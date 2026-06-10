@@ -5,6 +5,7 @@ import type { Adapter, FileAction, InstallContext } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
+import { HOME } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
@@ -29,10 +30,17 @@ export const opencodeAdapter: Adapter = {
   detect: detectOpenCode,
 
   paths(configDir) {
+    // Skills: OpenCode lee ~/.agents/skills nativamente (verificado en
+    // packages/opencode/src/skill/index.ts) — la misma copia sirve a Codex,
+    // sin duplicar en ~/.config/opencode/skills. Con el configDir real
+    // (~/.config/opencode) el ancla es HOME; con --target-dir, su padre
+    // (mismo patrón que Codex en pruebas).
+    const isRealConfigDir = path.resolve(configDir) === path.resolve(path.join(HOME, ".config", "opencode"));
+    const agentsHome = isRealConfigDir ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
       agentsDir: path.join(configDir, "agents"),
-      skillsDir: path.join(configDir, "skills"),
+      skillsDir: path.join(agentsHome, ".agents", "skills"),
       commandsDir: path.join(configDir, "commands"),
       pluginsDir: path.join(configDir, "plugins"),
       scriptsDir: path.join(configDir, "scripts"),
