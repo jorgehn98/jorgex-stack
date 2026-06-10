@@ -40,6 +40,20 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
 
+  // Archivos compartidos entre runtimes (p.ej. ~/.agents/skills sirve a Codex
+  // Y OpenCode): si un runtime que NO se desinstala sigue instalado, sus
+  // targets se conservan — desinstalar Codex no debe llevarse las skills que
+  // OpenCode usa.
+  const retained = new Set<string>();
+  for (const keep of Object.values(ADAPTERS)) {
+    if (opts.runtimes.includes(keep.id)) continue;
+    const detection = keep.detect();
+    if (!detection.installed) continue;
+    const keepCtx = makeContext(keep, detection.configDir);
+    if (!keepCtx) continue;
+    for (const action of buildPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
+  }
+
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
@@ -57,12 +71,15 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
 
     const unmerge = adapter.planUnmerge(mcp, hooks, ctx);
     const mergedTargets = new Set(unmerge.map((a) => a.target));
-    const deleteTargets = buildPlan(adapter, ctx)
+    const planTargets = buildPlan(adapter, ctx)
       .map((a) => a.target)
       .filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
+    const deleteTargets = planTargets.filter((t) => !retained.has(path.resolve(t)));
+    const sharedKept = planTargets.length - deleteTargets.length;
 
     p.log.step(`${adapter.name} → ${configDir}`);
     p.log.info(`${deleteTargets.length} archivos a borrar, ${unmerge.length} archivos compartidos a limpiar`);
+    if (sharedKept > 0) p.log.info(`${sharedKept} archivos se conservan: otros runtimes instalados los siguen usando.`);
 
     if (opts.dryRun) continue;
 
