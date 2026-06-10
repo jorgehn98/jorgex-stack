@@ -29,6 +29,13 @@ export interface InstallContext {
   secrets: Record<string, string | undefined>;
   /** Avisos no fatales que el pipeline muestra al final. */
   warnings: string[];
+  /**
+   * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,
+   * plugin engram.ts, entrada en configs). Es el default — desregistrar
+   * Engram exige el sí explícito del usuario. Las memorias (~/.engram) y el
+   * binario no se tocan JAMÁS, ni siquiera al desregistrar.
+   */
+  preserveEngram?: boolean;
 }
 
 export interface AdapterPaths {

@@ -7,6 +7,7 @@ import { ADAPTERS, buildPlan, diffPlan, makeContext } from "./install.js";
 import { detectEngram } from "./lib/detect.js";
 import { readTextIfExists } from "./lib/fsx.js";
 import { modelMapFile } from "./lib/model-map.js";
+import { HOME } from "./lib/paths.js";
 
 export function engramVersion(bin: string): string | null {
   try {
@@ -49,6 +50,12 @@ export async function runDoctor(): Promise<number> {
     } else {
       p.log.success(`Engram: ${version} (${engramBin})`);
     }
+  }
+  const engramDataDir = process.env.ENGRAM_DATA_DIR ?? path.join(HOME, ".engram");
+  const engramDb = path.join(engramDataDir, "engram.db");
+  if (fs.existsSync(engramDb)) {
+    const sizeMb = (fs.statSync(engramDb).size / 1024 / 1024).toFixed(1);
+    p.log.info(`Engram DB: ${engramDb} (${sizeMb} MB de memorias — el stack no la toca JAMÁS).`);
   }
 
   if (!fs.existsSync(modelMapFile())) p.log.info("model-map: aún no creado (se crea en el primer install o con 'models').");

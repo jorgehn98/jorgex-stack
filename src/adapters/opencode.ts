@@ -215,8 +215,12 @@ export const opencodeAdapter: Adapter = {
         }
         const plugin = root["plugin"] as string[] | undefined;
         if (Array.isArray(plugin) && pluginsDir !== null) {
+          // preserveEngram: el plugin engram.ts es la integración de memoria
+          // del usuario — solo se desregistra con su sí explícito.
           const ours = new Set(
-            pluginSources(ctx).map((s) => pathToFileURL(path.join(pluginsDir, path.basename(s))).href),
+            pluginSources(ctx)
+              .filter((s) => !(ctx.preserveEngram && path.basename(s) === "engram.ts"))
+              .map((s) => pathToFileURL(path.join(pluginsDir, path.basename(s))).href),
           );
           root["plugin"] = plugin.filter((url) => !ours.has(url));
           if ((root["plugin"] as string[]).length === 0) delete root["plugin"];

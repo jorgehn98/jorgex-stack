@@ -1,4 +1,7 @@
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../src/lib/hooks-format.js";
@@ -78,6 +81,48 @@ describe("removeNativeHooks", () => {
     const installed = upsertNativeHooks(null, CANONICAL, "C:/x/scripts");
     const removed = removeNativeHooks(installed, CANONICAL)!;
     expect(JSON.parse(removed)).toEqual({});
+  });
+});
+
+describe("uninstall preserva Engram por defecto (D7)", () => {
+  const HOOKS = { hooks: {} } as CanonicalHooks;
+  const MCP_SIN_ENGRAM = { servers: { context7: { transport: "http" as const, url: "https://mcp.context7.com/mcp" } } };
+
+  it("planUnmerge de opencode con preserveEngram conserva mcp.engram y el plugin engram.ts", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-engram-"));
+    const pluginsDir = path.join(tmp, "plugins");
+    const urls = ["engram.ts", "hooks.ts", "worktree.ts"].map((f) => pathToFileURL(path.join(pluginsDir, f)).href);
+    fs.writeFileSync(
+      path.join(tmp, "opencode.json"),
+      JSON.stringify({
+        mcp: {
+          engram: { type: "local", command: ["engram", "mcp"] },
+          context7: { type: "remote", url: "https://mcp.context7.com/mcp" },
+        },
+        plugin: urls,
+      }),
+    );
+
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: DEFAULT_MODEL_MAP.opencode,
+      secrets: {},
+      warnings: [],
+      preserveEngram: true,
+    };
+    const actions = opencodeAdapter.planUnmerge(MCP_SIN_ENGRAM, HOOKS, ctx);
+    const configAction = actions.find((a) => a.target.endsWith("opencode.json"))!;
+    const result = JSON.parse((configAction as { content: string }).content);
+
+    expect(result.mcp.engram).toBeDefined();
+    expect(result.mcp.context7).toBeUndefined();
+    expect(result.plugin).toContain(urls[0]); // engram.ts se conserva
+    expect(result.plugin).not.toContain(urls[1]); // hooks.ts se quita
+    expect(result.plugin).not.toContain(urls[2]); // worktree.ts se quita
+
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
 

@@ -19,11 +19,20 @@ interface Flags {
   yes: boolean;
   list: boolean;
   check: boolean;
+  removeEngram: boolean;
   positional: string[];
 }
 
 function parseFlags(args: string[]): Flags {
-  const flags: Flags = { agents: [], dryRun: false, yes: false, list: false, check: false, positional: [] };
+  const flags: Flags = {
+    agents: [],
+    dryRun: false,
+    yes: false,
+    list: false,
+    check: false,
+    removeEngram: false,
+    positional: [],
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--agents" || arg === "-a") flags.agents = (args[++i] ?? "").split(",").filter(Boolean) as RuntimeId[];
@@ -34,6 +43,7 @@ function parseFlags(args: string[]): Flags {
     else if (arg === "--yes" || arg === "-y") flags.yes = true;
     else if (arg === "--list") flags.list = true;
     else if (arg === "--check") flags.check = true;
+    else if (arg === "--remove-engram") flags.removeEngram = true;
     else flags.positional.push(arg);
   }
   return flags;
@@ -67,7 +77,9 @@ Comandos:
   update      --check: compara stack/Engram/skills con sus upstreams
   doctor      Estado: Engram, drift de config, hooks de Codex, key de context7
   restore     --list para ver backups · 'restore <id>' para restaurar
-  uninstall   Retira SOLO lo gestionado por el stack (con backup)
+  uninstall   Retira SOLO lo gestionado por el stack (con backup).
+              Engram se CONSERVA por defecto (memorias, binario y registro);
+              desregistrarlo exige --remove-engram o el sí explícito
 
 Opciones:
   --agents, -a opencode,claude-code,codex   Runtimes destino (default: detectados)
@@ -117,7 +129,13 @@ async function main(): Promise<void> {
     case "uninstall": {
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null || runtimes.length === 0) return;
-      process.exitCode = await runUninstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: flags.yes });
+      process.exitCode = await runUninstall({
+        runtimes,
+        targetDir: flags.targetDir,
+        dryRun: flags.dryRun,
+        yes: flags.yes,
+        removeEngram: flags.removeEngram,
+      });
       return;
     }
     case "doctor": {

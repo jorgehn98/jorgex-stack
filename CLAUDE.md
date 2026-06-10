@@ -8,7 +8,7 @@ Harness multi-agente portable: una fuente canónica de configuración (agentes, 
 
 1. **pnpm siempre, nunca npm** — desarrollo, scripts, y cualquier instalación que ejecute el CLI (`pnpm dlx`, `pnpm add`).
 2. **Cero secretos en el repo**: ninguna key/token en código, ejemplos, tests o fixtures. Los únicos MCPs del stack son `engram` (sin key) y `context7` (placeholder vacío; cada usuario conecta su cuenta).
-3. **El Engram del usuario es intocable**: el instalador detecta binario/DB existentes y los respeta. Nunca reinstalar, migrar ni tocar la base de datos. Update del binario solo con confirmación explícita. Upstream: https://github.com/Gentleman-Programming/engram
+3. **El Engram del usuario es intocable en TODOS los flujos**: install/sync detectan y respetan binario/DB (`~/.engram` = memorias); update solo informa de releases; uninstall CONSERVA el registro de Engram por defecto y desregistrarlo exige `--remove-engram` o confirmación explícita (default No) — y ni con eso se tocan binario o DB. Upstream: https://github.com/Gentleman-Programming/engram
 4. **No tocar `C:\Users\jorge\Desktop\jorgex-custom-tools`** hasta la fase F6: sus plugins se COPIAN a `stack/plugins/opencode/`, los originales siguen en uso.
 5. **Merge idempotente**: toda escritura en configs de usuario va dentro de secciones marcadas (`<!-- jorgex:seccion -->` en markdown, upsert quirúrgico en JSON/TOML). Backup automático antes de escribir. Re-ejecutar `sync` dos veces = cero cambios.
 6. **Sin switches por runtime en `src/components/`**: toda variación entre Claude Code / Codex / OpenCode vive en su adapter (`src/adapters/`). Añadir un runtime = añadir un adapter, sin tocar componentes.

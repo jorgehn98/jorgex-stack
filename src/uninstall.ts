@@ -13,6 +13,8 @@ export interface UninstallOptions {
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
+  /** D7: desregistrar Engram exige el sí explícito (flag o confirmación). */
+  removeEngram: boolean;
 }
 
 /** Borra hacia arriba los directorios que hayan quedado vacíos, sin salir de root. */
@@ -39,6 +41,29 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
+
+  // D7: Engram guarda las memorias del usuario. Por defecto se CONSERVA todo
+  // (registro MCP, plugin engram.ts); desregistrarlo exige el sí explícito.
+  // Las memorias (~/.engram) y el binario no se tocan en ningún caso.
+  let removeEngram = opts.removeEngram;
+  if (!removeEngram && !opts.yes && !opts.dryRun && process.stdout.isTTY) {
+    const answer = await p.confirm({
+      message:
+        "¿Quitar también el registro de Engram (MCP/plugin) de los runtimes? Tus memorias (~/.engram) y el binario NO se tocan en ningún caso.",
+      initialValue: false,
+    });
+    if (p.isCancel(answer)) {
+      p.cancel("Cancelado — no se ha tocado nada.");
+      return 1;
+    }
+    removeEngram = answer === true;
+  }
+  const mcpForUnmerge = removeEngram
+    ? mcp
+    : { servers: Object.fromEntries(Object.entries(mcp.servers).filter(([name]) => name !== "engram")) };
+  if (!removeEngram) {
+    p.log.info("Engram se conserva: memorias, binario y registro intactos (usa --remove-engram para desregistrarlo).");
+  }
 
   // Archivos compartidos entre runtimes (p.ej. ~/.agents/skills sirve a Codex
   // Y OpenCode): si un runtime que NO se desinstala sigue instalado, sus
@@ -68,13 +93,16 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     }
     const ctx = makeContext(adapter, configDir);
     if (!ctx) continue;
+    ctx.preserveEngram = !removeEngram;
 
-    const unmerge = adapter.planUnmerge(mcp, hooks, ctx);
+    const unmerge = adapter.planUnmerge(mcpForUnmerge, hooks, ctx);
     const mergedTargets = new Set(unmerge.map((a) => a.target));
     const planTargets = buildPlan(adapter, ctx)
       .map((a) => a.target)
       .filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
-    const deleteTargets = planTargets.filter((t) => !retained.has(path.resolve(t)));
+    const deleteTargets = planTargets.filter(
+      (t) => !retained.has(path.resolve(t)) && !(ctx.preserveEngram && path.basename(t) === "engram.ts"),
+    );
     const sharedKept = planTargets.length - deleteTargets.length;
 
     p.log.step(`${adapter.name} → ${configDir}`);
