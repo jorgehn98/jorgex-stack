@@ -73,6 +73,12 @@ export async function runDoctor(): Promise<number> {
     if (adapter.id === "codex" && fs.existsSync(path.join(detection.configDir, "hooks.json"))) {
       p.log.info("Codex: recuerda que los hooks requieren aprobación manual — verifica con /hooks dentro de codex.");
     }
+    if (adapter.id === "codex" && fs.existsSync(path.join(detection.configDir, "AGENTS.override.md"))) {
+      p.log.warn(
+        "Codex: existe ~/.codex/AGENTS.override.md — tiene prioridad ABSOLUTA y tapa el AGENTS.md gestionado por el stack.",
+      );
+      problems++;
+    }
 
     const key = context7KeyConfigured(adapter.id, detection.configDir);
     if (key === false) p.log.info(`${adapter.name}: context7 sin key (opcional — conéctala cuando quieras).`);
