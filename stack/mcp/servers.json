@@ -1,0 +1,19 @@
+{
+  "$comment": "Manifiesto MCP canónico (PRD D5): SOLO engram y context7. Sin secretos jamás — '${VAR}' son referencias que el instalador pide opcionalmente en el install y escribe SOLO en la config local de cada runtime. '{{ENGRAM_BIN}}' lo resuelve el instalador a la ruta del binario Engram detectado en la máquina (D7: nunca reinstala uno existente). Traducción por adapter: Claude Code → scope user (~/.claude.json) · Codex → [mcp_servers.x] en config.toml · OpenCode → clave mcp en opencode.json (command como array, environment).",
+  "servers": {
+    "engram": {
+      "transport": "stdio",
+      "command": "{{ENGRAM_BIN}}",
+      "args": ["mcp", "--tools=agent"]
+    },
+    "context7": {
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      },
+      "optionalSecrets": ["CONTEXT7_API_KEY"],
+      "note": "Se instala vacío: cada usuario conecta su propia cuenta. Sin key, el instalador deja el header sin valor y context7 queda listo para configurar después."
+    }
+  }
+}

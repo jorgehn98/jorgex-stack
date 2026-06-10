@@ -1,0 +1,33 @@
+{
+  "name": "jorgex-stack",
+  "version": "0.1.0",
+  "description": "Harness multi-agente portable: instala la config JorgeX (agentes, skills, hooks, Engram, MCPs) en Claude Code, Codex CLI y OpenCode",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "jorgex-stack": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "stack",
+    "upstreams.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.1.1",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "cli": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  }
+}

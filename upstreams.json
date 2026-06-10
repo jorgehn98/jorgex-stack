@@ -1,0 +1,29 @@
+{
+  "$comment": "Terceros gestionados por `jorgex-stack update`: fuente, versión conocida y política. Las skills 'modified: true' tienen cambios locales respecto al upstream — update debe hacer diff/aviso, NUNCA reemplazo ciego (PRD §7.3). Skills propias sin upstream (no se actualizan desde fuera): agent-delegation, work-lifecycle.",
+  "tools": {
+    "engram": {
+      "kind": "binary",
+      "source": "github:Gentleman-Programming/engram",
+      "verify": "sha256",
+      "policy": "respect-existing — D7: si hay un Engram instalado (binario o DB), no se toca; update del binario solo con confirmación explícita y la DB jamás"
+    }
+  },
+  "skills": {
+    "agent-browser": { "source": "github:vercel-labs/agent-browser" },
+    "ai-sdk": { "source": "github:vercel/ai" },
+    "deploy-to-vercel": { "source": "github:vercel-labs/agent-skills", "version": "3.0.0" },
+    "diagnose": { "source": "github:mattpocock/skills", "modified": true },
+    "find-skills": { "source": "github:vercel-labs/skills" },
+    "graphify": { "source": "github:safishamsi/graphify", "version": "0.7.16" },
+    "mcp-builder": { "source": "github:anthropics/skills", "license": "Apache-2.0" },
+    "obsidian-cli": { "source": "github:kepano/obsidian-skills" },
+    "obsidian-markdown": { "source": "github:kepano/obsidian-skills" },
+    "react-doctor": { "source": "github:millionco/react-doctor" },
+    "skill-creator": { "source": "github:anthropics/skills", "license": "Apache-2.0" },
+    "supabase": { "source": "github:supabase/agent-skills", "version": "0.1.2" },
+    "supabase-postgres-best-practices": { "source": "github:supabase/agent-skills", "license": "MIT" },
+    "tdd": { "source": "github:mattpocock/skills", "modified": true },
+    "to-issues": { "source": "github:mattpocock/skills", "modified": true },
+    "to-prd": { "source": "github:mattpocock/skills", "modified": true }
+  }
+}

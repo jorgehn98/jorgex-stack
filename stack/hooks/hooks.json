@@ -1,0 +1,18 @@
+{
+  "$comment": "Hooks canónicos del stack. Formato base = Claude Code (code.claude.com/docs/en/hooks). Traducción por adapter en install: Claude Code → merge en ~/.claude/settings.json (clave hooks) · Codex → ~/.codex/hooks.json (el usuario debe aprobarlos después con /hooks) · OpenCode → plugin puente stack/plugins/opencode/hooks.ts con su propio hooks.json. Extensión propia 'x-command-includes': filtro por substring del comando bash que el puente de OpenCode aplica antes de ejecutar el script; en Claude Code y Codex el filtro lo aplica el propio script (sale con exit 0 si el comando no aplica). El placeholder {{SCRIPTS_DIR}} lo resuelve el instalador a la ruta real donde queden instalados los scripts del stack.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "x-command-includes": "gh pr create",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{SCRIPTS_DIR}}/post-pr-review.cjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
