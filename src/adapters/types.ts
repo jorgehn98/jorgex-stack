@@ -46,8 +46,17 @@ export interface Adapter {
   name: string;
   detect(): RuntimeDetection;
   paths(configDir: string): AdapterPaths;
-  /** Convierte un agente canónico al formato nativo del runtime. */
-  renderAgent(agent: CanonicalAgent, models: RuntimeModelMap): { file: string; content: string };
+  /**
+   * Convierte un agente canónico al formato nativo del runtime.
+   * kind "command" lo instala en commandsDir (p.ej. el orchestrator en
+   * Claude Code, donde los subagentes no pueden lanzar subagentes).
+   */
+  renderAgent(
+    agent: CanonicalAgent,
+    models: RuntimeModelMap,
+  ): { file: string; content: string; kind: "agent" | "command" };
+  /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
+  renderCommand(file: string, content: string): { file: string; content: string };
   /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[];
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */

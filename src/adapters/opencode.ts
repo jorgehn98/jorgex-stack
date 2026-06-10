@@ -62,7 +62,13 @@ export const opencodeAdapter: Adapter = {
     return {
       file: `${agent.name}.md`,
       content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
+      kind: "agent" as const,
     };
+  },
+
+  renderCommand(file, content) {
+    // OpenCode usa {{input}} tal cual: sin transformación.
+    return { file, content };
   },
 
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {
