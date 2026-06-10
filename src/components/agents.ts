@@ -3,10 +3,17 @@ import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { loadCanonicalAgents } from "../lib/canonical.js";
 
 export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] {
-  const { agentsDir, commandsDir } = adapter.paths(ctx.configDir);
-  return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).map((agent) => {
-    const rendered = adapter.renderAgent(agent, ctx.models);
-    const dir = rendered.kind === "command" ? commandsDir : agentsDir;
-    return { kind: "write", target: path.join(dir, rendered.file), content: rendered.content };
-  });
+  const { agentsDir, commandsDir, outputStylesDir } = adapter.paths(ctx.configDir);
+  const dirFor = { agent: agentsDir, command: commandsDir, "output-style": outputStylesDir } as const;
+
+  return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) =>
+    adapter.renderAgent(agent, ctx.models).flatMap((rendered): FileAction[] => {
+      const dir = dirFor[rendered.kind];
+      if (dir === null) {
+        ctx.warnings.push(`${adapter.name}: sin destino para '${rendered.kind}' (${rendered.file}) — omitido.`);
+        return [];
+      }
+      return [{ kind: "write", target: path.join(dir, rendered.file), content: rendered.content }];
+    }),
+  );
 }

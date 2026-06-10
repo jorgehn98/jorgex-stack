@@ -52,16 +52,25 @@ export const claudeCodeAdapter: Adapter = {
       commandsDir: path.join(configDir, "commands"),
       pluginsDir: null,
       scriptsDir: path.join(configDir, "scripts"),
+      outputStylesDir: path.join(configDir, "output-styles"),
     };
   },
 
   renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
-    // En Claude Code los subagentes no pueden lanzar subagentes: el
-    // orchestrator (primary) se instala como slash command para que el agente
-    // PRINCIPAL adopte el flujo y delegue vía Task a los subagentes.
+    // El orchestrator (primary) es un MODO del agente principal, nunca un
+    // subagente. En Claude Code eso es un output style: modifica el system
+    // prompt del main agent, se elige con /config y persiste en settings
+    // (equivalente al primary de OpenCode, sin cambio en caliente con Tab).
+    // El command /orchestrator acompaña como activador puntual en una sesión
+    // ya abierta. Ambos salen de la misma fuente canónica.
     if (agent.mode === "primary") {
-      const content = `---\ndescription: ${yamlString(agent.description)}\n---\n${agent.body.trimEnd()}\n\n## Task\n\n$ARGUMENTS\n`;
-      return { file: `${agent.name}.md`, content, kind: "command" as const };
+      const title = agent.name.charAt(0).toUpperCase() + agent.name.slice(1);
+      const style = `---\nname: ${title}\ndescription: ${yamlString(agent.description)}\nkeep-coding-instructions: true\n---\n${agent.body}`;
+      const command = `---\ndescription: ${yamlString(agent.description)}\n---\n${agent.body.trimEnd()}\n\n## Task\n\n$ARGUMENTS\n`;
+      return [
+        { file: `${agent.name}.md`, content: style, kind: "output-style" as const },
+        { file: `${agent.name}.md`, content: command, kind: "command" as const },
+      ];
     }
 
     const lines = [`name: ${agent.name}`, `description: ${yamlString(agent.description)}`];
@@ -69,11 +78,13 @@ export const claudeCodeAdapter: Adapter = {
     if (tools !== null) lines.push(`tools: ${tools}`);
     lines.push(`model: ${models[agent.tier].model}`);
 
-    return {
-      file: `${agent.name}.md`,
-      content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
-      kind: "agent" as const,
-    };
+    return [
+      {
+        file: `${agent.name}.md`,
+        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
+        kind: "agent" as const,
+      },
+    ];
   },
 
   renderCommand(file, content) {

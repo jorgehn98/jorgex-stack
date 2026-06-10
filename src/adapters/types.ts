@@ -39,6 +39,8 @@ export interface AdapterPaths {
   /** null si el runtime no tiene plugins TS (Claude Code, Codex). */
   pluginsDir: string | null;
   scriptsDir: string;
+  /** Solo Claude Code: modos del main agent (output styles). null en el resto. */
+  outputStylesDir: string | null;
 }
 
 export interface Adapter {
@@ -47,14 +49,16 @@ export interface Adapter {
   detect(): RuntimeDetection;
   paths(configDir: string): AdapterPaths;
   /**
-   * Convierte un agente canónico al formato nativo del runtime.
-   * kind "command" lo instala en commandsDir (p.ej. el orchestrator en
-   * Claude Code, donde los subagentes no pueden lanzar subagentes).
+   * Convierte un agente canónico a uno o varios artefactos nativos del runtime.
+   * El orchestrator (primary) es SIEMPRE un modo del agente principal que el
+   * usuario pilota, nunca un subagente invocado: OpenCode → primary agent
+   * (Tab) · Claude Code → output style (system prompt del main agent, /config)
+   * + command de activación puntual · Codex → profile con developer_instructions.
    */
   renderAgent(
     agent: CanonicalAgent,
     models: RuntimeModelMap,
-  ): { file: string; content: string; kind: "agent" | "command" };
+  ): { file: string; content: string; kind: "agent" | "command" | "output-style" }[];
   /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
   renderCommand(file: string, content: string): { file: string; content: string };
   /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */

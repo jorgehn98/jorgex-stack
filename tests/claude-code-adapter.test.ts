@@ -24,32 +24,42 @@ function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
 }
 
 describe("claudeCodeAdapter.renderAgent", () => {
-  it("convierte el primary (orchestrator) en slash command con $ARGUMENTS", () => {
+  it("el primary (orchestrator) es un MODO del main agent: output style + command de activación", () => {
     const out = claudeCodeAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
-    expect(out.kind).toBe("command");
-    expect(out.file).toBe("orchestrator.md");
-    expect(out.content).toContain("$ARGUMENTS");
-    expect(out.content).not.toContain("name: orchestrator");
+    expect(out).toHaveLength(2);
+
+    const style = out.find((o) => o.kind === "output-style")!;
+    expect(style.file).toBe("orchestrator.md");
+    expect(style.content).toContain("name: Orchestrator");
+    expect(style.content).toContain("keep-coding-instructions: true");
+    expect(style.content).not.toContain("$ARGUMENTS");
+
+    const command = out.find((o) => o.kind === "command")!;
+    expect(command.content).toContain("$ARGUMENTS");
+    expect(command.content).not.toContain("keep-coding-instructions");
   });
 
   it("subagente readonly con git-read: allowlist con Bash y tools de memoria", () => {
-    const out = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-    expect(out.kind).toBe("agent");
-    expect(out.content).toContain("tools: Read, Grep, Glob, Bash, mcp__engram__mem_save");
-    expect(out.content).toContain("model: fable");
+    const [out] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
+    expect(out!.kind).toBe("agent");
+    expect(out!.content).toContain("tools: Read, Grep, Glob, Bash, mcp__engram__mem_save");
+    expect(out!.content).toContain("model: fable");
   });
 
   it("subagente sin restricciones: hereda todo (sin clave tools)", () => {
-    const out = claudeCodeAdapter.renderAgent(agent({ tier: "standard" }), MODELS);
-    expect(out.content).not.toContain("tools:");
-    expect(out.content).toContain("model: sonnet");
+    const [out] = claudeCodeAdapter.renderAgent(agent({ tier: "standard" }), MODELS);
+    expect(out!.content).not.toContain("tools:");
+    expect(out!.content).toContain("model: sonnet");
   });
 
   it("el agente engram recibe solo tools de lectura de memoria (sin mem_save)", () => {
-    const out = claudeCodeAdapter.renderAgent(agent({ name: "engram", readonly: true, bash: "none", tier: "cheap" }), MODELS);
-    expect(out.content).toContain("mcp__engram__mem_get_observation");
-    expect(out.content).not.toContain("mem_save");
-    expect(out.content).not.toContain("Bash");
+    const [out] = claudeCodeAdapter.renderAgent(
+      agent({ name: "engram", readonly: true, bash: "none", tier: "cheap" }),
+      MODELS,
+    );
+    expect(out!.content).toContain("mcp__engram__mem_get_observation");
+    expect(out!.content).not.toContain("mem_save");
+    expect(out!.content).not.toContain("Bash");
   });
 });
 

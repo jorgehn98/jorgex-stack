@@ -35,6 +35,7 @@ export const opencodeAdapter: Adapter = {
       commandsDir: path.join(configDir, "commands"),
       pluginsDir: path.join(configDir, "plugins"),
       scriptsDir: path.join(configDir, "scripts"),
+      outputStylesDir: null,
     };
   },
 
@@ -59,11 +60,15 @@ export const opencodeAdapter: Adapter = {
       lines.push(`  write: ${agent.readonly ? "false" : "true"}`);
     }
 
-    return {
-      file: `${agent.name}.md`,
-      content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
-      kind: "agent" as const,
-    };
+    // En OpenCode el primary ES nativo: aparece en el ciclo de Tab junto a
+    // build/plan y es el agente que el usuario pilota directamente.
+    return [
+      {
+        file: `${agent.name}.md`,
+        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
+        kind: "agent" as const,
+      },
+    ];
   },
 
   renderCommand(file, content) {

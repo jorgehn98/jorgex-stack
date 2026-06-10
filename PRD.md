@@ -112,7 +112,8 @@ JorgeX Stack/
 | Componente | Canónico | Claude Code | Codex CLI | OpenCode |
 |---|---|---|---|---|
 | System prompt | `stack/system-prompt/AGENTS.md` | sección con marcadores en `~/.claude/CLAUDE.md` | sección en `~/.codex/AGENTS.md` | sección en `~/.config/opencode/AGENTS.md` |
-| Agentes | `stack/agents/*.md` | `~/.claude/agents/*.md` (frontmatter `name/description/tools/model`) | `~/.codex/agents/*.toml` (`developer_instructions`, `model_reasoning_effort`, `sandbox_mode`) | `~/.config/opencode/agents/*.md` (`mode/model/tools/permission`) |
+| Agentes (subagentes) | `stack/agents/*.md` | `~/.claude/agents/*.md` (frontmatter `name/description/tools/model`) | `~/.codex/agents/*.toml` (`developer_instructions`, `model_reasoning_effort`, `sandbox_mode`) | `~/.config/opencode/agents/*.md` (`mode/model/tools/permission`) |
+| **Orchestrator (primary)** | `stack/agents/orchestrator.md` | **Output style** `~/.claude/output-styles/orchestrator.md` (modifica el system prompt del MAIN agent; se elige con `/config` y persiste) + command `/orchestrator` como activador puntual | **Profile** `~/.codex/orchestrator.config.toml` con `developer_instructions` → `codex --profile orchestrator` (mensaje rol developer, sesión entera pilotada como orquestador) | **Primary agent** nativo: en el ciclo de Tab junto a build/plan |
 | Skills | `stack/skills/` + upstreams | copia en `~/.claude/skills/` | **`~/.agents/skills/`** (estándar agentskills.io — NO `~/.codex/skills`) | lee `~/.agents/skills/` nativo → misma copia que Codex |
 | Commands | `stack/commands/*.md` | `~/.claude/commands/*.md` | como skills (`~/.codex/prompts/` está deprecated) | `~/.config/opencode/commands/*.md` |
 | Hooks | `stack/hooks/hooks.json` | merge en `~/.claude/settings.json` → clave `hooks` | `~/.codex/hooks.json` (⚠ requiere trust manual vía `/hooks`) | **plugin puente** `hooks-bridge.ts` (OpenCode no tiene hooks declarativos) |
@@ -135,6 +136,8 @@ La config actual referencia modelos vía OpenCode multi-provider (`openai/gpt-5.
 - Defaults sensatos pre-seleccionados por tier (strong → análisis/review/seguridad/orchestrator; standard → implementer/tester; cheap → translator/docs/comments/engram), confirmables con Enter.
 - La elección se guarda en `model-map.json` (local del usuario, no en el repo) y `sync` la respeta.
 - Comando dedicado `jorgex-stack models` para re-escoger sin reinstalar.
+
+**Regla del orchestrator (cerrada con Jorge, 2026-06-10)**: el orchestrator es SIEMPRE un modo del agente principal que el usuario pilota — **nunca un subagente que se invoca**. OpenCode lo soporta nativo (primary + Tab). En Claude Code el mecanismo equivalente es el output style (cambia el system prompt del main agent; sin cambio en caliente: se selecciona en `/config` o al iniciar sesión). En Codex es el profile con `developer_instructions` (se elige al lanzar: `codex --profile orchestrator`; no hay cambio mid-session — verificado contra el código del repo openai/codex: los collaboration modes custom no existen aún). Si Codex/Claude añaden modos seleccionables en caliente, se migra a eso.
 
 ## 7. Componentes en detalle
 
