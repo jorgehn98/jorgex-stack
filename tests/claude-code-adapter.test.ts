@@ -40,10 +40,10 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(skill.content).not.toContain("keep-coding-instructions");
   });
 
-  it("subagente readonly con git-read: allowlist con Bash y tools de memoria", () => {
+  it("subagente readonly con git-read: allowlist con Skill, Bash y tools de memoria", () => {
     const [out] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
     expect(out!.kind).toBe("agent");
-    expect(out!.content).toContain("tools: Read, Grep, Glob, Bash, mcp__engram__mem_save");
+    expect(out!.content).toContain("tools: Read, Grep, Glob, Skill, Bash, mcp__engram__mem_save");
     expect(out!.content).toContain("model: fable");
   });
 
