@@ -113,8 +113,8 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
 
 1. Routing only (lightweight): list changed file NAMES with \`${diffScope} --name-only\` to decide which subagents apply. Do NOT load the full diff into your own context.
 
-2. All subagents are CONDITIONAL and read-only, and each fetches its OWN diff. Launch in PARALLEL (with your runtime's delegation mechanism) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
-   - comment-analyzer — only if the diff adds or changes comments/docstrings
+2. All subagents are CONDITIONAL and each fetches its OWN diff. All are read-only except comment-fixer, which edits comments directly (comments only, never code). Launch in PARALLEL (with your runtime's delegation mechanism) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
+   - comment-fixer — only if the diff adds or changes comments/docstrings; it fixes them in place and reports what changed
    - test-analyzer — only if the diff touches tests or code that should be tested
    - silent-failure-hunter — only if the diff includes error handling, try/catch, fallbacks, or async flows
    - type-design-analyzer — only if the diff changes types, interfaces, schemas, or public contracts
@@ -130,6 +130,7 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
    - Critical Issues (must fix)
    - Important Improvements (should fix)
    - Suggestions (nice to have)
+   - Changes already applied (e.g. comment fixes left uncommitted in the working tree)
    - Positive Findings
 </post-pr-review-required>`;
 

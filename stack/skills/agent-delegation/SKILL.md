@@ -29,7 +29,7 @@ Importante sobre el mecanismo:
 | `code-reviewer` | calidad de código vs guías (read-only) | hace falta revisar el diff contra las reglas del proyecto y detectar bugs |
 | `code-simplifier` | simplificación (read-only, propone) | el código introduce complejidad que merece simplificarse |
 | `silent-failure-hunter` | manejo de errores (read-only) | hay try/catch, fallbacks, errores silenciados o flujos async que auditar |
-| `comment-analyzer` | calidad de comentarios (read-only) | hay comentarios/docstrings nuevos o cambiados que revisar |
+| `comment-fixer` | comentarios (escribe SOLO comentarios, los corrige directamente) | hay comentarios/docstrings nuevos o cambiados que corregir |
 | `test-analyzer` | cobertura de tests (read-only) | hay que evaluar si los tests cubren bien lo cambiado (analiza, NO escribe) |
 | `type-design-analyzer` | diseño de tipos/invariantes (read-only) | cambian tipos, interfaces, schemas o contratos públicos |
 | `engram` | lectura de memoria (read-only) | hace falta recuperar contexto, decisiones o trabajo previo de memoria |

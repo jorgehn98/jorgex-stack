@@ -24,14 +24,14 @@ List only the changed file NAMES to decide routing — do NOT load the full diff
 
 ## 3. Launch the relevant subagents in PARALLEL
 
-All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the Task tool. Each subagent is read-only and fetches its OWN diff, so pass every one EXACTLY:
+All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the Task tool. Each subagent fetches its OWN diff; all are read-only except `comment-fixer`, which edits comments directly (comments only, never code). Pass every one EXACTLY:
 
 - BASE branch and HEAD branch (verbatim)
 - the instruction: review only `git diff <BASE>...HEAD` — never assume `main`, use the BASE/HEAD given
 
 Subagents and their triggers:
 
-1. Task(subagent_type='comment-analyzer') — only if the diff adds or changes comments/docstrings
+1. Task(subagent_type='comment-fixer') — only if the diff adds or changes comments/docstrings; it fixes them in place and reports what changed
 2. Task(subagent_type='test-analyzer') — only if the diff touches tests or code that should be tested
 3. Task(subagent_type='silent-failure-hunter') — only if the diff includes error handling, try/catch, fallbacks, or async flows
 4. Task(subagent_type='type-design-analyzer') — only if the diff changes types, interfaces, schemas, or public contracts
@@ -50,4 +50,5 @@ After the relevant subagents complete, synthesize their findings into a unified 
 - Critical Issues (must fix)
 - Important Improvements (should fix)
 - Suggestions (nice to have)
+- Changes already applied (e.g. comment fixes left uncommitted in the working tree)
 - Positive Findings
