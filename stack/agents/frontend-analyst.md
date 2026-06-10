@@ -48,4 +48,4 @@ End your report with exactly three lines:
 
 - Do not implement or edit code.
 - Detect the stack before suggesting anything; don't assume React-only.
-- If you spot a security risk, note it must go through `security-auditor` (as a delegation).
+- If you spot a security risk, don't analyze it in depth: report it as a delegation in your Result contract.

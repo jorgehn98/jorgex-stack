@@ -27,6 +27,7 @@ const MEMORY_TOOLS = memoryTools(["mem_save", "mem_search", "mem_context"]);
 /** El agente engram es lector puro de memoria: tools de lectura, sin mem_save. */
 const ENGRAM_AGENT_TOOLS = [
   "Read",
+  "Skill",
   ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
 
@@ -39,7 +40,9 @@ const ENGRAM_AGENT_TOOLS = [
 function toolsFor(agent: CanonicalAgent): string | null {
   if (agent.name === "engram") return ENGRAM_AGENT_TOOLS.join(", ");
   if (!agent.readonly) return null;
-  const tools = ["Read", "Grep", "Glob"];
+  // Skill SIEMPRE: todos los subagentes cargan agent-delegation como primera
+  // acción obligatoria — sin la tool en la allowlist no podrían.
+  const tools = ["Read", "Grep", "Glob", "Skill"];
   if (agent.bash !== "none") tools.push("Bash");
   tools.push(...MEMORY_TOOLS);
   return tools.join(", ");
