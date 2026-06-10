@@ -103,7 +103,7 @@ process.stdin.on('end', () => {
   const isConfirmed = resolution.source === BASE_BRANCH_SOURCE.GH;
   const baseSummary = isConfirmed
     ? `BASE (PR target, confirmed via gh pr view): ${baseBranch}`
-    : `BASE (PR target, inferred — NOT confirmed): ${baseBranch} — verify the real PR base before trusting the diff. Work is often in sub-branches whose PR does not target main.`;
+    : `BASE (PR target, NOT confirmed — fallback guess): ${baseBranch}. Before anything else, re-resolve it yourself: run \`gh pr view --json baseRefName --jq .baseRefName\` (the PR exists now; this hook may have raced its creation) and use THAT as BASE. Keep ${baseBranch} only if it still fails. Work is often done in sub-branches whose PR does NOT target the default branch — reviewing against the wrong BASE produces a huge, useless diff.`;
 
   const message = `<post-pr-review-required>
 A PR was just created. Run a conditional multi-agent review BEFORE reporting back to the user.
@@ -112,6 +112,8 @@ ${baseSummary}
 HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref HEAD\`).
 
 1. Routing only (lightweight): list changed file NAMES with \`${diffScope} --name-only\` to decide which subagents apply. Do NOT load the full diff into your own context.
+
+   Sanity check: if that list is far larger than the work just done (hundreds of files, unrelated areas), BASE is almost certainly wrong — STOP, re-resolve the PR base with \`gh pr view\`, and only continue when the diff matches the actual work.
 
 2. All subagents are CONDITIONAL and each fetches its OWN diff. All are read-only except comment-fixer, which edits comments directly (comments only, never code). Launch in PARALLEL (with your runtime's delegation mechanism) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
    - comment-fixer — only if the diff adds or changes comments/docstrings; it fixes them in place and reports what changed

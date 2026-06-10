@@ -22,6 +22,8 @@ Print the chosen BASE and HEAD and why BASE was selected.
 List only the changed file NAMES to decide routing — do NOT load the full diff into your own context:
 `git diff <BASE>...HEAD --name-only` (substitute the real branch names).
 
+Sanity check: if that list is far larger than the work being reviewed (hundreds of files, unrelated areas), BASE is almost certainly wrong — STOP, re-resolve it (step 1), and only continue when the diff matches the actual work. Reviewing against the wrong BASE makes every finding worthless.
+
 ## 3. Launch the relevant subagents in PARALLEL
 
 All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the Task tool. Each subagent fetches its OWN diff; all are read-only except `comment-fixer`, which edits comments directly (comments only, never code). Pass every one EXACTLY:
