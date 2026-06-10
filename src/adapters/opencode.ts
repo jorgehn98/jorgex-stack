@@ -5,7 +5,7 @@ import type { Adapter, FileAction, InstallContext } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
-import { HOME } from "../lib/paths.js";
+import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
@@ -39,9 +39,12 @@ export const opencodeAdapter: Adapter = {
     // Skills: OpenCode lee ~/.agents/skills nativamente (verificado en
     // packages/opencode/src/skill/index.ts) — la misma copia sirve a Codex,
     // sin duplicar en ~/.config/opencode/skills. Con el configDir real
-    // (~/.config/opencode) el ancla es HOME; con --target-dir, su padre
-    // (mismo patrón que Codex en pruebas).
-    const isRealConfigDir = path.resolve(configDir) === path.resolve(path.join(HOME, ".config", "opencode"));
+    // (aunque venga de OPENCODE_CONFIG_DIR) el ancla es HOME; con --target-dir,
+    // su padre (mismo patrón que Codex en pruebas).
+    const isRealConfigDir = samePath(
+      configDir,
+      process.env.OPENCODE_CONFIG_DIR ?? path.join(HOME, ".config", "opencode"),
+    );
     const agentsHome = isRealConfigDir ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
@@ -168,8 +171,9 @@ export const opencodeAdapter: Adapter = {
           for (const [key, raw] of Object.entries(server.headers ?? {})) {
             const envRef = /^\$\{(\w+)\}$/.exec(raw);
             const fromSecrets = envRef ? (ctx.secrets[envRef[1]!] ?? "") : raw;
-            // D5: si el usuario ya conectó su cuenta (header con valor), se preserva.
-            headers[key] = fromSecrets !== "" ? fromSecrets : (previous?.headers?.[key] ?? "");
+            // D5: el valor que el usuario ya tenga configurado manda; el env
+            // var solo rellena cuando está vacío.
+            headers[key] = previous?.headers?.[key] || fromSecrets || "";
           }
           mcp[name] = {
             type: "remote",
@@ -182,11 +186,35 @@ export const opencodeAdapter: Adapter = {
       // Los plugins instalados se registran como file:// URLs sin duplicar
       // y sin tocar los plugins propios del usuario.
       if (pluginsDir !== null) {
-        const plugin = (root["plugin"] ??= []) as string[];
-        for (const source of pluginSources(ctx)) {
-          const url = pathToFileURL(path.join(pluginsDir, path.basename(source))).href;
+        let plugin = (root["plugin"] ??= []) as string[];
+        const ourUrls = new Map(
+          pluginSources(ctx).map((s) => {
+            const base = path.basename(s);
+            return [pathToFileURL(path.join(pluginsDir, base)).href, base] as const;
+          }),
+        );
+        // Reconciliación: registros bajo NUESTRO pluginsDir cuyo plugin ya no
+        // existe en el stack se retiran (un registro roto impide arrancar
+        // OpenCode). engram.ts nunca se desregistra en sync (D7).
+        const pluginsDirPrefix = pathToFileURL(pluginsDir).href + "/";
+        plugin = plugin.filter(
+          (url) =>
+            !url.startsWith(pluginsDirPrefix) ||
+            ourUrls.has(url) ||
+            path.basename(url) === "engram.ts",
+        );
+        for (const [url, base] of ourUrls) {
+          // Si el usuario ya tiene OTRA integración de engram registrada, no
+          // se añade la del stack (duplicaría protocolo y eventos).
+          if (base === "engram.ts" && plugin.some((u) => u !== url && /engram/i.test(path.basename(u)))) {
+            ctx.warnings.push(
+              "OpenCode: ya hay un plugin de Engram registrado — el del stack no se registra para no duplicar la integración.",
+            );
+            continue;
+          }
           if (!plugin.includes(url)) plugin.push(url);
         }
+        root["plugin"] = plugin;
       }
     });
 

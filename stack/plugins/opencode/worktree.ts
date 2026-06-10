@@ -59,7 +59,8 @@ const buildScriptEnv = (scriptPath: string, activeWorktreePath?: string) => {
     delete env.OPENCODE_WORKTREE_PATH;
   }
 
-  if (scriptPath.endsWith(".sh")) {
+  // Windows-only: rutas de Git-for-Windows y ";" como separador de PATH.
+  if (scriptPath.endsWith(".sh") && process.platform === "win32") {
     const gitUsrBin = "C:/Program Files/Git/usr/bin";
     const gitBin = "C:/Program Files/Git/bin";
     const currentPath = process.env.PATH || "";

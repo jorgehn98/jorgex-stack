@@ -8,10 +8,36 @@ function markers(name: string): { open: string; close: string } {
   return { open: `<!-- jorgex:${name} -->`, close: `<!-- /jorgex:${name} -->` };
 }
 
+/**
+ * Repara marcadores rotos (editados a mano): pares incompletos, en orden
+ * inverso, duplicados o incrustados en una línea con más contenido. En esos
+ * casos elimina TODOS los marcadores conservando el contenido, y el upsert
+ * re-añade un bloque limpio. Sin esto, un upsert sobre un par roto duplicaría
+ * la sección o, peor, trataría texto del usuario como interior de la sección
+ * y lo borraría al reemplazar.
+ */
+function repairOrphanMarkers(existing: string, name: string): string {
+  const { open, close } = markers(name);
+  const count = (marker: string): number => existing.split(marker).length - 1;
+  const opens = count(open);
+  const closes = count(close);
+  if (opens === 0 && closes === 0) return existing;
+  const onOwnLine = (marker: string): boolean => existing.split("\n").some((line) => line.trim() === marker);
+  const healthy =
+    opens === 1 && closes === 1 && existing.indexOf(close) > existing.indexOf(open) && onOwnLine(open) && onOwnLine(close);
+  if (healthy) return existing;
+  return existing
+    .split("\n")
+    .map((line) => (line.trim() === open || line.trim() === close ? null : line.split(open).join("").split(close).join("")))
+    .filter((line): line is string => line !== null)
+    .join("\n");
+}
+
 export function upsertMarkdownSection(existing: string | null, name: string, content: string): string {
   const { open, close } = markers(name);
   const block = `${open}\n${content.trim()}\n${close}`;
   if (existing === null || existing.trim() === "") return block + "\n";
+  existing = repairOrphanMarkers(existing, name);
 
   const start = existing.indexOf(open);
   const end = existing.indexOf(close);
@@ -24,6 +50,7 @@ export function upsertMarkdownSection(existing: string | null, name: string, con
 
 /** Inversa de upsertMarkdownSection: elimina la sección marcada si existe. */
 export function removeMarkdownSection(existing: string, name: string): string {
+  existing = repairOrphanMarkers(existing, name);
   const { open, close } = markers(name);
   const start = existing.indexOf(open);
   const end = existing.indexOf(close);
@@ -60,10 +87,58 @@ export function upsertJson(existing: string | null, mutate: (root: Record<string
 }
 
 /**
+ * Normaliza el nombre de tabla de una línea-header TOML para comparar:
+ * `[ mcp_servers."engram" ] # nota` → `mcp_servers.engram`. Devuelve null si
+ * la línea no es un header.
+ */
+function headerName(line: string): string | null {
+  const match = /^\s*\[\s*([^\]]+?)\s*\]\s*(#.*)?$/.exec(line);
+  if (!match) return null;
+  return match[1]!
+    .split(".")
+    .map((part) => part.trim().replace(/^["']|["']$/g, ""))
+    .join(".");
+}
+
+/**
+ * Marca qué líneas están DENTRO de un string multilínea (''' o """) del
+ * usuario: ahí una línea `[x]` es texto, no un header de sección.
+ */
+function multilineStringMask(lines: string[]): boolean[] {
+  const mask: boolean[] = [];
+  let inside: string | null = null;
+  for (const line of lines) {
+    if (inside !== null) {
+      mask.push(true);
+      if (line.includes(inside)) inside = null;
+      continue;
+    }
+    mask.push(false);
+    for (const delim of ["'''", '"""']) {
+      if ((line.split(delim).length - 1) % 2 === 1) {
+        inside = delim;
+        break;
+      }
+    }
+  }
+  return mask;
+}
+
+/** Localiza una sección TOML: [start, end) en líneas, o null si no existe. */
+function findTomlSection(lines: string[], section: string): { start: number; end: number } | null {
+  const mask = multilineStringMask(lines);
+  const start = lines.findIndex((line, i) => !mask[i] && headerName(line) === section);
+  if (start === -1) return null;
+  let end = start + 1;
+  while (end < lines.length && (mask[end] || headerName(lines[end]!) === null)) end++;
+  return { start, end };
+}
+
+/**
  * Upsert quirúrgico de UNA sección TOML por texto (PRD D3): reemplaza desde el
- * header exacto `[section]` hasta el siguiente header (o EOF); si no existe,
- * la añade al final. Todo lo demás — otras secciones, comentarios, orden — se
- * preserva byte a byte. `body` son las líneas clave=valor SIN el header.
+ * header `[section]` hasta el siguiente header (o EOF); si no existe, la añade
+ * al final. Todo lo demás — otras secciones, comentarios, orden — se preserva
+ * byte a byte. `body` son las líneas clave=valor SIN el header.
  */
 export function upsertTomlSection(existing: string | null, section: string, body: string): string {
   const header = `[${section}]`;
@@ -71,37 +146,30 @@ export function upsertTomlSection(existing: string | null, section: string, body
   if (existing === null || existing.trim() === "") return block;
 
   const lines = existing.split(/\r?\n/);
-  const isHeader = (line: string): boolean => /^\s*\[.+\]\s*(#.*)?$/.test(line);
-  const start = lines.findIndex((line) => line.trim() === header || line.trim().startsWith(`${header} `));
+  const found = findTomlSection(lines, section);
 
-  if (start === -1) {
+  if (found === null) {
     const sep = existing.endsWith("\n") ? "\n" : "\n\n";
     return existing + sep + block;
   }
 
-  let end = start + 1;
-  while (end < lines.length && !isHeader(lines[end]!)) end++;
   // Las líneas en blanco al final de la sección son separación con lo que
   // sigue: quedan fuera del reemplazo para que re-aplicar sea byte-idéntico.
-  let sectionEnd = end;
-  while (sectionEnd > start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
-  const result = [...lines.slice(0, start), block.trimEnd(), ...lines.slice(sectionEnd)].join("\n");
+  let sectionEnd = found.end;
+  while (sectionEnd > found.start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
+  const result = [...lines.slice(0, found.start), block.trimEnd(), ...lines.slice(sectionEnd)].join("\n");
   return result.endsWith("\n") ? result : result + "\n";
 }
 
 /** Inversa de upsertTomlSection: elimina la sección (y su separación) si existe. */
 export function removeTomlSection(existing: string, section: string): string {
-  const header = `[${section}]`;
   const lines = existing.split(/\r?\n/);
-  const isHeader = (line: string): boolean => /^\s*\[.+\]\s*(#.*)?$/.test(line);
-  const start = lines.findIndex((line) => line.trim() === header);
-  if (start === -1) return existing;
-  let end = start + 1;
-  while (end < lines.length && !isHeader(lines[end]!)) end++;
+  const found = findTomlSection(lines, section);
+  if (found === null) return existing;
   // Absorbe también las líneas en blanco previas al header eliminado.
-  let realStart = start;
+  let realStart = found.start;
   while (realStart > 0 && lines[realStart - 1]!.trim() === "") realStart--;
-  const result = [...lines.slice(0, realStart), ...lines.slice(end)].join("\n");
+  const result = [...lines.slice(0, realStart), ...lines.slice(found.end)].join("\n");
   if (result.trim() === "") return "";
   return result.endsWith("\n") ? result : result + "\n";
 }
@@ -109,12 +177,8 @@ export function removeTomlSection(existing: string, section: string): string {
 /** Extrae el texto crudo de una sección TOML (sin header), o null si no existe. */
 export function readTomlSection(existing: string | null, section: string): string | null {
   if (existing === null) return null;
-  const header = `[${section}]`;
   const lines = existing.split(/\r?\n/);
-  const isHeader = (line: string): boolean => /^\s*\[.+\]\s*(#.*)?$/.test(line);
-  const start = lines.findIndex((line) => line.trim() === header);
-  if (start === -1) return null;
-  let end = start + 1;
-  while (end < lines.length && !isHeader(lines[end]!)) end++;
-  return lines.slice(start + 1, end).join("\n");
+  const found = findTomlSection(lines, section);
+  if (found === null) return null;
+  return lines.slice(found.start + 1, found.end).join("\n");
 }

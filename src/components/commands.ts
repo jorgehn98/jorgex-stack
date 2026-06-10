@@ -9,9 +9,12 @@ export function planCommands(adapter: Adapter, ctx: InstallContext): FileAction[
   return fs
     .readdirSync(source)
     .filter((f) => f.endsWith(".md"))
-    .map((f) => {
+    .flatMap((f): FileAction[] => {
       const raw = fs.readFileSync(path.join(source, f), "utf8").replace(/\r\n/g, "\n");
+      // Comandos marcados x-machine-specific (rutas personales del autor del
+      // stack) no se instalan a nadie.
+      if (/^x-machine-specific:\s*true$/m.test(raw)) return [];
       const rendered = adapter.renderCommand(f, raw);
-      return { kind: "write", target: path.join(commandsDir, rendered.file), content: rendered.content };
+      return [{ kind: "write", target: path.join(commandsDir, rendered.file), content: rendered.content }];
     });
 }

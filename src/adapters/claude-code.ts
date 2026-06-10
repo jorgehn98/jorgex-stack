@@ -12,17 +12,22 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Tools de memoria con AMBOS namespaces: MCP registrado por el stack
+ * (mcp__engram__*) y plugin oficial de marketplace (mcp__plugin_engram_engram__*).
+ * Claude Code ignora en la allowlist las tools que no existan, así la misma
+ * allowlist funciona con cualquiera de las dos integraciones.
+ */
+const memoryTools = (names: string[]): string[] =>
+  names.flatMap((n) => [`mcp__engram__${n}`, `mcp__plugin_engram_engram__${n}`]);
+
 /** Herramientas de memoria Engram que el protocolo exige incluso en agentes restringidos. */
-const MEMORY_TOOLS = ["mcp__engram__mem_save", "mcp__engram__mem_search", "mcp__engram__mem_context"];
+const MEMORY_TOOLS = memoryTools(["mem_save", "mem_search", "mem_context"]);
 
 /** El agente engram es lector puro de memoria: tools de lectura, sin mem_save. */
 const ENGRAM_AGENT_TOOLS = [
   "Read",
-  "mcp__engram__mem_context",
-  "mcp__engram__mem_search",
-  "mcp__engram__mem_get_observation",
-  "mcp__engram__mem_timeline",
-  "mcp__engram__mem_current_project",
+  ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
 
 /**
@@ -42,11 +47,18 @@ function toolsFor(agent: CanonicalAgent): string | null {
 
 /** Engram integrado vía su plugin oficial de marketplace (claude plugin install engram). */
 function hasEngramPlugin(configDir: string): boolean {
+  if (fs.existsSync(path.join(configDir, "plugins", "marketplaces", "engram"))) return true;
   const registry = readTextIfExists(path.join(configDir, "plugins", "installed_plugins.json"));
-  return (
-    (registry?.includes("engram") ?? false) ||
-    fs.existsSync(path.join(configDir, "plugins", "marketplaces", "engram"))
-  );
+  if (registry === null) return false;
+  try {
+    // Claves tipo "engram@engram" o "engram" — match por nombre de plugin
+    // exacto, no por substring (un plugin ajeno que contenga "engram" no cuenta).
+    const parsed = JSON.parse(registry) as Record<string, unknown>;
+    const keys = [...Object.keys(parsed), ...Object.keys((parsed["plugins"] as object | undefined) ?? {})];
+    return keys.some((k) => k === "engram" || k.startsWith("engram@"));
+  } catch {
+    return false;
+  }
 }
 
 export const claudeCodeAdapter: Adapter = {
@@ -138,8 +150,10 @@ export const claudeCodeAdapter: Adapter = {
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
         if (server.transport === "stdio") {
-          // El plugin oficial ya provee el MCP: registrarlo duplicaría las tools.
+          // El plugin oficial ya provee el MCP: registrarlo duplicaría las
+          // tools. Si un sync anterior (pre-plugin) lo registró, se retira.
           if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin(ctx.configDir)) {
+            if (name in servers) delete servers[name];
             ctx.warnings.push(
               "Claude Code: Engram ya está integrado vía plugin — no se registra el MCP para no duplicar las tools de memoria.",
             );
@@ -159,8 +173,9 @@ export const claudeCodeAdapter: Adapter = {
           for (const [key, raw] of Object.entries(server.headers ?? {})) {
             const envRef = /^\$\{(\w+)\}$/.exec(raw);
             const fromSecrets = envRef ? (ctx.secrets[envRef[1]!] ?? "") : raw;
-            // D5: si el usuario ya conectó su cuenta (header con valor), se preserva.
-            headers[key] = fromSecrets !== "" ? fromSecrets : (previous?.headers?.[key] ?? "");
+            // D5: el valor que el usuario ya tenga configurado manda; el env
+            // var solo rellena cuando está vacío.
+            headers[key] = previous?.headers?.[key] || fromSecrets || "";
           }
           servers[name] = {
             type: "http",
@@ -203,7 +218,9 @@ export const claudeCodeAdapter: Adapter = {
         for (const name of Object.keys(mcp.servers)) delete servers[name];
         if (Object.keys(servers).length === 0) delete root["mcpServers"];
       });
-      actions.push({ kind: "write", target: mainFile, content: content.trim() === "{}" ? "" : content });
+      // ~/.claude.json es el archivo de ESTADO del CLI de Claude (onboarding,
+      // proyectos): aunque quede vacío, jamás se borra — se deja {}.
+      actions.push({ kind: "write", target: mainFile, content });
     }
 
     return actions;

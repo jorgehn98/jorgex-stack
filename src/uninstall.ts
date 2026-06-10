@@ -5,8 +5,9 @@ import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, makeContext } from "./install.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
-import { writeText } from "./lib/fsx.js";
-import { stackRoot } from "./lib/paths.js";
+import { pruneEmptyDirs, writeText } from "./lib/fsx.js";
+import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
+import { HOME, stackRoot } from "./lib/paths.js";
 
 export interface UninstallOptions {
   runtimes: RuntimeId[];
@@ -15,20 +16,6 @@ export interface UninstallOptions {
   yes: boolean;
   /** D7: desregistrar Engram exige el sí explícito (flag o confirmación). */
   removeEngram: boolean;
-}
-
-/** Borra hacia arriba los directorios que hayan quedado vacíos, sin salir de root. */
-function pruneEmptyDirs(file: string, root: string): void {
-  let dir = path.dirname(file);
-  while (dir.startsWith(root) && dir !== root) {
-    try {
-      if (fs.readdirSync(dir).length > 0) return;
-      fs.rmdirSync(dir);
-    } catch {
-      return;
-    }
-    dir = path.dirname(dir);
-  }
 }
 
 /**
@@ -96,12 +83,16 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     ctx.preserveEngram = !removeEngram;
 
     const unmerge = adapter.planUnmerge(mcpForUnmerge, hooks, ctx);
-    const mergedTargets = new Set(unmerge.map((a) => a.target));
-    const planTargets = buildPlan(adapter, ctx)
-      .map((a) => a.target)
-      .filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
+    const mergedTargets = new Set(unmerge.map((a) => path.resolve(a.target)));
+    // Lo instalado = plan actual ∪ manifest (cubre archivos que versiones
+    // anteriores instalaron y el plan actual ya no genera).
+    const usingRealConfig = opts.targetDir === undefined;
+    const prevOwned = usingRealConfig ? (readManifest().runtimes[id]?.owned ?? []) : [];
+    const planTargets = [
+      ...new Set([...buildPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
+    ].filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
     const deleteTargets = planTargets.filter(
-      (t) => !retained.has(path.resolve(t)) && !(ctx.preserveEngram && path.basename(t) === "engram.ts"),
+      (t) => !retained.has(t) && !(ctx.preserveEngram && path.basename(t) === "engram.ts"),
     );
     const sharedKept = planTargets.length - deleteTargets.length;
 
@@ -117,9 +108,12 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     );
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
+    // En instalación real los targets pueden vivir fuera del configDir
+    // (~/.agents/skills): la poda de dirs vacíos se ancla a HOME.
+    const pruneRoot = usingRealConfig ? HOME : path.dirname(configDir);
     for (const target of deleteTargets) {
       fs.rmSync(target, { force: true });
-      pruneEmptyDirs(target, path.dirname(configDir));
+      pruneEmptyDirs(target, pruneRoot);
     }
     for (const action of unmerge) {
       if (action.kind !== "write") continue;
@@ -129,6 +123,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
         writeText(action.target, action.content);
       }
     }
+    if (usingRealConfig) removeRuntimeManifest(id);
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 

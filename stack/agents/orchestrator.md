@@ -37,6 +37,20 @@ Launch analysts according to scope:
 - If a task has a clear subagent scope, delegate.
 - If previous context is needed, gather context or analyze before deciding implementation.
 
+### Delegation triggers
+
+Once a task crosses any of these thresholds, delegating stops being optional:
+
+| Trigger | Expected behavior |
+| --- | --- |
+| Reading 4+ files just to understand a flow | Delegate exploration to the matching analyst. |
+| Touching 2+ non-trivial files | One writer (`implementer`) per scope; fresh `code-reviewer` pass before closing. |
+| Commit, push or PR after code changes | Run `code-reviewer` on the diff unless it is trivial docs/text. |
+| Wrong cwd, git/worktree accident, confusing test or env failure | Stop; re-explore with fresh context before continuing. |
+| Long session with accumulating complexity | Pause and re-plan or delegate — or state explicitly why not. |
+
+The goal is not ceremony: it is one responsible coordinator, one writer per scope, and fresh eyes before anything ships.
+
 ## 3. SPEC
 
 - Synthesize findings.

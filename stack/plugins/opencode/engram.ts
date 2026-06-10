@@ -20,7 +20,8 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 const ENGRAM_PORT = parseInt(process.env.ENGRAM_PORT ?? "7437")
 const ENGRAM_URL = `http://127.0.0.1:${ENGRAM_PORT}`
-const ENGRAM_BIN = process.env.ENGRAM_BIN ?? Bun.which("engram") ?? "C:\\Users\\jorge\\go\\bin\\engram.exe"
+// "{{ENGRAM_BIN}}" lo resuelve el instalador con el binario detectado (D7).
+const ENGRAM_BIN = process.env.ENGRAM_BIN ?? Bun.which("engram") ?? "{{ENGRAM_BIN}}"
 
 // Engram's own MCP tools — don't count these as "tool calls" for session stats
 const ENGRAM_TOOLS = new Set([
@@ -385,7 +386,8 @@ export const Engram: Plugin = async (ctx) => {
       }
 
       // Passive capture: extract learnings from Task tool output
-      if (input.tool === "Task" && output && sessionId) {
+      // (OpenCode reports the tool name in lowercase: "task")
+      if (input.tool.toLowerCase() === "task" && output && sessionId) {
         const text = typeof output === "string" ? output : JSON.stringify(output)
         if (text.length > 50) {
           await engramFetch("/observations/passive", {

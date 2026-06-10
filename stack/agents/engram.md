@@ -112,3 +112,13 @@ You are invoked to read and process memory, not to save:
 1. Session start: load relevant context for the current task.
 2. Before a new task: search for related prior patterns, decisions or bugs.
 3. Specific query: look up concrete information about a topic.
+
+---
+
+## Result contract
+
+End your report with exactly three lines:
+
+- **Status**: done | partial | blocked (+ why if not done)
+- **Delegations**: `→ [agent]: [work] — [paths] — [inputs]` per item, or "none" (for you this is almost always "none": you read memory, you don't route work)
+- **Risks**: what the orchestrator must know (e.g. conflicting or superseded memories found), or "none"

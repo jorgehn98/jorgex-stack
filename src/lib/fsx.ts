@@ -13,14 +13,53 @@ export function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-export function writeText(file: string, content: string): void {
-  ensureDir(path.dirname(file));
-  fs.writeFileSync(file, content, "utf8");
+let tmpCounter = 0;
+
+function tmpPath(target: string): string {
+  return path.join(path.dirname(target), `.jorgex-${process.pid}-${tmpCounter++}.tmp`);
 }
 
+/** Mueve el temporal sobre el destino; limpia el temporal si el rename falla. */
+function renameInto(tmp: string, target: string): void {
+  try {
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+/**
+ * Escritura atómica: temporal en el mismo dir + rename. Un corte a mitad de
+ * escritura nunca deja una config del usuario corrupta o a medias.
+ */
+export function writeText(file: string, content: string): void {
+  ensureDir(path.dirname(file));
+  const tmp = tmpPath(file);
+  fs.writeFileSync(tmp, content, "utf8");
+  renameInto(tmp, file);
+}
+
+/** Copia atómica: misma garantía que writeText. */
 export function copyFile(source: string, target: string): void {
   ensureDir(path.dirname(target));
-  fs.copyFileSync(source, target);
+  const tmp = tmpPath(target);
+  fs.copyFileSync(source, tmp);
+  renameInto(tmp, target);
+}
+
+/** Borra hacia arriba los directorios que hayan quedado vacíos, sin salir de root. */
+export function pruneEmptyDirs(file: string, root: string): void {
+  let dir = path.dirname(file);
+  while (dir.startsWith(root) && dir !== root) {
+    try {
+      if (fs.readdirSync(dir).length > 0) return;
+      fs.rmdirSync(dir);
+    } catch {
+      return;
+    }
+    dir = path.dirname(dir);
+  }
 }
 
 export function sameFileContent(a: string, b: string): boolean {

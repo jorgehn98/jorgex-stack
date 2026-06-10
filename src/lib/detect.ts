@@ -1,5 +1,5 @@
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { HOME } from "./paths.js";
 import type { RuntimeId } from "../adapters/types.js";
 
@@ -13,12 +13,14 @@ export interface RuntimeDetection {
 
 /** Busca un ejecutable en PATH sin invocar shell. */
 export function lookPath(cmd: string): string | null {
-  const exts = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat", ".ps1"] : [""];
+  // En Windows, primero las extensiones ejecutables: los shims de npm/pnpm
+  // crean también un script sh sin extensión que cmd.exe no puede ejecutar.
+  const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ".ps1", ""] : [""];
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
     if (!dir) continue;
     for (const ext of exts) {
       const candidate = path.join(dir, cmd + ext);
-      if (existsSync(candidate)) return candidate;
+      if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
     }
   }
   return null;

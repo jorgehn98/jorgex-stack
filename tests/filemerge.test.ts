@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { stripLeadingHtmlComments, upsertJson, upsertMarkdownSection } from "../src/lib/filemerge.js";
+import {
+  readTomlSection,
+  removeTomlSection,
+  stripLeadingHtmlComments,
+  upsertJson,
+  upsertMarkdownSection,
+  upsertTomlSection,
+} from "../src/lib/filemerge.js";
 import { parseCanonicalAgent } from "../src/lib/canonical.js";
 
 describe("upsertMarkdownSection", () => {
@@ -37,6 +44,66 @@ describe("upsertMarkdownSection", () => {
     expect(updated).toContain("AAA2");
     expect(updated).toContain("BBB");
     expect(updated).not.toContain("AAA\n");
+  });
+
+  it("repara un opener huérfano (closer borrado a mano) sin duplicar marcadores", () => {
+    const broken = "# Notas\n\n<!-- jorgex:demo -->\ncontenido viejo\n\n# Más notas del usuario\n";
+    const out = upsertMarkdownSection(broken, "demo", "contenido nuevo");
+    expect(out).toContain("contenido nuevo");
+    expect(out).toContain("# Más notas del usuario");
+    // Exactamente un par de marcadores: el huérfano se eliminó.
+    expect(out.split("<!-- jorgex:demo -->").length).toBe(2);
+    expect(out.split("<!-- /jorgex:demo -->").length).toBe(2);
+    // Re-aplicar sigue siendo idempotente tras la reparación.
+    expect(upsertMarkdownSection(out, "demo", "contenido nuevo")).toBe(out);
+  });
+
+  it("repara un closer huérfano (opener borrado a mano)", () => {
+    const broken = "contenido viejo\n<!-- /jorgex:demo -->\n# Del usuario\n";
+    const out = upsertMarkdownSection(broken, "demo", "nuevo");
+    expect(out).toContain("# Del usuario");
+    expect(out.split("<!-- /jorgex:demo -->").length).toBe(2);
+  });
+
+  it("un opener INLINE sin closer no se traga el contenido del usuario en re-syncs", () => {
+    // Escenario: el usuario dejó el marcador incrustado en una línea suya.
+    const broken = "nota mía <!-- jorgex:demo -->\n\n# Sección importante del usuario\n";
+    const once = upsertMarkdownSection(broken, "demo", "contenido stack");
+    const twice = upsertMarkdownSection(once, "demo", "contenido stack");
+    expect(twice).toBe(once);
+    expect(twice).toContain("# Sección importante del usuario");
+    expect(twice).toContain("nota mía");
+  });
+});
+
+describe("secciones TOML: variantes de header y strings multilínea", () => {
+  it("reconoce el header aunque el usuario le añada un comentario, en las tres operaciones", () => {
+    const doc = '[mcp_servers.context7] # mi cuenta\nurl = "u"\nhttp_headers = { "CONTEXT7_API_KEY" = "mi-key" }\n';
+    expect(readTomlSection(doc, "mcp_servers.context7")).toContain("mi-key");
+    const updated = upsertTomlSection(doc, "mcp_servers.context7", 'url = "u2"');
+    expect(updated).toContain("u2");
+    expect(updated.split("[mcp_servers.context7]").length).toBe(2); // sin tabla duplicada
+    expect(removeTomlSection(doc, "mcp_servers.context7")).toBe("");
+  });
+
+  it("no confunde una línea [x] dentro de un string multilínea con un header", () => {
+    const doc = "[profiles.mio]\ninstructions = '''\n[checklist]\n- item\n'''\n\n[otra]\nx = 1\n";
+    // La sección del usuario llega hasta [otra]; [checklist] es texto.
+    const removed = removeTomlSection(doc, "profiles.mio");
+    expect(removed).not.toContain("[checklist]");
+    expect(removed).toContain("[otra]");
+    // Y un upsert ajeno no parte el string multilínea.
+    const upserted = upsertTomlSection(doc, "mcp_servers.engram", 'command = "engram"');
+    expect(upserted).toContain("[checklist]");
+    expect(upserted.indexOf("[mcp_servers.engram]")).toBeGreaterThan(upserted.indexOf("[otra]"));
+  });
+
+  it("normaliza variantes válidas del mismo header ([ x ], dotted quoted)", () => {
+    const doc = '[ mcp_servers."engram" ]\ncommand = "viejo"\n';
+    const updated = upsertTomlSection(doc, "mcp_servers.engram", 'command = "nuevo"');
+    expect(updated).toContain("nuevo");
+    expect(updated).not.toContain("viejo");
+    expect(updated.split("mcp_servers").length).toBe(2); // una sola tabla
   });
 });
 

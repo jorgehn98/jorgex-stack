@@ -294,8 +294,10 @@ const buildScriptEnv = (scriptPath: string, activeWorktreePath?: string) => {
     delete env.OPENCODE_WORKTREE_PATH;
   }
 
-  // Ensure Git coreutils (cat, grep, head, dirname, etc.) are in PATH for .sh scripts
-  if (scriptPath.endsWith(".sh")) {
+  // Ensure Git coreutils (cat, grep, head, dirname, etc.) are in PATH for .sh
+  // scripts. Windows-only: rutas de Git-for-Windows y ";" es el separador de
+  // PATH de Windows (en POSIX es ":" y esto corrompería el PATH).
+  if (scriptPath.endsWith(".sh") && process.platform === "win32") {
     const gitUsrBin = "C:/Program Files/Git/usr/bin";
     const gitBin = "C:/Program Files/Git/bin";
     const currentPath = process.env.PATH || "";
@@ -476,7 +478,10 @@ export const HooksPlugin: Plugin = async ({ client, directory, worktree }) => {
       const content = await (globalThis as any).Bun.file(configPath).text();
       return JSON.parse(content);
     } catch (error) {
-      if (error instanceof Error && error.name !== "ENOENT") {
+      // Los errores de fs exponen code, no name: sin esto, cada proyecto sin
+      // hooks.json loguearía un warning espurio.
+      const code = (error as { code?: string })?.code;
+      if (error instanceof Error && error.name !== "ENOENT" && code !== "ENOENT") {
         await client.app.log({
           body: {
             service: "hooks",

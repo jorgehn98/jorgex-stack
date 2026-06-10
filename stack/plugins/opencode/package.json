@@ -1,9 +1,9 @@
 {
-  "name": "@jorgex/hooks",
+  "name": "@jorgex/opencode-plugins",
   "version": "1.0.0",
-  "description": "Generic hooks plugin - runs scripts on session/tool events from project and global config",
+  "description": "OpenCode plugins del stack: engram (memoria persistente), hooks (puente de scripts por evento/tool) y worktree (gestión de git worktrees)",
   "type": "module",
-  "main": "src/hooks.ts",
+  "main": "hooks.ts",
   "dependencies": {
     "@opencode-ai/plugin": "1.3.2"
   }

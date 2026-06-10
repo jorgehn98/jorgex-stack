@@ -4,6 +4,7 @@ import type { Adapter, FileAction, InstallContext } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
+import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertTomlSection } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
@@ -43,9 +44,11 @@ export const codexAdapter: Adapter = {
 
   paths(configDir) {
     // Skills: estándar agentskills.io en ~/.agents/skills (NO ~/.codex/skills).
-    // Se deriva del padre del configDir para que --target-dir en pruebas
-    // escriba <target-padre>/.agents/skills y nunca toque el real.
-    const skillsDir = path.join(path.dirname(configDir), ".agents", "skills");
+    // Con el configDir real (aunque venga de CODEX_HOME) el ancla es HOME — la
+    // copia compartida con OpenCode; con --target-dir, el padre del target.
+    const isRealConfigDir = samePath(configDir, process.env.CODEX_HOME ?? path.join(HOME, ".codex"));
+    const agentsHome = isRealConfigDir ? HOME : path.dirname(configDir);
+    const skillsDir = path.join(agentsHome, ".agents", "skills");
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
       agentsDir: path.join(configDir, "agents"),
@@ -146,7 +149,9 @@ export const codexAdapter: Adapter = {
       const section = `mcp_servers.${name}`;
       if (server.transport === "stdio") {
         // Con la integración oficial presente, el MCP duplicaría las tools.
+        // Si un sync anterior (pre-plugin) lo registró, se retira.
         if (server.command === "{{ENGRAM_BIN}}" && hasEngramIntegration(ctx.configDir)) {
+          if (content !== null) content = removeTomlSection(content, section);
           ctx.warnings.push(
             "Codex: Engram ya está integrado vía plugin de marketplace — no se registra el MCP para no duplicar las tools de memoria.",
           );
@@ -166,12 +171,15 @@ export const codexAdapter: Adapter = {
         const headerPairs = Object.entries(server.headers ?? {}).map(([key, raw]) => {
           const envRef = /^\$\{(\w+)\}$/.exec(raw);
           const fromSecrets = envRef ? (ctx.secrets[envRef[1]!] ?? "") : raw;
-          // D5: preservar el valor que el usuario ya tenga configurado.
+          // D5: el valor que el usuario ya tenga configurado manda; el env var
+          // solo rellena cuando está vacío. Key escapada y anclada para no
+          // casar dentro de otra clave (p.ej. OTHER_API_KEY).
+          const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           const previousValue =
             previousSection !== null
-              ? new RegExp(`"?${key}"?\\s*=\\s*"([^"]*)"`).exec(previousSection)?.[1]
+              ? new RegExp(`(?:^|[{,]\\s*)"?${escaped}"?\\s*=\\s*"([^"]*)"`, "m").exec(previousSection)?.[1]
               : undefined;
-          const value = fromSecrets !== "" ? fromSecrets : (previousValue ?? "");
+          const value = previousValue || fromSecrets || "";
           return `${tomlString(key)} = ${tomlString(value)}`;
         });
         const body = [`url = ${tomlString(server.url!)}`];

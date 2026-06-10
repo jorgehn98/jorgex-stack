@@ -23,3 +23,11 @@ export function stackRoot(): string {
 export function dataDir(): string {
   return path.join(HOME, ".jorgex-stack");
 }
+
+/** Igualdad de rutas robusta (Windows es case-insensitive). */
+export function samePath(a: string, b: string): boolean {
+  const resolvedA = path.resolve(a);
+  const resolvedB = path.resolve(b);
+  if (process.platform === "win32") return resolvedA.toLowerCase() === resolvedB.toLowerCase();
+  return resolvedA === resolvedB;
+}

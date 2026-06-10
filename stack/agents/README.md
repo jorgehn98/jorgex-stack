@@ -20,9 +20,11 @@ Una sola fuente por agente. El instalador los traduce al formato de cada runtime
 |---|---|---|---|
 | `tier` | alias `fable`/`opus`/`sonnet`/`haiku` según model-map | `model` + `model_reasoning_effort` | `provider/model` del model-map |
 | `readonly: true` | `tools: Read, Grep, Glob` (+Bash si aplica) | `sandbox_mode = "read-only"` | `tools: { write: false }`, `permission: { edit: deny }` |
-| `bash: git-read` | `Bash` + hooks/permissions restringidos a git read | (cubierto por sandbox read-only) | `permission.bash: { "git diff*": allow, "git log*": allow }` |
+| `bash: git-read` | `Bash` completo en tools — la restricción a git read es solo de prompt (el frontmatter de Claude Code no tiene esa granularidad) | con `readonly: true` el sandbox read-only impide escrituras; con `readonly: false` la restricción es solo de prompt | `permission.bash: { "git diff*": allow, "git log*": allow }` (única aplicación real) |
 | `bash: none` | sin `Bash` en tools | sandbox read-only | `permission: { bash: deny }` |
 | `spawn: false` | sin tool `Agent`/`Task` | n/a | `permission: { task: deny }` |
+
+> Ojo: solo OpenCode aplica `git-read` de verdad. En Claude Code y Codex la combinación `readonly: false` + `bash: git-read` (p.ej. `docs-maintainer`) se degrada a shell completo guiado por prompt.
 
 ## Convenciones de contenido
 

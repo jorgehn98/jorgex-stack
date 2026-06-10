@@ -3,9 +3,10 @@ import fs from "node:fs";
 import { execSync } from "node:child_process";
 import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
-import { ADAPTERS, buildPlan, diffPlan, makeContext } from "./install.js";
+import { ADAPTERS, buildPlan, collectAllCurrentTargets, diffPlan, makeContext } from "./install.js";
 import { detectEngram } from "./lib/detect.js";
 import { readTextIfExists } from "./lib/fsx.js";
+import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { HOME } from "./lib/paths.js";
 
@@ -60,6 +61,9 @@ export async function runDoctor(): Promise<number> {
 
   if (!fs.existsSync(modelMapFile())) p.log.info("model-map: aún no creado (se crea en el primer install o con 'models').");
 
+  const manifest = readManifest();
+  const current = collectAllCurrentTargets();
+
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) {
@@ -69,12 +73,28 @@ export async function runDoctor(): Promise<number> {
     const ctx = makeContext(adapter, detection.configDir);
     if (!ctx) continue;
 
-    const pending = diffPlan(buildPlan(adapter, ctx)).filter((d) => d.status !== "unchanged");
-    if (pending.length > 0) {
-      p.log.warn(`${adapter.name}: ${pending.length} archivos gestionados desactualizados o ausentes → ejecuta 'sync'.`);
+    let pending: number;
+    try {
+      pending = diffPlan(buildPlan(adapter, ctx)).filter((d) => d.status !== "unchanged").length;
+    } catch (err) {
+      p.log.error(
+        `${adapter.name}: config ilegible en ${detection.configDir} — ${err instanceof Error ? err.message : err}`,
+      );
+      problems++;
+      continue;
+    }
+    if (pending > 0) {
+      p.log.warn(`${adapter.name}: ${pending} archivos gestionados desactualizados o ausentes → ejecuta 'sync'.`);
       problems++;
     } else {
       p.log.success(`${adapter.name}: config del stack al día (${detection.configDir}).`);
+    }
+
+    const prev = manifest.runtimes[adapter.id];
+    const orphans = prev && current.complete ? findOrphans(prev.owned, current.targets) : [];
+    if (orphans.length > 0) {
+      p.log.warn(`${adapter.name}: ${orphans.length} archivos huérfanos de versiones previas → ejecuta 'sync'.`);
+      problems++;
     }
 
     if (adapter.id === "codex" && fs.existsSync(path.join(detection.configDir, "hooks.json"))) {

@@ -45,8 +45,20 @@ export function modelMapFile(): string {
 export function loadModelMap(): ModelMap {
   const raw = readTextIfExists(modelMapFile());
   if (raw === null) return DEFAULT_MODEL_MAP;
-  const fromDisk = JSON.parse(raw) as ModelMap;
-  return { ...DEFAULT_MODEL_MAP, ...fromDisk };
+  let fromDisk: ModelMap;
+  try {
+    fromDisk = JSON.parse(raw) as ModelMap;
+  } catch {
+    // model-map corrupto: defaults para no brickear todos los comandos;
+    // 'models' lo regenera.
+    return DEFAULT_MODEL_MAP;
+  }
+  // Merge por tier: un runtime editado a mano sin algún tier hereda el default.
+  const merged: ModelMap = {};
+  for (const id of Object.keys(DEFAULT_MODEL_MAP) as RuntimeId[]) {
+    merged[id] = { ...DEFAULT_MODEL_MAP[id], ...(fromDisk[id] ?? {}) };
+  }
+  return merged;
 }
 
 /** Crea el archivo con los defaults si no existe; devuelve su ruta. */

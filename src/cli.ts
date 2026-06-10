@@ -7,7 +7,7 @@ import { runUpdateCheck } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall"] as const;
 type Command = (typeof COMMANDS)[number];
@@ -86,6 +86,8 @@ Opciones:
   --target-dir <dir>    Dir alternativo (pruebas de paridad; requiere 1 runtime)
   --dry-run             Muestra el plan sin escribir nada
   --yes, -y             No interactivo
+  --remove-engram       (uninstall) desregistra Engram de los runtimes;
+                        memorias y binario quedan intactos igualmente
 
 Ver PRD.md para el diseño completo.`);
 }
@@ -104,7 +106,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const command: Command = isCommand ? (first as Command) : "install";
+  const command: Command = isCommand ? ((first ?? "install") as Command) : "install";
   const flags = parseFlags(isCommand ? rest : process.argv.slice(2));
 
   if (flags.targetDir !== undefined && flags.agents.length !== 1) {
@@ -128,7 +130,12 @@ async function main(): Promise<void> {
     }
     case "uninstall": {
       const runtimes = await resolveRuntimes(flags);
-      if (runtimes === null || runtimes.length === 0) return;
+      if (runtimes === null) return;
+      if (runtimes.length === 0) {
+        console.error("Ningún runtime detectado (opencode, claude-code, codex).");
+        process.exitCode = 1;
+        return;
+      }
       process.exitCode = await runUninstall({
         runtimes,
         targetDir: flags.targetDir,
@@ -147,7 +154,13 @@ async function main(): Promise<void> {
         // update = sync + informe de upstreams.
         const runtimes = await resolveRuntimes(flags);
         if (runtimes === null) return;
-        if (runtimes.length > 0) await runInstall({ runtimes, dryRun: false, yes: true });
+        if (runtimes.length > 0) {
+          const code = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: true });
+          if (code !== 0) {
+            process.exitCode = code;
+            return;
+          }
+        }
       }
       process.exitCode = await runUpdateCheck(VERSION);
       return;
@@ -171,4 +184,7 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
+});

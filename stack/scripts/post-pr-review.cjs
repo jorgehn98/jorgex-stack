@@ -13,8 +13,10 @@
  * - Codex hooks:       { tool_name: "shell", tool_input: { command: [...] }, cwd }
  * - OpenCode bridge:   { tool: "bash", args: { command: "..." }, directory }
  *
- * Output: plain message on stderr (OpenCode bridge) + JSON additionalContext on
- * stdout (Claude Code / Codex PostToolUse). Exit 0 always.
+ * Output (single channel per runtime, so the bridge never duplicates it):
+ * - OpenCode bridge payload → plain message on stderr.
+ * - Claude Code / Codex payload → JSON additionalContext on stdout.
+ * Exit 0 always.
  */
 
 const { execSync } = require('child_process');
@@ -111,14 +113,14 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
 
 1. Routing only (lightweight): list changed file NAMES with \`${diffScope} --name-only\` to decide which subagents apply. Do NOT load the full diff into your own context.
 
-2. All subagents are CONDITIONAL and read-only, and each fetches its OWN diff. Launch in PARALLEL (via Task) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
-   - Task(subagent_type='comment-analyzer') — only if the diff adds or changes comments/docstrings
-   - Task(subagent_type='test-analyzer') — only if the diff touches tests or code that should be tested
-   - Task(subagent_type='silent-failure-hunter') — only if the diff includes error handling, try/catch, fallbacks, or async flows
-   - Task(subagent_type='type-design-analyzer') — only if the diff changes types, interfaces, schemas, or public contracts
-   - Task(subagent_type='code-reviewer') — for general code quality whenever non-trivial source code changed
-   - Task(subagent_type='code-simplifier') — only if the diff introduces complexity worth simplifying
-   - Task(subagent_type='security-auditor') — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
+2. All subagents are CONDITIONAL and read-only, and each fetches its OWN diff. Launch in PARALLEL (with your runtime's delegation mechanism) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
+   - comment-analyzer — only if the diff adds or changes comments/docstrings
+   - test-analyzer — only if the diff touches tests or code that should be tested
+   - silent-failure-hunter — only if the diff includes error handling, try/catch, fallbacks, or async flows
+   - type-design-analyzer — only if the diff changes types, interfaces, schemas, or public contracts
+   - code-reviewer — for general code quality whenever non-trivial source code changed
+   - code-simplifier — only if the diff introduces complexity worth simplifying
+   - security-auditor — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
 
    If none of a subagent's triggers are present, skip it. Always state which subagents ran and which were skipped and why.
 
@@ -131,14 +133,19 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
    - Positive Findings
 </post-pr-review-required>`;
 
-  // OpenCode bridge reads stderr/plain output.
-  process.stderr.write(message + '\n');
-  // Claude Code / Codex PostToolUse read additionalContext from stdout JSON.
-  process.stdout.write(
-    JSON.stringify({
-      additionalContext: message,
-      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message },
-    }) + '\n',
-  );
+  // Un solo canal por runtime: el bridge de OpenCode recoge stdout Y stderr,
+  // así que emitir por ambos duplicaría el mensaje.
+  const isOpenCodeBridge = data.tool !== undefined && data.tool_name === undefined;
+  if (isOpenCodeBridge) {
+    process.stderr.write(message + '\n');
+  } else {
+    // Claude Code / Codex PostToolUse leen additionalContext del stdout JSON.
+    process.stdout.write(
+      JSON.stringify({
+        additionalContext: message,
+        hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message },
+      }) + '\n',
+    );
+  }
   process.exit(0);
 });

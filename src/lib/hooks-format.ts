@@ -20,6 +20,17 @@ export function hookScriptNames(canonical: CanonicalHooks): string[] {
     .map((s) => path.basename(s));
 }
 
+/** Comandos canónicos SIN {{SCRIPTS_DIR}}: se identifican por igualdad literal. */
+function plainHookCommands(canonical: CanonicalHooks): Set<string> {
+  return new Set(
+    Object.values(canonical.hooks)
+      .flat()
+      .flatMap((entry) => entry.hooks)
+      .map((h) => h.command)
+      .filter((c) => !c.includes("{{SCRIPTS_DIR}}")),
+  );
+}
+
 /**
  * Inversa de upsertNativeHooks: elimina del JSON las entradas cuyos hooks
  * ejecutan scripts del stack. Eventos/objetos que quedan vacíos se borran;
@@ -28,6 +39,7 @@ export function hookScriptNames(canonical: CanonicalHooks): string[] {
 export function removeNativeHooks(existing: string | null, canonical: CanonicalHooks): string | null {
   if (existing === null || existing.trim() === "") return existing;
   const scriptNames = hookScriptNames(canonical);
+  const plainCommands = plainHookCommands(canonical);
 
   return upsertJson(existing, (root) => {
     const hooks = root["hooks"] as Record<string, unknown[]> | undefined;
@@ -37,10 +49,12 @@ export function removeNativeHooks(existing: string | null, canonical: CanonicalH
       if (!Array.isArray(list)) continue;
       hooks[event] = list.filter((entry) => {
         const e = entry as { hooks?: { command?: string }[] };
-        return !(
-          Array.isArray(e?.hooks) &&
-          e.hooks.some((hh) => scriptNames.some((s) => String(hh?.command ?? "").includes(s)))
-        );
+        if (!Array.isArray(e?.hooks)) return true;
+        const ours = e.hooks.some((hh) => {
+          const cmd = String(hh?.command ?? "");
+          return scriptNames.some((s) => cmd.includes(s)) || plainCommands.has(cmd);
+        });
+        return !ours;
       });
       if ((hooks[event] as unknown[]).length === 0) delete hooks[event];
     }
@@ -75,13 +89,16 @@ export function upsertNativeHooks(
           .map((h) => /\{\{SCRIPTS_DIR\}\}[/\\]([\w./-]+)/.exec(h.command)?.[1])
           .filter((s): s is string => s !== undefined)
           .map((s) => path.basename(s));
+        // Hooks sin {{SCRIPTS_DIR}}: identidad por los comandos literales
+        // (sin esto, cada sync los re-añadiría y rompería la idempotencia).
+        const plainCommands = entry.hooks.map((h) => h.command).filter((c) => !c.includes("{{SCRIPTS_DIR}}"));
         const index = list.findIndex((existingEntry) => {
           const e = existingEntry as { matcher?: string; hooks?: { command?: string }[] };
-          return (
-            e?.matcher === matcher &&
-            Array.isArray(e?.hooks) &&
-            e.hooks.some((hh) => scriptNames.some((s) => String(hh?.command ?? "").includes(s)))
-          );
+          if (e?.matcher !== matcher || !Array.isArray(e?.hooks)) return false;
+          return e.hooks.some((hh) => {
+            const cmd = String(hh?.command ?? "");
+            return scriptNames.some((s) => cmd.includes(s)) || plainCommands.includes(cmd);
+          });
         });
         if (index >= 0) list[index] = rendered;
         else list.push(rendered);
