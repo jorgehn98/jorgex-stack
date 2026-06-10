@@ -58,18 +58,20 @@ export const claudeCodeAdapter: Adapter = {
 
   renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
     // El orchestrator (primary) es un MODO del agente principal, nunca un
-    // subagente. En Claude Code eso es un output style: modifica el system
-    // prompt del main agent, se elige con /config y persiste en settings
-    // (equivalente al primary de OpenCode, sin cambio en caliente con Tab).
-    // El command /orchestrator acompaña como activador puntual en una sesión
-    // ya abierta. Ambos salen de la misma fuente canónica.
+    // subagente. Dos vías desde la misma fuente canónica:
+    // - Output style: modo persistente del main agent (se elige en /config),
+    //   lo más cercano al primary de OpenCode.
+    // - Skill: activación puntual — /orchestrator explícito o carga implícita
+    //   cuando el modelo detecta trabajo de orquestación. Formato portable
+    //   (misma skill sirve en Codex; los commands de Codex están deprecados).
     if (agent.mode === "primary") {
       const title = agent.name.charAt(0).toUpperCase() + agent.name.slice(1);
       const style = `---\nname: ${title}\ndescription: ${yamlString(agent.description)}\nkeep-coding-instructions: true\n---\n${agent.body}`;
-      const command = `---\ndescription: ${yamlString(agent.description)}\n---\n${agent.body.trimEnd()}\n\n## Task\n\n$ARGUMENTS\n`;
+      const skillDescription = `${agent.description} Invoke to switch into ${agent.name} mode and apply its flow to the current task.`;
+      const skill = `---\nname: ${agent.name}\ndescription: ${yamlString(skillDescription)}\n---\n${agent.body}`;
       return [
         { file: `${agent.name}.md`, content: style, kind: "output-style" as const },
-        { file: `${agent.name}.md`, content: command, kind: "command" as const },
+        { file: `${agent.name}/SKILL.md`, content: skill, kind: "skill" as const },
       ];
     }
 
