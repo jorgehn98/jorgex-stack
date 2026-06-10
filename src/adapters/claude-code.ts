@@ -40,10 +40,24 @@ function toolsFor(agent: CanonicalAgent): string | null {
   return tools.join(", ");
 }
 
+/** Engram integrado vía su plugin oficial de marketplace (claude plugin install engram). */
+function hasEngramPlugin(configDir: string): boolean {
+  const registry = readTextIfExists(path.join(configDir, "plugins", "installed_plugins.json"));
+  return (
+    (registry?.includes("engram") ?? false) ||
+    fs.existsSync(path.join(configDir, "plugins", "marketplaces", "engram"))
+  );
+}
+
 export const claudeCodeAdapter: Adapter = {
   id: "claude-code",
   name: "Claude Code",
   detect: detectClaudeCode,
+
+  injectEngramProtocol(ctx) {
+    // El plugin oficial ya inyecta el protocolo (hooks + skill memory).
+    return !hasEngramPlugin(ctx.configDir);
+  },
 
   paths(configDir) {
     return {
@@ -120,18 +134,12 @@ export const claudeCodeAdapter: Adapter = {
     // estado del CLI: upsert quirúrgico SOLO de mcpServers gestionados + backup.
     const file = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
 
-    // Si Engram ya está integrado vía plugin de marketplace, registrar además
-    // el MCP duplicaría las tools de memoria (mem_* dos veces).
-    const pluginsRegistry = readTextIfExists(path.join(ctx.configDir, "plugins", "installed_plugins.json"));
-    const hasEngramPlugin =
-      (pluginsRegistry?.includes("engram") ?? false) ||
-      fs.existsSync(path.join(ctx.configDir, "plugins", "marketplaces", "engram"));
-
     const content = upsertJson(readTextIfExists(file), (root) => {
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
         if (server.transport === "stdio") {
-          if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin) {
+          // El plugin oficial ya provee el MCP: registrarlo duplicaría las tools.
+          if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin(ctx.configDir)) {
             ctx.warnings.push(
               "Claude Code: Engram ya está integrado vía plugin — no se registra el MCP para no duplicar las tools de memoria.",
             );

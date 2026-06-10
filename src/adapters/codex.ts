@@ -23,10 +23,23 @@ function tomlMultiline(value: string): string {
   return `'''\n${value.replace(/\r\n/g, "\n").trim()}\n'''`;
 }
 
+/**
+ * Engram integrado oficialmente en Codex: plugin engram en config.toml o
+ * `engram setup codex` previo (deja engram-instructions.md con el protocolo).
+ */
+function hasEngramIntegration(configDir: string): boolean {
+  const config = readTextIfExists(path.join(configDir, "config.toml"));
+  return /\[plugins\."engram@/.test(config ?? "") || fs.existsSync(path.join(configDir, "engram-instructions.md"));
+}
+
 export const codexAdapter: Adapter = {
   id: "codex",
   name: "Codex CLI",
   detect: detectCodex,
+
+  injectEngramProtocol(ctx) {
+    return !hasEngramIntegration(ctx.configDir);
+  },
 
   paths(configDir) {
     // Skills: estándar agentskills.io en ~/.agents/skills (NO ~/.codex/skills).
@@ -129,14 +142,11 @@ export const codexAdapter: Adapter = {
     const file = path.join(ctx.configDir, "config.toml");
     let content = readTextIfExists(file);
 
-    // Si Engram ya está integrado vía plugin de marketplace de Codex
-    // ([plugins."engram@..."] en config.toml), el MCP duplicaría las tools.
-    const hasEngramPlugin = /\[plugins\."engram@/.test(content ?? "");
-
     for (const [name, server] of Object.entries(canonical.servers)) {
       const section = `mcp_servers.${name}`;
       if (server.transport === "stdio") {
-        if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin) {
+        // Con la integración oficial presente, el MCP duplicaría las tools.
+        if (server.command === "{{ENGRAM_BIN}}" && hasEngramIntegration(ctx.configDir)) {
           ctx.warnings.push(
             "Codex: Engram ya está integrado vía plugin de marketplace — no se registra el MCP para no duplicar las tools de memoria.",
           );

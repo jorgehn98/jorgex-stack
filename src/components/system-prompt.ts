@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { stripLeadingHtmlComments, upsertMarkdownSection } from "../lib/filemerge.js";
+import { removeMarkdownSection, stripLeadingHtmlComments, upsertMarkdownSection } from "../lib/filemerge.js";
 
 const normalize = (s: string): string => s.replace(/\r\n/g, "\n");
 
@@ -20,6 +20,12 @@ export function planSystemPrompt(adapter: Adapter, ctx: InstallContext): FileAct
 
   let content = readTextIfExists(target);
   content = upsertMarkdownSection(content, "system-prompt", agentsMd);
-  content = upsertMarkdownSection(content, "engram-protocol", protocol);
+  if (adapter.injectEngramProtocol(ctx)) {
+    content = upsertMarkdownSection(content, "engram-protocol", protocol);
+  } else {
+    // La integración oficial de Engram del runtime ya inyecta el protocolo:
+    // se retira la sección si quedó de una instalación anterior.
+    content = removeMarkdownSection(content, "engram-protocol");
+  }
   return [{ kind: "write", target, content }];
 }

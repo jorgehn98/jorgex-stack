@@ -69,6 +69,13 @@ export interface Adapter {
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];
   /**
+   * ¿Debe inyectarse la sección engram-protocol en el system prompt?
+   * false cuando la integración oficial de Engram del runtime ya inyecta el
+   * protocolo (plugin de marketplace en Claude Code, engram-instructions.md
+   * en Codex, plugin engram.ts en OpenCode) — una sola fuente, sin duplicar.
+   */
+  injectEngramProtocol(ctx: InstallContext): boolean;
+  /**
    * Inversa para uninstall: devuelve los archivos COMPARTIDOS con el usuario
    * (system prompt, configs, hooks) reescritos sin nuestras secciones/claves.
    * Un write con content vacío significa "borrar el archivo". Los targets de

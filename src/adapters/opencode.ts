@@ -29,6 +29,12 @@ export const opencodeAdapter: Adapter = {
   name: "OpenCode",
   detect: detectOpenCode,
 
+  injectEngramProtocol() {
+    // El plugin engram.ts (que este mismo install despliega) inyecta el
+    // protocolo en runtime — única fuente, sin sección duplicada en AGENTS.md.
+    return false;
+  },
+
   paths(configDir) {
     // Skills: OpenCode lee ~/.agents/skills nativamente (verificado en
     // packages/opencode/src/skill/index.ts) — la misma copia sirve a Codex,
