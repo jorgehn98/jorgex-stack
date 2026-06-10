@@ -91,8 +91,9 @@ export const opencodeAdapter: Adapter = {
   },
 
   renderCommand(file, content) {
-    // OpenCode usa {{input}} tal cual: sin transformación.
-    return { file, content };
+    // Dialecto de input: {{input}} (canónico) → $ARGUMENTS (placeholder
+    // oficial de OpenCode, igual que Claude Code — opencode.ai/docs/commands).
+    return { file, content: content.replace(/\{\{input\}\}/g, "$ARGUMENTS") };
   },
 
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {

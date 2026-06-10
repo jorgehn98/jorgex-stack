@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBackup, listBackups } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 import { writeText } from "../src/lib/fsx.js";
+import { opencodeAdapter } from "../src/adapters/opencode.js";
 
 let tmp: string;
 
@@ -37,6 +38,14 @@ describe("backup: dedup de snapshots idénticos", () => {
     const second = createBackup([file], "t", root)!;
     expect(second.id).not.toBe(first.id);
     expect(listBackups(root)).toHaveLength(2);
+  });
+});
+
+describe("renderCommand de OpenCode", () => {
+  it("traduce {{input}} a $ARGUMENTS (placeholder oficial de OpenCode)", () => {
+    const out = opencodeAdapter.renderCommand("xreview.md", "Review.\n\nInput: {{input}}\n");
+    expect(out.content).toContain("$ARGUMENTS");
+    expect(out.content).not.toContain("{{input}}");
   });
 });
 
