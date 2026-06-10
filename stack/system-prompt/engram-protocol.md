@@ -1,6 +1,6 @@
-# Engram Memory Protocol
+<!-- Sección inyectable única (PRD §7.2): el instalador la inserta con marcadores en el system prompt de cada runtime, eliminando este comentario. Es LA fuente del protocolo — no duplicar en AGENTS.md ni en plugins. -->
 
-> Sección inyectable única (PRD §7.2): el instalador la inserta con marcadores en el system prompt de cada runtime. Es LA fuente del protocolo — no duplicar en AGENTS.md ni en plugins.
+# Engram Memory Protocol
 
 Engram persistent memory is ALWAYS ACTIVE. This protocol is mandatory.
 

@@ -46,5 +46,6 @@ pnpm cli <cmd>      # ejecutar el CLI local (node dist/cli.js)
 
 - ✅ F0: PRD + scaffold + git init
 - ✅ F1: fuente canónica en `stack/` — 15 agentes portados (frontmatter canónico tier/readonly/bash + result contract + deslindes), AGENTS.md + engram-protocol.md (única fuente del protocolo), hooks.json + post-pr-review.cjs (payload dual Claude/OpenCode), commands, mcp/servers.json, 18 skills vendorizadas (16 third-party con upstream en upstreams.json; solo agent-delegation y work-lifecycle son propias), work-lifecycle reescrita memory-first (D9), 3 plugins opencode vendorizados (copia fiel; rutas personales a parametrizar en F2: engram.ts:23, hooks.ts:76-78/299-300, worktree.ts:63-64/97-99, package.json main desactualizado)
-- ⏳ F2: CLI core (detect, backup, filemerge, pipeline) + adapter OpenCode con paridad
+- ✅ F2: CLI core funcional — lib (paths/fsx/filemerge/detect/backup/model-map/canonical), adapter OpenCode completo, 7 components agnósticos, pipeline detect→plan→diff→backup→apply→verify con verificación de idempotencia automática, CLI real (install/sync/models/restore; --target-dir para pruebas). Verificado e2e: 120 archivos a dir temporal, 2ª pasada 0 cambios, key de usuario/claves propias/contenido manual preservados. 12 tests vitest. Repo público: https://github.com/jorgehn98/jorgex-stack
+- ⏳ F3: adapter Claude Code · F4: adapter Codex · F5: update/doctor/uninstall + picker de modelos interactivo + publicación npm
 - Roadmap completo: PRD §11
