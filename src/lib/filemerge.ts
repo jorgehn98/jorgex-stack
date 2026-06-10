@@ -22,6 +22,18 @@ export function upsertMarkdownSection(existing: string | null, name: string, con
   return existing + sep + block + "\n";
 }
 
+/** Inversa de upsertMarkdownSection: elimina la sección marcada si existe. */
+export function removeMarkdownSection(existing: string, name: string): string {
+  const { open, close } = markers(name);
+  const start = existing.indexOf(open);
+  const end = existing.indexOf(close);
+  if (start === -1 || end === -1 || end < start) return existing;
+  const before = existing.slice(0, start).replace(/\n+$/, "\n");
+  const after = existing.slice(end + close.length).replace(/^\n+/, "\n");
+  const joined = before + after;
+  return joined.trim() === "" ? "" : joined.replace(/^\n+/, "");
+}
+
 /** Quita comentarios HTML iniciales (notas meta de los archivos canónicos). */
 export function stripLeadingHtmlComments(md: string): string {
   let out = md.trimStart();
@@ -74,6 +86,23 @@ export function upsertTomlSection(existing: string | null, section: string, body
   let sectionEnd = end;
   while (sectionEnd > start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
   const result = [...lines.slice(0, start), block.trimEnd(), ...lines.slice(sectionEnd)].join("\n");
+  return result.endsWith("\n") ? result : result + "\n";
+}
+
+/** Inversa de upsertTomlSection: elimina la sección (y su separación) si existe. */
+export function removeTomlSection(existing: string, section: string): string {
+  const header = `[${section}]`;
+  const lines = existing.split(/\r?\n/);
+  const isHeader = (line: string): boolean => /^\s*\[.+\]\s*(#.*)?$/.test(line);
+  const start = lines.findIndex((line) => line.trim() === header);
+  if (start === -1) return existing;
+  let end = start + 1;
+  while (end < lines.length && !isHeader(lines[end]!)) end++;
+  // Absorbe también las líneas en blanco previas al header eliminado.
+  let realStart = start;
+  while (realStart > 0 && lines[realStart - 1]!.trim() === "") realStart--;
+  const result = [...lines.slice(0, realStart), ...lines.slice(end)].join("\n");
+  if (result.trim() === "") return "";
   return result.endsWith("\n") ? result : result + "\n";
 }
 

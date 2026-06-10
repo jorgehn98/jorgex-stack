@@ -6,7 +6,8 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { upsertJson } from "../lib/filemerge.js";
+import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
+import { hookScriptNames } from "../lib/hooks-format.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
@@ -176,5 +177,62 @@ export const opencodeAdapter: Adapter = {
     });
 
     return [{ kind: "write", target: file, content }];
+  },
+
+  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
+    const actions: FileAction[] = [];
+    const { systemPromptFile, pluginsDir } = this.paths(ctx.configDir);
+
+    const prompt = readTextIfExists(systemPromptFile);
+    if (prompt !== null) {
+      let content = removeMarkdownSection(prompt, "system-prompt");
+      content = removeMarkdownSection(content, "engram-protocol");
+      actions.push({ kind: "write", target: systemPromptFile, content });
+    }
+
+    const configFile = path.join(ctx.configDir, "opencode.json");
+    const config = readTextIfExists(configFile);
+    if (config !== null) {
+      const content = upsertJson(config, (root) => {
+        const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
+        if (mcpBlock) {
+          for (const name of Object.keys(mcp.servers)) delete mcpBlock[name];
+          if (Object.keys(mcpBlock).length === 0) delete root["mcp"];
+        }
+        const plugin = root["plugin"] as string[] | undefined;
+        if (Array.isArray(plugin) && pluginsDir !== null) {
+          const ours = new Set(
+            pluginSources(ctx).map((s) => pathToFileURL(path.join(pluginsDir, path.basename(s))).href),
+          );
+          root["plugin"] = plugin.filter((url) => !ours.has(url));
+          if ((root["plugin"] as string[]).length === 0) delete root["plugin"];
+        }
+      });
+      actions.push({ kind: "write", target: configFile, content });
+    }
+
+    const hooksFile = path.join(ctx.configDir, "hooks.json");
+    const hooksJson = readTextIfExists(hooksFile);
+    if (hooksJson !== null) {
+      const ourScripts = hookScriptNames(hooks);
+      const content = upsertJson(hooksJson, (root) => {
+        const after = root["tool.execute.after"] as Record<string, Record<string, string[]>> | undefined;
+        if (!after) return;
+        for (const tool of Object.keys(after)) {
+          const byCommand = after[tool]!;
+          for (const includes of Object.keys(byCommand)) {
+            byCommand[includes] = byCommand[includes]!.filter(
+              (script) => !ourScripts.some((s) => script.includes(s)),
+            );
+            if (byCommand[includes]!.length === 0) delete byCommand[includes];
+          }
+          if (Object.keys(byCommand).length === 0) delete after[tool];
+        }
+        if (Object.keys(after).length === 0) delete root["tool.execute.after"];
+      });
+      actions.push({ kind: "write", target: hooksFile, content: content.trim() === "{}" ? "" : content });
+    }
+
+    return actions;
   },
 };

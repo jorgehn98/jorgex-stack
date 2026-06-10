@@ -79,3 +79,11 @@ export interface CanonicalMcpServer {
 export interface CanonicalMcp {
   servers: Record<string, CanonicalMcpServer & Record<string, unknown>>;
 }
+
+export function loadCanonicalMcp(stackDir: string): CanonicalMcp {
+  return JSON.parse(fs.readFileSync(path.join(stackDir, "mcp", "servers.json"), "utf8")) as CanonicalMcp;
+}
+
+export function loadCanonicalHooks(stackDir: string): CanonicalHooks {
+  return JSON.parse(fs.readFileSync(path.join(stackDir, "hooks", "hooks.json"), "utf8")) as CanonicalHooks;
+}

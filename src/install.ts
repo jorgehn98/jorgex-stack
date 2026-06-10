@@ -31,9 +31,23 @@ export interface InstallOptions {
   yes: boolean;
 }
 
-type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
+export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 
-function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
+/** Contexto de instalación para un runtime, o null si no hay model-map. */
+export function makeContext(adapter: Adapter, configDir: string): InstallContext | null {
+  const models = loadModelMap()[adapter.id];
+  if (!models) return null;
+  return {
+    stackDir: stackRoot(),
+    configDir,
+    engramBin: detectEngram(),
+    models,
+    secrets: { CONTEXT7_API_KEY: process.env.CONTEXT7_API_KEY },
+    warnings: [],
+  };
+}
+
+export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   return [
     ...planSystemPrompt(adapter, ctx),
     ...planAgents(adapter, ctx),
@@ -45,7 +59,7 @@ function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   ];
 }
 
-function diffPlan(plan: FileAction[]): PlannedChange[] {
+export function diffPlan(plan: FileAction[]): PlannedChange[] {
   return plan.map((action) => {
     if (action.kind === "write") {
       const current = readTextIfExists(action.target);
@@ -123,6 +137,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (changes.length === 0) {
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       continue;
+    }
+
+    if (!opts.yes && process.stdout.isTTY) {
+      const ok = await p.confirm({ message: `¿Aplicar ${changes.length} cambios en ${adapter.name}?` });
+      if (p.isCancel(ok) || !ok) {
+        p.log.warn(`${adapter.name}: omitido por el usuario.`);
+        continue;
+      }
     }
 
     const backup = createBackup(

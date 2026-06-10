@@ -1,10 +1,13 @@
 import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, runInstall } from "./install.js";
+import { runUninstall } from "./uninstall.js";
+import { runDoctor } from "./doctor.js";
+import { runUpdateCheck } from "./update.js";
+import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
-import { ensureModelMapFile } from "./lib/model-map.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall"] as const;
 type Command = (typeof COMMANDS)[number];
@@ -15,11 +18,12 @@ interface Flags {
   dryRun: boolean;
   yes: boolean;
   list: boolean;
+  check: boolean;
   positional: string[];
 }
 
 function parseFlags(args: string[]): Flags {
-  const flags: Flags = { agents: [], dryRun: false, yes: false, list: false, positional: [] };
+  const flags: Flags = { agents: [], dryRun: false, yes: false, list: false, check: false, positional: [] };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--agents" || arg === "-a") flags.agents = (args[++i] ?? "").split(",").filter(Boolean) as RuntimeId[];
@@ -29,9 +33,26 @@ function parseFlags(args: string[]): Flags {
     else if (arg === "--dry-run") flags.dryRun = true;
     else if (arg === "--yes" || arg === "-y") flags.yes = true;
     else if (arg === "--list") flags.list = true;
+    else if (arg === "--check") flags.check = true;
     else flags.positional.push(arg);
   }
   return flags;
+}
+
+/** Runtimes destino: --agents explícito, o multiselect interactivo de los detectados, o todos los detectados. */
+async function resolveRuntimes(flags: Flags): Promise<RuntimeId[] | null> {
+  if (flags.agents.length > 0) return flags.agents;
+  const detected = Object.values(ADAPTERS).filter((a) => a.detect().installed);
+  if (detected.length === 0) return [];
+  if (flags.yes || !process.stdout.isTTY || flags.targetDir !== undefined) return detected.map((a) => a.id);
+
+  const choice = await p.multiselect({
+    message: "¿En qué runtimes? (detectados en esta máquina)",
+    options: detected.map((a) => ({ value: a.id, label: a.name })),
+    initialValues: detected.map((a) => a.id),
+  });
+  if (p.isCancel(choice)) return null;
+  return choice;
 }
 
 function printHelp(): void {
@@ -40,17 +61,17 @@ function printHelp(): void {
 Uso: pnpm dlx jorgex-stack [comando] [opciones]
 
 Comandos:
-  install     Instala el stack en los runtimes elegidos (default)
+  install     Instala el stack en los runtimes elegidos (default, interactivo)
   sync        Re-aplica la config (idempotente; alias de install)
-  models      Crea/abre el model-map por tiers (~/.jorgex-stack/model-map.json)
+  models      Picker de modelos por tier (OpenCode: lista en vivo de 'opencode models')
+  update      --check: compara stack/Engram/skills con sus upstreams
+  doctor      Estado: Engram, drift de config, hooks de Codex, key de context7
   restore     --list para ver backups · 'restore <id>' para restaurar
-  update      Actualiza stack + terceros (F5)
-  doctor      Verifica el estado de la instalación (F5)
-  uninstall   Retira el stack (F5)
+  uninstall   Retira SOLO lo gestionado por el stack (con backup)
 
 Opciones:
-  --agents, -a opencode,claude-code,codex   Runtimes destino (default: detectados con adapter)
-  --target-dir <dir>    Instala en un dir alternativo (pruebas de paridad)
+  --agents, -a opencode,claude-code,codex   Runtimes destino (default: detectados)
+  --target-dir <dir>    Dir alternativo (pruebas de paridad; requiere 1 runtime)
   --dry-run             Muestra el plan sin escribir nada
   --yes, -y             No interactivo
 
@@ -74,30 +95,47 @@ async function main(): Promise<void> {
   const command: Command = isCommand ? (first as Command) : "install";
   const flags = parseFlags(isCommand ? rest : process.argv.slice(2));
 
+  if (flags.targetDir !== undefined && flags.agents.length !== 1) {
+    console.error("--target-dir requiere exactamente un runtime en --agents.");
+    process.exitCode = 1;
+    return;
+  }
+
   switch (command) {
     case "install":
     case "sync": {
-      const available = Object.keys(ADAPTERS) as RuntimeId[];
-      const runtimes = flags.agents.length > 0 ? flags.agents : available;
-      if (flags.targetDir !== undefined && runtimes.length !== 1) {
-        console.error("--target-dir requiere exactamente un runtime en --agents.");
+      const runtimes = await resolveRuntimes(flags);
+      if (runtimes === null) return;
+      if (runtimes.length === 0) {
+        console.error("Ningún runtime detectado (opencode, claude-code, codex).");
         process.exitCode = 1;
         return;
       }
-      process.exitCode = await runInstall({
-        runtimes,
-        targetDir: flags.targetDir,
-        dryRun: flags.dryRun,
-        yes: flags.yes,
-      });
+      process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: flags.yes });
+      return;
+    }
+    case "uninstall": {
+      const runtimes = await resolveRuntimes(flags);
+      if (runtimes === null || runtimes.length === 0) return;
+      process.exitCode = await runUninstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: flags.yes });
+      return;
+    }
+    case "doctor": {
+      process.exitCode = await runDoctor();
+      return;
+    }
+    case "update": {
+      if (!flags.check) {
+        // update = sync + informe de upstreams.
+        const runtimes = await resolveRuntimes(flags);
+        if (runtimes === null) return;
+        if (runtimes.length > 0) await runInstall({ runtimes, dryRun: false, yes: true });
+      }
+      process.exitCode = await runUpdateCheck(VERSION);
       return;
     }
     case "models": {
-      const file = ensureModelMapFile();
-      p.intro("jorgex-stack models");
-      p.log.info(`Model-map por tiers: ${file}`);
-      p.log.info("Edítalo y re-ejecuta 'sync'. Picker interactivo (lista en vivo de `opencode models`): F5.");
-      p.outro("Hecho.");
+      process.exitCode = await runModelsPicker({ yes: flags.yes });
       return;
     }
     case "restore": {
@@ -111,11 +149,6 @@ async function main(): Promise<void> {
       const restored = restoreBackup(flags.positional[0]!);
       console.log(`Restaurados ${restored} archivos.`);
       return;
-    }
-    default: {
-      p.intro(`jorgex-stack v${VERSION}`);
-      p.log.warn(`'${command}' llega en F5 (ver PRD.md §11).`);
-      p.outro("Nada que hacer todavía.");
     }
   }
 }

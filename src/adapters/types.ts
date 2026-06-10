@@ -68,4 +68,11 @@ export interface Adapter {
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[];
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];
+  /**
+   * Inversa para uninstall: devuelve los archivos COMPARTIDOS con el usuario
+   * (system prompt, configs, hooks) reescritos sin nuestras secciones/claves.
+   * Un write con content vacío significa "borrar el archivo". Los targets de
+   * estas acciones marcan además qué archivos del plan normal NO se borran.
+   */
+  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[];
 }

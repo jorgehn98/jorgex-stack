@@ -5,8 +5,8 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { readTomlSection, upsertTomlSection } from "../lib/filemerge.js";
-import { upsertNativeHooks } from "../lib/hooks-format.js";
+import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertTomlSection } from "../lib/filemerge.js";
+import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
@@ -163,5 +163,36 @@ export const codexAdapter: Adapter = {
     if (content === null) return [];
     if (!content.endsWith("\n")) content += "\n";
     return [{ kind: "write", target: file, content }];
+  },
+
+  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
+    const actions: FileAction[] = [];
+    const { systemPromptFile } = this.paths(ctx.configDir);
+
+    const prompt = readTextIfExists(systemPromptFile);
+    if (prompt !== null) {
+      let content = removeMarkdownSection(prompt, "system-prompt");
+      content = removeMarkdownSection(content, "engram-protocol");
+      actions.push({ kind: "write", target: systemPromptFile, content });
+    }
+
+    const configFile = path.join(ctx.configDir, "config.toml");
+    const config = readTextIfExists(configFile);
+    if (config !== null) {
+      let content = config;
+      for (const name of Object.keys(mcp.servers)) content = removeTomlSection(content, `mcp_servers.${name}`);
+      actions.push({ kind: "write", target: configFile, content });
+    }
+
+    const hooksFile = path.join(ctx.configDir, "hooks.json");
+    const hooksJson = readTextIfExists(hooksFile);
+    if (hooksJson !== null) {
+      const content = removeNativeHooks(hooksJson, hooks);
+      if (content !== null) {
+        actions.push({ kind: "write", target: hooksFile, content: content.trim() === "{}" ? "" : content });
+      }
+    }
+
+    return actions;
   },
 };

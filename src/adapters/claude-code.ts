@@ -5,8 +5,8 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { upsertJson } from "../lib/filemerge.js";
-import { upsertNativeHooks } from "../lib/hooks-format.js";
+import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
+import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -151,5 +151,40 @@ export const claudeCodeAdapter: Adapter = {
     });
 
     return [{ kind: "write", target: file, content }];
+  },
+
+  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
+    const actions: FileAction[] = [];
+    const { systemPromptFile } = this.paths(ctx.configDir);
+
+    const prompt = readTextIfExists(systemPromptFile);
+    if (prompt !== null) {
+      let content = removeMarkdownSection(prompt, "system-prompt");
+      content = removeMarkdownSection(content, "engram-protocol");
+      actions.push({ kind: "write", target: systemPromptFile, content });
+    }
+
+    const settingsFile = path.join(ctx.configDir, "settings.json");
+    const settings = readTextIfExists(settingsFile);
+    if (settings !== null) {
+      const content = removeNativeHooks(settings, hooks);
+      if (content !== null) {
+        actions.push({ kind: "write", target: settingsFile, content: content.trim() === "{}" ? "" : content });
+      }
+    }
+
+    const mainFile = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
+    const main = readTextIfExists(mainFile);
+    if (main !== null) {
+      const content = upsertJson(main, (root) => {
+        const servers = root["mcpServers"] as Record<string, unknown> | undefined;
+        if (!servers) return;
+        for (const name of Object.keys(mcp.servers)) delete servers[name];
+        if (Object.keys(servers).length === 0) delete root["mcpServers"];
+      });
+      actions.push({ kind: "write", target: mainFile, content: content.trim() === "{}" ? "" : content });
+    }
+
+    return actions;
   },
 };
