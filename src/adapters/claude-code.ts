@@ -120,10 +120,23 @@ export const claudeCodeAdapter: Adapter = {
     // estado del CLI: upsert quirúrgico SOLO de mcpServers gestionados + backup.
     const file = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
 
+    // Si Engram ya está integrado vía plugin de marketplace, registrar además
+    // el MCP duplicaría las tools de memoria (mem_* dos veces).
+    const pluginsRegistry = readTextIfExists(path.join(ctx.configDir, "plugins", "installed_plugins.json"));
+    const hasEngramPlugin =
+      (pluginsRegistry?.includes("engram") ?? false) ||
+      fs.existsSync(path.join(ctx.configDir, "plugins", "marketplaces", "engram"));
+
     const content = upsertJson(readTextIfExists(file), (root) => {
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
         if (server.transport === "stdio") {
+          if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin) {
+            ctx.warnings.push(
+              "Claude Code: Engram ya está integrado vía plugin — no se registra el MCP para no duplicar las tools de memoria.",
+            );
+            continue;
+          }
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
               "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",

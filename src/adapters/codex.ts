@@ -129,9 +129,19 @@ export const codexAdapter: Adapter = {
     const file = path.join(ctx.configDir, "config.toml");
     let content = readTextIfExists(file);
 
+    // Si Engram ya está integrado vía plugin de marketplace de Codex
+    // ([plugins."engram@..."] en config.toml), el MCP duplicaría las tools.
+    const hasEngramPlugin = /\[plugins\."engram@/.test(content ?? "");
+
     for (const [name, server] of Object.entries(canonical.servers)) {
       const section = `mcp_servers.${name}`;
       if (server.transport === "stdio") {
+        if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin) {
+          ctx.warnings.push(
+            "Codex: Engram ya está integrado vía plugin de marketplace — no se registra el MCP para no duplicar las tools de memoria.",
+          );
+          continue;
+        }
         if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
           ctx.warnings.push(
             "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
