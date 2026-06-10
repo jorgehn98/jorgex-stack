@@ -36,6 +36,7 @@ export const opencodeAdapter: Adapter = {
       pluginsDir: path.join(configDir, "plugins"),
       scriptsDir: path.join(configDir, "scripts"),
       outputStylesDir: null,
+      profilesDir: null,
     };
   },
 

@@ -4,7 +4,7 @@ import { ADAPTERS, runInstall } from "./install.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { ensureModelMapFile } from "./lib/model-map.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall"] as const;
 type Command = (typeof COMMANDS)[number];

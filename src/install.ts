@@ -3,6 +3,7 @@ import * as p from "@clack/prompts";
 import type { Adapter, FileAction, InstallContext, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
+import { codexAdapter } from "./adapters/codex.js";
 import { stackRoot } from "./lib/paths.js";
 import { detectEngram } from "./lib/detect.js";
 import { copyFile, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
@@ -19,7 +20,7 @@ import { planPlugins } from "./components/plugins.js";
 export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
   opencode: opencodeAdapter,
   "claude-code": claudeCodeAdapter,
-  // codex: F4 (PRD §11)
+  codex: codexAdapter,
 };
 
 export interface InstallOptions {

@@ -41,6 +41,8 @@ export interface AdapterPaths {
   scriptsDir: string;
   /** Solo Claude Code: modos del main agent (output styles). null en el resto. */
   outputStylesDir: string | null;
+  /** Solo Codex: profiles (<nombre>.config.toml). null en el resto. */
+  profilesDir: string | null;
 }
 
 export interface Adapter {
@@ -59,7 +61,7 @@ export interface Adapter {
   renderAgent(
     agent: CanonicalAgent,
     models: RuntimeModelMap,
-  ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "skill" }[];
+  ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "skill" | "profile" }[];
   /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
   renderCommand(file: string, content: string): { file: string; content: string };
   /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */

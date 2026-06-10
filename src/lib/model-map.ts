@@ -18,7 +18,7 @@ export type ModelMap = Partial<Record<RuntimeId, RuntimeModelMap>>;
  * la regenera. Claude Code usa alias auto-actualizables; fable es el nivel
  * superior (2026).
  */
-export const DEFAULT_MODEL_MAP: Required<Pick<ModelMap, "opencode" | "claude-code">> & ModelMap = {
+export const DEFAULT_MODEL_MAP: Required<ModelMap> = {
   opencode: {
     strong: { model: "openai/gpt-5.4", variant: "high" },
     standard: { model: "openai/gpt-5.4-mini", variant: "high" },
@@ -28,6 +28,13 @@ export const DEFAULT_MODEL_MAP: Required<Pick<ModelMap, "opencode" | "claude-cod
     strong: { model: "fable" },
     standard: { model: "sonnet" },
     cheap: { model: "haiku" },
+  },
+  // Codex: "default" = no fijar modelo (usa el del CLI, que OpenAI actualiza
+  // solo — D6); variant → model_reasoning_effort.
+  codex: {
+    strong: { model: "default", variant: "high" },
+    standard: { model: "default", variant: "medium" },
+    cheap: { model: "default", variant: "low" },
   },
 };
 

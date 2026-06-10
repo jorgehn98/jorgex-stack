@@ -9,8 +9,9 @@
  * Mirrors the `/review` command logic so both stay aligned.
  *
  * Payload compatibility (stdin JSON), so the same script works on every runtime:
- * - Claude Code / Codex hooks: { tool_name, tool_input: { command }, cwd }
- * - OpenCode hooks bridge:     { tool, args: { command }, directory }
+ * - Claude Code hooks: { tool_name: "Bash", tool_input: { command: "..." }, cwd }
+ * - Codex hooks:       { tool_name: "shell", tool_input: { command: [...] }, cwd }
+ * - OpenCode bridge:   { tool: "bash", args: { command: "..." }, directory }
  *
  * Output: plain message on stderr (OpenCode bridge) + JSON additionalContext on
  * stdout (Claude Code / Codex PostToolUse). Exit 0 always.
@@ -81,10 +82,13 @@ process.stdin.on('end', () => {
   }
 
   const toolName = String(data.tool_name || data.tool || '').toLowerCase();
-  const rawToolCommand = String(data?.tool_input?.command || data?.args?.command || '');
+  const SHELL_TOOLS = ['bash', 'shell', 'local_shell'];
+  const commandValue = data?.tool_input?.command ?? data?.args?.command ?? '';
+  // Codex passes the shell command as an argv array; the rest as a string.
+  const rawToolCommand = Array.isArray(commandValue) ? commandValue.join(' ') : String(commandValue);
   const toolCommand = rawToolCommand.toLowerCase();
 
-  if (toolName !== 'bash' || !toolCommand.includes('gh pr create')) {
+  if (!SHELL_TOOLS.includes(toolName) || !toolCommand.includes('gh pr create')) {
     process.exit(0);
   }
 

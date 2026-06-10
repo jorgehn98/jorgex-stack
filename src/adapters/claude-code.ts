@@ -6,6 +6,7 @@ import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { upsertJson } from "../lib/filemerge.js";
+import { upsertNativeHooks } from "../lib/hooks-format.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -53,6 +54,7 @@ export const claudeCodeAdapter: Adapter = {
       pluginsDir: null,
       scriptsDir: path.join(configDir, "scripts"),
       outputStylesDir: path.join(configDir, "output-styles"),
+      profilesDir: null,
     };
   },
 
@@ -97,46 +99,10 @@ export const claudeCodeAdapter: Adapter = {
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
     const { scriptsDir } = this.paths(ctx.configDir);
-    // Forward slashes: válidas para node en Windows y legibles en JSON.
-    const scriptsDirForCommand = scriptsDir.replace(/\\/g, "/");
 
+    // El formato canónico ES el de Claude Code: upsert directo en settings.json.
     const settingsFile = path.join(ctx.configDir, "settings.json");
-    const content = upsertJson(readTextIfExists(settingsFile), (root) => {
-      const hooks = (root["hooks"] ??= {}) as Record<string, unknown[]>;
-      for (const [event, entries] of Object.entries(canonical.hooks)) {
-        const list = (hooks[event] ??= []);
-        for (const entry of entries) {
-          // El formato canónico ES el de Claude Code: solo se resuelve
-          // {{SCRIPTS_DIR}} y se omite la extensión x-command-includes
-          // (el propio script filtra por comando y sale con exit 0).
-          const rendered = {
-            matcher: entry.matcher,
-            hooks: entry.hooks.map((h) => ({
-              type: h.type,
-              command: h.command.replace(/\{\{SCRIPTS_DIR\}\}/g, scriptsDirForCommand),
-              ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
-            })),
-          };
-
-          // Upsert sin duplicar: nuestra entrada se identifica por matcher +
-          // nombre del script; los hooks propios del usuario no se tocan.
-          const scriptNames = entry.hooks
-            .map((h) => /\{\{SCRIPTS_DIR\}\}[/\\]([\w./-]+)/.exec(h.command)?.[1])
-            .filter((s): s is string => s !== undefined)
-            .map((s) => path.basename(s));
-          const index = list.findIndex((existing) => {
-            const e = existing as { matcher?: string; hooks?: { command?: string }[] };
-            return (
-              e?.matcher === entry.matcher &&
-              Array.isArray(e?.hooks) &&
-              e.hooks.some((hh) => scriptNames.some((s) => String(hh?.command ?? "").includes(s)))
-            );
-          });
-          if (index >= 0) list[index] = rendered;
-          else list.push(rendered);
-        }
-      }
-    });
+    const content = upsertNativeHooks(readTextIfExists(settingsFile), canonical, scriptsDir);
     actions.push({ kind: "write", target: settingsFile, content });
 
     const scriptsSource = path.join(ctx.stackDir, "scripts");
