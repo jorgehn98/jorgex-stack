@@ -29,6 +29,15 @@ function opencodeLiveModels(binPath: string): string[] | null {
 
 const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku", "inherit"];
 
+/**
+ * Lista curada de modelos de Codex (login ChatGPT) — sin typos: se elige, no
+ * se escribe. "default" usa el modelo vigente del CLI y nunca caduca; los IDs
+ * concretos se refrescan con cada release del stack (junio 2026:
+ * developers.openai.com/codex/models). "custom" queda como vía de escape.
+ */
+const CODEX_MODELS = ["default", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+const CODEX_CUSTOM = "__custom__";
+
 export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
   const file = ensureModelMapFile();
   if (opts.yes || !process.stdout.isTTY) {
@@ -84,13 +93,30 @@ export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
           initialValue: current.variant ?? "medium",
         });
         if (p.isCancel(effort)) return cancelled();
-        const choice = await p.text({
-          message: `${det.name} · tier ${tier} — modelo: "default" (el del CLI, recomendado) o un ID concreto de OpenAI`,
+        const modelOptions = [
+          ...(CODEX_MODELS.includes(current.model) ? [] : [{ value: current.model, label: `${current.model} (actual)` }]),
+          ...CODEX_MODELS.map((m) => ({
+            value: m,
+            label: m === "default" ? "default — el del CLI, se actualiza solo (recomendado)" : m,
+          })),
+          { value: CODEX_CUSTOM, label: "otro… (escribir un ID a mano)" },
+        ];
+        let model = await p.select({
+          message: `${det.name} · tier ${tier} — modelo`,
+          options: modelOptions,
           initialValue: current.model,
-          validate: (v) => (!v || v.trim() === "" ? 'Vacío no — usa "default" o un ID.' : undefined),
         });
-        if (p.isCancel(choice)) return cancelled();
-        runtimeMap[tier] = { model: choice.trim(), variant: effort };
+        if (p.isCancel(model)) return cancelled();
+        if (model === CODEX_CUSTOM) {
+          const typed = await p.text({
+            message: `${det.name} · tier ${tier} — ID exacto del modelo (minúsculas; compruébalo con /model dentro de codex)`,
+            initialValue: current.model,
+            validate: (v) => (!v || v.trim() === "" ? 'Vacío no — usa "default" o un ID.' : undefined),
+          });
+          if (p.isCancel(typed)) return cancelled();
+          model = typed.trim().toLowerCase();
+        }
+        runtimeMap[tier] = { model, variant: effort };
       }
     }
     map[det.id] = runtimeMap;
