@@ -9,8 +9,30 @@ export interface TierModel {
   variant?: string;
 }
 
-export type RuntimeModelMap = Record<Tier, TierModel>;
+/**
+ * Mapa por tier + ajuste fino opcional: "overrides" por nombre de agente pisa
+ * el tier de ESE agente (p.ej. backend-analyst y code-reviewer son ambos
+ * strong, pero pueden llevar modelos distintos). Se edita a mano en
+ * model-map.json; el picker por tiers lo preserva.
+ */
+export type RuntimeModelMap = Record<Tier, TierModel> & {
+  overrides?: Record<string, Partial<TierModel>>;
+};
 export type ModelMap = Partial<Record<RuntimeId, RuntimeModelMap>>;
+
+/**
+ * Modelo efectivo de un subagente: override por nombre > tier. Un override
+ * con `"variant": ""` limpia el variant del tier (modelo sin variant).
+ */
+export function resolveAgentModel(models: RuntimeModelMap, agentName: string, tier: Tier): TierModel {
+  const base = models[tier];
+  const override = models.overrides?.[agentName];
+  if (!override) return base;
+  return {
+    model: override.model || base.model,
+    variant: "variant" in override ? override.variant || undefined : base.variant,
+  };
+}
 
 /**
  * Defaults por runtime (PRD §6.1). La elección real del usuario vive en

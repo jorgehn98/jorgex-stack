@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import type { RuntimeModelMap } from "../lib/model-map.js";
+import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
 import { loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath } from "../lib/paths.js";
@@ -81,7 +81,7 @@ export const codexAdapter: Adapter = {
   },
 
   renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
-    const tierModel = models[agent.tier];
+    const tierModel = resolveAgentModel(models, agent.name, agent.tier);
 
     // El orchestrator (primary) es un modo del agente principal: profile
     // (`codex --profile orchestrator`, developer_instructions con rol

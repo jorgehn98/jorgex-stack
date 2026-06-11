@@ -53,6 +53,14 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(out!.content).toContain("model: sonnet");
   });
 
+  it("override por agente pisa el tier solo para ese agente", () => {
+    const models: RuntimeModelMap = { ...MODELS, overrides: { demo: { model: "opus" } } };
+    const [out] = claudeCodeAdapter.renderAgent(agent({}), models);
+    expect(out!.content).toContain("model: opus");
+    const [other] = claudeCodeAdapter.renderAgent(agent({ name: "otro" }), models);
+    expect(other!.content).toContain("model: fable");
+  });
+
   it("el agente engram recibe solo tools de lectura de memoria (sin mem_save)", () => {
     const [out] = claudeCodeAdapter.renderAgent(
       agent({ name: "engram", readonly: true, bash: "none", tier: "cheap" }),

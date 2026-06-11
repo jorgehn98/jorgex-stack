@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext } from "./types.js";
 import { loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import type { RuntimeModelMap } from "../lib/model-map.js";
+import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
@@ -56,7 +56,7 @@ export const opencodeAdapter: Adapter = {
     // Paridad con la config original: los primary no fijan modelo ni permisos
     // (usan el modelo seleccionado por el usuario y los defaults globales).
     if (agent.mode === "subagent") {
-      const tierModel = models[agent.tier];
+      const tierModel = resolveAgentModel(models, agent.name, agent.tier);
       lines.push(`model: ${tierModel.model}`);
       if (tierModel.variant) lines.push(`variant: ${tierModel.variant}`);
 

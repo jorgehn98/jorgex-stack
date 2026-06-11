@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext } from "./types.js";
 import { loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import type { RuntimeModelMap } from "../lib/model-map.js";
+import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
@@ -110,7 +110,7 @@ export const claudeCodeAdapter: Adapter = {
     const lines = [`name: ${agent.name}`, `description: ${yamlString(agent.description)}`];
     const tools = toolsFor(agent);
     if (tools !== null) lines.push(`tools: ${tools}`);
-    lines.push(`model: ${models[agent.tier].model}`);
+    lines.push(`model: ${resolveAgentModel(models, agent.name, agent.tier).model}`);
 
     return [
       {

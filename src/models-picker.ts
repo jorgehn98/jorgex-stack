@@ -142,6 +142,9 @@ export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
 
   writeText(file, JSON.stringify(map satisfies ModelMap, null, 2) + "\n");
   p.log.success(`Guardado en ${file}`);
+  p.log.info(
+    'Ajuste fino opcional: añade "overrides" por runtime en ese archivo para pisar el tier de UN agente — p.ej. { "overrides": { "code-reviewer": { "model": "...", "variant": "high" } } }.',
+  );
   p.outro("Ejecuta 'sync' para aplicar los modelos a los agentes instalados.");
   return 0;
 }

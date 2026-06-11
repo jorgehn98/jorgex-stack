@@ -49,6 +49,16 @@ describe("codexAdapter.renderAgent", () => {
     expect(out!.content).toContain('model = "gpt-5.4"');
   });
 
+  it("override por agente: modelo propio y variant vacío limpia el effort del tier", () => {
+    const models: RuntimeModelMap = {
+      ...MODELS,
+      overrides: { demo: { model: "gpt-5.4-mini", variant: "" } },
+    };
+    const [out] = codexAdapter.renderAgent(agent({}), models);
+    expect(out!.content).toContain('model = "gpt-5.4-mini"');
+    expect(out!.content).not.toContain("model_reasoning_effort");
+  });
+
   it("el primary (orchestrator) → profile + skill, sin model ni effort (usa el del usuario)", () => {
     const models: RuntimeModelMap = { ...MODELS, strong: { model: "gpt-5.4", variant: "high" } };
     const out = codexAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), models);
