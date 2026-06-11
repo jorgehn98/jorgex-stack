@@ -38,7 +38,7 @@ const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku", "inherit"];
 const CODEX_MODELS = ["default", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 const CODEX_CUSTOM = "__custom__";
 
-export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
+export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[] }): Promise<number> {
   const file = ensureModelMapFile();
   if (opts.yes || !process.stdout.isTTY) {
     console.log(`Model-map en ${file} (defaults). Edítalo o ejecuta 'models' sin --yes para el picker.`);
@@ -49,15 +49,21 @@ export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
   const map = loadModelMap();
 
   const detections: { id: RuntimeId; name: string; installed: boolean; options: string[] | null }[] = [];
-  const opencode = detectOpenCode();
-  detections.push({
-    id: "opencode",
-    name: "OpenCode",
-    installed: opencode.installed,
-    options: opencode.binPath ? opencodeLiveModels(opencode.binPath) : null,
-  });
-  detections.push({ id: "claude-code", name: "Claude Code", installed: detectClaudeCode().installed, options: CLAUDE_ALIASES });
-  detections.push({ id: "codex", name: "Codex CLI", installed: detectCodex().installed, options: null });
+  if (opts.runtimes.includes("opencode")) {
+    const opencode = detectOpenCode();
+    detections.push({
+      id: "opencode",
+      name: "OpenCode",
+      installed: opencode.installed,
+      options: opencode.binPath ? opencodeLiveModels(opencode.binPath) : null,
+    });
+  }
+  if (opts.runtimes.includes("claude-code")) {
+    detections.push({ id: "claude-code", name: "Claude Code", installed: detectClaudeCode().installed, options: CLAUDE_ALIASES });
+  }
+  if (opts.runtimes.includes("codex")) {
+    detections.push({ id: "codex", name: "Codex CLI", installed: detectCodex().installed, options: null });
+  }
 
   for (const det of detections) {
     if (!det.installed) {

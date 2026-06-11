@@ -166,7 +166,16 @@ async function main(): Promise<void> {
       return;
     }
     case "models": {
-      process.exitCode = await runModelsPicker({ yes: flags.yes });
+      // Mismo primer paso que install: elegir runtimes (espacio) antes de
+      // preguntar modelos — solo se piden los de los runtimes seleccionados.
+      const runtimes = await resolveRuntimes(flags);
+      if (runtimes === null) return;
+      if (runtimes.length === 0) {
+        console.error("Ningún runtime detectado (opencode, claude-code, codex).");
+        process.exitCode = 1;
+        return;
+      }
+      process.exitCode = await runModelsPicker({ yes: flags.yes, runtimes });
       return;
     }
     case "restore": {
