@@ -239,7 +239,6 @@ export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[
 
   writeText(file, JSON.stringify(map satisfies ModelMap, null, 2) + "\n");
   p.log.success(`Guardado en ${file}`);
-  p.outro("Ejecuta 'sync' para aplicar los modelos a los agentes instalados.");
   return 0;
 }
 

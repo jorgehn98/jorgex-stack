@@ -175,7 +175,19 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      process.exitCode = await runModelsPicker({ yes: flags.yes, runtimes });
+      const code = await runModelsPicker({ yes: flags.yes, runtimes });
+      process.exitCode = code;
+      // Elegir modelos solo escribe el model-map local; aplicarlos a los
+      // agentes instalados es trabajo de sync. Ofrecerlo aquí evita el paso
+      // manual que nadie recuerda.
+      if (code === 0 && !flags.yes && process.stdout.isTTY) {
+        const apply = await p.confirm({ message: "¿Aplicar ahora los modelos a los agentes instalados? (sync)" });
+        if (!p.isCancel(apply) && apply) {
+          process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: false });
+        } else {
+          console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
+        }
+      }
       return;
     }
     case "restore": {
