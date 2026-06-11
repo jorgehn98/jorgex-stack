@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
+import { isContainedIn } from "./fsx.js";
 
 /** Header Authorization Bearer si el usuario tiene GH_TOKEN o GITHUB_TOKEN en el entorno. */
 function authHeaders(): Record<string, string> {
@@ -55,8 +56,43 @@ export async function latestGithubCommit(repo: string): Promise<string | null> {
 }
 
 /**
+ * Valida el árbol extraído en destDir: rechaza symlinks y rutas que escapen del dir.
+ * Exportada para tests unitarios. Fail-closed: devuelve false ante cualquier problema.
+ */
+export function validateExtractedTree(destDir: string): boolean {
+  const resolved = path.resolve(destDir);
+  const walk = (dir: string): boolean => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      // Rechazar symlinks (primitiva de exfiltración / zip-slip).
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(full);
+      } catch {
+        return false;
+      }
+      if (stat.isSymbolicLink()) return false;
+      // Rechazar rutas que escapen de destDir.
+      if (!isContainedIn(full, resolved)) return false;
+      if (entry.isDirectory()) {
+        if (!walk(full)) return false;
+      }
+    }
+    return true;
+  };
+  return walk(resolved);
+}
+
+/**
  * Descarga el tarball de un repo en el SHA indicado y lo extrae en destDir.
- * Usa `tar -xzf --strip-components=1` (bsdtar, presente en Windows 10+/macOS/Linux).
+ * Usa `tar -xzf --strip-components=1` (tar nativo; en Windows es GNU tar de MSYS).
+ * Tras extraer, valida el árbol (symlinks, path-escape); si falla, limpia y devuelve false.
  * Fail-closed: cualquier error limpia destDir y devuelve false.
  */
 export async function downloadRepoTarball(repo: string, sha: string, destDir: string): Promise<boolean> {
@@ -78,8 +114,14 @@ export async function downloadRepoTarball(repo: string, sha: string, destDir: st
     fs.rmSync(destDir, { recursive: true, force: true });
     fs.mkdirSync(destDir, { recursive: true });
 
-    // Extrae con bsdtar/tar nativo (strip-components elimina el prefijo repo-sha/).
+    // Extrae con tar nativo (strip-components elimina el prefijo repo-sha/).
     execFileSync("tar", ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
+
+    // Validación post-extracción: symlinks y rutas que escapen de destDir.
+    if (!validateExtractedTree(destDir)) {
+      fs.rmSync(destDir, { recursive: true, force: true });
+      return false;
+    }
 
     return true;
   } catch {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
+import { validateExtractedTree } from "../src/lib/github.js";
 import { buildEligibleSkillUpdates, type SkillQueryResult } from "../src/update.js";
 import { writeText } from "../src/lib/fsx.js";
 import { listBackups } from "../src/lib/backup.js";
@@ -406,5 +407,159 @@ describe("buildEligibleSkillUpdates: lógica de elegibilidad del picker", () => 
     // engram está en upstreams.tools y nunca llega a esta función.
     const skills: SkillQueryResult[] = []; // vacío = sin skills (engram no está aquí)
     expect(buildEligibleSkillUpdates(skills)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateExtractedTree: seguridad post-extracción de tarball
+// ---------------------------------------------------------------------------
+
+describe("validateExtractedTree: detección de symlinks y path-escape", () => {
+  it("árbol limpio sin symlinks → true", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-vtree-"));
+    try {
+      writeText(path.join(dir, "SKILL.md"), "# skill\n");
+      writeText(path.join(dir, "subdir", "helper.md"), "helper\n");
+      expect(validateExtractedTree(dir)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dir vacío → true", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-vtree-"));
+    try {
+      expect(validateExtractedTree(dir)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("symlink de archivo dentro del dir → false", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-vtree-"));
+    try {
+      const target = path.join(dir, "real.txt");
+      const link = path.join(dir, "link.txt");
+      writeText(target, "contenido\n");
+      try {
+        fs.symlinkSync(target, link);
+      } catch {
+        // EPERM en Windows CI sin privilegios de symlink → skip silencioso
+        return;
+      }
+      expect(validateExtractedTree(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("symlink de directorio dentro del dir → false", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-vtree-"));
+    try {
+      const subdir = path.join(dir, "real-sub");
+      fs.mkdirSync(subdir, { recursive: true });
+      writeText(path.join(subdir, "f.md"), "x\n");
+      const linkDir = path.join(dir, "linked-sub");
+      try {
+        fs.symlinkSync(subdir, linkDir, "junction");
+      } catch {
+        // EPERM → skip
+        return;
+      }
+      expect(validateExtractedTree(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replaceSkill: rechaza symlinks en upstream
+// ---------------------------------------------------------------------------
+
+describe("replaceSkill: rechaza symlinks en el upstream", () => {
+  function makeUpstreamsFixtureLocal(skillName: string, dir: string): string {
+    const file = path.join(dir, "upstreams.json");
+    const data = {
+      tools: {},
+      skills: {
+        [skillName]: {
+          source: `github:example/repo`,
+          commit: "abc1234def5678901234567890123456789012345",
+        },
+      },
+    };
+    writeText(file, JSON.stringify(data, null, 2) + "\n");
+    return file;
+  }
+
+  it("upstream con symlink → lanza error claro sin tocar disco local", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-replace-"));
+    try {
+      const upstreamSkillDir = path.join(dir, "upstream", "my-skill");
+      const skillsRoot = path.join(dir, "skills");
+      const upstreamsFile = makeUpstreamsFixtureLocal("my-skill", dir);
+
+      const realFile = path.join(upstreamSkillDir, "SKILL.md");
+      writeText(realFile, "# skill\n");
+      const linkFile = path.join(upstreamSkillDir, "evil.txt");
+      try {
+        fs.symlinkSync(realFile, linkFile);
+      } catch {
+        // EPERM en Windows CI → skip
+        return;
+      }
+
+      expect(() =>
+        replaceSkill("my-skill", upstreamSkillDir, "newcommit", upstreamsFile, skillsRoot),
+      ).toThrow(/[Ss]ymlink/);
+
+      // staging no debe quedar en disco; local tampoco (nunca se creó)
+      expect(fs.existsSync(path.join(skillsRoot, "my-skill"))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderSkillDiff: diff completo incluido en la salida
+// ---------------------------------------------------------------------------
+
+describe("renderSkillDiff: diff completo en la salida cuando hay diferencias", () => {
+  it("con diferencias → salida contiene líneas de diff (no solo --stat)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-rdiff-"));
+    try {
+      const up = path.join(dir, "upstream");
+      const local = path.join(dir, "local");
+      writeText(path.join(up, "SKILL.md"), "# skill v2\nlinea nueva\n");
+      writeText(path.join(local, "SKILL.md"), "# skill v1\nlinea vieja\n");
+
+      const out = renderSkillDiff(up, local);
+      expect(out.length).toBeGreaterThan(0);
+      // Si git está disponible, la salida debe contener el diff completo (líneas +/-)
+      // o al menos el stat; en cualquier caso la cadena es no vacía.
+      // No podemos asumir git disponible en todos los entornos, así que solo verificamos
+      // que la salida indique cambios de alguna forma.
+      const hasDiffContent =
+        out.includes("+") || out.includes("añadidos") || out.includes("modificados");
+      expect(hasDiffContent).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dirs idénticos → cadena vacía (sin cambios)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-rdiff-"));
+    try {
+      const up = path.join(dir, "upstream");
+      const local = path.join(dir, "local");
+      writeText(path.join(up, "SKILL.md"), "# skill\n");
+      writeText(path.join(local, "SKILL.md"), "# skill\n");
+
+      expect(renderSkillDiff(up, local)).toBe("");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

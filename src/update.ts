@@ -158,13 +158,27 @@ function isGitClone(): boolean {
   return fs.existsSync(path.join(projectRoot, ".git"));
 }
 
+// Método canónico para el update del stack en modo clon git
+const STACK_METHOD_CLONE = "git pull + pnpm install + pnpm build";
+
+/** Resuelve el binario de pnpm. */
+function resolvePnpm(): string {
+  const bin = lookPath("pnpm") ?? lookPath("pnpm.cmd") ?? lookPath("pnpm.ps1");
+  if (!bin) throw new Error("pnpm no encontrado en PATH.");
+  return bin;
+}
+
+/** Elimina un directorio temporal de forma fail-soft. */
+function cleanupTmp(dir: string): void {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignorar */ }
+}
+
 /** Actualiza el stack en modo clon git (git pull + pnpm install + pnpm build). */
 function updateStackGitClone(): void {
   const projectRoot = path.dirname(stackRoot());
   const git = lookPath("git");
   if (!git) throw new Error("git no encontrado en PATH.");
-  const pnpm = lookPath("pnpm") ?? lookPath("pnpm.cmd") ?? lookPath("pnpm.ps1");
-  if (!pnpm) throw new Error("pnpm no encontrado en PATH.");
+  const pnpm = resolvePnpm();
 
   p.log.info("Ejecutando git pull…");
   execFileSync(git, ["pull"], { cwd: projectRoot, stdio: "inherit" });
@@ -178,37 +192,62 @@ function updateStackGitClone(): void {
 
 /** Actualiza el stack instalado globalmente. */
 function updateStackGlobal(): void {
-  const pnpm = lookPath("pnpm") ?? lookPath("pnpm.cmd") ?? lookPath("pnpm.ps1");
-  if (!pnpm) throw new Error("pnpm no encontrado en PATH.");
+  const pnpm = resolvePnpm();
   p.log.info("Ejecutando pnpm add -g jorgex-stack@latest…");
   execFileSync(pnpm, ["add", "-g", "jorgex-stack@latest"], { stdio: "inherit" });
 }
 
-/** Descarga una skill desde su repo upstream al directorio temporal y devuelve la ruta. */
-async function downloadSkillToTemp(repo: string, sha: string, skillPath: string | undefined): Promise<string | null> {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-skill-"));
+/**
+ * Descarga una skill desde su repo upstream al directorio temporal.
+ * Devuelve {dir: subdirectorio de la skill, root: raíz mkdtemp} para que el
+ * caller pueda limpiar siempre la raíz completa.
+ */
+async function downloadSkillToTemp(repo: string, sha: string, skillPath: string | undefined): Promise<{ dir: string; root: string } | null> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-skill-"));
   try {
-    const ok = await downloadRepoTarball(repo, sha, tmp);
-    if (!ok) return null;
+    const ok = await downloadRepoTarball(repo, sha, root);
+    if (!ok) {
+      cleanupTmp(root);
+      return null;
+    }
     // Si la skill está en un subdirectorio del repo, calculamos la subruta.
     // Guard de contención: rechazar rutas que escapen del tmpDir.
     if (skillPath) {
-      const sub = path.resolve(path.join(tmp, skillPath));
-      if (!isContainedIn(sub, tmp)) {
+      const sub = path.resolve(path.join(root, skillPath));
+      if (!isContainedIn(sub, root)) {
         p.log.error(`skill: ruta de subdirectorio "${skillPath}" escapa del tmpDir — omitiendo.`);
+        cleanupTmp(root);
         return null;
       }
-      if (fs.existsSync(sub)) return sub;
+      if (fs.existsSync(sub)) return { dir: sub, root };
       // Intento con último segmento del path
       const lastSeg = skillPath.split("/").pop()!;
-      const sub2 = path.resolve(path.join(tmp, lastSeg));
-      if (isContainedIn(sub2, tmp) && fs.existsSync(sub2)) return sub2;
+      const sub2 = path.resolve(path.join(root, lastSeg));
+      if (isContainedIn(sub2, root) && fs.existsSync(sub2)) return { dir: sub2, root };
     }
-    return tmp;
+    return { dir: root, root };
   } catch {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignorar */ }
+    cleanupTmp(root);
     return null;
   }
+}
+
+/**
+ * Retiene solo los 3 backups de DB de engram más recientes en dataDir.
+ * Fail-soft: no lanza excepciones.
+ */
+function pruneEngramDbBackups(): void {
+  try {
+    const dir = dataDir();
+    if (!fs.existsSync(dir)) return;
+    const backups = fs.readdirSync(dir)
+      .filter((f) => f.startsWith("engram-db-backup-") && f.endsWith(".db"))
+      .map((f) => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime); // más reciente primero
+    for (const old of backups.slice(3)) {
+      try { fs.rmSync(path.join(dir, old.name)); } catch { /* ignorar */ }
+    }
+  } catch { /* ignorar */ }
 }
 
 /** Actualiza engram usando el canal nativo replicado (brew → go install → URL releases). */
@@ -241,6 +280,8 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
         if (!fs.existsSync(dataDir())) fs.mkdirSync(dataDir(), { recursive: true });
         fs.copyFileSync(engramDb, dest);
         p.log.success(`DB respaldada en ${dest} (la DB original NO se modifica jamás).`);
+        // Conservar solo los 3 backups más recientes
+        pruneEngramDbBackups();
       } catch (err) {
         p.log.warn(`No se pudo copiar la DB: ${err instanceof Error ? err.message : err}. Continuando sin backup.`);
       }
@@ -248,42 +289,60 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
   }
 
   // 3. Canal: brew → go install → URL releases
-  // Canal A: brew
+  let anyChannelTried = false;
+
+  // Canal A: brew — separar detección de acción
   const brew = lookPath("brew");
   if (brew) {
-    // Verificar si brew gestiona engram
+    let brewManages = false;
     try {
       execFileSync(brew, ["list", "engram"], { stdio: "pipe" });
-      // Si llega aquí, brew gestiona engram
-      p.log.info("Actualizando engram con brew…");
-      execFileSync(brew, ["upgrade", "engram"], { stdio: "inherit" });
-      return true;
+      brewManages = true;
     } catch {
       // brew no gestiona engram — continuar con siguiente canal
+    }
+    if (brewManages) {
+      anyChannelTried = true;
+      p.log.info("Actualizando engram con brew…");
+      try {
+        execFileSync(brew, ["upgrade", "engram"], { stdio: "inherit" });
+        return true;
+      } catch (err) {
+        p.log.error(`brew upgrade engram falló: ${err instanceof Error ? err.message : err}`);
+        return false;
+      }
     }
   }
 
   // Canal B: go install
   const go = lookPath("go");
   if (go) {
+    anyChannelTried = true;
     p.log.info(`Actualizando engram con go install (${latestVersion})…`);
     try {
       execFileSync(
         go,
-        ["install", `github.com/Gentleman-Programming/engram/cmd/engram@latest`],
+        ["install", `github.com/Gentleman-Programming/engram/cmd/engram@v${latestVersion}`],
         { stdio: "inherit" },
       );
       return true;
     } catch (err) {
-      p.log.warn(`go install falló: ${err instanceof Error ? err.message : err}`);
+      p.log.error(`go install falló: ${err instanceof Error ? err.message : err}`);
+      return false;
     }
   }
 
   // Canal C: informar URL de releases
-  p.log.warn(
-    `No se encontró brew ni go en PATH.\n` +
-    `  Descarga manual: github.com/${engramRepo}/releases/tag/v${latestVersion}`,
-  );
+  if (anyChannelTried) {
+    p.log.error(
+      `Los canales de actualización disponibles fallaron — revisa el error arriba; descarga manual: github.com/${engramRepo}/releases/tag/v${latestVersion}`,
+    );
+  } else {
+    p.log.warn(
+      `No se encontró brew ni go en PATH.\n` +
+      `  Descarga manual: github.com/${engramRepo}/releases/tag/v${latestVersion}`,
+    );
+  }
   return false;
 }
 
@@ -370,19 +429,28 @@ export function buildEligibleSkillUpdates(skills: SkillQueryResult[]): EligibleS
   return result;
 }
 
+/** Resultado del flujo interactivo de update. */
+export interface InteractiveUpdateResult {
+  exitCode: number;
+  /** true si se aplicó al menos un update de stack o skill con éxito (requiere sync). */
+  appliedUpdates: boolean;
+}
+
 /**
  * Flujo interactivo de update. Escanea las 3 fuentes, ofrece multiselect
  * y aplica lo marcado. Respeta --yes y no-TTY: en esos casos, solo informe.
+ * dryRun: cortocircuita al check sin aplicar nada.
  */
-export async function runInteractiveUpdate(localVersion: string, yes: boolean): Promise<number> {
-  // Con --yes o sin TTY: comportarse como el check original
-  if (yes || !process.stdout.isTTY) {
-    return runUpdateCheck(localVersion);
+export async function runInteractiveUpdate(localVersion: string, yes: boolean, dryRun = false): Promise<InteractiveUpdateResult> {
+  // Con --dry-run, --yes o sin TTY: comportarse como el check original
+  if (dryRun || yes || !process.stdout.isTTY) {
+    return { exitCode: await runUpdateCheck(localVersion), appliedUpdates: false };
   }
 
   p.intro("jorgex-stack update");
   const upstreams = loadUpstreams();
   let exitCode = 0;
+  let appliedUpdates = false;
 
   // -------------------------------------------------------------------------
   // FASE 1: Escanear las 3 fuentes en paralelo
@@ -421,7 +489,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
     p.log.success(`jorgex-stack: v${localVersion} — al día.`);
   } else {
     stackNeedsUpdate = true;
-    const mode = isGitClone() ? "git pull + pnpm build" : `pnpm add -g jorgex-stack@${npmLatest}`;
+    const mode = isGitClone() ? STACK_METHOD_CLONE : `pnpm add -g jorgex-stack@${npmLatest}`;
     updateItems.push({
       value: "stack",
       label: `jorgex-stack: v${localVersion} → v${npmLatest}`,
@@ -431,10 +499,9 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
 
   // Engram
   let engramNeedsUpdate = false;
-  let engramBinLocal: string | null = null;
   let engramLocalVersion: string | null = null;
   if (engramData) {
-    engramBinLocal = detectEngram();
+    const engramBinLocal = detectEngram();
     engramLocalVersion = engramBinLocal ? engramVersion(engramBinLocal) : null;
     if (engramLocalVersion === null) {
       p.log.warn("engram: no detectado en esta máquina.");
@@ -511,7 +578,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
   // Nada que actualizar
   if (updateItems.length === 0) {
     p.outro("Todo al día. No hay actualizaciones disponibles.");
-    return 0;
+    return { exitCode: 0, appliedUpdates: false };
   }
 
   // -------------------------------------------------------------------------
@@ -526,12 +593,12 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
 
   if (p.isCancel(selected)) {
     p.outro("Update cancelado.");
-    return 0;
+    return { exitCode: 0, appliedUpdates: false };
   }
 
   if ((selected as string[]).length === 0) {
     p.outro("Nada seleccionado.");
-    return 0;
+    return { exitCode: 0, appliedUpdates: false };
   }
 
   const sel = selected as string[];
@@ -543,9 +610,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
   // 4a. Stack
   if (stackNeedsUpdate && sel.includes("stack")) {
     const isClone = isGitClone();
-    const method = isClone
-      ? "git pull + pnpm install + pnpm build"
-      : "pnpm add -g jorgex-stack@latest";
+    const method = isClone ? STACK_METHOD_CLONE : "pnpm add -g jorgex-stack@latest";
     const confirm = await p.confirm({
       message: `Actualizar el stack con: ${method}`,
       initialValue: true,
@@ -560,6 +625,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
           updateStackGlobal();
         }
         p.log.success("Stack actualizado correctamente.");
+        appliedUpdates = true;
       } catch (err) {
         p.log.error(`Stack: error al actualizar — ${err instanceof Error ? err.message : err}`);
         exitCode = 1;
@@ -588,14 +654,16 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
     // Descargar upstream a tmp
     const spin2 = p.spinner();
     spin2.start(`Descargando upstream de ${skillInfo.name}…`);
-    const tmpDir = await downloadSkillToTemp(skillInfo.repo, skillInfo.head, skillInfo.skillPath);
-    spin2.stop(tmpDir ? "Descargado." : "Error de descarga.");
+    const tmpResult = await downloadSkillToTemp(skillInfo.repo, skillInfo.head, skillInfo.skillPath);
+    spin2.stop(tmpResult ? "Descargado." : "Error de descarga.");
 
-    if (!tmpDir) {
+    if (!tmpResult) {
       p.log.error(`skill ${skillInfo.name}: no se pudo descargar el upstream. Omitiendo.`);
       exitCode = 1;
       continue;
     }
+
+    const { dir: tmpDir, root: tmpRoot } = tmpResult;
 
     // Mostrar diff
     const localSkillDir = path.join(stackRoot(), "skills", skillInfo.name);
@@ -604,29 +672,31 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
       p.log.info(`Diff de ${skillInfo.name}:\n${diff}`);
     } else {
       p.log.info(`${skillInfo.name}: sin cambios en contenido (el repo se movió pero la skill no cambió).`);
-      // Limpiar tmpDir y continuar sin hacer nada
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignorar */ }
+      // Limpiar la raíz tmpRoot y continuar sin hacer nada
+      cleanupTmp(tmpRoot);
       continue;
     }
 
     const applySkill = await p.confirm({
       message: `¿Aplicar la actualización de ${skillInfo.name}?`,
-      initialValue: !skillInfo.modified,
+      // Default No — política deliberate-pin (el diff es de contenido)
+      initialValue: false,
     });
     if (p.isCancel(applySkill) || !applySkill) {
       p.log.info(`skill ${skillInfo.name}: omitida.`);
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignorar */ }
+      cleanupTmp(tmpRoot);
       continue;
     }
 
     try {
       replaceSkill(skillInfo.name, tmpDir, skillInfo.head);
       p.log.success(`skill ${skillInfo.name}: actualizada y re-pineada a ${skillInfo.head.slice(0, 7)}.`);
+      appliedUpdates = true;
     } catch (err) {
       p.log.error(`skill ${skillInfo.name}: error — ${err instanceof Error ? err.message : err}`);
       exitCode = 1;
     } finally {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignorar */ }
+      cleanupTmp(tmpRoot);
     }
   }
 
@@ -648,11 +718,13 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean): 
         const versionPost = binPost ? engramVersion(binPost) : null;
         if (versionPost) {
           p.log.success(`Engram: ahora en v${versionPost}.`);
+        } else {
+          p.log.warn("Engram actualizado, pero no se pudo verificar la versión — comprueba con engram --version");
         }
       }
     }
   }
 
   p.outro(exitCode === 0 ? "Update completado." : "Update completado con errores (revisa arriba).");
-  return exitCode;
+  return { exitCode, appliedUpdates };
 }

@@ -71,9 +71,12 @@ export function diffSkillDirs(upstreamDir: string, localDir: string): SkillDiff 
   };
 }
 
+const DIFF_MAX_LINES = 400;
+
 /**
  * Devuelve el resumen legible del diff entre upstreamDir y localDir usando
- * `git diff --no-index --stat`. Si no hay diferencias, devuelve cadena vacía.
+ * `git diff --no-index --stat` seguido del diff completo (capado a DIFF_MAX_LINES líneas).
+ * Si no hay diferencias, devuelve cadena vacía.
  * En caso de error (git no disponible o dirs inexistentes) devuelve un mensaje
  * con el conteo de archivos de diffSkillDirs como fallback.
  */
@@ -86,21 +89,43 @@ export function renderSkillDiff(upstreamDir: string, localDir: string): string {
     });
     // código 0 → sin diferencias
     return "";
-  } catch (err: unknown) {
-    // execFileSync lanza cuando exit code != 0; el output está en err.stdout
-    const e = err as { stdout?: string; status?: number };
-    if (typeof e.stdout === "string" && e.status === 1) {
-      // código 1 = hay diferencias (comportamiento normal de git diff)
-      return e.stdout;
+  } catch (statErr: unknown) {
+    const se = statErr as { stdout?: string; status?: number };
+    if (typeof se.stdout !== "string" || se.status !== 1) {
+      // Fallback: git no disponible o directorios inválidos
+      const d = diffSkillDirs(upstreamDir, localDir);
+      const total = d.added.length + d.modified.length + d.deleted.length;
+      if (total === 0) return "";
+      return (
+        `[git no disponible — resumen de cambios]\n` +
+        `  añadidos: ${d.added.length}, modificados: ${d.modified.length}, eliminados: ${d.deleted.length}`
+      );
     }
-    // Fallback: git no disponible o directorios inválidos
-    const d = diffSkillDirs(upstreamDir, localDir);
-    const total = d.added.length + d.modified.length + d.deleted.length;
-    if (total === 0) return "";
-    return (
-      `[git no disponible — resumen de cambios]\n` +
-      `  añadidos: ${d.added.length}, modificados: ${d.modified.length}, eliminados: ${d.deleted.length}`
-    );
+
+    // código 1 = hay diferencias; mostrar --stat + diff completo capado
+    const stat = se.stdout;
+    let fullDiff = "";
+    try {
+      execFileSync("git", ["diff", "--no-index", "--", localDir, upstreamDir], {
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      // código 0 inesperado (no debería pasar tras --stat con diffs)
+    } catch (diffErr: unknown) {
+      const de = diffErr as { stdout?: string; status?: number };
+      if (typeof de.stdout === "string" && de.status === 1) {
+        const lines = de.stdout.split("\n");
+        if (lines.length > DIFF_MAX_LINES) {
+          fullDiff =
+            lines.slice(0, DIFF_MAX_LINES).join("\n") +
+            `\n(truncado — ${lines.length - DIFF_MAX_LINES} líneas omitidas)`;
+        } else {
+          fullDiff = de.stdout;
+        }
+      }
+    }
+
+    return fullDiff ? `${stat}\n${fullDiff}` : stat;
   }
 }
 
@@ -160,6 +185,11 @@ export function replaceSkill(
   try {
     const upstreamFiles = listFilesRecursive(upstreamSkillDir);
     for (const src of upstreamFiles) {
+      // Rechazar symlinks: copyFileSync desreferenciaría el target (exfiltración).
+      const st = fs.lstatSync(src);
+      if (st.isSymbolicLink()) {
+        throw new Error(`Symlink rechazado en upstream de skill "${name}": ${src}`);
+      }
       const rel = path.relative(upstreamSkillDir, src);
       const dest = path.join(stagingDir, rel);
       ensureDir(path.dirname(dest));

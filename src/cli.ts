@@ -3,7 +3,7 @@ import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, runInstall } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
-import { runUpdateCheck, runInteractiveUpdate } from "./update.js";
+import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 
@@ -155,7 +155,12 @@ async function main(): Promise<void> {
         process.exitCode = await runUpdateCheck(VERSION);
         return;
       }
-      // Sin --check: sync primero, luego flujo interactivo de update.
+      // --dry-run: cortocircuita al check sin sync previo ni flujo interactivo.
+      if (flags.dryRun) {
+        process.exitCode = await runUpdateCheck(VERSION);
+        return;
+      }
+      // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
       if (runtimes.length > 0) {
@@ -165,7 +170,19 @@ async function main(): Promise<void> {
           return;
         }
       }
-      process.exitCode = await runInteractiveUpdate(VERSION, flags.yes);
+      const result: InteractiveUpdateResult = await runInteractiveUpdate(VERSION, flags.yes, flags.dryRun);
+      process.exitCode = result.exitCode;
+      // Ofrecer sync si se aplicaron skills o stack y hay runtimes disponibles.
+      if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && !flags.yes && process.stdout.isTTY) {
+        const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });
+        if (!p.isCancel(apply) && apply) {
+          process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: false, yes: false });
+        } else {
+          console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
+        }
+      } else if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && (flags.yes || !process.stdout.isTTY)) {
+        console.log("Skills/stack actualizados. Ejecuta jorgex-stack sync para aplicarlos a los runtimes.");
+      }
       return;
     }
     case "models": {
