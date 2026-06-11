@@ -31,7 +31,7 @@ Todo comando soporta `--dry-run`, `--yes` y `--target-dir <dir>` (pruebas sin to
 `update` gestiona tres fuentes:
 
 1. **Stack** (jorgex-stack): detecta si es clon git o instalación global, oferece actualización con confirmación.
-2. **Engram** (binario): detecta la versión instalada, ofrece actualización con **canal nativo** (brew → `go install` → URL releases). Advierte si el proceso está en ejecución (bloquea en Windows). **Backup automático de la DB antes de actualizar**. La base de datos y las memorias jamás se tocan.
+2. **Engram** (binario): detecta la versión instalada, ofrece actualización con **canal nativo** (brew → `go install` → URL releases). No hace falta parar nada: igual que el upstream en macOS/Linux, los procesos vivos siguen con la versión antigua hasta reiniciar los clientes; en Windows el `.exe` en uso se rota por rename antes de instalar. **Backup automático de la DB antes de actualizar**. La base de datos y las memorias jamás se tocan.
 3. **Skills vendorizadas**: detecta cambios en los upstream registrados en `upstreams.json`, descarga el upstream a temporal, **muestra diff obligatorio** y solicita confirmación. Las skills con cambios locales (`modified: true`) alertan y exigen doble confirmación.
 
 Uso:

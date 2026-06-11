@@ -272,19 +272,48 @@ function pruneEngramDbBackups(): void {
   } catch { /* ignorar */ }
 }
 
+/**
+ * Windows no permite sobrescribir el .exe de un proceso vivo, pero SÍ
+ * renombrarlo (mismo truco que Chrome/rustup): el proceso sigue usando el
+ * archivo rotado y la ruta original queda libre para el binario nuevo.
+ * Limpia rotaciones de updates anteriores ya liberadas (fail-soft: las que
+ * sigan en uso se quedan y caerán en el siguiente update).
+ * Devuelve la ruta rotada, o null si no había binario que rotar.
+ */
+export function rotateLockedBinary(binPath: string, sweepRoot = HOME): string | null {
+  if (!fs.existsSync(binPath)) return null;
+  const dir = path.dirname(binPath);
+  const base = path.basename(binPath);
+  // El barrido de rotaciones es lo único destructivo: solo bajo sweepRoot
+  // (HOME en uso real) y solo archivos con el formato exacto de rotación.
+  const escapedBase = base.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+  const oldPattern = new RegExp("^" + escapedBase + "\\.old-\\d+$");
+  // El propio root cuenta como dentro (un binario directamente en HOME es legítimo).
+  const resolvedDir = path.resolve(dir);
+  if (resolvedDir === path.resolve(sweepRoot) || isContainedIn(resolvedDir, sweepRoot)) {
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (oldPattern.test(entry)) {
+          try { fs.rmSync(path.join(dir, entry), { force: true }); } catch { /* aún en uso */ }
+        }
+      }
+    } catch { /* ignorar */ }
+  }
+  const rotated = path.join(dir, `${base}.old-${Date.now()}`);
+  fs.renameSync(binPath, rotated);
+  return rotated;
+}
+
 /** Actualiza engram usando el canal nativo replicado (brew → go install → URL releases). */
 async function updateEngram(engramRepo: string, latestVersion: string): Promise<boolean> {
-  // 1. ¿Está ejecutándose engram? Advertir antes de intentar reemplazar el binario.
-  const running = isEngramRunning();
-  if (running === null) {
-    p.log.warn("No se pudo comprobar si engram está en ejecución. En Windows el .exe en uso bloquea el reemplazo — asegúrate de pararlo si ves errores.");
-  } else if (running) {
-    p.log.warn("Engram está en ejecución. En Windows el .exe en uso bloquea el reemplazo.");
-    const stop = await p.confirm({ message: "¿Has parado el proceso engram? (necesario en Windows antes de actualizar)" });
-    if (p.isCancel(stop) || !stop) {
-      p.log.info("Actualización de engram cancelada. Para manualmente: taskkill /IM engram.exe /F");
-      return false;
-    }
+  // 1. Procesos en ejecución: NO hay que parar nada — mismo comportamiento que
+  // el upstream en macOS/Linux (brew reemplaza el binario con procesos vivos;
+  // siguen con la versión antigua hasta reiniciar los clientes). En Windows la
+  // ruta se libera rotando el .exe por rename antes de instalar (canal B).
+  if (isEngramRunning()) {
+    p.log.info(
+      "Engram está en ejecución: los procesos vivos seguirán usando la versión antigua hasta que reinicies los clientes (Claude Code/OpenCode/Codex).",
+    );
   }
 
   // 2. Ofrecer backup de la DB ANTES de actualizar el binario.
@@ -340,6 +369,18 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
   const go = lookPath("go");
   if (go) {
     anyChannelTried = true;
+    // Windows: liberar la ruta del binario en uso ANTES de go install.
+    let rotated: string | null = null;
+    const bin = detectEngram();
+    if (process.platform === "win32" && bin) {
+      try {
+        rotated = rotateLockedBinary(bin);
+      } catch (err) {
+        p.log.warn(
+          `No se pudo rotar el binario en uso: ${err instanceof Error ? err.message : err}. go install puede fallar por bloqueo.`,
+        );
+      }
+    }
     p.log.info(`Actualizando engram con go install (${latestVersion})…`);
     try {
       execFileSync(
@@ -347,8 +388,34 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
         ["install", `github.com/Gentleman-Programming/engram/cmd/engram@v${latestVersion}`],
         { stdio: "inherit" },
       );
+      // go install escribe en GOBIN: si esa NO era la ruta rotada, el binario
+      // activo quedaría desaparecido tras un install "exitoso" — restaurarlo.
+      if (rotated && bin && !fs.existsSync(bin)) {
+        try {
+          fs.renameSync(rotated, bin);
+          p.log.warn(
+            `go install instaló en otra ruta (GOBIN distinto); el binario activo en ${bin} se ha restaurado. Comprueba qué engram resuelve tu PATH.`,
+          );
+        } catch {
+          p.log.warn(`go install instaló en otra ruta y no se pudo restaurar ${bin}; tu binario anterior está en ${rotated}.`);
+        }
+      }
       return true;
     } catch (err) {
+      if (rotated && bin) {
+        if (!fs.existsSync(bin)) {
+          // Install fallido con la ruta vacía: revertir la rotación.
+          try {
+            fs.renameSync(rotated, bin);
+            p.log.info("Rotación revertida — el binario anterior sigue en su sitio.");
+          } catch {
+            p.log.error(`No se pudo revertir la rotación: tu binario anterior está en ${rotated} — renómbralo a ${bin} a mano.`);
+          }
+        } else {
+          // go install es atómico (temp+rename), pero si dejó algo en la ruta no lo pisamos.
+          p.log.warn(`El install falló pero dejó un binario en ${bin}; tu copia anterior queda en ${rotated}.`);
+        }
+      }
       p.log.error(`go install falló: ${err instanceof Error ? err.message : err}`);
       return false;
     }
@@ -726,6 +793,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
         } else {
           p.log.warn("Engram actualizado, pero no se pudo verificar la versión — comprueba con engram --version");
         }
+        p.log.info("Reinicia los clientes (Claude Code/OpenCode/Codex) para que sus MCP usen la versión nueva.");
       }
     }
   }
