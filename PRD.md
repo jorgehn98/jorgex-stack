@@ -158,20 +158,44 @@ La config actual referencia modelos vía OpenCode multi-provider (`openai/gpt-5.
 - En OpenCode se conserva el plugin completo (captura pasiva, session resilience, compaction handling) — es la integración más rica y se mantiene.
 - `update` trata Engram como tool gestionada (release de GitHub, comparación de versión), pero **solo actualiza el binario con confirmación explícita** y nunca toca la base de datos.
 
-### 7.3 Skills y upstreams
+### 7.3 Update: política y flujo
 
-`upstreams.json` registra cada pieza de terceros:
+`upstreams.json` registra cada pieza de terceros (ejemplo de formato):
 
 ```json
 {
-  "engram": { "kind": "binary", "source": "github:Gentleman-Programming/engram", "version": "v?.?.?", "verify": "sha256" },
-  "skills/supabase": { "kind": "skill", "source": "github:supabase/agent-skills", "path": "...", "version": "<commit/tag>" },
-  "skills/mcp-builder": { "kind": "skill", "source": "github:anthropics/skills", "version": "..." }
+  "tools": {
+    "engram": { "kind": "binary", "source": "github:Gentleman-Programming/engram", "verify": "sha256", "policy": "respect-existing — D7" }
+  },
+  "skills": {
+    "skill-name": { "source": "github:org/repo", "commit": "...", "modified": false }
+  }
 }
 ```
 
-- **Auditoría hecha (F1, 2026-06-10)**: las 18 skills están vendorizadas en `stack/skills/` con upstream registrado. Sorpresa: solo `agent-delegation` y `work-lifecycle` son propias; `tdd`, `to-prd`, `to-issues` y `diagnose` son de **mattpocock/skills** con modificaciones locales (`modified: true` en upstreams.json). Resto: anthropics/skills, supabase/agent-skills, vercel(-labs), kepano/obsidian-skills, millionco/react-doctor, safishamsi/graphify.
-- `update --check`: compara versión local vs upstream (tags/commits de GitHub) y lista qué hay nuevo; `update` aplica respetando modificaciones locales — las skills `modified: true` exigen diff/aviso, nunca reemplazo ciego.
+**Auditoría (F1, 2026-06-10)**: las 18 skills están vendorizadas en `stack/skills/` con upstream registrado. Solo `agent-delegation` y `work-lifecycle` son propias; `tdd`, `to-prd`, `to-issues` y `diagnose` de **mattpocock/skills** tienen modificaciones locales (`modified: true`). Resto: anthropics/skills, supabase/agent-skills, vercel(-labs), kepano/obsidian-skills, millionco/react-doctor, safishamsi/graphify.
+
+**Política de `update` (F5.x — implementada con flujo interactivo)**:
+
+1. **`update --check`** (sin TTY o con `--yes`): compara versión local vs upstream (tags/commits de GitHub) y **solo lista** qué hay nuevo. Respeta D7 y D8: no toca nada sin confirmación explícita.
+
+2. **`update` interactivo** (TTY + sin `--yes`): 
+   - **Escanea 3 fuentes en paralelo**: stack (npm), Engram (GitHub releases), skills (commit pins en upstreams.json por repo único).
+   - **Multiselect**: ofrece marcar lo actualizable (stack, Engram, skills por repo con upstream movido).
+   - **Stack**: detecta clon git o instalación global; ofrece `git pull + pnpm install + pnpm build` o `pnpm add -g jorgex-stack@latest` con confirmación.
+   - **Engram** (D7 reforzado): 
+     * Detecta si el proceso está en ejecución (bloquea en Windows) y advierte.
+     * Ofrece **backup de la DB** (`~/.engram/engram.db`) a `~/.jorgex-stack/` ANTES de actualizar el binario.
+     * Usa **canal nativo** replicado: brew → `go install` → URL de releases.
+     * La DB y las memorias **jamás** se tocan; solo el binario se puede actualizar con confirmación explícita.
+   - **Skills**: 
+     * Descarga upstream a temporal y **muestra diff SIEMPRE** (obligatorio antes de aplicar).
+     * Las skills `modified: true` alertan y exigen doble confirmación (los cambios locales se sobreescriben con backup automático).
+     * Reemplaza la copia vendorizada y re-pined el commit en upstreams.json.
+   - **Backup automático** de `~/.jorgex-stack/manifest.json` antes de cualquier cambio.
+   - **Verificación post-update**: detecta engram actualizado y reporta la nueva versión.
+
+3. **Con `--yes` o sin TTY**: se comporta como `--check` (solo informe).
 
 ### 7.4 MCPs
 

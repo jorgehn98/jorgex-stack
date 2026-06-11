@@ -15,7 +15,9 @@ node dist/cli.js install    # interactivo: elige runtimes y confirma
 node dist/cli.js models     # picker de modelos por runtime y tier (strong/standard/cheap)
 node dist/cli.js sync       # re-aplica la config (idempotente; limpia huérfanos)
 node dist/cli.js doctor     # verifica que todo está sano (Engram, drift, hooks, keys)
-node dist/cli.js update     # comprueba releases de Engram, del stack y skills vendorizadas
+node dist/cli.js update     # interactivo: scan stack/Engram/skills, multiselect, diff/confirm
+                             # Con --check: solo informe sin cambios
+                             # Con --yes: modo batch (solo informe)
 node dist/cli.js restore    # restaura un backup
 node dist/cli.js uninstall  # desinstala lo nuestro y conserva lo del usuario (Engram intacto)
 ```
@@ -23,6 +25,19 @@ node dist/cli.js uninstall  # desinstala lo nuestro y conserva lo del usuario (E
 Publicado en npm será `pnpm dlx jorgex-stack <comando>`.
 
 Todo comando soporta `--dry-run`, `--yes` y `--target-dir <dir>` (pruebas sin tocar la config real). Las escrituras llevan backup automático y verificación de idempotencia; el merge en configs de usuario es quirúrgico (secciones marcadas en markdown, upsert en JSON/TOML) — lo tuyo no se toca jamás.
+
+### Update: flujo interactivo
+
+`update` gestiona tres fuentes:
+
+1. **Stack** (jorgex-stack): detecta si es clon git o instalación global, oferece actualización con confirmación.
+2. **Engram** (binario): detecta la versión instalada, ofrece actualización con **canal nativo** (brew → `go install` → URL releases). Advierte si el proceso está en ejecución (bloquea en Windows). **Backup automático de la DB antes de actualizar**. La base de datos y las memorias jamás se tocan.
+3. **Skills vendorizadas**: detecta cambios en los upstream registrados en `upstreams.json`, descarga el upstream a temporal, **muestra diff obligatorio** y solicita confirmación. Las skills con cambios locales (`modified: true`) alertan y exigen doble confirmación.
+
+Uso:
+- `update --check`: scan de versiones sin aplicar cambios.
+- `update` (TTY, sin `--yes`): multiselect interactivo con diffs visibles y confirmaciones paso a paso.
+- `update --yes` o sin TTY: se comporta como `--check` (solo informe).
 
 ## Estado
 
