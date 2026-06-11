@@ -6,6 +6,10 @@ import { createBackup, listBackups } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 import { writeText } from "../src/lib/fsx.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
+import { codexAdapter } from "../src/adapters/codex.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
+import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { stackRoot } from "../src/lib/paths.js";
 
 let tmp: string;
 
@@ -38,6 +42,43 @@ describe("backup: dedup de snapshots idénticos", () => {
     const second = createBackup([file], "t", root)!;
     expect(second.id).not.toBe(first.id);
     expect(listBackups(root)).toHaveLength(2);
+  });
+});
+
+describe("permisos por defecto: solo si el usuario no los tiene", () => {
+  const makeCtx = (id: "opencode" | "codex") => ({
+    stackDir: stackRoot(),
+    configDir: tmp,
+    engramBin: null,
+    models: DEFAULT_MODEL_MAP[id]!,
+    secrets: {},
+    warnings: [],
+  });
+  const mcp = () => loadCanonicalMcp(stackRoot());
+
+  it("opencode: los añade si faltan, respeta los existentes", () => {
+    const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
+    const fresh = JSON.parse((action as { content: string }).content);
+    expect(fresh.permission.bash["rm *"]).toBe("ask");
+
+    writeText(path.join(tmp, "opencode.json"), JSON.stringify({ permission: { edit: "deny" } }));
+    const [action2] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
+    const existing = JSON.parse((action2 as { content: string }).content);
+    expect(existing.permission).toEqual({ edit: "deny" });
+  });
+
+  it("codex: añade approval_policy/sandbox_mode si faltan, respeta los existentes", () => {
+    const [action] = codexAdapter.planMainConfig(mcp(), makeCtx("codex"));
+    const fresh = (action as { content: string }).content;
+    expect(fresh).toContain('approval_policy = "on-request"');
+    expect(fresh).toContain('sandbox_mode = "workspace-write"');
+
+    writeText(path.join(tmp, "config.toml"), 'approval_policy = "never"\n');
+    const [action2] = codexAdapter.planMainConfig(mcp(), makeCtx("codex"));
+    const existing = (action2 as { content: string }).content;
+    expect(existing).toContain('approval_policy = "never"');
+    expect(existing).not.toContain('approval_policy = "on-request"');
+    expect(existing).toContain('sandbox_mode = "workspace-write"'); // esta sí faltaba
   });
 });
 

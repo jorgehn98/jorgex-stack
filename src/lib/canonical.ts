@@ -87,3 +87,16 @@ export function loadCanonicalMcp(stackDir: string): CanonicalMcp {
 export function loadCanonicalHooks(stackDir: string): CanonicalHooks {
   return JSON.parse(fs.readFileSync(path.join(stackDir, "hooks", "hooks.json"), "utf8")) as CanonicalHooks;
 }
+
+/**
+ * Permisos por defecto por runtime (stack/config/defaults.json). Cada adapter
+ * escribe su bloque SOLO si el usuario aún no tiene esa clave: nunca pisa ni
+ * re-impone una config de permisos existente.
+ */
+export function loadCanonicalDefaults(stackDir: string): Record<string, Record<string, unknown>> {
+  const file = path.join(stackDir, "config", "defaults.json");
+  if (!fs.existsSync(file)) return {};
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, Record<string, unknown>>;
+  delete parsed["$comment"];
+  return parsed;
+}

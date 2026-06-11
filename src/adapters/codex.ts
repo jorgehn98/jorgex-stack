@@ -4,6 +4,7 @@ import type { Adapter, FileAction, InstallContext } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
+import { loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertTomlSection } from "../lib/filemerge.js";
@@ -160,6 +161,16 @@ export const codexAdapter: Adapter = {
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "config.toml");
     let content = readTextIfExists(file);
+
+    // Permisos por defecto (claves top-level): solo si el usuario no las
+    // tiene — una config existente no se toca ni se re-impone jamás. Se
+    // anteponen al inicio del archivo, donde siempre son top-level.
+    const defaults = loadCanonicalDefaults(ctx.stackDir)["codex"] ?? {};
+    for (const [key, value] of Object.entries(defaults)) {
+      if (content !== null && new RegExp(`^\\s*${key}\\s*=`, "m").test(content)) continue;
+      const line = `${key} = ${tomlString(String(value))}\n`;
+      content = content === null ? line : line + content;
+    }
 
     for (const [name, server] of Object.entries(canonical.servers)) {
       const section = `mcp_servers.${name}`;

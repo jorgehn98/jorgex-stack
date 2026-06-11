@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext } from "./types.js";
+import { loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
@@ -131,7 +132,15 @@ export const claudeCodeAdapter: Adapter = {
 
     // El formato canónico ES el de Claude Code: upsert directo en settings.json.
     const settingsFile = path.join(ctx.configDir, "settings.json");
-    const content = upsertNativeHooks(readTextIfExists(settingsFile), canonical, scriptsDir);
+    let content = upsertNativeHooks(readTextIfExists(settingsFile), canonical, scriptsDir);
+    // Permisos por defecto: solo si el usuario no tiene ya la clave —
+    // una config de permisos existente no se toca ni se re-impone jamás.
+    const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
+    if (defaults?.["permissions"] !== undefined) {
+      content = upsertJson(content, (root) => {
+        if (!("permissions" in root)) root["permissions"] = defaults["permissions"];
+      });
+    }
     actions.push({ kind: "write", target: settingsFile, content });
 
     const scriptsSource = path.join(ctx.stackDir, "scripts");

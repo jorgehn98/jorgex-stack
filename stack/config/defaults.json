@@ -1,0 +1,37 @@
+{
+  "$comment": "Permisos por defecto del stack: casi todo permitido, lo destructivo pregunta o se bloquea. REGLA DE ORO: cada bloque se escribe SOLO si el usuario aún no tiene esa clave en su config — si ya la tiene (suya o ajustada después), el sync no la toca jamás. Quitar o editar estos valores tras el install es seguro: pasan a ser config del usuario.",
+  "opencode": {
+    "permission": {
+      "edit": "allow",
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "lsp": "allow",
+      "webfetch": "allow",
+      "websearch": "allow",
+      "bash": {
+        "*": "allow",
+        "rm *": "ask",
+        "del *": "ask",
+        "rmdir *": "ask",
+        "git push --force*": "ask",
+        "format *": "deny",
+        "mkfs *": "deny",
+        "dd *": "deny",
+        "shred *": "deny"
+      }
+    }
+  },
+  "claude-code": {
+    "permissions": {
+      "allow": ["Bash", "Edit", "Write", "WebFetch", "WebSearch"],
+      "ask": ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
+      "deny": ["Bash(format:*)", "Bash(mkfs:*)", "Bash(dd:*)", "Bash(shred:*)", "Read(./.env)", "Read(./.env.*)"]
+    }
+  },
+  "codex": {
+    "approval_policy": "on-request",
+    "sandbox_mode": "workspace-write"
+  }
+}

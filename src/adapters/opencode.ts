@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext } from "./types.js";
+import { loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
@@ -154,6 +155,13 @@ export const opencodeAdapter: Adapter = {
 
     const content = upsertJson(readTextIfExists(file), (root) => {
       root["$schema"] ??= "https://opencode.ai/config.json";
+
+      // Permisos por defecto: solo si el usuario no tiene ya la clave —
+      // una config de permisos existente no se toca ni se re-impone jamás.
+      const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
+      if (defaults?.["permission"] !== undefined && !("permission" in root)) {
+        root["permission"] = defaults["permission"];
+      }
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
