@@ -121,7 +121,8 @@ Every piece of information about a piece of work has exactly ONE home — never 
 
 - Local commits are allowed when the work is coherent and reasonably verified.
 - Commit per task or per bounded group of tasks — small, separate commits whose history maps to the work; never everything in one giant commit.
-- Never push directly to production branches (main/master or the repo's protected/release branches). Pushing a work branch or a worktree branch is fine without asking.
+- Never push code or behavior changes directly to production branches (main/master or the repo's protected/release branches): those always go through a work branch + PR. Pushing a work branch or a worktree branch is fine without asking.
+- Exception: TRIVIAL changes — docs, typos, content removal, config text with no behavior or code-logic impact — may be committed and pushed directly to the production branch. When in doubt about whether a change is trivial, it is not: use a PR.
 - Creating a pull request is fine without asking.
 - Merging a PR ALWAYS requires an explicit user request — no exceptions, in any flow.
 - Before commit or push, review `git status`, `git diff`, and `git log --oneline -10`.
