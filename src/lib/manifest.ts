@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { RuntimeId } from "../adapters/types.js";
-import { dataDir } from "./paths.js";
-import { readTextIfExists, writeText } from "./fsx.js";
+import { dataDir, HOME } from "./paths.js";
+import { isContainedIn, readTextIfExists, writeText } from "./fsx.js";
 
 /**
  * Manifest de instalación (~/.jorgex-stack/manifest.json): registra qué
@@ -56,10 +56,13 @@ export function removeRuntimeManifest(id: RuntimeId, file = manifestFile()): voi
 /**
  * Huérfanos: archivos owned de una instalación previa que ya no son target de
  * ningún plan actual (de ningún runtime instalado). Nunca propone engram.ts
- * (D7) y solo devuelve archivos que existen.
+ * (D7) y solo devuelve archivos que existen DENTRO de root: el manifest es
+ * estado local editable y no puede dirigir borrados fuera de esa frontera.
  */
-export function findOrphans(prevOwned: string[], currentTargets: ReadonlySet<string>): string[] {
+export function findOrphans(prevOwned: string[], currentTargets: ReadonlySet<string>, root = HOME): string[] {
   return prevOwned
     .map((f) => path.resolve(f))
-    .filter((f) => !currentTargets.has(f) && path.basename(f) !== "engram.ts" && fs.existsSync(f));
+    .filter(
+      (f) => !currentTargets.has(f) && path.basename(f) !== "engram.ts" && isContainedIn(f, root) && fs.existsSync(f),
+    );
 }

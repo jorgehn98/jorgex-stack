@@ -1,22 +1,18 @@
 import path from "node:path";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
 import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, collectAllCurrentTargets, diffPlan, makeContext } from "./install.js";
-import { detectEngram } from "./lib/detect.js";
+import { detectEngram, runDetectedBin } from "./lib/detect.js";
 import { readTextIfExists } from "./lib/fsx.js";
 import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { HOME } from "./lib/paths.js";
 
 export function engramVersion(bin: string): string | null {
-  try {
-    const out = execSync(`"${bin}" --version`, { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"] });
-    return /(\d+\.\d+\.\d+)/.exec(out)?.[1] ?? out.trim().split("\n")[0] ?? null;
-  } catch {
-    return null;
-  }
+  const out = runDetectedBin(bin, ["--version"], 5_000);
+  if (out === null) return null;
+  return /(\d+\.\d+\.\d+)/.exec(out)?.[1] ?? out.trim().split("\n")[0] ?? null;
 }
 
 /** Dónde mirar la key de context7 en la config de cada runtime. */

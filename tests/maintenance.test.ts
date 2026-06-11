@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createBackup, listBackups } from "../src/lib/backup.js";
+import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
-import { writeText } from "../src/lib/fsx.js";
+import { isContainedIn, writeText } from "../src/lib/fsx.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
@@ -129,14 +129,43 @@ describe("manifest de instalación", () => {
     expect(readManifest(corrupt).runtimes).toEqual({});
   });
 
-  it("findOrphans: solo archivos existentes fuera del plan actual, nunca engram.ts", () => {
-    const stale = path.join(tmp, "skills", "old-skill", "SKILL.md");
-    const kept = path.join(tmp, "skills", "current", "SKILL.md");
-    const engram = path.join(tmp, "plugins", "engram.ts");
-    for (const f of [stale, kept, engram]) writeText(f, "x");
+  it("findOrphans: solo archivos existentes fuera del plan actual, nunca engram.ts ni fuera del root", () => {
+    const root = path.join(tmp, "home");
+    const stale = path.join(root, "skills", "old-skill", "SKILL.md");
+    const kept = path.join(root, "skills", "current", "SKILL.md");
+    const engram = path.join(root, "plugins", "engram.ts");
+    const foreign = path.join(tmp, "fuera-del-root.md"); // existe, pero un manifest manipulado no puede borrarlo
+    for (const f of [stale, kept, engram, foreign]) writeText(f, "x");
 
     const current = new Set([path.resolve(kept)]);
-    const orphans = findOrphans([stale, kept, engram, path.join(tmp, "ya-borrado.md")], current);
+    const orphans = findOrphans([stale, kept, engram, foreign, path.join(root, "ya-borrado.md")], current, root);
     expect(orphans).toEqual([path.resolve(stale)]);
+  });
+});
+
+describe("contención de rutas (manifest/backup manipulados)", () => {
+  it("isContainedIn: dentro sí; el propio root, hermanos y traversal no", () => {
+    const root = path.join(tmp, "home");
+    expect(isContainedIn(path.join(root, "a", "b.txt"), root)).toBe(true);
+    expect(isContainedIn(root, root)).toBe(false);
+    expect(isContainedIn(path.join(tmp, "otro", "c.txt"), root)).toBe(false);
+    expect(isContainedIn(path.join(root, "..", "evil.txt"), root)).toBe(false);
+  });
+
+  it("restoreBackup no escribe fuera de la frontera", () => {
+    const boundary = path.join(tmp, "home");
+    const inside = path.join(boundary, "config.json");
+    const outside = path.join(tmp, "fuera", "config.json");
+    writeText(inside, "a");
+    writeText(outside, "b");
+
+    const root = path.join(tmp, "backups");
+    const info = createBackup([inside, outside], "t", root)!;
+    fs.rmSync(inside);
+    fs.rmSync(outside);
+
+    expect(restoreBackup(info.id, root, boundary)).toBe(1);
+    expect(fs.existsSync(inside)).toBe(true);
+    expect(fs.existsSync(outside)).toBe(false);
   });
 });

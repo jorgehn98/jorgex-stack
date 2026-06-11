@@ -96,8 +96,7 @@ JorgeX Stack/
 │   ├── lib/
 │   │   ├── filemerge.ts         # merge por marcadores (md) + upsert JSON/JSONC/TOML
 │   │   ├── backup.ts            # snapshot tar.gz con retención + restore
-│   │   ├── detect.ts            # qué runtimes hay instalados (binario en PATH + dir config)
-│   │   └── download.ts          # GitHub releases con verificación SHA256 (fail-closed)
+│   │   └── detect.ts            # qué runtimes hay instalados (binario en PATH + dir config)
 │   └── …
 └── tests/                       # unit (filemerge, adapters) + paridad entre runtimes
 ```

@@ -48,6 +48,12 @@ export function copyFile(source: string, target: string): void {
   renameInto(tmp, target);
 }
 
+/** true si child queda estrictamente dentro de root (child === root no cuenta). */
+export function isContainedIn(child: string, root: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(child));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
 /** Borra hacia arriba los directorios que hayan quedado vacíos, sin salir de root. */
 export function pruneEmptyDirs(file: string, root: string): void {
   let dir = path.dirname(file);

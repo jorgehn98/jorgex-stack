@@ -1,8 +1,7 @@
 import path from "node:path";
-import { execSync } from "node:child_process";
 import * as p from "@clack/prompts";
 import type { RuntimeId, Tier } from "./adapters/types.js";
-import { detectClaudeCode, detectCodex, detectOpenCode } from "./lib/detect.js";
+import { detectClaudeCode, detectCodex, detectOpenCode, runDetectedBin } from "./lib/detect.js";
 import { loadCanonicalAgents } from "./lib/canonical.js";
 import {
   ensureModelMapFile,
@@ -35,16 +34,13 @@ const CANCEL = Symbol("cancel");
 
 /** Lista en vivo de modelos conectados en OpenCode (PRD §6.1 / D6). */
 function opencodeLiveModels(binPath: string): string[] | null {
-  try {
-    const out = execSync(`"${binPath}" models`, { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
-    const models = out
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l !== "" && l.includes("/"));
-    return models.length > 0 ? models : null;
-  } catch {
-    return null;
-  }
+  const out = runDetectedBin(binPath, ["models"], 20_000);
+  if (out === null) return null;
+  const models = out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && l.includes("/"));
+  return models.length > 0 ? models : null;
 }
 
 /** Subagentes canónicos agrupados por tier. El primary (orchestrator) nunca lleva modelo. */

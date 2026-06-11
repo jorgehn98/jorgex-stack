@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync, statSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
 import { HOME } from "./paths.js";
 import type { RuntimeId } from "../adapters/types.js";
 
@@ -24,6 +25,28 @@ export function lookPath(cmd: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Ejecuta un binario detectado con args fijos y devuelve su stdout, o null.
+ * Argv directo sin shell: una ruta con metacaracteres nunca se interpreta.
+ * Los shims .cmd/.bat de npm/pnpm solo corren vía cmd.exe — ahí la ruta se
+ * valida antes de interpolarla (los args de los callers son literales).
+ */
+export function runDetectedBin(bin: string, args: string[], timeoutMs: number): string | null {
+  try {
+    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(bin)) {
+      if (/[&|<>^%!"]/.test(bin)) return null;
+      return execSync(`"${bin}" ${args.join(" ")}`, {
+        encoding: "utf8",
+        timeout: timeoutMs,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return execFileSync(bin, args, { encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
+  } catch {
+    return null;
+  }
 }
 
 export function detectOpenCode(): RuntimeDetection {

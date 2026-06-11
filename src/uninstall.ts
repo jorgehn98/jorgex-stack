@@ -5,7 +5,7 @@ import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, makeContext } from "./install.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
-import { pruneEmptyDirs, writeText } from "./lib/fsx.js";
+import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 
@@ -88,11 +88,15 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     // anteriores instalaron y el plan actual ya no genera).
     const usingRealConfig = opts.targetDir === undefined;
     const prevOwned = usingRealConfig ? (readManifest().runtimes[id]?.owned ?? []) : [];
+    // En instalación real los targets pueden vivir fuera del configDir
+    // (~/.agents/skills): borrado y poda se anclan a HOME. Nada fuera de esa
+    // frontera se borra, aunque el manifest (estado local editable) lo liste.
+    const pruneRoot = usingRealConfig ? HOME : path.dirname(configDir);
     const planTargets = [
       ...new Set([...buildPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
     ].filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
     const deleteTargets = planTargets.filter(
-      (t) => !retained.has(t) && !(ctx.preserveEngram && path.basename(t) === "engram.ts"),
+      (t) => !retained.has(t) && !(ctx.preserveEngram && path.basename(t) === "engram.ts") && isContainedIn(t, pruneRoot),
     );
     const sharedKept = planTargets.length - deleteTargets.length;
 
@@ -108,9 +112,6 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     );
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
-    // En instalación real los targets pueden vivir fuera del configDir
-    // (~/.agents/skills): la poda de dirs vacíos se ancla a HOME.
-    const pruneRoot = usingRealConfig ? HOME : path.dirname(configDir);
     for (const target of deleteTargets) {
       fs.rmSync(target, { force: true });
       pruneEmptyDirs(target, pruneRoot);

@@ -21,7 +21,7 @@ src/
   cli.ts      → entrypoint: install | sync | models | update | doctor | restore | uninstall
   adapters/   → uno por runtime: declara DÓNDE (rutas) y CÓMO (estrategias/formatos)
   components/ → uno por componente: QUÉ se instala, agnóstico del runtime
-  lib/        → filemerge (marcadores/upserts), backup, detect, download (SHA256 fail-closed)
+  lib/        → filemerge (marcadores/upserts), backup, detect, manifest, model-map
 upstreams.json → terceros gestionados por `update` (engram, skills open-source) con fuente y versión
 ```
 

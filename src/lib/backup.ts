@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { dataDir } from "./paths.js";
-import { ensureDir, writeText, readTextIfExists } from "./fsx.js";
+import { dataDir, HOME } from "./paths.js";
+import { ensureDir, isContainedIn, writeText, readTextIfExists } from "./fsx.js";
 
 const KEEP_BACKUPS = 10;
 
@@ -77,12 +77,15 @@ export function listBackups(root = backupsRoot()): BackupInfo[] {
 }
 
 /** Restaura un backup por id. Devuelve cuántos archivos se restauraron. */
-export function restoreBackup(id: string, root = backupsRoot()): number {
+export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME): number {
   const info = listBackups(root).find((b) => b.id === id);
   if (!info) throw new Error(`Backup no encontrado: ${id}`);
   let restored = 0;
   for (const { original, stored } of info.files) {
     if (!fs.existsSync(stored)) continue;
+    // El manifest del backup es estado local editable: nunca puede dirigir
+    // una escritura fuera de la frontera (HOME en uso real).
+    if (!isContainedIn(original, boundary)) continue;
     ensureDir(path.dirname(original));
     fs.copyFileSync(stored, original);
     restored++;

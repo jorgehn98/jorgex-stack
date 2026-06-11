@@ -11,7 +11,11 @@
   "skills": {
     "agent-browser": { "source": "github:vercel-labs/agent-browser" },
     "ai-sdk": { "source": "github:vercel/ai" },
-    "deploy-to-vercel": { "source": "github:vercel-labs/agent-skills", "version": "3.0.0" },
+    "deploy-to-vercel": {
+      "source": "github:vercel-labs/agent-skills",
+      "version": "3.0.0",
+      "note": "por diseño empaqueta el proyecto entero (tarball) y lo sube a un endpoint de Vercel para desplegarlo; excluye .env/.env.*/.git/node_modules"
+    },
     "diagnose": { "source": "github:mattpocock/skills", "modified": true },
     "find-skills": { "source": "github:vercel-labs/skills" },
     "graphify": { "source": "github:safishamsi/graphify", "version": "0.7.16" },
