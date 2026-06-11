@@ -75,14 +75,22 @@ export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
         if (p.isCancel(choice)) return cancelled();
         runtimeMap[tier] = { ...current, model: choice };
       } else {
-        // Codex: "default" usa el modelo vigente del CLI (se actualiza solo).
+        // Codex: con plan ChatGPT el modelo lo marca la cuenta — la palanca
+        // real es el reasoning effort por tier (mismo enfoque que gentle-ai).
+        // "default" usa el modelo vigente del CLI (se actualiza solo).
+        const effort = await p.select({
+          message: `${det.name} · tier ${tier} (${TIER_HINT[tier]}) — reasoning effort`,
+          options: ["low", "medium", "high", "xhigh"].map((v) => ({ value: v, label: v })),
+          initialValue: current.variant ?? "medium",
+        });
+        if (p.isCancel(effort)) return cancelled();
         const choice = await p.text({
-          message: `${det.name} · tier ${tier} (${TIER_HINT[tier]}) — "default" o un ID de modelo OpenAI`,
+          message: `${det.name} · tier ${tier} — modelo: "default" (el del CLI, recomendado) o un ID concreto de OpenAI`,
           initialValue: current.model,
           validate: (v) => (!v || v.trim() === "" ? 'Vacío no — usa "default" o un ID.' : undefined),
         });
         if (p.isCancel(choice)) return cancelled();
-        runtimeMap[tier] = { ...current, model: choice.trim() };
+        runtimeMap[tier] = { model: choice.trim(), variant: effort };
       }
     }
     map[det.id] = runtimeMap;
