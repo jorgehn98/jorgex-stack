@@ -107,6 +107,34 @@ describe("diffSkillDirs: detecta added / modified / deleted", () => {
     const diff = diffSkillDirs(up, local);
     expect(diff.added).toEqual(["a.md", "z.md"]);
   });
+
+  it("CRLF vs LF mismo contenido → no aparece como modified (falso positivo)", () => {
+    const up = path.join(tmp, "upstream");
+    const local = path.join(tmp, "local");
+    // upstream con LF (como llegan los tarballs de GitHub)
+    fs.mkdirSync(up, { recursive: true });
+    fs.writeFileSync(path.join(up, "SKILL.md"), "# skill\nline two\n");
+    // local con CRLF (como los deja git con core.autocrlf=true en Windows)
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(path.join(local, "SKILL.md"), "# skill\r\nline two\r\n");
+
+    const diff = diffSkillDirs(up, local);
+    expect(diff.modified).toEqual([]);
+    expect(diff.added).toEqual([]);
+    expect(diff.deleted).toEqual([]);
+  });
+
+  it("contenido realmente distinto (no solo line endings) → modified", () => {
+    const up = path.join(tmp, "upstream");
+    const local = path.join(tmp, "local");
+    fs.mkdirSync(up, { recursive: true });
+    fs.writeFileSync(path.join(up, "SKILL.md"), "# skill v2\r\nline two\r\n");
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(path.join(local, "SKILL.md"), "# skill v1\r\nline two\r\n");
+
+    const diff = diffSkillDirs(up, local);
+    expect(diff.modified).toEqual(["SKILL.md"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

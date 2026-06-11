@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { listFilesRecursive, sameFileContent, copyFile, ensureDir, writeText } from "./fsx.js";
+import { listFilesRecursive, copyFile, ensureDir, writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { stackRoot } from "./paths.js";
 
@@ -15,9 +15,29 @@ export interface SkillDiff {
 }
 
 /**
+ * Devuelve true si dos archivos son equivalentes ignorando diferencias de line endings
+ * (CRLF vs LF). Compara primero byte a byte para evitar lecturas innecesarias; si
+ * difieren, normaliza \r\n → \n en ambos y vuelve a comparar. Esto evita que en
+ * Windows (core.autocrlf=true) los tarballs LF de GitHub aparezcan como modificados
+ * respecto al working tree CRLF.
+ * Nota: los archivos binarios también se cubren correctamente: si son byte-iguales →
+ * same; si difieren, la normalización no altera bytes no-textuales y el resultado
+ * seguirá siendo "distinto".
+ */
+function sameTextContentNormalized(a: string, b: string): boolean {
+  const ba = fs.readFileSync(a);
+  const bb = fs.readFileSync(b);
+  if (ba.equals(bb)) return true;
+  const sa = ba.toString("utf8").replace(/\r\n/g, "\n");
+  const sb = bb.toString("utf8").replace(/\r\n/g, "\n");
+  return sa === sb;
+}
+
+/**
  * Compara recursivamente upstreamDir vs localDir y devuelve las rutas relativas
- * agrupadas por estado. Usa comparación binaria (sameFileContent) para evitar
- * falsos positivos por line endings u encoding.
+ * agrupadas por estado. La comparación normaliza line endings (CRLF/LF) para
+ * evitar falsos positivos en Windows donde el working tree puede estar en CRLF
+ * y los tarballs descargados de GitHub llegan en LF.
  */
 export function diffSkillDirs(upstreamDir: string, localDir: string): SkillDiff {
   const upstreamFiles = new Set(
@@ -34,7 +54,7 @@ export function diffSkillDirs(upstreamDir: string, localDir: string): SkillDiff 
   for (const rel of upstreamFiles) {
     if (!localFiles.has(rel)) {
       added.push(rel);
-    } else if (!sameFileContent(path.join(upstreamDir, rel), path.join(localDir, rel))) {
+    } else if (!sameTextContentNormalized(path.join(upstreamDir, rel), path.join(localDir, rel))) {
       modified.push(rel);
     }
   }
