@@ -6,7 +6,21 @@ import * as p from "@clack/prompts";
 import { detectEngram, lookPath, runDetectedBin } from "./lib/detect.js";
 import { stackRoot, dataDir, HOME } from "./lib/paths.js";
 import { engramVersion } from "./doctor.js";
-import { latestGithubRelease, latestGithubCommit, downloadRepoTarball } from "./lib/github.js";
+import {
+  latestGithubRelease,
+  latestGithubCommit,
+  downloadRepoTarball,
+  githubRateLimited,
+  ghPresentButTokenFailed,
+  validateExtractedTree,
+} from "./lib/github.js";
+
+/** Aviso de rate limit con el remedio que aplica a ESTA máquina. */
+function rateLimitHint(prefix: string): string {
+  return ghPresentButTokenFailed()
+    ? `${prefix} Tienes gh instalado pero \`gh auth token\` no devolvió credencial (¿sesión caducada?) — prueba \`gh auth login\` o define GH_TOKEN.`
+    : `${prefix} Define GH_TOKEN o inicia sesión en gh CLI.`;
+}
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 
@@ -107,6 +121,9 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
     p.log.info("Skills de terceros: ningún upstream se ha movido respecto a su pin.");
   }
 
+  if (githubRateLimited()) {
+    p.log.warn(rateLimitHint("GitHub limitó algunas consultas (rate limit sin token)."));
+  }
   p.outro("Check completado.");
   return 0;
 }
@@ -190,35 +207,50 @@ function updateStackGlobal(): void {
 /**
  * Descarga una skill desde su repo upstream al directorio temporal.
  * Devuelve {dir: subdirectorio de la skill, root: raíz mkdtemp} para que el
- * caller pueda limpiar siempre la raíz completa.
+ * caller pueda limpiar siempre la raíz completa, o {error} con el motivo.
  */
-async function downloadSkillToTemp(repo: string, sha: string, skillPath: string | undefined): Promise<{ dir: string; root: string } | null> {
+async function downloadSkillToTemp(
+  repo: string,
+  sha: string,
+  skillPath: string | undefined,
+): Promise<{ dir: string; root: string } | { error: string }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-skill-"));
   try {
-    const ok = await downloadRepoTarball(repo, sha, root);
-    if (!ok) {
+    // La validación de symlinks/escapes se limita al subárbol consumido: los
+    // monorepos llevan symlinks legítimos en zonas que nunca se leen.
+    const result = await downloadRepoTarball(repo, sha, root, skillPath);
+    if (!result.ok) {
       cleanupTmp(root);
-      return null;
+      return { error: result.reason };
     }
     // Si la skill está en un subdirectorio del repo, calculamos la subruta.
     // Guard de contención: rechazar rutas que escapen del tmpDir.
     if (skillPath) {
       const sub = path.resolve(path.join(root, skillPath));
       if (!isContainedIn(sub, root)) {
-        p.log.error(`skill: ruta de subdirectorio "${skillPath}" escapa del tmpDir — omitiendo.`);
         cleanupTmp(root);
-        return null;
+        return { error: `la ruta "${skillPath}" escapa del directorio temporal` };
       }
       if (fs.existsSync(sub)) return { dir: sub, root };
-      // Intento con último segmento del path
+      // Intento con último segmento del path — validarlo aparte: el download
+      // solo validó skillPath y este fallback consume otro subárbol.
       const lastSeg = skillPath.split("/").pop()!;
       const sub2 = path.resolve(path.join(root, lastSeg));
-      if (isContainedIn(sub2, root) && fs.existsSync(sub2)) return { dir: sub2, root };
+      if (isContainedIn(sub2, root) && fs.existsSync(sub2)) {
+        if (!validateExtractedTree(sub2)) {
+          cleanupTmp(root);
+          return { error: `el subárbol "${lastSeg}" contiene symlinks o rutas fuera del destino` };
+        }
+        return { dir: sub2, root };
+      }
+      // Sin subdir localizable, diffear contra la raíz del repo sería un diff sin sentido.
+      cleanupTmp(root);
+      return { error: `la ruta "${skillPath}" no existe en el tarball del upstream` };
     }
     return { dir: root, root };
-  } catch {
+  } catch (err) {
     cleanupTmp(root);
-    return null;
+    return { error: err instanceof Error ? err.message : "error desconocido" };
   }
 }
 
@@ -458,6 +490,10 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
 
   spin.stop("Consulta completada.");
 
+  if (githubRateLimited()) {
+    p.log.warn(rateLimitHint("GitHub limitó algunas consultas — los upstreams 'sin conexión' pueden ser eso."));
+  }
+
   // -------------------------------------------------------------------------
   // FASE 2: Construir la lista de items actualizables
   // -------------------------------------------------------------------------
@@ -624,10 +660,10 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     const spin2 = p.spinner();
     spin2.start(`Descargando upstream de ${skillInfo.name}…`);
     const tmpResult = await downloadSkillToTemp(skillInfo.repo, skillInfo.head, skillInfo.skillPath);
-    spin2.stop(tmpResult ? "Descargado." : "Error de descarga.");
+    spin2.stop("error" in tmpResult ? "Error de descarga." : "Descargado.");
 
-    if (!tmpResult) {
-      p.log.error(`skill ${skillInfo.name}: no se pudo descargar el upstream. Omitiendo.`);
+    if ("error" in tmpResult) {
+      p.log.error(`skill ${skillInfo.name}: descarga fallida — ${tmpResult.error}. Omitiendo.`);
       exitCode = 1;
       continue;
     }
