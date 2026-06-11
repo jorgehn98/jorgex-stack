@@ -272,19 +272,40 @@ function pruneEngramDbBackups(): void {
   } catch { /* ignorar */ }
 }
 
+/**
+ * Windows no permite sobrescribir el .exe de un proceso vivo, pero SÍ
+ * renombrarlo (mismo truco que Chrome/rustup): el proceso sigue usando el
+ * archivo rotado y la ruta original queda libre para el binario nuevo.
+ * Limpia rotaciones de updates anteriores ya liberadas (fail-soft: las que
+ * sigan en uso se quedan y caerán en el siguiente update).
+ * Devuelve la ruta rotada, o null si no había binario que rotar.
+ */
+export function rotateLockedBinary(binPath: string): string | null {
+  if (!fs.existsSync(binPath)) return null;
+  const dir = path.dirname(binPath);
+  const base = path.basename(binPath);
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(`${base}.old-`)) {
+        try { fs.rmSync(path.join(dir, entry), { force: true }); } catch { /* aún en uso */ }
+      }
+    }
+  } catch { /* ignorar */ }
+  const rotated = path.join(dir, `${base}.old-${Date.now()}`);
+  fs.renameSync(binPath, rotated);
+  return rotated;
+}
+
 /** Actualiza engram usando el canal nativo replicado (brew → go install → URL releases). */
 async function updateEngram(engramRepo: string, latestVersion: string): Promise<boolean> {
-  // 1. ¿Está ejecutándose engram? Advertir antes de intentar reemplazar el binario.
-  const running = isEngramRunning();
-  if (running === null) {
-    p.log.warn("No se pudo comprobar si engram está en ejecución. En Windows el .exe en uso bloquea el reemplazo — asegúrate de pararlo si ves errores.");
-  } else if (running) {
-    p.log.warn("Engram está en ejecución. En Windows el .exe en uso bloquea el reemplazo.");
-    const stop = await p.confirm({ message: "¿Has parado el proceso engram? (necesario en Windows antes de actualizar)" });
-    if (p.isCancel(stop) || !stop) {
-      p.log.info("Actualización de engram cancelada. Para manualmente: taskkill /IM engram.exe /F");
-      return false;
-    }
+  // 1. Procesos en ejecución: NO hay que parar nada — mismo comportamiento que
+  // el upstream en macOS/Linux (brew reemplaza el binario con procesos vivos;
+  // siguen con la versión antigua hasta reiniciar los clientes). En Windows la
+  // ruta se libera rotando el .exe por rename antes de instalar (canal B).
+  if (isEngramRunning()) {
+    p.log.info(
+      "Engram está en ejecución: los procesos vivos seguirán usando la versión antigua hasta que reinicies los clientes (Claude Code/OpenCode/Codex).",
+    );
   }
 
   // 2. Ofrecer backup de la DB ANTES de actualizar el binario.
@@ -340,6 +361,18 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
   const go = lookPath("go");
   if (go) {
     anyChannelTried = true;
+    // Windows: liberar la ruta del binario en uso ANTES de go install.
+    let rotated: string | null = null;
+    const bin = detectEngram();
+    if (process.platform === "win32" && bin) {
+      try {
+        rotated = rotateLockedBinary(bin);
+      } catch (err) {
+        p.log.warn(
+          `No se pudo rotar el binario en uso: ${err instanceof Error ? err.message : err}. go install puede fallar por bloqueo.`,
+        );
+      }
+    }
     p.log.info(`Actualizando engram con go install (${latestVersion})…`);
     try {
       execFileSync(
@@ -349,6 +382,13 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
       );
       return true;
     } catch (err) {
+      // Si el install falló y dejó la ruta vacía, revertir la rotación.
+      if (rotated && bin && !fs.existsSync(bin)) {
+        try {
+          fs.renameSync(rotated, bin);
+          p.log.info("Rotación revertida — el binario anterior sigue en su sitio.");
+        } catch { /* ignorar */ }
+      }
       p.log.error(`go install falló: ${err instanceof Error ? err.message : err}`);
       return false;
     }
@@ -726,6 +766,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
         } else {
           p.log.warn("Engram actualizado, pero no se pudo verificar la versión — comprueba con engram --version");
         }
+        p.log.info("Reinicia los clientes (Claude Code/OpenCode/Codex) para que sus MCP usen la versión nueva.");
       }
     }
   }

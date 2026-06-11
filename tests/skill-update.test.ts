@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
 import { validateExtractedTree } from "../src/lib/github.js";
-import { buildEligibleSkillUpdates, type SkillQueryResult } from "../src/update.js";
+import { buildEligibleSkillUpdates, rotateLockedBinary, type SkillQueryResult } from "../src/update.js";
 import { writeText } from "../src/lib/fsx.js";
 import { listBackups } from "../src/lib/backup.js";
 
@@ -563,3 +563,38 @@ describe("renderSkillDiff: diff completo en la salida cuando hay diferencias", (
     }
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// rotateLockedBinary: truco de rename para actualizar el .exe en uso (Windows)
+// ---------------------------------------------------------------------------
+
+describe("rotateLockedBinary", () => {
+  it("rota el binario existente y deja la ruta original libre", () => {
+    const bin = path.join(tmp, "engram.exe");
+    fs.writeFileSync(bin, "binario-v1");
+
+    const rotated = rotateLockedBinary(bin);
+    expect(rotated).not.toBeNull();
+    expect(fs.existsSync(bin)).toBe(false);
+    expect(fs.existsSync(rotated!)).toBe(true);
+    expect(fs.readFileSync(rotated!, "utf8")).toBe("binario-v1");
+    expect(path.basename(rotated!)).toMatch(/^engram\.exe\.old-\d+$/);
+  });
+
+  it("devuelve null si el binario no existe", () => {
+    expect(rotateLockedBinary(path.join(tmp, "no-existe.exe"))).toBeNull();
+  });
+
+  it("limpia rotaciones de updates anteriores ya liberadas", () => {
+    const bin = path.join(tmp, "engram.exe");
+    const previa = path.join(tmp, "engram.exe.old-1111111111");
+    fs.writeFileSync(bin, "v2");
+    fs.writeFileSync(previa, "v1");
+
+    const rotated = rotateLockedBinary(bin);
+    expect(fs.existsSync(previa)).toBe(false);
+    expect(fs.existsSync(rotated!)).toBe(true);
+  });
+});
+
