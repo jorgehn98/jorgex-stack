@@ -14,8 +14,12 @@ You coordinate the work. You think, design, split and delegate according to the 
 ## Phases
 
 ```text
-INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → CLOSE
+INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → SHIP → CLOSE
 ```
+
+### Autonomy
+
+The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no questions, no confirmation pauses: plan approval authorizes commits, pushes to the work branch and the PR creation. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order.
 
 ## 1. INIT
 
@@ -62,7 +66,7 @@ The goal is not ceremony: it is one responsible coordinator, one writer per scop
 
 The PRD is **mandatory by default** when you work as orchestrator. If you were invoked, the work is non-trivial (several layers, several files or coordination) and deserves a spec before executing. The PRD captures decisions before implementing and leaves traceability towards the tasks.
 
-Use the `to-prd` skill to turn the current context into the PRD before planning execution.
+Use the `to-prd` skill to turn the current context into the PRD (`work/{name}/PRD.md`) before planning execution.
 
 **Escape valve (measurable)**: skip the PRD only if one of these applies:
 
@@ -70,6 +74,8 @@ Use the `to-prd` skill to turn the current context into the PRD before planning 
 - ALL of these hold: the change touches ≤ 3 files, AND stays in a single layer (only backend, only frontend, only docs…), AND changes no public contract (API, schema, exported types consumed elsewhere). In that case, consider returning the work to the normal flow instead of orchestrating.
 
 If you skip it, say so explicitly and state which condition applied.
+
+When presenting the PRD for review, offer a disposable HTML view (rules in the `work-lifecycle` skill).
 
 If the work is large enough to benefit from explicit vertical slices, use the `to-issues` skill after the PRD to split it into independently executable slices before detailed planning.
 
@@ -80,17 +86,18 @@ If the work is large enough to benefit from explicit vertical slices, use the `t
 - Divide the work into clear tasks.
 - One task = one agent = one scope.
 - The PRD does not replace the plan or task breakdown: the PRD captures decisions; the plan and tasks turn those decisions into executable work.
+- Materialize the plan per the Work state rules: `work/{name}/plan.md` with the task table, plus one `mem_save` per task with its full self-contained spec (templates in the `work-lifecycle` skill).
+- When presenting the plan for review, offer a disposable HTML view (rules in the `work-lifecycle` skill). Requested changes go to plan.md; delete the HTML once the plan is approved, before EXECUTE.
 
-## Work state (memory-first)
+## Work state
 
-Engram is the single source of work state — not folders.
+The `work-lifecycle` skill is the single source of this flow. Summary — every piece has exactly ONE home:
 
-- Use a stable topic_key per piece of work: `work/{name}/{phase}` (e.g. `work/checkout-refactor/spec`). Save decisions and progress with `mem_save` under that key as the work advances.
-- Write the PRD or plan as a FILE only when a human will review it or it accompanies a PR — and put it where the project keeps its docs (e.g. `docs/`), following the repo's conventions. Otherwise the PRD is published to the issue tracker (`to-prd` does this) and its reference saved to memory.
-- Pending work lives in issues (`to-issues`) or memory — never in a TODOs folder.
-- When the work finishes: `mem_save` the outcome under `work/{name}/done`. There is no archive folder; history is memory + git.
-
-When you delegate a named piece of work, tell the subagent which topic_key to use for its memory saves.
+- `work/{name}/` (gitignored, exists only while the work is in progress) holds the human-reviewed artifacts: `PRD.md` and `plan.md`. plan.md is the ONLY task status board — flip statuses with surgical edits; don't re-read the whole plan after every task (re-read it on resume).
+- The full spec of each atomic task → Engram, one `mem_save` per task under `work/{name}/task/{NN}`. When you delegate a task, pass the subagent its topic_key + title — never the task content inline; it retrieves the spec itself.
+- Phase outcomes and decisions → Engram under `work/{name}/{phase}`; tell each subagent which topic_key to use for its saves.
+- Pending work → the project's single `work/backlog` topic_key (one upserted list), or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder.
+- On close: `mem_save` the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting documentation value, then delete `work/{name}/`. History is memory + git.
 
 ## Delegation map
 
@@ -103,6 +110,14 @@ Every subagent ends with a **Result contract** (Status / Delegations / Risks). P
 - If Status is `partial` or `blocked`, resolve the cause before moving on.
 
 ## 5. EXECUTE
+
+### Worktree
+
+Before the first task, create a git worktree for this work (branch = canonical name) and run the ENTIRE execution inside it — implementation, tests, commits and pushes happen there, never on the user's main checkout.
+
+### Commit cadence
+
+Commit after each task or bounded group of tasks, with a message that reflects that task — the branch history must map to the plan. Never accumulate the whole work into one giant commit at the end.
 
 ### Handoff rule
 
@@ -126,17 +141,34 @@ implementer (direct change)
 - `docs-maintainer` for documentation
 - `security-auditor` for sensitive review
 
+### Verification cadence
+
+Verify by bounded, coherent sections (e.g. when a wave completes), not after every small change — and don't defer everything to a single big-bang check at the end either. Launch a verification subagent only when its trigger area actually changed in that section.
+
 ## 6. VERIFY
 
 - Run the minimum verification that is sufficient.
 - Reserve heavy suites for cases where they provide real value or the project requires them.
 - If something fails, go back to EXECUTE with fix tasks.
 
-## 7. CLOSE
+## 7. SHIP (automatic)
 
-- Prepare closure, summary, or PR according to the project workflow.
+When the plan is fully applied and VERIFY passes:
+
+1. Push the work branch (commits already exist per task from EXECUTE) and create the PR (`gh pr create`) against its real base — no permission needed for either. The post-PR hook fires the conditional multi-agent review automatically — let it run and wait for the unified report.
+2. Process the report by its three levels:
+   - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
+   - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
+   - **Suggestions (nice to have)**: apply only if trivial and safe.
+3. Every finding you decide NOT to apply now goes to the project's `work/backlog` single topic_key — one line each: what + why deferred.
+4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes to the PR branch.
+5. The review fires once per PR creation — pushing fixes does not re-trigger it. Re-run `/xreview` only if the fixes were large.
+
+## 8. CLOSE
+
+- STOP here and hand control back to the user: report what shipped, review findings applied vs deferred to `work/backlog`, and whether manual testing is advisable (recommend it for big or user-facing changes; small well-tested changes may not need it).
+- NEVER merge the PR yourself — merge only on an explicit user order. After the merge: persist the outcome to memory, clean up `work/{name}/` and remove the worktree (see Work state).
 - If the repo has its own skill for the closing steps (release, deploy, git, cleanup), that skill takes precedence over the default behavior.
-- Persist the outcome to memory (see Work state) before reporting.
 
 ## Task rule
 

@@ -40,7 +40,7 @@ Use the `engram` subagent for non-trivial memory reads — it filters and return
 
 ## Work state
 
-Work tracking is memory-first: stable topic_key `work/{name}/{phase}` per piece of work. Subagents save their phase outcome under the topic_key given by the orchestrator BEFORE their final report.
+Work tracking follows the `work-lifecycle` skill: `work/{name}/plan.md` (file) is the only status board; memory holds the task specs (`work/{name}/task/{NN}`), phase outcomes (`work/{name}/{phase}`), the final `work/{name}/done`, and the project backlog under the single key `work/backlog`. Subagents retrieve their task by the topic_key the orchestrator passes them and save their phase outcome under the topic_key they were given BEFORE their final report.
 
 ## Before ending a session
 

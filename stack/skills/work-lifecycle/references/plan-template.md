@@ -1,22 +1,18 @@
-# Plan & Task Templates — in-progress folder
+# Plan & Task Templates
 
-Use these structures when creating `work/2-inProgress/[name]/`.
-
-`[name]` is the canonical name shared by the folder and the branch (kebab-case).
+Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and the atomic tasks (Engram observations). `[name]` is the canonical kebab-case name shared by `work/[name]/`, the branch and every topic_key.
 
 ---
 
-## Folder structure
+## `work/[name]/` contents
 
 ```
-work/2-inProgress/[name]/
-├── PRD.md                      # decisions and design
-├── plan.md                     # master index
-└── tasks/
-    ├── 01-[description].md      # atomic task
-    ├── 02-[description].md
-    └── ...
+work/[name]/
+├── PRD.md      # decisions and design (written by the to-prd skill)
+└── plan.md     # master index + task status board
 ```
+
+The full spec of each task is NOT a file: it lives in Engram, one observation per task with topic_key `work/[name]/task/[NN]` (the `[NN]` matches the `#` column of the plan table).
 
 ---
 
@@ -48,28 +44,36 @@ work/2-inProgress/[name]/
 
 ## Tasks
 
-| # | Task | File | Status | Wave | Deps |
-|---|------|------|--------|------|------|
-| 01 | [descriptive name] | `tasks/01-xxx.md` | ⬜ | 1 | — |
-| 02 | [descriptive name] | `tasks/02-xxx.md` | ⬜ | 1 | — |
-| 03 | [descriptive name] | `tasks/03-xxx.md` | ⬜ | 2 | 01 |
-| 04 | [descriptive name] | `tasks/04-xxx.md` | ⬜ | 2 | 01, 02 |
+> Full spec of task NN → Engram topic_key `work/[name]/task/NN`.
+> Status lives ONLY in this table — update it with a surgical edit per task.
+
+| # | Task | One-liner | Status | Wave | Deps |
+|---|------|-----------|--------|------|------|
+| 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
+| 02 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
+| 03 | [descriptive name] | [one-line description] | ⬜ | 2 | 01 |
+| 04 | [descriptive name] | [one-line description] | ⬜ | 2 | 01, 02 |
 
 **Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
 ```
 
 ---
 
-## Task file — Template
+## Task observation — Template (`mem_save` per task)
 
-Each task file is self-contained: a subagent reads it and has all the context needed to work without asking back. Don't write unnecessary information or full code blocks unless needed. In the chosen approach, write only what the subagent needs to understand it perfectly.
+Each task observation is self-contained: a subagent retrieves it by topic_key and has all the context needed to work without asking back. Don't write unnecessary information or full code blocks unless needed. In the context section, write only what the subagent needs to understand it perfectly.
+
+`mem_save` fields:
+
+- **title**: `[name]/task/[NN] — [descriptive task name]`
+- **topic_key**: `work/[name]/task/[NN]`
+- **type**: `architecture`
+- **content**: the markdown below
+
+Status, wave and dependencies live in the plan.md table (single home) — do NOT repeat them here.
 
 ```markdown
-# T[##]: [Descriptive task name]
-
-**Status**: ⬜ Pending
-**Wave**: [number]
-**Dependencies**: [T## or —]
+# T[NN]: [Descriptive task name]
 
 ## Intent
 
@@ -140,6 +144,18 @@ Each task file is self-contained: a subagent reads it and has all the context ne
 
 ---
 
+## Backlog entry — Template (`work/backlog`)
+
+ONE observation per project holds every pending idea (topic_key `work/backlog`, upserted). Each item is just:
+
+```markdown
+- **[short title]** — [one-line description of the idea and its value]
+```
+
+When an item starts, remove it from this list and create its `work/[name]/`.
+
+---
+
 ## Task creation rules
 
 ### Atomicity
@@ -149,8 +165,7 @@ Each task file is self-contained: a subagent reads it and has all the context ne
 ### Structure
 
 - **Natural order**: data layer → generated types → services/hooks → components/UI.
-- **Numbering**: `01`, `02`, `03`... (two digits).
-- **File name**: `[number]-[kebab-description].md` (e.g. `03-user-list-hook.md`).
+- **Numbering**: `01`, `02`, `03`... (two digits) — shared by the plan table row and the topic_key.
 
 ### Context
 
@@ -168,4 +183,3 @@ Each task file is self-contained: a subagent reads it and has all the context ne
 
 - Include the relevant project rules as constraints.
 - If there are no special constraints, say so explicitly.
-```

@@ -86,14 +86,14 @@ docs/
 
 ---
 
-## Work State (memory-first)
+## Work State
 
-Work state, pending items and history live in Engram memory — not in folders.
+Every piece of information about a piece of work has exactly ONE home — never two. The `work-lifecycle` skill is the single source of this flow.
 
-- Track each piece of work in memory with a stable topic_key: `work/{name}/{phase}`.
-- Write a PRD or plan as a FILE only when a human will review it or it accompanies a PR; put it where the project keeps docs (e.g. `docs/`). Otherwise publish via the issue tracker (`to-prd`) and keep the reference in memory.
-- Pending work: issues (`to-issues`) or memory — never a TODOs folder.
-- Finished work: persist the outcome to memory; history is memory + git. No archive folders.
+- In-progress work lives in `work/{name}/` (gitignored): `PRD.md` + `plan.md`. plan.md is the ONLY task status board — update statuses with surgical edits. An empty `work/` means nothing is half-done.
+- Full task specs, phase outcomes and history live in Engram: `work/{name}/task/{NN}`, `work/{name}/{phase}`, `work/{name}/done`. Subagents receive a topic_key + title, never the task content inline.
+- Pending work: the project's single `work/backlog` topic_key (one upserted list — never one key per idea), or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder.
+- On close: save the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting value, then delete `work/{name}/`. History is memory + git — no archive folders.
 
 ---
 
@@ -120,8 +120,10 @@ Work state, pending items and history live in Engram memory — not in folders.
 ## Git
 
 - Local commits are allowed when the work is coherent and reasonably verified.
-- Never push without an explicit user request.
-- Do not create PRs unless asked.
+- Commit per task or per bounded group of tasks — small, separate commits whose history maps to the work; never everything in one giant commit.
+- Never push directly to production branches (main/master or the repo's protected/release branches). Pushing a work branch or a worktree branch is fine without asking.
+- Creating a pull request is fine without asking.
+- Merging a PR ALWAYS requires an explicit user request — no exceptions, in any flow.
 - Before commit or push, review `git status`, `git diff`, and `git log --oneline -10`.
 - Never add AI signatures, `Co-Authored-By`, or agent mentions.
 

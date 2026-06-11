@@ -1,60 +1,79 @@
 ---
 name: work-lifecycle
-description: Single source for how a piece of work is tracked and advances — memory-first via Engram. Use when starting, tracking, resuming or closing a piece of work, or when deciding where a PRD/plan should live.
+description: Single source for how a piece of work is tracked and advances — PRD and plan as files in work/{name}/ while in progress; task specs, phase outcomes and history in Engram memory. Use when starting, tracking, resuming or closing a piece of work, or when deciding where a PRD, plan, task or backlog item should live.
 ---
 
-# Work Lifecycle (memory-first)
+# Work Lifecycle
 
-Work state, pending items and history live in **Engram memory** — not in folders. There is no `work/` directory, no TODOs folder, no archive folder. History is memory + git.
+One rule kills duplication: **every piece of information has exactly ONE home**. Files are for what a human reviews; memory is for what subagents consume and for history. Nothing is ever stored in two places.
 
 ## Identity
 
 Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `checkout-refactor`), shared with the branch if applicable. The name stays the same across its whole life — it is the key to everything else.
 
-## State
+## Where everything lives
 
-Track state with `mem_save` under a stable topic_key per phase:
+| Piece | Single home | Why there |
+|---|---|---|
+| PRD | `work/{name}/PRD.md` | Written once, reviewed by the human |
+| Plan (goal, approach, task board) | `work/{name}/plan.md` | The status board: humans glance at it; statuses flip with surgical edits |
+| Full spec of each atomic task | Engram `work/{name}/task/{NN}` | Only subagents consume it; visible from any worktree |
+| Phase outcomes, decisions, findings | Engram `work/{name}/{phase}` | History — must survive the folder and compactions |
+| Final outcome | Engram `work/{name}/done` | Permanent record of what shipped |
+| Pending / backlog items | Engram `work/backlog` — ONE key per project | All pending ideas in a single upserted list |
 
-```
-work/{name}/spec      → decisions captured before implementing (PRD reference, approach)
-work/{name}/plan      → task breakdown, sequencing, statuses
-work/{name}/{phase}   → outcome of each execution phase (one topic per phase, upserted as it evolves)
-work/{name}/done      → final outcome when the work closes
-```
+`work/` is **scaffolding, not product**: add it to the project's `.gitignore`. It contains ONLY work in progress — an empty `work/` means nothing is half-done. No `1-TODOs/`, no `3-finalized/`, no phase subfolders.
 
-- Same evolving phase → same topic_key (upsert). Different phases must not overwrite each other.
-- When the orchestrator delegates, it passes the subagent the topic_key to use; the subagent saves BEFORE its final report.
+## Starting
 
-## Artifacts (files only when a human reads them)
+1. Pick the canonical name and create `work/{name}/`. If the item came from the backlog, remove it from `work/backlog` in the same step.
+2. Produce the PRD with the `to-prd` skill → `work/{name}/PRD.md`. The human reviews it there.
+3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, success criteria, and the task table — number, title, one-line description, status, wave, deps.
+4. Save the full spec of each atomic task to memory: one `mem_save` per task with topic_key `work/{name}/task/{NN}` (content structure in `references/plan-template.md`).
 
-- **PRD**: produced with the `to-prd` skill, which publishes it to the project's issue tracker. Write it as a FILE only when a human will review it or it accompanies a PR — and then it goes where the project keeps docs (e.g. `docs/`), following repo conventions. Save its reference (issue URL or path) under `work/{name}/spec`.
-- **Plan / tasks**: live in memory or as issues (`to-issues`). Use `references/plan-template.md` for the content structure wherever it lives (memory, issue or file). A plan file is the exception, not the rule.
+## Executing
 
-## Pending work
+- Execution happens inside a git worktree created for the work (branch = canonical name); the user's main checkout stays untouched until merge.
+- Delegation handoff: the subagent receives its **topic_key + task title**, never the task content inline. It retrieves the spec itself (`mem_search` → `mem_get_observation`).
+- The subagent saves its phase outcome under the topic_key the orchestrator gave it (`work/{name}/{phase}`) BEFORE its final report.
+- Task status lives ONLY in the plan.md table: flip it (⬜ → ✅) with a surgical edit when the task closes. Do not mirror statuses into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
 
-Pending or upcoming work = issues in the tracker (`to-issues`) or a memory entry under `work/{name}/spec` with its status noted. Never a TODOs folder.
+## HTML review view (on demand)
+
+When presenting the PRD or the plan for human review on non-trivial work, OFFER a disposable HTML view (e.g. side-by-side approach comparison for the PRD, task table + dependency graph for the plan). Rules:
+
+- Only generate it if the human says yes — never by default.
+- The markdown is the ONLY source of truth: requested changes are applied to `PRD.md`/`plan.md`, and the HTML is regenerated from the updated markdown if another review round is needed. The HTML is never edited as a document and never read by subagents.
+- It lives in `work/{name}/` (e.g. `plan.review.html`, `PRD.review.html`) and is DELETED as soon as its artifact is approved — before execution starts.
+
+## Pending work (backlog)
+
+All pending or future work of a project lives under the SINGLE topic_key `work/backlog` (upsert): one list, each item a short title + one-liner. Never one topic_key per idea, never a TODOs folder. When an item starts, it graduates: remove it from the backlog and create its `work/{name}/`. Review findings deliberately NOT applied also land here, one line each (what + why deferred).
+
+If the project manages work through an issue tracker, issues (`to-issues`) take this role instead — don't keep both.
 
 ## Resuming
 
-To pick up a piece of work (same or another session):
-
-1. `mem_search("work/{name}")` — or `mem_context` if recent.
-2. Read the latest phase saves; continue from the first phase without a saved outcome.
+1. Read `work/{name}/plan.md` — the board says what's done and what's pending.
+2. If detail is needed: `mem_search("work/{name}")` for the latest phase outcomes (or `mem_context` if recent).
+3. Continue from the first task without ✅.
 
 ## Closing
 
 When the work is finalized (e.g. PR created and merged into its target branch):
 
 1. `mem_save` under `work/{name}/done`: outcome, what shipped, anything left pending.
-2. `mem_session_summary` covers the session as usual.
-3. Nothing to move or archive — git has the code, memory has the story.
+2. If the PRD has lasting documentation value, move it to where the project keeps docs (e.g. `docs/`); otherwise its key decisions already live in `done`.
+3. **Delete `work/{name}/`** and remove the work's worktree. Nothing to archive — git has the code, memory has the story.
+4. `mem_session_summary` covers the session as usual.
 
 ## Rules
 
 - One piece of work = one canonical name, stable across its whole life.
 - Don't mix several distinct pieces of work under the same name/topic_key.
-- A piece of work has exactly one current state in memory; advancing it means saving the next phase, not duplicating the previous one.
+- Same evolving phase → same topic_key (upsert). Different phases and different tasks must not overwrite each other.
+- Never persist the same artifact in two homes — no file + memory copies, no hybrid writes.
 
 ## Legacy `work/` folders
 
-If a repo still has the old `work/1-TODOs / 2-inProgress / 3-finalized` structure: respect what exists, don't extend it. When you touch a piece of work living there, migrate its state to memory (one `mem_save` per artifact worth keeping) and continue memory-first.
+If a repo still has the old `work/1-TODOs / 2-inProgress / 3-finalized` structure: respect what exists, don't extend it. When you touch a piece of work living there, migrate it to this flow: pending ideas → one entry each in `work/backlog`; an in-progress folder → `work/{name}/` keeping only PRD.md and plan.md, its tasks to memory; finalized folders → one `mem_save` per piece worth keeping, then delete them with the user's OK.
