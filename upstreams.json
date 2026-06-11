@@ -9,8 +9,16 @@
     }
   },
   "skills": {
-    "agent-browser": { "source": "github:vercel-labs/agent-browser", "path": "skills/agent-browser", "commit": "5185339ca3fdab9848e11b8ec676eecfdec3733f" },
-    "ai-sdk": { "source": "github:vercel/ai", "path": "skills/use-ai-sdk", "commit": "f6fc2fb0b27099f90391700d43f38f23930371da" },
+    "agent-browser": {
+      "source": "github:vercel-labs/agent-browser",
+      "path": "skills/agent-browser",
+      "commit": "5185339ca3fdab9848e11b8ec676eecfdec3733f"
+    },
+    "ai-sdk": {
+      "source": "github:vercel/ai",
+      "path": "skills/use-ai-sdk",
+      "commit": "862c1c8ff3a4ff0f75f1bbaae8a212b1793f9f65"
+    },
     "deploy-to-vercel": {
       "source": "github:vercel-labs/agent-skills",
       "path": "skills/deploy-to-vercel",
@@ -18,18 +26,79 @@
       "commit": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
       "note": "por diseño empaqueta el proyecto entero (tarball) y lo sube a un endpoint de Vercel para desplegarlo; excluye .env/.env.*/.git/node_modules"
     },
-    "diagnose": { "source": "github:mattpocock/skills", "path": "skills/engineering/diagnose", "commit": "694fa30311e02c2639942308513555e61ee84a6f", "modified": true },
-    "find-skills": { "source": "github:vercel-labs/skills", "path": "skills/find-skills", "commit": "be0dd25b4a8665894a56f45ef582cc02ca802c39" },
-    "graphify": { "source": "github:safishamsi/graphify", "kind": "release", "version": "0.7.16", "commit": "cce26730212baab6d92ce5f390ef5aae56268f31" },
-    "mcp-builder": { "source": "github:anthropics/skills", "path": "skills/mcp-builder", "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949", "license": "Apache-2.0" },
-    "obsidian-cli": { "source": "github:kepano/obsidian-skills", "path": "skills/obsidian-cli", "commit": "a1dc48e68138490d522c04cbf5822214c6eb1202" },
-    "obsidian-markdown": { "source": "github:kepano/obsidian-skills", "path": "skills/obsidian-markdown", "commit": "a1dc48e68138490d522c04cbf5822214c6eb1202" },
-    "react-doctor": { "source": "github:millionco/react-doctor", "path": "skills/react-doctor", "commit": "a48fb06ffbe7221655e18529fcc954ecae17a22f" },
-    "skill-creator": { "source": "github:anthropics/skills", "path": "skills/skill-creator", "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949", "license": "Apache-2.0" },
-    "supabase": { "source": "github:supabase/agent-skills", "path": "skills/supabase", "version": "0.1.2", "commit": "1356046015476711a769601079262b5635929427" },
-    "supabase-postgres-best-practices": { "source": "github:supabase/agent-skills", "path": "skills/supabase-postgres-best-practices", "commit": "1356046015476711a769601079262b5635929427", "license": "MIT" },
-    "tdd": { "source": "github:mattpocock/skills", "path": "skills/engineering/tdd", "commit": "694fa30311e02c2639942308513555e61ee84a6f", "modified": true },
-    "to-issues": { "source": "github:mattpocock/skills", "path": "skills/engineering/to-issues", "commit": "694fa30311e02c2639942308513555e61ee84a6f", "modified": true },
-    "to-prd": { "source": "github:mattpocock/skills", "path": "skills/engineering/to-prd", "commit": "694fa30311e02c2639942308513555e61ee84a6f", "modified": true }
+    "diagnose": {
+      "source": "github:mattpocock/skills",
+      "path": "skills/engineering/diagnose",
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "modified": true
+    },
+    "find-skills": {
+      "source": "github:vercel-labs/skills",
+      "path": "skills/find-skills",
+      "commit": "be0dd25b4a8665894a56f45ef582cc02ca802c39"
+    },
+    "graphify": {
+      "source": "github:safishamsi/graphify",
+      "kind": "release",
+      "version": "0.7.16",
+      "commit": "cce26730212baab6d92ce5f390ef5aae56268f31"
+    },
+    "mcp-builder": {
+      "source": "github:anthropics/skills",
+      "path": "skills/mcp-builder",
+      "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
+      "license": "Apache-2.0"
+    },
+    "obsidian-cli": {
+      "source": "github:kepano/obsidian-skills",
+      "path": "skills/obsidian-cli",
+      "commit": "a1dc48e68138490d522c04cbf5822214c6eb1202"
+    },
+    "obsidian-markdown": {
+      "source": "github:kepano/obsidian-skills",
+      "path": "skills/obsidian-markdown",
+      "commit": "a1dc48e68138490d522c04cbf5822214c6eb1202"
+    },
+    "react-doctor": {
+      "source": "github:millionco/react-doctor",
+      "path": "skills/react-doctor",
+      "commit": "a48fb06ffbe7221655e18529fcc954ecae17a22f"
+    },
+    "skill-creator": {
+      "source": "github:anthropics/skills",
+      "path": "skills/skill-creator",
+      "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
+      "license": "Apache-2.0"
+    },
+    "supabase": {
+      "source": "github:supabase/agent-skills",
+      "path": "skills/supabase",
+      "version": "0.1.2",
+      "commit": "1356046015476711a769601079262b5635929427"
+    },
+    "supabase-postgres-best-practices": {
+      "source": "github:supabase/agent-skills",
+      "path": "skills/supabase-postgres-best-practices",
+      "commit": "1356046015476711a769601079262b5635929427",
+      "license": "MIT"
+    },
+    "tdd": {
+      "source": "github:mattpocock/skills",
+      "path": "skills/engineering/tdd",
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "modified": true
+    },
+    "to-issues": {
+      "source": "github:mattpocock/skills",
+      "path": "skills/engineering/to-issues",
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "modified": true
+    },
+    "to-prd": {
+      "source": "github:mattpocock/skills",
+      "path": "skills/engineering/to-prd",
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "modified": true
+    }
   }
 }
