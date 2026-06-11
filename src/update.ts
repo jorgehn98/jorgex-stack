@@ -280,17 +280,25 @@ function pruneEngramDbBackups(): void {
  * sigan en uso se quedan y caerán en el siguiente update).
  * Devuelve la ruta rotada, o null si no había binario que rotar.
  */
-export function rotateLockedBinary(binPath: string): string | null {
+export function rotateLockedBinary(binPath: string, sweepRoot = HOME): string | null {
   if (!fs.existsSync(binPath)) return null;
   const dir = path.dirname(binPath);
   const base = path.basename(binPath);
-  try {
-    for (const entry of fs.readdirSync(dir)) {
-      if (entry.startsWith(`${base}.old-`)) {
-        try { fs.rmSync(path.join(dir, entry), { force: true }); } catch { /* aún en uso */ }
+  // El barrido de rotaciones es lo único destructivo: solo bajo sweepRoot
+  // (HOME en uso real) y solo archivos con el formato exacto de rotación.
+  const escapedBase = base.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+  const oldPattern = new RegExp("^" + escapedBase + "\\.old-\\d+$");
+  // El propio root cuenta como dentro (un binario directamente en HOME es legítimo).
+  const resolvedDir = path.resolve(dir);
+  if (resolvedDir === path.resolve(sweepRoot) || isContainedIn(resolvedDir, sweepRoot)) {
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (oldPattern.test(entry)) {
+          try { fs.rmSync(path.join(dir, entry), { force: true }); } catch { /* aún en uso */ }
+        }
       }
-    }
-  } catch { /* ignorar */ }
+    } catch { /* ignorar */ }
+  }
   const rotated = path.join(dir, `${base}.old-${Date.now()}`);
   fs.renameSync(binPath, rotated);
   return rotated;
@@ -380,14 +388,33 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
         ["install", `github.com/Gentleman-Programming/engram/cmd/engram@v${latestVersion}`],
         { stdio: "inherit" },
       );
-      return true;
-    } catch (err) {
-      // Si el install falló y dejó la ruta vacía, revertir la rotación.
+      // go install escribe en GOBIN: si esa NO era la ruta rotada, el binario
+      // activo quedaría desaparecido tras un install "exitoso" — restaurarlo.
       if (rotated && bin && !fs.existsSync(bin)) {
         try {
           fs.renameSync(rotated, bin);
-          p.log.info("Rotación revertida — el binario anterior sigue en su sitio.");
-        } catch { /* ignorar */ }
+          p.log.warn(
+            `go install instaló en otra ruta (GOBIN distinto); el binario activo en ${bin} se ha restaurado. Comprueba qué engram resuelve tu PATH.`,
+          );
+        } catch {
+          p.log.warn(`go install instaló en otra ruta y no se pudo restaurar ${bin}; tu binario anterior está en ${rotated}.`);
+        }
+      }
+      return true;
+    } catch (err) {
+      if (rotated && bin) {
+        if (!fs.existsSync(bin)) {
+          // Install fallido con la ruta vacía: revertir la rotación.
+          try {
+            fs.renameSync(rotated, bin);
+            p.log.info("Rotación revertida — el binario anterior sigue en su sitio.");
+          } catch {
+            p.log.error(`No se pudo revertir la rotación: tu binario anterior está en ${rotated} — renómbralo a ${bin} a mano.`);
+          }
+        } else {
+          // go install es atómico (temp+rename), pero si dejó algo en la ruta no lo pisamos.
+          p.log.warn(`El install falló pero dejó un binario en ${bin}; tu copia anterior queda en ${rotated}.`);
+        }
       }
       p.log.error(`go install falló: ${err instanceof Error ? err.message : err}`);
       return false;

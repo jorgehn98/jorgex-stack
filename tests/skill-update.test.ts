@@ -586,14 +586,17 @@ describe("rotateLockedBinary", () => {
     expect(rotateLockedBinary(path.join(tmp, "no-existe.exe"))).toBeNull();
   });
 
-  it("limpia rotaciones de updates anteriores ya liberadas", () => {
+  it("limpia rotaciones de updates anteriores ya liberadas (solo formato exacto)", () => {
     const bin = path.join(tmp, "engram.exe");
     const previa = path.join(tmp, "engram.exe.old-1111111111");
+    const ajeno = path.join(tmp, "engram.exe.old-backup-manual");
     fs.writeFileSync(bin, "v2");
     fs.writeFileSync(previa, "v1");
+    fs.writeFileSync(ajeno, "no me borres");
 
-    const rotated = rotateLockedBinary(bin);
+    const rotated = rotateLockedBinary(bin, tmp);
     expect(fs.existsSync(previa)).toBe(false);
+    expect(fs.existsSync(ajeno)).toBe(true); // sufijo no-timestamp: intocable
     expect(fs.existsSync(rotated!)).toBe(true);
   });
 });
