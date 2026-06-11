@@ -14,11 +14,6 @@
       "path": "skills/agent-browser",
       "commit": "5185339ca3fdab9848e11b8ec676eecfdec3733f"
     },
-    "ai-sdk": {
-      "source": "github:vercel/ai",
-      "path": "skills/use-ai-sdk",
-      "commit": "862c1c8ff3a4ff0f75f1bbaae8a212b1793f9f65"
-    },
     "deploy-to-vercel": {
       "source": "github:vercel-labs/agent-skills",
       "path": "skills/deploy-to-vercel",
