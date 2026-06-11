@@ -6,7 +6,7 @@ import { createBackup } from "./backup.js";
 import { stackRoot } from "./paths.js";
 
 // Skills propias (sin upstream) y de tipo release: nunca se reemplazan con esta función.
-const PROTECTED_SKILLS = new Set(["agent-delegation", "work-lifecycle"]);
+export const PROTECTED_SKILLS = new Set(["agent-delegation", "work-lifecycle"]);
 
 export interface SkillDiff {
   added: string[];
@@ -96,13 +96,22 @@ export function renderSkillDiff(upstreamDir: string, localDir: string): string {
  *   del upstream (parcialmente copiados), pero el backup permite recuperar.
  * - upstreams.json se reescribe preservando formato (JSON 2 espacios + salto final)
  *   y el resto de claves intactas.
+ *
+ * @param upstreamsFilePath - Ruta al upstreams.json (por defecto la del proyecto).
+ * @param localSkillsRoot   - Directorio raíz de skills locales (por defecto stack/skills/).
  */
-export function replaceSkill(name: string, upstreamSkillDir: string, newCommit: string): void {
+export function replaceSkill(
+  name: string,
+  upstreamSkillDir: string,
+  newCommit: string,
+  upstreamsFilePath?: string,
+  localSkillsRoot?: string,
+): void {
   if (PROTECTED_SKILLS.has(name)) {
     throw new Error(`La skill "${name}" es propia del stack y no se actualiza desde upstream.`);
   }
 
-  const upstreamsFile = path.join(path.dirname(stackRoot()), "upstreams.json");
+  const upstreamsFile = upstreamsFilePath ?? path.join(path.dirname(stackRoot()), "upstreams.json");
   const raw = fs.readFileSync(upstreamsFile, "utf8");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = JSON.parse(raw) as any;
@@ -115,7 +124,8 @@ export function replaceSkill(name: string, upstreamSkillDir: string, newCommit: 
     throw new Error(`La skill "${name}" es de tipo release y no se actualiza con replaceSkill.`);
   }
 
-  const localSkillDir = path.join(stackRoot(), "skills", name);
+  const skillsRoot = localSkillsRoot ?? path.join(stackRoot(), "skills");
+  const localSkillDir = path.join(skillsRoot, name);
 
   // Backup de la copia local actual (puede no existir si es totalmente nueva).
   const localFiles = listFilesRecursive(localSkillDir);

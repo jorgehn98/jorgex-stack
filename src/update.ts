@@ -289,6 +289,82 @@ interface UpdateItem {
   hint?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Lógica de elegibilidad de skills — función pura exportada para tests
+// ---------------------------------------------------------------------------
+
+/** Entrada por skill tal y como la devuelve la consulta al upstream. */
+export interface SkillQueryResult {
+  name: string;
+  repo: string;
+  info: {
+    source: string;
+    path?: string;
+    kind?: string;
+    version?: string;
+    commit?: string;
+    modified?: boolean;
+  };
+  head: string | null;
+}
+
+/** Una skill elegible para actualizar (upstream se movió y se puede aplicar). */
+export interface EligibleSkillUpdate {
+  name: string;
+  repo: string;
+  head: string;
+  pinned: string;
+  skillPath?: string;
+  modified: boolean;
+}
+
+/**
+ * Calcula qué skills son elegibles para el multiselect a partir de los datos
+ * ya consultados (sin I/O ni red). Reglas:
+ * - kind=release: excluida (informar aparte, no actualizar con replaceSkill).
+ * - Sin pin: excluida (sin referencia para comparar).
+ * - Sin conexión (head=null): excluida.
+ * - head === pinned: al día, no incluir.
+ * - Resto: elegible.
+ * Agrupa por repo para no repetir: el pin y el head los toma del primero
+ * del repo que encuentre; si hay varios skills en el mismo repo, todos usan
+ * el mismo head/pinned.
+ */
+export function buildEligibleSkillUpdates(skills: SkillQueryResult[]): EligibleSkillUpdate[] {
+  const byRepo = new Map<string, { names: string[]; pinned: string; headVal: string | null }>();
+
+  for (const { name, repo, info, head } of skills) {
+    // Excluir kind=release
+    if (info.kind === "release") continue;
+    const existing = byRepo.get(repo);
+    if (!existing) {
+      byRepo.set(repo, { names: [name], pinned: info.commit ?? "", headVal: head });
+    } else {
+      existing.names.push(name);
+    }
+  }
+
+  const result: EligibleSkillUpdate[] = [];
+  for (const [repo, { names, pinned, headVal }] of byRepo) {
+    if (!pinned) continue;
+    if (headVal === null) continue;
+    if (headVal === pinned) continue;
+    // Upstream se movió — agregar cada skill con sus datos individuales
+    for (const name of names) {
+      const skill = skills.find((s) => s.name === name)!;
+      result.push({
+        name,
+        repo,
+        head: headVal,
+        pinned,
+        skillPath: skill.info.path,
+        modified: skill.info.modified ?? false,
+      });
+    }
+  }
+  return result;
+}
+
 /**
  * Flujo interactivo de update. Escanea las 3 fuentes, ofrece multiselect
  * y aplica lo marcado. Respeta --yes y no-TTY: en esos casos, solo informe.
