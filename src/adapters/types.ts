@@ -26,7 +26,6 @@ export interface InstallContext {
   /** Binario Engram detectado (D7: siempre el existente). null = no instalado. */
   engramBin: string | null;
   models: RuntimeModelMap;
-  secrets: Record<string, string | undefined>;
   /** Avisos no fatales que el pipeline muestra al final. */
   warnings: string[];
   /**

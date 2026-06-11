@@ -179,10 +179,10 @@ export const opencodeAdapter: Adapter = {
           const headers: Record<string, string> = {};
           for (const [key, raw] of Object.entries(server.headers ?? {})) {
             const envRef = /^\$\{(\w+)\}$/.exec(raw);
-            const fromSecrets = envRef ? (ctx.secrets[envRef[1]!] ?? "") : raw;
-            // D5: el valor que el usuario ya tenga configurado manda; el env
-            // var solo rellena cuando está vacío.
-            headers[key] = previous?.headers?.[key] || fromSecrets || "";
+            // D5: el valor que el usuario ya tenga configurado manda. Sin
+            // valor previo se escribe la REFERENCIA nativa de OpenCode
+            // ({env:VAR}): el secreto vive en el entorno, nunca en el archivo.
+            headers[key] = previous?.headers?.[key] || (envRef ? `{env:${envRef[1]!}}` : raw);
           }
           mcp[name] = {
             type: "remote",

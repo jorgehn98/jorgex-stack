@@ -45,7 +45,6 @@ export function makeContext(adapter: Adapter, configDir: string): InstallContext
     configDir,
     engramBin: detectEngram(),
     models,
-    secrets: { CONTEXT7_API_KEY: process.env.CONTEXT7_API_KEY },
     warnings: [],
   };
 }
@@ -147,8 +146,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       configDir,
       engramBin,
       models,
-      secrets: { CONTEXT7_API_KEY: process.env.CONTEXT7_API_KEY },
-      warnings: [],
+        warnings: [],
     };
 
     let plan = buildPlan(adapter, ctx);

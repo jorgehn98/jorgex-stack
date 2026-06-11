@@ -195,22 +195,26 @@ export const codexAdapter: Adapter = {
         content = upsertTomlSection(content, section, `command = ${tomlString(command)}\nargs = [${args}]`);
       } else {
         const previousSection = readTomlSection(content, section);
-        const headerPairs = Object.entries(server.headers ?? {}).map(([key, raw]) => {
+        // D5: si el usuario tiene un valor LITERAL configurado, se preserva
+        // (http_headers). En cualquier otro caso se escribe env_http_headers:
+        // el header sale de una variable de entorno, nunca del archivo.
+        const prevUsesEnvHeaders = previousSection?.includes("env_http_headers") ?? false;
+        const literalPairs: string[] = [];
+        const refPairs: string[] = [];
+        for (const [key, raw] of Object.entries(server.headers ?? {})) {
           const envRef = /^\$\{(\w+)\}$/.exec(raw);
-          const fromSecrets = envRef ? (ctx.secrets[envRef[1]!] ?? "") : raw;
-          // D5: el valor que el usuario ya tenga configurado manda; el env var
-          // solo rellena cuando está vacío. Key escapada y anclada para no
-          // casar dentro de otra clave (p.ej. OTHER_API_KEY).
+          // Key escapada y anclada para no casar dentro de otra clave.
           const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           const previousValue =
-            previousSection !== null
+            !prevUsesEnvHeaders && previousSection !== null
               ? new RegExp(`(?:^|[{,]\\s*)"?${escaped}"?\\s*=\\s*"([^"]*)"`, "m").exec(previousSection)?.[1]
               : undefined;
-          const value = previousValue || fromSecrets || "";
-          return `${tomlString(key)} = ${tomlString(value)}`;
-        });
+          if (previousValue) literalPairs.push(`${tomlString(key)} = ${tomlString(previousValue)}`);
+          else refPairs.push(`${tomlString(key)} = ${tomlString(envRef ? envRef[1]! : raw)}`);
+        }
         const body = [`url = ${tomlString(server.url!)}`];
-        if (headerPairs.length > 0) body.push(`http_headers = { ${headerPairs.join(", ")} }`);
+        if (literalPairs.length > 0) body.push(`http_headers = { ${literalPairs.join(", ")} }`);
+        if (refPairs.length > 0) body.push(`env_http_headers = { ${refPairs.join(", ")} }`);
         content = upsertTomlSection(content, section, body.join("\n"));
       }
     }

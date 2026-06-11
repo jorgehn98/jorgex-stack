@@ -184,10 +184,11 @@ export const claudeCodeAdapter: Adapter = {
           const headers: Record<string, string> = {};
           for (const [key, raw] of Object.entries(server.headers ?? {})) {
             const envRef = /^\$\{(\w+)\}$/.exec(raw);
-            const fromSecrets = envRef ? (ctx.secrets[envRef[1]!] ?? "") : raw;
-            // D5: el valor que el usuario ya tenga configurado manda; el env
-            // var solo rellena cuando está vacío.
-            headers[key] = previous?.headers?.[key] || fromSecrets || "";
+            // D5: el valor del usuario se preserva. Sin valor previo queda
+            // vacío: ~/.claude.json no tiene sintaxis de referencia a env
+            // vars, y escribir el secreto literal en el archivo va contra la
+            // política del stack — el usuario lo conecta cuando quiera.
+            headers[key] = previous?.headers?.[key] || (envRef ? "" : raw);
           }
           servers[name] = {
             type: "http",
