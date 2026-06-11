@@ -25,12 +25,28 @@ function tomlMultiline(value: string): string {
 }
 
 /**
- * Engram integrado oficialmente en Codex: plugin engram en config.toml o
- * `engram setup codex` previo (deja engram-instructions.md con el protocolo).
+ * Plugin de marketplace engram ACTIVO: provee las MCP tools, así que registrar
+ * el MCP además duplicaría. Un plugin presente pero `enabled = false` NO
+ * cuenta: en ese caso el MCP manual es la integración real y debe conservarse.
  */
-function hasEngramIntegration(configDir: string): boolean {
+function hasActiveEngramPlugin(configDir: string): boolean {
   const config = readTextIfExists(path.join(configDir, "config.toml"));
-  return /\[plugins\."engram@/.test(config ?? "") || fs.existsSync(path.join(configDir, "engram-instructions.md"));
+  if (config === null) return false;
+  const match = /\[plugins\."engram@[^"]*"\]([^[]*)/.exec(config);
+  return match !== null && !/enabled\s*=\s*false/.test(match[1]!);
+}
+
+/**
+ * Protocolo de memoria ya presente por otra vía: plugin activo, o un
+ * engram-instructions.md de `engram setup codex` (en configDir o referenciado
+ * como model_instructions_file en config.toml). En ese caso no se inyecta la
+ * sección engram-protocol en AGENTS.md para no duplicarlo.
+ */
+function hasEngramProtocol(configDir: string): boolean {
+  if (hasActiveEngramPlugin(configDir)) return true;
+  if (fs.existsSync(path.join(configDir, "engram-instructions.md"))) return true;
+  const config = readTextIfExists(path.join(configDir, "config.toml"));
+  return config !== null && /engram-instructions\.md/.test(config);
 }
 
 export const codexAdapter: Adapter = {
@@ -39,7 +55,7 @@ export const codexAdapter: Adapter = {
   detect: detectCodex,
 
   injectEngramProtocol(ctx) {
-    return !hasEngramIntegration(ctx.configDir);
+    return !hasEngramProtocol(ctx.configDir);
   },
 
   paths(configDir) {
@@ -148,9 +164,9 @@ export const codexAdapter: Adapter = {
     for (const [name, server] of Object.entries(canonical.servers)) {
       const section = `mcp_servers.${name}`;
       if (server.transport === "stdio") {
-        // Con la integración oficial presente, el MCP duplicaría las tools.
+        // Con el plugin de marketplace ACTIVO, el MCP duplicaría las tools.
         // Si un sync anterior (pre-plugin) lo registró, se retira.
-        if (server.command === "{{ENGRAM_BIN}}" && hasEngramIntegration(ctx.configDir)) {
+        if (server.command === "{{ENGRAM_BIN}}" && hasActiveEngramPlugin(ctx.configDir)) {
           if (content !== null) content = removeTomlSection(content, section);
           ctx.warnings.push(
             "Codex: Engram ya está integrado vía plugin de marketplace — no se registra el MCP para no duplicar las tools de memoria.",
