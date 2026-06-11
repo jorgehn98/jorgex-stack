@@ -198,7 +198,7 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     // Local preexistente (distinto contenido)
     writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local v1\n");
 
-    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", upstreamsFile, skillsRoot, backupsRoot);
+    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", { upstreamsFilePath: upstreamsFile, localSkillsRoot: skillsRoot, backupsRoot });
 
     const localSkillDir = path.join(skillsRoot, "my-skill");
     expect(fs.readFileSync(path.join(localSkillDir, "SKILL.md"), "utf8")).toBe("# upstream v2\n");
@@ -214,7 +214,7 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     writeText(path.join(upstreamSkillDir, "SKILL.md"), "# upstream v2\n");
     writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local v1\n");
 
-    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", upstreamsFile, skillsRoot, backupsRoot);
+    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", { upstreamsFilePath: upstreamsFile, localSkillsRoot: skillsRoot, backupsRoot });
 
     // El backup se crea en backupsRoot (dir temporal); verificamos que el dir
     // local fue reemplazado y que el backup existe en la raíz temporal.
@@ -239,7 +239,7 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# v1\n");
 
     const newCommit = "fffeeedddcccbbb000111222333444555666777888";
-    replaceSkill("my-skill", upstreamSkillDir, newCommit, upstreamsFile, skillsRoot, backupsRoot);
+    replaceSkill("my-skill", upstreamSkillDir, newCommit, { upstreamsFilePath: upstreamsFile, localSkillsRoot: skillsRoot, backupsRoot });
 
     const updated = JSON.parse(fs.readFileSync(upstreamsFile, "utf8"));
     // Pin actualizado
@@ -258,7 +258,7 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     writeText(path.join(upstreamSkillDir, "SKILL.md"), "# v\n");
 
     expect(() =>
-      replaceSkill("nonexistent", upstreamSkillDir, "abc", upstreamsFile, skillsRoot),
+      replaceSkill("nonexistent", upstreamSkillDir, "abc", { upstreamsFilePath: upstreamsFile, localSkillsRoot: skillsRoot }),
     ).toThrow(/no encontrada en upstreams\.json/);
   });
 });
@@ -302,7 +302,7 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
     writeText(path.join(upstreamSkillDir, "SKILL.md"), "# v\n");
 
     expect(() =>
-      replaceSkill("graphify", upstreamSkillDir, "newcommit", upstreamsFile, skillsRoot),
+      replaceSkill("graphify", upstreamSkillDir, "newcommit", { upstreamsFilePath: upstreamsFile, localSkillsRoot: skillsRoot }),
     ).toThrow(/tipo release/);
   });
 });
@@ -317,7 +317,7 @@ describe("buildEligibleSkillUpdates: lógica de elegibilidad del picker", () => 
     repo: string,
     commit: string | undefined,
     head: string | null,
-    opts?: { kind?: string; modified?: boolean; path?: string },
+    opts?: { kind?: "binary" | "release"; modified?: boolean; path?: string },
   ): SkillQueryResult {
     return {
       name,
@@ -511,7 +511,7 @@ describe("replaceSkill: rechaza symlinks en el upstream", () => {
       }
 
       expect(() =>
-        replaceSkill("my-skill", upstreamSkillDir, "newcommit", upstreamsFile, skillsRoot),
+        replaceSkill("my-skill", upstreamSkillDir, "newcommit", { upstreamsFilePath: upstreamsFile, localSkillsRoot: skillsRoot }),
       ).toThrow(/[Ss]ymlink/);
 
       // staging no debe quedar en disco; local tampoco (nunca se creó)

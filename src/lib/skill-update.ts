@@ -8,6 +8,17 @@ import { stackRoot } from "./paths.js";
 // Skills propias (sin upstream) y de tipo release: nunca se reemplazan con esta función.
 export const PROTECTED_SKILLS = new Set(["agent-delegation", "work-lifecycle"]);
 
+/** Forma canónica de un skill en upstreams.json (compartida con update.ts y replaceSkill). */
+export interface SkillUpstreamInfo {
+  source: string;
+  path?: string;
+  /** "binary" | "release" — tipado como union para detectar typos en upstreams.json. */
+  kind?: "binary" | "release";
+  version?: string;
+  commit?: string;
+  modified?: boolean;
+}
+
 export interface SkillDiff {
   added: string[];
   modified: string[];
@@ -129,6 +140,16 @@ export function renderSkillDiff(upstreamDir: string, localDir: string): string {
   }
 }
 
+/** Opciones opcionales de replaceSkill (para tests y callers especializados). */
+export interface ReplaceSkillOpts {
+  /** Ruta al upstreams.json (por defecto la del proyecto). */
+  upstreamsFilePath?: string;
+  /** Directorio raíz de skills locales (por defecto stack/skills/). */
+  localSkillsRoot?: string;
+  /** Raíz de backups (para tests; por defecto el dataDir real). */
+  backupsRoot?: string;
+}
+
 /**
  * Reemplaza la copia local de una skill por el contenido del upstreamSkillDir
  * y actualiza el pin `commit` en upstreams.json.
@@ -141,27 +162,23 @@ export function renderSkillDiff(upstreamDir: string, localDir: string): string {
  *   para evitar ventanas de estado parcial en caso de error.
  * - upstreams.json se reescribe atómicamente (writeText = temp+rename).
  *   El resto de claves del JSON se preservan intactas.
- *
- * @param upstreamsFilePath - Ruta al upstreams.json (por defecto la del proyecto).
- * @param localSkillsRoot   - Directorio raíz de skills locales (por defecto stack/skills/).
- * @param backupsRoot       - Raíz de backups (para tests; por defecto el dataDir real).
  */
 export function replaceSkill(
   name: string,
   upstreamSkillDir: string,
   newCommit: string,
-  upstreamsFilePath?: string,
-  localSkillsRoot?: string,
-  backupsRoot?: string,
+  opts?: ReplaceSkillOpts,
 ): void {
+  const upstreamsFilePath = opts?.upstreamsFilePath;
+  const localSkillsRoot = opts?.localSkillsRoot;
+  const backupsRoot = opts?.backupsRoot;
   if (PROTECTED_SKILLS.has(name)) {
     throw new Error(`La skill "${name}" es propia del stack y no se actualiza desde upstream.`);
   }
 
   const upstreamsFile = upstreamsFilePath ?? path.join(path.dirname(stackRoot()), "upstreams.json");
   const raw = fs.readFileSync(upstreamsFile, "utf8");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = JSON.parse(raw) as any;
+  const data = JSON.parse(raw) as { skills?: Record<string, SkillUpstreamInfo & { commit?: string }> };
 
   const skillEntry = data?.skills?.[name];
   if (!skillEntry) {

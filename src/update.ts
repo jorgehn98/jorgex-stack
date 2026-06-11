@@ -7,22 +7,12 @@ import { detectEngram, lookPath, runDetectedBin } from "./lib/detect.js";
 import { stackRoot, dataDir, HOME } from "./lib/paths.js";
 import { engramVersion } from "./doctor.js";
 import { latestGithubRelease, latestGithubCommit, downloadRepoTarball } from "./lib/github.js";
-import { diffSkillDirs, renderSkillDiff, replaceSkill } from "./lib/skill-update.js";
+import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 
 interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
-  skills: Record<
-    string,
-    {
-      source: string;
-      path?: string;
-      kind?: string;
-      version?: string;
-      commit?: string;
-      modified?: boolean;
-    }
-  >;
+  skills: Record<string, SkillUpstreamInfo>;
 }
 
 function loadUpstreams(): Upstreams {
@@ -361,14 +351,7 @@ interface UpdateItem {
 export interface SkillQueryResult {
   name: string;
   repo: string;
-  info: {
-    source: string;
-    path?: string;
-    kind?: string;
-    version?: string;
-    commit?: string;
-    modified?: boolean;
-  };
+  info: SkillUpstreamInfo;
   head: string | null;
 }
 
@@ -519,60 +502,46 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     }
   }
 
-  // Skills (solo kind != release y no protegidas)
-  interface SkillUpdateInfo {
-    name: string;
-    repo: string;
-    head: string;
-    pinned: string;
-    skillPath?: string;
-    modified: boolean;
-  }
-  const skillUpdates: SkillUpdateInfo[] = [];
+  // Skills: primero loguear las no-elegibles (pasada de I/O separada), luego calcular elegibles con la función pura.
+  const typedSkillHeads = skillHeads as SkillQueryResult[];
 
-  // Agrupar por repo para no repetir
-  const byRepo = new Map<string, { names: string[]; pinned: string; headVal: string | null }>();
-  for (const item of skillHeads as { name: string; repo: string; info: typeof upstreams.skills[string]; head: string | null }[]) {
-    const { name, repo, info, head } = item;
-    // Excluir kind=release (solo informe)
+  // Pasada de logging: kind=release, sin pin, sin conexión, al día (agrupado por repo).
+  const loggedRepos = new Map<string, { names: string[]; pinned: string; headVal: string | null; anyRelease: boolean }>();
+  for (const { name, repo, info, head } of typedSkillHeads) {
     if (info.kind === "release") {
+      // Informar solo si el upstream se movió respecto al pin
       if (head !== null && info.commit && head !== info.commit) {
         p.log.warn(`${name} (release): upstream se movió. Revisa: github.com/${repo}/releases`);
       }
       continue;
     }
-    const existing = byRepo.get(repo);
+    const existing = loggedRepos.get(repo);
     if (!existing) {
-      byRepo.set(repo, { names: [name], pinned: info.commit ?? "", headVal: head });
+      loggedRepos.set(repo, { names: [name], pinned: info.commit ?? "", headVal: head, anyRelease: false });
     } else {
       existing.names.push(name);
     }
   }
-
-  for (const [repo, { names, pinned, headVal }] of byRepo) {
+  for (const [repo, { names, pinned, headVal }] of loggedRepos) {
     if (!pinned) {
       p.log.warn(`${repo}: sin pin — no se puede actualizar. Skills: ${names.join(", ")}`);
-      continue;
-    }
-    if (headVal === null) {
+    } else if (headVal === null) {
       p.log.info(`${repo}: sin conexión al upstream. Skills: ${names.join(", ")}`);
-      continue;
-    }
-    if (headVal === pinned) {
+    } else if (headVal === pinned) {
       p.log.success(`${repo}: al día (pin ${pinned.slice(0, 7)}). Skills: ${names.join(", ")}`);
-      continue;
     }
-    // Upstream se movió — agregar cada skill al picker
-    for (const name of names) {
-      const info = upstreams.skills[name]!;
-      const modifiedWarning = info.modified ? " ⚠ modificada localmente" : "";
-      skillUpdates.push({ name, repo, head: headVal, pinned, skillPath: info.path, modified: info.modified ?? false });
-      updateItems.push({
-        value: `skill:${name}`,
-        label: `skill ${name}: ${pinned.slice(0, 7)} → ${headVal.slice(0, 7)}${modifiedWarning}`,
-        hint: `github.com/${repo}/compare/${pinned.slice(0, 7)}...${headVal.slice(0, 7)}`,
-      });
-    }
+    // Si el upstream se movió (elegible), no se logea aquí — aparece en el picker.
+  }
+
+  // Calcular elegibles con la función pura (sin I/O).
+  const skillUpdates = buildEligibleSkillUpdates(typedSkillHeads);
+  for (const skillInfo of skillUpdates) {
+    const modifiedWarning = skillInfo.modified ? " ⚠ modificada localmente" : "";
+    updateItems.push({
+      value: `skill:${skillInfo.name}`,
+      label: `skill ${skillInfo.name}: ${skillInfo.pinned.slice(0, 7)} → ${skillInfo.head.slice(0, 7)}${modifiedWarning}`,
+      hint: `github.com/${skillInfo.repo}/compare/${skillInfo.pinned.slice(0, 7)}...${skillInfo.head.slice(0, 7)}`,
+    });
   }
 
   // Nada que actualizar
@@ -689,7 +658,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     }
 
     try {
-      replaceSkill(skillInfo.name, tmpDir, skillInfo.head);
+      replaceSkill(skillInfo.name, tmpDir, skillInfo.head, {});
       p.log.success(`skill ${skillInfo.name}: actualizada y re-pineada a ${skillInfo.head.slice(0, 7)}.`);
       appliedUpdates = true;
     } catch (err) {
