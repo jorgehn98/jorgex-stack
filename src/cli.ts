@@ -3,7 +3,7 @@ import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, runInstall } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
-import { runUpdateCheck } from "./update.js";
+import { runUpdateCheck, runInteractiveUpdate } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 
@@ -150,19 +150,22 @@ async function main(): Promise<void> {
       return;
     }
     case "update": {
-      if (!flags.check) {
-        // update = sync + informe de upstreams.
-        const runtimes = await resolveRuntimes(flags);
-        if (runtimes === null) return;
-        if (runtimes.length > 0) {
-          const code = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: true });
-          if (code !== 0) {
-            process.exitCode = code;
-            return;
-          }
+      if (flags.check) {
+        // --check: solo informar (comportamiento anterior, byte-compatible).
+        process.exitCode = await runUpdateCheck(VERSION);
+        return;
+      }
+      // Sin --check: sync primero, luego flujo interactivo de update.
+      const runtimes = await resolveRuntimes(flags);
+      if (runtimes === null) return;
+      if (runtimes.length > 0) {
+        const code = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: true });
+        if (code !== 0) {
+          process.exitCode = code;
+          return;
         }
       }
-      process.exitCode = await runUpdateCheck(VERSION);
+      process.exitCode = await runInteractiveUpdate(VERSION, flags.yes);
       return;
     }
     case "models": {
