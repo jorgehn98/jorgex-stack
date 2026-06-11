@@ -11,8 +11,16 @@ import {
   latestGithubCommit,
   downloadRepoTarball,
   githubRateLimited,
+  ghPresentButTokenFailed,
   validateExtractedTree,
 } from "./lib/github.js";
+
+/** Aviso de rate limit con el remedio que aplica a ESTA máquina. */
+function rateLimitHint(prefix: string): string {
+  return ghPresentButTokenFailed()
+    ? `${prefix} Tienes gh instalado pero \`gh auth token\` no devolvió credencial (¿sesión caducada?) — prueba \`gh auth login\` o define GH_TOKEN.`
+    : `${prefix} Define GH_TOKEN o inicia sesión en gh CLI.`;
+}
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 
@@ -114,9 +122,7 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
   }
 
   if (githubRateLimited()) {
-    p.log.warn(
-      "GitHub limitó algunas consultas (rate limit sin token). Define GH_TOKEN o inicia sesión en gh CLI y reintenta.",
-    );
+    p.log.warn(rateLimitHint("GitHub limitó algunas consultas (rate limit sin token)."));
   }
   p.outro("Check completado.");
   return 0;
@@ -485,9 +491,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
   spin.stop("Consulta completada.");
 
   if (githubRateLimited()) {
-    p.log.warn(
-      "GitHub limitó algunas consultas (rate limit sin token) — los upstreams 'sin conexión' pueden ser eso. Define GH_TOKEN o inicia sesión en gh CLI.",
-    );
+    p.log.warn(rateLimitHint("GitHub limitó algunas consultas — los upstreams 'sin conexión' pueden ser eso."));
   }
 
   // -------------------------------------------------------------------------

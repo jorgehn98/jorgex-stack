@@ -162,6 +162,10 @@ export interface ReplaceSkillOpts {
  *   para evitar ventanas de estado parcial en caso de error.
  * - upstreams.json se reescribe atómicamente (writeText = temp+rename).
  *   El resto de claves del JSON se preservan intactas.
+ *
+ * INVARIANTE de seguridad: esta función es el ÚNICO punto que copia contenido
+ * desde un tarball descargado al repo (rechaza symlinks por lstat). Cualquier
+ * caller nuevo que lea de tmpDir/root debe re-validar con validateExtractedTree.
  */
 export function replaceSkill(
   name: string,

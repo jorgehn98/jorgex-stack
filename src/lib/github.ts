@@ -8,6 +8,7 @@ import { isContainedIn } from "./fsx.js";
 import { lookPath, runDetectedBin } from "./detect.js";
 
 let cachedToken: string | null | undefined;
+let ghTokenFailed = false;
 
 /**
  * Token de GitHub para subir el rate limit (sin auth: 60/h + límite de ráfaga
@@ -20,8 +21,19 @@ function githubToken(): string | null {
   const env = process.env["GH_TOKEN"]?.trim() || process.env["GITHUB_TOKEN"]?.trim();
   if (env) return (cachedToken = env);
   const gh = lookPath("gh");
-  const fromGh = gh ? runDetectedBin(gh, ["auth", "token"], 5_000)?.trim() : null;
-  return (cachedToken = fromGh || null);
+  if (gh) {
+    const fromGh = runDetectedBin(gh, ["auth", "token"], 5_000)?.trim();
+    if (fromGh) return (cachedToken = fromGh);
+    // gh está pero no dio token (sesión caducada, sin login, timeout): el
+    // hint de rate limit debe distinguirlo de "no hay gh".
+    ghTokenFailed = true;
+  }
+  return (cachedToken = null);
+}
+
+/** true si gh CLI está instalado pero `gh auth token` no devolvió credencial. */
+export function ghPresentButTokenFailed(): boolean {
+  return ghTokenFailed;
 }
 
 function authHeaders(): Record<string, string> {
@@ -159,7 +171,7 @@ export async function downloadRepoTarball(
         `HTTP ${res.status}${res.status === 403 || res.status === 429 ? " — rate limit; define GH_TOKEN o inicia sesión en gh" : ""}`,
       );
     }
-    if (!res.body) return fail("respuesta sin cuerpo");
+    if (!res.body) return fail("respuesta HTTP sin cuerpo");
 
     // Streaming a disco — nunca el tarball entero en memoria.
     await pipeline(
@@ -174,13 +186,18 @@ export async function downloadRepoTarball(
     // Extrae con tar nativo (strip-components elimina el prefijo repo-sha/).
     try {
       execFileSync("tar", ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
-    } catch {
-      return fail("tar no disponible o falló la extracción");
+    } catch (err) {
+      // "tar ausente" y "tarball corrupto" exigen acciones opuestas: dar la causa.
+      const e = err as { stderr?: Buffer | string; message?: string };
+      const detail = (e.stderr?.toString().trim() || e.message || "").split("\n")[0];
+      return fail(detail ? `tar falló: ${detail}` : "tar no disponible o falló la extracción");
     }
 
     // Validación post-extracción: symlinks y rutas que escapen del árbol consumido.
-    const validateRoot = validateSubdir ? path.resolve(destDir, validateSubdir) : destDir;
-    if (validateSubdir && !isContainedIn(validateRoot, path.resolve(destDir))) {
+    const resolvedDest = path.resolve(destDir);
+    const validateRoot = validateSubdir ? path.resolve(resolvedDest, validateSubdir) : resolvedDest;
+    // "." o "" resuelven al propio destDir → validar el árbol completo, no es escape.
+    if (validateRoot !== resolvedDest && !isContainedIn(validateRoot, resolvedDest)) {
       return fail(`la ruta de validación "${validateSubdir}" escapa del destino`);
     }
     if (fs.existsSync(validateRoot) && !validateExtractedTree(validateRoot)) {

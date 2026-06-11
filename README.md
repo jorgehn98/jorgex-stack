@@ -39,6 +39,8 @@ Uso:
 - `update` (TTY, sin `--yes`): multiselect interactivo con diffs visibles y confirmaciones paso a paso.
 - `update --yes` o sin TTY: se comporta como `--check` (solo informe).
 
+Autenticación con GitHub: las consultas usan `GH_TOKEN`/`GITHUB_TOKEN` del entorno o, si no existen, el token de tu sesión de `gh` CLI (`gh auth token` — solo lectura local, nunca se loguea ni persiste). Sin token, GitHub limita las consultas en paralelo y algunos upstreams pueden salir como "sin conexión".
+
 ## Estado
 
 **v0.6.0 — CLI completo y migración real ejecutada (F6).** El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
