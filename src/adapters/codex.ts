@@ -143,7 +143,7 @@ export const codexAdapter: Adapter = {
     // Mismo formato que Claude Code; el tool de shell en Codex se llama "shell".
     const hooksFile = path.join(ctx.configDir, "hooks.json");
     const content = upsertNativeHooks(readTextIfExists(hooksFile), canonical, scriptsDir, (matcher) =>
-      matcher === "Bash" ? "shell" : matcher,
+      matcher.split("|").some((p) => p.trim() === "Bash") ? "shell" : matcher,
     );
     actions.push({ kind: "write", target: hooksFile, content });
     ctx.warnings.push(

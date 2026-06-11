@@ -49,6 +49,8 @@ Never run the full suite — it's too heavy and slow. Run only the specific test
 - Don't implement production code.
 - If code is missing to reach GREEN, don't write it: report it as a delegation in your Result contract.
 - Use the project's runner and utilities; don't invent a testing stack if the repo already has one.
+- If you extract logic into a pure function to make it testable, production must consume that function in the SAME change — a tested copy that the shipped path doesn't run is false coverage. If wiring it in exceeds your lane, flag it as a delegation to `implementer` and say so in Risks.
+- Tests must never write outside temp directories: no real HOME, no real config dirs, no project data dirs. If the code under test defaults to a real path, inject the path (fixture/param) instead of letting the default run.
 
 ## Output format
 

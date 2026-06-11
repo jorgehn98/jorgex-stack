@@ -53,7 +53,7 @@ describe("removeNativeHooks", () => {
     hooks: {
       PostToolUse: [
         {
-          matcher: "Bash",
+          matcher: "Bash|PowerShell",
           hooks: [{ type: "command", command: 'node "{{SCRIPTS_DIR}}/post-pr-review.cjs"', timeout: 30 }],
         },
       ],
@@ -81,6 +81,31 @@ describe("removeNativeHooks", () => {
     const installed = upsertNativeHooks(null, CANONICAL, "C:/x/scripts");
     const removed = removeNativeHooks(installed, CANONICAL)!;
     expect(JSON.parse(removed)).toEqual({});
+  });
+
+  it("upsert migra el matcher en sitio sin duplicar cuando cambia de Bash a Bash|PowerShell", () => {
+    // Simula settings del usuario con la entrada vieja (matcher "Bash").
+    const CANONICAL_OLD: CanonicalHooks = {
+      hooks: {
+        PostToolUse: [
+          {
+            matcher: "Bash",
+            hooks: [{ type: "command", command: 'node "{{SCRIPTS_DIR}}/post-pr-review.cjs"', timeout: 30 }],
+          },
+        ],
+      },
+    };
+    const withOld = upsertNativeHooks(null, CANONICAL_OLD, "C:/x/scripts");
+
+    // Ahora el canónico es "Bash|PowerShell": el upsert debe REEMPLAZAR la entrada.
+    const migrated = upsertNativeHooks(withOld, CANONICAL, "C:/x/scripts");
+    const parsed = JSON.parse(migrated);
+    const entries: Array<{ matcher?: string }> = parsed.hooks?.PostToolUse ?? [];
+
+    // Sigue siendo UNA sola entrada (no duplicada).
+    expect(entries).toHaveLength(1);
+    // El matcher queda actualizado al canónico nuevo.
+    expect(entries[0]!.matcher).toBe("Bash|PowerShell");
   });
 });
 

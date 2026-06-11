@@ -115,6 +115,8 @@ Every subagent ends with a **Result contract** (Status / Delegations / Risks). P
 
 Before the first task, create a git worktree for this work (branch = canonical name) and run the ENTIRE execution inside it — implementation, tests, commits and pushes happen there, never on the user's main checkout.
 
+Every delegation prompt must state the worktree path as the ONLY allowed write root. After each writer subagent finishes, verify the user's main checkout is still clean (`git status` there); if the subagent wrote outside the worktree, STOP, move those changes into the worktree (patch/apply) and restore the main checkout before continuing. Subagent obedience is not a safety boundary — this check is.
+
 ### Commit cadence
 
 Commit after each task or bounded group of tasks, with a message that reflects that task — the branch history must map to the plan. Never accumulate the whole work into one giant commit at the end.
@@ -157,7 +159,7 @@ Verify by bounded, coherent sections (e.g. when a wave completes), not after eve
 
 When the plan is fully applied and VERIFY passes:
 
-1. Push the work branch (commits already exist per task from EXECUTE) and create the PR (`gh pr create`) against its real base — no permission needed for either. The post-PR hook fires the conditional multi-agent review automatically — let it run and wait for the unified report.
+1. Push the work branch (commits already exist per task from EXECUTE) and create the PR (`gh pr create`) against its real base — no permission needed for either. The post-PR hook fires the conditional multi-agent review automatically — let it run and wait for the unified report. If the hook does NOT fire (no review instruction arrives after the PR is created), don't skip the review: launch `/xreview` yourself against the PR's base, with the same scope the hook would have used.
 2. Process the report by its three levels:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
