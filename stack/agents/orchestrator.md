@@ -147,9 +147,11 @@ Verify by bounded, coherent sections (e.g. when a wave completes), not after eve
 
 ## 6. VERIFY
 
+- Validate against the plan's **Success criteria** in plan.md and tick the ones that pass. Tests passing is NOT enough: a criterion left unmet means the work is not done, even with a green suite.
 - Run the minimum verification that is sufficient.
 - Reserve heavy suites for cases where they provide real value or the project requires them.
 - If something fails, go back to EXECUTE with fix tasks.
+- **Anti-thrashing**: max 3 attempts per failing task or criterion. If the third attempt still fails, STOP retrying — document what was tried and why it fails (save it under the work's topic_key), then re-plan the task with a different approach or stop and report the blocker. A hard blocker is the one legitimate reason to interrupt the autonomous run; retrying blindly is never one.
 
 ## 7. SHIP (automatic)
 
