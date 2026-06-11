@@ -84,7 +84,7 @@ process.stdin.on('end', () => {
   }
 
   const toolName = String(data.tool_name || data.tool || '').toLowerCase();
-  const SHELL_TOOLS = ['bash', 'shell', 'local_shell'];
+  const SHELL_TOOLS = ['bash', 'shell', 'local_shell', 'powershell'];
   const commandValue = data?.tool_input?.command ?? data?.args?.command ?? '';
   // Codex passes the shell command as an argv array; the rest as a string.
   const rawToolCommand = Array.isArray(commandValue) ? commandValue.join(' ') : String(commandValue);

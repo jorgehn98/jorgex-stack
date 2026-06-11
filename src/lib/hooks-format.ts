@@ -7,8 +7,9 @@ import { upsertJson } from "./filemerge.js";
  * Renderiza el upsert sobre el JSON destino: resuelve {{SCRIPTS_DIR}}, omite
  * la extensión x-command-includes (el script filtra solo) y traduce el
  * matcher por runtime (Codex llama "shell" al tool de bash). Las entradas
- * nuestras se identifican por matcher + nombre de script: re-aplicar no
- * duplica y los hooks propios del usuario no se tocan.
+ * nuestras se identifican por nombre de script (NO por matcher): re-aplicar
+ * actualiza el matcher en sitio sin duplicar, y los hooks propios del usuario
+ * no se tocan.
  */
 /** Nombres de archivo de los scripts referenciados por los hooks canónicos. */
 export function hookScriptNames(canonical: CanonicalHooks): string[] {
@@ -94,7 +95,7 @@ export function upsertNativeHooks(
         const plainCommands = entry.hooks.map((h) => h.command).filter((c) => !c.includes("{{SCRIPTS_DIR}}"));
         const index = list.findIndex((existingEntry) => {
           const e = existingEntry as { matcher?: string; hooks?: { command?: string }[] };
-          if (e?.matcher !== matcher || !Array.isArray(e?.hooks)) return false;
+          if (!Array.isArray(e?.hooks)) return false;
           return e.hooks.some((hh) => {
             const cmd = String(hh?.command ?? "");
             return scriptNames.some((s) => cmd.includes(s)) || plainCommands.includes(cmd);

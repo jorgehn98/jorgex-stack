@@ -102,7 +102,7 @@ export const opencodeAdapter: Adapter = {
         continue;
       }
       for (const entry of entries) {
-        if ((entry.matcher ?? "").toLowerCase() !== "bash") {
+        if (!(entry.matcher ?? "").split("|").some((p) => p.trim().toLowerCase() === "bash")) {
           ctx.warnings.push(`opencode: matcher de hook '${entry.matcher}' no soportado — omitido.`);
           continue;
         }
