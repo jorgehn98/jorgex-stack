@@ -192,38 +192,26 @@ export const opencodeAdapter: Adapter = {
         }
       }
 
-      // Los plugins instalados se registran como file:// URLs sin duplicar
-      // y sin tocar los plugins propios del usuario.
+      // Los plugins locales viven en pluginsDir y OpenCode los AUTO-CARGA al
+      // arrancar (opencode.ai/docs/plugins): no se registran en el array
+      // `plugin` — ahí solo van los paquetes npm del usuario. Los registros
+      // file:// nuestros de versiones anteriores se retiran (redundantes con
+      // el auto-load; mantenerlos arriesga doble carga).
       if (pluginsDir !== null) {
-        let plugin = (root["plugin"] ??= []) as string[];
-        const ourUrls = new Map(
-          pluginSources(ctx).map((s) => {
-            const base = path.basename(s);
-            return [pathToFileURL(path.join(pluginsDir, base)).href, base] as const;
-          }),
-        );
-        // Reconciliación: registros bajo NUESTRO pluginsDir cuyo plugin ya no
-        // existe en el stack se retiran (un registro roto impide arrancar
-        // OpenCode). engram.ts nunca se desregistra en sync (D7).
-        const pluginsDirPrefix = pathToFileURL(pluginsDir).href + "/";
-        plugin = plugin.filter(
-          (url) =>
-            !url.startsWith(pluginsDirPrefix) ||
-            ourUrls.has(url) ||
-            path.basename(url) === "engram.ts",
-        );
-        for (const [url, base] of ourUrls) {
-          // Si el usuario ya tiene OTRA integración de engram registrada, no
-          // se añade la del stack (duplicaría protocolo y eventos).
-          if (base === "engram.ts" && plugin.some((u) => u !== url && /engram/i.test(path.basename(u)))) {
+        const plugin = root["plugin"] as string[] | undefined;
+        if (Array.isArray(plugin)) {
+          const pluginsDirPrefix = pathToFileURL(pluginsDir).href + "/";
+          const kept = plugin.filter((url) => !url.startsWith(pluginsDirPrefix));
+          if (kept.length === 0) delete root["plugin"];
+          else root["plugin"] = kept;
+          // Si el usuario usa OTRA integración de engram (paquete npm), la
+          // copia local engram.ts del stack duplicaría protocolo y eventos.
+          if (kept.some((u) => /engram/i.test(u))) {
             ctx.warnings.push(
-              "OpenCode: ya hay un plugin de Engram registrado — el del stack no se registra para no duplicar la integración.",
+              "OpenCode: hay un plugin de Engram registrado como paquete — revisa que no conviva con el engram.ts del stack (duplicaría la integración).",
             );
-            continue;
           }
-          if (!plugin.includes(url)) plugin.push(url);
         }
-        root["plugin"] = plugin;
       }
     });
 
@@ -252,15 +240,13 @@ export const opencodeAdapter: Adapter = {
         }
         const plugin = root["plugin"] as string[] | undefined;
         if (Array.isArray(plugin) && pluginsDir !== null) {
-          // preserveEngram: el plugin engram.ts es la integración de memoria
-          // del usuario — solo se desregistra con su sí explícito.
-          const ours = new Set(
-            pluginSources(ctx)
-              .filter((s) => !(ctx.preserveEngram && path.basename(s) === "engram.ts"))
-              .map((s) => pathToFileURL(path.join(pluginsDir, path.basename(s))).href),
-          );
-          root["plugin"] = plugin.filter((url) => !ours.has(url));
-          if ((root["plugin"] as string[]).length === 0) delete root["plugin"];
+          // Registros file:// bajo nuestro pluginsDir: residuos de versiones
+          // antiguas (los locales se auto-cargan del dir). Quitarlos no toca
+          // los archivos — engram.ts se conserva en disco vía preserveEngram.
+          const pluginsDirPrefix = pathToFileURL(pluginsDir).href + "/";
+          const kept = plugin.filter((url) => !url.startsWith(pluginsDirPrefix));
+          if (kept.length === 0) delete root["plugin"];
+          else root["plugin"] = kept;
         }
       });
       actions.push({ kind: "write", target: configFile, content });

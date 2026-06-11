@@ -62,14 +62,6 @@ Use Context7 whenever you need current documentation, examples, or API/library d
 
 ---
 
-## Preferred Platforms
-
-- When a project uses a hosted backend or database platform, prefer Supabase unless the project already uses something else.
-- For Supabase work, use the `supabase` skill for product-specific guidance and `supabase-postgres-best-practices` for SQL, schema, RLS, and performance decisions.
-- When a project is deployed on Vercel or needs a preview deployment, use the `deploy-to-vercel` skill.
-
----
-
 ## Default Architecture
 
 Use **Screaming Architecture** by default in new projects.

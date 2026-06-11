@@ -88,7 +88,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
   const HOOKS = { hooks: {} } as CanonicalHooks;
   const MCP_SIN_ENGRAM = { servers: { context7: { transport: "http" as const, url: "https://mcp.context7.com/mcp" } } };
 
-  it("planUnmerge de opencode con preserveEngram conserva mcp.engram y el plugin engram.ts", () => {
+  it("planUnmerge de opencode con preserveEngram conserva mcp.engram y limpia registros file:// nuestros", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-engram-"));
     const pluginsDir = path.join(tmp, "plugins");
     const urls = ["engram.ts", "hooks.ts", "worktree.ts"].map((f) => pathToFileURL(path.join(pluginsDir, f)).href);
@@ -99,7 +99,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
           engram: { type: "local", command: ["engram", "mcp"] },
           context7: { type: "remote", url: "https://mcp.context7.com/mcp" },
         },
-        plugin: urls,
+        plugin: ["@usuario/su-plugin-npm", ...urls],
       }),
     );
 
@@ -118,9 +118,9 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
 
     expect(result.mcp.engram).toBeDefined();
     expect(result.mcp.context7).toBeUndefined();
-    expect(result.plugin).toContain(urls[0]); // engram.ts se conserva
-    expect(result.plugin).not.toContain(urls[1]); // hooks.ts se quita
-    expect(result.plugin).not.toContain(urls[2]); // worktree.ts se quita
+    // Los registros file:// se quitan siempre (los locales se auto-cargan del
+    // dir; el ARCHIVO engram.ts lo protege preserveEngram en deleteTargets).
+    expect(result.plugin).toEqual(["@usuario/su-plugin-npm"]);
 
     fs.rmSync(tmp, { recursive: true, force: true });
   });
