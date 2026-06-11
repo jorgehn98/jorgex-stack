@@ -7,7 +7,7 @@ import { engramVersion } from "./doctor.js";
 
 interface Upstreams {
   tools: Record<string, { source: string }>;
-  skills: Record<string, { source: string; version?: string; modified?: boolean }>;
+  skills: Record<string, { source: string; version?: string; commit?: string; modified?: boolean }>;
 }
 
 function loadUpstreams(): Upstreams {
@@ -24,6 +24,20 @@ async function latestGithubRelease(repo: string): Promise<string | null> {
     if (!res.ok) return null;
     const data = (await res.json()) as { tag_name?: string };
     return data.tag_name?.replace(/^v/, "") ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function latestGithubCommit(repo: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/commits?per_page=1`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "jorgex-stack" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { sha?: string }[];
+    return data[0]?.sha ?? null;
   } catch {
     return null;
   }
@@ -71,19 +85,36 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
       );
   }
 
-  // 3. Skills de terceros.
-  const modified: string[] = [];
-  const upstreamed: string[] = [];
+  // 3. Skills de terceros: HEAD del repo vs el commit pineado en upstreams.json.
+  // El pin es la última revisión aceptada: si el repo se movió, el contenido
+  // nuevo NO está revisado — actualizar exige diff manual + re-pin deliberado.
+  // Una consulta por repo único (varios skills comparten monorepo).
+  const byRepo = new Map<string, { skills: string[]; pinned?: string }>();
   for (const [name, info] of Object.entries(upstreams.skills)) {
-    if (info.modified) modified.push(`${name} (${info.source})`);
-    else upstreamed.push(`${name} → ${info.source.replace(/^github:/, "github.com/")}`);
+    const repo = info.source.replace(/^github:/, "");
+    const entry = byRepo.get(repo) ?? { skills: [], pinned: info.commit };
+    entry.skills.push(info.modified ? `${name} (modificada localmente)` : name);
+    byRepo.set(repo, entry);
   }
-  if (modified.length > 0) {
-    p.log.warn(`Skills con modificaciones locales (update manual con diff, nunca reemplazo ciego):`);
-    for (const m of modified) p.log.message(`  ~ ${m}`);
+  const heads = await Promise.all(
+    [...byRepo.keys()].map(async (repo) => [repo, await latestGithubCommit(repo)] as const),
+  );
+  let moved = 0;
+  for (const [repo, head] of heads) {
+    const { skills, pinned } = byRepo.get(repo)!;
+    if (!pinned) p.log.warn(`${repo}: sin pin en upstreams.json — añade el commit revisado. Skills: ${skills.join(", ")}`);
+    else if (head === null) p.log.info(`${repo}: pin ${pinned.slice(0, 7)} (no se pudo consultar el upstream).`);
+    else if (head === pinned) p.log.success(`${repo}: al día con el pin ${pinned.slice(0, 7)} (${skills.join(", ")}).`);
+    else {
+      moved++;
+      p.log.warn(
+        `${repo}: el upstream se movió (pin ${pinned.slice(0, 7)} → ${head.slice(0, 7)}). Skills: ${skills.join(", ")}.\n` +
+          `  Revisa el diff y, si lo aceptas, actualiza la copia vendorizada y el pin: github.com/${repo}/compare/${pinned.slice(0, 7)}...${head.slice(0, 7)}`,
+      );
+    }
   }
-  if (upstreamed.length > 0) {
-    p.log.info(`Skills de terceros sin modificar (${upstreamed.length}) — upstreams registrados en upstreams.json.`);
+  if (moved === 0 && heads.every(([, head]) => head !== null)) {
+    p.log.info("Skills de terceros: ningún upstream se ha movido respecto a su pin.");
   }
 
   p.outro("Check completado.");
