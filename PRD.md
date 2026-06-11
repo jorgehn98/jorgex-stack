@@ -73,7 +73,7 @@ JorgeX Stack/
 │   │   ├── orchestrator.md
 │   │   ├── backend-analyst.md … type-design-analyzer.md
 │   ├── skills/                  # TODAS las skills vendorizadas (terceros con upstream registrado en upstreams.json)
-│   ├── commands/                # review.md, video.md (formato canónico)
+│   ├── commands/                # xreview.md (formato canónico)
 │   ├── hooks/
 │   │   └── hooks.json           # definición canónica de hooks (formato Claude Code como base)
 │   ├── scripts/

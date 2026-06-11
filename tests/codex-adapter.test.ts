@@ -79,9 +79,9 @@ describe("codexAdapter.renderAgent", () => {
 
 describe("codexAdapter.renderCommand", () => {
   it("convierte un command canónico en skill con name/description", () => {
-    const out = codexAdapter.renderCommand("video.md", "---\ndescription: Launch the hub\n---\nDo it.\n\nInput: {{input}}\n");
-    expect(out.file).toBe("video/SKILL.md");
-    expect(out.content).toContain("name: video");
+    const out = codexAdapter.renderCommand("demo.md", "---\ndescription: Launch the hub\n---\nDo it.\n\nInput: {{input}}\n");
+    expect(out.file).toBe("demo/SKILL.md");
+    expect(out.content).toContain("name: demo");
     expect(out.content).toContain('"Launch the hub"');
     expect(out.content).toContain("Input: the user's request in this conversation");
   });

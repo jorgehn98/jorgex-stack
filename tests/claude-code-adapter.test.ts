@@ -74,7 +74,7 @@ describe("claudeCodeAdapter.renderAgent", () => {
 
 describe("claudeCodeAdapter.renderCommand", () => {
   it("traduce {{input}} a $ARGUMENTS", () => {
-    const out = claudeCodeAdapter.renderCommand("video.md", "Haz X.\n\nInput: {{input}}\n");
+    const out = claudeCodeAdapter.renderCommand("demo.md", "Haz X.\n\nInput: {{input}}\n");
     expect(out.content).toContain("Input: $ARGUMENTS");
     expect(out.content).not.toContain("{{input}}");
   });
