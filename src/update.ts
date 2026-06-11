@@ -4,43 +4,16 @@ import * as p from "@clack/prompts";
 import { detectEngram } from "./lib/detect.js";
 import { stackRoot } from "./lib/paths.js";
 import { engramVersion } from "./doctor.js";
+import { latestGithubRelease, latestGithubCommit } from "./lib/github.js";
 
 interface Upstreams {
   tools: Record<string, { source: string }>;
-  skills: Record<string, { source: string; version?: string; commit?: string; modified?: boolean }>;
+  skills: Record<string, { source: string; path?: string; kind?: string; version?: string; commit?: string; modified?: boolean }>;
 }
 
 function loadUpstreams(): Upstreams {
   const file = path.join(path.dirname(stackRoot()), "upstreams.json");
   return JSON.parse(fs.readFileSync(file, "utf8")) as Upstreams;
-}
-
-async function latestGithubRelease(repo: string): Promise<string | null> {
-  try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "jorgex-stack" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { tag_name?: string };
-    return data.tag_name?.replace(/^v/, "") ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function latestGithubCommit(repo: string): Promise<string | null> {
-  try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/commits?per_page=1`, {
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "jorgex-stack" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { sha?: string }[];
-    return data[0]?.sha ?? null;
-  } catch {
-    return null;
-  }
 }
 
 async function latestNpmVersion(pkg: string): Promise<string | null> {
