@@ -16,15 +16,6 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function pluginSources(ctx: InstallContext): string[] {
-  const dir = path.join(ctx.stackDir, "plugins", "opencode");
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(".ts"))
-    .map((f) => path.join(dir, f));
-}
-
 export const opencodeAdapter: Adapter = {
   id: "opencode",
   name: "OpenCode",

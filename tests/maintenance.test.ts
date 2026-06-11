@@ -51,7 +51,6 @@ describe("permisos por defecto: solo si el usuario no los tiene", () => {
     configDir: tmp,
     engramBin: null,
     models: DEFAULT_MODEL_MAP[id]!,
-    secrets: {},
     warnings: [],
   });
   const mcp = () => loadCanonicalMcp(stackRoot());
@@ -90,7 +89,6 @@ describe("planPlugins: placeholders resueltos", () => {
       configDir: tmp,
       engramBin: "C:\\bin\\engram.exe",
       models: DEFAULT_MODEL_MAP.opencode!,
-      secrets: {},
       warnings: [],
     };
     const actions = planPlugins(opencodeAdapter, ctx);

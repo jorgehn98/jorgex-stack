@@ -108,7 +108,6 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       configDir: tmp,
       engramBin: null,
       models: DEFAULT_MODEL_MAP.opencode,
-      secrets: {},
       warnings: [],
       preserveEngram: true,
     };
