@@ -82,6 +82,28 @@ describe("permisos por defecto: solo si el usuario no los tiene", () => {
   });
 });
 
+describe("planPlugins: placeholders resueltos", () => {
+  it("engram.ts recibe el protocolo canónico y el binario, sin placeholders", async () => {
+    const { planPlugins } = await import("../src/components/plugins.js");
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: "C:\\bin\\engram.exe",
+      models: DEFAULT_MODEL_MAP.opencode!,
+      secrets: {},
+      warnings: [],
+    };
+    const actions = planPlugins(opencodeAdapter, ctx);
+    const engram = actions.find((a) => a.target.endsWith("engram.ts"))!;
+    expect(engram.kind).toBe("write");
+    const content = (engram as { content: string }).content;
+    expect(content).toContain("Engram Memory Protocol"); // protocolo canónico inyectado
+    expect(content).toContain("engram.exe");
+    expect(content).not.toContain("{{ENGRAM_PROTOCOL}}");
+    expect(content).not.toContain("{{ENGRAM_BIN}}");
+  });
+});
+
 describe("renderCommand de OpenCode", () => {
   it("traduce {{input}} a $ARGUMENTS (placeholder oficial de OpenCode)", () => {
     const out = opencodeAdapter.renderCommand("xreview.md", "Review.\n\nInput: {{input}}\n");
