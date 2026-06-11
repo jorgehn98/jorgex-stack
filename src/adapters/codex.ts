@@ -86,14 +86,15 @@ export const codexAdapter: Adapter = {
     // El orchestrator (primary) es un modo del agente principal: profile
     // (`codex --profile orchestrator`, developer_instructions con rol
     // developer) + skill de activación puntual dentro de una sesión.
+    // Sin model ni effort: el primary usa SIEMPRE el modelo que el usuario
+    // tenga por defecto (y puede cambiarlo en sesión) — solo los subagentes
+    // fijan modelo por tier.
     if (agent.mode === "primary") {
       const profileLines = [
         "# Managed by jorgex-stack — modo orquestador del agente principal.",
         `# Uso: codex --profile ${agent.name}`,
         `developer_instructions = ${tomlMultiline(agent.body)}`,
       ];
-      if (tierModel.model !== "default") profileLines.push(`model = ${tomlString(tierModel.model)}`);
-      if (tierModel.variant) profileLines.push(`model_reasoning_effort = ${tomlString(tierModel.variant)}`);
 
       const skillDescription = `${agent.description} Invoke to switch into ${agent.name} mode and apply its flow to the current task.`;
       const skill = `---\nname: ${agent.name}\ndescription: ${JSON.stringify(skillDescription)}\n---\n${agent.body}`;

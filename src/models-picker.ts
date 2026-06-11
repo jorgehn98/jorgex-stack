@@ -6,8 +6,9 @@ import { ensureModelMapFile, loadModelMap, modelMapFile, type ModelMap } from ".
 import { writeText } from "./lib/fsx.js";
 
 const TIERS: Tier[] = ["strong", "standard", "cheap"];
+// Solo subagentes: el orchestrator (primary) no fija modelo — usa el del usuario.
 const TIER_HINT: Record<Tier, string> = {
-  strong: "análisis, review, seguridad, orchestrator",
+  strong: "análisis, review, seguridad",
   standard: "implementer, tester",
   cheap: "translator, docs, comments, engram",
 };

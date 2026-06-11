@@ -49,14 +49,17 @@ describe("codexAdapter.renderAgent", () => {
     expect(out!.content).toContain('model = "gpt-5.4"');
   });
 
-  it("el primary (orchestrator) → profile + skill", () => {
-    const out = codexAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
+  it("el primary (orchestrator) → profile + skill, sin model ni effort (usa el del usuario)", () => {
+    const models: RuntimeModelMap = { ...MODELS, strong: { model: "gpt-5.4", variant: "high" } };
+    const out = codexAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), models);
     expect(out).toHaveLength(2);
 
     const profile = out.find((o) => o.kind === "profile")!;
     expect(profile.file).toBe("orchestrator.config.toml");
     expect(profile.content).toContain("developer_instructions = '''");
     expect(profile.content).toContain("codex --profile orchestrator");
+    expect(profile.content).not.toContain("model =");
+    expect(profile.content).not.toContain("model_reasoning_effort");
 
     const skill = out.find((o) => o.kind === "skill")!;
     expect(skill.file).toBe("orchestrator/SKILL.md");
