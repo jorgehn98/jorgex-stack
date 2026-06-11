@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 
 /** Header Authorization Bearer si el usuario tiene GH_TOKEN o GITHUB_TOKEN en el entorno. */
@@ -79,7 +79,7 @@ export async function downloadRepoTarball(repo: string, sha: string, destDir: st
     fs.mkdirSync(destDir, { recursive: true });
 
     // Extrae con bsdtar/tar nativo (strip-components elimina el prefijo repo-sha/).
-    execSync(`tar -xzf "${tmp}" --strip-components=1 -C "${destDir}"`, { stdio: "pipe" });
+    execFileSync("tar", ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
 
     return true;
   } catch {

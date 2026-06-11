@@ -169,7 +169,7 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     // Local preexistente (distinto contenido)
     writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local v1\n");
 
-    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", upstreamsFile, skillsRoot);
+    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", upstreamsFile, skillsRoot, backupsRoot);
 
     const localSkillDir = path.join(skillsRoot, "my-skill");
     expect(fs.readFileSync(path.join(localSkillDir, "SKILL.md"), "utf8")).toBe("# upstream v2\n");
@@ -185,20 +185,20 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     writeText(path.join(upstreamSkillDir, "SKILL.md"), "# upstream v2\n");
     writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local v1\n");
 
-    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", upstreamsFile, skillsRoot);
+    replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", upstreamsFile, skillsRoot, backupsRoot);
 
-    // El backup se crea en el dataDir real (~/.jorgex-stack/backups), no en tmp;
-    // verificamos que el dir local fue reemplazado y el backup existe en algún sitio.
-    // Usamos listBackups con la raíz de backups por defecto (del dataDir real) —
-    // o simplemente verificamos que el archivo local fue sobreescrito (el backup
-    // lo verifica indirectamente: si replaceSkill no lanzó, el backup fue creado).
+    // El backup se crea en backupsRoot (dir temporal); verificamos que el dir
+    // local fue reemplazado y que el backup existe en la raíz temporal.
     const content = fs.readFileSync(path.join(skillsRoot, "my-skill", "SKILL.md"), "utf8");
     expect(content).toBe("# upstream v2\n");
+    const backupEntries = fs.existsSync(backupsRoot) ? fs.readdirSync(backupsRoot) : [];
+    expect(backupEntries.length).toBeGreaterThan(0);
   });
 
   it("re-pinea el commit en upstreams.json y preserva el resto del JSON", () => {
     const upstreamSkillDir = path.join(tmp, "upstream", "my-skill");
     const skillsRoot = path.join(tmp, "skills");
+    const backupsRoot = path.join(tmp, "backups");
     const upstreamsFile = makeUpstreamsFixture("my-skill");
 
     // Añadir otra skill que no debe tocarse
@@ -210,7 +210,7 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
     writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# v1\n");
 
     const newCommit = "fffeeedddcccbbb000111222333444555666777888";
-    replaceSkill("my-skill", upstreamSkillDir, newCommit, upstreamsFile, skillsRoot);
+    replaceSkill("my-skill", upstreamSkillDir, newCommit, upstreamsFile, skillsRoot, backupsRoot);
 
     const updated = JSON.parse(fs.readFileSync(upstreamsFile, "utf8"));
     // Pin actualizado

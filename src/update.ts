@@ -8,7 +8,7 @@ import { stackRoot, dataDir, HOME } from "./lib/paths.js";
 import { engramVersion } from "./doctor.js";
 import { latestGithubRelease, latestGithubCommit, downloadRepoTarball } from "./lib/github.js";
 import { diffSkillDirs, renderSkillDiff, replaceSkill } from "./lib/skill-update.js";
-import { createBackup } from "./lib/backup.js";
+import { isContainedIn } from "./lib/fsx.js";
 
 interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
@@ -190,14 +190,19 @@ async function downloadSkillToTemp(repo: string, sha: string, skillPath: string 
   try {
     const ok = await downloadRepoTarball(repo, sha, tmp);
     if (!ok) return null;
-    // Si la skill está en un subdirectorio del repo, calculamos la subruta
+    // Si la skill está en un subdirectorio del repo, calculamos la subruta.
+    // Guard de contención: rechazar rutas que escapen del tmpDir.
     if (skillPath) {
-      const sub = path.join(tmp, skillPath);
+      const sub = path.resolve(path.join(tmp, skillPath));
+      if (!isContainedIn(sub, tmp)) {
+        p.log.error(`skill: ruta de subdirectorio "${skillPath}" escapa del tmpDir — omitiendo.`);
+        return null;
+      }
       if (fs.existsSync(sub)) return sub;
       // Intento con último segmento del path
       const lastSeg = skillPath.split("/").pop()!;
-      const sub2 = path.join(tmp, lastSeg);
-      if (fs.existsSync(sub2)) return sub2;
+      const sub2 = path.resolve(path.join(tmp, lastSeg));
+      if (isContainedIn(sub2, tmp) && fs.existsSync(sub2)) return sub2;
     }
     return tmp;
   } catch {

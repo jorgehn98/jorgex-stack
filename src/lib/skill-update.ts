@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { listFilesRecursive, sameFileContent, copyFile, ensureDir } from "./fsx.js";
+import { listFilesRecursive, sameFileContent, copyFile, ensureDir, writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { stackRoot } from "./paths.js";
 
@@ -91,14 +91,15 @@ export function renderSkillDiff(upstreamDir: string, localDir: string): string {
  * Reglas:
  * - Skills protegidas (agent-delegation, work-lifecycle) y kind=release (graphify)
  *   se rechazan sin tocar el disco.
- * - Se hace backup de la skill local antes de borrarla.
- * - Si algo falla tras el backup, los archivos de la skill quedan en el estado
- *   del upstream (parcialmente copiados), pero el backup permite recuperar.
- * - upstreams.json se reescribe preservando formato (JSON 2 espacios + salto final)
- *   y el resto de claves intactas.
+ * - Se hace backup de la skill local antes de tocarla.
+ * - La copia se hace en staging (dir hermano temporal) antes de renombrar,
+ *   para evitar ventanas de estado parcial en caso de error.
+ * - upstreams.json se reescribe atómicamente (writeText = temp+rename).
+ *   El resto de claves del JSON se preservan intactas.
  *
  * @param upstreamsFilePath - Ruta al upstreams.json (por defecto la del proyecto).
  * @param localSkillsRoot   - Directorio raíz de skills locales (por defecto stack/skills/).
+ * @param backupsRoot       - Raíz de backups (para tests; por defecto el dataDir real).
  */
 export function replaceSkill(
   name: string,
@@ -106,6 +107,7 @@ export function replaceSkill(
   newCommit: string,
   upstreamsFilePath?: string,
   localSkillsRoot?: string,
+  backupsRoot?: string,
 ): void {
   if (PROTECTED_SKILLS.has(name)) {
     throw new Error(`La skill "${name}" es propia del stack y no se actualiza desde upstream.`);
@@ -130,23 +132,34 @@ export function replaceSkill(
   // Backup de la copia local actual (puede no existir si es totalmente nueva).
   const localFiles = listFilesRecursive(localSkillDir);
   if (localFiles.length > 0) {
-    createBackup(localFiles, `skill-update-${name}`);
+    createBackup(localFiles, `skill-update-${name}`, backupsRoot);
   }
 
-  // Borra el directorio local y copia el contenido del upstream.
-  fs.rmSync(localSkillDir, { recursive: true, force: true });
+  // Copia el upstream a un dir staging hermano; luego rename atómico.
+  const stagingDir = `${localSkillDir}.staging-${process.pid}`;
+  try {
+    const upstreamFiles = listFilesRecursive(upstreamSkillDir);
+    for (const src of upstreamFiles) {
+      const rel = path.relative(upstreamSkillDir, src);
+      const dest = path.join(stagingDir, rel);
+      ensureDir(path.dirname(dest));
+      copyFile(src, dest);
+    }
 
-  const upstreamFiles = listFilesRecursive(upstreamSkillDir);
-  for (const src of upstreamFiles) {
-    const rel = path.relative(upstreamSkillDir, src);
-    const dest = path.join(localSkillDir, rel);
-    ensureDir(path.dirname(dest));
-    copyFile(src, dest);
+    // Rename: local → .old, staging → local, borrar .old
+    const oldDir = `${localSkillDir}.old-${process.pid}`;
+    if (fs.existsSync(localSkillDir)) {
+      fs.renameSync(localSkillDir, oldDir);
+    }
+    fs.renameSync(stagingDir, localSkillDir);
+    fs.rmSync(oldDir, { recursive: true, force: true });
+  } catch (err) {
+    // Limpiar staging en error para no dejar restos
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignorar */ }
+    throw err;
   }
 
-  // Re-pin del commit en upstreams.json (upsert quirúrgico).
+  // Re-pin del commit en upstreams.json (upsert quirúrgico, escritura atómica).
   skillEntry.commit = newCommit;
-  // Conserva el formato estable del archivo.
-  const updated = JSON.stringify(data, null, 2) + "\n";
-  fs.writeFileSync(upstreamsFile, updated, "utf8");
+  writeText(upstreamsFile, JSON.stringify(data, null, 2) + "\n");
 }
