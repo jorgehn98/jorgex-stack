@@ -82,7 +82,25 @@ export async function runModelsPicker(opts: { yes: boolean }): Promise<number> {
           maxItems: 12,
         });
         if (p.isCancel(choice)) return cancelled();
-        runtimeMap[tier] = { ...current, model: choice };
+        // Variant (reasoning effort) nativo de OpenCode. `opencode models` no
+        // expone qué variants soporta cada modelo, así que la lista es genérica:
+        // si el modelo no soporta variants, deja "(sin variant)". Nunca se
+        // arrastra el variant del modelo anterior (podría no existir en el nuevo).
+        const knownVariants = ["low", "medium", "high", "xhigh"];
+        const keptCurrent = choice === current.model && current.variant ? current.variant : null;
+        const variant = await p.select({
+          message: `${det.name} · tier ${tier} — reasoning effort (variant; solo si el modelo lo soporta)`,
+          options: [
+            { value: "", label: "(sin variant — el default del modelo)" },
+            ...knownVariants.map((v) => ({ value: v, label: v })),
+            ...(keptCurrent && !knownVariants.includes(keptCurrent)
+              ? [{ value: keptCurrent, label: `${keptCurrent} (actual)` }]
+              : []),
+          ],
+          initialValue: keptCurrent ?? "",
+        });
+        if (p.isCancel(variant)) return cancelled();
+        runtimeMap[tier] = { model: choice, ...(variant ? { variant } : {}) };
       } else {
         // Codex: con plan ChatGPT el modelo lo marca la cuenta — la palanca
         // real es el reasoning effort por tier (mismo enfoque que gentle-ai).
