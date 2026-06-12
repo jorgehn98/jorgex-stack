@@ -11,47 +11,16 @@ import {
   githubRateLimited,
   ghPresentButTokenFailed,
   __resetGithubState,
+  resolveTarBin,
 } from "../src/lib/github.js";
-
-/**
- * Resuelve la ruta al ejecutable tar que entiende rutas Windows nativas.
- * En Windows con Git-MSYS, "tar" del PATH interpreta "C:" como hostname de red
- * y falla con rutas Windows. El bsdtar de System32 sí las acepta. En Linux/macOS,
- * devuelve "tar" directamente.
- */
-function resolveWindowsTar(): string {
-  if (process.platform !== "win32") return "tar";
-  const winTar = [process.env["SystemRoot"] ?? "C:\\Windows", "System32", "tar.exe"].join(
-    path.sep,
-  );
-  try {
-    execFileSync(winTar, ["--version"], { stdio: "pipe" });
-    return winTar;
-  } catch {
-    return "tar"; // fallback
-  }
-}
-
-const TAR = resolveWindowsTar();
 
 /**
  * Crea un fixture .tar.gz real con un directorio raíz rootName/ para simular
  * el formato de descarga de GitHub (GitHub empaqueta como "repo-sha/...").
- * Usa el tar resuelto por resolveWindowsTar() para manejar rutas Windows.
+ * Usa resolveTarBin() (importada de producción) para manejar rutas Windows.
  */
 function makeFixtureTarball(rootDir: string, tarPath: string, rootName: string): void {
-  execFileSync(TAR, ["-czf", tarPath, "-C", path.dirname(rootDir), rootName], { stdio: "pipe" });
-}
-
-/**
- * PATH con bsdtar de System32 al frente (Windows).
- * downloadRepoTarball hereda process.env.PATH; stubeamos para que use
- * bsdtar en lugar del tar MSYS de Git durante la extracción en tests.
- */
-function pathWithWindowsTar(): string {
-  if (process.platform !== "win32") return process.env["PATH"] ?? "";
-  const sys32 = [process.env["SystemRoot"] ?? "C:\\Windows", "System32"].join(path.sep);
-  return sys32 + path.delimiter + (process.env["PATH"] ?? "");
+  execFileSync(resolveTarBin(), ["-czf", tarPath, "-C", path.dirname(rootDir), rootName], { stdio: "pipe" });
 }
 
 // ---------------------------------------------------------------------------
@@ -164,27 +133,8 @@ function buildTarGz(entries: TarEntry[]): Buffer {
   return zlib.gzipSync(tarBuf);
 }
 
-/**
- * Recorre recursivamente un directorio y devuelve rutas absolutas de todas
- * las entradas. Incluye symlinks sin seguirlos.
- */
-function walkDir(dir: string): string[] {
-  const result: string[] = [];
-  const visit = (current: string): void => {
-    const entries = fs.readdirSync(current, { withFileTypes: true });
-    for (const e of entries) {
-      const full = path.join(current, e.name);
-      result.push(full);
-      // Entrar en el directorio solo si NO es symlink (para no seguirlo).
-      if (e.isDirectory() && !e.isSymbolicLink()) visit(full);
-    }
-  };
-  visit(dir);
-  return result;
-}
-
 // ---------------------------------------------------------------------------
-// Único archivo del repo autorizado a usar vi.stubGlobal / vi.stubEnv.
+// vi.stubGlobal confinado a este archivo; stubEnv puntual permitido con unstub.
 // afterEach SIEMPRE restaura globals y env para no contaminar otros tests.
 // ---------------------------------------------------------------------------
 
@@ -197,15 +147,60 @@ beforeEach(() => {
   // para que los tests de "sin token" no fallen por variables heredadas.
   vi.stubEnv("GH_TOKEN", "");
   vi.stubEnv("GITHUB_TOKEN", "");
-  // En Windows, poner el bsdtar de System32 antes del tar MSYS de Git para
-  // que downloadRepoTarball pueda extraer con rutas Windows nativas.
-  vi.stubEnv("PATH", pathWithWindowsTar());
+  // PATH no se manipula aquí: downloadRepoTarball usa resolveTarBin() con
+  // ruta absoluta a System32\tar.exe, no depende del PATH en runtime.
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// resolveTarBin
+// ---------------------------------------------------------------------------
+
+describe("resolveTarBin", () => {
+  it("en la plataforma actual devuelve una string no vacía", () => {
+    // En cualquier plataforma debe devolver algo utilizable por execFileSync.
+    const bin = resolveTarBin();
+    expect(typeof bin).toBe("string");
+    expect(bin.length).toBeGreaterThan(0);
+  });
+
+  if (process.platform === "win32") {
+    it("win32 con SystemRoot válido → ruta absoluta a System32\\tar.exe (cuando existe)", () => {
+      // Solo verificable en Windows real con bsdtar en System32.
+      const bin = resolveTarBin();
+      const sys32 = path.join(process.env["SystemRoot"] ?? "C:\\Windows", "System32");
+      if (fs.existsSync(path.join(sys32, "tar.exe"))) {
+        expect(bin).toBe(path.join(sys32, "tar.exe"));
+      } else {
+        // tar.exe no presente en System32 → fallback
+        expect(bin).toBe("tar");
+      }
+    });
+
+    it("win32 con SystemRoot apuntando a dir sin tar.exe → fallback 'tar'", () => {
+      // Usamos un directorio temporal que no contiene tar.exe.
+      const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-tarbin-"));
+      try {
+        vi.stubEnv("SystemRoot", fakeRoot);
+        // resolveTarBin() lee process.env["SystemRoot"] en cada llamada
+        // (no cachea), por lo que el stub tiene efecto inmediato.
+        const bin = resolveTarBin();
+        expect(bin).toBe("tar");
+      } finally {
+        vi.unstubAllEnvs();
+        fs.rmSync(fakeRoot, { recursive: true, force: true });
+      }
+    });
+  } else {
+    it("no-win32 → devuelve 'tar' directamente", () => {
+      expect(resolveTarBin()).toBe("tar");
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -603,13 +598,19 @@ function assertNothingEscapedDestDir(destDir: string): void {
  */
 function assertCleanTree(destDir: string): void {
   const resolved = path.resolve(destDir);
-  for (const full of walkDir(destDir)) {
-    // Verificar con lstat para detectar symlinks sin seguirlos
-    const stat = fs.lstatSync(full);
-    expect(stat.isSymbolicLink()).toBe(false);
-    // Verificar que la ruta está contenida en destDir
-    expect(path.resolve(full).startsWith(resolved)).toBe(true);
-  }
+  const visit = (current: string): void => {
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(current, e.name);
+      // Verificar con lstat para detectar symlinks sin seguirlos
+      const stat = fs.lstatSync(full);
+      expect(stat.isSymbolicLink()).toBe(false);
+      // Verificar que la ruta está contenida en destDir
+      expect(path.resolve(full).startsWith(resolved)).toBe(true);
+      if (e.isDirectory() && !e.isSymbolicLink()) visit(full);
+    }
+  };
+  visit(resolved);
 }
 
 describe("downloadRepoTarball: tarball malicioso — invariante de seguridad", () => {

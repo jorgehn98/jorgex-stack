@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
 import { validateExtractedTree } from "../src/lib/github.js";
 import { buildEligibleSkillUpdates, rotateLockedBinary, type SkillQueryResult } from "../src/update.js";
@@ -17,6 +17,26 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+/**
+ * Crea un upstreams.json de fixture en `dir` con una skill y el commit indicado.
+ * Parametrizado para reutilizarse en las secciones de residuos y de fallo por symlink.
+ */
+function makeUpstreamsFixtureInDir(
+  skillName: string,
+  dir: string,
+  commit = "abc1234def5678901234567890123456789012345",
+): string {
+  const file = path.join(dir, "upstreams.json");
+  const data = {
+    tools: {},
+    skills: {
+      [skillName]: { source: `github:example/repo`, commit },
+    },
+  };
+  writeText(file, JSON.stringify(data, null, 2) + "\n");
+  return file;
+}
 
 // ---------------------------------------------------------------------------
 // diffSkillDirs
@@ -435,7 +455,7 @@ describe("validateExtractedTree: detección de symlinks y path-escape", () => {
     }
   });
 
-  it("symlink de archivo dentro del dir → false", () => {
+  it("symlink de archivo dentro del dir → false", (ctx: TestContext) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-vtree-"));
     try {
       const target = path.join(dir, "real.txt");
@@ -444,8 +464,8 @@ describe("validateExtractedTree: detección de symlinks y path-escape", () => {
       try {
         fs.symlinkSync(target, link);
       } catch {
-        // EPERM en Windows CI sin privilegios de symlink → skip silencioso
-        return;
+        // EPERM en Windows CI sin privilegios de symlink → skip explícito
+        ctx.skip();
       }
       expect(validateExtractedTree(dir)).toBe(false);
     } finally {
@@ -453,7 +473,7 @@ describe("validateExtractedTree: detección de symlinks y path-escape", () => {
     }
   });
 
-  it("symlink de directorio dentro del dir → false", () => {
+  it("symlink de directorio dentro del dir → false", (ctx: TestContext) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-vtree-"));
     try {
       const subdir = path.join(dir, "real-sub");
@@ -463,8 +483,8 @@ describe("validateExtractedTree: detección de symlinks y path-escape", () => {
       try {
         fs.symlinkSync(subdir, linkDir, "junction");
       } catch {
-        // EPERM → skip
-        return;
+        // EPERM → skip explícito
+        ctx.skip();
       }
       expect(validateExtractedTree(dir)).toBe(false);
     } finally {
@@ -493,7 +513,7 @@ describe("replaceSkill: rechaza symlinks en el upstream", () => {
     return file;
   }
 
-  it("upstream con symlink → lanza error claro sin tocar disco local", () => {
+  it("upstream con symlink → lanza error claro sin tocar disco local", (ctx: TestContext) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-replace-"));
     try {
       const upstreamSkillDir = path.join(dir, "upstream", "my-skill");
@@ -506,8 +526,8 @@ describe("replaceSkill: rechaza symlinks en el upstream", () => {
       try {
         fs.symlinkSync(realFile, linkFile);
       } catch {
-        // EPERM en Windows CI → skip
-        return;
+        // EPERM en Windows CI → skip explícito
+        ctx.skip();
       }
 
       expect(() =>
@@ -617,21 +637,6 @@ describe("renderSkillDiff: fallback con PATH vacío (sin git)", () => {
 // ---------------------------------------------------------------------------
 
 describe("replaceSkill: sin residuos staging/old tras éxito y datos del backup", () => {
-  function makeUpstreamsFixtureInDir(skillName: string, dir: string): string {
-    const file = path.join(dir, "upstreams.json");
-    const data = {
-      tools: {},
-      skills: {
-        [skillName]: {
-          source: `github:example/repo`,
-          commit: "abc1234def5678901234567890123456789012345",
-        },
-      },
-    };
-    writeText(file, JSON.stringify(data, null, 2) + "\n");
-    return file;
-  }
-
   it("tras éxito: no quedan dirs .staging-* ni .old-* junto a la skill", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-clean-"));
     try {
@@ -703,28 +708,13 @@ describe("replaceSkill: sin residuos staging/old tras éxito y datos del backup"
 });
 
 describe("replaceSkill: invariantes en caso de fallo por symlink", () => {
-  function makeUpstreamsFixtureInDir(skillName: string, dir: string): string {
-    const file = path.join(dir, "upstreams.json");
-    const data = {
-      tools: {},
-      skills: {
-        [skillName]: {
-          source: `github:example/repo`,
-          commit: "original-commit-1234567890123456789012345",
-        },
-      },
-    };
-    writeText(file, JSON.stringify(data, null, 2) + "\n");
-    return file;
-  }
-
-  it("fallo por symlink: local conserva contenido original, sin .staging-* residual, upstreams.json no re-pineado", () => {
+  it("fallo por symlink: local conserva contenido original, sin .staging-* residual, upstreams.json no re-pineado", (ctx: TestContext) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-symlink-fail-"));
     try {
       const upstreamSkillDir = path.join(dir, "upstream", "my-skill");
       const skillsRoot = path.join(dir, "skills");
-      const upstreamsFile = makeUpstreamsFixtureInDir("my-skill", dir);
       const originalCommit = "original-commit-1234567890123456789012345";
+      const upstreamsFile = makeUpstreamsFixtureInDir("my-skill", dir, originalCommit);
 
       writeText(path.join(upstreamSkillDir, "SKILL.md"), "# upstream v2\n");
       writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local original\n");
@@ -734,8 +724,8 @@ describe("replaceSkill: invariantes en caso de fallo por symlink", () => {
       try {
         fs.symlinkSync(realFile, linkFile);
       } catch {
-        // EPERM en Windows CI sin privilegios de symlink → skip silencioso
-        return;
+        // EPERM en Windows CI sin privilegios de symlink → skip explícito
+        ctx.skip();
       }
 
       expect(() =>
