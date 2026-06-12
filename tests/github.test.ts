@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -52,6 +53,136 @@ function pathWithWindowsTar(): string {
   if (process.platform !== "win32") return process.env["PATH"] ?? "";
   const sys32 = [process.env["SystemRoot"] ?? "C:\\Windows", "System32"].join(path.sep);
   return sys32 + path.delimiter + (process.env["PATH"] ?? "");
+}
+
+// ---------------------------------------------------------------------------
+// Generador de tarballs maliciosos en puro Node.js (sin dependencias externas).
+//
+// Construye buffers de 512 bytes por entrada (formato POSIX ustar) y los
+// comprime con zlib.gzipSync. No usa fs.symlinkSync (EPERM en Windows) —
+// los bytes se arman directamente, lo que hace los fixtures portables.
+// ---------------------------------------------------------------------------
+
+/** Escribe una cadena ASCII en un Buffer en la posición indicada (null-padded). */
+function writeField(buf: Buffer, offset: number, len: number, value: string): void {
+  buf.fill(0, offset, offset + len);
+  buf.write(value, offset, "ascii");
+}
+
+/** Escribe un número como octal con terminador (formato POSIX tar). */
+function writeOctal(buf: Buffer, offset: number, len: number, value: number): void {
+  // Formato: dígitos octales + espacio-null o null, relleno de ceros a la izquierda.
+  const s = value.toString(8).padStart(len - 1, "0") + "\0";
+  buf.write(s.slice(0, len), offset, "ascii");
+}
+
+/** Calcula el checksum POSIX: suma de todos los bytes del header con el campo
+ *  checksum (offset 148, 8 bytes) tratado como espacios (0x20). */
+function computeChecksum(header: Buffer): number {
+  let sum = 0;
+  for (let i = 0; i < 512; i++) {
+    sum += i >= 148 && i < 156 ? 0x20 : (header[i] ?? 0);
+  }
+  return sum;
+}
+
+/** Construye un header tar de 512 bytes. */
+function makeTarHeader(opts: {
+  name: string;
+  typeflag: "0" | "2" | "5";
+  size: number;
+  linkname?: string;
+}): Buffer {
+  const header = Buffer.alloc(512, 0);
+
+  writeField(header, 0, 100, opts.name);
+  writeOctal(header, 100, 8, 0o000644); // mode
+  writeOctal(header, 108, 8, 0);        // uid
+  writeOctal(header, 116, 8, 0);        // gid
+  writeOctal(header, 124, 12, opts.size);
+  writeOctal(header, 136, 12, Math.floor(Date.now() / 1000));
+  // checksum placeholder (spaces) — se calcula abajo
+  header.fill(0x20, 148, 156);
+  header.write(opts.typeflag, 156, "ascii");
+  if (opts.linkname) writeField(header, 157, 100, opts.linkname);
+  // USTAR magic
+  header.write("ustar\0", 257, "ascii");
+  header.write("00", 263, "ascii");
+
+  const cksum = computeChecksum(header);
+  // Formato del checksum: 6 dígitos octales + null + espacio
+  header.write(cksum.toString(8).padStart(6, "0") + "\0 ", 148, "ascii");
+
+  return header;
+}
+
+/** Rellena el contenido de un archivo hasta el siguiente múltiplo de 512. */
+function padContent(content: Buffer): Buffer {
+  const rem = content.length % 512;
+  if (rem === 0) return content;
+  const padded = Buffer.alloc(content.length + (512 - rem), 0);
+  content.copy(padded);
+  return padded;
+}
+
+interface TarEntry {
+  name: string;
+  typeflag: "0" | "2" | "5";
+  content?: Buffer;
+  linkname?: string;
+}
+
+/**
+ * Ensambla un tarball (.tar.gz) a partir de entradas en memoria.
+ * Devuelve el Buffer comprimido listo para servir como Response.body.
+ *
+ * Cada entrada de tipo "0" (archivo regular) puede tener `content` (Buffer).
+ * Cada entrada de tipo "2" (symlink) debe tener `linkname`.
+ * Cada entrada de tipo "5" (directorio) no lleva contenido.
+ *
+ * El resultado siempre termina con dos bloques de 512 bytes a cero (fin de tar).
+ */
+function buildTarGz(entries: TarEntry[]): Buffer {
+  const parts: Buffer[] = [];
+
+  for (const entry of entries) {
+    const content = entry.typeflag === "0" ? (entry.content ?? Buffer.alloc(0)) : Buffer.alloc(0);
+    const header = makeTarHeader({
+      name: entry.name,
+      typeflag: entry.typeflag,
+      size: content.length,
+      linkname: entry.linkname,
+    });
+    parts.push(header);
+    if (content.length > 0) {
+      parts.push(padContent(content));
+    }
+  }
+
+  // Fin de archivo: dos bloques de ceros.
+  parts.push(Buffer.alloc(1024, 0));
+
+  const tarBuf = Buffer.concat(parts);
+  return zlib.gzipSync(tarBuf);
+}
+
+/**
+ * Recorre recursivamente un directorio y devuelve rutas absolutas de todas
+ * las entradas. Incluye symlinks sin seguirlos.
+ */
+function walkDir(dir: string): string[] {
+  const result: string[] = [];
+  const visit = (current: string): void => {
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(current, e.name);
+      result.push(full);
+      // Entrar en el directorio solo si NO es symlink (para no seguirlo).
+      if (e.isDirectory() && !e.isSymbolicLink()) visit(full);
+    }
+  };
+  visit(dir);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,13 +316,18 @@ describe("latestGithubCommit", () => {
 // Token por cabeceras
 // Observamos el token a través de las cabeceras que recibe el fetch stubeado,
 // llamando a latestGithubRelease como punto de entrada público.
+//
+// Los mocks se tipan con la firma de fetch para que TypeScript infiera
+// mock.calls como [RequestInfo | URL, RequestInit?][] y permita indexar [n][1].
 // ---------------------------------------------------------------------------
 
 describe("token: precedencia y caché", () => {
   it("GH_TOKEN='aaa' + GITHUB_TOKEN='bbb' → Authorization Bearer aaa (GH_TOKEN gana)", async () => {
     vi.stubEnv("GH_TOKEN", "aaa");
     vi.stubEnv("GITHUB_TOKEN", "bbb");
-    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }));
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     await latestGithubRelease("owner/repo");
@@ -203,7 +339,9 @@ describe("token: precedencia y caché", () => {
   it("solo GITHUB_TOKEN='bbb' → Authorization Bearer bbb", async () => {
     vi.stubEnv("GH_TOKEN", "");
     vi.stubEnv("GITHUB_TOKEN", "bbb");
-    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }));
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     await latestGithubRelease("owner/repo");
@@ -215,7 +353,9 @@ describe("token: precedencia y caché", () => {
   it("GH_TOKEN con espacios '  ccc  ' → Bearer ccc (trim aplicado)", async () => {
     vi.stubEnv("GH_TOKEN", "  ccc  ");
     vi.stubEnv("GITHUB_TOKEN", "");
-    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }));
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     await latestGithubRelease("owner/repo");
@@ -227,7 +367,9 @@ describe("token: precedencia y caché", () => {
   it("caché: segunda llamada usa token congelado aunque cambie el env", async () => {
     vi.stubEnv("GH_TOKEN", "aaa");
     vi.stubEnv("GITHUB_TOKEN", "");
-    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }));
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     // Primera llamada — cachea "aaa"
@@ -244,7 +386,9 @@ describe("token: precedencia y caché", () => {
   it("tras __resetGithubState(), el token se recalcula con el env actual", async () => {
     vi.stubEnv("GH_TOKEN", "aaa");
     vi.stubEnv("GITHUB_TOKEN", "");
-    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }));
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     // Primera llamada — cachea "aaa"
@@ -264,7 +408,9 @@ describe("token: precedencia y caché", () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     // PATH vacío para que lookPath("gh") no encuentre nada
     vi.stubEnv("PATH", "");
-    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }));
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
     vi.stubGlobal("fetch", mockFetch);
 
     await latestGithubRelease("owner/repo");
@@ -417,5 +563,154 @@ describe("downloadRepoTarball: happy path", () => {
     // strip-components=1: los archivos deben estar directamente bajo destDir, sin el prefijo repo-abc123/
     expect(fs.existsSync(path.join(destDir, "README.md"))).toBe(true);
     expect(fs.existsSync(path.join(destDir, "index.ts"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadRepoTarball — e2e tarball malicioso (invariante de seguridad portable)
+//
+// Verifica que downloadRepoTarball → tar real → validateExtractedTree bloquea
+// tarballs hostiles y nunca deja contenido peligroso fuera de destDir.
+//
+// Los fixtures se construyen en puro Node.js con buildTarGz() (sin dependencias
+// externas y sin fs.symlinkSync, que requiere privilegios en Windows).
+//
+// Invariante portable (independiente del tar del sistema):
+//   - ok:false  → destDir no existe o está vacío (fail-closed).
+//   - ok:true   → todo el contenido de destDir está contenido en destDir y
+//                 no hay symlinks (plataformas donde tar degrada la entrada).
+//   En ningún caso existe contenido fuera de destDir.
+// ---------------------------------------------------------------------------
+
+/**
+ * Comprueba que ningún archivo creado por la extracción escapó de destDir.
+ * Verifica la carpeta del padre de destDir para detectar path-traversal.
+ */
+function assertNothingEscapedDestDir(destDir: string): void {
+  const parent = path.dirname(destDir);
+  const destName = path.basename(destDir);
+  // Entramos en cada sibling del destDir en el mismo tmp-dir y aseguramos
+  // que solo destDir (o su ausencia) existe.
+  const siblings = fs.readdirSync(parent).filter((n) => n !== destName);
+  // Nada de lo que exista en el padre debe ser "evil.txt" ni "evil"
+  for (const s of siblings) {
+    expect(s).not.toBe("evil.txt");
+    expect(s).not.toBe("evil");
+  }
+}
+
+/**
+ * Si ok:true, verifica que el árbol de destDir no contiene symlinks
+ * y que todo está contenido en destDir.
+ */
+function assertCleanTree(destDir: string): void {
+  const resolved = path.resolve(destDir);
+  for (const full of walkDir(destDir)) {
+    // Verificar con lstat para detectar symlinks sin seguirlos
+    const stat = fs.lstatSync(full);
+    expect(stat.isSymbolicLink()).toBe(false);
+    // Verificar que la ruta está contenida en destDir
+    expect(path.resolve(full).startsWith(resolved)).toBe(true);
+  }
+}
+
+describe("downloadRepoTarball: tarball malicioso — invariante de seguridad", () => {
+  // Control positivo: el generador buildTarGz() produce tarballs benignos válidos.
+  // Si este test falla, los tests de vectores maliciosos son inconfiables.
+  it("control positivo: tarball benigno generado con buildTarGz() → { ok:true, validated:true }", async () => {
+    const tarGzBuf = buildTarGz([
+      { name: "repo-sha/", typeflag: "5" },
+      { name: "repo-sha/README.md", typeflag: "0", content: Buffer.from("# ok\n") },
+      { name: "repo-sha/src/", typeflag: "5" },
+      { name: "repo-sha/src/index.ts", typeflag: "0", content: Buffer.from("export {};\n") },
+    ]);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(new Uint8Array(tarGzBuf), { status: 200 })),
+    );
+    const destDir = path.join(tmp, "dest");
+    fs.mkdirSync(destDir);
+
+    const result = await downloadRepoTarball("owner/repo", "sha", destDir);
+
+    expect(result).toEqual({ ok: true, validated: true });
+    expect(fs.existsSync(path.join(destDir, "README.md"))).toBe(true);
+    expect(fs.existsSync(path.join(destDir, "src", "index.ts"))).toBe(true);
+  });
+
+  // Vector 1: path traversal — entrada con nombre "repo-sha/../evil.txt".
+  // El tar puede rechazar el tarball completo (ok:false) o degradar la entrada
+  // (neutralizarla dentro de destDir). En ningún caso evil.txt escapa a fuera.
+  it("vector path-traversal: repo-sha/../evil.txt no escapa de destDir", async () => {
+    const tarGzBuf = buildTarGz([
+      { name: "repo-sha/", typeflag: "5" },
+      // Entrada maliciosa: ruta que intenta escribir fuera del directorio raíz.
+      { name: "repo-sha/../evil.txt", typeflag: "0", content: Buffer.from("malicious\n") },
+      // Entrada legítima para que el tarball no sea trivialmente vacío.
+      { name: "repo-sha/ok.md", typeflag: "0", content: Buffer.from("ok\n") },
+    ]);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(new Uint8Array(tarGzBuf), { status: 200 })),
+    );
+    const destDir = path.join(tmp, "dest");
+    fs.mkdirSync(destDir);
+
+    const result = await downloadRepoTarball("owner/repo", "sha", destDir);
+
+    // Invariante 1: nada escapa de destDir.
+    assertNothingEscapedDestDir(destDir);
+
+    if (result.ok) {
+      // Plataformas que degradan la entrada: el árbol debe estar limpio.
+      assertCleanTree(destDir);
+    } else {
+      // Fail-closed: destDir no existe o está vacío.
+      const destExists = fs.existsSync(destDir);
+      if (destExists) {
+        const contents = fs.readdirSync(destDir);
+        expect(contents).toHaveLength(0);
+      }
+    }
+  });
+
+  // Vector 2: symlink — entrada "repo-sha/link" apunta fuera con linkname "../../target".
+  // bsdtar puede rechazarlo (ok:false) o extraerlo; si lo extrae, validateExtractedTree
+  // detecta el symlink y falla (ok:false). En ambos casos: fail-closed.
+  it("vector symlink: link con linkname ../../target no persiste en destDir", async () => {
+    const tarGzBuf = buildTarGz([
+      { name: "repo-sha/", typeflag: "5" },
+      // Entrada maliciosa: symlink que apunta fuera del árbol.
+      { name: "repo-sha/link", typeflag: "2", linkname: "../../target" },
+      // Entrada legítima.
+      { name: "repo-sha/ok.md", typeflag: "0", content: Buffer.from("ok\n") },
+    ]);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(new Uint8Array(tarGzBuf), { status: 200 })),
+    );
+    const destDir = path.join(tmp, "dest");
+    fs.mkdirSync(destDir);
+
+    const result = await downloadRepoTarball("owner/repo", "sha", destDir);
+
+    // Invariante 1: nada escapa de destDir.
+    assertNothingEscapedDestDir(destDir);
+
+    if (result.ok) {
+      // Si tar no rechazó, validateExtractedTree debería haber limpiado.
+      // Árbol limpio: sin symlinks.
+      assertCleanTree(destDir);
+    } else {
+      // Fail-closed: destDir no existe o está vacío.
+      const destExists = fs.existsSync(destDir);
+      if (destExists) {
+        const contents = fs.readdirSync(destDir);
+        expect(contents).toHaveLength(0);
+      }
+    }
   });
 });
