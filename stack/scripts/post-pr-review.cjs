@@ -134,7 +134,7 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
    - Critical Issues (must fix)
    - Important Improvements (should fix)
    - Suggestions (nice to have)
-   - Changes already applied (e.g. comment fixes committed to the PR branch)
+   - Changes already applied (comment fixes: committed to the PR branch, or left uncommitted for working-tree reviews)
    - Positive Findings
 </post-pr-review-required>`;
 
