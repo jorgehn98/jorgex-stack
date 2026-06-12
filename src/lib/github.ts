@@ -36,6 +36,13 @@ export function ghPresentButTokenFailed(): boolean {
   return ghTokenFailed;
 }
 
+/** SOLO para tests: resetea el estado de módulo (token cacheado y flags). */
+export function __resetGithubState(): void {
+  cachedToken = undefined;
+  ghTokenFailed = false;
+  rateLimitHit = false;
+}
+
 function authHeaders(): Record<string, string> {
   const token = githubToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -133,19 +140,35 @@ export function validateExtractedTree(destDir: string): boolean {
   return walk(resolved);
 }
 
-export type TarballResult = { ok: true } | { ok: false; reason: string };
+export type TarballResult = { ok: true; validated: boolean } | { ok: false; reason: string };
+
+/**
+ * Resuelve el ejecutable tar según la plataforma.
+ * En Windows con Git-MSYS instalado, "tar" del PATH interpreta "C:" como hostname
+ * de red y falla con rutas Windows nativas. System32 contiene bsdtar (Windows 10+)
+ * que sí acepta esas rutas. Si no existe, fallback a "tar" del PATH.
+ * Linux/macOS → "tar" directamente.
+ * Exportada para tests (permite verificar la rama de fallback sin un Windows real).
+ */
+export function resolveTarBin(): string {
+  if (process.platform !== "win32") return "tar";
+  const winTar = path.join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "tar.exe");
+  return fs.existsSync(winTar) ? winTar : "tar";
+}
 
 /**
  * Descarga el tarball de un repo en el SHA indicado y lo extrae en destDir.
  * El cuerpo se hace streaming a disco (los tarballs de monorepos como vercel/ai
  * pesan decenas de MB) con timeout de 120s. Usa `tar -xzf --strip-components=1`
- * (tar nativo; en Windows es GNU tar de MSYS) y valida el árbol extraído
+ * (bsdtar de System32 en Windows, tar nativo en Linux/macOS) y valida el árbol extraído
  * (symlinks, path-escape). Con `validateSubdir`, la validación se limita al
  * subárbol que el caller va a consumir: un monorepo puede llevar symlinks
  * legítimos en zonas que nunca se leen (vercel/ai los tiene) y rechazar el
  * tarball entero sería un falso positivo. Si el subdir no existe, se omite la
- * validación (el caller decide qué hacer con un path ausente). Fail-closed:
- * cualquier error limpia destDir y devuelve { ok: false, reason }.
+ * validación (el caller decide qué hacer con un path ausente). En ese caso
+ * el resultado incluye `validated: false`. Si el subdir existe y pasa la
+ * validación, devuelve `validated: true`. Fail-closed: cualquier error limpia
+ * destDir y devuelve { ok: false, reason }.
  */
 export async function downloadRepoTarball(
   repo: string,
@@ -183,9 +206,10 @@ export async function downloadRepoTarball(
     fs.rmSync(destDir, { recursive: true, force: true });
     fs.mkdirSync(destDir, { recursive: true });
 
-    // Extrae con tar nativo (strip-components elimina el prefijo repo-sha/).
+    // Extrae con tar (strip-components elimina el prefijo repo-sha/).
+    // bsdtar/tar resuelto por resolveTarBin() según la plataforma.
     try {
-      execFileSync("tar", ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
+      execFileSync(resolveTarBin(), ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
     } catch (err) {
       // "tar ausente" y "tarball corrupto" exigen acciones opuestas: dar la causa.
       const e = err as { stderr?: Buffer | string; message?: string };
@@ -196,15 +220,17 @@ export async function downloadRepoTarball(
     // Validación post-extracción: symlinks y rutas que escapen del árbol consumido.
     const resolvedDest = path.resolve(destDir);
     const validateRoot = validateSubdir ? path.resolve(resolvedDest, validateSubdir) : resolvedDest;
-    // "." o "" resuelven al propio destDir → validar el árbol completo, no es escape.
+    // "." o "" resuelven al propio destDir → validar todo, no es escape.
     if (validateRoot !== resolvedDest && !isContainedIn(validateRoot, resolvedDest)) {
       return fail(`la ruta de validación "${validateSubdir}" escapa del destino`);
     }
     if (fs.existsSync(validateRoot) && !validateExtractedTree(validateRoot)) {
       return fail("el árbol extraído contiene symlinks o rutas fuera del destino");
     }
+    // validated: true si validateRoot pasó validación, false si no existe (nada que validar).
+    const validated = fs.existsSync(validateRoot);
 
-    return { ok: true };
+    return { ok: true, validated };
   } catch (err) {
     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
     return fail(timedOut ? "timeout de descarga (120s)" : err instanceof Error ? `fallo de red: ${err.message}` : "error desconocido");

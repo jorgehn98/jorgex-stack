@@ -390,31 +390,28 @@ async function updateEngram(engramRepo: string, latestVersion: string): Promise<
       );
       // go install escribe en GOBIN: si esa NO era la ruta rotada, el binario
       // activo quedaría desaparecido tras un install "exitoso" — restaurarlo.
-      if (rotated && bin && !fs.existsSync(bin)) {
+      const rollbackOk = resolveEngramRollback({ installOk: true, rotated, bin, binExists: fs.existsSync(bin ?? "") });
+      if (rollbackOk.action === "restore") {
         try {
-          fs.renameSync(rotated, bin);
-          p.log.warn(
-            `go install instaló en otra ruta (GOBIN distinto); el binario activo en ${bin} se ha restaurado. Comprueba qué engram resuelve tu PATH.`,
-          );
+          fs.renameSync(rotated!, bin!);
+          p.log.warn(rollbackOk.messages.onRestore);
         } catch {
-          p.log.warn(`go install instaló en otra ruta y no se pudo restaurar ${bin}; tu binario anterior está en ${rotated}.`);
+          p.log.warn(rollbackOk.messages.onRenameFail);
         }
       }
       return true;
     } catch (err) {
-      if (rotated && bin) {
-        if (!fs.existsSync(bin)) {
-          // Install fallido con la ruta vacía: revertir la rotación.
-          try {
-            fs.renameSync(rotated, bin);
-            p.log.info("Rotación revertida — el binario anterior sigue en su sitio.");
-          } catch {
-            p.log.error(`No se pudo revertir la rotación: tu binario anterior está en ${rotated} — renómbralo a ${bin} a mano.`);
-          }
-        } else {
-          // go install es atómico (temp+rename), pero si dejó algo en la ruta no lo pisamos.
-          p.log.warn(`El install falló pero dejó un binario en ${bin}; tu copia anterior queda en ${rotated}.`);
+      const rollbackFail = resolveEngramRollback({ installOk: false, rotated, bin, binExists: fs.existsSync(bin ?? "") });
+      if (rollbackFail.action === "restore") {
+        try {
+          fs.renameSync(rotated!, bin!);
+          p.log.info(rollbackFail.messages.onRestore);
+        } catch {
+          p.log.error(rollbackFail.messages.onRenameFail);
         }
+      } else if (rollbackFail.action === "leave_old") {
+        // go install es atómico (temp+rename), pero si dejó algo en la ruta no lo pisamos.
+        p.log.warn(rollbackFail.messages.onLeaveOld);
       }
       p.log.error(`go install falló: ${err instanceof Error ? err.message : err}`);
       return false;
@@ -440,6 +437,78 @@ interface UpdateItem {
   value: string;
   label: string;
   hint?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Lógica de rollback de Engram — función pura exportada para tests
+// ---------------------------------------------------------------------------
+
+/** Acción de rollback de binario que resolveEngramRollback recomienda. */
+export type EngramRollbackAction =
+  | { action: "none" }
+  | {
+      action: "restore";
+      /** Mensajes a loguear: onRestore si el rename tiene éxito; onRenameFail si falla. */
+      messages: { onRestore: string; onRenameFail: string };
+    }
+  | {
+      action: "leave_old";
+      /** Mensaje a loguear cuando el install falló pero go dejó algo en bin. */
+      messages: { onLeaveOld: string };
+    };
+
+/**
+ * Decide qué hacer con el binario rotado tras un intento de go install.
+ * Función pura (sin I/O, sin side-effects): recibe los hechos del mundo como
+ * parámetros y devuelve la acción + los mensajes con rutas concretas.
+ * `updateEngram` la consume para ejecutar el rename y loguear los mensajes.
+ */
+export function resolveEngramRollback(input: {
+  installOk: boolean;
+  rotated: string | null;
+  bin: string | null;
+  /** fs.existsSync(bin) DESPUÉS del intento de install. */
+  binExists: boolean;
+}): EngramRollbackAction {
+  const { installOk, rotated, bin, binExists } = input;
+
+  // Sin rotación (no hay nada que restaurar) o sin ruta de destino conocida.
+  if (!rotated || !bin) return { action: "none" };
+
+  if (installOk && !binExists) {
+    // go install tuvo éxito pero escribió en GOBIN distinto → restaurar activo.
+    return {
+      action: "restore",
+      messages: {
+        onRestore: `go install instaló en otra ruta (GOBIN distinto); el binario activo en ${bin} se ha restaurado. Comprueba qué engram resuelve tu PATH.`,
+        onRenameFail: `go install instaló en otra ruta y no se pudo restaurar ${bin}; tu binario anterior está en ${rotated}.`,
+      },
+    };
+  }
+
+  if (!installOk && !binExists) {
+    // Install fallido, ruta vacía → revertir la rotación.
+    return {
+      action: "restore",
+      messages: {
+        onRestore: "Rotación revertida — el binario anterior sigue en su sitio.",
+        onRenameFail: `No se pudo revertir la rotación: tu binario anterior está en ${rotated} — renómbralo a ${bin} a mano.`,
+      },
+    };
+  }
+
+  if (!installOk && binExists) {
+    // Install falló pero go dejó algo en la ruta (temp+rename parcial).
+    return {
+      action: "leave_old",
+      messages: {
+        onLeaveOld: `El install falló pero dejó un binario en ${bin}; tu copia anterior queda en ${rotated}.`,
+      },
+    };
+  }
+
+  // Resto de casos: install limpio (installOk && binExists) o combinaciones imposibles.
+  return { action: "none" };
 }
 
 // ---------------------------------------------------------------------------
