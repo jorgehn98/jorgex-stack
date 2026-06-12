@@ -36,6 +36,13 @@ export function ghPresentButTokenFailed(): boolean {
   return ghTokenFailed;
 }
 
+/** SOLO para tests: resetea el estado de módulo (token cacheado y flags). */
+export function __resetGithubState(): void {
+  cachedToken = undefined;
+  ghTokenFailed = false;
+  rateLimitHit = false;
+}
+
 function authHeaders(): Record<string, string> {
   const token = githubToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -133,7 +140,7 @@ export function validateExtractedTree(destDir: string): boolean {
   return walk(resolved);
 }
 
-export type TarballResult = { ok: true } | { ok: false; reason: string };
+export type TarballResult = { ok: true; validated: boolean } | { ok: false; reason: string };
 
 /**
  * Descarga el tarball de un repo en el SHA indicado y lo extrae en destDir.
@@ -144,8 +151,10 @@ export type TarballResult = { ok: true } | { ok: false; reason: string };
  * subárbol que el caller va a consumir: un monorepo puede llevar symlinks
  * legítimos en zonas que nunca se leen (vercel/ai los tiene) y rechazar el
  * tarball entero sería un falso positivo. Si el subdir no existe, se omite la
- * validación (el caller decide qué hacer con un path ausente). Fail-closed:
- * cualquier error limpia destDir y devuelve { ok: false, reason }.
+ * validación (el caller decide qué hacer con un path ausente). En ese caso
+ * el resultado incluye `validated: false`. Si el subdir existe y pasa la
+ * validación, devuelve `validated: true`. Fail-closed: cualquier error limpia
+ * destDir y devuelve { ok: false, reason }.
  */
 export async function downloadRepoTarball(
   repo: string,
@@ -203,8 +212,11 @@ export async function downloadRepoTarball(
     if (fs.existsSync(validateRoot) && !validateExtractedTree(validateRoot)) {
       return fail("el árbol extraído contiene symlinks o rutas fuera del destino");
     }
+    // validated=true SOLO si el árbol existía y pasó validateExtractedTree.
+    // validated=false si validateRoot no existía (nada que validar — el caller decide).
+    const validated = fs.existsSync(validateRoot);
 
-    return { ok: true };
+    return { ok: true, validated };
   } catch (err) {
     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
     return fail(timedOut ? "timeout de descarga (120s)" : err instanceof Error ? `fallo de red: ${err.message}` : "error desconocido");
