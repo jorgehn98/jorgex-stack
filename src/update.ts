@@ -448,8 +448,6 @@ export type EngramRollbackAction =
   | { action: "none" }
   | {
       action: "restore";
-      /** true → go install instaló en GOBIN distinto (warning); false → install falló (revertir). */
-      warnGobinMismatch: boolean;
       /** Mensajes a loguear: onRestore si el rename tiene éxito; onRenameFail si falla. */
       messages: { onRestore: string; onRenameFail: string };
     }
@@ -481,7 +479,6 @@ export function resolveEngramRollback(input: {
     // go install tuvo éxito pero escribió en GOBIN distinto → restaurar activo.
     return {
       action: "restore",
-      warnGobinMismatch: true,
       messages: {
         onRestore: `go install instaló en otra ruta (GOBIN distinto); el binario activo en ${bin} se ha restaurado. Comprueba qué engram resuelve tu PATH.`,
         onRenameFail: `go install instaló en otra ruta y no se pudo restaurar ${bin}; tu binario anterior está en ${rotated}.`,
@@ -493,7 +490,6 @@ export function resolveEngramRollback(input: {
     // Install fallido, ruta vacía → revertir la rotación.
     return {
       action: "restore",
-      warnGobinMismatch: false,
       messages: {
         onRestore: "Rotación revertida — el binario anterior sigue en su sitio.",
         onRenameFail: `No se pudo revertir la rotación: tu binario anterior está en ${rotated} — renómbralo a ${bin} a mano.`,

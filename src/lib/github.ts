@@ -148,8 +148,9 @@ export type TarballResult = { ok: true; validated: boolean } | { ok: false; reas
  * de red y falla con rutas Windows nativas. System32 contiene bsdtar (Windows 10+)
  * que sí acepta esas rutas. Si no existe, fallback a "tar" del PATH.
  * Linux/macOS → "tar" directamente.
+ * Exportada para tests (permite verificar la rama de fallback sin un Windows real).
  */
-function resolveTarBin(): string {
+export function resolveTarBin(): string {
   if (process.platform !== "win32") return "tar";
   const winTar = path.join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "tar.exe");
   return fs.existsSync(winTar) ? winTar : "tar";

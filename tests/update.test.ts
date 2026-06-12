@@ -19,8 +19,6 @@ describe("resolveEngramRollback: camino 1 — GOBIN distinto (installOk, bin aus
     });
 
     expect(result.action).toBe("restore");
-    if (result.action !== "restore") return; // narrowing para TS
-    expect(result.warnGobinMismatch).toBe(true);
   });
 
   it("el mensaje onRestore contiene la ruta de bin", () => {
@@ -70,8 +68,6 @@ describe("resolveEngramRollback: camino 2 — revert tras install fallido (binEx
     });
 
     expect(result.action).toBe("restore");
-    if (result.action !== "restore") return;
-    expect(result.warnGobinMismatch).toBe(false);
   });
 
   it("el mensaje onRestore indica que la rotación fue revertida", () => {
