@@ -45,7 +45,7 @@ Sanity check: if that list is far larger than the work being reviewed (hundreds 
 If the diff adds or changes comments/docstrings, run `comment-fixer` ALONE before the analysts — it edits comments in place (comments only, never code), so the analysts then review a diff already clean of comment noise instead of re-reporting it or mistaking its edits for contamination.
 
 - Pass it the same scope (BASE/HEAD or working diff) as everyone else.
-- If it changed anything and the scope is a committed diff (branch/PR): commit its fixes to the reviewed branch before launching the analysts, so the diff they fetch already includes them.
+- If it changed anything and the scope is a committed diff (branch/PR): comment-fixer itself never commits — YOU commit its fixes to the reviewed branch before launching the analysts, staging ONLY the files it touched (never `-a`/`-A`: don't sweep unrelated working-tree changes into the commit). If the commit can't be made (branch checked out elsewhere, hook rejection), leave the edits uncommitted and say so in the report.
 - For working-tree reviews: leave its edits uncommitted (they join the user's pending work) and say so in the report.
 - If the diff touches no comments, skip it and move on.
 
