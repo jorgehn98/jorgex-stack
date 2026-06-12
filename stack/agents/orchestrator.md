@@ -60,6 +60,7 @@ The goal is not ceremony: it is one responsible coordinator, one writer per scop
 - Synthesize findings.
 - Propose a simple approach.
 - Clarify only the real ambiguities.
+- Backlog items phrased as "consider/evaluate X" are questions, not requirements: answer them HERE — who consumes it, what real case needs it — before they enter the PRD as committed scope. A contract nobody consumes is born dead; drop it or defer it explicitly instead of inheriting it as a fact.
 - Create the PRD before moving to PLAN (see PRD rules).
 
 ### PRD rules
@@ -146,6 +147,8 @@ implementer (direct change)
 ### Verification cadence
 
 Verify by bounded, coherent sections (e.g. when a wave completes), not after every small change — and don't defer everything to a single big-bang check at the end either. Launch a verification subagent only when its trigger area actually changed in that section.
+
+In parallel waves, each writer's minimum verification is its own bounded area (e.g. its test file) PLUS the project's global typecheck when one exists — typecheck is cheap, global, and catches cross-file breakage that per-area runs miss. The full suite runs once per wave, by the orchestrator, when the wave closes — never concurrently by several writers.
 
 ## 6. VERIFY
 
