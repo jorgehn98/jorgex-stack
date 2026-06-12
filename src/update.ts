@@ -502,7 +502,7 @@ export function resolveEngramRollback(input: {
   }
 
   if (!installOk && binExists) {
-    // Install fallido pero go dejó algo en la ruta (temp+rename parcial).
+    // Install falló pero go dejó algo en la ruta (temp+rename parcial).
     return {
       action: "leave_old",
       messages: {
@@ -511,7 +511,7 @@ export function resolveEngramRollback(input: {
     };
   }
 
-  // installOk && binExists: go install tuvo éxito y escribió en la ruta correcta.
+  // Resto de casos: install limpio (installOk && binExists) o combinaciones imposibles.
   return { action: "none" };
 }
 

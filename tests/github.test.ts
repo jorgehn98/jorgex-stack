@@ -15,9 +15,9 @@ import {
 
 /**
  * Resuelve la ruta al ejecutable tar que entiende rutas Windows nativas.
- * En Windows con Git-MSYS instalado, "tar" apunta al tar MSYS que interpreta
- * "C:" como hostname de red y falla. El bsdtar del sistema (System32) sí
- * acepta rutas Windows. En Linux/macOS devuelve "tar" directamente.
+ * En Windows con Git-MSYS, "tar" del PATH interpreta "C:" como hostname de red
+ * y falla con rutas Windows. El bsdtar de System32 sí las acepta. En Linux/macOS,
+ * devuelve "tar" directamente.
  */
 function resolveWindowsTar(): string {
   if (process.platform !== "win32") return "tar";
@@ -44,10 +44,9 @@ function makeFixtureTarball(rootDir: string, tarPath: string, rootName: string):
 }
 
 /**
- * PATH con el directorio del tar correcto al frente.
- * downloadRepoTarball llama a execFileSync("tar", ...) sin env explícito, por lo
- * que hereda process.env.PATH. Stubeando PATH ponemos el bsdtar de System32 antes
- * del tar MSYS de Git para que la extracción en los tests también funcione.
+ * PATH con bsdtar de System32 al frente (Windows).
+ * downloadRepoTarball hereda process.env.PATH; stubeamos para que use
+ * bsdtar en lugar del tar MSYS de Git durante la extracción en tests.
  */
 function pathWithWindowsTar(): string {
   if (process.platform !== "win32") return process.env["PATH"] ?? "";
@@ -56,11 +55,11 @@ function pathWithWindowsTar(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Generador de tarballs maliciosos en puro Node.js (sin dependencias externas).
+// Generador de tarballs en puro Node.js (sin dependencias externas).
 //
 // Construye buffers de 512 bytes por entrada (formato POSIX ustar) y los
-// comprime con zlib.gzipSync. No usa fs.symlinkSync (EPERM en Windows) —
-// los bytes se arman directamente, lo que hace los fixtures portables.
+// comprime con zlib.gzipSync. Sin fs.symlinkSync (EPERM en Windows) — arma
+// symlinks directamente en bytes para fixtures portables (benignos y hostiles).
 // ---------------------------------------------------------------------------
 
 /** Escribe una cadena ASCII en un Buffer en la posición indicada (null-padded). */
@@ -69,15 +68,14 @@ function writeField(buf: Buffer, offset: number, len: number, value: string): vo
   buf.write(value, offset, "ascii");
 }
 
-/** Escribe un número como octal con terminador (formato POSIX tar). */
+/** Escribe un número como octal con terminador null (formato POSIX tar). */
 function writeOctal(buf: Buffer, offset: number, len: number, value: number): void {
-  // Formato: dígitos octales + espacio-null o null, relleno de ceros a la izquierda.
+  // Dígitos octales con padding izquierda + null, en len bytes totales.
   const s = value.toString(8).padStart(len - 1, "0") + "\0";
   buf.write(s.slice(0, len), offset, "ascii");
 }
 
-/** Calcula el checksum POSIX: suma de todos los bytes del header con el campo
- *  checksum (offset 148, 8 bytes) tratado como espacios (0x20). */
+/** Calcula el checksum POSIX: suma de bytes del header; campo checksum (148-156) como espacios (0x20). */
 function computeChecksum(header: Buffer): number {
   let sum = 0;
   for (let i = 0; i < 512; i++) {
