@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
 import { validateExtractedTree } from "../src/lib/github.js";
 import { buildEligibleSkillUpdates, rotateLockedBinary, type SkillQueryResult } from "../src/update.js";
@@ -564,6 +564,203 @@ describe("renderSkillDiff: diff completo en la salida cuando hay diferencias", (
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// renderSkillDiff: fallback cuando git no está disponible (PATH vacío)
+// ---------------------------------------------------------------------------
+
+describe("renderSkillDiff: fallback con PATH vacío (sin git)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("dirs con diferencia real → fallback contiene el texto exacto y conteo correcto", () => {
+    vi.stubEnv("PATH", "");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-fallback-"));
+    try {
+      const up = path.join(dir, "upstream");
+      const local = path.join(dir, "local");
+      writeText(path.join(up, "SKILL.md"), "# skill v2\n");
+      writeText(path.join(up, "new.md"), "nuevo\n");
+      writeText(path.join(local, "SKILL.md"), "# skill v1\n");
+
+      const out = renderSkillDiff(up, local);
+      // Debe usar el fallback y contener el marcador exacto
+      expect(out).toContain("[git no disponible — resumen de cambios]");
+      // 1 modified (SKILL.md), 1 added (new.md), 0 deleted
+      expect(out).toContain("añadidos: 1");
+      expect(out).toContain("modificados: 1");
+      expect(out).toContain("eliminados: 0");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dirs idénticos con PATH vacío → cadena vacía (fallback no reporta cambios)", () => {
+    vi.stubEnv("PATH", "");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-fallback-"));
+    try {
+      const up = path.join(dir, "upstream");
+      const local = path.join(dir, "local");
+      writeText(path.join(up, "SKILL.md"), "# skill\n");
+      writeText(path.join(local, "SKILL.md"), "# skill\n");
+
+      expect(renderSkillDiff(up, local)).toBe("");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replaceSkill: limpieza de artefactos y estado post-operación
+// ---------------------------------------------------------------------------
+
+describe("replaceSkill: sin residuos staging/old tras éxito y datos del backup", () => {
+  function makeUpstreamsFixtureInDir(skillName: string, dir: string): string {
+    const file = path.join(dir, "upstreams.json");
+    const data = {
+      tools: {},
+      skills: {
+        [skillName]: {
+          source: `github:example/repo`,
+          commit: "abc1234def5678901234567890123456789012345",
+        },
+      },
+    };
+    writeText(file, JSON.stringify(data, null, 2) + "\n");
+    return file;
+  }
+
+  it("tras éxito: no quedan dirs .staging-* ni .old-* junto a la skill", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-clean-"));
+    try {
+      const upstreamSkillDir = path.join(dir, "upstream", "my-skill");
+      const skillsRoot = path.join(dir, "skills");
+      const backupsRoot = path.join(dir, "backups");
+      const upstreamsFile = makeUpstreamsFixtureInDir("my-skill", dir);
+
+      writeText(path.join(upstreamSkillDir, "SKILL.md"), "# v2\n");
+      writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# v1\n");
+
+      replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", {
+        upstreamsFilePath: upstreamsFile,
+        localSkillsRoot: skillsRoot,
+        backupsRoot,
+      });
+
+      const entries = fs.readdirSync(skillsRoot);
+      const staging = entries.filter((e) => e.includes(".staging-"));
+      const old = entries.filter((e) => e.includes(".old-"));
+      expect(staging).toHaveLength(0);
+      expect(old).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tras éxito: backup contiene el contenido local anterior", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-backup-content-"));
+    try {
+      const upstreamSkillDir = path.join(dir, "upstream", "my-skill");
+      const skillsRoot = path.join(dir, "skills");
+      const backupsRoot = path.join(dir, "backups");
+      const upstreamsFile = makeUpstreamsFixtureInDir("my-skill", dir);
+
+      writeText(path.join(upstreamSkillDir, "SKILL.md"), "# upstream v2\n");
+      writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local anterior\n");
+
+      replaceSkill("my-skill", upstreamSkillDir, "newcommit1234567890123456789012345678901234", {
+        upstreamsFilePath: upstreamsFile,
+        localSkillsRoot: skillsRoot,
+        backupsRoot,
+      });
+
+      // El backup debe existir y contener algún archivo con el contenido original
+      expect(fs.existsSync(backupsRoot)).toBe(true);
+      const backupDirs = fs.readdirSync(backupsRoot);
+      expect(backupDirs.length).toBeGreaterThan(0);
+      // Buscar el archivo backupeado dentro de los subdirs del backup
+      let foundOriginal = false;
+      for (const bd of backupDirs) {
+        const bdPath = path.join(backupsRoot, bd);
+        if (!fs.statSync(bdPath).isDirectory()) continue;
+        const backupFiles = fs.readdirSync(bdPath, { recursive: true, encoding: "utf8" }) as string[];
+        for (const bf of backupFiles) {
+          const bfPath = path.join(bdPath, bf);
+          if (!fs.statSync(bfPath).isFile()) continue;
+          const content = fs.readFileSync(bfPath, "utf8");
+          if (content.includes("local anterior")) {
+            foundOriginal = true;
+          }
+        }
+      }
+      expect(foundOriginal).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("replaceSkill: invariantes en caso de fallo por symlink", () => {
+  function makeUpstreamsFixtureInDir(skillName: string, dir: string): string {
+    const file = path.join(dir, "upstreams.json");
+    const data = {
+      tools: {},
+      skills: {
+        [skillName]: {
+          source: `github:example/repo`,
+          commit: "original-commit-1234567890123456789012345",
+        },
+      },
+    };
+    writeText(file, JSON.stringify(data, null, 2) + "\n");
+    return file;
+  }
+
+  it("fallo por symlink: local conserva contenido original, sin .staging-* residual, upstreams.json no re-pineado", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-symlink-fail-"));
+    try {
+      const upstreamSkillDir = path.join(dir, "upstream", "my-skill");
+      const skillsRoot = path.join(dir, "skills");
+      const upstreamsFile = makeUpstreamsFixtureInDir("my-skill", dir);
+      const originalCommit = "original-commit-1234567890123456789012345";
+
+      writeText(path.join(upstreamSkillDir, "SKILL.md"), "# upstream v2\n");
+      writeText(path.join(skillsRoot, "my-skill", "SKILL.md"), "# local original\n");
+
+      const realFile = path.join(upstreamSkillDir, "SKILL.md");
+      const linkFile = path.join(upstreamSkillDir, "evil.txt");
+      try {
+        fs.symlinkSync(realFile, linkFile);
+      } catch {
+        // EPERM en Windows CI sin privilegios de symlink → skip silencioso
+        return;
+      }
+
+      expect(() =>
+        replaceSkill("my-skill", upstreamSkillDir, "new-commit-999999999999999999999999999999", {
+          upstreamsFilePath: upstreamsFile,
+          localSkillsRoot: skillsRoot,
+        }),
+      ).toThrow(/[Ss]ymlink/);
+
+      // La skill local debe conservar su contenido original
+      const localContent = fs.readFileSync(path.join(skillsRoot, "my-skill", "SKILL.md"), "utf8");
+      expect(localContent).toBe("# local original\n");
+
+      // No debe quedar ningún directorio .staging-* en skillsRoot
+      const entries = fs.readdirSync(skillsRoot);
+      expect(entries.filter((e) => e.includes(".staging-"))).toHaveLength(0);
+
+      // upstreams.json NO debe haberse re-pineado
+      const updated = JSON.parse(fs.readFileSync(upstreamsFile, "utf8"));
+      expect(updated.skills["my-skill"].commit).toBe(originalCommit);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // rotateLockedBinary: truco de rename para actualizar el .exe en uso (Windows)
