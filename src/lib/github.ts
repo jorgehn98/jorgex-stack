@@ -143,10 +143,24 @@ export function validateExtractedTree(destDir: string): boolean {
 export type TarballResult = { ok: true; validated: boolean } | { ok: false; reason: string };
 
 /**
+ * Resuelve el ejecutable tar correcto para la plataforma actual.
+ * En Windows, el tar de MSYS/Git interpreta "C:" como hostname de red y falla
+ * con rutas Windows nativas. El bsdtar incluido en System32 (desde Windows 10)
+ * sí acepta esas rutas. Si no existe el bsdtar de System32 (instalación recortada),
+ * se usa "tar" del PATH con el mismo comportamiento de hoy.
+ * En Linux/macOS devuelve "tar" directamente.
+ */
+function resolveTarBin(): string {
+  if (process.platform !== "win32") return "tar";
+  const winTar = path.join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "tar.exe");
+  return fs.existsSync(winTar) ? winTar : "tar";
+}
+
+/**
  * Descarga el tarball de un repo en el SHA indicado y lo extrae en destDir.
  * El cuerpo se hace streaming a disco (los tarballs de monorepos como vercel/ai
  * pesan decenas de MB) con timeout de 120s. Usa `tar -xzf --strip-components=1`
- * (tar nativo; en Windows es GNU tar de MSYS) y valida el árbol extraído
+ * (bsdtar de System32 en Windows, tar nativo en Linux/macOS) y valida el árbol extraído
  * (symlinks, path-escape). Con `validateSubdir`, la validación se limita al
  * subárbol que el caller va a consumir: un monorepo puede llevar symlinks
  * legítimos en zonas que nunca se leen (vercel/ai los tiene) y rechazar el
@@ -193,8 +207,10 @@ export async function downloadRepoTarball(
     fs.mkdirSync(destDir, { recursive: true });
 
     // Extrae con tar nativo (strip-components elimina el prefijo repo-sha/).
+    // En Windows usa el bsdtar de System32 para evitar el GNU tar de MSYS/Git,
+    // que interpreta "C:" como hostname de red y falla con rutas Windows nativas.
     try {
-      execFileSync("tar", ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
+      execFileSync(resolveTarBin(), ["-xzf", tmp, "--strip-components=1", "-C", destDir], { stdio: "pipe" });
     } catch (err) {
       // "tar ausente" y "tarball corrupto" exigen acciones opuestas: dar la causa.
       const e = err as { stderr?: Buffer | string; message?: string };
