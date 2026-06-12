@@ -40,26 +40,34 @@ List only the changed file NAMES to decide routing — do NOT load the full diff
 
 Sanity check: if that list is far larger than the work being reviewed (hundreds of files, unrelated areas), BASE is almost certainly wrong — STOP, re-resolve it (step 1), and only continue when the diff matches the actual work. Reviewing against the wrong BASE makes every finding worthless.
 
-## 3. Launch the relevant subagents in PARALLEL
+## 3. Comment pass FIRST (conditional)
 
-All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the Task tool. Each subagent fetches its OWN diff; all are read-only except `comment-fixer`, which edits comments directly (comments only, never code). Pass every one EXACTLY:
+If the diff adds or changes comments/docstrings, run `comment-fixer` ALONE before the analysts — it edits comments in place (comments only, never code), so the analysts then review a diff already clean of comment noise instead of re-reporting it or mistaking its edits for contamination.
+
+- Pass it the same scope (BASE/HEAD or working diff) as everyone else.
+- If it changed anything and the scope is a committed diff (branch/PR): commit its fixes to the reviewed branch before launching the analysts, so the diff they fetch already includes them.
+- For working-tree reviews: leave its edits uncommitted (they join the user's pending work) and say so in the report.
+- If the diff touches no comments, skip it and move on.
+
+## 4. Launch the remaining subagents in PARALLEL
+
+All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the Task tool. Each subagent fetches its OWN diff; all are read-only. Pass every one EXACTLY:
 
 - the review scope: BASE and HEAD branches (verbatim), or "working diff" for uncommitted work
 - the instruction: review only that scope — never assume `main`, use the scope given
 
 Subagents and their triggers:
 
-1. Task(subagent_type='comment-fixer') — only if the diff adds or changes comments/docstrings; it fixes them in place and reports what changed
-2. Task(subagent_type='test-analyzer') — only if the diff touches tests or code that should be tested
-3. Task(subagent_type='silent-failure-hunter') — only if the diff includes error handling, try/catch, fallbacks, or async flows
-4. Task(subagent_type='type-design-analyzer') — only if the diff changes types, interfaces, schemas, or public contracts
-5. Task(subagent_type='code-reviewer') — for general code quality whenever non-trivial source code changed
-6. Task(subagent_type='code-simplifier') — only if the diff introduces complexity worth simplifying
-7. Task(subagent_type='security-auditor') — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
+1. Task(subagent_type='test-analyzer') — only if the diff touches tests or code that should be tested
+2. Task(subagent_type='silent-failure-hunter') — only if the diff includes error handling, try/catch, fallbacks, or async flows
+3. Task(subagent_type='type-design-analyzer') — only if the diff changes types, interfaces, schemas, or public contracts
+4. Task(subagent_type='code-reviewer') — for general code quality whenever non-trivial source code changed
+5. Task(subagent_type='code-simplifier') — only if the diff introduces complexity worth simplifying
+6. Task(subagent_type='security-auditor') — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
 
 If none of a subagent's triggers are present, skip it and note that it was skipped. Always state which subagents ran and which were skipped and why.
 
-## 4. Synthesize
+## 5. Synthesize
 
 After the relevant subagents complete, synthesize their findings into a unified report:
 
@@ -68,5 +76,5 @@ After the relevant subagents complete, synthesize their findings into a unified 
 - Critical Issues (must fix)
 - Important Improvements (should fix)
 - Suggestions (nice to have)
-- Changes already applied (e.g. comment fixes left uncommitted in the working tree)
+- Changes already applied (comment fixes: committed to the branch, or left uncommitted for working-tree reviews)
 - Positive Findings

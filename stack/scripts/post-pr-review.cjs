@@ -6,7 +6,8 @@
  * Generic and project-agnostic: no version bump, no React Doctor, no project paths.
  *
  * The review subagents are CONDITIONAL — only the ones relevant to the diff run.
- * Mirrors the `/review` command logic so both stay aligned.
+ * Mirrors the `/xreview` command logic so both stay aligned: comment-fixer first
+ * (committed before the analysts), then the read-only analysts in parallel.
  *
  * Payload compatibility (stdin JSON), so the same script works on every runtime:
  * - Claude Code hooks: { tool_name: "Bash", tool_input: { command: "..." }, cwd }
@@ -115,8 +116,9 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
 
    Sanity check: if that list is far larger than the work just done (hundreds of files, unrelated areas), BASE is almost certainly wrong — STOP, re-resolve the PR base with \`gh pr view\`, and only continue when the diff matches the actual work.
 
-2. All subagents are CONDITIONAL and each fetches its OWN diff. All are read-only except comment-fixer, which edits comments directly (comments only, never code). Launch in PARALLEL (with your runtime's delegation mechanism) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
-   - comment-fixer — only if the diff adds or changes comments/docstrings; it fixes them in place and reports what changed
+2. Comment pass FIRST (conditional): if the diff adds or changes comments/docstrings, run comment-fixer ALONE before the analysts — it edits comments in place (comments only, never code). If it changed anything, commit its fixes to the PR branch BEFORE launching the analysts, so the diff they fetch is already clean of comment noise (push them together with whatever the review produces, or on their own if nothing else needs fixing). If the diff touches no comments, skip it.
+
+3. The remaining subagents are CONDITIONAL, read-only, and each fetches its OWN diff. Launch in PARALLEL (with your runtime's delegation mechanism) ONLY the relevant ones, passing each EXACTLY the BASE and HEAD branches and the instruction: review only \`${diffScope}\` — never assume \`main\`, use the BASE/HEAD given.
    - test-analyzer — only if the diff touches tests or code that should be tested
    - silent-failure-hunter — only if the diff includes error handling, try/catch, fallbacks, or async flows
    - type-design-analyzer — only if the diff changes types, interfaces, schemas, or public contracts
@@ -126,13 +128,13 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
 
    If none of a subagent's triggers are present, skip it. Always state which subagents ran and which were skipped and why.
 
-3. After the relevant subagents complete, synthesize a unified report:
+4. After the relevant subagents complete, synthesize a unified report:
    - BASE and HEAD used
    - Subagents run vs skipped (with reason)
    - Critical Issues (must fix)
    - Important Improvements (should fix)
    - Suggestions (nice to have)
-   - Changes already applied (e.g. comment fixes left uncommitted in the working tree)
+   - Changes already applied (e.g. comment fixes committed to the PR branch)
    - Positive Findings
 </post-pr-review-required>`;
 
