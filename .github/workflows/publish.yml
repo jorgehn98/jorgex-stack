@@ -1,0 +1,55 @@
+name: Publish to npm
+
+# Publica en npm en cada push a main, pero SOLO si la versión de package.json
+# no existe ya en el registry. npm no permite republicar una versión, así que
+# un push sin bump de versión no falla: simplemente se salta el publish.
+# Para soltar una versión nueva: subir un commit que cambie "version" en package.json.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # necesario para la provenance de npm
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # lee la versión del campo "packageManager" de package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - run: pnpm build
+
+      - name: Comprobar si la versión ya está publicada
+        id: check
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION ya está en npm — no se publica."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$NAME@$VERSION es nueva — se publicará."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publicar en npm
+        if: steps.check.outputs.publish == 'true'
+        run: npm publish --access public --ignore-scripts --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
