@@ -63,7 +63,10 @@ function makeTarHeader(opts: {
   const header = Buffer.alloc(512, 0);
 
   writeField(header, 0, 100, opts.name);
-  writeOctal(header, 100, 8, 0o000644); // mode
+  // Los directorios necesitan el bit de ejecución (0755): en Linux un dir sin
+  // x no es transitable y lstat de sus hijos da EACCES, lo que el validador
+  // (fail-closed) traduce a "árbol inválido". En Windows el modo se ignora.
+  writeOctal(header, 100, 8, opts.typeflag === "5" ? 0o000755 : 0o000644); // mode
   writeOctal(header, 108, 8, 0);        // uid
   writeOctal(header, 116, 8, 0);        // gid
   writeOctal(header, 124, 12, opts.size);
