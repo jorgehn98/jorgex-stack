@@ -1,6 +1,6 @@
 {
   "name": "jorgex-stack",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "description": "Harness multi-agente portable: instala la config JorgeX (agentes, skills, hooks, Engram, MCPs) en Claude Code, Codex CLI y OpenCode",
   "type": "module",
   "license": "MIT",
@@ -8,7 +8,16 @@
     "type": "git",
     "url": "git+https://github.com/jorgehn98/jorgex-stack.git"
   },
-  "keywords": ["claude-code", "codex", "opencode", "agents", "skills", "mcp", "engram", "harness"],
+  "keywords": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "agents",
+    "skills",
+    "mcp",
+    "engram",
+    "harness"
+  ],
   "bin": {
     "jorgex-stack": "./dist/cli.js"
   },
