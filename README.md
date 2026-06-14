@@ -6,23 +6,21 @@ Harness multi-agente portable: una sola fuente de configuración — 15 agentes,
 
 ## Uso
 
-Hasta la publicación en npm, desde un clon del repo:
+Instalación y uso vía npm (no requiere clonar el repo):
 
 ```
-pnpm install && pnpm build
-
-node dist/cli.js install    # interactivo: elige runtimes y confirma
-node dist/cli.js models     # picker de modelos por runtime y tier (strong/standard/cheap)
-node dist/cli.js sync       # re-aplica la config (idempotente; limpia huérfanos)
-node dist/cli.js doctor     # verifica que todo está sano (Engram, drift, hooks, keys)
-node dist/cli.js update     # interactivo: scan stack/Engram/skills, multiselect, diff/confirm
-                             # Con --check: solo informe sin cambios
-                             # Con --yes: modo batch (solo informe)
-node dist/cli.js restore    # restaura un backup
-node dist/cli.js uninstall  # desinstala lo nuestro y conserva lo del usuario (Engram intacto)
+pnpm dlx jorgex-stack install    # interactivo: elige runtimes y confirma
+pnpm dlx jorgex-stack models     # picker de modelos por runtime y tier (strong/standard/cheap)
+pnpm dlx jorgex-stack sync       # re-aplica la config (idempotente; limpia huérfanos)
+pnpm dlx jorgex-stack doctor     # verifica que todo está sano (Engram, drift, hooks, keys)
+pnpm dlx jorgex-stack update     # interactivo: scan stack/Engram/skills, multiselect, diff/confirm
+                                 # Con --check: solo informe sin cambios
+                                 # Con --yes: modo batch (solo informe)
+pnpm dlx jorgex-stack restore    # restaura un backup
+pnpm dlx jorgex-stack uninstall  # desinstala lo nuestro y conserva lo del usuario (Engram intacto)
 ```
 
-Publicado en npm será `pnpm dlx jorgex-stack <comando>`.
+En desarrollo (desde un clon), los mismos comandos van por `pnpm cli <comando>` (ver [Desarrollo](#desarrollo)).
 
 Todo comando soporta `--dry-run`, `--yes` y `--target-dir <dir>` (pruebas sin tocar la config real). Las escrituras llevan backup automático y verificación de idempotencia; el merge en configs de usuario es quirúrgico (secciones marcadas en markdown, upsert en JSON/TOML) — lo tuyo no se toca jamás.
 
@@ -43,7 +41,7 @@ Autenticación con GitHub: las consultas usan `GH_TOKEN`/`GITHUB_TOKEN` del ento
 
 ## Estado
 
-**v0.6.0 — CLI completo y migración real ejecutada (F6).** El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
+**v1.0.0 — publicada en [npm](https://www.npmjs.com/package/jorgex-stack).** CLI completo y migración real ejecutada (F6); el stack es la única fuente de configuración. El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
 
 ## Desarrollo
 
