@@ -34,10 +34,8 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
-      # Asegura npm >= 11.5.1 aunque la imagen traiga uno anterior.
+      # Asegura npm >= 11.5.1 (requisito de OIDC) aunque la imagen traiga uno anterior.
       - run: npm install -g npm@latest
-
-      - run: npm --version # debug: confirmar que el publish usa npm >= 11.5.1
 
       - run: pnpm install --frozen-lockfile
 
