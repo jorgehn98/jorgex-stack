@@ -4,6 +4,10 @@ name: Publish to npm
 # no existe ya en el registry. npm no permite republicar una versión, así que
 # un push sin bump de versión no falla: simplemente se salta el publish.
 # Para soltar una versión nueva: subir un commit que cambie "version" en package.json.
+#
+# Autenticación por trusted publishing (OIDC): SIN token ni secret. Requiere
+# configurar el repo+workflow como trusted publisher en la config del paquete
+# en npmjs.com (npm eliminó los classic/automation tokens en nov 2025).
 
 on:
   push:
@@ -27,6 +31,9 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
+      # Trusted publishing (OIDC) exige npm >= 11.5.1; el que trae Node 22 es 10.x.
+      - run: npm install -g npm@latest
+
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm typecheck
@@ -48,8 +55,6 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publicar en npm
+      - name: Publicar en npm (trusted publishing / OIDC — sin token)
         if: steps.check.outputs.publish == 'true'
         run: npm publish --access public --ignore-scripts --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
