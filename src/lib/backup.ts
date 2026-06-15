@@ -43,8 +43,16 @@ export function createBackup(files: string[], label: string, root = backupsRoot(
   const latest = listBackups(root)[0];
   if (latest?.checksum === checksum) return latest;
 
-  const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${label}`;
-  const dir = path.join(root, id);
+  // El id deriva del timestamp en ms; dos backups en el mismo milisegundo
+  // colisionarían y el segundo machacaría el directorio del primero. Sufijo
+  // incremental para garantizar unicidad sin depender de la resolución del reloj.
+  const base = `${new Date().toISOString().replace(/[:.]/g, "-")}-${label}`;
+  let id = base;
+  let dir = path.join(root, id);
+  for (let n = 1; fs.existsSync(dir); n++) {
+    id = `${base}-${n}`;
+    dir = path.join(root, id);
+  }
   ensureDir(path.join(dir, "files"));
 
   const entries = existing.map((original, i) => {
