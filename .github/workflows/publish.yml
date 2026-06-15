@@ -25,17 +25,19 @@ jobs:
 
       - uses: pnpm/action-setup@v4 # lee la versión del campo "packageManager" de package.json
 
-      # OJO: sin `registry-url`. setup-node con registry-url escribe un .npmrc con
-      # un _authToken placeholder que npm usa en vez de OIDC y rompe el trusted
-      # publishing (E404 al publicar). Sin él, npm detecta el entorno OIDC y se
-      # autentica solo. El registry por defecto ya es registry.npmjs.org.
+      # registry-url es necesario para que npm active el flujo OIDC. Clave: NO
+      # pasar `env: NODE_AUTH_TOKEN` al step de publish — un token (aunque vacío)
+      # en el .npmrc tiene precedencia sobre OIDC y rompe el trusted publishing.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22 # pnpm 11.x requiere Node >= 22.13
+          node-version: 24 # trae npm 11.x; OIDC exige npm >= 11.5.1
+          registry-url: https://registry.npmjs.org
           cache: pnpm
 
-      # Trusted publishing (OIDC) exige npm >= 11.5.1; el que trae Node 22 es 10.x.
+      # Asegura npm >= 11.5.1 aunque la imagen traiga uno anterior.
       - run: npm install -g npm@latest
+
+      - run: npm --version # debug: confirmar que el publish usa npm >= 11.5.1
 
       - run: pnpm install --frozen-lockfile
 
