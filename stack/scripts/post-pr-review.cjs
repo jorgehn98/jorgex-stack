@@ -123,10 +123,12 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
    - silent-failure-hunter — only if the diff includes error handling, try/catch, fallbacks, or async flows
    - type-design-analyzer — only if the diff changes types, interfaces, schemas, or public contracts
    - code-reviewer — for general code quality whenever non-trivial source code changed
-   - code-simplifier — only if the diff introduces complexity worth simplifying
+   - code-simplifier — only if the diff introduces complexity worth simplifying; this is the lean/anti-bloat pass for diffs and PRs
    - security-auditor — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
 
    If none of a subagent's triggers are present, skip it. Always state which subagents ran and which were skipped and why.
+
+   `/lean-audit` is a separate manual repo/path command, not post-PR automation. Do not route it from here.
 
 4. After the relevant subagents complete, synthesize a unified report:
    - BASE and HEAD used

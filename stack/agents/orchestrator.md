@@ -60,6 +60,7 @@ The goal is not ceremony: it is one responsible coordinator, one writer per scop
 - Synthesize findings.
 - Propose a simple approach.
 - Clarify only the real ambiguities.
+- Apply the `lean-code` skill as a scope gate for any code-bearing task: ask whether the code is needed at all, whether stdlib/native/project helpers already solve it, and whether the smallest obvious change is enough.
 - Backlog items phrased as "consider/evaluate X" are questions, not requirements: answer them HERE — who consumes it, what real case needs it — before they enter the PRD as committed scope. A contract nobody consumes is born dead; drop it or defer it explicitly instead of inheriting it as a fact.
 - Create the PRD before moving to PLAN (see PRD rules).
 
@@ -86,6 +87,7 @@ If the work is large enough to benefit from explicit vertical slices, use the `t
 - If a slice breakdown exists from `to-issues`, use it as the structure for planning and task sequencing.
 - Divide the work into clear tasks.
 - One task = one agent = one scope.
+- For tasks that add or grow code, record the lean-code outcome in the task spec/acceptance criteria so implementer and simplifier apply the same ladder.
 - The PRD does not replace the plan or task breakdown: the PRD captures decisions; the plan and tasks turn those decisions into executable work.
 - Materialize the plan per the Work state rules: `work/{name}/plan.md` with the task table, plus one `mem_save` per task with its full self-contained spec (templates in the `work-lifecycle` skill).
 - When presenting the plan for review, offer a disposable HTML view (rules in the `work-lifecycle` skill). Requested changes go to plan.md; delete the HTML once the plan is approved, before EXECUTE.

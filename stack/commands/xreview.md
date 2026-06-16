@@ -62,10 +62,12 @@ Subagents and their triggers:
 2. Task(subagent_type='silent-failure-hunter') — only if the diff includes error handling, try/catch, fallbacks, or async flows
 3. Task(subagent_type='type-design-analyzer') — only if the diff changes types, interfaces, schemas, or public contracts
 4. Task(subagent_type='code-reviewer') — for general code quality whenever non-trivial source code changed
-5. Task(subagent_type='code-simplifier') — only if the diff introduces complexity worth simplifying
+5. Task(subagent_type='code-simplifier') — only if the diff introduces complexity worth simplifying; this is the lean/anti-bloat pass for diffs and PRs
 6. Task(subagent_type='security-auditor') — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
 
 If none of a subagent's triggers are present, skip it and note that it was skipped. Always state which subagents ran and which were skipped and why.
+
+`/lean-audit` is a separate manual repo/path command, not post-PR automation. Do not route it from here.
 
 ## 5. Synthesize
 
