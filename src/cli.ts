@@ -6,8 +6,9 @@ import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
+import { readPackageVersion } from "./lib/release.js";
 
-const VERSION = "0.6.0";
+const VERSION = readPackageVersion();
 
 const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall"] as const;
 type Command = (typeof COMMANDS)[number];
