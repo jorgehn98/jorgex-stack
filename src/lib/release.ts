@@ -4,7 +4,9 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found/i;
+const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a single revision|bad revision|unknown commit|does not have any parents/i;
 const ZERO_SHA_PATTERN = /^0+$/;
+const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 const PUBLICABLE_EXACT = new Set([
   "upstreams.json",
@@ -65,6 +67,38 @@ export function assertCurrentReleaseRun(headSha: string, originMainSha: string):
   if (head !== originMain) {
     throw new Error("La run está obsoleta: origin/main cambió tras el fetch.");
   }
+}
+
+export function normalizeReleaseSha(releaseSha: string): string {
+  const normalized = releaseSha.trim().toLowerCase();
+
+  if (!FULL_GIT_SHA_PATTERN.test(normalized)) {
+    throw new Error("La SHA de recuperación debe ser una SHA completa de 40 hex de main.");
+  }
+
+  return normalized;
+}
+
+export function assertRecoveryReleaseSha(releaseSha: string, originMainSha: string): string {
+  const recoverySha = normalizeReleaseSha(releaseSha);
+  const originMain = originMainSha.trim().toLowerCase();
+
+  if (originMain === "") {
+    throw new Error("No se pudo resolver la SHA de origin/main para la recuperación.");
+  }
+
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", recoverySha, originMain], { stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    if (typeof (error as { status?: unknown }).status === "number" && (error as { status?: number }).status === 1) {
+      throw new Error(`La SHA de recuperación ${recoverySha} no pertenece a main. Reejecuta workflow_dispatch con release_sha=${recoverySha}.`);
+    }
+
+    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`.trim();
+    throw new Error(`No se pudo comprobar la ascendencia de release_sha contra origin/main. ${message}`.trim());
+  }
+
+  return recoverySha;
 }
 
 function findPackageJson(): string {
@@ -246,6 +280,38 @@ export function resolvePublishDiffBase(
   return resolveEventDiffBase(eventBefore, head);
 }
 
+export function resolveGitTagSha(tagRef: string): string | null {
+  try {
+    const sha = execFileSync("git", ["rev-list", "-n", "1", tagRef], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().toLowerCase();
+    return sha === "" ? null : sha;
+  } catch (error) {
+    const status = (error as { status?: unknown }).status;
+    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`.trim();
+
+    if (typeof status === "number" && GIT_TAG_NOT_FOUND_PATTERN.test(message)) {
+      return null;
+    }
+
+    throw new Error(`No se pudo resolver la SHA del tag ${tagRef}: ${message}`.trim());
+  }
+}
+
+export function assertGitTagTargetsSha(tagRef: string, expectedSha: string): string {
+  const actualSha = resolveGitTagSha(tagRef);
+
+  if (actualSha === null) {
+    throw new Error(`No existe el tag ${tagRef}.`);
+  }
+
+  const normalizedExpected = expectedSha.trim().toLowerCase();
+
+  if (actualSha !== normalizedExpected) {
+    throw new Error(`El tag ${tagRef} apunta a ${actualSha}, no a ${normalizedExpected}.`);
+  }
+
+  return actualSha;
+}
+
 export function buildReleasePlan(
   classification: ReleasePathDecision,
   packageMetadata: ReleasePackageMetadata,
@@ -270,21 +336,20 @@ export function buildReleasePlan(
 
 /**
  * Detecta commits cuyo ÚNICO propósito es bumpear versión (guarda anti-loop).
- * Reconoce: `chore(release): …`, `release: …`/`release …`, versiones sueltas
- * (`1.0.3`, `v1.0.3`) y bumps atribuidos a un actor bot con keywords de release.
- * NO matchea `chore:` genérico — un chore normal no debe saltarse el auto-bump.
+ * Reconoce: `chore(release): …`, versiones sueltas (`1.0.3`, `v1.0.3`) y
+ * bumps atribuidos a actores bot con sufijo exacto `[bot]` + keywords de release.
+ * NO matchea `release:` genérico ni `chore:` normal — un chore corriente no
+ * debe saltarse el auto-bump.
  */
 export function isReleaseBumpCommit(signal: ReleaseCommitSignal): boolean {
   const message = signal.message?.trim() ?? "";
   const actor = signal.actor?.trim() ?? "";
   const lowerMessage = message.toLowerCase();
-  const lowerActor = actor.toLowerCase();
 
   if (message === "") return false;
   if (/^chore\(release\):\s+/i.test(message)) return true;
-  if (/^release(?:[:\s-]|$)/i.test(message)) return true;
   if (/^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/i.test(message)) return true;
-  if (lowerActor.includes("bot") && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
+  if (/\[bot\]$/i.test(actor) && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
   return false;
 }
 
