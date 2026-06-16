@@ -302,6 +302,16 @@ describe("publish workflow contract", () => {
     expect(workflow).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN/);
   });
 
+  it("consulta versiones con pnpm y recupera bumps pendientes de publicar", () => {
+    const workflow = readWorkflow();
+    const bump = splitTopLevelJobs(workflow).get("bump") ?? "";
+
+    expect(bump).toContain("execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version']");
+    expect(bump).not.toContain("execFileSync('npm', ['view'");
+    expect(bump).toContain("If a previous publish failed after pushing the release bump");
+    expect(bump).toContain("the bumped version is still absent");
+  });
+
   it("crea el tag de la versión publicada después de npm publish", () => {
     const tagRelease = splitTopLevelJobs(readWorkflow()).get("tag-release") ?? "";
 

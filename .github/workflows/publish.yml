@@ -114,7 +114,7 @@ jobs:
           };
           const npmHasVersion = (packageName, version) => {
             try {
-              execFileSync('npm', ['view', `${packageName}@${version}`, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+              execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
               return true;
             } catch (error) {
               const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`;
@@ -252,6 +252,9 @@ jobs:
           }
 
           const publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          // If a previous publish failed after pushing the release bump, the bump commit
+          // itself is publishable (`package.json`) and the bumped version is still absent
+          // from npm. In that case we publish without bumping again.
           const shouldPublish = publicPaths.length > 0 && (!currentVersionExists || !releaseBumpCommit) && !npmHasVersion(packageJson.name, releaseVersion);
           console.log(`${packageJson.name}@${releaseVersion} ${shouldPublish ? 'se publicará.' : 'ya está publicado — no se publica.'}`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=${shouldPublish ? 'true' : 'false'}\nversion=${releaseVersion}\npublish_sha=${publishSha}\n`);

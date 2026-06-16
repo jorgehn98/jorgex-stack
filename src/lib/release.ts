@@ -279,7 +279,7 @@ export function findNextFreePatchVersion(version: string, versionExists: (candid
 
 export function npmHasVersion(packageName: string, version: string): boolean {
   try {
-    execFileSync("npm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return true;
   } catch (error) {
     const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
