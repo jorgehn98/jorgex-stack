@@ -73,6 +73,7 @@ After the relevant subagents complete, synthesize their findings into a unified 
 
 - Review scope used (BASE/HEAD or working diff) and how it was chosen
 - Subagents run vs skipped (with reason)
+- 4R coverage lives in the existing agent lenses (Reliability / Resilience / Readability / Risk); use it as an internal checklist, not as a separate required taxonomy or extra agents
 - Critical Issues (must fix)
 - Important Improvements (should fix)
 - Suggestions (nice to have)

@@ -7,7 +7,8 @@
  *
  * The review subagents are CONDITIONAL — only the ones relevant to the diff run.
  * Mirrors the `/xreview` command logic so both stay aligned: comment-fixer first
- * (committed before the analysts), then the read-only analysts in parallel.
+ * (committed before the analysts), then the read-only analysts in parallel, with
+ * 4R as an internal lens rather than extra agents or a mandatory output taxonomy.
  *
  * Payload compatibility (stdin JSON), so the same script works on every runtime:
  * - Claude Code hooks: { tool_name: "Bash", tool_input: { command: "..." }, cwd }
@@ -131,6 +132,7 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
 4. After the relevant subagents complete, synthesize a unified report:
    - BASE and HEAD used
    - Subagents run vs skipped (with reason)
+   - 4R coverage lives in the existing agent lenses (Reliability / Resilience / Readability / Risk); use it as an internal checklist, not as a separate required taxonomy or extra agents
    - Critical Issues (must fix)
    - Important Improvements (should fix)
    - Suggestions (nice to have)
