@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   buildReleasePlan,
+  assertCurrentReleaseRun,
   assertReleaseBumpTarget,
   classifyReleasePaths,
   bumpPatch,
@@ -13,6 +14,8 @@ import {
   isReleaseBumpCommit,
   isTestPath,
   isWorkPath,
+  resolveEventDiffBase,
+  resolvePublishDiffBase,
   readPackageVersion,
   writePackageVersion,
 } from "../src/lib/release.js";
@@ -185,6 +188,27 @@ describe("release version planning", () => {
     expect(bumpPatch("1.2.3-beta.1")).toBe("1.2.4");
     expect(() => bumpPatch("1.2")).toThrow('La versión "1.2" no es un semver simple x.y.z.');
   });
+
+  it("usa el tag v<package.version> como base acumulada si existe", () => {
+    expect(resolvePublishDiffBase("1.0.2", "ignored", (tagRef) => tagRef === "v1.0.2", "head-sha")).toBe("v1.0.2");
+  });
+
+  it("cae a github.event.before cuando no existe el tag de la versión actual", () => {
+    expect(resolvePublishDiffBase("1.0.2", "before-sha", () => false, "head-sha")).toBe("before-sha");
+  });
+
+  it("sigue usando la base vacía en el primer push sin parent", () => {
+    expect(resolveEventDiffBase("0000000000000000000000000000000000000000", "head-sha")).toBe(
+      "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    );
+  });
+
+  it("aborta runs obsoletas cuando origin/main ya no coincide con GITHUB_SHA", () => {
+    expect(() => assertCurrentReleaseRun("head-sha", "other-sha")).toThrow(
+      "La run está obsoleta: origin/main cambió tras el fetch.",
+    );
+    expect(() => assertCurrentReleaseRun("head-sha", "head-sha")).not.toThrow();
+  });
 });
 
 describe("version sync", () => {
@@ -229,13 +253,13 @@ describe("version sync", () => {
 });
 
 describe("publish workflow contract", () => {
-  it("mantiene validate, bump y publish como jobs separados", () => {
+  it("mantiene validate, bump, publish y tag-release como jobs separados", () => {
     const jobs = splitTopLevelJobs(readWorkflow());
 
-    expect([...jobs.keys()]).toEqual(["validate", "bump", "publish"]);
+    expect([...jobs.keys()]).toEqual(["validate", "bump", "publish", "tag-release"]);
   });
 
-  it("limita permisos privilegiados al bump y usa OIDC solo en publish", () => {
+  it("separa permisos de validación, bump, publish y tag", () => {
     const workflow = readWorkflow();
     const jobs = splitTopLevelJobs(workflow);
 
@@ -244,6 +268,27 @@ describe("publish workflow contract", () => {
     expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
     expect(jobs.get("publish")).toContain("permissions:\n      contents: read");
     expect(jobs.get("publish")).toContain("id-token: write");
+    expect(jobs.get("tag-release")).toContain("permissions:\n      contents: write");
+    expect(jobs.get("tag-release")).not.toContain("id-token: write");
+  });
+
+  it("usa acciones fijadas por SHA y hace fetch antes de validar la run", () => {
+    const workflow = readWorkflow();
+    const bump = splitTopLevelJobs(workflow).get("bump") ?? "";
+    const publish = splitTopLevelJobs(workflow).get("publish") ?? "";
+
+    expect(workflow).toContain("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
+    expect(workflow).toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
+    expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
+    expect(workflow).toContain("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02");
+    expect(workflow).toContain("actions/download-artifact@d3f86a1060a0bac45b974a628896c90dbdf5c8093");
+    expect(bump).toContain("['fetch', 'origin', 'main', '--tags']");
+    expect(bump).toContain("['rev-parse', 'origin/main']");
+    expect(bump).toContain("v${packageVersion.trim()}");
+    expect(bump).toContain("GITHUB_EVENT_BEFORE");
+    expect(bump).toContain("La run está obsoleta: origin/main cambió tras el fetch.");
+    expect(publish).toContain("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
+    expect(publish).toContain("actions/download-artifact@d3f86a1060a0bac45b974a628896c90dbdf5c8093");
   });
 
   it("publica desde publish_sha, no ejecuta dist/release.js y no filtra tokens", () => {
@@ -255,6 +300,18 @@ describe("publish workflow contract", () => {
     expect(publish).toContain("npm publish --ignore-scripts --provenance");
     expect(publish).not.toContain("dist/release.js");
     expect(workflow).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN/);
+  });
+
+  it("crea el tag de la versión publicada después de npm publish", () => {
+    const tagRelease = splitTopLevelJobs(readWorkflow()).get("tag-release") ?? "";
+
+    expect(tagRelease).toContain("needs: [bump, publish]");
+    expect(tagRelease).toContain("ref: ${{ needs.bump.outputs.publish_sha }}");
+    expect(tagRelease).toContain("TAG=\"v$VERSION\"");
+    expect(tagRelease).toContain("EXISTING_SHA=\"$(git rev-list -n 1 \"$TAG\")\"");
+    expect(tagRelease).toContain("if [ \"$EXISTING_SHA\" != \"$SHA\" ]; then");
+    expect(tagRelease).toContain("git tag \"$TAG\" \"$SHA\"");
+    expect(tagRelease).toContain("git push origin \"$TAG\"");
   });
 
   it("mantiene la guarda anti-loop cerrada a chore(release), no a chore genérico", () => {

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found/i;
+const ZERO_SHA_PATTERN = /^0+$/;
 
 const PUBLICABLE_EXACT = new Set([
   "upstreams.json",
@@ -47,6 +48,19 @@ export interface ReleasePlan extends ReleasePathDecision {
   nextVersion: string;
   releaseVersion: string;
   bumpAllowed: boolean;
+}
+
+export function assertCurrentReleaseRun(headSha: string, originMainSha: string): void {
+  const head = headSha.trim();
+  const originMain = originMainSha.trim();
+
+  if (head === "" || originMain === "") {
+    throw new Error("No se pudo resolver la SHA de la run o de origin/main.");
+  }
+
+  if (head !== originMain) {
+    throw new Error("La run está obsoleta: origin/main cambió tras el fetch.");
+  }
 }
 
 function findPackageJson(): string {
@@ -181,6 +195,40 @@ export function bumpPatch(version: string): string {
     throw new Error(`La versión "${version}" no es un semver simple x.y.z.`);
   }
   return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+export function resolveEventDiffBase(before: string, head: string): string {
+  const trimmed = before.trim();
+
+  if (trimmed === "") {
+    try {
+      return execFileSync("git", ["rev-parse", `${head}^`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    } catch (error) {
+      const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
+      if (/unknown revision|ambiguous argument|needed a single revision|does not have any parents/i.test(message)) {
+        return "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+      }
+
+      throw new Error(`No se pudo resolver la base de diff para ${head}: ${message.trim()}`);
+    }
+  }
+
+  return ZERO_SHA_PATTERN.test(trimmed) ? "4b825dc642cb6eb9a060e54bf8d69288fbee4904" : trimmed;
+}
+
+export function resolvePublishDiffBase(
+  packageVersion: string,
+  eventBefore: string,
+  tagExists: (tagRef: string) => boolean,
+  head: string,
+): string {
+  const tagRef = `v${packageVersion.trim()}`;
+
+  if (tagExists(tagRef)) {
+    return tagRef;
+  }
+
+  return resolveEventDiffBase(eventBefore, head);
 }
 
 export function buildReleasePlan(
