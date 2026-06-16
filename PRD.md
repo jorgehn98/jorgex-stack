@@ -212,6 +212,19 @@ Solo dos MCPs en el stack (D5):
 - Los originales **no se tocan** mientras dure el desarrollo (están en uso).
 - F6 (cierre): eliminar de jorgex-custom-tools, reinstalar todo desde JorgeX Stack.
 
+### 7.6 Publicación automática en npm
+
+El paquete `jorgex-stack` se publica solo, sin acción del usuario. El workflow `.github/workflows/publish.yml` corre en cada push a `main` y aplica esta política:
+
+1. **Detección de cambios publicables**: se compara `HEAD` contra el commit anterior y se clasifican los paths cambiados. Son publicables los de `src/`, `stack/` y la lista exacta (`upstreams.json`, `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `tsup.config.ts`, `README.md`, `PRD.md`). **No** son publicables los cambios solo en `work/`, `worktrees/`, tests, ni en archivos fuera de la lista. La política está modelada y testeada en `src/lib/release.ts` (`classifyReleasePaths`); el workflow la replica inline para no ejecutar código generado por el repo en el job privilegiado.
+2. **Patch automático**: si hay cambios publicables y la versión de `package.json` ya existe en npm, el workflow hace bump patch (`bumpPatch` en `src/lib/release.ts`), commitea `chore(release): bump version to v…` con el actor `github-actions[bot]` y publica la nueva versión. Si no hay cambios publicables: no hace nada.
+3. **Minor y major manuales**: cuando el siguiente patch ya existe en npm (p.ej. el workflow detectó que `1.0.3` está ocupado), falla con mensaje claro y exige bump manual de `package.json` en un PR. Minor y major siguen siendo decisiones humanas.
+4. **Guarda anti-loop**: `isReleaseBumpCommit` reconoce commits `chore(release):`, `release:`, bumps de versión, y cualquier commit de un actor con `bot` que mencione release/publish/bump/version. Cuando detecta uno, no vuelve a bumpear ni a publicar.
+5. **OIDC / trusted publishing**: el job de release usa `permissions: id-token: write` y `setup-node` con `registry-url: https://registry.npmjs.org`. **No** se usan `NPM_TOKEN` ni `NODE_AUTH_TOKEN` — los únicos secretos del repo son los de GitHub. La excepción a la regla D8 ("pnpm siempre") es el `npm publish` final: el registry de npm requiere el cliente npm para OIDC; no hay equivalente oficial en pnpm.
+6. **Versión del CLI sincronizada**: `src/cli.ts --version` lee `package.json` directamente (`readPackageMetadata` en `src/lib/release.ts`); no hay constante `VERSION` hardcodeada que pueda quedar desincronizada.
+
+Los detalles de política (criterios de publicabilidad, lista exacta, semántica del bump commit) se prueban en `src/lib/release.ts`; el YAML mantiene una copia inline mínima por seguridad del job con `contents: write` + `id-token: write`.
+
 ## 8. CLI — UX
 
 ```

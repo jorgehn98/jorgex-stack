@@ -41,7 +41,18 @@ Autenticación con GitHub: las consultas usan `GH_TOKEN`/`GITHUB_TOKEN` del ento
 
 ## Estado
 
-**v1.0.0 — publicada en [npm](https://www.npmjs.com/package/jorgex-stack).** CLI completo y migración real ejecutada (F6); el stack es la única fuente de configuración. El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
+CLI completo y migración real ejecutada (F6); el stack es la única fuente de configuración. Las versiones se publican automáticamente en [npm](https://www.npmjs.com/package/jorgex-stack) según el flujo descrito en [Publicación](#publicación). El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
+
+## Publicación
+
+La release la dispara el push/merge a `main` y la ejecuta GitHub Actions. No se usa `pnpm publish` ni hace falta login de npm:
+
+- **Patch automático**: si el push a `main` contiene cambios publicables y la versión actual de `package.json` ya está en npm, el workflow hace bump patch (`1.0.x` → `1.0.(x+1)`), commitea `chore(release): bump version to v…` y publica. Sin intervención.
+- **Sin release**: cambios solo en `work/`, `worktrees/`, tests o archivos no listados como publicables (`src/`, `stack/`, `upstreams.json`, `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `tsup.config.ts`, `README.md`, `PRD.md`) no generan release.
+- **Minor y major manuales**: bump explícito de `package.json` en el PR (el workflow detecta que el siguiente patch ya existe en npm y exige el bump).
+- **OIDC / trusted publishing**: el workflow usa `id-token: write` y el `registry-url` de `setup-node`. No hay `NPM_TOKEN` ni `NODE_AUTH_TOKEN` en ningún secreto. La única excepción a la regla "pnpm siempre" es `npm publish` aquí, por compatibilidad del registry.
+
+Los detalles de diseño están en [PRD §7.6](PRD.md#76-publicación-automática-en-npm).
 
 ## Desarrollo
 
