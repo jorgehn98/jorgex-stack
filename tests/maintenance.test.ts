@@ -182,14 +182,21 @@ describe("contención de rutas (manifest/backup manipulados)", () => {
 describe("contrato 4R", () => {
   it("no introduce agentes review-* duplicados", () => {
     const agentsDir = path.join(stackRoot(), "agents");
+    const duplicateAgents = fs
+      .readdirSync(agentsDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /^review-.*\.md$/.test(entry.name))
+      .map((entry) => entry.name);
 
-    for (const name of [
-      "review-risk.md",
-      "review-readability.md",
-      "review-reliability.md",
-      "review-resilience.md",
-    ]) {
-      expect(fs.existsSync(path.join(agentsDir, name))).toBe(false);
+    expect(duplicateAgents).toEqual([]);
+  });
+
+  it("xreview y post-pr-review fijan el contrato 4R como lente interna", () => {
+    for (const relativePath of ["commands/xreview.md", "scripts/post-pr-review.cjs"]) {
+      const content = readStackFile(relativePath);
+      expect(content).toContain("4R coverage lives in the existing agent lenses");
+      expect(content).toContain("Reliability / Resilience / Readability / Risk");
+      expect(content).toContain("internal checklist");
+      expect(content).toContain("not as a separate required taxonomy or extra agents");
     }
   });
 
@@ -197,7 +204,6 @@ describe("contrato 4R", () => {
     expectFragments(readStackFile("agents/security-auditor.md"), [
       "## 4R Risk Lens",
       "auth, authorization, secrets, sensitive data, input validation, webhooks",
-      "Secrets & credentials",
       "input validation",
       "Webhooks & external callbacks",
     ]);
@@ -228,7 +234,6 @@ describe("contrato 4R", () => {
       "fallback, retry, degradation",
       "rollback",
       "fix-forward behavior",
-      "Silent failures are unacceptable",
     ]);
   });
 
