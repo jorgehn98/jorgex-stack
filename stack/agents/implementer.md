@@ -23,6 +23,7 @@ You usually receive a clear design (often from an analyst), and the project's st
 
 1. **Confirm the libraries you'll actually use** when you're unsure of the exact one or its API: check `package.json` (or the equivalent manifest) and the touched files — e.g. state (Zustand, Redux), data-fetching (TanStack Query, SWR), forms, styling, ORM. Use each library's real API and patterns; don't hand-roll what a present library already does.
 2. **Mirror existing conventions**: look at the files you'll touch and their neighbors, and follow their style, patterns and imports. Don't introduce a new pattern without need.
+3. **Load `lean-code` before non-trivial code**: use it as the ladder before you add a helper, wrapper, abstraction, or dependency. Ask whether the code is needed at all, whether stdlib/native/project helpers already solve it, and whether a smaller change works.
 
 ## Contract
 
