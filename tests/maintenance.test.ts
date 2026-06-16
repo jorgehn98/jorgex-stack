@@ -13,6 +13,15 @@ import { stackRoot } from "../src/lib/paths.js";
 
 let tmp: string;
 
+const readStackFile = (relativePath: string) =>
+  fs.readFileSync(path.join(stackRoot(), relativePath), "utf8");
+
+const expectFragments = (content: string, fragments: string[]) => {
+  for (const fragment of fragments) {
+    expect(content).toContain(fragment);
+  }
+};
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-maint-"));
 });
@@ -167,5 +176,80 @@ describe("contención de rutas (manifest/backup manipulados)", () => {
     expect(restoreBackup(info.id, root, boundary)).toBe(1);
     expect(fs.existsSync(inside)).toBe(true);
     expect(fs.existsSync(outside)).toBe(false);
+  });
+});
+
+describe("contrato 4R", () => {
+  it("no introduce agentes review-* duplicados", () => {
+    const agentsDir = path.join(stackRoot(), "agents");
+
+    for (const name of [
+      "review-risk.md",
+      "review-readability.md",
+      "review-reliability.md",
+      "review-resilience.md",
+    ]) {
+      expect(fs.existsSync(path.join(agentsDir, name))).toBe(false);
+    }
+  });
+
+  it("security-auditor conserva las señales de R1 Risk", () => {
+    expectFragments(readStackFile("agents/security-auditor.md"), [
+      "## 4R Risk Lens",
+      "auth, authorization, secrets, sensitive data, input validation, webhooks",
+      "Secrets & credentials",
+      "input validation",
+      "Webhooks & external callbacks",
+    ]);
+  });
+
+  it("code-simplifier conserva las señales de R2 Readability", () => {
+    expectFragments(readStackFile("agents/code-simplifier.md"), [
+      "## 4R Readability Lens",
+      "nested ternary operators",
+      "guard clauses",
+      "readability/maintainability",
+    ]);
+  });
+
+  it("test-analyzer conserva las señales de R3 Reliability", () => {
+    expectFragments(readStackFile("agents/test-analyzer.md"), [
+      "## 4R Reliability Lens",
+      "external contracts",
+      "negative test cases",
+      "async/concurrency behavior",
+      "behavioral coverage rather than line coverage",
+    ]);
+  });
+
+  it("silent-failure-hunter conserva las señales de R4 Resilience", () => {
+    expectFragments(readStackFile("agents/silent-failure-hunter.md"), [
+      "## 4R Resilience Lens",
+      "fallback, retry, degradation",
+      "rollback",
+      "fix-forward behavior",
+      "Silent failures are unacceptable",
+    ]);
+  });
+
+  it("xreview y post-pr-review solo lanzan agentes canónicos", () => {
+    const reviewFiles = [
+      "commands/xreview.md",
+      "scripts/post-pr-review.cjs",
+    ].map((relativePath) => readStackFile(relativePath));
+
+    for (const content of reviewFiles) {
+      expect(content).toContain("test-analyzer");
+      expect(content).toContain("silent-failure-hunter");
+      expect(content).toContain("type-design-analyzer");
+      expect(content).toContain("code-reviewer");
+      expect(content).toContain("code-simplifier");
+      expect(content).toContain("security-auditor");
+
+      expect(content).not.toContain("review-risk");
+      expect(content).not.toContain("review-readability");
+      expect(content).not.toContain("review-reliability");
+      expect(content).not.toContain("review-resilience");
+    }
   });
 });
