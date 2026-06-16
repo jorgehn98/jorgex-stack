@@ -110,6 +110,70 @@ describe("renderCommand de OpenCode", () => {
   });
 });
 
+describe("lean integration: artefactos canónicos del stack", () => {
+  it("incluye lean-code y lean-audit bajo stack/ y los publica en el paquete", () => {
+    const root = stackRoot();
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "..", "package.json"), "utf8")) as { files?: string[] };
+
+    expect(pkg.files).toContain("stack");
+
+    const skill = path.join(root, "skills", "lean-code", "SKILL.md");
+    const command = path.join(root, "commands", "lean-audit.md");
+
+    expect(fs.existsSync(skill)).toBe(true);
+    expect(fs.existsSync(command)).toBe(true);
+    expect(fs.readFileSync(skill, "utf8")).toContain("name: lean-code");
+    expect(fs.readFileSync(command, "utf8")).toContain("description: Manual read-only lean audit");
+  });
+});
+
+describe("lean integration: prompt wiring", () => {
+  it("code-simplifier carga lean-code y admite audit scope", () => {
+    const content = fs.readFileSync(path.join(stackRoot(), "agents", "code-simplifier.md"), "utf8");
+
+    expect(content).toContain("Use the `lean-code` skill as your anti-bloat lens");
+    expect(content).toContain("If you're given an audit scope (repo/path root)");
+    expect(content).toContain("Load the `lean-code` skill.");
+  });
+
+  it("implementer aplica lean-code antes de añadir código no trivial", () => {
+    const content = fs.readFileSync(path.join(stackRoot(), "agents", "implementer.md"), "utf8");
+
+    expect(content).toContain("Load `lean-code` before non-trivial code");
+    expect(content).toContain("Ask whether the code is needed at all");
+  });
+
+  it("orchestrator usa lean-code como gate de alcance", () => {
+    const content = fs.readFileSync(path.join(stackRoot(), "agents", "orchestrator.md"), "utf8");
+
+    expect(content).toContain("Apply the `lean-code` skill as a scope gate");
+    expect(content).toContain("whether the smallest obvious change is enough");
+  });
+
+  it("type-design-analyzer limita el audit scope a contratos/tipos", () => {
+    const content = fs.readFileSync(path.join(stackRoot(), "agents", "type-design-analyzer.md"), "utf8");
+
+    expect(content).toContain("If you're given an audit scope (repo/path root)");
+    expect(content).toContain("inspect only type/interface/schema/contract definitions in that path");
+  });
+});
+
+describe("lean integration: xreview y post-pr-review alineados", () => {
+  it("ambos tratan code-simplifier como el pase lean/anti-bloat y xreview deja lean-audit fuera de post-PR", () => {
+    const xreview = fs.readFileSync(path.join(stackRoot(), "commands", "xreview.md"), "utf8");
+    const postPrReview = fs.readFileSync(path.join(stackRoot(), "scripts", "post-pr-review.cjs"), "utf8");
+
+    expect(xreview).toContain("code-simplifier");
+    expect(xreview).toContain("lean/anti-bloat pass for diffs and PRs");
+    expect(xreview).toContain("`/lean-audit` is a separate manual repo/path command");
+    expect(xreview).toContain("not post-PR automation");
+
+    expect(postPrReview).toContain("code-simplifier");
+    expect(postPrReview).toContain("lean/anti-bloat pass for diffs and PRs");
+    expect(postPrReview).not.toContain("lean-audit");
+  });
+});
+
 describe("manifest de instalación", () => {
   it("write → read → remove por runtime sin tocar a los demás", () => {
     const file = path.join(tmp, "manifest.json");

@@ -173,7 +173,7 @@ La config actual referencia modelos vía OpenCode multi-provider (`openai/gpt-5.
 }
 ```
 
-**Auditoría (F1, 2026-06-10)**: las 18 skills están vendorizadas en `stack/skills/` con upstream registrado. Solo `agent-delegation` y `work-lifecycle` son propias; `tdd`, `to-prd`, `to-issues` y `diagnose` de **mattpocock/skills** tienen modificaciones locales (`modified: true`). Resto: anthropics/skills, supabase/agent-skills, vercel(-labs), kepano/obsidian-skills, millionco/react-doctor, safishamsi/graphify.
+**Auditoría (F1, 2026-06-10)**: las 18 skills están vendorizadas en `stack/skills/` con upstream registrado. Solo `agent-delegation`, `work-lifecycle` y `lean-code` son propias; `tdd`, `to-prd`, `to-issues` y `diagnose` de **mattpocock/skills** tienen modificaciones locales (`modified: true`). Resto: anthropics/skills, supabase/agent-skills, vercel(-labs), kepano/obsidian-skills, millionco/react-doctor, safishamsi/graphify.
 
 **Política de `update` (F5.x — implementada con flujo interactivo)**:
 

@@ -128,8 +128,6 @@ HEAD: the current branch / worktree (resolve with \`git rev-parse --abbrev-ref H
 
    If none of a subagent's triggers are present, skip it. Always state which subagents ran and which were skipped and why.
 
-   `/lean-audit` is a separate manual repo/path command, not post-PR automation. Do not route it from here.
-
 4. After the relevant subagents complete, synthesize a unified report:
    - BASE and HEAD used
    - Subagents run vs skipped (with reason)

@@ -1,5 +1,5 @@
 ---
-description: Manual read-only lean audit — resolves repo/path scope, runs a cheap bloat scan, launches code-simplifier always and the relevant analysts conditionally, then reports ranked delete/stdlib/native/yagni/shrink findings.
+description: Manual read-only lean audit — resolves repo/path scope, runs a cheap scope/routing scan, launches code-simplifier always and the relevant analysts conditionally, then reports ranked lean findings.
 ---
 
 Run a manual lean audit. Your job as the main agent: determine WHAT to audit, resolve the exact repo/path scope, decide which subagents apply, and launch them in parallel.
@@ -19,18 +19,16 @@ User input (may be empty): {{input}}
 - If the input is a repo root, audit the repo from that root downward.
 - If you are inside a worktree, use that worktree as the scope unless the user named a different path.
 
-## 2. Cheap bloat scan
+## 2. Cheap scope/routing scan
 
-Before launching subagents, do a quick scan for obvious bloat signals in the scope:
+Before launching subagents, do a quick scan for obvious routing signals in the scope:
 
-- large files or functions
-- repeated logic or copy-pasted branches
-- thin wrappers around stdlib or platform APIs
-- custom parsing/formatting that existing helpers already cover
-- abstractions that only forward arguments
-- code that exists only because a previous layer was not reused
+- changed file names and top-level directories
+- obvious code/test/docs boundaries
+- areas that likely need code-simplifier vs analyst passes
+- anything that changes which subagents should run
 
-Use the scan to rank areas, not to rewrite anything.
+Use the scan to route work, not to judge bloat or rewrite anything. Code-simplifier owns the lean/anti-bloat findings.
 
 ## 3. Launch the remaining subagents in PARALLEL
 
