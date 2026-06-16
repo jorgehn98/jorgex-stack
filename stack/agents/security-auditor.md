@@ -20,6 +20,13 @@ bash: git-read
 
 Focus only on the changed code and the context needed to judge its security impact — do not audit the whole codebase.
 
+## 4R Risk Lens
+
+- Report only concrete risks with evidence: file/line, data flow, trust boundary, and why the issue is exploitable or security-relevant.
+- Treat authz/backend surfaces, secrets, cookies/sessions, DOM sinks, injections by concatenation, and webhooks as priority review areas.
+- Do not broaden into readability, test coverage, or resilience cleanup; delegate those lanes instead.
+- A neutral-looking file can still carry risk if it changes control flow, permissions, data handling, or external input paths.
+
 ## What to Audit
 
 - **Authentication & sessions**: login/logout flows, token handling, session invalidation, JWT usage and claims.
