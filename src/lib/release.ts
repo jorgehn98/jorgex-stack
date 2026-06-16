@@ -21,6 +21,7 @@ const WORK_PREFIXES = ["work/", "worktrees/"];
 const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
 const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
 
+/** Clasificación del diff de un push a main: qué se publicaría y qué se ignora. */
 export interface ReleasePathDecision {
   publishable: boolean;
   reason: string;
@@ -30,16 +31,19 @@ export interface ReleasePathDecision {
   workPaths: string[];
 }
 
+/** Nombre y versión leídos de package.json. */
 export interface ReleasePackageMetadata {
   name: string;
   version: string;
 }
 
+/** Señales del HEAD (mensaje + actor) que se evalúan para detectar commits de bump. */
 export interface ReleaseCommitSignal {
   message?: string | null;
   actor?: string | null;
 }
 
+/** Plan completo de release: clasificación + estado del paquete + decisión de bump. */
 export interface ReleasePlan extends ReleasePathDecision {
   packageName: string;
   currentVersion: string;
@@ -77,6 +81,7 @@ export function readPackageVersion(): string {
   return readPackageMetadata().version;
 }
 
+/** Lee nombre y versión del package.json del repo (busca hacia arriba desde el dist/ del CLI). */
 export function readPackageMetadata(): ReleasePackageMetadata {
   const packageJson = findPackageJson();
   const raw = fs.readFileSync(packageJson, "utf8");
@@ -107,6 +112,8 @@ export function isTestPath(input: string): boolean {
 
 export function isPublicablePath(input: string): boolean {
   const normalized = normalizeReleasePath(input);
+  // work/ y worktrees/ se excluyen SIEMPRE, aunque la subruta viva bajo src/ o stack/
+  // (p. ej. un worktree que contiene un src/ propio): nunca se publica nada de ahí.
   if (WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
   if (PUBLICABLE_EXACT.has(normalized)) return true;
   return PUBLICABLE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
@@ -197,6 +204,11 @@ export function bumpPatch(version: string): string {
   return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
 }
 
+/**
+ * Resuelve la base del diff cuando NO existe el tag v<package.version>:
+ * usa `github.event.before` (push normal) o cae al SHA del árbol vacío de git
+ * (`4b825d…`) en el primer commit de la rama.
+ */
 export function resolveEventDiffBase(before: string, head: string): string {
   const trimmed = before.trim();
 
@@ -222,6 +234,9 @@ export function resolvePublishDiffBase(
   tagExists: (tagRef: string) => boolean,
   head: string,
 ): string {
+  // Si el tag v<version> ya existe, lo usamos como base acumulada: el diff contra
+  // ese tag refleja TODO lo que cambió desde la última release. Si no existe
+  // (versión nueva que nunca llegó a tagearse), caemos a github.event.before.
   const tagRef = `v${packageVersion.trim()}`;
 
   if (tagExists(tagRef)) {
@@ -253,6 +268,12 @@ export function buildReleasePlan(
   };
 }
 
+/**
+ * Detecta commits cuyo ÚNICO propósito es bumpear versión (guarda anti-loop).
+ * Reconoce: `chore(release): …`, `release: …`/`release …`, versiones sueltas
+ * (`1.0.3`, `v1.0.3`) y bumps atribuidos a un actor bot con keywords de release.
+ * NO matchea `chore:` genérico — un chore normal no debe saltarse el auto-bump.
+ */
 export function isReleaseBumpCommit(signal: ReleaseCommitSignal): boolean {
   const message = signal.message?.trim() ?? "";
   const actor = signal.actor?.trim() ?? "";
@@ -277,6 +298,11 @@ export function findNextFreePatchVersion(version: string, versionExists: (candid
   return candidate;
 }
 
+/**
+ * Comprueba si `<name>@<version>` existe en npm usando `pnpm view` (regla "pnpm
+ * siempre, nunca npm"). 404 = "no existe" (caso normal de primera publicación);
+ * cualquier otro error se relanza para no enmascarar fallos de red/permisos.
+ */
 export function npmHasVersion(packageName: string, version: string): boolean {
   try {
     execFileSync("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

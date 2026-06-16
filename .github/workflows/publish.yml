@@ -266,7 +266,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write # OIDC: emite la provenance de npm al publicar
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -281,6 +281,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
+          # registry-url activa el flujo OIDC de npm; NO añadir env vars de auth token
+          # (cualquier valor, aunque vacío, tiene precedencia sobre OIDC y rompe trusted publishing).
           registry-url: https://registry.npmjs.org
 
       - run: |
