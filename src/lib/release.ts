@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found/i;
 
 const PUBLICABLE_EXACT = new Set([
   "upstreams.json",
@@ -10,7 +13,6 @@ const PUBLICABLE_EXACT = new Set([
   "tsup.config.ts",
   "README.md",
   "PRD.md",
-  ".github/workflows/publish.yml",
 ]);
 
 const PUBLICABLE_PREFIXES = ["src/", "stack/"];
@@ -27,9 +29,24 @@ export interface ReleasePathDecision {
   workPaths: string[];
 }
 
+export interface ReleasePackageMetadata {
+  name: string;
+  version: string;
+}
+
 export interface ReleaseCommitSignal {
   message?: string | null;
   actor?: string | null;
+}
+
+export interface ReleasePlan extends ReleasePathDecision {
+  packageName: string;
+  currentVersion: string;
+  currentVersionExists: boolean;
+  releaseBumpCommit: boolean;
+  nextVersion: string;
+  releaseVersion: string;
+  bumpAllowed: boolean;
 }
 
 function findPackageJson(): string {
@@ -43,15 +60,21 @@ function findPackageJson(): string {
 }
 
 export function readPackageVersion(): string {
+  return readPackageMetadata().version;
+}
+
+export function readPackageMetadata(): ReleasePackageMetadata {
   const packageJson = findPackageJson();
   const raw = fs.readFileSync(packageJson, "utf8");
-  const parsed = JSON.parse(raw) as { version?: unknown };
-  if (typeof parsed.version === "string" && parsed.version.trim() !== "") return parsed.version.trim();
+  const parsed = JSON.parse(raw) as { name?: unknown; version?: unknown };
+  const name = typeof parsed.name === "string" ? parsed.name.trim() : "";
+  const version = typeof parsed.version === "string" ? parsed.version.trim() : "";
 
-  const fallback = process.env.npm_package_version?.trim();
-  if (fallback) return fallback;
+  if (name === "" || version === "") {
+    throw new Error("package.json no expone nombre o versión válidos.");
+  }
 
-  throw new Error("No se pudo leer la versión desde package.json.");
+  return { name, version };
 }
 
 export function normalizeReleasePath(input: string): string {
@@ -152,6 +175,35 @@ export function classifyReleasePaths(paths: readonly string[]): ReleasePathDecis
   };
 }
 
+export function bumpPatch(version: string): string {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+  if (!match) {
+    throw new Error(`La versión "${version}" no es un semver simple x.y.z.`);
+  }
+  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+export function buildReleasePlan(
+  classification: ReleasePathDecision,
+  packageMetadata: ReleasePackageMetadata,
+  currentVersionExists: boolean,
+  releaseBumpCommit: boolean,
+): ReleasePlan {
+  const bumpAllowed = classification.publishable && currentVersionExists && !releaseBumpCommit;
+  const nextVersion = bumpAllowed ? bumpPatch(packageMetadata.version) : "";
+
+  return {
+    ...classification,
+    packageName: packageMetadata.name,
+    currentVersion: packageMetadata.version,
+    currentVersionExists,
+    releaseBumpCommit,
+    nextVersion,
+    releaseVersion: bumpAllowed ? nextVersion : packageMetadata.version,
+    bumpAllowed,
+  };
+}
+
 export function isReleaseBumpCommit(signal: ReleaseCommitSignal): boolean {
   const message = signal.message?.trim() ?? "";
   const actor = signal.actor?.trim() ?? "";
@@ -166,4 +218,29 @@ export function isReleaseBumpCommit(signal: ReleaseCommitSignal): boolean {
   if (/\b(?:release|publish|version)\b.*\b(?:bump|update|commit)\b/i.test(message)) return true;
   if (lowerActor.includes("bot") && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
   return false;
+}
+
+export function npmHasVersion(packageName: string, version: string): boolean {
+  try {
+    execFileSync("npm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return true;
+  } catch (error) {
+    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
+    if (NPM_NOT_FOUND_PATTERN.test(message)) return false;
+    throw error;
+  }
+}
+
+export function writePackageVersion(packageJsonPath: string, version: string): void {
+  const raw = fs.readFileSync(packageJsonPath, "utf8");
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+  parsed.version = version;
+  fs.writeFileSync(packageJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+}
+
+export function assertReleaseBumpTarget(branch: string): void {
+  if (branch.trim() !== "main") {
+    throw new Error("El bump de release solo puede empujarse a main.");
+  }
 }

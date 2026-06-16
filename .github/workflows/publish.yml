@@ -1,41 +1,37 @@
 name: Publish to npm
 
-# Publica en npm en cada push a main, pero SOLO si la versión de package.json
-# no existe ya en el registry. npm no permite republicar una versión, así que
-# un push sin bump de versión no falla: simplemente se salta el publish.
-# Para soltar una versión nueva: subir un commit que cambie "version" en package.json.
-#
-# Autenticación por trusted publishing (OIDC): SIN token ni secret. Requiere
-# configurar el repo+workflow como trusted publisher en la config del paquete
-# en npmjs.com (npm eliminó los classic/automation tokens en nov 2025).
+# Publica en npm en cada push a main, pero SOLO si hay cambios publicables y
+# la versión resultante no existe ya en el registry. El build y los tests corren
+# en un job sin permisos privilegiados; el job de release usa pasos inline
+# auditablemente mínimos y publica con OIDC.
 
 on:
   push:
     branches: [main]
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
-  id-token: write # necesario para la provenance de npm
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4 # lee la versión del campo "packageManager" de package.json
+      - uses: pnpm/action-setup@v4
 
-      # registry-url es necesario para que npm active el flujo OIDC. Clave: NO
-      # pasar `env: NODE_AUTH_TOKEN` al step de publish — un token (aunque vacío)
-      # en el .npmrc tiene precedencia sobre OIDC y rompe el trusted publishing.
       - uses: actions/setup-node@v4
         with:
-          node-version: 24 # trae npm 11.x; OIDC exige npm >= 11.5.1
-          registry-url: https://registry.npmjs.org
+          node-version: 24
           cache: pnpm
-
-      # Asegura npm >= 11.5.1 (requisito de OIDC) aunque la imagen traiga uno anterior.
-      - run: npm install -g npm@latest
 
       - run: pnpm install --frozen-lockfile
 
@@ -45,19 +41,192 @@ jobs:
 
       - run: pnpm build
 
-      - name: Comprobar si la versión ya está publicada
-        id: check
-        run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "$NAME@$VERSION ya está en npm — no se publica."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$NAME@$VERSION es nueva — se publicará."
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
 
-      - name: Publicar en npm (trusted publishing / OIDC — sin token)
-        if: steps.check.outputs.publish == 'true'
-        run: npm publish --access public --ignore-scripts --provenance
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - id: release
+        shell: bash
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+
+          const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+          const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found/i;
+          const PUBLICABLE_EXACT = new Set([
+            'upstreams.json',
+            'package.json',
+            'pnpm-lock.yaml',
+            'tsconfig.json',
+            'tsup.config.ts',
+            'README.md',
+            'PRD.md',
+          ]);
+          const PUBLICABLE_PREFIXES = ['src/', 'stack/'];
+          const WORK_PREFIXES = ['work/', 'worktrees/'];
+          const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
+          const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
+
+          const normalize = (input) => input.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+          const isWorkPath = (input) => {
+            const normalized = normalize(input);
+            return WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+          };
+          const isTestPath = (input) => {
+            const normalized = normalize(input);
+            return TEST_DIR_PATTERN.test(normalized) || TEST_FILE_PATTERN.test(normalized);
+          };
+          const isPublicablePath = (input) => {
+            const normalized = normalize(input);
+            if (WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
+            if (PUBLICABLE_EXACT.has(normalized)) return true;
+            return PUBLICABLE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+          };
+          const bumpPatch = (version) => {
+            const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+            if (!match) throw new Error(`La versión "${version}" no es un semver simple x.y.z.`);
+            return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+          };
+          const npmHasVersion = (packageName, version) => {
+            try {
+              execFileSync('npm', ['view', `${packageName}@${version}`, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+              return true;
+            } catch (error) {
+              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`;
+              if (NPM_NOT_FOUND_PATTERN.test(message)) return false;
+              throw error;
+            }
+          };
+          const isReleaseBumpCommit = ({ message, actor }) => {
+            const trimmedMessage = (message ?? '').trim();
+            const trimmedActor = (actor ?? '').trim();
+            const lowerMessage = trimmedMessage.toLowerCase();
+            if (trimmedMessage === '') return false;
+            if (/^chore(?:\(release\))?:\s+/i.test(trimmedMessage)) return true;
+            if (/^release(?:[:\s-]|$)/i.test(trimmedMessage)) return true;
+            if (/^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/i.test(trimmedMessage)) return true;
+            if (/\b(?:release|publish|bump)\b.*\bversion\b/i.test(trimmedMessage)) return true;
+            if (/\b(?:release|publish|version)\b.*\b(?:bump|update|commit)\b/i.test(trimmedMessage)) return true;
+            if (trimmedActor.toLowerCase().includes('bot') && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
+            return false;
+          };
+          const resolveHeadRevision = (input) => {
+            const trimmed = input.trim();
+            if (trimmed !== '') return trimmed;
+            return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          };
+          const resolveDiffBase = (before, head) => {
+            const trimmed = before.trim();
+            if (trimmed === '') {
+              try {
+                return execFileSync('git', ['rev-parse', `${head}^`], { encoding: 'utf8' }).trim();
+              } catch {
+                return EMPTY_TREE_SHA;
+              }
+            }
+            return /^0+$/.test(trimmed) ? EMPTY_TREE_SHA : trimmed;
+          };
+
+          if ((process.env.GITHUB_REF_NAME ?? '').trim() !== 'main') {
+            throw new Error('El bump de release solo puede empujarse a main.');
+          }
+
+          const head = resolveHeadRevision(process.env.GITHUB_SHA ?? '');
+          const before = resolveDiffBase(process.env.GITHUB_EVENT_BEFORE ?? '', head);
+          const changedPaths = execFileSync('git', ['diff', '--name-only', before, head], { encoding: 'utf8' })
+            .split('\n')
+            .map((line) => normalize(line))
+            .filter(Boolean);
+
+          const publicPaths = [];
+          const ignoredPaths = [];
+          const testPaths = [];
+          const workPaths = [];
+
+          for (const rawPath of changedPaths) {
+            if (isWorkPath(rawPath)) {
+              workPaths.push(rawPath);
+              continue;
+            }
+            if (isTestPath(rawPath)) {
+              testPaths.push(rawPath);
+              continue;
+            }
+            if (isPublicablePath(rawPath)) {
+              publicPaths.push(rawPath);
+              continue;
+            }
+            ignoredPaths.push(rawPath);
+          }
+
+          if (publicPaths.length === 0) {
+            console.log('Sin cambios publicables.');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=false\nversion=\n');
+            process.exit(0);
+          }
+
+          console.log(`Cambios publicables en ${publicPaths.join(', ')}`);
+
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const commitMessage = execFileSync('git', ['log', '-1', '--pretty=%B', head], { encoding: 'utf8' }).trim();
+          const releaseBumpCommit = isReleaseBumpCommit({ message: commitMessage, actor: process.env.GITHUB_ACTOR ?? '' });
+          const currentVersionExists = npmHasVersion(packageJson.name, packageJson.version);
+
+          let releaseVersion = packageJson.version;
+          if (currentVersionExists && !releaseBumpCommit) {
+            const nextVersion = bumpPatch(packageJson.version);
+            if (npmHasVersion(packageJson.name, nextVersion)) {
+              throw new Error(`La siguiente versión ${packageJson.name}@${nextVersion} ya existe en npm. Se requiere bump manual.`);
+            }
+
+            packageJson.version = nextVersion;
+            fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
+            execFileSync('git', ['config', 'user.name', 'github-actions[bot]'], { stdio: 'inherit' });
+            execFileSync('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], { stdio: 'inherit' });
+            execFileSync('git', ['add', 'package.json'], { stdio: 'inherit' });
+            execFileSync('git', ['commit', '-m', `chore(release): bump version to v${nextVersion}`], { stdio: 'inherit' });
+            execFileSync('git', ['push', 'origin', `HEAD:${process.env.GITHUB_REF_NAME}`], { stdio: 'inherit' });
+            releaseVersion = nextVersion;
+          }
+
+          if (npmHasVersion(packageJson.name, releaseVersion)) {
+            console.log(`${packageJson.name}@${releaseVersion} ya está en npm — no se publica.`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=${releaseVersion}\n`);
+            process.exit(0);
+          }
+
+          console.log(`${packageJson.name}@${releaseVersion} es nueva — se publicará.`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=true\nversion=${releaseVersion}\n`);
+          NODE
+
+      - if: steps.release.outputs.publish == 'true'
+        run: |
+          npm pack --dry-run --ignore-scripts
+          npm publish --access public --ignore-scripts --provenance
