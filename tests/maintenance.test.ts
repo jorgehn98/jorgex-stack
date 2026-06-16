@@ -13,6 +13,70 @@ import { stackRoot } from "../src/lib/paths.js";
 
 let tmp: string;
 
+const readStackFile = (relativePath: string) =>
+  fs.readFileSync(path.join(stackRoot(), relativePath), "utf8");
+
+const expectFragments = (content: string, fragments: string[]) => {
+  for (const fragment of fragments) {
+    expect(content).toContain(fragment);
+  }
+};
+
+const REVIEW_ENTRYPOINT_CASES = [
+  {
+    relativePath: "commands/xreview.md",
+    contractFragments: [
+      "4R internally",
+      "comment-fixer",
+      "test-analyzer",
+      "silent-failure-hunter",
+      "type-design-analyzer",
+      "code-reviewer",
+      "code-simplifier",
+      "security-auditor",
+      "not add a separate 4R section or taxonomy",
+    ],
+  },
+  {
+    relativePath: "scripts/post-pr-review.cjs",
+    contractFragments: [
+      "stays internal",
+      "Reliability / Resilience / Readability / Risk",
+      "comment-fixer",
+      "test-analyzer",
+      "silent-failure-hunter",
+      "type-design-analyzer",
+      "code-reviewer",
+      "code-simplifier",
+      "security-auditor",
+      "extra agents",
+    ],
+  },
+] as const;
+
+const FOUR_R_LENS_CASES = [
+  {
+    relativePath: "agents/security-auditor.md",
+    header: "## 4R Risk Lens",
+    fragments: ["auth, authorization, secrets, sensitive data, input validation, webhooks", "input validation", "Webhooks & external callbacks"],
+  },
+  {
+    relativePath: "agents/code-simplifier.md",
+    header: "## 4R Readability Lens",
+    fragments: ["nested ternary operators", "guard clauses", "readability/maintainability"],
+  },
+  {
+    relativePath: "agents/test-analyzer.md",
+    header: "## 4R Reliability Lens",
+    fragments: ["external contracts", "negative test cases", "async/concurrency behavior", "behavioral coverage rather than line coverage"],
+  },
+  {
+    relativePath: "agents/silent-failure-hunter.md",
+    header: "## 4R Resilience Lens",
+    fragments: ["fallback, retry, degradation", "rollback", "fix-forward behavior"],
+  },
+] as const;
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-maint-"));
 });
@@ -231,5 +295,30 @@ describe("contención de rutas (manifest/backup manipulados)", () => {
     expect(restoreBackup(info.id, root, boundary)).toBe(1);
     expect(fs.existsSync(inside)).toBe(true);
     expect(fs.existsSync(outside)).toBe(false);
+  });
+});
+
+describe("contrato 4R", () => {
+  it("stack/agents no introduce agentes review-* duplicados", () => {
+    const agentsDir = path.join(stackRoot(), "agents");
+    const duplicateAgents = fs
+      .readdirSync(agentsDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /^review-.*\.md$/.test(entry.name))
+      .map((entry) => entry.name);
+
+    expect(duplicateAgents).toEqual([]);
+  });
+
+  it.each(REVIEW_ENTRYPOINT_CASES)("$relativePath fija 4R interno y routing canónico", ({ relativePath, contractFragments }) => {
+    const content = readStackFile(relativePath);
+    expectFragments(content, [...contractFragments]);
+    expect(content).not.toContain("review-risk");
+    expect(content).not.toContain("review-readability");
+    expect(content).not.toContain("review-reliability");
+    expect(content).not.toContain("review-resilience");
+  });
+
+  it.each(FOUR_R_LENS_CASES)("$relativePath conserva las señales de su lente 4R", ({ relativePath, header, fragments }) => {
+    expectFragments(readStackFile(relativePath), [header, ...fragments]);
   });
 });

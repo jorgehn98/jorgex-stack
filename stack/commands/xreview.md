@@ -71,7 +71,7 @@ If none of a subagent's triggers are present, skip it and note that it was skipp
 
 ## 5. Synthesize
 
-After the relevant subagents complete, synthesize their findings into a unified report:
+After the relevant subagents complete, synthesize their findings into a unified report. Use 4R internally (Reliability / Resilience / Readability / Risk) as a checklist while synthesizing; do not add a separate 4R section or taxonomy to the final report.
 
 - Review scope used (BASE/HEAD or working diff) and how it was chosen
 - Subagents run vs skipped (with reason)
