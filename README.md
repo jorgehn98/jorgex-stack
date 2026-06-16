@@ -47,10 +47,10 @@ CLI completo y migración real ejecutada (F6); el stack es la única fuente de c
 
 La release la dispara el push/merge a `main` y la ejecuta GitHub Actions. No se usa `pnpm publish` ni hace falta login de npm:
 
-- **Patch automático**: si el push a `main` contiene cambios publicables y la versión actual de `package.json` ya está en npm, el workflow hace bump patch (`1.0.x` → `1.0.(x+1)`), commitea `chore(release): bump version to v…` y publica. Sin intervención.
+- **Patch automático**: si el push a `main` contiene cambios publicables y la versión actual de `package.json` ya está en npm, el workflow busca el primer patch libre (`x+1`, `x+2`, …), commitea `chore(release): bump version to v…` y publica. Sin intervención.
 - **Sin release**: cambios solo en `work/`, `worktrees/`, tests o archivos no listados como publicables (`src/`, `stack/`, `upstreams.json`, `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `tsup.config.ts`, `README.md`, `PRD.md`) no generan release.
 - **Minor y major manuales**: bump explícito de `package.json` en el PR (el workflow detecta que el siguiente patch ya existe en npm y exige el bump).
-- **OIDC / trusted publishing**: el workflow usa `id-token: write` y el `registry-url` de `setup-node`. No hay `NPM_TOKEN` ni `NODE_AUTH_TOKEN` en ningún secreto. La única excepción a la regla "pnpm siempre" es `npm publish` aquí, por compatibilidad del registry.
+- **OIDC / trusted publishing**: el job de publicación usa `id-token: write` y `registry-url` de `setup-node`; el job de bump/push solo tiene `contents: write`. No hay `NPM_TOKEN` ni `NODE_AUTH_TOKEN` en ningún secreto. La única excepción a la regla "pnpm siempre" es `npm publish` aquí, por compatibilidad del registry.
 
 Los detalles de diseño están en [PRD §7.6](PRD.md#76-publicación-automática-en-npm).
 

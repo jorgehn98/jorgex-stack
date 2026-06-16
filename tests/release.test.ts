@@ -8,6 +8,7 @@ import {
   assertReleaseBumpTarget,
   classifyReleasePaths,
   bumpPatch,
+  findNextFreePatchVersion,
   isPublicablePath,
   isReleaseBumpCommit,
   isTestPath,
@@ -18,6 +19,37 @@ import {
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8") as string) as { version: string };
+const WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "publish.yml");
+
+function readWorkflow(): string {
+  return fs.readFileSync(WORKFLOW_PATH, "utf8");
+}
+
+function splitTopLevelJobs(workflow: string): Map<string, string> {
+  const lines = workflow.split(/\r?\n/);
+  const jobStarts: Array<{ name: string; line: number }> = [];
+  const jobsIndex = lines.findIndex((line) => line === "jobs:");
+
+  if (jobsIndex === -1) {
+    throw new Error("No se encontró la sección jobs en el workflow.");
+  }
+
+  for (let index = jobsIndex + 1; index < lines.length; index += 1) {
+    const match = /^  ([a-z][\w-]*):$/.exec(lines[index] ?? "");
+    if (match) {
+      jobStarts.push({ name: match[1]!, line: index });
+    }
+  }
+
+  const jobs = new Map<string, string>();
+  for (let index = 0; index < jobStarts.length; index += 1) {
+    const start = jobStarts[index]!.line;
+    const end = jobStarts[index + 1]?.line ?? lines.length;
+    jobs.set(jobStarts[index]!.name, lines.slice(start, end).join("\n"));
+  }
+
+  return jobs;
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -89,6 +121,12 @@ describe("release bump loop guard", () => {
     expect(isReleaseBumpCommit({ message: "feat: add docs" })).toBe(false);
   });
 
+  it("no trata un chore normal como release", () => {
+    expect(isReleaseBumpCommit({ message: "chore: update deps" })).toBe(false);
+    expect(isReleaseBumpCommit({ message: "docs: update publish version section" })).toBe(false);
+    expect(isReleaseBumpCommit({ message: "chore(release): 1.0.3" })).toBe(true);
+  });
+
   it("solo permite empujar el bump desde main", () => {
     expect(() => assertReleaseBumpTarget("main")).not.toThrow();
     expect(() => assertReleaseBumpTarget("feature/publish"))
@@ -105,6 +143,32 @@ describe("release version planning", () => {
     expect(plan.bumpAllowed).toBe(true);
     expect(plan.nextVersion).toBe("1.0.3");
     expect(plan.releaseVersion).toBe("1.0.3");
+  });
+
+  it("busca el primer patch libre si el siguiente ya existe", () => {
+    const classification = classifyReleasePaths(["src/lib/release.ts"]);
+    const plan = buildReleasePlan(
+      classification,
+      { name: "jorgex-stack", version: "1.0.2" },
+      true,
+      false,
+      (candidate) => candidate === "1.0.3",
+    );
+
+    expect(plan.bumpAllowed).toBe(true);
+    expect(plan.nextVersion).toBe("1.0.4");
+    expect(plan.releaseVersion).toBe("1.0.4");
+    expect(findNextFreePatchVersion("1.0.2", (candidate) => candidate === "1.0.3")).toBe("1.0.4");
+  });
+
+  it("no hace bump si la versión actual todavía no existe", () => {
+    const classification = classifyReleasePaths(["src/lib/release.ts"]);
+    const plan = buildReleasePlan(classification, { name: "jorgex-stack", version: "1.0.2" }, false, false);
+
+    expect(plan.publishable).toBe(true);
+    expect(plan.bumpAllowed).toBe(false);
+    expect(plan.nextVersion).toBe("");
+    expect(plan.releaseVersion).toBe("1.0.2");
   });
 
   it("bloquea el auto-bump en commits de release y deja la versión tal cual", () => {
@@ -161,5 +225,42 @@ describe("version sync", () => {
     }
 
     expect(logs).toEqual([PACKAGE_VERSION.version]);
+  });
+});
+
+describe("publish workflow contract", () => {
+  it("mantiene validate, bump y publish como jobs separados", () => {
+    const jobs = splitTopLevelJobs(readWorkflow());
+
+    expect([...jobs.keys()]).toEqual(["validate", "bump", "publish"]);
+  });
+
+  it("limita permisos privilegiados al bump y usa OIDC solo en publish", () => {
+    const workflow = readWorkflow();
+    const jobs = splitTopLevelJobs(workflow);
+
+    expect(workflow).toMatch(/^permissions:\n  contents: read$/m);
+    expect(jobs.get("validate")).toContain("permissions:\n      contents: read");
+    expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
+    expect(jobs.get("publish")).toContain("permissions:\n      contents: read");
+    expect(jobs.get("publish")).toContain("id-token: write");
+  });
+
+  it("publica desde publish_sha, no ejecuta dist/release.js y no filtra tokens", () => {
+    const workflow = readWorkflow();
+    const publish = splitTopLevelJobs(workflow).get("publish") ?? "";
+
+    expect(publish).toContain("ref: ${{ needs.bump.outputs.publish_sha }}");
+    expect(publish).toContain("npm pack --dry-run --ignore-scripts");
+    expect(publish).toContain("npm publish --ignore-scripts --provenance");
+    expect(publish).not.toContain("dist/release.js");
+    expect(workflow).not.toMatch(/NODE_AUTH_TOKEN|NPM_TOKEN/);
+  });
+
+  it("mantiene la guarda anti-loop cerrada a chore(release), no a chore genérico", () => {
+    const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+
+    expect(bump).toContain("/^chore\\(release\\):\\s+/i.test(trimmedMessage)");
+    expect(bump).not.toContain("/^chore:/i");
   });
 });

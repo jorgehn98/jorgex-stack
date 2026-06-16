@@ -188,9 +188,10 @@ export function buildReleasePlan(
   packageMetadata: ReleasePackageMetadata,
   currentVersionExists: boolean,
   releaseBumpCommit: boolean,
+  versionExists: (candidateVersion: string) => boolean = () => false,
 ): ReleasePlan {
   const bumpAllowed = classification.publishable && currentVersionExists && !releaseBumpCommit;
-  const nextVersion = bumpAllowed ? bumpPatch(packageMetadata.version) : "";
+  const nextVersion = bumpAllowed ? findNextFreePatchVersion(packageMetadata.version, versionExists) : "";
 
   return {
     ...classification,
@@ -211,13 +212,21 @@ export function isReleaseBumpCommit(signal: ReleaseCommitSignal): boolean {
   const lowerActor = actor.toLowerCase();
 
   if (message === "") return false;
-  if (/^chore(?:\(release\))?:\s+/i.test(message)) return true;
+  if (/^chore\(release\):\s+/i.test(message)) return true;
   if (/^release(?:[:\s-]|$)/i.test(message)) return true;
   if (/^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/i.test(message)) return true;
-  if (/\b(?:release|publish|bump)\b.*\bversion\b/i.test(message)) return true;
-  if (/\b(?:release|publish|version)\b.*\b(?:bump|update|commit)\b/i.test(message)) return true;
   if (lowerActor.includes("bot") && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
   return false;
+}
+
+export function findNextFreePatchVersion(version: string, versionExists: (candidateVersion: string) => boolean): string {
+  let candidate = bumpPatch(version);
+
+  while (versionExists(candidate)) {
+    candidate = bumpPatch(candidate);
+  }
+
+  return candidate;
 }
 
 export function npmHasVersion(packageName: string, version: string): boolean {

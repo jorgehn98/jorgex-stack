@@ -2,8 +2,8 @@ name: Publish to npm
 
 # Publica en npm en cada push a main, pero SOLO si hay cambios publicables y
 # la versión resultante no existe ya en el registry. El build y los tests corren
-# en un job sin permisos privilegiados; el job de release usa pasos inline
-# auditablemente mínimos y publica con OIDC.
+# en un job sin permisos privilegiados; el bump/push usa solo contents: write;
+# el publish usa OIDC sin capacidad de escribir en el repo.
 
 on:
   push:
@@ -47,26 +47,23 @@ jobs:
           path: dist
           if-no-files-found: error
 
-  release:
+  bump:
     needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+      publish_sha: ${{ steps.release.outputs.publish_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - id: release
         shell: bash
@@ -129,13 +126,15 @@ jobs:
             const trimmedActor = (actor ?? '').trim();
             const lowerMessage = trimmedMessage.toLowerCase();
             if (trimmedMessage === '') return false;
-            if (/^chore(?:\(release\))?:\s+/i.test(trimmedMessage)) return true;
+            if (/^chore\(release\):\s+/i.test(trimmedMessage)) return true;
             if (/^release(?:[:\s-]|$)/i.test(trimmedMessage)) return true;
             if (/^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/i.test(trimmedMessage)) return true;
-            if (/\b(?:release|publish|bump)\b.*\bversion\b/i.test(trimmedMessage)) return true;
-            if (/\b(?:release|publish|version)\b.*\b(?:bump|update|commit)\b/i.test(trimmedMessage)) return true;
             if (trimmedActor.toLowerCase().includes('bot') && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
             return false;
+          };
+          const isExpectedNoParentError = (error) => {
+            const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`;
+            return /unknown revision|ambiguous argument|needed a single revision|does not have any parents/i.test(message);
           };
           const resolveHeadRevision = (input) => {
             const trimmed = input.trim();
@@ -146,9 +145,11 @@ jobs:
             const trimmed = before.trim();
             if (trimmed === '') {
               try {
-                return execFileSync('git', ['rev-parse', `${head}^`], { encoding: 'utf8' }).trim();
-              } catch {
-                return EMPTY_TREE_SHA;
+                return execFileSync('git', ['rev-parse', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+              } catch (error) {
+                if (isExpectedNoParentError(error)) return EMPTY_TREE_SHA;
+                const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+                throw new Error(`No se pudo resolver la base de diff para ${head}: ${message}`);
               }
             }
             return /^0+$/.test(trimmed) ? EMPTY_TREE_SHA : trimmed;
@@ -188,7 +189,7 @@ jobs:
 
           if (publicPaths.length === 0) {
             console.log('Sin cambios publicables.');
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=false\nversion=\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=\npublish_sha=${head}\n`);
             process.exit(0);
           }
 
@@ -201,9 +202,10 @@ jobs:
 
           let releaseVersion = packageJson.version;
           if (currentVersionExists && !releaseBumpCommit) {
-            const nextVersion = bumpPatch(packageJson.version);
-            if (npmHasVersion(packageJson.name, nextVersion)) {
-              throw new Error(`La siguiente versión ${packageJson.name}@${nextVersion} ya existe en npm. Se requiere bump manual.`);
+            let nextVersion = bumpPatch(packageJson.version);
+            while (npmHasVersion(packageJson.name, nextVersion)) {
+              console.log(`${packageJson.name}@${nextVersion} ya existe en npm — se prueba el siguiente patch.`);
+              nextVersion = bumpPatch(nextVersion);
             }
 
             packageJson.version = nextVersion;
@@ -216,17 +218,35 @@ jobs:
             releaseVersion = nextVersion;
           }
 
-          if (npmHasVersion(packageJson.name, releaseVersion)) {
-            console.log(`${packageJson.name}@${releaseVersion} ya está en npm — no se publica.`);
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=${releaseVersion}\n`);
-            process.exit(0);
-          }
-
-          console.log(`${packageJson.name}@${releaseVersion} es nueva — se publicará.`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=true\nversion=${releaseVersion}\n`);
+          const publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          const shouldPublish = publicPaths.length > 0 && (!currentVersionExists || !releaseBumpCommit) && !npmHasVersion(packageJson.name, releaseVersion);
+          console.log(`${packageJson.name}@${releaseVersion} ${shouldPublish ? 'se publicará.' : 'ya está publicado — no se publica.'}`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=${shouldPublish ? 'true' : 'false'}\nversion=${releaseVersion}\npublish_sha=${publishSha}\n`);
           NODE
 
-      - if: steps.release.outputs.publish == 'true'
-        run: |
+  publish:
+    needs: bump
+    if: needs.bump.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.publish_sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - run: |
           npm pack --dry-run --ignore-scripts
-          npm publish --access public --ignore-scripts --provenance
+          npm publish --ignore-scripts --provenance
