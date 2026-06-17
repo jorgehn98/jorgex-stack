@@ -158,6 +158,29 @@ class GoalStoreImpl implements GoalStore {
       CREATE INDEX IF NOT EXISTS idx_goals_project_status_updated
         ON goals(project, status, updated_at);
 
+      UPDATE goals
+      SET status = 'cancelled'
+      WHERE status NOT IN ('failed', 'complete', 'cancelled')
+        AND EXISTS (
+          SELECT 1
+          FROM goals AS newer
+          WHERE newer.project = goals.project
+            AND newer.status NOT IN ('failed', 'complete', 'cancelled')
+            AND (
+              newer.updated_at > goals.updated_at
+              OR (newer.updated_at = goals.updated_at AND newer.created_at > goals.created_at)
+              OR (
+                newer.updated_at = goals.updated_at
+                AND newer.created_at = goals.created_at
+                AND newer.id > goals.id
+              )
+            )
+        );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_one_open_per_project
+        ON goals(project)
+        WHERE status NOT IN ('failed', 'complete', 'cancelled');
+
       CREATE TABLE IF NOT EXISTS goal_events (
         id TEXT PRIMARY KEY,
         goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
@@ -226,6 +249,11 @@ class GoalStoreImpl implements GoalStore {
     this.assertText(input.objective, "objective");
     this.assertText(input.project, "project");
 
+    const existing = this.getCurrentGoal(input.project);
+    if (existing) {
+      throw new Error(`Project ${input.project} already has an open goal: ${existing.objective}.`);
+    }
+
     const createdAt = this.now();
     const goal: GoalRecord = {
       id: createRecordId("goal"),
@@ -261,6 +289,18 @@ class GoalStoreImpl implements GoalStore {
     const row = this.db.get(
       `SELECT * FROM goals
        WHERE project = ? AND status = 'active'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      project,
+    );
+    return row ? mapGoal(row) : undefined;
+  }
+
+  getCurrentGoal(project: string): GoalRecord | undefined {
+    this.ensureOpen();
+    const row = this.db.get(
+      `SELECT * FROM goals
+       WHERE project = ? AND status NOT IN ('failed', 'complete', 'cancelled')
        ORDER BY updated_at DESC
        LIMIT 1`,
       project,
@@ -478,20 +518,26 @@ class GoalStoreImpl implements GoalStore {
     return row ? mapPullRequest(row) : undefined;
   }
 
+  getOpenPullRequest(goalId: string): PullRequestRecord | undefined {
+    this.ensureOpen();
+    const row = this.db.get(
+      `SELECT * FROM goal_prs
+       WHERE goal_id = ? AND status = 'open'
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      goalId,
+    );
+    return row ? mapPullRequest(row) : undefined;
+  }
+
   nextAction(goalId: string): NextAction {
     this.ensureOpen();
     const goal = this.requireGoal(goalId);
 
     if (goal.status === "waiting_for_merge") {
-      const pullRequest = this.db.get(
-        `SELECT * FROM goal_prs
-         WHERE goal_id = ? AND status = 'open'
-         ORDER BY created_at ASC
-         LIMIT 1`,
-        goalId,
-      );
+      const pullRequest = this.getOpenPullRequest(goalId);
       if (pullRequest) {
-        return { type: "wait_for_merge", pullRequestId: readText(pullRequest, "id") };
+        return { type: "wait_for_merge", pullRequestId: pullRequest.id };
       }
     }
 

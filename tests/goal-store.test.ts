@@ -19,6 +19,41 @@ afterEach(() => {
 });
 
 describe("Goal Mode SQLite store", () => {
+  it("migrates legacy duplicate open goals before adding the uniqueness guard", async () => {
+    const databasePath = makeDbPath();
+    const { DatabaseSync } = await import("node:sqlite");
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      CREATE TABLE goals (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `);
+    const insert = database.prepare(
+      `INSERT INTO goals (id, project, objective, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run("goal_old", "jorgex-stack", "Old open goal", "active", "2026-06-17T00:00:00.000Z", "2026-06-17T00:00:00.000Z");
+    insert.run("goal_new", "jorgex-stack", "New open goal", "paused", "2026-06-17T01:00:00.000Z", "2026-06-17T01:00:00.000Z");
+    database.close();
+
+    const store = createGoalStore({ databasePath });
+
+    expect(() => store.migrate()).not.toThrow();
+    expect(store.schemaVersion()).toBe(GOAL_STORE_SCHEMA_VERSION);
+    expect(store.getCurrentGoal("jorgex-stack")).toMatchObject({
+      id: "goal_new",
+      status: "paused",
+    });
+    expect(store.getGoal("goal_old")).toMatchObject({ status: "cancelled" });
+
+    store.close();
+  });
+
   it("creates a new DB, applies versioned migrations and creates an active goal", () => {
     const store = createGoalStore({ databasePath: makeDbPath() });
 

@@ -1,4 +1,4 @@
-export const GOAL_STORE_SCHEMA_VERSION = 1 as const;
+export const GOAL_STORE_SCHEMA_VERSION = 2 as const;
 
 export type GoalStatus =
   | "active"
@@ -143,6 +143,8 @@ export interface GoalStore {
   createGoal(input: GoalInput): GoalRecord;
   getGoal(goalId: string): GoalRecord | undefined;
   getActiveGoal(project: string): GoalRecord | undefined;
+  getCurrentGoal(project: string): GoalRecord | undefined;
+  getOpenPullRequest(goalId: string): PullRequestRecord | undefined;
   appendEvent(goalId: string, input: GoalEventInput): GoalEventRecord;
   listEvents(goalId: string): GoalEventRecord[];
   transitionGoal(
