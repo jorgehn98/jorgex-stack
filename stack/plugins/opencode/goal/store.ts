@@ -3,6 +3,9 @@ import { GoalDb } from "./db.js";
 import { assertGoalTransition, isTerminalGoalStatus } from "./state.js";
 import {
   GOAL_STORE_SCHEMA_VERSION,
+  type GoalArtifactInput,
+  type GoalArtifactKind,
+  type GoalArtifactRecord,
   type GoalEventInput,
   type GoalEventRecord,
   type GoalInput,
@@ -132,6 +135,17 @@ function mapPullRequest(row: Row): PullRequestRecord {
   };
 }
 
+function mapArtifact(row: Row): GoalArtifactRecord {
+  return {
+    id: readText(row, "id"),
+    goalId: readText(row, "goal_id"),
+    kind: readText(row, "kind") as GoalArtifactKind,
+    path: readText(row, "path"),
+    createdAt: readText(row, "created_at"),
+    updatedAt: readText(row, "updated_at"),
+  };
+}
+
 class GoalStoreImpl implements GoalStore {
   private readonly db: GoalDb;
   private readonly now: () => string;
@@ -233,6 +247,19 @@ class GoalStoreImpl implements GoalStore {
 
       CREATE INDEX IF NOT EXISTS idx_goal_prs_goal_status_created
         ON goal_prs(goal_id, status, created_at);
+
+      CREATE TABLE IF NOT EXISTS goal_artifacts (
+        id TEXT PRIMARY KEY,
+        goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(goal_id, kind)
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS idx_goal_artifacts_goal_kind
+        ON goal_artifacts(goal_id, kind);
 
       PRAGMA user_version = ${GOAL_STORE_SCHEMA_VERSION};
     `);
@@ -528,6 +555,69 @@ class GoalStoreImpl implements GoalStore {
       goalId,
     );
     return row ? mapPullRequest(row) : undefined;
+  }
+
+  recordArtifact(goalId: string, input: GoalArtifactInput): GoalArtifactRecord {
+    return this.atomically(() => {
+      this.ensureOpen();
+      this.requireGoal(goalId);
+      this.assertText(input.path, "path");
+      if (input.kind !== "prd" && input.kind !== "plan") {
+        throw new Error(`Invalid artifact kind: ${input.kind}`);
+      }
+
+      const existing = this.getArtifact(goalId, input.kind);
+      const updatedAt = this.now();
+      if (existing) {
+        this.db.run(
+          "UPDATE goal_artifacts SET path = ?, updated_at = ? WHERE id = ?",
+          input.path,
+          updatedAt,
+          existing.id,
+        );
+        this.touchGoal(goalId, updatedAt);
+        return this.getArtifact(goalId, input.kind)!;
+      }
+
+      const artifact: GoalArtifactRecord = {
+        id: createRecordId("artifact"),
+        goalId,
+        kind: input.kind,
+        path: input.path,
+        createdAt: updatedAt,
+        updatedAt,
+      };
+
+      this.db.run(
+        `INSERT INTO goal_artifacts (id, goal_id, kind, path, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        artifact.id,
+        artifact.goalId,
+        artifact.kind,
+        artifact.path,
+        artifact.createdAt,
+        artifact.updatedAt,
+      );
+      this.touchGoal(goalId, updatedAt);
+      return artifact;
+    });
+  }
+
+  listArtifacts(goalId: string): GoalArtifactRecord[] {
+    this.ensureOpen();
+    return this.db
+      .all("SELECT * FROM goal_artifacts WHERE goal_id = ? ORDER BY kind ASC", goalId)
+      .map(mapArtifact);
+  }
+
+  getArtifact(goalId: string, kind: GoalArtifactKind): GoalArtifactRecord | undefined {
+    this.ensureOpen();
+    const row = this.db.get(
+      "SELECT * FROM goal_artifacts WHERE goal_id = ? AND kind = ?",
+      goalId,
+      kind,
+    );
+    return row ? mapArtifact(row) : undefined;
   }
 
   nextAction(goalId: string): NextAction {

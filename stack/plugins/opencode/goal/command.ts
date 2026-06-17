@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { GoalRecord, GoalStatus, GoalStore, NextAction } from "./types.js";
 
 const COMMANDS = new Set(["status", "plan", "history", "pause", "resume", "cancel"]);
@@ -65,7 +66,7 @@ export function createGoalCommandHandlers(options: GoalCommandHandlersOptions): 
       }
 
       if (normalized === "status") return statusResponse(currentGoal(), options.store);
-      if (normalized === "plan") return planResponse(requireCurrentGoal());
+      if (normalized === "plan") return planResponse(requireCurrentGoal(), options.store);
       if (normalized === "history") return historyResponse(requireCurrentGoal(), options.store);
 
       const goal = requireCurrentGoal();
@@ -103,7 +104,14 @@ function statusResponse(goal: GoalRecord | undefined, store: GoalStore): GoalCom
   };
 }
 
-function planResponse(goal: GoalRecord): GoalCommandResponse {
+function planResponse(goal: GoalRecord, store: GoalStore): GoalCommandResponse {
+  const plan = store.getArtifact(goal.id, "plan");
+  if (plan && fs.existsSync(plan.path)) {
+    return {
+      message: [`Plan for goal: ${goal.objective}`, fs.readFileSync(plan.path, "utf8")].join("\n\n"),
+    };
+  }
+
   return {
     message: [
       `Plan for goal: ${goal.objective}`,

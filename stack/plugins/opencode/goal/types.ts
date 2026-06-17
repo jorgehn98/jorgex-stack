@@ -1,4 +1,4 @@
-export const GOAL_STORE_SCHEMA_VERSION = 2 as const;
+export const GOAL_STORE_SCHEMA_VERSION = 3 as const;
 
 export type GoalStatus =
   | "active"
@@ -11,6 +11,7 @@ export type GoalStatus =
   | "cancelled";
 
 export type PullRequestStatus = "open" | "merged" | "closed";
+export type GoalArtifactKind = "prd" | "plan";
 
 export interface GoalStoreOptions {
   databasePath: string;
@@ -58,6 +59,11 @@ export interface PullRequestInput {
 export interface PullRequestMergeInput {
   mergedAt: string;
   mergeCommit: string;
+}
+
+export interface GoalArtifactInput {
+  kind: GoalArtifactKind;
+  path: string;
 }
 
 export interface GoalRecord {
@@ -116,6 +122,15 @@ export interface PullRequestRecord {
   mergeCommit?: string;
 }
 
+export interface GoalArtifactRecord {
+  id: string;
+  goalId: string;
+  kind: GoalArtifactKind;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface GoalStoreSnapshot {
   schemaVersion: number;
   nextEventSequence: number;
@@ -156,6 +171,9 @@ export interface GoalStore {
   addWorktree(goalId: string, input: WorktreeInput): WorktreeRecord;
   recordPullRequest(goalId: string, input: PullRequestInput): PullRequestRecord;
   getPullRequest(pullRequestId: string): PullRequestRecord | undefined;
+  recordArtifact(goalId: string, input: GoalArtifactInput): GoalArtifactRecord;
+  listArtifacts(goalId: string): GoalArtifactRecord[];
+  getArtifact(goalId: string, kind: GoalArtifactKind): GoalArtifactRecord | undefined;
   nextAction(goalId: string): NextAction;
   recordPullRequestMerged(
     pullRequestId: string,
