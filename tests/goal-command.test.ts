@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type TestContext } from "vitest";
 import { createGoalStore } from "../stack/plugins/opencode/goal/store.js";
 import { createGoalCommandHandlers } from "../stack/plugins/opencode/goal/command.js";
 
@@ -119,6 +119,26 @@ describe("/goal command", () => {
 
     await expect(runGoalCommand("Bootstrap must roll back")).rejects.toThrow(/bootstrap failed/i);
 
+    expect(store!.getCurrentGoal(PROJECT)).toBeUndefined();
+  });
+
+  it("informa si el rollback de artefactos también falla", async (ctx: TestContext) => {
+    const sensitiveDir = path.join(tempDir, ".engram");
+    const linkRoot = path.join(tempDir, "artifact-root-link");
+    fs.mkdirSync(sensitiveDir, { recursive: true });
+    try {
+      fs.symlinkSync(sensitiveDir, linkRoot, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (isWindowsSymlinkPermissionError(error)) ctx.skip();
+      throw error;
+    }
+    handlers = createGoalCommandHandlers({
+      store: store!,
+      project: PROJECT,
+      artifactsRootDir: linkRoot,
+    });
+
+    await expect(runGoalCommand("Bootstrap cleanup must surface")).rejects.toThrow(/cleanup also failed/i);
     expect(store!.getCurrentGoal(PROJECT)).toBeUndefined();
   });
 
@@ -269,3 +289,7 @@ describe("/goal command", () => {
     expect(store?.getGoal(goal.id)).toMatchObject({ status: "cancelled" });
   });
 });
+
+function isWindowsSymlinkPermissionError(error: unknown): boolean {
+  return process.platform === "win32" && error instanceof Error && /\b(EPERM|privilege)\b/i.test(error.message);
+}

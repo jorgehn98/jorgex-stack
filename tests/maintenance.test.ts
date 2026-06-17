@@ -12,6 +12,7 @@ import { codexAdapter } from "../src/adapters/codex.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { runInstall } from "../src/install.js";
 
 let tmp: string;
 
@@ -186,6 +187,37 @@ describe("planPlugins: Goal Mode de OpenCode", () => {
     expect(targets).not.toContain("package.json");
   });
 
+  it("install/sync con --target-dir escribe el árbol Goal Mode de forma idempotente", async () => {
+    const targetDir = path.join(tmp, "opencode-target");
+
+    await expect(runInstall({
+      runtimes: ["opencode"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+    })).resolves.toBe(0);
+
+    const installedFiles = [
+      path.join(targetDir, "plugins", "goal-plugin.ts"),
+      path.join(targetDir, "plugins", "goal", "db.ts"),
+      path.join(targetDir, "plugins", "goal", "store.ts"),
+      path.join(targetDir, "plugins", "goal", "opencode-hooks.ts"),
+    ];
+    for (const file of installedFiles) {
+      expect(fs.existsSync(file)).toBe(true);
+    }
+
+    await expect(runInstall({
+      runtimes: ["opencode"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+    })).resolves.toBe(0);
+    for (const file of installedFiles) {
+      expect(fs.existsSync(file)).toBe(true);
+    }
+  });
+
   it.each(
     [
       ["claude-code", claudeCodeAdapter],
@@ -225,6 +257,23 @@ describe("lean integration: artefactos canónicos del stack", () => {
     expect(fs.existsSync(command)).toBe(true);
     expect(fs.readFileSync(skill, "utf8")).toContain("name: lean-code");
     expect(fs.readFileSync(command, "utf8")).toContain("description: Manual read-only lean audit");
+  });
+});
+
+describe("Goal Mode runtime version contract", () => {
+  it("mantiene alineados Node >=22.5, tsup node22 y la documentación", () => {
+    const root = path.join(stackRoot(), "..");
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
+      engines?: { node?: string };
+    };
+    const tsup = fs.readFileSync(path.join(root, "tsup.config.ts"), "utf8");
+    const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+    const prd = fs.readFileSync(path.join(root, "PRD.md"), "utf8");
+
+    expect(pkg.engines?.node).toBe(">=22.5");
+    expect(tsup).toContain('target: "node22"');
+    expect(readme).toContain("Node ≥ 22.5");
+    expect(prd).toContain("Node (≥22.5)");
   });
 });
 

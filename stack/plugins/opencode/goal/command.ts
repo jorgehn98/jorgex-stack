@@ -78,10 +78,14 @@ export function createGoalCommandHandlers(options: GoalCommandHandlersOptions): 
               data: { objective: createdGoal.objective, project: createdGoal.project },
             });
           } catch (error) {
+            let cleanupFailure: string | undefined;
             if (artifactRootDir && options.artifactsRootDir) {
-              cleanupBootstrappedArtifactDir(artifactRootDir, options.artifactsRootDir);
+              cleanupFailure = cleanupBootstrappedArtifactDir(artifactRootDir, options.artifactsRootDir);
             }
-            throw new Error(`Goal bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
+            const rootCause = error instanceof Error ? error.message : String(error);
+            throw new Error(
+              `Goal bootstrap failed: ${rootCause}${cleanupFailure ? ` Cleanup also failed: ${cleanupFailure}` : ""}`,
+            );
           }
           return createdGoal;
         });
@@ -127,12 +131,16 @@ function statusResponse(goal: GoalRecord | undefined, store: GoalStore): GoalCom
     return { message: "No active goal. Start one with /goal <objective>." };
   }
 
-  return {
-    message: [
+  const lines = [
       `Goal: ${goal.objective}`,
       `Status: ${goal.status}`,
       `Next action: ${formatNextAction(store.nextAction(goal.id))}`,
-    ].join("\n"),
+    ];
+  const issue = latestAutoContinueIssue(store, goal.id);
+  if (issue) lines.push(`Operational issue: ${issue.message}`);
+
+  return {
+    message: lines.join("\n"),
   };
 }
 
@@ -163,12 +171,13 @@ function planResponse(goal: GoalRecord, store: GoalStore, artifactsRootDir: stri
   };
 }
 
-function cleanupBootstrappedArtifactDir(rootDir: string, allowedRootDir: string): void {
+function cleanupBootstrappedArtifactDir(rootDir: string, allowedRootDir: string): string | undefined {
   try {
     assertSafeArtifactPath(rootDir, allowedRootDir, "Goal artifact cleanup path");
     fs.rmSync(rootDir, { recursive: true, force: true });
-  } catch {
-    // Preserve the original bootstrap error; unsafe cleanup paths are intentionally left untouched.
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -209,6 +218,32 @@ function transitionResponse(
   return {
     message: `Goal ${updated.status}: ${updated.objective}`,
   };
+}
+
+function latestAutoContinueIssue(store: GoalStore, goalId: string) {
+  const events = store.listEvents(goalId);
+  const currentStateSequence = Math.max(
+    0,
+    ...events
+      .filter((event) => !event.type.startsWith("goal.auto_continue_"))
+      .map((event) => event.sequence),
+  );
+  return events
+    .filter((event) =>
+      (
+        event.type === "goal.auto_continue_unavailable" ||
+        event.type === "goal.auto_continue_failed" ||
+        event.type === "goal.auto_continue_skipped"
+      ) &&
+      readEventStateSequence(event.data) === currentStateSequence,
+    )
+    .at(-1);
+}
+
+function readEventStateSequence(data: unknown): number | undefined {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  const value = (data as { stateSequence?: unknown }).stateSequence;
+  return typeof value === "number" ? value : undefined;
 }
 
 function formatNextAction(action: NextAction): string {

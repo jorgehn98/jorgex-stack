@@ -15,6 +15,7 @@ interface GoalSessionClient {
 
 interface GoalLogger {
   warn?: (message: string, details?: unknown) => void;
+  error?: (message: string, details?: unknown) => void;
 }
 
 export interface OpenCodeGoalHooksDeps {
@@ -80,8 +81,33 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
       const decision = supervisor.decide();
       if (!decision || decision.type === "pause_for_merge") return;
       if (decision.state.goal.status !== "active") return;
-      if (!deps.sessionClient?.promptAsync) return;
       const sessionID = extractSessionID(event.properties);
+      const stateSequence = latestNonAutoContinueSequence(decision.state.events);
+      if (hasAutoContinueEventForState(decision.state.events, "goal.auto_continue_requested", stateSequence)) {
+        if (!hasAutoContinueEventForState(decision.state.events, "goal.auto_continue_deduped", stateSequence)) {
+          deps.store.appendEvent(decision.state.goal.id, {
+            type: "goal.auto_continue_deduped",
+            message: "Auto-continue skipped because this goal state already requested a continuation.",
+            data: { sessionID, stateSequence },
+          });
+        }
+        return;
+      }
+      if (!deps.sessionClient?.promptAsync) {
+        if (!hasAutoContinueEventForState(decision.state.events, "goal.auto_continue_unavailable", stateSequence)) {
+          deps.store.appendEvent(decision.state.goal.id, {
+            type: "goal.auto_continue_unavailable",
+            message: "Auto-continue unavailable: session prompt client missing.",
+            data: { sessionID, stateSequence },
+          });
+          deps.logger?.warn?.("Goal Mode auto-continue unavailable", {
+            goalId: decision.state.goal.id,
+            sessionID,
+            stateSequence,
+          });
+        }
+        return;
+      }
       const prompt = supervisor.renderContinuationPrompt(decision.state.goal.id);
       if (!prompt?.trim()) {
         deps.store.appendEvent(decision.state.goal.id, {
@@ -90,11 +116,12 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
         });
         return;
       }
-      const dedupeKey = `${decision.state.goal.id}:${sessionID ?? "unknown"}`;
+      const dedupeKey = `${decision.state.goal.id}:${sessionID ?? "unknown"}:${stateSequence}`;
       if (autoContinueInFlight.has(dedupeKey)) {
         deps.store.appendEvent(decision.state.goal.id, {
           type: "goal.auto_continue_deduped",
           message: "Auto-continue skipped because a continuation is already in flight.",
+          data: { sessionID, stateSequence },
         });
         return;
       }
@@ -104,6 +131,7 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
         deps.store.appendEvent(decision.state.goal.id, {
           type: "goal.auto_continue_requested",
           message: `Auto-continue requested for session ${sessionID ?? "unknown"}.`,
+          data: { sessionID, stateSequence },
         });
         await deps.sessionClient.promptAsync({
           sessionID,
@@ -113,9 +141,9 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
         deps.store.appendEvent(decision.state.goal.id, {
           type: "goal.auto_continue_failed",
           message: `Auto-continue failed for session ${sessionID ?? "unknown"}.`,
-          data: { error: error instanceof Error ? error.message : String(error) },
+          data: { error: error instanceof Error ? error.message : String(error), sessionID, stateSequence },
         });
-        deps.logger?.warn?.("Goal Mode auto-continue failed", error);
+        deps.logger?.error?.("Goal Mode auto-continue failed", error);
       } finally {
         autoContinueInFlight.delete(dedupeKey);
       }
@@ -165,7 +193,7 @@ function appendHookText(input: unknown, output: HookOutput, text: string): void 
     output.content.push({ type: "text", text });
     return;
   }
-  output.message = text;
+  throw new Error("Unsupported OpenCode command output contract for Goal Mode.");
 }
 
 function extractHookSessionID(input: unknown, output: HookOutput): string {
@@ -213,6 +241,30 @@ function extractSessionID(properties: unknown): string | undefined {
   const info = properties.info;
   if (isRecord(info) && typeof info.id === "string") return info.id;
   return undefined;
+}
+
+const AUTO_CONTINUE_EVENT_PREFIX = "goal.auto_continue_";
+
+function latestNonAutoContinueSequence(events: Array<{ type: string; sequence: number }>): number {
+  return Math.max(
+    0,
+    ...events
+      .filter((event) => !event.type.startsWith(AUTO_CONTINUE_EVENT_PREFIX))
+      .map((event) => event.sequence),
+  );
+}
+
+function hasAutoContinueEventForState(
+  events: Array<{ type: string; data?: unknown }>,
+  type: string,
+  stateSequence: number,
+): boolean {
+  return events.some((event) => event.type === type && readEventStateSequence(event.data) === stateSequence);
+}
+
+function readEventStateSequence(data: unknown): number | undefined {
+  if (!isRecord(data)) return undefined;
+  return typeof data.stateSequence === "number" ? data.stateSequence : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GoalDb } from "./db.js";
-import { assertGoalTransition, isTerminalGoalStatus } from "./state.js";
+import { assertGoalTransition, GOAL_STATUSES, isTerminalGoalStatus } from "./state.js";
 import {
   GOAL_STORE_SCHEMA_VERSION,
   type GoalArtifactInput,
@@ -18,6 +18,7 @@ import {
   type PhaseInput,
   type PhaseRecord,
   type PullRequestInput,
+  type PullRequestStatus,
   type PullRequestMergeInput,
   type PullRequestRecord,
   type WorktreeInput,
@@ -61,6 +62,33 @@ function readOptionalText(row: Row, key: string): string | undefined {
   return value;
 }
 
+const PULL_REQUEST_STATUSES = ["open", "merged", "closed"] as const satisfies readonly PullRequestStatus[];
+const ARTIFACT_KINDS = ["prd", "plan"] as const satisfies readonly GoalArtifactKind[];
+
+function readGoalStatus(row: Row, key: string): GoalStatus {
+  const value = readText(row, key);
+  if (!GOAL_STATUSES.includes(value as GoalStatus)) {
+    throw new Error(`Invalid SQLite row: ${key} has unknown goal status ${value}.`);
+  }
+  return value as GoalStatus;
+}
+
+function readPullRequestStatus(row: Row, key: string): PullRequestStatus {
+  const value = readText(row, key);
+  if (!PULL_REQUEST_STATUSES.includes(value as PullRequestStatus)) {
+    throw new Error(`Invalid SQLite row: ${key} has unknown pull request status ${value}.`);
+  }
+  return value as PullRequestStatus;
+}
+
+function readArtifactKind(row: Row, key: string): GoalArtifactKind {
+  const value = readText(row, key);
+  if (!ARTIFACT_KINDS.includes(value as GoalArtifactKind)) {
+    throw new Error(`Invalid SQLite row: ${key} has unknown artifact kind ${value}.`);
+  }
+  return value as GoalArtifactKind;
+}
+
 function encodeJson(value: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
 }
@@ -74,7 +102,7 @@ function mapGoal(row: Row): GoalRecord {
     id: readText(row, "id"),
     project: readText(row, "project"),
     objective: readText(row, "objective"),
-    status: readText(row, "status") as GoalStatus,
+    status: readGoalStatus(row, "status"),
     createdAt: readText(row, "created_at"),
     updatedAt: readText(row, "updated_at"),
   };
@@ -98,7 +126,7 @@ function mapPhase(row: Row): PhaseRecord {
     goalId: readText(row, "goal_id"),
     name: readText(row, "name"),
     objective: readText(row, "objective"),
-    status: readText(row, "status") as GoalStatus,
+    status: readGoalStatus(row, "status"),
     createdAt: readText(row, "created_at"),
     updatedAt: readText(row, "updated_at"),
   };
@@ -111,7 +139,7 @@ function mapWorktree(row: Row): WorktreeRecord {
     phaseId: readText(row, "phase_id"),
     path: readText(row, "path"),
     branch: readText(row, "branch"),
-    status: readText(row, "status") as GoalStatus,
+    status: readGoalStatus(row, "status"),
     createdAt: readText(row, "created_at"),
     updatedAt: readText(row, "updated_at"),
   };
@@ -127,7 +155,7 @@ function mapPullRequest(row: Row): PullRequestRecord {
     url: readText(row, "url"),
     branch: readText(row, "branch"),
     base: readText(row, "base"),
-    status: readText(row, "status") as PullRequestRecord["status"],
+    status: readPullRequestStatus(row, "status"),
     createdAt: readText(row, "created_at"),
     updatedAt: readText(row, "updated_at"),
     mergedAt: readOptionalText(row, "merged_at"),
@@ -139,7 +167,7 @@ function mapArtifact(row: Row): GoalArtifactRecord {
   return {
     id: readText(row, "id"),
     goalId: readText(row, "goal_id"),
-    kind: readText(row, "kind") as GoalArtifactKind,
+    kind: readArtifactKind(row, "kind"),
     path: readText(row, "path"),
     createdAt: readText(row, "created_at"),
     updatedAt: readText(row, "updated_at"),
@@ -164,7 +192,7 @@ class GoalStoreImpl implements GoalStore {
         id TEXT PRIMARY KEY,
         project TEXT NOT NULL,
         objective TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'blocked', 'waiting_for_merge', 'budget_limited', 'failed', 'complete', 'cancelled')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       ) STRICT;
@@ -213,7 +241,7 @@ class GoalStoreImpl implements GoalStore {
         goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
         name TEXT NOT NULL,
         objective TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'blocked', 'waiting_for_merge', 'budget_limited', 'failed', 'complete', 'cancelled')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       ) STRICT;
@@ -224,7 +252,7 @@ class GoalStoreImpl implements GoalStore {
         phase_id TEXT NOT NULL REFERENCES goal_phases(id) ON DELETE CASCADE,
         path TEXT NOT NULL,
         branch TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'blocked', 'waiting_for_merge', 'budget_limited', 'failed', 'complete', 'cancelled')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       ) STRICT;
@@ -238,7 +266,7 @@ class GoalStoreImpl implements GoalStore {
         url TEXT NOT NULL,
         branch TEXT NOT NULL,
         base TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'merged', 'closed')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         merged_at TEXT,
@@ -251,7 +279,7 @@ class GoalStoreImpl implements GoalStore {
       CREATE TABLE IF NOT EXISTS goal_artifacts (
         id TEXT PRIMARY KEY,
         goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('prd', 'plan')),
         path TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -498,6 +526,12 @@ class GoalStoreImpl implements GoalStore {
       this.assertText(input.url, "url");
       this.assertText(input.branch, "branch");
       this.assertText(input.base, "base");
+      if (!Number.isInteger(input.number) || input.number <= 0) {
+        throw new Error("Invalid pull request number.");
+      }
+      if (!PULL_REQUEST_STATUSES.includes(input.status)) {
+        throw new Error(`Invalid pull request status: ${input.status}`);
+      }
 
       if (isTerminalGoalStatus(goal.status)) {
         throw new Error(`Cannot register a pull request on terminal goal ${goalId}.`);
@@ -744,7 +778,15 @@ class GoalStoreImpl implements GoalStore {
       this.db.exec("COMMIT;");
       return result;
     } catch (error) {
-      this.db.exec("ROLLBACK;");
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch (rollbackError) {
+        throw new Error(
+          `Goal store transaction failed: ${error instanceof Error ? error.message : String(error)}. Rollback also failed: ${
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          }`,
+        );
+      }
       throw error;
     } finally {
       this.inTransaction = false;

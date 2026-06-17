@@ -8,6 +8,7 @@ import { createOpenCodeGoalHooks } from "./goal/opencode-hooks.js";
 
 interface GoalPluginLogger {
   warn?: (message: string, details?: unknown) => void;
+  error?: (message: string, details?: unknown) => void;
 }
 
 export function resolveGoalProjectName(directory: string, logger?: GoalPluginLogger): string {
@@ -51,20 +52,58 @@ function parseRemoteProjectKey(remote: string): string | undefined {
 }
 
 export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }) => {
-  const logger = console;
+  const logger = createGoalPluginLogger(ctx.client);
   const databasePath = resolveGoalDatabasePath(process.env.JORGEX_GOAL_DB);
   const store = createGoalStore({ databasePath });
-  store.migrate();
-  const project = resolveGoalProjectName(ctx.directory, logger);
+  try {
+    store.migrate();
+    const project = resolveGoalProjectName(ctx.directory, logger);
 
-  return createOpenCodeGoalHooks({
-    store,
-    project,
-    artifactsRootDir: path.join(os.homedir(), ".jorgex-stack", "goals", "artifacts", safePathSegment(project)),
-    sessionClient: extractSessionClient(ctx.client),
-    logger,
-  });
+    return createOpenCodeGoalHooks({
+      store,
+      project,
+      artifactsRootDir: path.join(os.homedir(), ".jorgex-stack", "goals", "artifacts", safePathSegment(project)),
+      sessionClient: extractSessionClient(ctx.client),
+      logger,
+    });
+  } catch (error) {
+    store.close();
+    throw error;
+  }
 };
+
+function createGoalPluginLogger(client: unknown): GoalPluginLogger {
+  return {
+    warn: (message, details) => {
+      void logToOpenCode(client, "warn", message, details);
+      console.warn(message, details);
+    },
+    error: (message, details) => {
+      void logToOpenCode(client, "error", message, details);
+      console.error(message, details);
+    },
+  };
+}
+
+async function logToOpenCode(client: unknown, level: "warn" | "error", message: string, details?: unknown): Promise<void> {
+  if (typeof client !== "object" || client === null) return;
+  const app = (client as { app?: unknown }).app;
+  if (typeof app !== "object" || app === null) return;
+  const log = (app as { log?: unknown }).log;
+  if (typeof log !== "function") return;
+  try {
+    await log.call(app, {
+      body: {
+        service: "goal-mode",
+        level,
+        message,
+        extra: details,
+      },
+    });
+  } catch {
+    // Logging must never break the plugin path.
+  }
+}
 
 export function resolveGoalDatabasePath(overridePath?: string): string {
   const goalRoot = path.join(os.homedir(), ".jorgex-stack", "goals");

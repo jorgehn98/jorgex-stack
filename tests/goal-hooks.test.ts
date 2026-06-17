@@ -167,8 +167,8 @@ describe("OpenCode Goal Mode hooks", () => {
     expect(promptAsync).not.toHaveBeenCalled();
   });
 
-  it("continues again on later idle events after the previous prompt resolved", async () => {
-    const goal = await seedGoal("Continue across later idle events");
+  it("does not auto-continue the same goal state more than once", async () => {
+    const goal = await seedGoal("Do not loop on same idle state");
     const promptAsync = vi.fn();
     const hooks = createOpenCodeGoalHooks({
       store: store!,
@@ -180,11 +180,76 @@ describe("OpenCode Goal Mode hooks", () => {
     await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
     await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
 
-    expect(promptAsync).toHaveBeenCalledTimes(3);
+    expect(promptAsync).toHaveBeenCalledOnce();
     expect(store!.listEvents(goal.id).map((event) => event.type)).toEqual(
-      expect.arrayContaining(["goal.auto_continue_requested"]),
+      expect.arrayContaining(["goal.auto_continue_requested", "goal.auto_continue_deduped"]),
     );
-    expect(store!.listEvents(goal.id).map((event) => event.type)).not.toContain("goal.auto_continue_deduped");
+  });
+
+  it("auto-continues again only after the goal state changes", async () => {
+    const goal = await seedGoal("Continue after state change");
+    const promptAsync = vi.fn();
+    const hooks = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+      sessionClient: { promptAsync },
+    });
+
+    await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+    store!.appendEvent(goal.id, {
+      type: "goal.slice_completed",
+      message: "A continuation made progress.",
+    });
+    await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+
+    expect(promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("records unavailable auto-continue when the OpenCode prompt client is missing", async () => {
+    const goal = await seedGoal("Missing prompt client");
+    const hooks = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+    });
+
+    await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+    await hooks.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+
+    const events = store!.listEvents(goal.id);
+    expect(events.filter((event) => event.type === "goal.auto_continue_unavailable")).toHaveLength(1);
+    const statusOutput = { parts: [] as Array<{ text: string }> };
+    await hooks["command.execute.before"]?.(
+      { command: "goal", args: { arguments: "status" }, sessionID: "s1", messageID: "m1" },
+      statusOutput,
+    );
+    expect(statusOutput.parts[0]!.text).toContain("Auto-continue unavailable");
+  });
+
+  it("does not surface stale auto-continue issues after goal state progresses", async () => {
+    const goal = await seedGoal("Stale operational issue");
+    const hooksWithoutClient = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+    });
+    await hooksWithoutClient.event?.({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+
+    store!.appendEvent(goal.id, {
+      type: "goal.slice_completed",
+      message: "Manual progress happened after the missing client issue.",
+    });
+
+    const hooksWithClient = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+      sessionClient: { promptAsync: vi.fn() },
+    });
+    const statusOutput = { parts: [] as Array<{ text: string }> };
+    await hooksWithClient["command.execute.before"]?.(
+      { command: "goal", args: { arguments: "status" }, sessionID: "s1", messageID: "m1" },
+      statusOutput,
+    );
+
+    expect(statusOutput.parts[0]!.text).not.toContain("Auto-continue unavailable");
   });
 
   it("deduplicates concurrent idle auto-continue while a prompt is still in flight", async () => {
@@ -229,10 +294,22 @@ describe("OpenCode Goal Mode hooks", () => {
         expect.objectContaining({
           type: "goal.auto_continue_failed",
           message: expect.stringContaining("s1"),
-          data: { error: "transport down" },
+          data: expect.objectContaining({ error: "transport down", sessionID: "s1" }),
         }),
       ]),
     );
+  });
+
+  it("throws instead of corrupting an unsupported command output envelope", async () => {
+    await seedGoal("Unsupported hook output shape");
+    const hooks = createOpenCodeGoalHooks({ store: store!, project: PROJECT });
+
+    await expect(
+      hooks["command.execute.before"]?.(
+        { command: "goal", args: { arguments: "status" }, sessionID: "s1", messageID: "m1" },
+        { message: { id: "m1" } },
+      ),
+    ).rejects.toThrow(/unsupported opencode command output/i);
   });
 
   it("derives a stable owner/repo project key from git remote before worktree basename", () => {
@@ -245,6 +322,24 @@ describe("OpenCode Goal Mode hooks", () => {
     });
 
     expect(resolveGoalProjectName(repoDir)).toBe("acme/widgets");
+  });
+
+  it("falls back to a stable git-common-dir project key when origin is missing", () => {
+    const repoDir = path.join(tempDir, "repo-without-origin");
+    fs.mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
+
+    const projectKey = resolveGoalProjectName(repoDir);
+
+    expect(projectKey).toMatch(/^local:[a-f0-9]{16}$/);
+    expect(resolveGoalProjectName(path.join(repoDir, "."))).toBe(projectKey);
+  });
+
+  it("falls back to a local directory project key outside git", () => {
+    const directory = path.join(tempDir, "not-a-git-repo");
+    fs.mkdirSync(directory, { recursive: true });
+
+    expect(resolveGoalProjectName(directory)).toMatch(/^local:[a-f0-9]{16}$/);
   });
 
   it("rejects Goal Mode database overrides outside the dedicated goals directory", () => {

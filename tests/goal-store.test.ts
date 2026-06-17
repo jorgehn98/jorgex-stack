@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it, type TestContext } from "vitest";
 import { createGoalStore, GOAL_STORE_SCHEMA_VERSION } from "../stack/plugins/opencode/goal/store.js";
 
 const tempDirs: string[] = [];
@@ -19,6 +21,28 @@ afterEach(() => {
 });
 
 describe("Goal Mode SQLite store", () => {
+  it("loads the store in the Bun/OpenCode runtime path", (ctx: TestContext) => {
+    try {
+      execFileSync("bun", ["--version"], { stdio: "ignore" });
+    } catch {
+      ctx.skip();
+    }
+
+    const databasePath = makeDbPath();
+    const storeModule = pathToFileURL(path.resolve("stack/plugins/opencode/goal/store.ts")).href;
+    const script = `
+      const { createGoalStore } = await import(${JSON.stringify(storeModule)});
+      const store = createGoalStore({ databasePath: ${JSON.stringify(databasePath)} });
+      store.migrate();
+      const goal = store.createGoal({ objective: "bun smoke", project: "jorgex-stack" });
+      store.appendEvent(goal.id, { type: "goal.created", message: "created in bun" });
+      if (store.listEvents(goal.id).length !== 1) throw new Error("event not persisted");
+      store.close();
+    `;
+
+    expect(() => execFileSync("bun", ["--eval", script], { cwd: path.resolve("."), stdio: "pipe" })).not.toThrow();
+  });
+
   it("migrates legacy duplicate open goals before adding the uniqueness guard", async () => {
     const databasePath = makeDbPath();
     const { DatabaseSync } = await import("node:sqlite");
@@ -194,6 +218,17 @@ describe("Goal Mode SQLite store", () => {
       base: "main",
       status: "open",
     });
+    expect(() =>
+      store.recordPullRequest(goal.id, {
+        phaseId: phase.id,
+        worktreeId: worktree.id,
+        number: 0,
+        url: "https://github.com/jorgehn98/jorgex-stack/pull/0",
+        branch: "invalid-pr",
+        base: "main",
+        status: "open",
+      }),
+    ).toThrow(/pull request number/i);
     const secondPhase = store.addPhase(goal.id, {
       name: "Command UX",
       objective: "Create command handlers",

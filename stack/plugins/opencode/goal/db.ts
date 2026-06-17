@@ -35,6 +35,7 @@ export class GoalDb {
     const Database = loadDatabaseCtor();
     this.db = new Database(databasePath, { create: true });
     this.exec("PRAGMA foreign_keys = ON;");
+    this.exec("PRAGMA busy_timeout = 5000;");
   }
 
   exec(sql: string): void {
