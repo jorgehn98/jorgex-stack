@@ -21,6 +21,7 @@ import {
   resolvePublishDiffBase,
   resolveRecoveryDiffBase,
   readPackageVersion,
+  shouldBlockMixedWorkflowRelease,
   writePackageVersion,
 } from "../src/lib/release.js";
 
@@ -114,6 +115,29 @@ describe("release path classification", () => {
     expect(result.reason).toContain("Release bloqueada");
     expect(result.reason).toContain("src/foo.ts");
     expect(result.reason).toContain(".github/workflows/publish.yml");
+  });
+
+  it("no bloquea la mezcla publicable+workflow cuando puede auto-bumpear patch", () => {
+    const result = classifyReleasePaths([
+      "src/foo.ts",
+      ".github/workflows/publish.yml",
+    ]);
+
+    expect(shouldBlockMixedWorkflowRelease(result, {
+      currentVersionExists: true,
+      recoveryRun: false,
+      releaseBumpCommit: false,
+    })).toBe(false);
+    expect(shouldBlockMixedWorkflowRelease(result, {
+      currentVersionExists: false,
+      recoveryRun: false,
+      releaseBumpCommit: false,
+    })).toBe(true);
+    expect(shouldBlockMixedWorkflowRelease(result, {
+      currentVersionExists: true,
+      recoveryRun: true,
+      releaseBumpCommit: false,
+    })).toBe(true);
   });
 
   it("no publica solo tests o worktrees", () => {
@@ -370,15 +394,18 @@ describe("publish workflow contract", () => {
     expect(recoveryRunBlock).not.toContain("skip_reason=stale_run");
   });
 
-  it("bloquea mezclar cambios publicables con workflows antes del bump/publish", () => {
+  it("permite auto-bump cuando el diff acumulado mezcla cambios publicables con workflows", () => {
     const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
     const noPublicableIndex = bump.indexOf("if (publicPaths.length === 0 && !recoveryRun) {");
-    const guardIndex = bump.indexOf("if (publicPaths.length > 0 && workflowPaths.length > 0) {");
+    const autoBumpRunIndex = bump.indexOf("const autoBumpRun = !recoveryRun && currentVersionExists && !releaseBumpCommit;");
+    const guardIndex = bump.indexOf("if (publicPaths.length > 0 && workflowPaths.length > 0 && !autoBumpRun) {");
     const recoveryBranchIndex = bump.indexOf("if (recoveryRun) {");
     const autoBumpBranchIndex = bump.indexOf("} else if (currentVersionExists && !releaseBumpCommit) {");
 
     expect(noPublicableIndex).toBeGreaterThan(-1);
+    expect(autoBumpRunIndex).toBeGreaterThan(-1);
     expect(guardIndex).toBeGreaterThan(noPublicableIndex);
+    expect(guardIndex).toBeGreaterThan(autoBumpRunIndex);
     expect(guardIndex).toBeLessThan(recoveryBranchIndex);
     expect(guardIndex).toBeLessThan(autoBumpBranchIndex);
     expect(bump).toContain("const workflowPaths = [];");
@@ -389,10 +416,26 @@ describe("publish workflow contract", () => {
     expect(bump).toContain("? resolveRecoveryDiffBase(head)");
     expect(bump).toContain("falta un tag de release previo");
     expect(bump).not.toContain("return resolveEventDiffBase('', head);");
+    expect(bump).not.toContain("if (publicPaths.length > 0 && workflowPaths.length > 0) {");
     expect(bump).not.toContain("if (!recoveryRun && publicPaths.length > 0 && workflowPaths.length > 0) {");
     expect(bump).toContain("GitHub puede rechazar el push del tag sin permisos para workflows");
     expect(bump).toContain("ya está publicada, pero falta ${releaseTag}");
     expect(bump).toContain("Separa la release o publica/tagea manualmente con permisos elevados.");
+  });
+
+  it("publica automáticamente una versión manual nueva sin aplicar otro bump", () => {
+    const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+    const manualVersionBranchIndex = bump.indexOf("} else if (!currentVersionExists && !releaseBumpCommit) {");
+    const outputsIndex = bump.indexOf("if (shouldPublish) {", manualVersionBranchIndex);
+
+    expect(manualVersionBranchIndex).toBeGreaterThan(-1);
+    expect(outputsIndex).toBeGreaterThan(manualVersionBranchIndex);
+
+    const manualVersionBranch = bump.slice(manualVersionBranchIndex, outputsIndex);
+
+    expect(manualVersionBranch).toContain("tagNeeded = releaseTagSha === null;");
+    expect(manualVersionBranch).toContain("shouldPublish = true;");
+    expect(manualVersionBranch).not.toContain("bumpPatch(");
   });
 
   it("separa permisos de validación, bump, publish y tag", () => {

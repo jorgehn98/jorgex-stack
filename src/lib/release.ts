@@ -60,6 +60,22 @@ export interface ReleasePlan extends ReleasePathDecision {
   bumpAllowed: boolean;
 }
 
+export interface MixedWorkflowReleaseSignal {
+  currentVersionExists: boolean;
+  releaseBumpCommit: boolean;
+  recoveryRun: boolean;
+}
+
+export function shouldBlockMixedWorkflowRelease(
+  classification: Pick<ReleasePathDecision, "publicPaths" | "workflowPaths">,
+  signal: MixedWorkflowReleaseSignal,
+): boolean {
+  if (classification.publicPaths.length === 0 || classification.workflowPaths.length === 0) return false;
+
+  const canAutoBumpPatch = !signal.recoveryRun && signal.currentVersionExists && !signal.releaseBumpCommit;
+  return !canAutoBumpPatch;
+}
+
 export function assertCurrentReleaseRun(headSha: string, originMainSha: string): void {
   const head = headSha.trim();
   const originMain = originMainSha.trim();
