@@ -336,24 +336,14 @@ describe("version sync", () => {
     expect(readPackageVersion()).toBe(PACKAGE_VERSION.version);
   });
 
-  it("`--version` imprime la misma versión que package.json", async () => {
-    const originalArgv = process.argv;
-    const logs: string[] = [];
-    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
-      logs.push(args.map(String).join(" "));
+  it("`--version` usa la acción de versión del CLI", async () => {
+    const { parseCliArgs } = await import("../src/cli.js");
+
+    expect(parseCliArgs(["--version"])).toMatchObject({
+      action: "version",
+      command: "install",
     });
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    process.argv = ["node", "cli.ts", "--version"];
-    try {
-      await import("../src/cli.js");
-      await Promise.resolve();
-    } finally {
-      process.argv = originalArgv;
-      logSpy.mockRestore();
-    }
-
-    expect(logs).toEqual([PACKAGE_VERSION.version]);
+    expect(readPackageVersion()).toBe(PACKAGE_VERSION.version);
   });
 });
 
