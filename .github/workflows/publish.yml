@@ -36,6 +36,18 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
           fetch-depth: 0
 
+      - name: Validate pinned action SHAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Eo 'uses: actions/[^@]+@[0-9a-f]{40}' .github/workflows/publish.yml |
+          while IFS= read -r pin; do
+            action_ref="${pin#uses: }"
+            repo="${action_ref%@*}"
+            sha="${action_ref#*@}"
+            curl -fsS "https://api.github.com/repos/${repo}/commits/${sha}" > /dev/null
+          done
+
       - name: Resolve validate checkout SHA
         id: resolve
         shell: bash

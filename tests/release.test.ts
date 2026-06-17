@@ -401,6 +401,9 @@ describe("publish workflow contract", () => {
     expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
     expect(workflow).toContain("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02");
     expect(workflow).toContain("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093");
+    expect(validate).toContain("Validate pinned action SHAs");
+    expect(validate).toContain("grep -Eo 'uses: actions/[^@]+@[0-9a-f]{40}' .github/workflows/publish.yml");
+    expect(validate).toContain("curl -fsS \"https://api.github.com/repos/${repo}/commits/${sha}\"");
     expect(validate).toContain("ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}");
     expect(validate).toContain("git checkout --detach \"$checkout_sha\"");
     expect(validate).toContain("git merge-base --is-ancestor \"$release_sha\" \"$origin_main\"");
