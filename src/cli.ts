@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { pathToFileURL } from "node:url";
 import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, runInstall } from "./install.js";
 import { runUninstall } from "./uninstall.js";
@@ -11,24 +12,35 @@ import { readPackageVersion } from "./lib/release.js";
 const VERSION = readPackageVersion();
 
 const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall"] as const;
-type Command = (typeof COMMANDS)[number];
+export type Command = (typeof COMMANDS)[number];
 
-interface Flags {
+export interface Flags {
   agents: RuntimeId[];
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
+  help: boolean;
+  version: boolean;
   list: boolean;
   check: boolean;
   removeEngram: boolean;
   positional: string[];
 }
 
-function parseFlags(args: string[]): Flags {
+export interface ParsedCli {
+  action: "run" | "help" | "version" | "unknown";
+  command: Command;
+  flags: Flags;
+  unknownCommand?: string;
+}
+
+export function parseFlags(args: string[]): Flags {
   const flags: Flags = {
     agents: [],
     dryRun: false,
     yes: false,
+    help: false,
+    version: false,
     list: false,
     check: false,
     removeEngram: false,
@@ -42,12 +54,36 @@ function parseFlags(args: string[]): Flags {
     else if (arg.startsWith("--target-dir=")) flags.targetDir = arg.slice(13);
     else if (arg === "--dry-run") flags.dryRun = true;
     else if (arg === "--yes" || arg === "-y") flags.yes = true;
+    else if (arg === "--help" || arg === "-h") flags.help = true;
+    else if (arg === "--version" || arg === "-v") flags.version = true;
     else if (arg === "--list") flags.list = true;
     else if (arg === "--check") flags.check = true;
     else if (arg === "--remove-engram") flags.removeEngram = true;
     else flags.positional.push(arg);
   }
   return flags;
+}
+
+export function parseCliArgs(argv: string[]): ParsedCli {
+  const [first, ...rest] = argv;
+  const isCommand = (COMMANDS as readonly string[]).includes(first ?? "install");
+
+  if (first !== undefined && !isCommand && !first.startsWith("-")) {
+    return {
+      action: "unknown",
+      command: "install",
+      flags: parseFlags(rest),
+      unknownCommand: first,
+    };
+  }
+
+  const command: Command = isCommand ? ((first ?? "install") as Command) : "install";
+  const flags = parseFlags(isCommand ? rest : argv);
+
+  if (first === "--help" || first === "-h" || flags.help) return { action: "help", command, flags };
+  if (first === "--version" || first === "-v" || flags.version) return { action: "version", command, flags };
+
+  return { action: "run", command, flags };
 }
 
 /** Runtimes destino: --agents explícito, o multiselect interactivo de los detectados, o todos los detectados. */
@@ -94,21 +130,18 @@ Ver PRD.md para el diseño completo.`);
 }
 
 async function main(): Promise<void> {
-  const [first, ...rest] = process.argv.slice(2);
+  const parsed = parseCliArgs(process.argv.slice(2));
 
-  if (first === "--help" || first === "-h") return printHelp();
-  if (first === "--version" || first === "-v") return console.log(VERSION);
-
-  const isCommand = (COMMANDS as readonly string[]).includes(first ?? "install");
-  if (first !== undefined && !isCommand && !first.startsWith("-")) {
-    console.error(`Comando desconocido: ${first}`);
+  if (parsed.action === "help") return printHelp();
+  if (parsed.action === "version") return console.log(VERSION);
+  if (parsed.action === "unknown") {
+    console.error(`Comando desconocido: ${parsed.unknownCommand}`);
     printHelp();
     process.exitCode = 1;
     return;
   }
 
-  const command: Command = isCommand ? ((first ?? "install") as Command) : "install";
-  const flags = parseFlags(isCommand ? rest : process.argv.slice(2));
+  const { command, flags } = parsed;
 
   if (flags.targetDir !== undefined && flags.agents.length !== 1) {
     console.error("--target-dir requiere exactamente un runtime en --agents.");
@@ -226,7 +259,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exitCode = 1;
-});
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err: unknown) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  });
+}
