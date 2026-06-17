@@ -317,12 +317,20 @@ export function resolveRecoveryDiffBase(
   latestReachableTagBeforeHead: (headParentRef: string) => string | null = resolveLatestReachableTag,
 ): string {
   const previousTag = latestReachableTagBeforeHead(`${head}^`);
-  return previousTag ?? resolveEventDiffBase("", head);
+  if (previousTag === null) {
+    throw new Error(
+      `No se pudo reconstruir la base de recovery para ${head}: falta un tag de release previo. `
+      + "No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. "
+      + "Haz publish/tag manuales con permisos elevados o recrea el tag previo.",
+    );
+  }
+
+  return previousTag;
 }
 
 function resolveLatestReachableTag(ref: string): string | null {
   try {
-    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", "--first-parent", "--match", "v[0-9]*.[0-9]*.[0-9]*", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     return tag === "" ? null : tag;
   } catch (error) {
     const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`.trim();

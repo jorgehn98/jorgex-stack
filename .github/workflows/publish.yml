@@ -303,7 +303,7 @@ jobs:
           };
           const resolveRecoveryDiffBase = (head) => {
             try {
-              const previousTag = execFileSync('git', ['describe', '--tags', '--abbrev=0', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+              const previousTag = execFileSync('git', ['describe', '--tags', '--abbrev=0', '--first-parent', '--match', 'v[0-9]*.[0-9]*.[0-9]*', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
               if (previousTag !== '') return previousTag;
             } catch (error) {
               const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
@@ -312,7 +312,7 @@ jobs:
               }
             }
 
-            return resolveEventDiffBase('', head);
+            throw new Error(`No se pudo reconstruir la base de recovery para ${head}: falta un tag de release previo. No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. Haz publish/tag manuales con permisos elevados o recrea el tag previo.`);
           };
 
           if (BRANCH_NAME !== 'main') {
@@ -430,6 +430,14 @@ jobs:
           }
 
           if (publicPaths.length > 0 && workflowPaths.length > 0) {
+            if (currentVersionExists && releaseTagSha === null) {
+              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya está publicada, pero falta ${releaseTag}. El diff también mezcla cambios publicables con .github/workflows/*, así que crea el tag manualmente con permisos elevados.`);
+            }
+
+            if (releaseTagSha !== null && releaseTagSha !== head) {
+              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}.`);
+            }
+
             throw new Error('El diff mezcla cambios publicables con .github/workflows/*; GitHub puede rechazar el push del tag sin permisos para workflows. Separa la release o publica/tagea manualmente con permisos elevados.');
           }
 

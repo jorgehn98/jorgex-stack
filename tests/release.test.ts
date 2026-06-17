@@ -268,6 +268,12 @@ describe("release version planning", () => {
     expect(resolveRecoveryDiffBase("release-sha", (ref) => (ref === "release-sha^" ? "v1.0.2" : null))).toBe("v1.0.2");
   });
 
+  it("en recovery falla cerrado si no hay tag previo alcanzable", () => {
+    expect(() => resolveRecoveryDiffBase("release-sha", () => null)).toThrow(
+      "No se pudo reconstruir la base de recovery para release-sha: falta un tag de release previo.",
+    );
+  });
+
   it("cae a github.event.before cuando no existe el tag de la versión actual", () => {
     expect(resolvePublishDiffBase("1.0.2", "before-sha", () => false, "head-sha")).toBe("before-sha");
   });
@@ -379,10 +385,13 @@ describe("publish workflow contract", () => {
     expect(bump).toContain("if (isWorkflowPath(rawPath)) {");
     expect(bump).toContain("workflowPaths.push(rawPath);");
     expect(bump).toContain("const resolveRecoveryDiffBase = (head) => {");
-    expect(bump).toContain("['describe', '--tags', '--abbrev=0', `${head}^`]");
+    expect(bump).toContain("['describe', '--tags', '--abbrev=0', '--first-parent', '--match', 'v[0-9]*.[0-9]*.[0-9]*', `${head}^`]");
     expect(bump).toContain("? resolveRecoveryDiffBase(head)");
+    expect(bump).toContain("falta un tag de release previo");
+    expect(bump).not.toContain("return resolveEventDiffBase('', head);");
     expect(bump).not.toContain("if (!recoveryRun && publicPaths.length > 0 && workflowPaths.length > 0) {");
     expect(bump).toContain("GitHub puede rechazar el push del tag sin permisos para workflows");
+    expect(bump).toContain("ya está publicada, pero falta ${releaseTag}");
     expect(bump).toContain("Separa la release o publica/tagea manualmente con permisos elevados.");
   });
 
