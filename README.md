@@ -53,6 +53,7 @@ Comandos disponibles:
 - `/goal history` — lista eventos y transiciones.
 - `/goal pause` — pausa el goal.
 - `/goal resume` — reanuda el goal.
+- `/goal merged [commit]` — señala que el PR externo pendiente ya se ha mergeado.
 - `/goal cancel` — cancela el goal.
 
 Lo que no existe:
@@ -63,7 +64,7 @@ Lo que no existe:
 Estado operativo:
 
 - SQLite separada por defecto en `~/.jorgex-stack/goals/goals.sqlite`.
-- Override opcional con `JORGEX_GOAL_DB` si necesitas otra ruta.
+- Override opcional con `JORGEX_GOAL_DB`, pero siempre dentro de `~/.jorgex-stack/goals/`.
 - Engram no es el store operativo del goal: sigue siendo memoria/protocolo, no base de estado.
 - Goal Mode no hace merges automáticos; cuando toca esperar un merge externo, el estado pasa a `waiting_for_merge`.
 - La integración usa hooks experimentales de OpenCode (`experimental.chat.system.transform` y `experimental.session.compacting`), así que esa superficie puede cambiar.
@@ -86,7 +87,7 @@ Los detalles de diseño están en [PRD §7.6](PRD.md#76-publicación-automática
 
 ## Desarrollo
 
-Requisitos: Node ≥ 20 y pnpm (nunca npm).
+Requisitos: Node ≥ 22.5 y pnpm (nunca npm). Goal Mode usa `node:sqlite` en tests/CLI Node y OpenCode usa `bun:sqlite` en runtime.
 
 ```
 pnpm install

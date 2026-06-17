@@ -43,12 +43,42 @@ async function seedGoal(objective = "Ship Goal Mode for OpenCode") {
   return { goal, output };
 }
 
+async function seedOpenPullRequest(objective = "Manual merge recovery goal", number = 46) {
+  const { goal } = await seedGoal(objective);
+  const phase = store!.addPhase(goal.id, {
+    name: "Slice waiting for manual merge signal",
+    objective: "Wait until /goal merged",
+    status: "active",
+  });
+  const worktree = store!.addWorktree(goal.id, {
+    phaseId: phase.id,
+    path: `C:\\tmp\\JorgeX-Stack-goal-mode-manual-merge-${number}`,
+    branch: `goal-mode-manual-merge-${number}`,
+    status: "active",
+  });
+  const pullRequest = store!.recordPullRequest(goal.id, {
+    phaseId: phase.id,
+    worktreeId: worktree.id,
+    number,
+    url: `https://github.com/jorgehn98/jorgex-stack/pull/${number}`,
+    branch: `goal-mode-manual-merge-${number}`,
+    base: "main",
+    status: "open",
+  });
+
+  return { goal, pullRequest };
+}
+
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-goal-command-"));
   const databasePath = path.join(tempDir, "goals.sqlite");
   store = createGoalStore({ databasePath });
   store.migrate();
-  handlers = createGoalCommandHandlers({ store, project: PROJECT });
+  handlers = createGoalCommandHandlers({
+    store,
+    project: PROJECT,
+    artifactsRootDir: path.join(tempDir, "artifacts"),
+  });
 });
 
 afterEach(() => {
@@ -75,6 +105,21 @@ describe("/goal command", () => {
     });
     expect(textOf(output).toLowerCase()).toContain(objective.toLowerCase());
     expect(textOf(output).toLowerCase()).toMatch(/goal|created|creado/);
+    expect(store?.getArtifact(goal!.id, "plan")?.path).toContain(path.join(tempDir, "artifacts"));
+  });
+
+  it("no deja un goal abierto si falla el bootstrap de artefactos maestros", async () => {
+    const blockedRoot = path.join(tempDir, "blocked-artifacts-root");
+    fs.writeFileSync(blockedRoot, "not a directory", "utf8");
+    handlers = createGoalCommandHandlers({
+      store: store!,
+      project: PROJECT,
+      artifactsRootDir: blockedRoot,
+    });
+
+    await expect(runGoalCommand("Bootstrap must roll back")).rejects.toThrow(/bootstrap failed/i);
+
+    expect(store!.getCurrentGoal(PROJECT)).toBeUndefined();
   });
 
   it("rechaza un objetivo vacío", async () => {
@@ -169,6 +214,43 @@ describe("/goal command", () => {
 
     await expect(runGoalCommand("resume")).rejects.toThrow(/waiting for an external PR merge/i);
     expect(store!.getGoal(goal.id)).toMatchObject({ status: "waiting_for_merge" });
+  });
+
+  it("permite señalar manualmente que el PR externo ya fue mergeado", async () => {
+    const { goal } = await seedOpenPullRequest("Manual merge recovery goal", 46);
+
+    const output = textOf(await runGoalCommand("merged\tabc123")).toLowerCase();
+
+    expect(output).toContain("#46");
+    expect(output).toContain("active");
+    expect(store!.getGoal(goal.id)).toMatchObject({ status: "active" });
+    expect(store!.getOpenPullRequest(goal.id)).toBeUndefined();
+  });
+
+  it("usa mergeCommit manual por defecto en /goal merged sin argumento", async () => {
+    const { pullRequest } = await seedOpenPullRequest("Manual merge default commit goal", 47);
+
+    await runGoalCommand("merged");
+
+    expect(store!.getPullRequest(pullRequest.id)).toMatchObject({
+      status: "merged",
+      mergeCommit: "manual",
+    });
+  });
+
+  it("rechaza /goal merged si no hay PR abierto", async () => {
+    await seedGoal("No open PR to merge");
+
+    await expect(runGoalCommand("merged")).rejects.toThrow(/no open pull request/i);
+  });
+
+  it("falla explícitamente si /goal plan requiere artefactos pero no hay plan registrado", () => {
+    store!.createGoal({
+      objective: "Missing registered master plan",
+      project: PROJECT,
+    });
+
+    expect(() => handlers!.handleGoalCommand("plan")).toThrow(/plan artifact is not registered/i);
   });
 
   it("pause, resume y cancel actualizan el estado persistido del goal", async () => {

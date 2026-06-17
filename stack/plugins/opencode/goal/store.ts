@@ -389,17 +389,20 @@ class GoalStoreImpl implements GoalStore {
       const goal = this.requireGoal(goalId);
       this.assertText(input.reason, "reason");
 
-      if (goal.status === status) return goal;
+      const targetStatus =
+        status === "active" && this.getOpenPullRequest(goalId) ? "waiting_for_merge" : status;
 
-      assertGoalTransition(goal.status, status);
+      if (goal.status === targetStatus) return goal;
+
+      assertGoalTransition(goal.status, targetStatus);
       const updatedAt = this.now();
       this.db.run(
         "UPDATE goals SET status = ?, updated_at = ? WHERE id = ?",
-        status,
+        targetStatus,
         updatedAt,
         goalId,
       );
-      this.insertEvent(goalId, `goal.${status}`, input.reason, { from: goal.status, to: status }, updatedAt);
+      this.insertEvent(goalId, `goal.${targetStatus}`, input.reason, { from: goal.status, to: targetStatus }, updatedAt);
       return this.requireGoal(goalId);
     });
   }
@@ -655,7 +658,7 @@ class GoalStoreImpl implements GoalStore {
     this.ensureOpen();
     const goal = this.requireGoal(goalId);
 
-    if (goal.status === "waiting_for_merge") {
+    if (!isTerminalGoalStatus(goal.status)) {
       const pullRequest = this.getOpenPullRequest(goalId);
       if (pullRequest) {
         return { type: "wait_for_merge", pullRequestId: pullRequest.id };
@@ -674,6 +677,9 @@ class GoalStoreImpl implements GoalStore {
       const pullRequest = this.requirePullRequest(pullRequestId);
       this.assertText(input.mergedAt, "mergedAt");
       this.assertText(input.mergeCommit, "mergeCommit");
+      if (pullRequest.status !== "open") {
+        throw new Error(`Pull request ${pullRequestId} is not open.`);
+      }
 
       this.db.run(
         `UPDATE goal_prs

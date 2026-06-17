@@ -247,6 +247,48 @@ describe("Goal Mode SQLite store", () => {
     });
 
     expect(store.getGoal(goal.id)?.status).toBe("active");
+    expect(() =>
+      store.recordPullRequestMerged(secondPullRequest.id, {
+        mergedAt: "2026-06-17T03:00:00.000Z",
+        mergeCommit: "already-merged",
+      }),
+    ).toThrow(/not open/i);
+
+    store.close();
+  });
+
+  it("keeps an open pull request as the next action gate even if status is resumed", () => {
+    const store = createGoalStore({ databasePath: makeDbPath() });
+    store.migrate();
+    const goal = store.createGoal({ objective: "open PR invariant", project: "jorgex-stack" });
+    const phase = store.addPhase(goal.id, {
+      name: "PR gate",
+      objective: "Protect open PR invariant",
+      status: "active",
+    });
+    const worktree = store.addWorktree(goal.id, {
+      phaseId: phase.id,
+      path: "C:\\tmp\\JorgeX-Stack-goal-mode-invariant",
+      branch: "goal-mode-invariant",
+      status: "active",
+    });
+    const pullRequest = store.recordPullRequest(goal.id, {
+      phaseId: phase.id,
+      worktreeId: worktree.id,
+      number: 47,
+      url: "https://github.com/jorgehn98/jorgex-stack/pull/47",
+      branch: "goal-mode-invariant",
+      base: "main",
+      status: "open",
+    });
+
+    const resumed = store.transitionGoal(goal.id, "active", { reason: "manual resume attempt" });
+
+    expect(resumed.status).toBe("waiting_for_merge");
+    expect(store.nextAction(goal.id)).toEqual({
+      type: "wait_for_merge",
+      pullRequestId: pullRequest.id,
+    });
 
     store.close();
   });

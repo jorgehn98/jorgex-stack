@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { GoalStore } from "./types.js";
 import { createGoalCommandHandlers } from "./command.js";
 import {
@@ -19,6 +20,7 @@ interface GoalLogger {
 export interface OpenCodeGoalHooksDeps {
   store: GoalStore;
   project: string;
+  artifactsRootDir?: string;
   sessionClient?: GoalSessionClient;
   logger?: GoalLogger;
 }
@@ -34,6 +36,7 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
   const commands = createGoalCommandHandlers({
     store: deps.store,
     project: deps.project,
+    artifactsRootDir: deps.artifactsRootDir,
   });
   const supervisor = createGoalSupervisor({
     store: deps.store,
@@ -46,7 +49,7 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
       if (command !== "goal") return;
 
       const response = commands.handleGoalCommand(extractCommandArguments(input));
-      appendHookText(output, response.message);
+      appendHookText(input, output, response.message);
     },
 
     "experimental.chat.system.transform": async (_input, output) => {
@@ -72,24 +75,55 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
     },
 
     event: async ({ event }) => {
-      if (event.type !== "session.idle" && event.type !== "session.status") return;
+      if (event.type !== "session.idle") return;
 
       const decision = supervisor.decide();
       if (!decision || decision.type === "pause_for_merge") return;
       if (decision.state.goal.status !== "active") return;
       if (!deps.sessionClient?.promptAsync) return;
+      const sessionID = extractSessionID(event.properties);
+      const prompt = supervisor.renderContinuationPrompt(decision.state.goal.id);
+      if (!prompt?.trim()) {
+        deps.store.appendEvent(decision.state.goal.id, {
+          type: "goal.auto_continue_skipped",
+          message: "Auto-continue skipped because the continuation prompt was empty.",
+        });
+        return;
+      }
+      const dedupeKey = `${decision.state.goal.id}:${sessionID ?? "unknown"}`;
+      if (autoContinueInFlight.has(dedupeKey)) {
+        deps.store.appendEvent(decision.state.goal.id, {
+          type: "goal.auto_continue_deduped",
+          message: "Auto-continue skipped because a continuation is already in flight.",
+        });
+        return;
+      }
+      autoContinueInFlight.add(dedupeKey);
 
       try {
+        deps.store.appendEvent(decision.state.goal.id, {
+          type: "goal.auto_continue_requested",
+          message: `Auto-continue requested for session ${sessionID ?? "unknown"}.`,
+        });
         await deps.sessionClient.promptAsync({
-          sessionID: extractSessionID(event.properties),
-          prompt: supervisor.renderContinuationPrompt(decision.state.goal.id) ?? "",
+          sessionID,
+          prompt,
         });
       } catch (error) {
+        deps.store.appendEvent(decision.state.goal.id, {
+          type: "goal.auto_continue_failed",
+          message: `Auto-continue failed for session ${sessionID ?? "unknown"}.`,
+          data: { error: error instanceof Error ? error.message : String(error) },
+        });
         deps.logger?.warn?.("Goal Mode auto-continue failed", error);
+      } finally {
+        autoContinueInFlight.delete(dedupeKey);
       }
     },
   };
 }
+
+const autoContinueInFlight = new Set<string>();
 
 function extractCommandName(input: unknown): string {
   if (!isRecord(input)) return "";
@@ -107,7 +141,18 @@ function extractCommandArguments(input: unknown): string {
   return typeof nested === "string" ? nested : "";
 }
 
-function appendHookText(output: HookOutput, text: string): void {
+function appendHookText(input: unknown, output: HookOutput, text: string): void {
+  if (Array.isArray(output.parts)) {
+    output.parts.push({
+      id: `part_${randomUUID()}`,
+      sessionID: extractHookSessionID(input, output),
+      messageID: extractHookMessageID(input, output),
+      type: "text",
+      text,
+      synthetic: true,
+    });
+    return;
+  }
   if (typeof output.message === "string") {
     output.message = output.message ? `${output.message}\n\n${text}` : text;
     return;
@@ -121,6 +166,36 @@ function appendHookText(output: HookOutput, text: string): void {
     return;
   }
   output.message = text;
+}
+
+function extractHookSessionID(input: unknown, output: HookOutput): string {
+  const inputRecord = isRecord(input) ? input : undefined;
+  const outputRecord = output;
+  const direct = inputRecord?.sessionID ?? inputRecord?.sessionId ?? outputRecord.sessionID ?? outputRecord.sessionId;
+  if (typeof direct === "string" && direct.trim()) return direct;
+
+  const message = outputRecord.message ?? outputRecord.info;
+  if (isRecord(message)) {
+    const sessionID = message.sessionID ?? message.sessionId;
+    if (typeof sessionID === "string" && sessionID.trim()) return sessionID;
+  }
+
+  return `session_${randomUUID()}`;
+}
+
+function extractHookMessageID(input: unknown, output: HookOutput): string {
+  const inputRecord = isRecord(input) ? input : undefined;
+  const outputRecord = output;
+  const direct = inputRecord?.messageID ?? inputRecord?.messageId ?? outputRecord.messageID ?? outputRecord.messageId;
+  if (typeof direct === "string" && direct.trim()) return direct;
+
+  const message = outputRecord.message ?? outputRecord.info;
+  if (isRecord(message)) {
+    const id = message.id ?? message.messageID ?? message.messageId;
+    if (typeof id === "string" && id.trim()) return id;
+  }
+
+  return `msg_${randomUUID()}`;
 }
 
 function upsertMarkedBlock(text: string, block: string): string {

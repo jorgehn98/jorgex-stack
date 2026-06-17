@@ -1,11 +1,16 @@
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createGoalStore } from "./goal/store.js";
 import { createOpenCodeGoalHooks } from "./goal/opencode-hooks.js";
 
-export function resolveGoalProjectName(directory: string): string {
+interface GoalPluginLogger {
+  warn?: (message: string, details?: unknown) => void;
+}
+
+export function resolveGoalProjectName(directory: string, logger?: GoalPluginLogger): string {
   try {
     const remote = execFileSync("git", ["-C", directory, "remote", "get-url", "origin"], {
       encoding: "utf8",
@@ -13,7 +18,12 @@ export function resolveGoalProjectName(directory: string): string {
     }).trim();
     const name = parseRemoteProjectKey(remote);
     if (name) return name;
-  } catch {
+    logger?.warn?.("Goal Mode could not parse origin URL; falling back to local project key.", {
+      directory,
+      remote,
+    });
+  } catch (error) {
+    logger?.warn?.("Goal Mode project remote lookup failed; falling back to local project key.", error);
     // Fallback below.
   }
 
@@ -24,7 +34,8 @@ export function resolveGoalProjectName(directory: string): string {
     }).trim();
     const absolute = path.resolve(directory, commonDir);
     return `local:${createHash("sha256").update(absolute.toLowerCase()).digest("hex").slice(0, 16)}`;
-  } catch {
+  } catch (error) {
+    logger?.warn?.("Goal Mode git-common-dir lookup failed; falling back to directory project key.", error);
     return `local:${createHash("sha256").update(path.resolve(directory).toLowerCase()).digest("hex").slice(0, 16)}`;
   }
 }
@@ -40,18 +51,80 @@ function parseRemoteProjectKey(remote: string): string | undefined {
 }
 
 export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }) => {
-  const databasePath =
-    process.env.JORGEX_GOAL_DB ??
-    path.join(os.homedir(), ".jorgex-stack", "goals", "goals.sqlite");
+  const logger = console;
+  const databasePath = resolveGoalDatabasePath(process.env.JORGEX_GOAL_DB);
   const store = createGoalStore({ databasePath });
   store.migrate();
+  const project = resolveGoalProjectName(ctx.directory, logger);
 
   return createOpenCodeGoalHooks({
     store,
-    project: resolveGoalProjectName(ctx.directory),
+    project,
+    artifactsRootDir: path.join(os.homedir(), ".jorgex-stack", "goals", "artifacts", safePathSegment(project)),
     sessionClient: extractSessionClient(ctx.client),
+    logger,
   });
 };
+
+export function resolveGoalDatabasePath(overridePath?: string): string {
+  const goalRoot = path.join(os.homedir(), ".jorgex-stack", "goals");
+  const requested = overridePath ?? path.join(goalRoot, "goals.sqlite");
+  const resolved = path.resolve(requested);
+  const resolvedGoalRoot = resolveExistingPath(goalRoot);
+  const resolvedEngramRoot = resolveExistingPath(path.join(os.homedir(), ".engram"));
+  const resolvedParent = resolveExistingPath(path.dirname(resolved));
+  const fileStats = lstatIfExists(resolved);
+  if (fileStats?.isSymbolicLink()) {
+    throw new Error("JORGEX_GOAL_DB must not point to a symlink.");
+  }
+  if (fileStats?.isFile() && fileStats.nlink > 1) {
+    throw new Error("JORGEX_GOAL_DB must not point to a hard link.");
+  }
+  const resolvedFile = fileStats ? fs.realpathSync(resolved) : resolved;
+
+  if (!isContainedIn(resolvedParent, resolvedGoalRoot)) {
+    throw new Error(`JORGEX_GOAL_DB must stay inside ${goalRoot}. Refusing: ${requested}`);
+  }
+  if (!isContainedIn(resolvedFile, resolvedGoalRoot)) {
+    throw new Error(`JORGEX_GOAL_DB must stay inside ${goalRoot}. Refusing: ${requested}`);
+  }
+  if (isContainedIn(resolvedParent, resolvedEngramRoot) || isContainedIn(resolvedFile, resolvedEngramRoot)) {
+    throw new Error("JORGEX_GOAL_DB must not point inside ~/.engram.");
+  }
+
+  return resolved;
+}
+
+function lstatIfExists(input: string): fs.Stats | undefined {
+  try {
+    return fs.lstatSync(input);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function resolveExistingPath(input: string): string {
+  let current = path.resolve(input);
+  const missing: string[] = [];
+  while (!fs.existsSync(current)) {
+    missing.push(path.basename(current));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  const real = fs.existsSync(current) ? fs.realpathSync(current) : current;
+  return missing.reduceRight((base, part) => path.join(base, part), real);
+}
+
+function isContainedIn(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "goal";
+}
 
 function extractSessionClient(client: unknown) {
   if (typeof client !== "object" || client === null) return undefined;
