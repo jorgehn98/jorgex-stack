@@ -331,13 +331,17 @@ describe("publish workflow contract", () => {
   it("activa pnpm en bump antes del script de release", () => {
     const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
     const setupNodeIndex = bump.indexOf("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
+    const enableIndex = bump.indexOf("corepack enable pnpm");
     const corepackIndex = bump.indexOf("corepack prepare pnpm@11.1.1 --activate");
     const releaseIndex = bump.indexOf("id: release");
     const pnpmVersion = PACKAGE_METADATA.packageManager.replace(/^pnpm@/, "");
 
     expect(setupNodeIndex).toBeGreaterThan(-1);
+    expect(enableIndex).toBeGreaterThan(-1);
     expect(corepackIndex).toBeGreaterThan(-1);
     expect(releaseIndex).toBeGreaterThan(-1);
+    expect(setupNodeIndex).toBeLessThan(enableIndex);
+    expect(enableIndex).toBeLessThan(corepackIndex);
     expect(setupNodeIndex).toBeLessThan(corepackIndex);
     expect(corepackIndex).toBeLessThan(releaseIndex);
     expect(bump).toContain(`corepack prepare pnpm@${pnpmVersion} --activate`);
