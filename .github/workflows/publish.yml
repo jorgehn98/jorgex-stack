@@ -1,41 +1,89 @@
 name: Publish to npm
 
-# Publica en npm en cada push a main, pero SOLO si la versión de package.json
-# no existe ya en el registry. npm no permite republicar una versión, así que
-# un push sin bump de versión no falla: simplemente se salta el publish.
-# Para soltar una versión nueva: subir un commit que cambie "version" en package.json.
-#
-# Autenticación por trusted publishing (OIDC): SIN token ni secret. Requiere
-# configurar el repo+workflow como trusted publisher en la config del paquete
-# en npmjs.com (npm eliminó los classic/automation tokens en nov 2025).
+# Publica en npm en cada push a main, pero SOLO si hay cambios publicables y
+# la versión resultante no existe ya en el registry. También hay un
+# workflow_dispatch de recuperación para publicar la versión actual sin re-bump
+# o crear el tag faltante. El build y los tests corren en un job sin permisos
+# privilegiados; el bump/push usa solo contents: write; el publish usa OIDC sin
+# capacidad de escribir en el repo.
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: SHA completa de 40 hex de recuperación anclada a main (opcional)
+        required: false
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write # necesario para la provenance de npm
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4 # lee la versión del campo "packageManager" de package.json
-
-      # registry-url es necesario para que npm active el flujo OIDC. Clave: NO
-      # pasar `env: NODE_AUTH_TOKEN` al step de publish — un token (aunque vacío)
-      # en el .npmrc tiene precedencia sobre OIDC y rompe el trusted publishing.
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          node-version: 24 # trae npm 11.x; OIDC exige npm >= 11.5.1
-          registry-url: https://registry.npmjs.org
-          cache: pnpm
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
+          fetch-depth: 0
 
-      # Asegura npm >= 11.5.1 (requisito de OIDC) aunque la imagen traiga uno anterior.
-      - run: npm install -g npm@latest
+      - name: Resolve validate checkout SHA
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_SHA: ${{ github.event.inputs.release_sha || '' }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          checkout_sha="$GITHUB_SHA"
+          origin_main="$(git rev-parse origin/main)"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -n "$RELEASE_SHA" ]]; then
+              release_sha="${RELEASE_SHA,,}"
+
+              if ! [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::La SHA de recuperación debe ser una SHA completa de 40 hex de main."
+                exit 1
+              fi
+
+              if git merge-base --is-ancestor "$release_sha" "$origin_main"; then
+                checkout_sha="$release_sha"
+              else
+                status=$?
+
+                if [[ "$status" -eq 1 ]]; then
+                  echo "::error::La SHA de recuperación $release_sha no pertenece a main. Reejecuta workflow_dispatch con release_sha=$release_sha."
+                  exit 1
+                fi
+
+                echo "::error::No se pudo comprobar la ascendencia de release_sha contra origin/main (git merge-base salió con status $status)."
+                exit 1
+              fi
+            else
+              checkout_sha="$origin_main"
+            fi
+          fi
+
+          echo "target_sha=$checkout_sha" >> "$GITHUB_OUTPUT"
+          git checkout --detach "$checkout_sha"
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
@@ -45,19 +93,427 @@ jobs:
 
       - run: pnpm build
 
-      - name: Comprobar si la versión ya está publicada
-        id: check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
+  bump:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+      publish_sha: ${{ steps.release.outputs.publish_sha }}
+      tag_needed: ${{ steps.release.outputs.tag_needed }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ needs.validate.outputs.target_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - id: release
+        shell: bash
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_sha || '' }}
+          TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
         run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "$NAME@$VERSION ya está en npm — no se publica."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$NAME@$VERSION es nueva — se publicará."
-            echo "publish=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+
+          const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+          const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found/i;
+          const EVENT_NAME = (process.env.GITHUB_EVENT_NAME ?? '').trim();
+          const BRANCH_NAME = (process.env.GITHUB_REF_NAME ?? '').trim();
+          const RELEASE_SHA = (process.env.RELEASE_SHA ?? '').trim();
+          const PUBLICABLE_EXACT = new Set([
+            'upstreams.json',
+            'package.json',
+            'pnpm-lock.yaml',
+            'tsconfig.json',
+            'tsup.config.ts',
+            'README.md',
+            'PRD.md',
+          ]);
+          const PUBLICABLE_PREFIXES = ['src/', 'stack/'];
+          const WORK_PREFIXES = ['work/', 'worktrees/'];
+          const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
+          const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
+          const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+
+          const normalize = (input) => input.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+          const isWorkPath = (input) => {
+            const normalized = normalize(input);
+            return WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+          };
+          const isTestPath = (input) => {
+            const normalized = normalize(input);
+            return TEST_DIR_PATTERN.test(normalized) || TEST_FILE_PATTERN.test(normalized);
+          };
+          const isPublicablePath = (input) => {
+            const normalized = normalize(input);
+            if (WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
+            if (PUBLICABLE_EXACT.has(normalized)) return true;
+            return PUBLICABLE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+          };
+          const bumpPatch = (version) => {
+            const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+            if (!match) throw new Error(`La versión "${version}" no es un semver simple x.y.z.`);
+            return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+          };
+          const npmHasVersion = (packageName, version) => {
+            try {
+              execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+              return true;
+            } catch (error) {
+              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`;
+              if (NPM_NOT_FOUND_PATTERN.test(message)) return false;
+              throw error;
+            }
+          };
+          const isReleaseBumpCommit = ({ message, actor }) => {
+            const trimmedMessage = (message ?? '').trim();
+            const trimmedActor = (actor ?? '').trim();
+            const lowerMessage = trimmedMessage.toLowerCase();
+            if (trimmedMessage === '') return false;
+            if (/^chore\(release\):\s+/i.test(trimmedMessage)) return true;
+            if (/^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/i.test(trimmedMessage)) return true;
+            if (/\[bot\]$/i.test(trimmedActor) && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
+            return false;
+          };
+          const assertCurrentReleaseRun = (headSha, originMainSha) => {
+            const head = headSha.trim();
+            const originMain = originMainSha.trim();
+
+            if (head === '' || originMain === '') {
+              throw new Error('No se pudo resolver la SHA de la run o de origin/main.');
+            }
+
+            if (head !== originMain) {
+              throw new Error('La run está obsoleta: origin/main cambió tras el fetch.');
+            }
+          };
+          const normalizeRecoveryReleaseSha = (input) => {
+            const normalized = input.trim().toLowerCase();
+
+            if (!FULL_GIT_SHA_PATTERN.test(normalized)) {
+              throw new Error('La SHA de recuperación debe ser una SHA completa de 40 hex de main.');
+            }
+
+            return normalized;
+          };
+          const assertRecoveryReleaseSha = (releaseSha, originMainSha) => {
+            const recoverySha = normalizeRecoveryReleaseSha(releaseSha);
+            const originMain = originMainSha.trim().toLowerCase();
+
+            if (recoverySha === '' || originMain === '') {
+              throw new Error('No se pudo resolver la SHA de recuperación o de origin/main.');
+            }
+
+            try {
+              execFileSync('git', ['merge-base', '--is-ancestor', recoverySha, originMain], { stdio: ['ignore', 'pipe', 'pipe'] });
+            } catch (error) {
+              if (typeof error?.status === 'number' && error.status === 1) {
+                throw new Error(`La SHA de recuperación ${recoverySha} no pertenece a main. Reejecuta workflow_dispatch con release_sha=${recoverySha}.`);
+              }
+
+              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+              throw new Error(`No se pudo comprobar la ascendencia de release_sha contra origin/main. ${message}`.trim());
+            }
+
+            return recoverySha;
+          };
+          const readPackageMetadataAtRef = (ref) => {
+            const raw = execFileSync('git', ['show', `${ref}:package.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+            const parsed = JSON.parse(raw);
+            const name = typeof parsed.name === 'string' ? parsed.name.trim() : '';
+            const version = typeof parsed.version === 'string' ? parsed.version.trim() : '';
+
+            if (name === '' || version === '') {
+              throw new Error(`package.json en ${ref} no expone nombre o versión válidos.`);
+            }
+
+            return { name, version };
+          };
+          const resolveTagSha = (tagRef) => {
+            try {
+              const sha = execFileSync('git', ['rev-list', '-n', '1', tagRef], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().toLowerCase();
+              return sha === '' ? null : sha;
+            } catch (error) {
+              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+              if (/unknown revision|ambiguous argument|needed a single revision|bad revision|unknown commit|does not have any parents/i.test(message)) {
+                return null;
+              }
+
+              throw new Error(`No se pudo resolver la SHA del tag ${tagRef}: ${message}`);
+            }
+          };
+          const resolvePublishDiffBase = (packageVersion, eventBefore, head) => {
+            const releaseTag = `v${packageVersion.trim()}`;
+            if (resolveTagSha(releaseTag) !== null) return releaseTag;
+            const trimmed = eventBefore.trim();
+            if (trimmed === '') {
+              try {
+                return execFileSync('git', ['rev-parse', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+              } catch (error) {
+                const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+                if (/unknown revision|ambiguous argument|needed a single revision|does not have any parents/i.test(message)) {
+                  return EMPTY_TREE_SHA;
+                }
+                throw new Error(`No se pudo resolver la base de diff para ${head}: ${message}`);
+              }
+            }
+
+            return /^0+$/.test(trimmed) ? EMPTY_TREE_SHA : trimmed;
+          };
+
+          if (BRANCH_NAME !== 'main') {
+            throw new Error('El bump de release solo puede empujarse a main.');
+          }
+
+          execFileSync('git', ['fetch', 'origin', 'main', '--tags'], { stdio: 'inherit' });
+          const originMain = execFileSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
+          const pushHead = (process.env.GITHUB_SHA ?? '').trim();
+          const head = (process.env.TARGET_SHA ?? '').trim();
+
+          if (head === '') {
+            throw new Error('No se pudo resolver la SHA validada de la publicación.');
+          }
+
+          if (EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== '') {
+            const recoverySha = assertRecoveryReleaseSha(RELEASE_SHA, originMain);
+            if (recoverySha !== head) {
+              throw new Error('La SHA validada en validate no coincide con la SHA de recuperación.');
+            }
+          }
+
+          execFileSync('git', ['checkout', '--detach', head], { stdio: 'inherit' });
+
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (EVENT_NAME !== 'workflow_dispatch') {
+            if (pushHead === '' || originMain === '') {
+              throw new Error('No se pudo resolver la SHA de la run o de origin/main.');
+            }
+
+            try {
+              assertCurrentReleaseRun(head, originMain);
+            } catch (error) {
+              if (String(error?.message ?? error).includes('La run está obsoleta: origin/main cambió tras el fetch.')) {
+                console.log(String(error?.message ?? error));
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=false\nversion=\npublish_sha=\ntag_needed=false\nskip_reason=stale_run\n');
+                process.exit(0);
+              }
+
+              throw error;
+            }
+          }
+
+          if (EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== '') {
+            const recoveryPackage = readPackageMetadataAtRef(head);
+            if (recoveryPackage.name !== packageJson.name || recoveryPackage.version !== packageJson.version) {
+              throw new Error(`La SHA de recuperación ${head} no coincide con el package.json del checkout.`);
+            }
+          }
+          const before = resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
+          const changedPaths = execFileSync('git', ['diff', '--name-only', before, head], { encoding: 'utf8' })
+            .split('\n')
+            .map((line) => normalize(line))
+            .filter(Boolean);
+
+          const publicPaths = [];
+          const ignoredPaths = [];
+          const testPaths = [];
+          const workPaths = [];
+
+          for (const rawPath of changedPaths) {
+            if (isWorkPath(rawPath)) {
+              workPaths.push(rawPath);
+              continue;
+            }
+            if (isTestPath(rawPath)) {
+              testPaths.push(rawPath);
+              continue;
+            }
+            if (isPublicablePath(rawPath)) {
+              publicPaths.push(rawPath);
+              continue;
+            }
+            ignoredPaths.push(rawPath);
+          }
+
+          const recoveryRun = EVENT_NAME === 'workflow_dispatch';
+          const explicitRecoverySha = recoveryRun && RELEASE_SHA !== '';
+
+          const commitMessage = execFileSync('git', ['log', '-1', '--pretty=%B', head], { encoding: 'utf8' }).trim();
+          const releaseBumpCommit = isReleaseBumpCommit({ message: commitMessage, actor: process.env.GITHUB_ACTOR ?? '' });
+          const currentVersionExists = npmHasVersion(packageJson.name, packageJson.version);
+          let releaseTag = `v${packageJson.version}`;
+          let releaseTagSha = resolveTagSha(releaseTag);
+
+          if (releaseBumpCommit && !recoveryRun) {
+            if (!currentVersionExists) {
+              throw new Error(`Publicación incompleta para ${releaseTag}. Ejecuta workflow_dispatch con release_sha=${head} para recuperar.`);
+            }
+
+            if (releaseTagSha === null) {
+              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya existe en npm pero falta el tag ${releaseTag}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
+            }
+
+            if (releaseTagSha !== head) {
+              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}. Reejecuta workflow_dispatch con release_sha=${head}.`);
+            }
+
+            console.log('Commit de bump de release detectado — se evita el bucle y no se vuelve a publicar.');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=${packageJson.version}\npublish_sha=${head}\ntag_needed=false\nskip_reason=release_bump_commit\n`);
+            process.exit(0);
+          }
+
+          if (publicPaths.length === 0 && !recoveryRun) {
+            console.log('Sin cambios publicables.');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=\npublish_sha=${head}\ntag_needed=false\nskip_reason=no_publicable_changes\n`);
+            process.exit(0);
+          }
+
+          if (publicPaths.length > 0) {
+            console.log(`Cambios publicables en ${publicPaths.join(', ')}`);
+          }
+
+          let releaseVersion = packageJson.version;
+          let shouldPublish = false;
+          let tagNeeded = false;
+          let publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+          if (recoveryRun) {
+            publishSha = head;
+
+            if (releaseTagSha !== null && releaseTagSha !== head) {
+              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
+            }
+
+            if (currentVersionExists && releaseTagSha === null && !explicitRecoverySha) {
+              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya existe en npm pero falta el tag ${releaseTag}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
+            }
+
+            shouldPublish = !currentVersionExists;
+            tagNeeded = releaseTagSha === null;
+          } else if (currentVersionExists && !releaseBumpCommit) {
+            let nextVersion = bumpPatch(packageJson.version);
+            while (npmHasVersion(packageJson.name, nextVersion)) {
+              console.log(`${packageJson.name}@${nextVersion} ya existe en npm — se prueba el siguiente patch.`);
+              nextVersion = bumpPatch(nextVersion);
+            }
+
+            packageJson.version = nextVersion;
+            fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
+            execFileSync('git', ['config', 'user.name', 'github-actions[bot]'], { stdio: 'inherit' });
+            execFileSync('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], { stdio: 'inherit' });
+            execFileSync('git', ['add', 'package.json'], { stdio: 'inherit' });
+            execFileSync('git', ['commit', '-m', `chore(release): bump version to v${nextVersion}`], { stdio: 'inherit' });
+            execFileSync('git', ['push', 'origin', `HEAD:${process.env.GITHUB_REF_NAME}`], { stdio: 'inherit' });
+            publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+            releaseVersion = nextVersion;
+            releaseTag = `v${releaseVersion}`;
+            releaseTagSha = resolveTagSha(releaseTag);
+
+            if (releaseTagSha !== null && releaseTagSha !== publishSha) {
+              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${publishSha}. Reejecuta workflow_dispatch con release_sha=${publishSha}.`);
+            }
+
+            tagNeeded = releaseTagSha === null;
+            shouldPublish = true;
+          } else if (!currentVersionExists && !releaseBumpCommit) {
+            if (releaseTagSha !== null && releaseTagSha !== head) {
+              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
+            }
+
+            tagNeeded = releaseTagSha === null;
+            shouldPublish = true;
+          }
+
+          if (shouldPublish) {
+            console.log(`${packageJson.name}@${releaseVersion} se publicará.`);
+          } else if (tagNeeded) {
+            console.log(`${packageJson.name}@${releaseVersion} ya está publicado; solo falta el tag.`);
+          } else {
+            console.log(`${packageJson.name}@${releaseVersion} ya está publicado y tageado.`);
+          }
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=${shouldPublish ? 'true' : 'false'}\nversion=${releaseVersion}\npublish_sha=${publishSha}\ntag_needed=${tagNeeded ? 'true' : 'false'}\n`);
+          NODE
+
+  publish:
+    needs: bump
+    if: needs.bump.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC: emite la provenance de npm al publicar
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ needs.bump.outputs.publish_sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@d3f86a1060a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          # registry-url activa el flujo OIDC de npm; NO añadir env vars de auth token
+          # (cualquier valor, aunque vacío, tiene precedencia sobre OIDC y rompe trusted publishing).
+          registry-url: https://registry.npmjs.org
+
+      - run: |
+          npm pack --dry-run --ignore-scripts
+          npm publish --ignore-scripts --provenance
+
+  tag-release:
+    needs: [bump, publish]
+    if: always() && !cancelled() && needs.publish.result != 'failure' && needs.publish.result != 'cancelled' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.bump.outputs.tag_needed == 'true')) && (needs.publish.result == 'success' || needs.bump.outputs.tag_needed == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ needs.bump.outputs.publish_sha }}
+          fetch-depth: 0
+
+      - shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.bump.outputs.version }}"
+          SHA="${{ needs.bump.outputs.publish_sha }}"
+          TAG="v$VERSION"
+
+          if [ -z "$VERSION" ] || [ -z "$SHA" ]; then
+            echo "No se pudo resolver la versión o SHA publicada."
+            exit 1
           fi
 
-      - name: Publicar en npm (trusted publishing / OIDC — sin token)
-        if: steps.check.outputs.publish == 'true'
-        run: npm publish --access public --ignore-scripts --provenance
+          git fetch origin --tags
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            EXISTING_SHA="$(git rev-list -n 1 "$TAG")"
+            if [ "$EXISTING_SHA" != "$SHA" ]; then
+              echo "$TAG ya existe pero apunta a $EXISTING_SHA, no a $SHA."
+              exit 1
+            fi
+            echo "$TAG ya existe — no se mueve."
+            exit 0
+          fi
+
+          git tag "$TAG" "$SHA"
+          git push origin "$TAG"
