@@ -280,9 +280,7 @@ jobs:
               throw new Error(`No se pudo resolver la SHA del tag ${tagRef}: ${message}`);
             }
           };
-          const resolvePublishDiffBase = (packageVersion, eventBefore, head) => {
-            const releaseTag = `v${packageVersion.trim()}`;
-            if (resolveTagSha(releaseTag) !== null) return releaseTag;
+          const resolveEventDiffBase = (eventBefore, head) => {
             const trimmed = eventBefore.trim();
             if (trimmed === '') {
               try {
@@ -297,6 +295,24 @@ jobs:
             }
 
             return /^0+$/.test(trimmed) ? EMPTY_TREE_SHA : trimmed;
+          };
+          const resolvePublishDiffBase = (packageVersion, eventBefore, head) => {
+            const releaseTag = `v${packageVersion.trim()}`;
+            if (resolveTagSha(releaseTag) !== null) return releaseTag;
+            return resolveEventDiffBase(eventBefore, head);
+          };
+          const resolveRecoveryDiffBase = (head) => {
+            try {
+              const previousTag = execFileSync('git', ['describe', '--tags', '--abbrev=0', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+              if (previousTag !== '') return previousTag;
+            } catch (error) {
+              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+              if (!/No names found|No tags can describe|not a valid object name|unknown revision|ambiguous argument|needed a single revision/i.test(message)) {
+                throw new Error(`No se pudo resolver el último tag alcanzable desde ${head}^: ${message}`);
+              }
+            }
+
+            return resolveEventDiffBase('', head);
           };
 
           if (BRANCH_NAME !== 'main') {
@@ -346,7 +362,9 @@ jobs:
               throw new Error(`La SHA de recuperación ${head} no coincide con el package.json del checkout.`);
             }
           }
-          const before = resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
+          const before = EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== ''
+            ? resolveRecoveryDiffBase(head)
+            : resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
           const changedPaths = execFileSync('git', ['diff', '--name-only', before, head], { encoding: 'utf8' })
             .split('\n')
             .map((line) => normalize(line))

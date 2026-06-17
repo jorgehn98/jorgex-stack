@@ -196,6 +196,18 @@ export function classifyReleasePaths(paths: readonly string[]): ReleasePathDecis
     ignoredPaths.push(normalized);
   }
 
+  if (publicPaths.length > 0 && workflowPaths.length > 0) {
+    return {
+      publishable: false,
+      reason: `Release bloqueada: cambios publicables (${publicPaths.join(", ")}) mezclados con workflows (${workflowPaths.join(", ")}).`,
+      publicPaths,
+      ignoredPaths,
+      testPaths,
+      workPaths,
+      workflowPaths,
+    };
+  }
+
   if (publicPaths.length > 0) {
     return {
       publishable: true,
@@ -298,6 +310,28 @@ export function resolvePublishDiffBase(
   }
 
   return resolveEventDiffBase(eventBefore, head);
+}
+
+export function resolveRecoveryDiffBase(
+  head: string,
+  latestReachableTagBeforeHead: (headParentRef: string) => string | null = resolveLatestReachableTag,
+): string {
+  const previousTag = latestReachableTagBeforeHead(`${head}^`);
+  return previousTag ?? resolveEventDiffBase("", head);
+}
+
+function resolveLatestReachableTag(ref: string): string | null {
+  try {
+    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    return tag === "" ? null : tag;
+  } catch (error) {
+    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`.trim();
+    if (/No names found|No tags can describe|not a valid object name|unknown revision|ambiguous argument|needed a single revision/i.test(message)) {
+      return null;
+    }
+
+    throw new Error(`No se pudo resolver el último tag alcanzable desde ${ref}: ${message}`.trim());
+  }
 }
 
 export function resolveGitTagSha(tagRef: string): string | null {
