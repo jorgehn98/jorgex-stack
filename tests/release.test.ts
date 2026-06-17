@@ -270,7 +270,7 @@ describe("release version planning", () => {
 
   it("en recovery falla cerrado si no hay tag previo alcanzable", () => {
     expect(() => resolveRecoveryDiffBase("release-sha", () => null)).toThrow(
-      "No se pudo reconstruir la base de recovery para release-sha: falta un tag de release previo.",
+      "No se pudo reconstruir la base de recovery para release-sha: falta un tag de release previo. No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. Haz publish/tag manuales con permisos elevados o recrea el tag previo.",
     );
   });
 
