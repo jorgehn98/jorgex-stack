@@ -3,6 +3,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+type ExecFileSyncLike = typeof execFileSync;
+
 const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found|ERR_PNPM_PACKAGE_NOT_FOUND|No matching version found/i;
 const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a single revision|bad revision|unknown commit|does not have any parents/i;
 const ZERO_SHA_PATTERN = /^0+$/;
@@ -372,9 +374,9 @@ export function isNpmVersionNotFoundMessage(message: string): boolean {
  * siempre, nunca npm"). 404 = "no existe" (caso normal de primera publicación);
  * cualquier otro error se relanza para no enmascarar fallos de red/permisos.
  */
-export function npmHasVersion(packageName: string, version: string): boolean {
+export function npmHasVersion(packageName: string, version: string, execFile: ExecFileSyncLike = execFileSync): boolean {
   try {
-    execFileSync("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execFile("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return true;
   } catch (error) {
     const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;

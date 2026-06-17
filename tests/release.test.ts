@@ -12,6 +12,7 @@ import {
   findNextFreePatchVersion,
   isPublicablePath,
   isNpmVersionNotFoundMessage,
+  npmHasVersion,
   isReleaseBumpCommit,
   isTestPath,
   isWorkPath,
@@ -190,6 +191,18 @@ describe("release version planning", () => {
     expect(isNpmVersionNotFoundMessage("[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3")).toBe(true);
     expect(isNpmVersionNotFoundMessage("404 Not Found - GET https://registry.npmjs.org/jorgex-stack")).toBe(true);
     expect(isNpmVersionNotFoundMessage("ECONNRESET registry timeout")).toBe(false);
+  });
+
+  it("npmHasVersion devuelve false para versiones ausentes de pnpm y relanza errores reales", () => {
+    const missingVersionError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stderr: "[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3",
+    });
+    const networkError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stderr: "ERR_PNPM_META_FETCH_FAIL registry timeout",
+    });
+
+    expect(npmHasVersion("jorgex-stack", "1.0.3", (() => { throw missingVersionError; }) as never)).toBe(false);
+    expect(() => npmHasVersion("jorgex-stack", "1.0.3", (() => { throw networkError; }) as never)).toThrow(networkError);
   });
 
   it("no hace bump si la versión actual todavía no existe", () => {
