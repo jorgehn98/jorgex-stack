@@ -163,6 +163,7 @@ jobs:
           ]);
           const PUBLICABLE_PREFIXES = ['src/', 'stack/'];
           const WORK_PREFIXES = ['work/', 'worktrees/'];
+          const WORKFLOW_PREFIXES = ['.github/workflows/'];
           const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
           const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
           const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -171,6 +172,10 @@ jobs:
           const isWorkPath = (input) => {
             const normalized = normalize(input);
             return WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+          };
+          const isWorkflowPath = (input) => {
+            const normalized = normalize(input);
+            return WORKFLOW_PREFIXES.some((prefix) => normalized.startsWith(prefix));
           };
           const isTestPath = (input) => {
             const normalized = normalize(input);
@@ -275,9 +280,7 @@ jobs:
               throw new Error(`No se pudo resolver la SHA del tag ${tagRef}: ${message}`);
             }
           };
-          const resolvePublishDiffBase = (packageVersion, eventBefore, head) => {
-            const releaseTag = `v${packageVersion.trim()}`;
-            if (resolveTagSha(releaseTag) !== null) return releaseTag;
+          const resolveEventDiffBase = (eventBefore, head) => {
             const trimmed = eventBefore.trim();
             if (trimmed === '') {
               try {
@@ -292,6 +295,24 @@ jobs:
             }
 
             return /^0+$/.test(trimmed) ? EMPTY_TREE_SHA : trimmed;
+          };
+          const resolvePublishDiffBase = (packageVersion, eventBefore, head) => {
+            const releaseTag = `v${packageVersion.trim()}`;
+            if (resolveTagSha(releaseTag) !== null) return releaseTag;
+            return resolveEventDiffBase(eventBefore, head);
+          };
+          const resolveRecoveryDiffBase = (head) => {
+            try {
+              const previousTag = execFileSync('git', ['describe', '--tags', '--abbrev=0', '--first-parent', '--match', 'v[0-9]*.[0-9]*.[0-9]*', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+              if (previousTag !== '') return previousTag;
+            } catch (error) {
+              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+              if (!/No names found|No tags can describe|not a valid object name|unknown revision|ambiguous argument|needed a single revision/i.test(message)) {
+                throw new Error(`No se pudo resolver el último tag alcanzable desde ${head}^: ${message}`);
+              }
+            }
+
+            throw new Error(`No se pudo reconstruir la base de recovery para ${head}: falta un tag de release previo. No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. Haz publish/tag manuales con permisos elevados o recrea el tag previo.`);
           };
 
           if (BRANCH_NAME !== 'main') {
@@ -341,7 +362,9 @@ jobs:
               throw new Error(`La SHA de recuperación ${head} no coincide con el package.json del checkout.`);
             }
           }
-          const before = resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
+          const before = EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== ''
+            ? resolveRecoveryDiffBase(head)
+            : resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
           const changedPaths = execFileSync('git', ['diff', '--name-only', before, head], { encoding: 'utf8' })
             .split('\n')
             .map((line) => normalize(line))
@@ -351,6 +374,7 @@ jobs:
           const ignoredPaths = [];
           const testPaths = [];
           const workPaths = [];
+          const workflowPaths = [];
 
           for (const rawPath of changedPaths) {
             if (isWorkPath(rawPath)) {
@@ -359,6 +383,10 @@ jobs:
             }
             if (isTestPath(rawPath)) {
               testPaths.push(rawPath);
+              continue;
+            }
+            if (isWorkflowPath(rawPath)) {
+              workflowPaths.push(rawPath);
               continue;
             }
             if (isPublicablePath(rawPath)) {
@@ -399,6 +427,18 @@ jobs:
             console.log('Sin cambios publicables.');
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=\npublish_sha=${head}\ntag_needed=false\nskip_reason=no_publicable_changes\n`);
             process.exit(0);
+          }
+
+          if (publicPaths.length > 0 && workflowPaths.length > 0) {
+            if (currentVersionExists && releaseTagSha === null) {
+              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya está publicada, pero falta ${releaseTag}. El diff también mezcla cambios publicables con .github/workflows/*, así que crea el tag manualmente con permisos elevados.`);
+            }
+
+            if (releaseTagSha !== null && releaseTagSha !== head) {
+              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}.`);
+            }
+
+            throw new Error('El diff mezcla cambios publicables con .github/workflows/*; GitHub puede rechazar el push del tag sin permisos para workflows. Separa la release o publica/tagea manualmente con permisos elevados.');
           }
 
           if (publicPaths.length > 0) {

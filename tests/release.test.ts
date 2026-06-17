@@ -15,9 +15,11 @@ import {
   npmHasVersion,
   isReleaseBumpCommit,
   isTestPath,
+  isWorkflowPath,
   isWorkPath,
   resolveEventDiffBase,
   resolvePublishDiffBase,
+  resolveRecoveryDiffBase,
   readPackageVersion,
   writePackageVersion,
 } from "../src/lib/release.js";
@@ -80,10 +82,6 @@ describe("release path classification", () => {
       "upstreams.json",
       "package.json",
       "pnpm-lock.yaml",
-      "docs/internal.md",
-      ".github/workflows/publish.yml",
-      "tests/release.test.ts",
-      "worktrees/auto-version-publish/plan.md",
     ]);
 
     expect(result.publishable).toBe(true);
@@ -94,11 +92,28 @@ describe("release path classification", () => {
       "package.json",
       "pnpm-lock.yaml",
     ]);
-    expect(result.testPaths).toEqual(["tests/release.test.ts"]);
-    expect(result.workPaths).toEqual(["worktrees/auto-version-publish/plan.md"]);
-    expect(result.ignoredPaths).toEqual(["docs/internal.md", ".github/workflows/publish.yml"]);
     expect(result.reason).toContain("src/foo.ts");
     expect(result.reason).toContain("stack/agents/foo.md");
+  });
+
+  it("bloquea mezclar cambios publicables con workflows", () => {
+    const result = classifyReleasePaths([
+      "src/foo.ts",
+      ".github/workflows/publish.yml",
+      "tests/release.test.ts",
+      "worktrees/auto-version-publish/plan.md",
+      "docs/internal.md",
+    ]);
+
+    expect(result.publishable).toBe(false);
+    expect(result.publicPaths).toEqual(["src/foo.ts"]);
+    expect(result.workflowPaths).toEqual([".github/workflows/publish.yml"]);
+    expect(result.testPaths).toEqual(["tests/release.test.ts"]);
+    expect(result.workPaths).toEqual(["worktrees/auto-version-publish/plan.md"]);
+    expect(result.ignoredPaths).toEqual(["docs/internal.md"]);
+    expect(result.reason).toContain("Release bloqueada");
+    expect(result.reason).toContain("src/foo.ts");
+    expect(result.reason).toContain(".github/workflows/publish.yml");
   });
 
   it("no publica solo tests o worktrees", () => {
@@ -114,8 +129,9 @@ describe("release path classification", () => {
 
     const workflowOnly = classifyReleasePaths([".github/workflows/publish.yml"]);
     expect(workflowOnly.publishable).toBe(false);
-    expect(workflowOnly.reason).toBe("Sin cambios publicables: otros no publicables.");
-    expect(workflowOnly.ignoredPaths).toEqual([".github/workflows/publish.yml"]);
+    expect(workflowOnly.reason).toBe("Sin cambios publicables: workflows.");
+    expect(workflowOnly.workflowPaths).toEqual([".github/workflows/publish.yml"]);
+    expect(workflowOnly.ignoredPaths).toEqual([]);
   });
 
   it("expone los predicados directos para rutas conocidas", () => {
@@ -124,6 +140,8 @@ describe("release path classification", () => {
     expect(isPublicablePath("work/auto-version-publish/plan.md")).toBe(false);
     expect(isTestPath("tests/release.test.ts")).toBe(true);
     expect(isTestPath("src/foo.spec.ts")).toBe(true);
+    expect(isWorkflowPath(".github/workflows/publish.yml")).toBe(true);
+    expect(isWorkflowPath("src/lib/release.ts")).toBe(false);
     expect(isWorkPath("worktrees/auto-version-publish/plan.md")).toBe(true);
   });
 });
@@ -246,6 +264,16 @@ describe("release version planning", () => {
     expect(resolvePublishDiffBase("1.0.2", "ignored", (tagRef) => tagRef === "v1.0.2", "head-sha")).toBe("v1.0.2");
   });
 
+  it("en recovery usa el último tag alcanzable antes del release_sha", () => {
+    expect(resolveRecoveryDiffBase("release-sha", (ref) => (ref === "release-sha^" ? "v1.0.2" : null))).toBe("v1.0.2");
+  });
+
+  it("en recovery falla cerrado si no hay tag previo alcanzable", () => {
+    expect(() => resolveRecoveryDiffBase("release-sha", () => null)).toThrow(
+      "No se pudo reconstruir la base de recovery para release-sha: falta un tag de release previo. No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. Haz publish/tag manuales con permisos elevados o recrea el tag previo.",
+    );
+  });
+
   it("cae a github.event.before cuando no existe el tag de la versión actual", () => {
     expect(resolvePublishDiffBase("1.0.2", "before-sha", () => false, "head-sha")).toBe("before-sha");
   });
@@ -340,6 +368,31 @@ describe("publish workflow contract", () => {
 
     const recoveryRunBlock = bump.slice(recoveryRunStart, publicableStart);
     expect(recoveryRunBlock).not.toContain("skip_reason=stale_run");
+  });
+
+  it("bloquea mezclar cambios publicables con workflows antes del bump/publish", () => {
+    const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+    const noPublicableIndex = bump.indexOf("if (publicPaths.length === 0 && !recoveryRun) {");
+    const guardIndex = bump.indexOf("if (publicPaths.length > 0 && workflowPaths.length > 0) {");
+    const recoveryBranchIndex = bump.indexOf("if (recoveryRun) {");
+    const autoBumpBranchIndex = bump.indexOf("} else if (currentVersionExists && !releaseBumpCommit) {");
+
+    expect(noPublicableIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(noPublicableIndex);
+    expect(guardIndex).toBeLessThan(recoveryBranchIndex);
+    expect(guardIndex).toBeLessThan(autoBumpBranchIndex);
+    expect(bump).toContain("const workflowPaths = [];");
+    expect(bump).toContain("if (isWorkflowPath(rawPath)) {");
+    expect(bump).toContain("workflowPaths.push(rawPath);");
+    expect(bump).toContain("const resolveRecoveryDiffBase = (head) => {");
+    expect(bump).toContain("['describe', '--tags', '--abbrev=0', '--first-parent', '--match', 'v[0-9]*.[0-9]*.[0-9]*', `${head}^`]");
+    expect(bump).toContain("? resolveRecoveryDiffBase(head)");
+    expect(bump).toContain("falta un tag de release previo");
+    expect(bump).not.toContain("return resolveEventDiffBase('', head);");
+    expect(bump).not.toContain("if (!recoveryRun && publicPaths.length > 0 && workflowPaths.length > 0) {");
+    expect(bump).toContain("GitHub puede rechazar el push del tag sin permisos para workflows");
+    expect(bump).toContain("ya está publicada, pero falta ${releaseTag}");
+    expect(bump).toContain("Separa la release o publica/tagea manualmente con permisos elevados.");
   });
 
   it("separa permisos de validación, bump, publish y tag", () => {
