@@ -180,7 +180,7 @@ jobs:
               execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
               return true;
             } catch (error) {
-              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`;
+              const message = `${error?.message ?? ''}\n${String(error?.stdout ?? '')}\n${String(error?.stderr ?? '')}`;
               if (NPM_NOT_FOUND_PATTERN.test(message)) return false;
               throw error;
             }

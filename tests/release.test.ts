@@ -195,7 +195,8 @@ describe("release version planning", () => {
 
   it("npmHasVersion devuelve false para versiones ausentes de pnpm y relanza errores reales", () => {
     const missingVersionError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
-      stderr: "[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3",
+      stdout: "[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3",
+      stderr: "",
     });
     const networkError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
       stderr: "ERR_PNPM_META_FETCH_FAIL registry timeout",
@@ -442,6 +443,7 @@ describe("publish workflow contract", () => {
     expect(bump).toContain("execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version']");
     expect(bump).toContain("ERR_PNPM_PACKAGE_NOT_FOUND");
     expect(bump).toContain("No matching version found");
+    expect(bump).toContain("String(error?.stdout ?? '')");
     expect(bump).not.toContain("execFileSync('npm', ['view'");
     expect(bump).toContain("let releaseTagSha = resolveTagSha(releaseTag);");
     expect(bump).toContain("['rev-list', '-n', '1', tagRef]");

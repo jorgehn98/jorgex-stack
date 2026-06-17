@@ -379,7 +379,7 @@ export function npmHasVersion(packageName: string, version: string, execFile: Ex
     execFile("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return true;
   } catch (error) {
-    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
+    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stdout?: unknown }).stdout ?? "")}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
     if (isNpmVersionNotFoundMessage(message)) return false;
     throw error;
   }
