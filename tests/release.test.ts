@@ -313,10 +313,11 @@ describe("publish workflow contract", () => {
     const workflow = readWorkflow();
     const jobs = splitTopLevelJobs(workflow);
 
-    expect(workflow).toMatch(/^permissions:\n  contents: read$/m);
+    expect(workflow).toMatch(/^permissions:\r?\n  contents: read$/m);
     expect(workflow).toContain('workflow_dispatch:');
     expect(jobs.get("validate")).toContain("permissions:\n      contents: read");
     expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
+    expect(jobs.get("bump")).toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
     expect(jobs.get("bump")).toContain("tag_needed=${tagNeeded ? 'true' : 'false'}");
     expect(jobs.get("bump")).toContain("tag_needed: ${{ steps.release.outputs.tag_needed }}");
     expect(jobs.get("publish")).toContain("permissions:\n      contents: read");
