@@ -433,6 +433,11 @@ class GoalStoreImpl implements GoalStore {
         phase.createdAt,
         phase.updatedAt,
       );
+      this.insertEvent(goalId, "goal.phase_added", "Goal phase added", {
+        phaseId: phase.id,
+        name: phase.name,
+        status: phase.status,
+      }, createdAt);
       this.touchGoal(goalId, createdAt);
       return phase;
     });
@@ -470,6 +475,12 @@ class GoalStoreImpl implements GoalStore {
         worktree.createdAt,
         worktree.updatedAt,
       );
+      this.insertEvent(goalId, "goal.worktree_added", "Goal worktree added", {
+        worktreeId: worktree.id,
+        phaseId: worktree.phaseId,
+        branch: worktree.branch,
+        status: worktree.status,
+      }, createdAt);
       this.touchGoal(goalId, createdAt);
       return worktree;
     });
@@ -532,6 +543,11 @@ class GoalStoreImpl implements GoalStore {
           number: pullRequest.number,
         }, createdAt);
       } else {
+        this.insertEvent(goalId, "goal.pull_request_recorded", "Pull request recorded", {
+          pullRequestId: pullRequest.id,
+          number: pullRequest.number,
+          status: pullRequest.status,
+        }, createdAt);
         this.touchGoal(goalId, createdAt);
       }
 
@@ -557,6 +573,13 @@ class GoalStoreImpl implements GoalStore {
     return row ? mapPullRequest(row) : undefined;
   }
 
+  listPullRequests(goalId: string): PullRequestRecord[] {
+    this.ensureOpen();
+    return this.db
+      .all("SELECT * FROM goal_prs WHERE goal_id = ? ORDER BY created_at ASC", goalId)
+      .map(mapPullRequest);
+  }
+
   recordArtifact(goalId: string, input: GoalArtifactInput): GoalArtifactRecord {
     return this.atomically(() => {
       this.ensureOpen();
@@ -575,6 +598,10 @@ class GoalStoreImpl implements GoalStore {
           updatedAt,
           existing.id,
         );
+        this.insertEvent(goalId, "goal.artifact_recorded", "Goal artifact updated", {
+          artifactId: existing.id,
+          kind: input.kind,
+        }, updatedAt);
         this.touchGoal(goalId, updatedAt);
         return this.getArtifact(goalId, input.kind)!;
       }
@@ -598,6 +625,10 @@ class GoalStoreImpl implements GoalStore {
         artifact.createdAt,
         artifact.updatedAt,
       );
+      this.insertEvent(goalId, "goal.artifact_recorded", "Goal artifact recorded", {
+        artifactId: artifact.id,
+        kind: artifact.kind,
+      }, updatedAt);
       this.touchGoal(goalId, updatedAt);
       return artifact;
     });

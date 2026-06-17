@@ -160,6 +160,7 @@ export interface GoalStore {
   getActiveGoal(project: string): GoalRecord | undefined;
   getCurrentGoal(project: string): GoalRecord | undefined;
   getOpenPullRequest(goalId: string): PullRequestRecord | undefined;
+  listPullRequests(goalId: string): PullRequestRecord[];
   appendEvent(goalId: string, input: GoalEventInput): GoalEventRecord;
   listEvents(goalId: string): GoalEventRecord[];
   transitionGoal(
