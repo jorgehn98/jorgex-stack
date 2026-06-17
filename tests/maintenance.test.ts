@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 import { isContainedIn, writeText } from "../src/lib/fsx.js";
+import { planPlugins } from "../src/components/plugins.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
+import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
@@ -147,7 +149,6 @@ describe("permisos por defecto: solo si el usuario no los tiene", () => {
 
 describe("planPlugins: placeholders resueltos", () => {
   it("engram.ts recibe el protocolo canónico y el binario, sin placeholders", async () => {
-    const { planPlugins } = await import("../src/components/plugins.js");
     const ctx = {
       stackDir: stackRoot(),
       configDir: tmp,
@@ -163,6 +164,42 @@ describe("planPlugins: placeholders resueltos", () => {
     expect(content).toContain("engram.exe");
     expect(content).not.toContain("{{ENGRAM_PROTOCOL}}");
     expect(content).not.toContain("{{ENGRAM_BIN}}");
+  });
+});
+
+describe("planPlugins: Goal Mode de OpenCode", () => {
+  it("copia goal-plugin.ts y el subdirectorio goal/* de forma recursiva", () => {
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: DEFAULT_MODEL_MAP.opencode!,
+      warnings: [],
+    };
+    const actions = planPlugins(opencodeAdapter, ctx);
+    const pluginRoot = path.join(tmp, "plugins");
+    const targets = actions.map((action) => path.relative(pluginRoot, action.target).replace(/\\/g, "/"));
+
+    expect(targets).toContain("goal-plugin.ts");
+    expect(targets).toContain("goal/command.ts");
+    expect(targets).toContain("goal/store.ts");
+    expect(targets).not.toContain("package.json");
+  });
+
+  it.each(
+    [
+      ["claude-code", claudeCodeAdapter],
+      ["codex", codexAdapter],
+    ] as const,
+  )("no planifica plugins locales para %s", (_id, adapter) => {
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: DEFAULT_MODEL_MAP[adapter.id]!,
+      warnings: [],
+    };
+    expect(planPlugins(adapter, ctx)).toEqual([]);
   });
 });
 
