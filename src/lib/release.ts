@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 type ExecFileSyncLike = typeof execFileSync;
 
-const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found|ERR_PNPM_PACKAGE_NOT_FOUND|No matching version found/i;
+const PNPM_VERSION_NOT_FOUND_PATTERN = /\bERR_PNPM_PACKAGE_NOT_FOUND\b/i;
 const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a single revision|bad revision|unknown commit|does not have any parents/i;
 const ZERO_SHA_PATTERN = /^0+$/;
 const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -365,8 +365,9 @@ export function findNextFreePatchVersion(version: string, versionExists: (candid
   return candidate;
 }
 
-export function isNpmVersionNotFoundMessage(message: string): boolean {
-  return NPM_NOT_FOUND_PATTERN.test(message);
+export function isNpmVersionNotFoundMessage(message: string, packageName: string, version: string): boolean {
+  const target = `${packageName}@${version}`;
+  return PNPM_VERSION_NOT_FOUND_PATTERN.test(message) || message.includes(`No matching version found for ${target}`);
 }
 
 /**
@@ -379,8 +380,8 @@ export function npmHasVersion(packageName: string, version: string, execFile: Ex
     execFile("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return true;
   } catch (error) {
-    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
-    if (isNpmVersionNotFoundMessage(message)) return false;
+    const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stdout?: unknown }).stdout ?? "")}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
+    if (isNpmVersionNotFoundMessage(message, packageName, version)) return false;
     throw error;
   }
 }

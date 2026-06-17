@@ -188,21 +188,33 @@ describe("release version planning", () => {
   });
 
   it("reconoce el error de pnpm cuando una versión npm no existe", () => {
-    expect(isNpmVersionNotFoundMessage("[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3")).toBe(true);
-    expect(isNpmVersionNotFoundMessage("404 Not Found - GET https://registry.npmjs.org/jorgex-stack")).toBe(true);
-    expect(isNpmVersionNotFoundMessage("ECONNRESET registry timeout")).toBe(false);
+    expect(isNpmVersionNotFoundMessage("[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3", "jorgex-stack", "1.0.3")).toBe(true);
+    expect(isNpmVersionNotFoundMessage("No matching version found for jorgex-stack@1.0.3", "jorgex-stack", "1.0.3")).toBe(true);
+    expect(isNpmVersionNotFoundMessage("404 Not Found - GET https://registry.npmjs.org/jorgex-stack", "jorgex-stack", "1.0.3")).toBe(false);
+    expect(isNpmVersionNotFoundMessage("ERR_PNPM_FETCH_404 jorgex-stack is not in the npm registry", "jorgex-stack", "1.0.3")).toBe(false);
+    expect(isNpmVersionNotFoundMessage("ECONNRESET registry timeout", "jorgex-stack", "1.0.3")).toBe(false);
   });
 
   it("npmHasVersion devuelve false para versiones ausentes de pnpm y relanza errores reales", () => {
     const missingVersionError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stdout: "[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3",
+      stderr: "",
+    });
+    const missingVersionStderrError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stdout: "",
       stderr: "[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3",
     });
     const networkError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
       stderr: "ERR_PNPM_META_FETCH_FAIL registry timeout",
     });
+    const registry404Error = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stdout: "ERR_PNPM_FETCH_404 jorgex-stack is not in the npm registry, or you have no permission to fetch it",
+    });
 
     expect(npmHasVersion("jorgex-stack", "1.0.3", (() => { throw missingVersionError; }) as never)).toBe(false);
+    expect(npmHasVersion("jorgex-stack", "1.0.3", (() => { throw missingVersionStderrError; }) as never)).toBe(false);
     expect(() => npmHasVersion("jorgex-stack", "1.0.3", (() => { throw networkError; }) as never)).toThrow(networkError);
+    expect(() => npmHasVersion("jorgex-stack", "1.0.3", (() => { throw registry404Error; }) as never)).toThrow(registry404Error);
   });
 
   it("no hace bump si la versión actual todavía no existe", () => {
@@ -442,6 +454,7 @@ describe("publish workflow contract", () => {
     expect(bump).toContain("execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version']");
     expect(bump).toContain("ERR_PNPM_PACKAGE_NOT_FOUND");
     expect(bump).toContain("No matching version found");
+    expect(bump).toContain("String(error?.stdout ?? '')");
     expect(bump).not.toContain("execFileSync('npm', ['view'");
     expect(bump).toContain("let releaseTagSha = resolveTagSha(releaseTag);");
     expect(bump).toContain("['rev-list', '-n', '1', tagRef]");
