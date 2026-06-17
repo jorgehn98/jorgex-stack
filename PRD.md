@@ -31,7 +31,7 @@ pnpm dlx jorgex-stack doctor   → verifica que todo está sano
 
 | # | Decisión | Elección |
 |---|----------|----------|
-| D1 | Tecnología del instalador | **TypeScript + Node (≥20)**, bundle único (tsup/esbuild), prompts con `@clack/prompts`, publicado en el registry npm y ejecutado con `pnpm dlx jorgex-stack`. Sin Go, sin binarios propios. |
+| D1 | Tecnología del instalador | **TypeScript + Node (≥22.5)**, bundle único (tsup/esbuild), prompts con `@clack/prompts`, publicado en el registry npm y ejecutado con `pnpm dlx jorgex-stack`. Sin Go, sin binarios propios. |
 | D2 | Plataformas | **Cross-platform desde v1** (Windows + macOS + Linux). Windows es el entorno principal de pruebas. |
 | D3 | Estrategia de despliegue | **Merge idempotente con marcadores** (`<!-- jorgex:seccion -->` en markdown, upsert quirúrgico en JSON/TOML). Backup automático antes de tocar nada + rollback. Nunca machaca contenido manual del usuario. |
 | D4 | Plugins de jorgex-custom-tools | Se **copian** al nuevo repo ahora (los originales NO se tocan porque están en uso). **Cuando el proyecto esté completo e instalado**: se eliminan de `C:\Users\jorge\Desktop\jorgex-custom-tools` y pasan a vivir/instalarse SOLO desde JorgeX Stack. Ver §11 F6. |

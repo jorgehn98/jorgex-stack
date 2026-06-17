@@ -5,11 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 import { isContainedIn, writeText } from "../src/lib/fsx.js";
+import { planPlugins } from "../src/components/plugins.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
+import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { runInstall } from "../src/install.js";
 
 let tmp: string;
 
@@ -147,7 +150,6 @@ describe("permisos por defecto: solo si el usuario no los tiene", () => {
 
 describe("planPlugins: placeholders resueltos", () => {
   it("engram.ts recibe el protocolo canónico y el binario, sin placeholders", async () => {
-    const { planPlugins } = await import("../src/components/plugins.js");
     const ctx = {
       stackDir: stackRoot(),
       configDir: tmp,
@@ -163,6 +165,73 @@ describe("planPlugins: placeholders resueltos", () => {
     expect(content).toContain("engram.exe");
     expect(content).not.toContain("{{ENGRAM_PROTOCOL}}");
     expect(content).not.toContain("{{ENGRAM_BIN}}");
+  });
+});
+
+describe("planPlugins: Goal Mode de OpenCode", () => {
+  it("copia goal-plugin.ts y el subdirectorio goal/* de forma recursiva", () => {
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: DEFAULT_MODEL_MAP.opencode!,
+      warnings: [],
+    };
+    const actions = planPlugins(opencodeAdapter, ctx);
+    const pluginRoot = path.join(tmp, "plugins");
+    const targets = actions.map((action) => path.relative(pluginRoot, action.target).replace(/\\/g, "/"));
+
+    expect(targets).toContain("goal-plugin.ts");
+    expect(targets).toContain("goal/command.ts");
+    expect(targets).toContain("goal/store.ts");
+    expect(targets).not.toContain("package.json");
+  });
+
+  it("install/sync con --target-dir escribe el árbol Goal Mode de forma idempotente", async () => {
+    const targetDir = path.join(tmp, "opencode-target");
+
+    await expect(runInstall({
+      runtimes: ["opencode"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+    })).resolves.toBe(0);
+
+    const installedFiles = [
+      path.join(targetDir, "plugins", "goal-plugin.ts"),
+      path.join(targetDir, "plugins", "goal", "db.ts"),
+      path.join(targetDir, "plugins", "goal", "store.ts"),
+      path.join(targetDir, "plugins", "goal", "opencode-hooks.ts"),
+    ];
+    for (const file of installedFiles) {
+      expect(fs.existsSync(file)).toBe(true);
+    }
+
+    await expect(runInstall({
+      runtimes: ["opencode"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+    })).resolves.toBe(0);
+    for (const file of installedFiles) {
+      expect(fs.existsSync(file)).toBe(true);
+    }
+  });
+
+  it.each(
+    [
+      ["claude-code", claudeCodeAdapter],
+      ["codex", codexAdapter],
+    ] as const,
+  )("no planifica plugins locales para %s", (_id, adapter) => {
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: DEFAULT_MODEL_MAP[adapter.id]!,
+      warnings: [],
+    };
+    expect(planPlugins(adapter, ctx)).toEqual([]);
   });
 });
 
@@ -188,6 +257,23 @@ describe("lean integration: artefactos canónicos del stack", () => {
     expect(fs.existsSync(command)).toBe(true);
     expect(fs.readFileSync(skill, "utf8")).toContain("name: lean-code");
     expect(fs.readFileSync(command, "utf8")).toContain("description: Manual read-only lean audit");
+  });
+});
+
+describe("Goal Mode runtime version contract", () => {
+  it("mantiene alineados Node >=22.5, tsup node22 y la documentación", () => {
+    const root = path.join(stackRoot(), "..");
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
+      engines?: { node?: string };
+    };
+    const tsup = fs.readFileSync(path.join(root, "tsup.config.ts"), "utf8");
+    const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+    const prd = fs.readFileSync(path.join(root, "PRD.md"), "utf8");
+
+    expect(pkg.engines?.node).toBe(">=22.5");
+    expect(tsup).toContain('target: "node22"');
+    expect(readme).toContain("Node ≥ 22.5");
+    expect(prd).toContain("Node (≥22.5)");
   });
 });
 

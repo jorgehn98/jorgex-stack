@@ -2,11 +2,13 @@ import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { stripLeadingHtmlComments } from "../lib/filemerge.js";
+import { listFilesRecursive } from "../lib/fsx.js";
 
 /**
- * Plugins TS por runtime (stack/plugins/<runtime>/). Solo los .ts: el
- * package.json vendorizado es metadata del sub-proyecto original, el runtime
- * no lo necesita. Placeholders resueltos al instalar:
+ * Plugins TS por runtime (stack/plugins/<runtime>/). Se copian recursivamente
+ * los .ts para incluir submódulos como goal/*; el package.json vendorizado es
+ * metadata del sub-proyecto original, el runtime no lo necesita. Placeholders
+ * resueltos al instalar:
  * - "{{ENGRAM_BIN}}" → binario detectado (D7), por si engram no está en PATH.
  * - "{{ENGRAM_PROTOCOL}}" → contenido de system-prompt/engram-protocol.md
  *   (única fuente del protocolo, alineada con el resto de runtimes).
@@ -16,12 +18,10 @@ export function planPlugins(adapter: Adapter, ctx: InstallContext): FileAction[]
   if (pluginsDir === null) return [];
   const source = path.join(ctx.stackDir, "plugins", adapter.id);
   if (!fs.existsSync(source)) return [];
-  return fs
-    .readdirSync(source)
+  return listFilesRecursive(source)
     .filter((f) => f.endsWith(".ts"))
-    .map((f): FileAction => {
-      const sourceFile = path.join(source, f);
-      const target = path.join(pluginsDir, f);
+    .map((sourceFile): FileAction => {
+      const target = path.join(pluginsDir, path.relative(source, sourceFile));
       const raw = fs.readFileSync(sourceFile, "utf8");
       let content = raw;
       if (content.includes('"{{ENGRAM_BIN}}"')) {
