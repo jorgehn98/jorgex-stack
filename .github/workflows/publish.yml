@@ -402,6 +402,7 @@ jobs:
           const commitMessage = execFileSync('git', ['log', '-1', '--pretty=%B', head], { encoding: 'utf8' }).trim();
           const releaseBumpCommit = isReleaseBumpCommit({ message: commitMessage, actor: process.env.GITHUB_ACTOR ?? '' });
           const currentVersionExists = npmHasVersion(packageJson.name, packageJson.version);
+          const autoBumpRun = !recoveryRun && currentVersionExists && !releaseBumpCommit;
           let releaseTag = `v${packageJson.version}`;
           let releaseTagSha = resolveTagSha(releaseTag);
 
@@ -429,7 +430,7 @@ jobs:
             process.exit(0);
           }
 
-          if (publicPaths.length > 0 && workflowPaths.length > 0) {
+          if (publicPaths.length > 0 && workflowPaths.length > 0 && !autoBumpRun) {
             if (currentVersionExists && releaseTagSha === null) {
               throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya está publicada, pero falta ${releaseTag}. El diff también mezcla cambios publicables con .github/workflows/*, así que crea el tag manualmente con permisos elevados.`);
             }

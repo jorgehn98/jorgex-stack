@@ -36,6 +36,13 @@ pnpm typecheck      # tsc --noEmit
 pnpm cli <cmd>      # ejecutar el CLI local (node dist/cli.js)
 ```
 
+## Publicación npm
+
+- El workflow publica automáticamente en npm al mergear en `main` si hay cambios publicables.
+- Si `package.json.version` ya existe en npm, el workflow solo auto-bumpea el **patch** (`x.y.z → x.y.z+1`) y publica esa versión.
+- Para cambios importantes, subir **minor** o **major** manualmente en `package.json` dentro del PR (`x.y.0` o `x.0.0`). Al mergear, el workflow publica esa versión manual si todavía no existe en npm.
+- No esperar que el workflow decida minor/major: esa decisión es humana.
+
 ## Estilo
 
 - Simplicidad máxima: la solución más simple gana; nada de abstracciones para requisitos que no existen.
