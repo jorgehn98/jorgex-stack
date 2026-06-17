@@ -39,6 +39,35 @@ Uso:
 
 Autenticación con GitHub: las consultas usan `GH_TOKEN`/`GITHUB_TOKEN` del entorno o, si no existen, el token de tu sesión de `gh` CLI (`gh auth token` — solo lectura local, nunca se loguea ni persiste). Sin token, GitHub limita las consultas en paralelo y algunos upstreams pueden salir como "sin conexión".
 
+### Goal Mode de OpenCode
+
+Goal Mode es un plugin de OpenCode para objetivos largos: varias sesiones, varios slices, varios worktrees y, si hace falta, varios PRs. No está pensado para tareas cortas. Si el cambio cabe sin autonomía prolongada, no uses `/goal`.
+
+Solo vive en OpenCode. Claude Code y Codex no lo reciben.
+
+Comandos disponibles:
+
+- `/goal <objetivo>` — crea un goal persistente.
+- `/goal status` — muestra estado y siguiente acción.
+- `/goal plan` — enseña el plan maestro / PRD del goal.
+- `/goal history` — lista eventos y transiciones.
+- `/goal pause` — pausa el goal.
+- `/goal resume` — reanuda el goal.
+- `/goal cancel` — cancela el goal.
+
+Lo que no existe:
+
+- `/goal quick`
+- `/goal work`
+
+Estado operativo:
+
+- SQLite separada por defecto en `~/.jorgex-stack/goals/goals.sqlite`.
+- Override opcional con `JORGEX_GOAL_DB` si necesitas otra ruta.
+- Engram no es el store operativo del goal: sigue siendo memoria/protocolo, no base de estado.
+- Goal Mode no hace merges automáticos; cuando toca esperar un merge externo, el estado pasa a `waiting_for_merge`.
+- La integración usa hooks experimentales de OpenCode (`experimental.chat.system.transform` y `experimental.session.compacting`), así que esa superficie puede cambiar.
+
 ## Estado
 
 CLI completo y migración real ejecutada (F6); el stack es la única fuente de configuración. Las versiones se publican automáticamente en [npm](https://www.npmjs.com/package/jorgex-stack) según el flujo descrito en [Publicación](#publicación). El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
