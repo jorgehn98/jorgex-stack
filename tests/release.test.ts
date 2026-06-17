@@ -15,6 +15,7 @@ import {
   npmHasVersion,
   isReleaseBumpCommit,
   isTestPath,
+  isWorkflowPath,
   isWorkPath,
   resolveEventDiffBase,
   resolvePublishDiffBase,
@@ -96,7 +97,8 @@ describe("release path classification", () => {
     ]);
     expect(result.testPaths).toEqual(["tests/release.test.ts"]);
     expect(result.workPaths).toEqual(["worktrees/auto-version-publish/plan.md"]);
-    expect(result.ignoredPaths).toEqual(["docs/internal.md", ".github/workflows/publish.yml"]);
+    expect(result.workflowPaths).toEqual([".github/workflows/publish.yml"]);
+    expect(result.ignoredPaths).toEqual(["docs/internal.md"]);
     expect(result.reason).toContain("src/foo.ts");
     expect(result.reason).toContain("stack/agents/foo.md");
   });
@@ -114,8 +116,9 @@ describe("release path classification", () => {
 
     const workflowOnly = classifyReleasePaths([".github/workflows/publish.yml"]);
     expect(workflowOnly.publishable).toBe(false);
-    expect(workflowOnly.reason).toBe("Sin cambios publicables: otros no publicables.");
-    expect(workflowOnly.ignoredPaths).toEqual([".github/workflows/publish.yml"]);
+    expect(workflowOnly.reason).toBe("Sin cambios publicables: workflows.");
+    expect(workflowOnly.workflowPaths).toEqual([".github/workflows/publish.yml"]);
+    expect(workflowOnly.ignoredPaths).toEqual([]);
   });
 
   it("expone los predicados directos para rutas conocidas", () => {
@@ -124,6 +127,8 @@ describe("release path classification", () => {
     expect(isPublicablePath("work/auto-version-publish/plan.md")).toBe(false);
     expect(isTestPath("tests/release.test.ts")).toBe(true);
     expect(isTestPath("src/foo.spec.ts")).toBe(true);
+    expect(isWorkflowPath(".github/workflows/publish.yml")).toBe(true);
+    expect(isWorkflowPath("src/lib/release.ts")).toBe(false);
     expect(isWorkPath("worktrees/auto-version-publish/plan.md")).toBe(true);
   });
 });
@@ -340,6 +345,21 @@ describe("publish workflow contract", () => {
 
     const recoveryRunBlock = bump.slice(recoveryRunStart, publicableStart);
     expect(recoveryRunBlock).not.toContain("skip_reason=stale_run");
+  });
+
+  it("bloquea mezclar cambios publicables con workflows antes del bump/publish", () => {
+    const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+    const noPublicableIndex = bump.indexOf("if (publicPaths.length === 0 && !recoveryRun) {");
+    const guardIndex = bump.indexOf("if (publicPaths.length > 0 && workflowPaths.length > 0) {");
+
+    expect(noPublicableIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(noPublicableIndex);
+    expect(bump).toContain("const workflowPaths = [];");
+    expect(bump).toContain("if (isWorkflowPath(rawPath)) {");
+    expect(bump).toContain("workflowPaths.push(rawPath);");
+    expect(bump).not.toContain("if (!recoveryRun && publicPaths.length > 0 && workflowPaths.length > 0) {");
+    expect(bump).toContain("GitHub puede rechazar el push del tag sin permisos para workflows");
+    expect(bump).toContain("Separa la release o publica/tagea manualmente con permisos elevados.");
   });
 
   it("separa permisos de validación, bump, publish y tag", () => {

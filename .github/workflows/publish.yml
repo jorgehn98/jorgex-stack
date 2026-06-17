@@ -163,6 +163,7 @@ jobs:
           ]);
           const PUBLICABLE_PREFIXES = ['src/', 'stack/'];
           const WORK_PREFIXES = ['work/', 'worktrees/'];
+          const WORKFLOW_PREFIXES = ['.github/workflows/'];
           const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
           const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
           const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -171,6 +172,10 @@ jobs:
           const isWorkPath = (input) => {
             const normalized = normalize(input);
             return WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+          };
+          const isWorkflowPath = (input) => {
+            const normalized = normalize(input);
+            return WORKFLOW_PREFIXES.some((prefix) => normalized.startsWith(prefix));
           };
           const isTestPath = (input) => {
             const normalized = normalize(input);
@@ -351,6 +356,7 @@ jobs:
           const ignoredPaths = [];
           const testPaths = [];
           const workPaths = [];
+          const workflowPaths = [];
 
           for (const rawPath of changedPaths) {
             if (isWorkPath(rawPath)) {
@@ -359,6 +365,10 @@ jobs:
             }
             if (isTestPath(rawPath)) {
               testPaths.push(rawPath);
+              continue;
+            }
+            if (isWorkflowPath(rawPath)) {
+              workflowPaths.push(rawPath);
               continue;
             }
             if (isPublicablePath(rawPath)) {
@@ -399,6 +409,10 @@ jobs:
             console.log('Sin cambios publicables.');
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=\npublish_sha=${head}\ntag_needed=false\nskip_reason=no_publicable_changes\n`);
             process.exit(0);
+          }
+
+          if (publicPaths.length > 0 && workflowPaths.length > 0) {
+            throw new Error('El diff mezcla cambios publicables con .github/workflows/*; GitHub puede rechazar el push del tag sin permisos para workflows. Separa la release o publica/tagea manualmente con permisos elevados.');
           }
 
           if (publicPaths.length > 0) {
