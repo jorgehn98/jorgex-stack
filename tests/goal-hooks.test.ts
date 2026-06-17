@@ -43,10 +43,16 @@ async function seedGoal(objective = "Hooked Goal Mode") {
 }
 
 describe("OpenCode Goal Mode hooks", () => {
-  it("routes command.execute.before through /goal handlers without a model call", async () => {
+  it("routes command.execute.before through /goal handlers and replaces the command prompt", async () => {
     await seedGoal("Command hook goal");
     const hooks = createOpenCodeGoalHooks({ store: store!, project: PROJECT });
-    const output = { parts: [] as Array<{
+    const output = { parts: [{
+      id: "template_part",
+      sessionID: "s1",
+      messageID: "m1",
+      type: "text",
+      text: "Original slash command template",
+    }] as Array<{
       id: string;
       sessionID: string;
       messageID: string;
@@ -71,6 +77,22 @@ describe("OpenCode Goal Mode hooks", () => {
       }),
     ]);
     expect(output.parts[0]!.text).toContain("active");
+    expect(output.parts[0]!.text).toContain("Reply with the Goal Mode command result only");
+    expect(output.parts[0]!.text).not.toContain("Original slash command template");
+  });
+
+  it("allows new goal commands to continue via the Goal Mode context after creation", async () => {
+    const hooks = createOpenCodeGoalHooks({ store: store!, project: PROJECT });
+    const output = { parts: [] as Array<{ text: string }> };
+
+    await hooks["command.execute.before"]?.(
+      { command: "goal", arguments: "Ship the missing slash command", sessionID: "s1", messageID: "m1" },
+      output,
+    );
+
+    expect(output.parts[0]!.text).toContain("Goal created: Ship the missing slash command");
+    expect(output.parts[0]!.text).toContain("Acknowledge the created goal");
+    expect(output.parts[0]!.text).not.toContain("Reply with the Goal Mode command result only");
   });
 
   it("injects active goal context into system prompt idempotently", async () => {

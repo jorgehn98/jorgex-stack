@@ -13,6 +13,7 @@ import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { runInstall } from "../src/install.js";
+import { planCommands } from "../src/components/commands.js";
 
 let tmp: string;
 
@@ -198,6 +199,7 @@ describe("planPlugins: Goal Mode de OpenCode", () => {
     })).resolves.toBe(0);
 
     const installedFiles = [
+      path.join(targetDir, "commands", "goal.md"),
       path.join(targetDir, "plugins", "goal-plugin.ts"),
       path.join(targetDir, "plugins", "goal", "db.ts"),
       path.join(targetDir, "plugins", "goal", "store.ts"),
@@ -232,6 +234,30 @@ describe("planPlugins: Goal Mode de OpenCode", () => {
       warnings: [],
     };
     expect(planPlugins(adapter, ctx)).toEqual([]);
+  });
+});
+
+describe("planCommands: comandos específicos por runtime", () => {
+  const makeCtx = (adapterId: "opencode" | "claude-code" | "codex") => ({
+    stackDir: stackRoot(),
+    configDir: tmp,
+    engramBin: null,
+    models: DEFAULT_MODEL_MAP[adapterId]!,
+    warnings: [],
+  });
+
+  it("instala /goal solo en OpenCode", () => {
+    const opencodeTargets = planCommands(opencodeAdapter, makeCtx("opencode"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    expect(opencodeTargets).toContain("commands/goal.md");
+
+    const claudeTargets = planCommands(claudeCodeAdapter, makeCtx("claude-code"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    expect(claudeTargets).not.toContain("commands/goal.md");
+
+    const codexTargets = planCommands(codexAdapter, makeCtx("codex"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    expect(codexTargets).not.toContain("skills/goal/SKILL.md");
   });
 });
 
