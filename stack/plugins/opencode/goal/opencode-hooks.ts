@@ -50,7 +50,7 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
       if (command !== "goal") return;
 
       const response = commands.handleGoalCommand(extractCommandArguments(input));
-      appendHookText(input, output, response.message);
+      replaceGoalCommandPrompt(input, output, response.message);
     },
 
     "experimental.chat.system.transform": async (_input, output) => {
@@ -169,31 +169,49 @@ function extractCommandArguments(input: unknown): string {
   return typeof nested === "string" ? nested : "";
 }
 
-function appendHookText(input: unknown, output: HookOutput, text: string): void {
+function replaceGoalCommandPrompt(input: unknown, output: HookOutput, text: string): void {
+  const prompt = renderGoalCommandPrompt(input, text);
+
   if (Array.isArray(output.parts)) {
-    output.parts.push({
+    output.parts.splice(0, output.parts.length, {
       id: `part_${randomUUID()}`,
       sessionID: extractHookSessionID(input, output),
       messageID: extractHookMessageID(input, output),
       type: "text",
-      text,
+      text: prompt,
       synthetic: true,
     });
     return;
   }
   if (typeof output.message === "string") {
-    output.message = output.message ? `${output.message}\n\n${text}` : text;
+    output.message = output.message ? `${output.message}\n\n${prompt}` : prompt;
     return;
   }
   if (typeof output.output === "string") {
-    output.output = output.output ? `${output.output}\n\n${text}` : text;
+    output.output = output.output ? `${output.output}\n\n${prompt}` : prompt;
     return;
   }
   if (Array.isArray(output.content)) {
-    output.content.push({ type: "text", text });
+    output.content.push({ type: "text", text: prompt });
     return;
   }
   throw new Error("Unsupported OpenCode command output contract for Goal Mode.");
+}
+
+function renderGoalCommandPrompt(input: unknown, commandResult: string): string {
+  const args = extractCommandArguments(input).trim();
+  const firstToken = args.split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  const isControlCommand = new Set(["status", "plan", "history", "pause", "resume", "cancel", "merged"]).has(firstToken);
+
+  return [
+    "Goal Mode command result (authoritative):",
+    commandResult,
+    "",
+    "Instructions:",
+    isControlCommand
+      ? "Reply with the Goal Mode command result only. Do not inspect files, run tools, continue implementation, create branches, open PRs, or change repository state."
+      : "A persistent Goal Mode objective has been created. Acknowledge the created goal, then continue only according to the injected Goal Mode context and the project work-lifecycle rules.",
+  ].join("\n");
 }
 
 function extractHookSessionID(input: unknown, output: HookOutput): string {
