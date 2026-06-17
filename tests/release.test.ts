@@ -21,7 +21,8 @@ import {
 } from "../src/lib/release.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8") as string) as { version: string };
+const PACKAGE_METADATA = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8") as string) as { packageManager: string; version: string };
+const PACKAGE_VERSION = PACKAGE_METADATA;
 const WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "publish.yml");
 
 function readWorkflow(): string {
@@ -329,12 +330,17 @@ describe("publish workflow contract", () => {
 
   it("activa pnpm en bump antes del script de release", () => {
     const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+    const setupNodeIndex = bump.indexOf("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
     const corepackIndex = bump.indexOf("corepack prepare pnpm@11.1.1 --activate");
     const releaseIndex = bump.indexOf("id: release");
+    const pnpmVersion = PACKAGE_METADATA.packageManager.replace(/^pnpm@/, "");
 
+    expect(setupNodeIndex).toBeGreaterThan(-1);
     expect(corepackIndex).toBeGreaterThan(-1);
     expect(releaseIndex).toBeGreaterThan(-1);
+    expect(setupNodeIndex).toBeLessThan(corepackIndex);
     expect(corepackIndex).toBeLessThan(releaseIndex);
+    expect(bump).toContain(`corepack prepare pnpm@${pnpmVersion} --activate`);
     expect(bump).not.toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
   });
 
