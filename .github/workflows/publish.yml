@@ -136,7 +136,7 @@ jobs:
           import { execFileSync } from 'node:child_process';
 
           const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-          const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found|ERR_PNPM_PACKAGE_NOT_FOUND|No matching version found/i;
+          const PNPM_VERSION_NOT_FOUND_PATTERN = /\bERR_PNPM_PACKAGE_NOT_FOUND\b/i;
           const EVENT_NAME = (process.env.GITHUB_EVENT_NAME ?? '').trim();
           const BRANCH_NAME = (process.env.GITHUB_REF_NAME ?? '').trim();
           const RELEASE_SHA = (process.env.RELEASE_SHA ?? '').trim();
@@ -181,7 +181,8 @@ jobs:
               return true;
             } catch (error) {
               const message = `${error?.message ?? ''}\n${String(error?.stdout ?? '')}\n${String(error?.stderr ?? '')}`;
-              if (NPM_NOT_FOUND_PATTERN.test(message)) return false;
+              const target = `${packageName}@${version}`;
+              if (PNPM_VERSION_NOT_FOUND_PATTERN.test(message) || message.includes(`No matching version found for ${target}`)) return false;
               throw error;
             }
           };
