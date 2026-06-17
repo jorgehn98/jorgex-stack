@@ -317,7 +317,7 @@ describe("publish workflow contract", () => {
     expect(workflow).toContain('workflow_dispatch:');
     expect(jobs.get("validate")).toContain("permissions:\n      contents: read");
     expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
-    expect(jobs.get("bump")).toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
+    expect(jobs.get("bump")).toContain("corepack prepare pnpm@11.1.1 --activate");
     expect(jobs.get("bump")).toContain("tag_needed=${tagNeeded ? 'true' : 'false'}");
     expect(jobs.get("bump")).toContain("tag_needed: ${{ steps.release.outputs.tag_needed }}");
     expect(jobs.get("publish")).toContain("permissions:\n      contents: read");
@@ -325,6 +325,17 @@ describe("publish workflow contract", () => {
     expect(jobs.get("tag-release")).toContain("permissions:\n      contents: write");
     expect(jobs.get("tag-release")).not.toContain("id-token: write");
     expect(jobs.get("tag-release")).toContain("needs.publish.result == 'success' || needs.bump.outputs.tag_needed == 'true'");
+  });
+
+  it("activa pnpm en bump antes del script de release", () => {
+    const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+    const corepackIndex = bump.indexOf("corepack prepare pnpm@11.1.1 --activate");
+    const releaseIndex = bump.indexOf("id: release");
+
+    expect(corepackIndex).toBeGreaterThan(-1);
+    expect(releaseIndex).toBeGreaterThan(-1);
+    expect(corepackIndex).toBeLessThan(releaseIndex);
+    expect(bump).not.toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
   });
 
   it("escribe tag_needed=false en todos los early exits relevantes", () => {
