@@ -3,7 +3,9 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found/i;
+type ExecFileSyncLike = typeof execFileSync;
+
+const NPM_NOT_FOUND_PATTERN = /E404|404 Not Found|No match found|ERR_PNPM_PACKAGE_NOT_FOUND|No matching version found/i;
 const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a single revision|bad revision|unknown commit|does not have any parents/i;
 const ZERO_SHA_PATTERN = /^0+$/;
 const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -363,18 +365,22 @@ export function findNextFreePatchVersion(version: string, versionExists: (candid
   return candidate;
 }
 
+export function isNpmVersionNotFoundMessage(message: string): boolean {
+  return NPM_NOT_FOUND_PATTERN.test(message);
+}
+
 /**
  * Comprueba si `<name>@<version>` existe en npm usando `pnpm view` (regla "pnpm
  * siempre, nunca npm"). 404 = "no existe" (caso normal de primera publicación);
  * cualquier otro error se relanza para no enmascarar fallos de red/permisos.
  */
-export function npmHasVersion(packageName: string, version: string): boolean {
+export function npmHasVersion(packageName: string, version: string, execFile: ExecFileSyncLike = execFileSync): boolean {
   try {
-    execFileSync("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execFile("pnpm", ["view", `${packageName}@${version}`, "version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return true;
   } catch (error) {
     const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
-    if (NPM_NOT_FOUND_PATTERN.test(message)) return false;
+    if (isNpmVersionNotFoundMessage(message)) return false;
     throw error;
   }
 }

@@ -11,6 +11,8 @@ import {
   bumpPatch,
   findNextFreePatchVersion,
   isPublicablePath,
+  isNpmVersionNotFoundMessage,
+  npmHasVersion,
   isReleaseBumpCommit,
   isTestPath,
   isWorkPath,
@@ -183,6 +185,24 @@ describe("release version planning", () => {
     expect(plan.nextVersion).toBe("1.0.4");
     expect(plan.releaseVersion).toBe("1.0.4");
     expect(findNextFreePatchVersion("1.0.2", (candidate) => candidate === "1.0.3")).toBe("1.0.4");
+  });
+
+  it("reconoce el error de pnpm cuando una versión npm no existe", () => {
+    expect(isNpmVersionNotFoundMessage("[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3")).toBe(true);
+    expect(isNpmVersionNotFoundMessage("404 Not Found - GET https://registry.npmjs.org/jorgex-stack")).toBe(true);
+    expect(isNpmVersionNotFoundMessage("ECONNRESET registry timeout")).toBe(false);
+  });
+
+  it("npmHasVersion devuelve false para versiones ausentes de pnpm y relanza errores reales", () => {
+    const missingVersionError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stderr: "[ERR_PNPM_PACKAGE_NOT_FOUND] No matching version found for jorgex-stack@1.0.3",
+    });
+    const networkError = Object.assign(new Error("Command failed: pnpm view jorgex-stack@1.0.3 version"), {
+      stderr: "ERR_PNPM_META_FETCH_FAIL registry timeout",
+    });
+
+    expect(npmHasVersion("jorgex-stack", "1.0.3", (() => { throw missingVersionError; }) as never)).toBe(false);
+    expect(() => npmHasVersion("jorgex-stack", "1.0.3", (() => { throw networkError; }) as never)).toThrow(networkError);
   });
 
   it("no hace bump si la versión actual todavía no existe", () => {
@@ -420,6 +440,8 @@ describe("publish workflow contract", () => {
     const bump = splitTopLevelJobs(workflow).get("bump") ?? "";
 
     expect(bump).toContain("execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version']");
+    expect(bump).toContain("ERR_PNPM_PACKAGE_NOT_FOUND");
+    expect(bump).toContain("No matching version found");
     expect(bump).not.toContain("execFileSync('npm', ['view'");
     expect(bump).toContain("let releaseTagSha = resolveTagSha(releaseTag);");
     expect(bump).toContain("['rev-list', '-n', '1', tagRef]");
