@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
 import { validateExtractedTree } from "../src/lib/github.js";
-import { buildEligibleSkillUpdates, rotateLockedBinary, type SkillQueryResult } from "../src/update.js";
+import { buildEligibleSkillUpdates, isGitClone, rotateLockedBinary, skillsToScan, type SkillQueryResult, type Upstreams } from "../src/update.js";
 import { writeText } from "../src/lib/fsx.js";
 import { listBackups } from "../src/lib/backup.js";
 
@@ -427,6 +427,63 @@ describe("buildEligibleSkillUpdates: lógica de elegibilidad del picker", () => 
     // engram está en upstreams.tools y nunca llega a esta función.
     const skills: SkillQueryResult[] = []; // vacío = sin skills (engram no está aquí)
     expect(buildEligibleSkillUpdates(skills)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// skillsToScan: gate del escaneo de skills de terceros (mantenedor vs usuario)
+// ---------------------------------------------------------------------------
+
+describe("skillsToScan: solo el mantenedor consulta upstream de skills", () => {
+  const upstreams: Upstreams = {
+    tools: {},
+    skills: {
+      tdd: { source: "github:mattpocock/skills", commit: "aaa" },
+      diagnose: { source: "github:mattpocock/skills", commit: "bbb" },
+    },
+  };
+
+  it("mantenedor → devuelve todos los nombres de skills (se consulta upstream)", () => {
+    expect(skillsToScan(true, upstreams).sort()).toEqual(["diagnose", "tdd"]);
+  });
+
+  it("usuario final → devuelve [] (no se consulta ninguna red)", () => {
+    expect(skillsToScan(false, upstreams)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isGitClone: distingue contexto mantenedor (clon) de usuario final (paquete)
+// ---------------------------------------------------------------------------
+
+describe("isGitClone: solo el clon del repo gestiona skills de terceros", () => {
+  it("projectRoot con .git → true (mantenedor)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-clone-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".git"));
+      expect(isGitClone(dir)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("projectRoot sin .git → false (usuario final: pnpm dlx / add -g)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pkg-"));
+    try {
+      expect(isGitClone(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("acepta .git como archivo (worktree) además de directorio", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-worktree-"));
+    try {
+      fs.writeFileSync(path.join(dir, ".git"), "gitdir: /ruta/al/repo/.git/worktrees/x\n");
+      expect(isGitClone(dir)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

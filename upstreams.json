@@ -23,8 +23,9 @@
     },
     "diagnose": {
       "source": "github:mattpocock/skills",
-      "path": "skills/engineering/diagnose",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f"
+      "path": "skills/engineering/diagnosing-bugs",
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "note": "upstream renombró la carpeta diagnose → diagnosing-bugs; mantenemos el nombre local 'diagnose'. El pin sigue en la última revisión aceptada hasta hacer diff y re-pin deliberado del contenido nuevo."
     },
     "find-skills": {
       "source": "github:vercel-labs/skills",
