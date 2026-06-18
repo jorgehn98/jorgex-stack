@@ -9,9 +9,9 @@ Portable multi-agent harness: one configuration source — 15 agents, 17 skills,
 Install and run via npm without cloning the repository:
 
 ```
-pnpm dlx jorgex-stack install    # interactive: choose runtimes and confirm
+pnpm dlx jorgex-stack install    # apply config to your runtimes (interactive pick; idempotent, removes orphans)
 pnpm dlx jorgex-stack models     # model picker by runtime and tier (strong/standard/cheap)
-pnpm dlx jorgex-stack sync       # reapplies config (idempotent; removes orphans)
+pnpm dlx jorgex-stack sync       # alias of install (same idempotent apply)
 pnpm dlx jorgex-stack doctor     # checks that everything is healthy (Engram, drift, hooks, keys)
 pnpm dlx jorgex-stack update     # interactive: scans stack + Engram, multiselect, diff/confirm
                                  # With --check: report only, no changes
