@@ -168,6 +168,17 @@ describe("release path classification", () => {
     expect(isWorkflowPath("src/lib/release.ts")).toBe(false);
     expect(isWorkPath("worktrees/auto-version-publish/plan.md")).toBe(true);
   });
+
+  it("no publica cambios de solo documentación (README, PRD, docs/)", () => {
+    expect(isPublicablePath("README.md")).toBe(false);
+    expect(isPublicablePath("PRD.md")).toBe(false);
+    expect(isPublicablePath("docs/guides/setup.md")).toBe(false);
+
+    const docsOnly = classifyReleasePaths(["README.md", "docs/guides/setup.md"]);
+    expect(docsOnly.publishable).toBe(false);
+    expect(docsOnly.publicPaths).toEqual([]);
+    expect(docsOnly.ignoredPaths).toEqual(["README.md", "docs/guides/setup.md"]);
+  });
 });
 
 describe("release bump loop guard", () => {
