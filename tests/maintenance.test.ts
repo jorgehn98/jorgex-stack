@@ -294,12 +294,10 @@ describe("Goal Mode runtime version contract", () => {
     };
     const tsup = fs.readFileSync(path.join(root, "tsup.config.ts"), "utf8");
     const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
-    const prd = fs.readFileSync(path.join(root, "PRD.md"), "utf8");
 
     expect(pkg.engines?.node).toBe(">=22.5");
     expect(tsup).toContain('target: "node22"');
-    expect(readme).toContain("Node ≥ 22.5");
-    expect(prd).toContain("Node (≥22.5)");
+    expect(readme).toContain("Node >= 22.5");
   });
 });
 

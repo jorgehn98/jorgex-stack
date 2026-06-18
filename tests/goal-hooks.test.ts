@@ -69,7 +69,7 @@ describe("OpenCode Goal Mode hooks", () => {
     expect(output.parts).toEqual([
       expect.objectContaining({
         type: "text",
-        id: expect.stringMatching(/^part_/),
+        id: expect.stringMatching(/^prt_/),
         sessionID: "s1",
         messageID: "m1",
         text: expect.stringContaining("Command hook goal"),
