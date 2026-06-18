@@ -12,7 +12,9 @@ const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 // Solo manifiestos/config que afectan al paquete publicado.
 // Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
-const PUBLICABLE_EXACT = new Set([
+// Exportadas para que un test asegure que la copia inline del clasificador en
+// .github/workflows/publish.yml no se desincronice de esta (fuente única real).
+export const PUBLICABLE_EXACT = new Set([
   "upstreams.json",
   "package.json",
   "pnpm-lock.yaml",
@@ -20,9 +22,9 @@ const PUBLICABLE_EXACT = new Set([
   "tsup.config.ts",
 ]);
 
-const PUBLICABLE_PREFIXES = ["src/", "stack/"];
-const WORK_PREFIXES = ["work/", "worktrees/"];
-const WORKFLOW_PREFIXES = [".github/workflows/"];
+export const PUBLICABLE_PREFIXES = ["src/", "stack/"];
+export const WORK_PREFIXES = ["work/", "worktrees/"];
+export const WORKFLOW_PREFIXES = [".github/workflows/"];
 const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
 const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
 
