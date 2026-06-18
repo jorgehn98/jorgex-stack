@@ -289,8 +289,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// OpenCode validates entity IDs by prefix (parts: "prt", sessions: "ses", messages: "msg").
-// A synthetic part injected with a "part_" id is rejected with: Expected a string starting with "prt".
+// OpenCode validates entity IDs by prefix: parts must start with "prt", sessions with "ses", messages with "msg".
+// The UUID is hex-only (dashes removed) to avoid confusion with uuid format.
 function createOpenCodeID(prefix: "prt" | "ses" | "msg"): string {
   return `${prefix}_${randomUUID().replace(/-/g, "")}`;
 }
