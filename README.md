@@ -13,7 +13,7 @@ pnpm dlx jorgex-stack install    # interactive: choose runtimes and confirm
 pnpm dlx jorgex-stack models     # model picker by runtime and tier (strong/standard/cheap)
 pnpm dlx jorgex-stack sync       # reapplies config (idempotent; removes orphans)
 pnpm dlx jorgex-stack doctor     # checks that everything is healthy (Engram, drift, hooks, keys)
-pnpm dlx jorgex-stack update     # interactive: scans stack/Engram/skills, multiselect, diff/confirm
+pnpm dlx jorgex-stack update     # interactive: scans stack + Engram, multiselect, diff/confirm
                                  # With --check: report only, no changes
                                  # With --yes: batch mode (report only)
 pnpm dlx jorgex-stack restore    # restores a backup
@@ -26,11 +26,11 @@ Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testin
 
 ### Update: Interactive Flow
 
-`update` manages three sources:
+`update` manages two sources for the end user, plus a maintainer-only one:
 
 1. **Stack** (jorgex-stack): detects whether it is a git clone or a global install, then offers an update with confirmation.
 2. **Engram** (binary): detects the installed version and offers an update through the **native channel** (brew -> `go install` -> release URL). Nothing needs to be stopped: as in upstream macOS/Linux, live processes keep using the old version until clients restart; on Windows, the in-use `.exe` is rotated by rename before installation. **Automatic DB backup before updating**. The database and memories are never touched.
-3. **Vendored skills**: detects changes in upstreams registered in `upstreams.json`, downloads the upstream to a temp directory, **shows a mandatory diff**, and asks for confirmation. Skills with local changes (`modified: true`) warn and require double confirmation.
+3. **Vendored skills** (maintainer only): third-party skills ship **pinned** with the stack version, so the installed package never reaches out to their upstreams. Only when running from a git clone (`pnpm cli update`) does `update` scan the upstreams in `upstreams.json`, download to a temp directory, **show a mandatory diff**, and ask for confirmation — so the review and re-pin persist in the repo and get published. Skills with local changes (`modified: true`) warn and require double confirmation.
 
 Usage:
 - `update --check`: scans versions without applying changes.

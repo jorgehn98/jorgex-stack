@@ -48,10 +48,9 @@ async function latestNpmVersion(pkg: string): Promise<string | null> {
 }
 
 /**
- * update --check: compara versiones locales vs upstream. `update` sin --check
- * re-aplica el stack (sync) y muestra este informe; aplicar updates de skills
- * de terceros automáticamente queda para v1.x (las 'modified' exigen diff
- * manual — PRD §7.3).
+ * update --check: compara versiones locales vs upstream. Las skills de terceros
+ * solo se revisan en contexto mantenedor (clon del repo): para el usuario final
+ * van pineadas con la versión del stack y no se consulta su upstream.
  */
 export async function runUpdateCheck(localVersion: string): Promise<number> {
   p.intro("jorgex-stack update --check");
@@ -84,41 +83,48 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
       );
   }
 
-  // 3. Skills de terceros: HEAD del repo vs el commit pineado en upstreams.json.
+  // 3. Skills de terceros: solo se revisan desde el clon del repo (mantenedor).
   // El pin es la última revisión aceptada: si el repo se movió, el contenido
   // nuevo NO está revisado — actualizar exige diff manual + re-pin deliberado.
-  // Una consulta por repo único (varios skills comparten monorepo).
-  const byRepo = new Map<string, { skills: string[]; pinned?: string }>();
-  for (const [name, info] of Object.entries(upstreams.skills)) {
-    const repo = info.source.replace(/^github:/, "");
-    const entry = byRepo.get(repo) ?? { skills: [], pinned: info.commit };
-    entry.skills.push(info.modified ? `${name} (modificada localmente)` : name);
-    byRepo.set(repo, entry);
-  }
-  const heads = await Promise.all(
-    [...byRepo.keys()].map(async (repo) => [repo, await latestGithubCommit(repo)] as const),
-  );
-  let moved = 0;
-  for (const [repo, head] of heads) {
-    const { skills, pinned } = byRepo.get(repo)!;
-    if (!pinned)
-      p.log.warn(
-        `${repo}: sin pin en upstreams.json — añade el commit revisado. Skills: ${skills.join(", ")}`,
-      );
-    else if (head === null)
-      p.log.info(`${repo}: pin ${pinned.slice(0, 7)} (no se pudo consultar el upstream).`);
-    else if (head === pinned)
-      p.log.success(`${repo}: al día con el pin ${pinned.slice(0, 7)} (${skills.join(", ")}).`);
-    else {
-      moved++;
-      p.log.warn(
-        `${repo}: el upstream se movió (pin ${pinned.slice(0, 7)} → ${head.slice(0, 7)}). Skills: ${skills.join(", ")}.\n` +
-          `  Revisa el diff y, si lo aceptas, actualiza la copia vendorizada y el pin: github.com/${repo}/compare/${pinned.slice(0, 7)}...${head.slice(0, 7)}`,
-      );
+  // Para el usuario final van pineadas con el stack: no se consulta su upstream.
+  if (!isGitClone()) {
+    p.log.info(
+      "Skills de terceros: pineadas con la versión del stack (su revisión upstream se hace desde el clon del repo).",
+    );
+  } else {
+    // Una consulta por repo único (varios skills comparten monorepo).
+    const byRepo = new Map<string, { skills: string[]; pinned?: string }>();
+    for (const [name, info] of Object.entries(upstreams.skills)) {
+      const repo = info.source.replace(/^github:/, "");
+      const entry = byRepo.get(repo) ?? { skills: [], pinned: info.commit };
+      entry.skills.push(info.modified ? `${name} (modificada localmente)` : name);
+      byRepo.set(repo, entry);
     }
-  }
-  if (moved === 0 && heads.every(([, head]) => head !== null)) {
-    p.log.info("Skills de terceros: ningún upstream se ha movido respecto a su pin.");
+    const heads = await Promise.all(
+      [...byRepo.keys()].map(async (repo) => [repo, await latestGithubCommit(repo)] as const),
+    );
+    let moved = 0;
+    for (const [repo, head] of heads) {
+      const { skills, pinned } = byRepo.get(repo)!;
+      if (!pinned)
+        p.log.warn(
+          `${repo}: sin pin en upstreams.json — añade el commit revisado. Skills: ${skills.join(", ")}`,
+        );
+      else if (head === null)
+        p.log.info(`${repo}: pin ${pinned.slice(0, 7)} (no se pudo consultar el upstream).`);
+      else if (head === pinned)
+        p.log.success(`${repo}: al día con el pin ${pinned.slice(0, 7)} (${skills.join(", ")}).`);
+      else {
+        moved++;
+        p.log.warn(
+          `${repo}: el upstream se movió (pin ${pinned.slice(0, 7)} → ${head.slice(0, 7)}). Skills: ${skills.join(", ")}.\n` +
+            `  Revisa el diff y, si lo aceptas, actualiza la copia vendorizada y el pin: github.com/${repo}/compare/${pinned.slice(0, 7)}...${head.slice(0, 7)}`,
+        );
+      }
+    }
+    if (moved === 0 && heads.every(([, head]) => head !== null)) {
+      p.log.info("Skills de terceros: ningún upstream se ha movido respecto a su pin.");
+    }
   }
 
   if (githubRateLimited()) {
@@ -159,9 +165,14 @@ function isEngramRunning(): boolean | null {
   }
 }
 
-/** Detecta si este stack es un clon git o está instalado como paquete global. */
-function isGitClone(): boolean {
-  const projectRoot = path.dirname(stackRoot());
+/**
+ * Detecta si este stack es un clon git (contexto mantenedor) o está instalado
+ * como paquete (usuario final: pnpm dlx / add -g). Solo el mantenedor revisa y
+ * actualiza skills de terceros, porque ahí los cambios persisten en el repo y se
+ * commitean/publican; en el paquete instalado escribirían en una copia efímera.
+ * `projectRoot` es parametrizable para tests.
+ */
+export function isGitClone(projectRoot: string = path.dirname(stackRoot())): boolean {
   return fs.existsSync(path.join(projectRoot, ".git"));
 }
 
@@ -603,12 +614,18 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
   let exitCode = 0;
   let appliedUpdates = false;
 
+  // Las skills de terceros solo se revisan/actualizan desde el clon del repo
+  // (mantenedor): ahí los cambios persisten y se commitean/publican. En el
+  // paquete instalado escribirían en una copia efímera (store de pnpm) — inútil.
+  const maintainer = isGitClone();
+
   // -------------------------------------------------------------------------
-  // FASE 1: Escanear las 3 fuentes en paralelo
+  // FASE 1: Escanear las fuentes en paralelo (skills solo en modo mantenedor)
   // -------------------------------------------------------------------------
   const spin = p.spinner();
   spin.start("Consultando versiones upstream…");
 
+  const skillNames = maintainer ? Object.keys(upstreams.skills) : [];
   const [npmLatest, engramLatestRaw, ...skillHeads] = await Promise.all([
     latestNpmVersion("jorgex-stack"),
     (async () => {
@@ -616,7 +633,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
       if (!repo) return null;
       return { repo, version: await latestGithubRelease(repo) };
     })(),
-    ...Object.keys(upstreams.skills).map(async (name) => {
+    ...skillNames.map(async (name) => {
       const info = upstreams.skills[name]!;
       const repo = info.source.replace(/^github:/, "");
       const head = await latestGithubCommit(repo);
@@ -703,6 +720,12 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
       p.log.success(`${repo}: al día (pin ${pinned.slice(0, 7)}). Skills: ${names.join(", ")}`);
     }
     // Si el upstream se movió (elegible), no se logea aquí — aparece en el picker.
+  }
+
+  if (!maintainer) {
+    p.log.info(
+      "Skills de terceros: pineadas con esta versión del stack — su revisión upstream se hace desde el clon del repo.",
+    );
   }
 
   // Calcular elegibles con la función pura (sin I/O).
