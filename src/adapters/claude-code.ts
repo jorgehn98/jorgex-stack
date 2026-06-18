@@ -8,6 +8,7 @@ import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
+import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -111,6 +112,21 @@ export const claudeCodeAdapter: Adapter = {
     const tools = toolsFor(agent);
     if (tools !== null) lines.push(`tools: ${tools}`);
     lines.push(`model: ${resolveAgentModel(models, agent.name, agent.tier).model}`);
+
+    // Claude Code no tiene deny de comandos por-subagente; un hook PreToolUse en
+    // el frontmatter del subagente es el mecanismo documentado para bloquear git
+    // destructivo solo en los full-bash, sin tocar al agente principal.
+    // {{SCRIPTS_DIR}} lo resuelve planAgents a la ruta de scripts instalada.
+    if (agent.bash === "full") {
+      lines.push(
+        "hooks:",
+        "  PreToolUse:",
+        '    - matcher: "Bash|PowerShell"',
+        "      hooks:",
+        "        - type: command",
+        `          command: "node \\"{{SCRIPTS_DIR}}/${GIT_GUARD_SCRIPT}\\""`,
+      );
+    }
 
     return [
       {

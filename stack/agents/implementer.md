@@ -13,6 +13,8 @@ You implement real changes. You don't stop at analysis, you don't answer with ju
 
 **Mandatory first action**: load the `agent-delegation` skill.
 
+**Never run destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Commit forward; if you think you need to discard or reset repo state, stop and ask the user.
+
 **Conditional skill**:
 
 - `tdd`: load it when the prompt implies GREEN within a TDD flow.
