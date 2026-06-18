@@ -32,12 +32,6 @@
       "path": "skills/find-skills",
       "commit": "be0dd25b4a8665894a56f45ef582cc02ca802c39"
     },
-    "graphify": {
-      "source": "github:safishamsi/graphify",
-      "kind": "release",
-      "version": "0.7.16",
-      "commit": "cce26730212baab6d92ce5f390ef5aae56268f31"
-    },
     "mcp-builder": {
       "source": "github:anthropics/skills",
       "path": "skills/mcp-builder",
