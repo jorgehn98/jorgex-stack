@@ -17,53 +17,82 @@ const MODELS: RuntimeModelMap = {
   cheap: { model: "haiku" },
 };
 
-/** Lanza el guard con un payload de stdin y devuelve su exit code (2 = bloqueado). */
-function runGuard(stdin: string): number {
+/** Lanza el guard con un payload de stdin y devuelve exit code (2 = bloqueado) + stderr. */
+function runGuard(stdin: string): { code: number; stderr: string } {
   try {
     execFileSync("node", [SCRIPT], { input: stdin, stdio: ["pipe", "pipe", "pipe"] });
-    return 0;
+    return { code: 0, stderr: "" };
   } catch (error) {
-    return (error as { status?: number }).status ?? -1;
+    const e = error as { status?: number; stderr?: Buffer };
+    return { code: e.status ?? -1, stderr: e.stderr?.toString() ?? "" };
   }
 }
 
 const withCommand = (command: string) => JSON.stringify({ tool_input: { command } });
 
 describe("block-destructive-git guard", () => {
-  it("bloquea (exit 2) las operaciones git destructivas", () => {
+  it("bloquea (exit 2) las operaciones git destructivas, incl. bypasses comunes", () => {
     for (const command of [
       "git reset --hard HEAD~1",
       "git reset",
       "git clean -fd",
       "git checkout -- src/foo.ts",
       "git restore src/foo.ts",
+      "git switch --discard-changes main",
       "git push --force origin main",
-      "git push origin main --force-with-lease",
+      "git push origin main --force-with-lease", // flag posicional
       "git push -f",
-      "cd packages/app && git reset --hard", // comando compuesto: el guard ve la cadena completa
+      "git push -fq origin", // short flag agrupado
+      "git push origin +main", // refspec con + fuerza
+      "cd packages/app && git reset --hard", // comando compuesto
+      "git -C /repo reset --hard", // opción global -C antes del subcomando
+      "git -c core.editor=vim reset --hard", // opción global -c
+      "git --git-dir=.git checkout -- .", // opción global --git-dir
+      "git checkout .", // descarta todo el working tree
+      "git checkout HEAD -- .", // descarta con tree-ish explícito
+      "git checkout -f main", // -f fuerza el descarte
     ]) {
-      expect(runGuard(withCommand(command)), command).toBe(2);
+      expect(runGuard(withCommand(command)).code, command).toBe(2);
     }
   });
 
-  it("permite (exit 0) git seguro y comandos no-git", () => {
+  it("permite (exit 0) git seguro y comandos no-git (sin falsos positivos)", () => {
     for (const command of [
       "git status",
       "git diff",
       "git add -A && git commit -m 'wip'",
+      'git commit -m "reset the broken flow"', // 'reset' dentro del mensaje, no es el subcomando
       "git checkout -b feature/x",
-      "git checkout --quiet main", // '--' como flag, no como separador de descarte
+      "git checkout feature/x", // rama con slash, no es una ruta de descarte
+      "git checkout --quiet main", // '--quiet' es flag, no separador de descarte
+      "git switch main",
       "git push origin main",
       "pnpm test",
     ]) {
-      expect(runGuard(withCommand(command)), command).toBe(0);
+      expect(runGuard(withCommand(command)).code, command).toBe(0);
     }
   });
 
+  it("normaliza command en forma de array (argv) y lo evalúa", () => {
+    const payload = JSON.stringify({ tool_input: { command: ["git", "reset", "--hard", "HEAD~1"] } });
+    expect(runGuard(payload).code).toBe(2);
+  });
+
+  it("también lee el comando del campo 'script' (tool PowerShell)", () => {
+    expect(runGuard(JSON.stringify({ tool_input: { script: "git reset --hard" } })).code).toBe(2);
+    expect(runGuard(JSON.stringify({ tool_input: { script: "git status" } })).code).toBe(0);
+  });
+
+  it("al bloquear, escribe un mensaje en stderr (motivo para el agente)", () => {
+    const result = runGuard(withCommand("git reset --hard"));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/destructive git/i);
+  });
+
   it("fail-open: payload ilegible o sin comando no bloquea (exit 0)", () => {
-    expect(runGuard("no es json")).toBe(0);
-    expect(runGuard("{}")).toBe(0);
-    expect(runGuard(withCommand("   "))).toBe(0);
+    expect(runGuard("no es json").code).toBe(0);
+    expect(runGuard("{}").code).toBe(0);
+    expect(runGuard(withCommand("   ")).code).toBe(0);
   });
 });
 
