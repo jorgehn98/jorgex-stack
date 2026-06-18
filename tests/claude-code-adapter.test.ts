@@ -70,6 +70,26 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(out!.content).not.toContain("mem_save");
     expect(out!.content).not.toContain("Bash");
   });
+
+  it("subagente full-bash: hook PreToolUse que bloquea git destructivo (placeholder SCRIPTS_DIR)", () => {
+    const [out] = claudeCodeAdapter.renderAgent(agent({ name: "implementer", bash: "full" }), MODELS);
+    expect(out!.content).toContain("hooks:");
+    expect(out!.content).toContain("PreToolUse:");
+    expect(out!.content).toContain('matcher: "Bash|PowerShell"');
+    expect(out!.content).toContain('command: "node \\"{{SCRIPTS_DIR}}/block-destructive-git.cjs\\""');
+  });
+
+  it("subagente que no es full-bash NO recibe el hook guard", () => {
+    const [gitRead] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
+    expect(gitRead!.content).not.toContain("PreToolUse");
+    const [none] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "none" }), MODELS);
+    expect(none!.content).not.toContain("PreToolUse");
+  });
+
+  it("el primary (orchestrator) NO recibe el hook guard — es el main agent", () => {
+    const out = claudeCodeAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
+    for (const o of out) expect(o.content).not.toContain("PreToolUse");
+  });
 });
 
 describe("claudeCodeAdapter.renderCommand", () => {

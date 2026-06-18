@@ -10,6 +10,7 @@ import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
+import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
@@ -64,7 +65,12 @@ export const opencodeAdapter: Adapter = {
       lines.push(`  edit: ${agent.readonly ? "deny" : "allow"}`);
       if (agent.bash === "none") lines.push("  bash: deny");
       else if (agent.bash === "git-read") lines.push('  bash:\n    "git diff*": allow\n    "git log*": allow');
-      else lines.push("  bash: allow");
+      else {
+        // full-bash: todo permitido EXCEPTO git destructivo. OpenCode evalúa por
+        // orden (última regla que matchea gana), así que "*" allow va primero.
+        const deny = DESTRUCTIVE_GIT_DENY.map((p) => `    ${yamlString(p)}: deny`).join("\n");
+        lines.push(`  bash:\n    "*": allow\n${deny}`);
+      }
       if (!agent.spawn) lines.push("  task: deny");
 
       lines.push("tools:");

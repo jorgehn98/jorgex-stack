@@ -3,7 +3,7 @@ import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { loadCanonicalAgents } from "../lib/canonical.js";
 
 export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] {
-  const { agentsDir, commandsDir, outputStylesDir, skillsDir, profilesDir } = adapter.paths(ctx.configDir);
+  const { agentsDir, commandsDir, outputStylesDir, skillsDir, profilesDir, scriptsDir } = adapter.paths(ctx.configDir);
   const dirFor = {
     agent: agentsDir,
     command: commandsDir,
@@ -12,6 +12,10 @@ export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] 
     profile: profilesDir,
   } as const;
 
+  // Forward slashes: la ruta va dentro de un string YAML double-quoted (hook
+  // command), donde un backslash de Windows se interpretaría como escape.
+  const scriptsBase = scriptsDir.replace(/\\/g, "/");
+
   return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) =>
     adapter.renderAgent(agent, ctx.models).flatMap((rendered): FileAction[] => {
       const dir = dirFor[rendered.kind];
@@ -19,7 +23,8 @@ export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] 
         ctx.warnings.push(`${adapter.name}: sin destino para '${rendered.kind}' (${rendered.file}) — omitido.`);
         return [];
       }
-      return [{ kind: "write", target: path.join(dir, rendered.file), content: rendered.content }];
+      const content = rendered.content.replace(/\{\{SCRIPTS_DIR\}\}/g, scriptsBase);
+      return [{ kind: "write", target: path.join(dir, rendered.file), content }];
     }),
   );
 }
