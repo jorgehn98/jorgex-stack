@@ -155,7 +155,7 @@ export interface ReplaceSkillOpts {
  * y actualiza el pin `commit` en upstreams.json.
  *
  * Reglas:
- * - Skills protegidas (agent-delegation, work-lifecycle) y kind=release (graphify)
+ * - Skills protegidas (agent-delegation, work-lifecycle) y kind=release
  *   se rechazan sin tocar el disco.
  * - Se hace backup de la skill local antes de tocarla.
  * - La copia se hace en staging (dir hermano temporal) antes de renombrar,
