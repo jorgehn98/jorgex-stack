@@ -69,7 +69,7 @@ describe("OpenCode Goal Mode hooks", () => {
     expect(output.parts).toEqual([
       expect.objectContaining({
         type: "text",
-        id: expect.stringMatching(/^part_/),
+        id: expect.stringMatching(/^prt_/),
         sessionID: "s1",
         messageID: "m1",
         text: expect.stringContaining("Command hook goal"),
@@ -93,6 +93,21 @@ describe("OpenCode Goal Mode hooks", () => {
     expect(output.parts[0]!.text).toContain("Goal created: Ship the missing slash command");
     expect(output.parts[0]!.text).toContain("Acknowledge the created goal");
     expect(output.parts[0]!.text).not.toContain("Reply with the Goal Mode command result only");
+  });
+
+  it("synthesizes valid OpenCode id prefixes when the hook input omits session and message ids", async () => {
+    await seedGoal("Fallback id prefixes");
+    const hooks = createOpenCodeGoalHooks({ store: store!, project: PROJECT });
+    const output = {
+      parts: [] as Array<{ id: string; sessionID: string; messageID: string; text: string }>,
+    };
+
+    await hooks["command.execute.before"]?.({ command: "goal", arguments: "status" }, output);
+
+    // OpenCode rejects ids that do not match the entity prefix; guard the generated fallbacks.
+    expect(output.parts[0]!.id).toMatch(/^prt_/);
+    expect(output.parts[0]!.sessionID).toMatch(/^ses_/);
+    expect(output.parts[0]!.messageID).toMatch(/^msg_/);
   });
 
   it("injects active goal context into system prompt idempotently", async () => {

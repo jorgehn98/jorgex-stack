@@ -174,7 +174,7 @@ function replaceGoalCommandPrompt(input: unknown, output: HookOutput, text: stri
 
   if (Array.isArray(output.parts)) {
     output.parts.splice(0, output.parts.length, {
-      id: `part_${randomUUID()}`,
+      id: createOpenCodeID("prt"),
       sessionID: extractHookSessionID(input, output),
       messageID: extractHookMessageID(input, output),
       type: "text",
@@ -226,7 +226,7 @@ function extractHookSessionID(input: unknown, output: HookOutput): string {
     if (typeof sessionID === "string" && sessionID.trim()) return sessionID;
   }
 
-  return `session_${randomUUID()}`;
+  return createOpenCodeID("ses");
 }
 
 function extractHookMessageID(input: unknown, output: HookOutput): string {
@@ -241,7 +241,7 @@ function extractHookMessageID(input: unknown, output: HookOutput): string {
     if (typeof id === "string" && id.trim()) return id;
   }
 
-  return `msg_${randomUUID()}`;
+  return createOpenCodeID("msg");
 }
 
 function upsertMarkedBlock(text: string, block: string): string {
@@ -287,4 +287,10 @@ function readEventStateSequence(data: unknown): number | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// OpenCode validates entity IDs by prefix: parts must start with "prt", sessions with "ses", messages with "msg".
+// The UUID is hex-only (dashes removed) to avoid confusion with uuid format.
+function createOpenCodeID(prefix: "prt" | "ses" | "msg"): string {
+  return `${prefix}_${randomUUID().replace(/-/g, "")}`;
 }
