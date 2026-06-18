@@ -1,97 +1,97 @@
 # JorgeX Stack
 
-Harness multi-agente portable: una sola fuente de configuración — 15 agentes, 18 skills, hooks, memoria persistente ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs y system prompt — instalable con un comando en **Claude Code**, **Codex CLI** y **OpenCode**.
+Portable multi-agent harness: one configuration source — 15 agents, 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, and **OpenCode**.
 
-> Inspirado en [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), reconstruido para el stack JorgeX.
+> Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
-## Uso
+## Usage
 
-Instalación y uso vía npm (no requiere clonar el repo):
+Install and run via npm without cloning the repository:
 
 ```
-pnpm dlx jorgex-stack install    # interactivo: elige runtimes y confirma
-pnpm dlx jorgex-stack models     # picker de modelos por runtime y tier (strong/standard/cheap)
-pnpm dlx jorgex-stack sync       # re-aplica la config (idempotente; limpia huérfanos)
-pnpm dlx jorgex-stack doctor     # verifica que todo está sano (Engram, drift, hooks, keys)
-pnpm dlx jorgex-stack update     # interactivo: scan stack/Engram/skills, multiselect, diff/confirm
-                                 # Con --check: solo informe sin cambios
-                                 # Con --yes: modo batch (solo informe)
-pnpm dlx jorgex-stack restore    # restaura un backup
-pnpm dlx jorgex-stack uninstall  # desinstala lo nuestro y conserva lo del usuario (Engram intacto)
+pnpm dlx jorgex-stack install    # interactive: choose runtimes and confirm
+pnpm dlx jorgex-stack models     # model picker by runtime and tier (strong/standard/cheap)
+pnpm dlx jorgex-stack sync       # reapplies config (idempotent; removes orphans)
+pnpm dlx jorgex-stack doctor     # checks that everything is healthy (Engram, drift, hooks, keys)
+pnpm dlx jorgex-stack update     # interactive: scans stack/Engram/skills, multiselect, diff/confirm
+                                 # With --check: report only, no changes
+                                 # With --yes: batch mode (report only)
+pnpm dlx jorgex-stack restore    # restores a backup
+pnpm dlx jorgex-stack uninstall  # uninstalls our files and keeps user data (Engram intact)
 ```
 
-En desarrollo (desde un clon), los mismos comandos van por `pnpm cli <comando>` (ver [Desarrollo](#desarrollo)).
+For development from a clone, run the same commands through `pnpm cli <command>` (see [Development](#development)).
 
-Todo comando soporta `--dry-run`, `--yes` y `--target-dir <dir>` (pruebas sin tocar la config real). Las escrituras llevan backup automático y verificación de idempotencia; el merge en configs de usuario es quirúrgico (secciones marcadas en markdown, upsert en JSON/TOML) — lo tuyo no se toca jamás.
+Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched.
 
-### Update: flujo interactivo
+### Update: Interactive Flow
 
-`update` gestiona tres fuentes:
+`update` manages three sources:
 
-1. **Stack** (jorgex-stack): detecta si es clon git o instalación global, oferece actualización con confirmación.
-2. **Engram** (binario): detecta la versión instalada, ofrece actualización con **canal nativo** (brew → `go install` → URL releases). No hace falta parar nada: igual que el upstream en macOS/Linux, los procesos vivos siguen con la versión antigua hasta reiniciar los clientes; en Windows el `.exe` en uso se rota por rename antes de instalar. **Backup automático de la DB antes de actualizar**. La base de datos y las memorias jamás se tocan.
-3. **Skills vendorizadas**: detecta cambios en los upstream registrados en `upstreams.json`, descarga el upstream a temporal, **muestra diff obligatorio** y solicita confirmación. Las skills con cambios locales (`modified: true`) alertan y exigen doble confirmación.
+1. **Stack** (jorgex-stack): detects whether it is a git clone or a global install, then offers an update with confirmation.
+2. **Engram** (binary): detects the installed version and offers an update through the **native channel** (brew -> `go install` -> release URL). Nothing needs to be stopped: as in upstream macOS/Linux, live processes keep using the old version until clients restart; on Windows, the in-use `.exe` is rotated by rename before installation. **Automatic DB backup before updating**. The database and memories are never touched.
+3. **Vendored skills**: detects changes in upstreams registered in `upstreams.json`, downloads the upstream to a temp directory, **shows a mandatory diff**, and asks for confirmation. Skills with local changes (`modified: true`) warn and require double confirmation.
 
-Uso:
-- `update --check`: scan de versiones sin aplicar cambios.
-- `update` (TTY, sin `--yes`): multiselect interactivo con diffs visibles y confirmaciones paso a paso.
-- `update --yes` o sin TTY: se comporta como `--check` (solo informe).
+Usage:
+- `update --check`: scans versions without applying changes.
+- `update` (TTY, without `--yes`): interactive multiselect with visible diffs and step-by-step confirmations.
+- `update --yes` or non-TTY: behaves like `--check` (report only).
 
-Autenticación con GitHub: las consultas usan `GH_TOKEN`/`GITHUB_TOKEN` del entorno o, si no existen, el token de tu sesión de `gh` CLI (`gh auth token` — solo lectura local, nunca se loguea ni persiste). Sin token, GitHub limita las consultas en paralelo y algunos upstreams pueden salir como "sin conexión".
+GitHub authentication: requests use `GH_TOKEN`/`GITHUB_TOKEN` from the environment or, if unavailable, the token from your `gh` CLI session (`gh auth token` — local read only, never logged or persisted). Without a token, GitHub limits parallel requests and some upstreams may appear as "offline".
 
-### Goal Mode de OpenCode
+### OpenCode Goal Mode
 
-Goal Mode es un plugin de OpenCode para objetivos largos: varias sesiones, varios slices, varios worktrees y, si hace falta, varios PRs. No está pensado para tareas cortas. Si el cambio cabe sin autonomía prolongada, no uses `/goal`.
+Goal Mode is an OpenCode plugin for long-running goals: multiple sessions, multiple slices, multiple worktrees, and, when needed, multiple PRs. It is not meant for short tasks. If the change fits without extended autonomy, do not use `/goal`.
 
-Solo vive en OpenCode. Claude Code y Codex no lo reciben.
+It only exists in OpenCode. Claude Code and Codex do not receive it.
 
-Comandos disponibles:
+Available commands:
 
-- `/goal <objetivo>` — crea un goal persistente.
-- `/goal status` — muestra estado y siguiente acción.
-- `/goal plan` — enseña el plan maestro / PRD del goal.
-- `/goal history` — lista eventos y transiciones.
-- `/goal pause` — pausa el goal.
-- `/goal resume` — reanuda el goal.
-- `/goal merged [commit]` — señala que el PR externo pendiente ya se ha mergeado.
-- `/goal cancel` — cancela el goal.
+- `/goal <goal>` — creates a persistent goal.
+- `/goal status` — shows status and next action.
+- `/goal plan` — shows the goal's master plan / PRD.
+- `/goal history` — lists events and transitions.
+- `/goal pause` — pauses the goal.
+- `/goal resume` — resumes the goal.
+- `/goal merged [commit]` — signals that the pending external PR has been merged.
+- `/goal cancel` — cancels the goal.
 
-Lo que no existe:
+What does not exist:
 
 - `/goal quick`
 - `/goal work`
 
-Estado operativo:
+Operational state:
 
-- SQLite separada por defecto en `~/.jorgex-stack/goals/goals.sqlite`.
-- Override opcional con `JORGEX_GOAL_DB`, pero siempre dentro de `~/.jorgex-stack/goals/`.
-- Engram no es el store operativo del goal: sigue siendo memoria/protocolo, no base de estado.
-- Goal Mode no hace merges automáticos; cuando toca esperar un merge externo, el estado pasa a `waiting_for_merge`.
-- La integración usa hooks experimentales de OpenCode (`experimental.chat.system.transform` y `experimental.session.compacting`), así que esa superficie puede cambiar.
+- Separate SQLite database by default at `~/.jorgex-stack/goals/goals.sqlite`.
+- Optional override with `JORGEX_GOAL_DB`, but always inside `~/.jorgex-stack/goals/`.
+- Engram is not the goal's operational store: it remains memory/protocol, not the state database.
+- Goal Mode does not perform automatic merges; when it must wait for an external merge, the state becomes `waiting_for_merge`.
+- The integration uses experimental OpenCode hooks (`experimental.chat.system.transform` and `experimental.session.compacting`), so that surface may change.
 
-## Estado
+## Status
 
-CLI completo y migración real ejecutada (F6); el stack es la única fuente de configuración. Las versiones se publican automáticamente en [npm](https://www.npmjs.com/package/jorgex-stack) según el flujo descrito en [Publicación](#publicación). El diseño, las decisiones (D1–D9) y el roadmap están en [PRD.md](PRD.md).
+The CLI is complete and the real migration has been executed (F6); the stack is the only configuration source. Versions are published automatically to [npm](https://www.npmjs.com/package/jorgex-stack) according to the flow described in [Publishing](#publishing). The design, decisions (D1-D9), and roadmap are in [PRD.md](PRD.md).
 
-## Publicación
+## Publishing
 
-La release la dispara el push/merge a `main` y GitHub Actions; también hay `workflow_dispatch` de recuperación sobre `main` con `release_sha` opcional. `validate` resuelve una sola vez la SHA objetivo y la expone como `target_sha`; `bump` reutiliza esa SHA. Si no pasas `release_sha`, `validate` fija `target_sha` a `origin/main` tras `fetch`; si la pasas, debe ser una SHA completa de 40 hex perteneciente a `main` o falla en rojo con instrucción de recuperación. El modo sin `release_sha` solo es válido para publicar `origin/main` cuando la versión aún no existe en npm; si la versión ya existe y falta el tag, el workflow falla y exige `workflow_dispatch` con `release_sha=<sha publicada>`. Si el diff mezcla cambios publicables con `.github/workflows/*`, el auto-release se corta antes de bump/publish porque GitHub puede rechazar el push del tag sin permisos para workflows; hay que separar la release o usar un publish/tag manual con permisos elevados. No se usa `pnpm publish` ni hace falta login de npm:
+Releases are triggered by push/merge to `main` and GitHub Actions; there is also a recovery `workflow_dispatch` on `main` with an optional `release_sha`. `validate` resolves the target SHA once and exposes it as `target_sha`; `bump` reuses that SHA. If you do not pass `release_sha`, `validate` pins `target_sha` to `origin/main` after `fetch`; if you do pass it, it must be a full 40-hex SHA that belongs to `main` or the workflow fails red with recovery instructions. Running without `release_sha` is only valid to publish `origin/main` when the version does not exist on npm yet; if the version already exists and the tag is missing, the workflow fails and requires `workflow_dispatch` with `release_sha=<published sha>`. If the diff mixes publishable changes with `.github/workflows/*`, auto-release stops before bump/publish because GitHub may reject the tag push without workflow permissions; split the release or use manual publish/tag with elevated permissions. `pnpm publish` is not used and npm login is not required:
 
-- **Patch automático**: si el push a `main` contiene cambios publicables y la versión actual de `package.json` ya está en npm, el workflow busca el primer patch libre (`x+1`, `x+2`, …), commitea `chore(release): bump version to v…` y publica. Si ya existe el tag `v<package.version>`, usa ese punto como base acumulada; si no, cae a `github.event.before`. Las runs obsoletas se abortan tras `git fetch origin main --tags` si `origin/main` ya no coincide con `GITHUB_SHA`.
-- **Recuperación manual**: una ejecución manual sobre `main` con `release_sha` publica esa SHA si todavía no existe en npm, sin volver a bumpear; si la versión ya está en npm pero falta el tag `v<version>`, el workflow falla y te obliga a relanzar con `release_sha=<sha publicada>` para no tagear `origin/main`. `release_sha` debe ser una SHA completa de 40 hex y pertenecer a `main`; refs mutables (`main`, tags, `main~1`) se rechazan. Si no pasas `release_sha`, `validate` resuelve `origin/main` una vez, lo expone como `target_sha` y `bump` usa esa SHA validada. La recuperación no salta la guarda de `.github/workflows/*`: si el diff mezcla workflows con cambios publicables, hay que separar la release o hacer el tag/publish con permisos elevados. Si no existe un tag de release previo alcanzable para reconstruir el rango, el workflow falla cerrado y exige intervención manual.
-- **Sin release**: cambios solo en `work/`, `worktrees/`, tests o archivos no listados como publicables (`src/`, `stack/`, `upstreams.json`, `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `tsup.config.ts`, `README.md`, `PRD.md`) no generan release.
-- **Minor y major manuales**: bump explícito de `package.json` en el PR (el workflow detecta que el siguiente patch ya existe en npm y exige el bump).
-- **OIDC / trusted publishing**: el job de publicación usa `id-token: write` y `registry-url` de `setup-node`; el job de bump/push solo tiene `contents: write`; el `tag-release` solo escribe `contents` y no usa OIDC. No hay `NPM_TOKEN` ni `NODE_AUTH_TOKEN` en ningún secreto. El `tag-release` solo corre si `publish` fue `success` o `skipped` con `tag_needed=true` y conserva su validación SHA como última defensa. La única excepción a la regla "pnpm siempre" son `npm pack --dry-run --ignore-scripts` y `npm publish --ignore-scripts --provenance` en el paso final, por compatibilidad y hardening del registry.
+- **Automatic patch**: if the push to `main` contains publishable changes and the current `package.json` version already exists on npm, the workflow finds the first free patch (`x+1`, `x+2`, ...), commits `chore(release): bump version to v...`, and publishes. If tag `v<package.version>` already exists, it uses that point as the accumulated base; otherwise, it falls back to `github.event.before`. Obsolete runs are aborted after `git fetch origin main --tags` if `origin/main` no longer matches `GITHUB_SHA`.
+- **Manual recovery**: a manual run on `main` with `release_sha` publishes that SHA if it does not exist on npm yet, without bumping again; if the version already exists on npm but tag `v<version>` is missing, the workflow fails and forces a rerun with `release_sha=<published sha>` to avoid tagging `origin/main`. `release_sha` must be a full 40-hex SHA and belong to `main`; mutable refs (`main`, tags, `main~1`) are rejected. If you do not pass `release_sha`, `validate` resolves `origin/main` once, exposes it as `target_sha`, and `bump` uses that validated SHA. Recovery does not bypass the `.github/workflows/*` guard: if the diff mixes workflows with publishable changes, split the release or perform the tag/publish manually with elevated permissions. If there is no reachable previous release tag to reconstruct the range, the workflow fails closed and requires manual intervention.
+- **No release**: changes only in `work/`, `worktrees/`, tests, or files not listed as publishable (`src/`, `stack/`, `upstreams.json`, `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `tsup.config.ts`, `README.md`, `PRD.md`) do not create a release.
+- **Manual minor and major**: explicit bump in `package.json` in the PR (the workflow detects that the next patch already exists on npm and requires the bump).
+- **OIDC / trusted publishing**: the publishing job uses `id-token: write` and `setup-node` `registry-url`; the bump/push job only has `contents: write`; `tag-release` only writes `contents` and does not use OIDC. There is no `NPM_TOKEN` or `NODE_AUTH_TOKEN` in any secret. `tag-release` only runs if `publish` was `success` or `skipped` with `tag_needed=true`, and keeps its SHA validation as the final defense. The only exception to the "always pnpm" rule is `npm pack --dry-run --ignore-scripts` and `npm publish --ignore-scripts --provenance` in the final step, for registry compatibility and hardening.
 
-Los detalles de diseño están en [PRD §7.6](PRD.md#76-publicación-automática-en-npm).
+Design details are in [PRD §7.6](PRD.md).
 
-## Desarrollo
+## Development
 
-Requisitos: Node ≥ 22.5 y pnpm (nunca npm). Goal Mode usa `node:sqlite` en tests/CLI Node y OpenCode usa `bun:sqlite` en runtime.
+Requirements: Node >= 22.5 and pnpm (never npm). Goal Mode uses `node:sqlite` in tests/Node CLI and OpenCode uses `bun:sqlite` at runtime.
 
 ```
 pnpm install
-pnpm build        # tsup → dist/
+pnpm build        # tsup -> dist/
 pnpm typecheck
 pnpm test         # vitest
 pnpm cli --help
