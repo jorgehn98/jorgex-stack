@@ -24,7 +24,7 @@ function rateLimitHint(prefix: string): string {
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 
-interface Upstreams {
+export interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
   skills: Record<string, SkillUpstreamInfo>;
 }
@@ -32,6 +32,16 @@ interface Upstreams {
 function loadUpstreams(): Upstreams {
   const file = path.join(path.dirname(stackRoot()), "upstreams.json");
   return JSON.parse(fs.readFileSync(file, "utf8")) as Upstreams;
+}
+
+/**
+ * Skills de terceros que `update` debe consultar en upstream. Solo en contexto
+ * mantenedor (clon del repo): el usuario final las recibe pineadas con el stack,
+ * así que devuelve [] y no se consulta ninguna red. Único punto de decisión del
+ * gate, compartido por runUpdateCheck y runInteractiveUpdate.
+ */
+export function skillsToScan(maintainer: boolean, upstreams: Upstreams): string[] {
+  return maintainer ? Object.keys(upstreams.skills) : [];
 }
 
 async function latestNpmVersion(pkg: string): Promise<string | null> {
@@ -87,14 +97,16 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
   // El pin es la última revisión aceptada: si el repo se movió, el contenido
   // nuevo NO está revisado — actualizar exige diff manual + re-pin deliberado.
   // Para el usuario final van pineadas con el stack: no se consulta su upstream.
-  if (!isGitClone()) {
+  const checkSkillNames = skillsToScan(isGitClone(), upstreams);
+  if (checkSkillNames.length === 0) {
     p.log.info(
       "Skills de terceros: pineadas con la versión del stack (su revisión upstream se hace desde el clon del repo).",
     );
   } else {
     // Una consulta por repo único (varios skills comparten monorepo).
     const byRepo = new Map<string, { skills: string[]; pinned?: string }>();
-    for (const [name, info] of Object.entries(upstreams.skills)) {
+    for (const name of checkSkillNames) {
+      const info = upstreams.skills[name]!;
       const repo = info.source.replace(/^github:/, "");
       const entry = byRepo.get(repo) ?? { skills: [], pinned: info.commit };
       entry.skills.push(info.modified ? `${name} (modificada localmente)` : name);
@@ -625,7 +637,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
   const spin = p.spinner();
   spin.start("Consultando versiones upstream…");
 
-  const skillNames = maintainer ? Object.keys(upstreams.skills) : [];
+  const skillNames = skillsToScan(maintainer, upstreams);
   const [npmLatest, engramLatestRaw, ...skillHeads] = await Promise.all([
     latestNpmVersion("jorgex-stack"),
     (async () => {
@@ -661,7 +673,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     p.log.success(`jorgex-stack: v${localVersion} — al día.`);
   } else {
     stackNeedsUpdate = true;
-    const mode = isGitClone() ? STACK_METHOD_CLONE : `pnpm add -g jorgex-stack@${npmLatest}`;
+    const mode = maintainer ? STACK_METHOD_CLONE : `pnpm add -g jorgex-stack@${npmLatest}`;
     updateItems.push({
       value: "stack",
       label: `jorgex-stack: v${localVersion} → v${npmLatest}`,

@@ -301,6 +301,19 @@ describe("Goal Mode runtime version contract", () => {
   });
 });
 
+describe("contrato upstreams.json ↔ skills vendorizadas", () => {
+  it("cada skill registrada tiene carpeta local stack/skills/<name> y source no vacío", () => {
+    const root = path.join(stackRoot(), "..");
+    const upstreams = JSON.parse(fs.readFileSync(path.join(root, "upstreams.json"), "utf8")) as {
+      skills: Record<string, { source?: string }>;
+    };
+    for (const [name, info] of Object.entries(upstreams.skills)) {
+      expect(fs.existsSync(path.join(stackRoot(), "skills", name)), `falta stack/skills/${name}`).toBe(true);
+      expect(typeof info.source === "string" && info.source.length > 0, `${name} sin source`).toBe(true);
+    }
+  });
+});
+
 describe("lean integration: prompt wiring", () => {
   it("code-simplifier carga lean-code y admite audit scope", () => {
     const content = fs.readFileSync(path.join(stackRoot(), "agents", "code-simplifier.md"), "utf8");
