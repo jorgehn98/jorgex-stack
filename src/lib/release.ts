@@ -10,8 +10,8 @@ const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a 
 const ZERO_SHA_PATTERN = /^0+$/;
 const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
-// Solo manifiestos/config que afectan al paquete publicado. Los docs del repo
-// (README.md, PRD.md, docs/…) NO publican: un cambio solo-doc no gasta versión.
+// Solo manifiestos/config que afectan al paquete publicado.
+// Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
 const PUBLICABLE_EXACT = new Set([
   "upstreams.json",
   "package.json",
