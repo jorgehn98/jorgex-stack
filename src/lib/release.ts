@@ -10,19 +10,21 @@ const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a 
 const ZERO_SHA_PATTERN = /^0+$/;
 const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
-const PUBLICABLE_EXACT = new Set([
+// Solo manifiestos/config que afectan al paquete publicado.
+// Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
+// Exportadas para que un test asegure que la copia inline del clasificador en
+// .github/workflows/publish.yml no se desincronice de esta (fuente única real).
+export const PUBLICABLE_EXACT = new Set([
   "upstreams.json",
   "package.json",
   "pnpm-lock.yaml",
   "tsconfig.json",
   "tsup.config.ts",
-  "README.md",
-  "PRD.md",
 ]);
 
-const PUBLICABLE_PREFIXES = ["src/", "stack/"];
-const WORK_PREFIXES = ["work/", "worktrees/"];
-const WORKFLOW_PREFIXES = [".github/workflows/"];
+export const PUBLICABLE_PREFIXES = ["src/", "stack/"];
+export const WORK_PREFIXES = ["work/", "worktrees/"];
+export const WORKFLOW_PREFIXES = [".github/workflows/"];
 const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
 const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
 

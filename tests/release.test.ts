@@ -11,6 +11,10 @@ import {
   bumpPatch,
   findNextFreePatchVersion,
   isPublicablePath,
+  PUBLICABLE_EXACT,
+  PUBLICABLE_PREFIXES,
+  WORK_PREFIXES,
+  WORKFLOW_PREFIXES,
   isNpmVersionNotFoundMessage,
   npmHasVersion,
   isReleaseBumpCommit,
@@ -167,6 +171,42 @@ describe("release path classification", () => {
     expect(isWorkflowPath(".github/workflows/publish.yml")).toBe(true);
     expect(isWorkflowPath("src/lib/release.ts")).toBe(false);
     expect(isWorkPath("worktrees/auto-version-publish/plan.md")).toBe(true);
+  });
+
+  it("no publica cambios de solo documentación (README, PRD, docs/)", () => {
+    expect(isPublicablePath("README.md")).toBe(false);
+    expect(isPublicablePath("PRD.md")).toBe(false);
+    expect(isPublicablePath("docs/guides/setup.md")).toBe(false);
+
+    const docsOnly = classifyReleasePaths(["README.md", "docs/guides/setup.md"]);
+    expect(docsOnly.publishable).toBe(false);
+    expect(docsOnly.publicPaths).toEqual([]);
+    expect(docsOnly.ignoredPaths).toEqual(["README.md", "docs/guides/setup.md"]);
+  });
+
+  it("una mezcla doc + código publica, con el doc en ignoredPaths", () => {
+    const mixed = classifyReleasePaths(["README.md", "src/foo.ts"]);
+    expect(mixed.publishable).toBe(true);
+    expect(mixed.publicPaths).toEqual(["src/foo.ts"]);
+    expect(mixed.ignoredPaths).toEqual(["README.md"]);
+  });
+
+  // El clasificador vive duplicado: la copia inline de publish.yml es la que
+  // corre en CI. Si una se desincroniza (p. ej. re-añadir README.md al inline),
+  // CI volvería a publicar en doc-only mientras la suite sigue verde. Este test
+  // enforza la invariante "Mantener en sync" en vez de confiar en el comentario.
+  it("la copia inline de publish.yml coincide con el clasificador de release.ts", () => {
+    const workflow = readWorkflow();
+    const extractInlineList = (name: string): string[] => {
+      const match = new RegExp(`const ${name} = (?:new Set\\()?\\[([\\s\\S]*?)\\]`).exec(workflow);
+      if (!match) throw new Error(`No se encontró ${name} en publish.yml`);
+      return [...match[1]!.matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]!).sort();
+    };
+
+    expect(extractInlineList("PUBLICABLE_EXACT")).toEqual([...PUBLICABLE_EXACT].sort());
+    expect(extractInlineList("PUBLICABLE_PREFIXES")).toEqual([...PUBLICABLE_PREFIXES].sort());
+    expect(extractInlineList("WORK_PREFIXES")).toEqual([...WORK_PREFIXES].sort());
+    expect(extractInlineList("WORKFLOW_PREFIXES")).toEqual([...WORKFLOW_PREFIXES].sort());
   });
 });
 

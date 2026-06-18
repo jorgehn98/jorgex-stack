@@ -152,14 +152,15 @@ jobs:
           const EVENT_NAME = (process.env.GITHUB_EVENT_NAME ?? '').trim();
           const BRANCH_NAME = (process.env.GITHUB_REF_NAME ?? '').trim();
           const RELEASE_SHA = (process.env.RELEASE_SHA ?? '').trim();
+          // Solo manifiestos/config que afectan al paquete publicado.
+          // Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
+          // Mantener en sync con src/lib/release.ts.
           const PUBLICABLE_EXACT = new Set([
             'upstreams.json',
             'package.json',
             'pnpm-lock.yaml',
             'tsconfig.json',
             'tsup.config.ts',
-            'README.md',
-            'PRD.md',
           ]);
           const PUBLICABLE_PREFIXES = ['src/', 'stack/'];
           const WORK_PREFIXES = ['work/', 'worktrees/'];
