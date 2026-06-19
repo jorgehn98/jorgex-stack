@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import type { CanonicalAgent } from "../src/lib/canonical.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import type { RuntimeModelMap } from "../src/lib/model-map.js";
+import { stackRoot } from "../src/lib/paths.js";
 
 const MODELS: RuntimeModelMap = {
   strong: { model: "fable" },
@@ -97,5 +102,32 @@ describe("claudeCodeAdapter.renderCommand", () => {
     const out = claudeCodeAdapter.renderCommand("demo.md", "Haz X.\n\nInput: {{input}}\n");
     expect(out.content).toContain("Input: $ARGUMENTS");
     expect(out.content).not.toContain("{{input}}");
+  });
+});
+
+describe("claudeCodeAdapter.planMainConfig: forma de mcpServers", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cc-mcp-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("registra el server stdio con type explícito y el http con type http", () => {
+    // configDir vacío → sin plugin engram, así que el MCP stdio SÍ se registra.
+    const ctx = {
+      stackDir: stackRoot(),
+      configDir: path.join(tmp, ".claude"),
+      engramBin: "/opt/engram",
+      models: MODELS,
+      warnings: [] as string[],
+    };
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+    const parsed = JSON.parse((action as { content: string }).content) as {
+      mcpServers: Record<string, { type?: string; command?: string }>;
+    };
+    expect(parsed.mcpServers.engram).toMatchObject({ type: "stdio", command: "/opt/engram" });
+    expect(parsed.mcpServers.context7!.type).toBe("http");
   });
 });
