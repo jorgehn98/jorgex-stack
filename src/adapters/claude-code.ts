@@ -194,7 +194,10 @@ export const claudeCodeAdapter: Adapter = {
             continue;
           }
           const command = server.command === "{{ENGRAM_BIN}}" ? ctx.engramBin! : server.command!;
-          servers[name] = { command, args: server.args ?? [] };
+          // type: "stdio" explícito (igual que el http lleva type) — Claude Code
+          // lo infiere por `command`, pero la doc actual siempre lo declara y es
+          // robusto frente a versiones más estrictas.
+          servers[name] = { type: "stdio", command, args: server.args ?? [] };
         } else {
           const previous = servers[name] as { headers?: Record<string, string> } | undefined;
           const headers: Record<string, string> = {};
