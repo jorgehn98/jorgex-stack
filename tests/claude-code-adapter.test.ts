@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
+import type { InstallContext } from "../src/adapters/types.js";
 import type { CanonicalAgent } from "../src/lib/canonical.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import type { RuntimeModelMap } from "../src/lib/model-map.js";
@@ -105,29 +106,89 @@ describe("claudeCodeAdapter.renderCommand", () => {
   });
 });
 
-describe("claudeCodeAdapter.planMainConfig: forma de mcpServers", () => {
+describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
   let tmp: string;
+  let configDir: string;
+  let mainFile: string;
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cc-mcp-"));
+    configDir = path.join(tmp, ".claude");
+    // El adapter escribe el MCP de scope user en el hermano <configDir>.json.
+    mainFile = path.join(tmp, ".claude.json");
   });
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  type Server = { type?: string; command?: string; url?: string; headers?: Record<string, string> };
+  const makeCtx = (overrides: Partial<InstallContext> = {}): InstallContext => ({
+    stackDir: stackRoot(),
+    configDir,
+    engramBin: "/opt/engram",
+    models: MODELS,
+    warnings: [],
+    ...overrides,
+  });
+  const run = (ctx: InstallContext): { content: string; servers: Record<string, Server> } => {
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+    const content = (action as { content: string }).content;
+    return { content, servers: (JSON.parse(content) as { mcpServers: Record<string, Server> }).mcpServers };
+  };
+
   it("registra el server stdio con type explícito y el http con type http", () => {
     // configDir vacío → sin plugin engram, así que el MCP stdio SÍ se registra.
-    const ctx = {
-      stackDir: stackRoot(),
-      configDir: path.join(tmp, ".claude"),
-      engramBin: "/opt/engram",
-      models: MODELS,
-      warnings: [] as string[],
-    };
-    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
-    const parsed = JSON.parse((action as { content: string }).content) as {
-      mcpServers: Record<string, { type?: string; command?: string }>;
-    };
-    expect(parsed.mcpServers.engram).toMatchObject({ type: "stdio", command: "/opt/engram" });
-    expect(parsed.mcpServers.context7!.type).toBe("http");
+    const { servers } = run(makeCtx());
+    expect(servers.engram).toMatchObject({ type: "stdio", command: "/opt/engram" });
+    expect(servers.context7!.type).toBe("http");
+  });
+
+  it("con el plugin engram presente NO registra el MCP, retira uno previo y avisa", () => {
+    // installed_plugins.json con la clave del plugin: la vía de detección frágil.
+    fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "plugins", "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: { "engram@engram": [{ version: "0.1.0" }] } }),
+    );
+    // un engram registrado por un sync pre-plugin debe desaparecer.
+    fs.writeFileSync(mainFile, JSON.stringify({ mcpServers: { engram: { type: "stdio", command: "old" } } }));
+    const ctx = makeCtx();
+    const { servers } = run(ctx);
+    expect(servers.engram).toBeUndefined();
+    expect(servers.context7!.type).toBe("http"); // el http no depende del plugin
+    expect(ctx.warnings.join("\n")).toContain("plugin");
+  });
+
+  it("sin binario de Engram (engramBin null) NO registra el MCP y avisa", () => {
+    const ctx = makeCtx({ engramBin: null });
+    const { servers } = run(ctx);
+    expect(servers.engram).toBeUndefined();
+    expect(servers.context7!.type).toBe("http");
+    expect(ctx.warnings.join("\n")).toContain("Engram no detectado");
+  });
+
+  it("http D5: una referencia ${VAR} se escribe vacía, nunca el literal", () => {
+    const { content, servers } = run(makeCtx());
+    expect(servers.context7!.headers!.CONTEXT7_API_KEY).toBe("");
+    expect(content).not.toContain("${CONTEXT7_API_KEY}");
+  });
+
+  it("http D5: preserva el valor de header que el usuario ya tenía puesto", () => {
+    fs.writeFileSync(
+      mainFile,
+      JSON.stringify({
+        mcpServers: {
+          context7: { type: "http", url: "https://mcp.context7.com/mcp", headers: { CONTEXT7_API_KEY: "real-key" } },
+        },
+      }),
+    );
+    const { servers } = run(makeCtx());
+    expect(servers.context7!.headers!.CONTEXT7_API_KEY).toBe("real-key");
+  });
+
+  it("upsert quirúrgico: preserva servers MCP ajenos al stack", () => {
+    fs.writeFileSync(mainFile, JSON.stringify({ mcpServers: { ajeno: { type: "http", url: "https://x" } } }));
+    const { servers } = run(makeCtx());
+    expect(servers.ajeno).toEqual({ type: "http", url: "https://x" });
+    expect(servers.engram).toMatchObject({ type: "stdio" });
   });
 });
