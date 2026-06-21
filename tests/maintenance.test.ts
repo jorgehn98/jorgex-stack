@@ -345,6 +345,32 @@ describe("lean integration: prompt wiring", () => {
   });
 });
 
+describe("worktree workflow contract", () => {
+  it("keeps the canonical project-local worktree rule in every operational prompt", () => {
+    const fragments = [
+      "git rev-parse --show-toplevel",
+      "worktrees/",
+      "<project-root>/worktrees/<canonical-name>",
+      ".git/info/exclude",
+    ];
+
+    for (const relativePath of [
+      "agents/orchestrator.md",
+      "skills/work-lifecycle/SKILL.md",
+      "system-prompt/AGENTS.md",
+    ]) {
+      expectFragments(readStackFile(relativePath), fragments);
+    }
+
+    expectFragments(fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8"), [
+      "git rev-parse --show-toplevel",
+      "worktrees/",
+      "<project-root>/worktrees/<canonical-name>",
+      ".git/info/exclude",
+    ]);
+  });
+});
+
 describe("lean integration: xreview y post-pr-review alineados", () => {
   it("ambos tratan code-simplifier como el pase lean/anti-bloat y xreview deja lean-audit fuera de post-PR", () => {
     const xreview = fs.readFileSync(path.join(stackRoot(), "commands", "xreview.md"), "utf8");
