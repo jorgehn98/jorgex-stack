@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import path from "node:path";
 
 interface WorktreePluginConfig {
   setupScript?: string;
@@ -19,10 +20,20 @@ interface ScriptResult {
 const isAbsolutePath = (value: string) =>
   /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/");
 
+const isWindowsPath = (value: string) => /^[a-zA-Z]:[\\/]/.test(value);
+
+const toSlashes = (value: string) => value.replace(/\\/g, "/");
+
 const joinProjectPath = (directory: string, target: string) => {
-  const normalizedDirectory = directory.replace(/[\\/]+$/, "");
-  const normalizedTarget = target.replace(/^[\\/]+/, "").replace(/\\/g, "/");
+  const normalizedDirectory = toSlashes(directory).replace(/[\\/]+$/, "");
+  const normalizedTarget = toSlashes(target).replace(/^[\\/]+/, "");
   return `${normalizedDirectory}/${normalizedTarget}`;
+};
+
+const resolvePath = (base: string, target: string) => {
+  const api = isWindowsPath(base) || isWindowsPath(target) ? path.win32 : path.posix;
+  const resolved = api.resolve(base, target);
+  return toSlashes(resolved);
 };
 
 const resolveProjectPath = (directory: string, target?: string) => {
@@ -250,8 +261,26 @@ const parseWorktreePath = (command: string) => {
 };
 
 const getWorktreeName = (worktreePath: string) => {
-  const segments = worktreePath.replace(/\\/g, "/").split("/").filter(Boolean);
+  const segments = toSlashes(worktreePath).split("/").filter(Boolean);
   return segments[segments.length - 1] || null;
+};
+
+const normalizePath = (value: string) =>
+  toSlashes(value).replace(/\/+$/, "");
+
+const samePath = (left: string, right: string) => {
+  const normalizedLeft = normalizePath(left);
+  const normalizedRight = normalizePath(right);
+  if (isWindowsPath(normalizedLeft) || isWindowsPath(normalizedRight)) {
+    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+  }
+  return normalizedLeft === normalizedRight;
+};
+
+const getCommandCwd = (args: Record<string, unknown>, directory: string) => {
+  const cwd = args.workdir || args.cwd;
+  if (typeof cwd !== "string" || cwd.length === 0) return directory;
+  return isAbsolutePath(cwd) ? cwd : resolvePath(directory, cwd);
 };
 
 const replaceToken = (value: string, token: string, replacement: string) =>
@@ -313,14 +342,11 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
         const args = input.args || {};
         const command = args.command || "";
         const commandLower = command.toLowerCase();
-        const pathContains = (
-          config.pathContains || "worktrees/"
+        const pathContains = toSlashes(
+          config.pathContains || "worktrees/",
         ).toLowerCase();
 
-        if (
-          !commandLower.includes("git worktree add") ||
-          !commandLower.includes(pathContains)
-        ) {
+        if (!commandLower.includes("git worktree add")) {
           return;
         }
 
@@ -334,9 +360,25 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
 
         const gitRoot = await $`git rev-parse --show-toplevel`.text();
         const projectRoot = String(gitRoot).trim().replace(/\\/g, "/");
-        const absoluteWorktreePath = isAbsolutePath(parsedWorktreePath)
-          ? parsedWorktreePath.replace(/\\/g, "/")
-          : joinProjectPath(projectRoot, parsedWorktreePath);
+        const commandCwd = getCommandCwd(args, directory);
+        const absoluteWorktreePath = resolvePath(commandCwd, parsedWorktreePath);
+        const expectedWorktreePath = joinProjectPath(
+          projectRoot,
+          `worktrees/${worktreeName}`,
+        );
+
+        if (!samePath(absoluteWorktreePath, expectedWorktreePath)) {
+          appendToolOutput(output, [
+            `Worktree path is not canonical: ${absoluteWorktreePath}`,
+            `Use the project-local path instead: ${expectedWorktreePath}`,
+            "Canonical rule: <project-root>/worktrees/<canonical-name>.",
+          ]);
+          return;
+        }
+
+        if (!normalizePath(absoluteWorktreePath).toLowerCase().includes(pathContains)) {
+          return;
+        }
 
         const setupScript = resolveProjectPath(directory, config.setupScript);
         if (setupScript) {

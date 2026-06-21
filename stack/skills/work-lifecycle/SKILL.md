@@ -33,7 +33,8 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 
 ## Executing
 
-- Execution happens inside a git worktree created for the work (branch = canonical name); the user's main checkout stays untouched until merge.
+- Execution happens inside a git worktree created for the work; the user's main checkout stays untouched until merge.
+- Worktree path is fixed: first resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` (branch = canonical name). Never place worktrees in the repo root, next to the repo, under `work/`, or outside the project.
 - Delegation handoff: the subagent receives its **topic_key + task title**, never the task content inline. It retrieves the spec itself (`mem_search` → `mem_get_observation`).
 - The subagent saves its phase outcome under the topic_key the orchestrator gave it (`work/{name}/{phase}`) BEFORE its final report.
 - Task status lives ONLY in the plan.md table: flip it (⬜ → ✅) with a surgical edit when the task closes. Do not mirror statuses into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.

@@ -116,7 +116,9 @@ Every subagent ends with a **Result contract** (Status / Delegations / Risks). P
 
 ### Worktree
 
-Before the first task, create a git worktree for this work (branch = canonical name) and run the ENTIRE execution inside it — implementation, tests, commits and pushes happen there, never on the user's main checkout.
+Before the first task, create a git worktree for this work and run the ENTIRE execution inside it — implementation, tests, commits and pushes happen there, never on the user's main checkout.
+
+Canonical location is mandatory: resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, create `worktrees/` inside that root if needed, and create the worktree at `<project-root>/worktrees/<canonical-name>` (branch = canonical name). Do not create worktrees next to the repo, in the repo root, under `work/`, or in any external temp/shared folder.
 
 Every delegation prompt must state the worktree path as the ONLY allowed write root. After each writer subagent finishes, verify the user's main checkout is still clean (`git status` there); if the subagent wrote outside the worktree, STOP, move those changes into the worktree (patch/apply) and restore the main checkout before continuing. Subagent obedience is not a safety boundary — this check is.
 
