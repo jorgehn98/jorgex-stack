@@ -36,6 +36,12 @@ pnpm typecheck      # tsc --noEmit
 pnpm cli <cmd>      # ejecutar el CLI local (node dist/cli.js)
 ```
 
+## Worktrees
+
+- Todo trabajo no trivial debe ejecutarse en un git worktree.
+- Ruta obligatoria: resolver la raíz real con `git rev-parse --show-toplevel`, crear `worktrees/` dentro de esa raíz si falta, y crear/usar `<project-root>/worktrees/<canonical-name>`.
+- No crear worktrees en la raíz del repo, junto al repo, bajo `work/`, ni en carpetas temporales/externas.
+
 ## Publicación npm
 
 - El workflow publica automáticamente en npm al mergear en `main` si hay cambios publicables.

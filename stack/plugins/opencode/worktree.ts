@@ -254,6 +254,9 @@ const getWorktreeName = (worktreePath: string) => {
   return segments[segments.length - 1] || null;
 };
 
+const normalizePath = (value: string) =>
+  value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
 const replaceToken = (value: string, token: string, replacement: string) =>
   value.split(token).join(replacement);
 
@@ -317,10 +320,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
           config.pathContains || "worktrees/"
         ).toLowerCase();
 
-        if (
-          !commandLower.includes("git worktree add") ||
-          !commandLower.includes(pathContains)
-        ) {
+        if (!commandLower.includes("git worktree add")) {
           return;
         }
 
@@ -337,6 +337,26 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
         const absoluteWorktreePath = isAbsolutePath(parsedWorktreePath)
           ? parsedWorktreePath.replace(/\\/g, "/")
           : joinProjectPath(projectRoot, parsedWorktreePath);
+        const expectedWorktreePath = joinProjectPath(
+          projectRoot,
+          `worktrees/${worktreeName}`,
+        );
+
+        if (
+          normalizePath(absoluteWorktreePath) !==
+          normalizePath(expectedWorktreePath)
+        ) {
+          appendToolOutput(output, [
+            `Worktree path is not canonical: ${absoluteWorktreePath}`,
+            `Use the project-local path instead: ${expectedWorktreePath}`,
+            "Canonical rule: <project-root>/worktrees/<canonical-name>.",
+          ]);
+          return;
+        }
+
+        if (!normalizePath(absoluteWorktreePath).includes(pathContains)) {
+          return;
+        }
 
         const setupScript = resolveProjectPath(directory, config.setupScript);
         if (setupScript) {
