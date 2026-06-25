@@ -16,12 +16,30 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 
+declare const Bun: {
+  which?: (bin: string) => string | null
+  spawnSync: (args: string[]) => { exitCode: number; stdout?: { toString(): string } | string }
+  spawn: (args: string[], options?: Record<string, unknown>) => unknown
+  file: (path: string) => { exists: () => Promise<boolean> }
+}
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const ENGRAM_PORT = parseInt(process.env.ENGRAM_PORT ?? "7437")
 const ENGRAM_URL = `http://127.0.0.1:${ENGRAM_PORT}`
 // "{{ENGRAM_BIN}}" lo resuelve el instalador con el binario detectado (D7).
-const ENGRAM_BIN = process.env.ENGRAM_BIN ?? Bun.which("engram") ?? "{{ENGRAM_BIN}}"
+const ENGRAM_BIN = "{{ENGRAM_BIN}}"
+
+export function resolveEngramBin(installerBin = ENGRAM_BIN): string {
+  const envBin = process.env.ENGRAM_BIN
+  if (envBin) return envBin
+
+  const bun = globalThis as typeof globalThis & { Bun?: { which?: (bin: string) => string | null } }
+  const bunBin = bun.Bun?.which?.("engram")
+  if (bunBin) return bunBin
+
+  return installerBin !== "{{ENGRAM_BIN}}" ? installerBin : "engram"
+}
 
 // Engram's own MCP tools — don't count these as "tool calls" for session stats
 const ENGRAM_TOOLS = new Set([
@@ -60,6 +78,7 @@ async function engramFetch(
       headers: opts.body ? { "Content-Type": "application/json" } : undefined,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     })
+    if (!res.ok) return null
     return await res.json()
   } catch {
     // Engram server not running — silently fail
@@ -126,6 +145,7 @@ function stripPrivateTags(str: string): string {
 export const Engram: Plugin = async (ctx) => {
   const oldProject = ctx.directory.split(/[\\/]/).pop() ?? "unknown"
   const project = extractProjectName(ctx.directory)
+  const engramBin = resolveEngramBin()
 
   // Track tool counts per session (in-memory only, not critical)
   const toolCounts = new Map<string, number>()
@@ -145,12 +165,12 @@ export const Engram: Plugin = async (ctx) => {
    *
    * Silently skips sub-agent sessions (tracked in `subAgentSessions`).
    */
-  async function ensureSession(sessionId: string): Promise<void> {
-    if (!sessionId || knownSessions.has(sessionId)) return
+  async function ensureSession(sessionId: string): Promise<boolean> {
+    if (!sessionId) return false
+    if (knownSessions.has(sessionId)) return true
     // Do not register sub-agent sessions in Engram (issue #116).
-    if (subAgentSessions.has(sessionId)) return
-    knownSessions.add(sessionId)
-    await engramFetch("/sessions", {
+    if (subAgentSessions.has(sessionId)) return false
+    const session = await engramFetch("/sessions", {
       method: "POST",
       body: {
         id: sessionId,
@@ -158,13 +178,18 @@ export const Engram: Plugin = async (ctx) => {
         directory: ctx.directory,
       },
     })
+
+    if (session === null) return false
+
+    knownSessions.add(sessionId)
+    return true
   }
 
   // Try to start engram server if not running
   const running = await isEngramRunning()
   if (!running) {
     try {
-      Bun.spawn([ENGRAM_BIN, "serve"], {
+      Bun.spawn([engramBin, "serve"], {
         stdout: "ignore",
         stderr: "ignore",
         stdin: "ignore",
@@ -192,7 +217,7 @@ export const Engram: Plugin = async (ctx) => {
     const manifestFile = `${ctx.directory}/.engram/manifest.json`
     const file = Bun.file(manifestFile)
     if (await file.exists()) {
-      Bun.spawn([ENGRAM_BIN, "sync", "--import"], {
+      Bun.spawn([engramBin, "sync", "--import"], {
         cwd: ctx.directory,
         stdout: "ignore",
         stderr: "ignore",
@@ -206,7 +231,7 @@ export const Engram: Plugin = async (ctx) => {
   return {
     // ─── Event Listeners ───────────────────────────────────────────
 
-    event: async ({ event }) => {
+    event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
       // --- Session Created ---
       if (event.type === "session.created") {
         // Bug fix (#116): session data is nested under event.properties.info,
@@ -254,7 +279,7 @@ export const Engram: Plugin = async (ctx) => {
     // output.message is typed as UserMessage (role:"user" already guaranteed).
     // output.parts contains TextPart[] with the actual message text.
 
-    "chat.message": async (input, output) => {
+    "chat.message": async (input: any, output: any) => {
       // Skip sub-agent sessions — they inflate session counts (issue #116)
       if (subAgentSessions.has(input.sessionID)) return
 
@@ -262,8 +287,8 @@ export const Engram: Plugin = async (ctx) => {
 
       // Extract text from parts (type:"text")
       const content = output.parts
-        .filter((p) => p.type === "text")
-        .map((p) => (p as any).text ?? "")
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => p.text ?? "")
         .join("\n")
         .trim()
 
@@ -276,15 +301,17 @@ export const Engram: Plugin = async (ctx) => {
 
       // Only capture non-trivial prompts (>10 chars)
       if (finalContent.length > 10) {
-        await ensureSession(sessionId)
-        await engramFetch("/prompts", {
-          method: "POST",
-          body: {
-            session_id: sessionId,
-            content: stripPrivateTags(truncate(finalContent, 2000)),
-            project,
-          },
-        })
+        const sessionReady = await ensureSession(sessionId)
+        if (sessionReady) {
+          await engramFetch("/prompts", {
+            method: "POST",
+            body: {
+              session_id: sessionId,
+              content: stripPrivateTags(truncate(finalContent, 2000)),
+              project,
+            },
+          })
+        }
       }
     },
 
@@ -294,13 +321,13 @@ export const Engram: Plugin = async (ctx) => {
     // Passive capture: when a Task tool completes, POST its output to
     // the passive capture endpoint so the server extracts learnings.
 
-    "tool.execute.after": async (input, output) => {
+    "tool.execute.after": async (input: any, output: any) => {
       if (ENGRAM_TOOLS.has(input.tool.toLowerCase())) return
 
       // input.sessionID comes from OpenCode — always available
       const sessionId = input.sessionID
-      if (sessionId) {
-        await ensureSession(sessionId)
+      const sessionReady = sessionId ? await ensureSession(sessionId) : false
+      if (sessionReady && sessionId) {
         toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
       }
 
@@ -308,7 +335,7 @@ export const Engram: Plugin = async (ctx) => {
       // (OpenCode reports the tool name in lowercase: "task")
       if (input.tool.toLowerCase() === "task" && output && sessionId) {
         const text = typeof output === "string" ? output : JSON.stringify(output)
-        if (text.length > 50) {
+        if (text.length > 50 && sessionReady) {
           await engramFetch("/observations/passive", {
             method: "POST",
             body: {
@@ -332,7 +359,7 @@ export const Engram: Plugin = async (ctx) => {
     // block at the beginning. By concatenating, we avoid adding extra system
     // messages that would break these models. See: GitHub issue #23.
 
-    "experimental.chat.system.transform": async (_input, output) => {
+    "experimental.chat.system.transform": async (_input: any, output: any) => {
       if (output.system.length > 0) {
         output.system[output.system.length - 1] += "\n\n" + MEMORY_INSTRUCTIONS
       } else {
@@ -348,7 +375,7 @@ export const Engram: Plugin = async (ctx) => {
     // 2. Inject context from previous sessions into the compaction prompt
     // 3. Tell the compressor to remind the new agent to save memories
 
-    "experimental.session.compacting": async (input, output) => {
+    "experimental.session.compacting": async (input: any, output: any) => {
       if (input.sessionID) {
         await ensureSession(input.sessionID)
       }

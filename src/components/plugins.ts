@@ -34,6 +34,7 @@ export function planPlugins(adapter: Adapter, ctx: InstallContext): FileAction[]
         // JSON.stringify produce un string JS válido con todo escapado.
         content = content.replace(/"\{\{ENGRAM_PROTOCOL\}\}"/g, JSON.stringify(protocol));
       }
+      content = content.replace(/(from\s+["'])(\.{1,2}\/[^"']+?)\.js(["'])/g, "$1$2.ts$3");
       if (content === raw) return { kind: "copy", source: sourceFile, target };
       return { kind: "write", target, content };
     });
