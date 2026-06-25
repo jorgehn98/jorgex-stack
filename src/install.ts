@@ -215,7 +215,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       changes = [...creates, ...updates];
     }
 
-    const backup = createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`);
+    const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
     applyChanges(changes);
