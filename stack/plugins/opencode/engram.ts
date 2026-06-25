@@ -78,6 +78,7 @@ async function engramFetch(
       headers: opts.body ? { "Content-Type": "application/json" } : undefined,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     })
+    if (!res.ok) return null
     return await res.json()
   } catch {
     // Engram server not running — silently fail

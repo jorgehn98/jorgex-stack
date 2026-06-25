@@ -16,7 +16,11 @@ afterEach(() => {
 function stubBun(options: {
   which?: string | null;
   remoteUrl?: string;
+  manifestExists?: boolean;
 } = {}) {
+  const spawn = vi.fn();
+  const exists = vi.fn(async () => options.manifestExists ?? false);
+
   vi.stubGlobal("Bun", {
     which: vi.fn(() => options.which ?? null),
     spawnSync: vi.fn((args: string[]) => {
@@ -29,11 +33,13 @@ function stubBun(options: {
 
       return { exitCode: 1, stdout: "" };
     }),
-    spawn: vi.fn(),
+    spawn,
     file: vi.fn(() => ({
-      exists: vi.fn(async () => false),
+      exists,
     })),
   });
+
+  return { spawn, exists };
 }
 
 describe("resolveEngramBin", () => {
@@ -59,7 +65,7 @@ describe("resolveEngramBin", () => {
 });
 
 describe("Engram session registration", () => {
-  it("reintenta POST /sessions si la primera llamada falla", async () => {
+  it("reintenta POST /sessions cuando recibe ok:false con un body JSON", async () => {
     stubBun({ remoteUrl: "https://github.com/jorgehn98/demo.git" });
     let sessionPosts = 0;
 
@@ -72,7 +78,7 @@ describe("Engram session registration", () => {
         sessionPosts += 1;
         return {
           ok: false,
-          json: async () => (sessionPosts === 1 ? null : { id: "session-1" }),
+          json: async () => ({ ok: false, error: "duplicate session" }),
         } as any;
       }
 
@@ -97,5 +103,50 @@ describe("Engram session registration", () => {
     await plugin.event({ event } as any);
 
     expect(fetchMock.mock.calls.filter(([calledUrl]) => String(calledUrl).endsWith("/sessions"))).toHaveLength(2);
+  });
+
+  it("usa el binario resuelto para serve y sync --import", async () => {
+    const { spawn } = stubBun({
+      which: "resolved-engram",
+      remoteUrl: "https://github.com/jorgehn98/demo.git",
+      manifestExists: true,
+    });
+
+    vi.stubGlobal("setTimeout", ((callback: (...args: any[]) => void) => {
+      callback();
+      return 0 as any;
+    }) as any);
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/health")) {
+        return { ok: false, json: async () => ({ ok: false }) } as any;
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    await Engram({ directory: "C:\\repo\\demo" } as any);
+
+    expect(spawn).toHaveBeenCalledWith([
+      "resolved-engram",
+      "serve",
+    ], expect.objectContaining({
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    }));
+
+    expect(spawn).toHaveBeenCalledWith([
+      "resolved-engram",
+      "sync",
+      "--import",
+    ], expect.objectContaining({
+      cwd: "C:\\repo\\demo",
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    }));
   });
 });
