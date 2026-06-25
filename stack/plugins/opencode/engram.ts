@@ -165,10 +165,11 @@ export const Engram: Plugin = async (ctx) => {
    *
    * Silently skips sub-agent sessions (tracked in `subAgentSessions`).
    */
-  async function ensureSession(sessionId: string): Promise<void> {
-    if (!sessionId || knownSessions.has(sessionId)) return
+  async function ensureSession(sessionId: string): Promise<boolean> {
+    if (!sessionId) return false
+    if (knownSessions.has(sessionId)) return true
     // Do not register sub-agent sessions in Engram (issue #116).
-    if (subAgentSessions.has(sessionId)) return
+    if (subAgentSessions.has(sessionId)) return false
     const session = await engramFetch("/sessions", {
       method: "POST",
       body: {
@@ -178,7 +179,10 @@ export const Engram: Plugin = async (ctx) => {
       },
     })
 
-    if (session !== null) knownSessions.add(sessionId)
+    if (session === null) return false
+
+    knownSessions.add(sessionId)
+    return true
   }
 
   // Try to start engram server if not running
@@ -297,15 +301,17 @@ export const Engram: Plugin = async (ctx) => {
 
       // Only capture non-trivial prompts (>10 chars)
       if (finalContent.length > 10) {
-        await ensureSession(sessionId)
-        await engramFetch("/prompts", {
-          method: "POST",
-          body: {
-            session_id: sessionId,
-            content: stripPrivateTags(truncate(finalContent, 2000)),
-            project,
-          },
-        })
+        const sessionReady = await ensureSession(sessionId)
+        if (sessionReady) {
+          await engramFetch("/prompts", {
+            method: "POST",
+            body: {
+              session_id: sessionId,
+              content: stripPrivateTags(truncate(finalContent, 2000)),
+              project,
+            },
+          })
+        }
       }
     },
 
@@ -320,8 +326,8 @@ export const Engram: Plugin = async (ctx) => {
 
       // input.sessionID comes from OpenCode — always available
       const sessionId = input.sessionID
-      if (sessionId) {
-        await ensureSession(sessionId)
+      const sessionReady = sessionId ? await ensureSession(sessionId) : false
+      if (sessionReady && sessionId) {
         toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
       }
 
@@ -329,7 +335,7 @@ export const Engram: Plugin = async (ctx) => {
       // (OpenCode reports the tool name in lowercase: "task")
       if (input.tool.toLowerCase() === "task" && output && sessionId) {
         const text = typeof output === "string" ? output : JSON.stringify(output)
-        if (text.length > 50) {
+        if (text.length > 50 && sessionReady) {
           await engramFetch("/observations/passive", {
             method: "POST",
             body: {

@@ -105,6 +105,63 @@ describe("Engram session registration", () => {
     expect(fetchMock.mock.calls.filter(([calledUrl]) => String(calledUrl).endsWith("/sessions"))).toHaveLength(2);
   });
 
+  it("no hace writes dependientes si POST /sessions falla", async () => {
+    stubBun({ remoteUrl: "https://github.com/jorgehn98/demo.git" });
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/health")) {
+        return { ok: true, json: async () => ({ ok: true }) } as any;
+      }
+
+      if (url.endsWith("/sessions")) {
+        return {
+          ok: false,
+          json: async () => ({ ok: false, error: "duplicate session" }),
+        } as any;
+      }
+
+      if (url.endsWith("/prompts") || url.endsWith("/observations/passive")) {
+        throw new Error(`Unexpected dependent write: ${url}`);
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const plugin = await Engram({ directory: "C:\\repo\\demo" } as any);
+
+    await plugin.event({
+      event: {
+        type: "session.created",
+        properties: {
+          info: {
+            id: "session-1",
+            parentID: null,
+            title: "Chat",
+          },
+        },
+      },
+    } as any);
+
+    await plugin["chat.message"](
+      { sessionID: "session-1" },
+      {
+        parts: [{ type: "text", text: "hello world from a user message" }],
+        message: {},
+      } as any,
+    );
+
+    await plugin["tool.execute.after"](
+      { sessionID: "session-2", tool: "task" },
+      "this task output is intentionally long enough to trigger passive capture",
+    );
+
+    expect(fetchMock.mock.calls.filter(([calledUrl]) => String(calledUrl).endsWith("/sessions"))).toHaveLength(3);
+    expect(fetchMock.mock.calls.some(([calledUrl]) => String(calledUrl).endsWith("/prompts"))).toBe(false);
+    expect(fetchMock.mock.calls.some(([calledUrl]) => String(calledUrl).endsWith("/observations/passive"))).toBe(false);
+  });
+
   it("usa el binario resuelto para serve y sync --import", async () => {
     const { spawn } = stubBun({
       which: "resolved-engram",
