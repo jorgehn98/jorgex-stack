@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
@@ -218,6 +220,37 @@ describe("planPlugins: Goal Mode de OpenCode", () => {
     for (const file of installedFiles) {
       expect(fs.existsSync(file)).toBe(true);
     }
+  });
+
+  it("reescribe los imports locales .js a .ts y permite importar el árbol instalado", async () => {
+    const targetDir = path.join(tmp, "opencode-smoke");
+
+    await expect(runInstall({
+      runtimes: ["opencode"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+    })).resolves.toBe(0);
+
+    const goalPlugin = fs.readFileSync(path.join(targetDir, "plugins", "goal-plugin.ts"), "utf8");
+    expect(goalPlugin).toContain('from "./goal/store.ts"');
+    expect(goalPlugin).toContain('from "./goal/opencode-hooks.ts"');
+    expect(goalPlugin).not.toContain('.js"');
+
+    const goalUrl = pathToFileURL(path.join(targetDir, "plugins", "goal-plugin.ts")).href;
+    const engramUrl = pathToFileURL(path.join(targetDir, "plugins", "engram.ts")).href;
+    const smoke = execFileSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--input-type=module",
+        "-e",
+        `await import(${JSON.stringify(goalUrl)}); await import(${JSON.stringify(engramUrl)}); console.log("ok");`,
+      ],
+      { encoding: "utf8" },
+    );
+
+    expect(smoke.trim()).toBe("ok");
   });
 
   it.each(

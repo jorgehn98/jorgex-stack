@@ -21,7 +21,13 @@ import type { Plugin } from "@opencode-ai/plugin"
 const ENGRAM_PORT = parseInt(process.env.ENGRAM_PORT ?? "7437")
 const ENGRAM_URL = `http://127.0.0.1:${ENGRAM_PORT}`
 // "{{ENGRAM_BIN}}" lo resuelve el instalador con el binario detectado (D7).
-const ENGRAM_BIN = process.env.ENGRAM_BIN ?? Bun.which("engram") ?? "{{ENGRAM_BIN}}"
+const ENGRAM_BIN = process.env.ENGRAM_BIN ?? "{{ENGRAM_BIN}}"
+
+function resolveEngramBin(): string {
+  if (ENGRAM_BIN !== "{{ENGRAM_BIN}}") return ENGRAM_BIN
+  const bun = globalThis as typeof globalThis & { Bun?: { which?: (bin: string) => string | null } }
+  return bun.Bun?.which?.("engram") ?? "engram"
+}
 
 // Engram's own MCP tools — don't count these as "tool calls" for session stats
 const ENGRAM_TOOLS = new Set([
@@ -126,6 +132,7 @@ function stripPrivateTags(str: string): string {
 export const Engram: Plugin = async (ctx) => {
   const oldProject = ctx.directory.split(/[\\/]/).pop() ?? "unknown"
   const project = extractProjectName(ctx.directory)
+  const engramBin = resolveEngramBin()
 
   // Track tool counts per session (in-memory only, not critical)
   const toolCounts = new Map<string, number>()
@@ -164,7 +171,7 @@ export const Engram: Plugin = async (ctx) => {
   const running = await isEngramRunning()
   if (!running) {
     try {
-      Bun.spawn([ENGRAM_BIN, "serve"], {
+      Bun.spawn([engramBin, "serve"], {
         stdout: "ignore",
         stderr: "ignore",
         stdin: "ignore",
@@ -192,7 +199,7 @@ export const Engram: Plugin = async (ctx) => {
     const manifestFile = `${ctx.directory}/.engram/manifest.json`
     const file = Bun.file(manifestFile)
     if (await file.exists()) {
-      Bun.spawn([ENGRAM_BIN, "sync", "--import"], {
+      Bun.spawn([engramBin, "sync", "--import"], {
         cwd: ctx.directory,
         stdout: "ignore",
         stderr: "ignore",
