@@ -16,17 +16,29 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 
+declare const Bun: {
+  which?: (bin: string) => string | null
+  spawnSync: (args: string[]) => { exitCode: number; stdout?: { toString(): string } | string }
+  spawn: (args: string[], options?: Record<string, unknown>) => unknown
+  file: (path: string) => { exists: () => Promise<boolean> }
+}
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const ENGRAM_PORT = parseInt(process.env.ENGRAM_PORT ?? "7437")
 const ENGRAM_URL = `http://127.0.0.1:${ENGRAM_PORT}`
 // "{{ENGRAM_BIN}}" lo resuelve el instalador con el binario detectado (D7).
-const ENGRAM_BIN = process.env.ENGRAM_BIN ?? "{{ENGRAM_BIN}}"
+const ENGRAM_BIN = "{{ENGRAM_BIN}}"
 
-function resolveEngramBin(): string {
-  if (ENGRAM_BIN !== "{{ENGRAM_BIN}}") return ENGRAM_BIN
+export function resolveEngramBin(installerBin = ENGRAM_BIN): string {
+  const envBin = process.env.ENGRAM_BIN
+  if (envBin) return envBin
+
   const bun = globalThis as typeof globalThis & { Bun?: { which?: (bin: string) => string | null } }
-  return bun.Bun?.which?.("engram") ?? "engram"
+  const bunBin = bun.Bun?.which?.("engram")
+  if (bunBin) return bunBin
+
+  return installerBin !== "{{ENGRAM_BIN}}" ? installerBin : "engram"
 }
 
 // Engram's own MCP tools — don't count these as "tool calls" for session stats
@@ -156,8 +168,7 @@ export const Engram: Plugin = async (ctx) => {
     if (!sessionId || knownSessions.has(sessionId)) return
     // Do not register sub-agent sessions in Engram (issue #116).
     if (subAgentSessions.has(sessionId)) return
-    knownSessions.add(sessionId)
-    await engramFetch("/sessions", {
+    const session = await engramFetch("/sessions", {
       method: "POST",
       body: {
         id: sessionId,
@@ -165,6 +176,8 @@ export const Engram: Plugin = async (ctx) => {
         directory: ctx.directory,
       },
     })
+
+    if (session !== null) knownSessions.add(sessionId)
   }
 
   // Try to start engram server if not running
@@ -213,7 +226,7 @@ export const Engram: Plugin = async (ctx) => {
   return {
     // ─── Event Listeners ───────────────────────────────────────────
 
-    event: async ({ event }) => {
+    event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
       // --- Session Created ---
       if (event.type === "session.created") {
         // Bug fix (#116): session data is nested under event.properties.info,
@@ -261,7 +274,7 @@ export const Engram: Plugin = async (ctx) => {
     // output.message is typed as UserMessage (role:"user" already guaranteed).
     // output.parts contains TextPart[] with the actual message text.
 
-    "chat.message": async (input, output) => {
+    "chat.message": async (input: any, output: any) => {
       // Skip sub-agent sessions — they inflate session counts (issue #116)
       if (subAgentSessions.has(input.sessionID)) return
 
@@ -269,8 +282,8 @@ export const Engram: Plugin = async (ctx) => {
 
       // Extract text from parts (type:"text")
       const content = output.parts
-        .filter((p) => p.type === "text")
-        .map((p) => (p as any).text ?? "")
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => p.text ?? "")
         .join("\n")
         .trim()
 
@@ -301,7 +314,7 @@ export const Engram: Plugin = async (ctx) => {
     // Passive capture: when a Task tool completes, POST its output to
     // the passive capture endpoint so the server extracts learnings.
 
-    "tool.execute.after": async (input, output) => {
+    "tool.execute.after": async (input: any, output: any) => {
       if (ENGRAM_TOOLS.has(input.tool.toLowerCase())) return
 
       // input.sessionID comes from OpenCode — always available
@@ -339,7 +352,7 @@ export const Engram: Plugin = async (ctx) => {
     // block at the beginning. By concatenating, we avoid adding extra system
     // messages that would break these models. See: GitHub issue #23.
 
-    "experimental.chat.system.transform": async (_input, output) => {
+    "experimental.chat.system.transform": async (_input: any, output: any) => {
       if (output.system.length > 0) {
         output.system[output.system.length - 1] += "\n\n" + MEMORY_INSTRUCTIONS
       } else {
@@ -355,7 +368,7 @@ export const Engram: Plugin = async (ctx) => {
     // 2. Inject context from previous sessions into the compaction prompt
     // 3. Tell the compressor to remind the new agent to save memories
 
-    "experimental.session.compacting": async (input, output) => {
+    "experimental.session.compacting": async (input: any, output: any) => {
       if (input.sessionID) {
         await ensureSession(input.sessionID)
       }
