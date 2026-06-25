@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
-import type { Adapter, FileAction, InstallContext, RuntimeId } from "./adapters/types.js";
+import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
@@ -9,6 +9,7 @@ import { HOME, stackRoot } from "./lib/paths.js";
 import { detectEngram } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap } from "./lib/model-map.js";
+import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
@@ -32,17 +33,20 @@ export interface InstallOptions {
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
+  mode?: InstallModePreference;
 }
 
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 
 /** Contexto de instalación para un runtime, o null si no hay model-map. */
-export function makeContext(adapter: Adapter, configDir: string): InstallContext | null {
+export function makeContext(adapter: Adapter, configDir: string, mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
   return {
     stackDir: stackRoot(),
     configDir,
+    mode: mode.mode,
+    subagentConcurrency: mode.subagentConcurrency,
     engramBin: detectEngram(),
     models,
     warnings: [],
@@ -87,13 +91,13 @@ function applyChanges(changes: PlannedChange[]): void {
  * usuario ilegible), `complete` es false: con visión parcial NO es seguro
  * borrar huérfanos.
  */
-export function collectAllCurrentTargets(): { targets: Set<string>; complete: boolean } {
+export function collectAllCurrentTargets(mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE): { targets: Set<string>; complete: boolean } {
   const targets = new Set<string>();
   let complete = true;
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) continue;
-    const ctx = makeContext(adapter, detection.configDir);
+    const ctx = makeContext(adapter, detection.configDir, mode);
     if (!ctx) continue;
     try {
       for (const action of buildPlan(adapter, ctx)) targets.add(path.resolve(action.target));
@@ -111,15 +115,20 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const engramBin = detectEngram();
   const modelMap = loadModelMap();
   ensureModelMapFile();
+  const modePreference = opts.mode ?? loadInstallModePreference();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 
   // El manifest solo aplica a instalaciones reales; --target-dir es de pruebas.
   const useManifest = opts.targetDir === undefined;
-  const current = useManifest ? collectAllCurrentTargets() : { targets: new Set<string>(), complete: false };
+  const current = useManifest ? collectAllCurrentTargets(modePreference) : { targets: new Set<string>(), complete: false };
   const canOrphan = useManifest && current.complete;
   const canonicalMcp = loadCanonicalMcp(stackDir);
   const canonicalHooks = loadCanonicalHooks(stackDir);
+
+  if (useManifest && !opts.dryRun) {
+    saveInstallModePreference(installModePreferenceFile(), modePreference);
+  }
 
   let exitCode = 0;
   for (const id of opts.runtimes) {
@@ -144,9 +153,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const ctx: InstallContext = {
       stackDir,
       configDir,
+      mode: modePreference.mode,
+      subagentConcurrency: modePreference.subagentConcurrency,
       engramBin,
       models,
-        warnings: [],
+      warnings: [],
     };
 
     let plan = buildPlan(adapter, ctx);

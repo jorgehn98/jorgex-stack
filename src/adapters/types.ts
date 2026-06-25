@@ -10,6 +10,15 @@ import type { RuntimeModelMap } from "../lib/model-map.js";
 
 export type RuntimeId = "claude-code" | "codex" | "opencode";
 
+export type InstallMode = "human" | "programmatic";
+
+export type SubagentConcurrency = "serial" | "parallel";
+
+export interface InstallModePreference {
+  mode: InstallMode;
+  subagentConcurrency: SubagentConcurrency;
+}
+
 /** Tier canónico de modelo por agente; el model-map lo resuelve por runtime (PRD §6.1). */
 export type Tier = "strong" | "standard" | "cheap";
 
@@ -23,6 +32,10 @@ export interface InstallContext {
   stackDir: string;
   /** Dir de config del runtime destino (puede venir de --target-dir en pruebas). */
   configDir: string;
+  /** Modo de instalación resuelto para este run. */
+  mode?: InstallMode;
+  /** Concurrencia de subagentes resuelta para este run. */
+  subagentConcurrency?: SubagentConcurrency;
   /** Binario Engram detectado (D7: siempre el existente). null = no instalado. */
   engramBin: string | null;
   models: RuntimeModelMap;
