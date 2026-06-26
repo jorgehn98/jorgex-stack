@@ -14,10 +14,9 @@ export type InstallMode = "human" | "programmatic";
 
 export type SubagentConcurrency = "serial" | "parallel";
 
-export interface InstallModePreference {
-  mode: InstallMode;
-  subagentConcurrency: SubagentConcurrency;
-}
+export type InstallModePreference =
+  | { mode: "human"; subagentConcurrency: "serial" }
+  | { mode: "programmatic"; subagentConcurrency: SubagentConcurrency };
 
 /** Tier canónico de modelo por agente; el model-map lo resuelve por runtime (PRD §6.1). */
 export type Tier = "strong" | "standard" | "cheap";

@@ -60,6 +60,12 @@ export async function runDoctor(): Promise<number> {
   const manifest = readManifest();
   const current = collectAllCurrentTargets();
 
+  if (!current.complete || current.warnings.length > 0) {
+    p.log.warn("Limpieza de huérfanos deshabilitada: no se pudo construir el plan completo de todos los runtimes.");
+    for (const warning of current.warnings) p.log.warn(warning);
+    problems++;
+  }
+
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) {

@@ -98,7 +98,7 @@ export function parseFlags(args: string[]): Flags {
   return flags;
 }
 
-async function resolveInstallMode(flags: Flags): Promise<InstallModePreference | null> {
+async function resolveInstallMode(flags: Flags, promptIfMissing = true): Promise<InstallModePreference | null> {
   const explicit = parseInstallModePreferenceFlags(flags.mode, flags.subagentConcurrency);
   if (explicit.error) {
     console.error(explicit.error);
@@ -107,17 +107,28 @@ async function resolveInstallMode(flags: Flags): Promise<InstallModePreference |
   }
   if (explicit.preference) return explicit.preference;
 
-  if (flags.targetDir !== undefined) return DEFAULT_INSTALL_MODE_PREFERENCE;
+  if (flags.targetDir !== undefined) {
+    p.log.info("--target-dir ignora la preferencia guardada y usa modo human por defecto; usa --mode programmatic si quieres otro modo.");
+    return DEFAULT_INSTALL_MODE_PREFERENCE;
+  }
 
   const preferenceFile = installModePreferenceFile();
   if (hasInstallModePreference(preferenceFile)) {
     try {
       return loadInstallModePreference(preferenceFile);
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(
+        `${reason}\nCorrige o borra ${preferenceFile}, o vuelve a ejecutar con --mode human|programmatic.`,
+      );
       process.exitCode = 1;
       return null;
     }
+  }
+  if (!promptIfMissing) {
+    console.error("No hay modo guardado; usa --mode explícito para este sync.");
+    process.exitCode = 1;
+    return null;
   }
   if (flags.yes || !process.stdout.isTTY) return DEFAULT_INSTALL_MODE_PREFERENCE;
 
@@ -131,23 +142,26 @@ async function resolveInstallMode(flags: Flags): Promise<InstallModePreference |
   });
   if (p.isCancel(selected)) return null;
 
-  let subagentConcurrency = DEFAULT_INSTALL_MODE_PREFERENCE.subagentConcurrency;
-  if (selected === "programmatic") {
-    const concurrency = await p.select({
-      message: "Concurrencia de subagentes en modo programmatic",
-      options: [
-        { value: "serial", label: "Serial (default)" },
-        { value: "parallel", label: "Parallel" },
-      ],
-      initialValue: DEFAULT_INSTALL_MODE_PREFERENCE.subagentConcurrency,
-    });
-    if (p.isCancel(concurrency)) return null;
-    subagentConcurrency = concurrency as SubagentConcurrency;
+  if (selected === "human") {
+    return {
+      mode: "human",
+      subagentConcurrency: "serial",
+    };
   }
 
+  const concurrency = await p.select({
+    message: "Concurrencia de subagentes en modo programmatic",
+    options: [
+      { value: "serial", label: "Serial (default)" },
+      { value: "parallel", label: "Parallel" },
+    ],
+    initialValue: DEFAULT_INSTALL_MODE_PREFERENCE.subagentConcurrency,
+  });
+  if (p.isCancel(concurrency)) return null;
+
   return {
-    mode: selected as InstallModePreference["mode"],
-    subagentConcurrency,
+    mode: "programmatic",
+    subagentConcurrency: concurrency as SubagentConcurrency,
   };
 }
 
@@ -288,23 +302,36 @@ async function main(): Promise<void> {
       // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
-      if (runtimes.length > 0) {
+      const preferenceFile = installModePreferenceFile();
+      const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
+      const hasSavedMode = hasInstallModePreference(preferenceFile);
+      const canResolveMode = flags.targetDir !== undefined || explicitMode || hasSavedMode;
+      const mode = runtimes.length > 0 && canResolveMode
+        ? await resolveInstallMode(flags, false)
+        : DEFAULT_INSTALL_MODE_PREFERENCE;
+      if (mode === null) return;
+      const canSync = runtimes.length === 0 || canResolveMode;
+      if (runtimes.length > 0 && canSync) {
         const code = await runInstall({
           runtimes,
           targetDir: flags.targetDir,
           dryRun: flags.dryRun,
           yes: true,
-          mode: flags.targetDir !== undefined ? DEFAULT_INSTALL_MODE_PREFERENCE : loadInstallModePreference(installModePreferenceFile()),
+          mode,
         });
         if (code !== 0) {
           process.exitCode = code;
           return;
         }
+      } else if (runtimes.length > 0) {
+        console.error("No hay modo guardado; se omite el sync previo y se continúa con update. Usa --mode explícito si quieres sincronizar.");
       }
       const result: InteractiveUpdateResult = await runInteractiveUpdate(VERSION, flags.yes, flags.dryRun);
       process.exitCode = result.exitCode;
       // Ofrecer sync si se aplicaron skills o stack y hay runtimes disponibles.
-      if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && !flags.yes && process.stdout.isTTY) {
+      if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && !canSync) {
+        p.log.warn("Skills/stack actualizados, pero el sync con los runtimes sigue pendiente. Ejecuta jorgex-stack sync --mode human|programmatic.");
+      } else if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });
         if (!p.isCancel(apply) && apply) {
           process.exitCode = await runInstall({
@@ -312,12 +339,12 @@ async function main(): Promise<void> {
             targetDir: flags.targetDir,
             dryRun: false,
             yes: false,
-            mode: flags.targetDir !== undefined ? DEFAULT_INSTALL_MODE_PREFERENCE : loadInstallModePreference(installModePreferenceFile()),
+            mode,
           });
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
         }
-      } else if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && (flags.yes || !process.stdout.isTTY)) {
+      } else if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
         console.log("Skills/stack actualizados. Ejecuta jorgex-stack sync para aplicarlos a los runtimes.");
       }
       return;
@@ -340,7 +367,17 @@ async function main(): Promise<void> {
       if (code === 0 && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Aplicar ahora los modelos a los agentes instalados? (sync)" });
         if (!p.isCancel(apply) && apply) {
-          process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: false });
+          const preferenceFile = installModePreferenceFile();
+          const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
+          const hasSavedMode = hasInstallModePreference(preferenceFile);
+          const canResolveMode = flags.targetDir !== undefined || explicitMode || hasSavedMode;
+          if (!canResolveMode) {
+            p.log.warn("Model-map guardado: se omite el sync con los runtimes porque falta un modo. Ejecuta jorgex-stack sync --mode human|programmatic.");
+            return;
+          }
+          const mode = await resolveInstallMode(flags, false);
+          if (mode === null) return;
+          process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: false, mode });
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
         }

@@ -112,7 +112,9 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
         targetDir: configDir,
         dryRun: false,
         yes: true,
-        mode: { mode, subagentConcurrency },
+        mode: mode === "human"
+          ? { mode: "human", subagentConcurrency: "serial" }
+          : { mode: "programmatic", subagentConcurrency },
       }),
     ).resolves.toBe(0);
 

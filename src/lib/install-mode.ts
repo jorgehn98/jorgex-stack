@@ -34,18 +34,25 @@ export function normalizeInstallModePreference(
   if (!value) {
     throw new Error("Preferencia de instalación vacía o corrupta.");
   }
-  const mode = value.mode;
-  const subagentConcurrency = value.subagentConcurrency;
-  if (!isInstallMode(mode ?? "") || !isSubagentConcurrency(subagentConcurrency ?? "")) {
-    throw new Error("Preferencia de instalación inválida o corrupta.");
+  if (value.mode === "human") {
+    if (value.subagentConcurrency !== "serial") {
+      throw new Error("Preferencia de instalación inconsistente: human solo puede usar serial.");
+    }
+    return DEFAULT_INSTALL_MODE_PREFERENCE;
   }
-  if (mode === "human" && subagentConcurrency !== "serial") {
-    throw new Error("Preferencia de instalación inconsistente: human solo puede usar serial.");
+
+  if (value.mode === "programmatic") {
+    const subagentConcurrency = value.subagentConcurrency;
+    if (subagentConcurrency === undefined || !isSubagentConcurrency(subagentConcurrency)) {
+      throw new Error("Preferencia de instalación inválida o corrupta.");
+    }
+    return {
+      mode: "programmatic",
+      subagentConcurrency,
+    };
   }
-  return {
-    mode: mode as InstallMode,
-    subagentConcurrency: subagentConcurrency as SubagentConcurrency,
-  };
+
+  throw new Error("Preferencia de instalación inválida o corrupta.");
 }
 
 export function loadInstallModePreference(file = installModePreferenceFile()): InstallModePreference {

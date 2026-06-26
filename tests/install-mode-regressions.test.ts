@@ -2,10 +2,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
-import type { RuntimeId } from "../src/adapters/types.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Adapter, RuntimeId } from "../src/adapters/types.js";
+import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { loadCanonicalAgents } from "../src/lib/canonical.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const canonicalAgents = loadCanonicalAgents(path.join(ROOT, "stack", "agents"));
+const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent")!;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function preferenceFile(homeDir: string): string {
   return path.join(homeDir, ".jorgex-stack", "install-mode.json");
@@ -13,6 +21,16 @@ function preferenceFile(homeDir: string): string {
 
 function writePreference(homeDir: string, value: unknown): void {
   const file = preferenceFile(homeDir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
+}
+
+function modelMapFile(homeDir: string): string {
+  return path.join(homeDir, ".jorgex-stack", "model-map.json");
+}
+
+function writeModelMap(homeDir: string, value: unknown): void {
+  const file = modelMapFile(homeDir);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
 }
@@ -78,6 +96,33 @@ describe("install-mode regressions", () => {
     expect(systemPrompt).not.toContain("strict JSON object");
   });
 
+  it("lee un model-map real existente en --target-dir sin crear archivos nuevos del data-dir", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-target-dir-model-map-"));
+    const homeDir = path.join(tmp, "home");
+    const targetDir = path.join(tmp, "target");
+    const dataDir = path.join(homeDir, ".jorgex-stack");
+    const file = modelMapFile(homeDir);
+    const overrideModel = "readonly/custom-model";
+    const overrideVariant = "readonly";
+
+    writeModelMap(homeDir, {
+      opencode: {
+        ...DEFAULT_MODEL_MAP.opencode,
+        [sampleSubagent.tier]: { model: overrideModel, variant: overrideVariant },
+      },
+    });
+    const originalModelMap = fs.readFileSync(file, "utf8");
+
+    await runCli(["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"], homeDir);
+
+    const subagentFile = path.join(targetDir, "agents", `${sampleSubagent.name}.md`);
+
+    expect(fs.readFileSync(subagentFile, "utf8")).toContain(`model: ${overrideModel}`);
+    expect(fs.readFileSync(subagentFile, "utf8")).toContain(`variant: ${overrideVariant}`);
+    expect(fs.readFileSync(file, "utf8")).toBe(originalModelMap);
+    expect(fs.readdirSync(dataDir).sort()).toEqual(["model-map.json"]);
+  });
+
   it("no escribe la preferencia antes de saber que la instalación ha terminado bien", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-save-timing-"));
     const homeDir = path.join(tmp, "home");
@@ -98,5 +143,175 @@ describe("install-mode regressions", () => {
       mode: "human",
       subagentConcurrency: "serial",
     });
+  });
+
+  it("persiste programmatic aunque el runtime ya esté al día y no haya cambios", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-mode-noop-"));
+    const homeDir = path.join(tmp, "home");
+    const opencodeConfigDir = path.join(tmp, "opencode");
+
+    const install = await importInstallModule(homeDir);
+    const opencodeAdapter = install.ADAPTERS.opencode!;
+    const originalDetect = opencodeAdapter.detect;
+
+    opencodeAdapter.detect = () => ({
+      id: "opencode",
+      name: "OpenCode",
+      installed: true,
+      binPath: null,
+      configDir: opencodeConfigDir,
+    });
+
+    try {
+      await expect(
+        install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+        }),
+      ).resolves.toBe(0);
+
+      const paths = opencodeAdapter.paths(opencodeConfigDir);
+      const systemPrompt = fs.readFileSync(paths.systemPromptFile, "utf8");
+
+      writePreference(homeDir, { mode: "human", subagentConcurrency: "serial" });
+
+      await expect(
+        install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+        }),
+      ).resolves.toBe(0);
+
+      expect(fs.readFileSync(paths.systemPromptFile, "utf8")).toBe(systemPrompt);
+      expect(JSON.parse(fs.readFileSync(preferenceFile(homeDir), "utf8")) as { mode: string; subagentConcurrency: string }).toEqual({
+        mode: "programmatic",
+        subagentConcurrency: "parallel",
+      });
+    } finally {
+      opencodeAdapter.detect = originalDetect;
+    }
+  });
+
+  it("persiste el modo resuelto aunque un runtime posterior falle", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-partial-save-"));
+    const homeDir = path.join(tmp, "home");
+    const opencodeConfigDir = path.join(tmp, "opencode");
+    const codexConfigDir = path.join(tmp, "codex");
+
+    writePreference(homeDir, { mode: "human", subagentConcurrency: "serial" });
+
+    const install = await importInstallModule(homeDir);
+    const opencodeAdapter = install.ADAPTERS.opencode!;
+    const codexAdapter = install.ADAPTERS.codex!;
+    const originalOpencodeDetect = opencodeAdapter.detect;
+    const originalCodexDetect = codexAdapter.detect;
+    const originalCodexRenderAgent = codexAdapter.renderAgent;
+
+    opencodeAdapter.detect = () => ({
+      id: "opencode",
+      name: "OpenCode",
+      installed: true,
+      binPath: null,
+      configDir: opencodeConfigDir,
+    });
+
+    const codexDetect = vi.fn()
+      .mockReturnValueOnce({
+        id: "codex",
+        name: "Codex CLI",
+        installed: false,
+        binPath: null,
+        configDir: codexConfigDir,
+      })
+      .mockReturnValue({
+        id: "codex",
+        name: "Codex CLI",
+        installed: true,
+        binPath: null,
+        configDir: codexConfigDir,
+      });
+
+    codexAdapter.detect = codexDetect as typeof codexAdapter.detect;
+    codexAdapter.renderAgent = () => {
+      throw new Error("codex runtime failed");
+    };
+
+    try {
+      await expect(
+        install.runInstall({
+          runtimes: ["opencode", "codex"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+        }),
+      ).rejects.toThrow("codex runtime failed");
+
+      expect(JSON.parse(fs.readFileSync(preferenceFile(homeDir), "utf8")) as { mode: string; subagentConcurrency: string }).toEqual({
+        mode: "programmatic",
+        subagentConcurrency: "parallel",
+      });
+    } finally {
+      opencodeAdapter.detect = originalOpencodeDetect;
+      codexAdapter.detect = originalCodexDetect;
+      codexAdapter.renderAgent = originalCodexRenderAgent;
+    }
+  });
+
+  it("rechaza una preferencia interna human/parallel inválida antes de persistirla", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-invalid-mode-"));
+    const homeDir = path.join(tmp, "home");
+
+    const { runInstall } = await importInstallModule(homeDir);
+
+    await expect(
+      runInstall({
+        runtimes: ["opencode"],
+        dryRun: false,
+        yes: true,
+        mode: { mode: "human", subagentConcurrency: "parallel" } as any,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("avisa cuando no puede construir el plan y desactiva la limpieza de huérfanos", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-orphan-warning-"));
+    const homeDir = path.join(tmp, "home");
+    const brokenOpenCodeDir = path.join(tmp, "opencode");
+
+    const install = await importInstallModule(homeDir);
+    const originalAdapters = { ...install.ADAPTERS };
+    const fakeAdapter = {
+      ...originalAdapters.opencode!,
+      detect: (): ReturnType<Adapter["detect"]> => ({
+        installed: true,
+        configDir: brokenOpenCodeDir,
+        id: "opencode",
+        name: "OpenCode",
+        binPath: null,
+      }),
+      renderAgent: () => {
+        throw new Error("broken plan");
+      },
+    };
+
+    install.ADAPTERS.opencode = fakeAdapter;
+    delete install.ADAPTERS.codex;
+    delete install.ADAPTERS["claude-code"];
+
+    try {
+      const current = install.collectAllCurrentTargets();
+
+      expect(current.complete).toBe(false);
+      expect(current.warnings.some((message) => /broken plan/i.test(message))).toBe(true);
+    } finally {
+      install.ADAPTERS.opencode = originalAdapters.opencode;
+      if (originalAdapters.codex) install.ADAPTERS.codex = originalAdapters.codex;
+      if (originalAdapters["claude-code"]) install.ADAPTERS["claude-code"] = originalAdapters["claude-code"];
+      else delete install.ADAPTERS["claude-code"];
+    }
   });
 });
