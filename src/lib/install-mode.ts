@@ -1,3 +1,11 @@
+/**
+ * Preferencia de modo de instalación (human/programmatic + concurrencia de
+ * subagentes), persistida en ~/.jorgex-stack/install-mode.json. La consulta
+ * en cada install/sync compone el system prompt, los addenda de programmatic
+ * y la concurrencia de delegación del orchestrator. Invariantes: human ⇒
+ * subagentConcurrency: "serial"; programmatic ⇒ serial | parallel.
+ */
+
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.js";
@@ -55,6 +63,7 @@ export function normalizeInstallModePreference(
   throw new Error("Preferencia de instalación inválida o corrupta.");
 }
 
+/** Devuelve el default si el archivo no existe; falla en loud si existe pero es inválido o corrupto. */
 export function loadInstallModePreference(file = installModePreferenceFile()): InstallModePreference {
   if (!fs.existsSync(file)) return DEFAULT_INSTALL_MODE_PREFERENCE;
   try {
@@ -70,6 +79,7 @@ export function saveInstallModePreference(file: string, value: InstallModePrefer
   writeText(file, JSON.stringify(value, null, 2) + "\n");
 }
 
+/** Valida los flags --mode y --subagent-concurrency del CLI; devuelve la preferencia resuelta o el error de validación. */
 export function parseInstallModePreferenceFlags(
   mode?: string,
   subagentConcurrency?: string,

@@ -1,3 +1,10 @@
+/**
+ * Compone addenda de programmatic mode (concatenadas al final de los agentes
+ * canónicos y del system prompt) cuando el install corre en modo programmatic.
+ * El marcador <!-- jorgex:programmatic-mode --> en los addenda garantiza
+ * idempotencia: re-aplicar no duplica el contenido.
+ */
+
 import fs from "node:fs";
 import path from "node:path";
 import type { CanonicalAgent } from "./canonical.js";
@@ -14,6 +21,7 @@ function loadProgrammaticAddendum(stackDir: string, fileName: string): string {
 
 function appendAddendum(base: string, addendum: string): string {
   const normalizedBase = normalize(base);
+  // Idempotente: si el marcador está presente, el addendum ya se añadió en un run previo.
   if (normalizedBase.includes(PROGRAMMATIC_MARKER)) return normalizedBase;
   return `${normalizedBase.trimEnd()}\n\n${addendum}\n`;
 }
@@ -32,11 +40,17 @@ function concurrencyRule(concurrency: SubagentConcurrency): string {
   ].join("\n");
 }
 
+/** Aplica el addendum de system prompt solo en modo programmatic; en human devuelve el contenido tal cual. */
 export function composeProgrammaticSystemPrompt(stackDir: string, content: string, mode?: InstallMode): string {
   if (mode !== "programmatic") return normalize(content);
   return appendAddendum(normalize(content), loadProgrammaticAddendum(stackDir, "AGENTS.addendum.md"));
 }
 
+/**
+ * Aplica el addendum de agent (orchestrator para primary, subagent para el
+ * resto) solo en modo programmatic. En primary sustituye el placeholder
+ * {{CONCURRENCY_RULE}} por la regla de concurrencia resuelta.
+ */
 export function composeProgrammaticAgentBody(
   stackDir: string,
   agent: CanonicalAgent,
