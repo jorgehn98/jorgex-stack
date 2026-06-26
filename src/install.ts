@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
-import type { Adapter, FileAction, InstallContext, RuntimeId } from "./adapters/types.js";
+import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
@@ -9,6 +9,7 @@ import { HOME, stackRoot } from "./lib/paths.js";
 import { detectEngram } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap } from "./lib/model-map.js";
+import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
@@ -32,17 +33,20 @@ export interface InstallOptions {
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
+  mode?: InstallModePreference;
 }
 
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 
 /** Contexto de instalación para un runtime, o null si no hay model-map. */
-export function makeContext(adapter: Adapter, configDir: string): InstallContext | null {
+export function makeContext(adapter: Adapter, configDir: string, mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
   return {
     stackDir: stackRoot(),
     configDir,
+    mode: mode.mode,
+    subagentConcurrency: mode.subagentConcurrency,
     engramBin: detectEngram(),
     models,
     warnings: [],
@@ -87,21 +91,31 @@ function applyChanges(changes: PlannedChange[]): void {
  * usuario ilegible), `complete` es false: con visión parcial NO es seguro
  * borrar huérfanos.
  */
-export function collectAllCurrentTargets(): { targets: Set<string>; complete: boolean } {
+export function collectAllCurrentTargets(
+  mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
+): { targets: Set<string>; complete: boolean; warnings: string[] } {
   const targets = new Set<string>();
   let complete = true;
+  const warnings: string[] = [];
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) continue;
-    const ctx = makeContext(adapter, detection.configDir);
-    if (!ctx) continue;
+    const ctx = makeContext(adapter, detection.configDir, mode);
+    if (!ctx) {
+      complete = false;
+      warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
+      continue;
+    }
     try {
       for (const action of buildPlan(adapter, ctx)) targets.add(path.resolve(action.target));
-    } catch {
+    } catch (error) {
       complete = false;
+      warnings.push(
+        `${adapter.name}: limpieza de huérfanos deshabilitada — no se pudo construir el plan completo (${error instanceof Error ? error.message : String(error)}).`,
+      );
     }
   }
-  return { targets, complete };
+  return { targets, complete, warnings };
 }
 
 export async function runInstall(opts: InstallOptions): Promise<number> {
@@ -109,19 +123,30 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
   const stackDir = stackRoot();
   const engramBin = detectEngram();
+  const modePreference = opts.mode === undefined
+    ? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE)
+    : normalizeInstallModePreference(opts.mode);
+  const useManifest = opts.targetDir === undefined;
   const modelMap = loadModelMap();
-  ensureModelMapFile();
+  if (useManifest) ensureModelMapFile();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 
   // El manifest solo aplica a instalaciones reales; --target-dir es de pruebas.
-  const useManifest = opts.targetDir === undefined;
-  const current = useManifest ? collectAllCurrentTargets() : { targets: new Set<string>(), complete: false };
+  const current = useManifest
+    ? collectAllCurrentTargets(modePreference)
+    : { targets: new Set<string>(), complete: false, warnings: [] as string[] };
   const canOrphan = useManifest && current.complete;
   const canonicalMcp = loadCanonicalMcp(stackDir);
   const canonicalHooks = loadCanonicalHooks(stackDir);
 
+  if (useManifest && (!current.complete || current.warnings.length > 0)) {
+    p.log.warn("Limpieza de huérfanos deshabilitada: no se pudo construir el plan completo de todos los runtimes.");
+    for (const warning of current.warnings) p.log.warn(warning);
+  }
+
   let exitCode = 0;
+  let successfulRuns = 0;
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
@@ -144,9 +169,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const ctx: InstallContext = {
       stackDir,
       configDir,
+      mode: modePreference.mode,
+      subagentConcurrency: modePreference.subagentConcurrency,
       engramBin,
       models,
-        warnings: [],
+      warnings: [],
     };
 
     let plan = buildPlan(adapter, ctx);
@@ -158,8 +185,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     // Huérfanos: archivos que una versión anterior instaló y el plan actual ya
     // no genera (skill renombrada/eliminada). Solo con manifest previo y visión
     // completa de los planes de todos los runtimes.
-    const prevManifest = canOrphan ? readManifest().runtimes[id] : undefined;
-    const orphans = prevManifest ? findOrphans(prevManifest.owned, current.targets) : [];
+    const prevManifest = useManifest ? readManifest().runtimes[id] : undefined;
+    const orphans = canOrphan && prevManifest ? findOrphans(prevManifest.owned, current.targets) : [];
 
     p.log.step(`${adapter.name} → ${configDir}`);
     p.log.info(
@@ -178,13 +205,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const writeManifest = (): void => {
       if (!useManifest) return;
       const unmergeTargets = new Set(adapter.planUnmerge(canonicalMcp, canonicalHooks, ctx).map((a) => path.resolve(a.target)));
-      const owned = plan.map((a) => path.resolve(a.target)).filter((t) => !unmergeTargets.has(t));
+      const keepTarget = (target: string): boolean => !unmergeTargets.has(target);
+      const liveOwned = plan.map((a) => path.resolve(a.target)).filter(keepTarget);
+      const previousOwned = (prevManifest?.owned ?? []).map((target) => path.resolve(target)).filter(keepTarget);
+      const owned = canOrphan ? liveOwned : [...new Set([...previousOwned, ...liveOwned])];
       writeRuntimeManifest(id, { configDir, owned, updatedAt: new Date().toISOString() });
     };
 
     if (changes.length === 0 && orphans.length === 0) {
       writeManifest();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
+      successfulRuns++;
       continue;
     }
 
@@ -204,7 +235,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       changes = [...creates, ...updates];
     }
 
-    const backup = createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`);
+    const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
     applyChanges(changes);
@@ -224,7 +255,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     } else {
       writeManifest();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
+      successfulRuns++;
     }
+  }
+
+  if (useManifest && !opts.dryRun && exitCode === 0 && successfulRuns > 0) {
+    saveInstallModePreference(installModePreferenceFile(), modePreference);
   }
 
   p.outro(opts.dryRun ? "Dry-run: no se ha escrito nada." : "Hecho.");

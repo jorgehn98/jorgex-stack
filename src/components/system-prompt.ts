@@ -3,6 +3,7 @@ import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, stripLeadingHtmlComments, upsertMarkdownSection } from "../lib/filemerge.js";
+import { composeProgrammaticSystemPrompt } from "../lib/mode-composition.js";
 
 const normalize = (s: string): string => s.replace(/\r\n/g, "\n");
 
@@ -17,9 +18,10 @@ export function planSystemPrompt(adapter: Adapter, ctx: InstallContext): FileAct
   const protocol = stripLeadingHtmlComments(
     normalize(fs.readFileSync(path.join(ctx.stackDir, "system-prompt", "engram-protocol.md"), "utf8")),
   );
+  const composedAgentsMd = composeProgrammaticSystemPrompt(ctx.stackDir, agentsMd, ctx.mode);
 
   let content = readTextIfExists(target);
-  content = upsertMarkdownSection(content, "system-prompt", agentsMd);
+  content = upsertMarkdownSection(content, "system-prompt", composedAgentsMd);
   if (adapter.injectEngramProtocol(ctx)) {
     content = upsertMarkdownSection(content, "engram-protocol", protocol);
   } else {

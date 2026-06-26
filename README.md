@@ -24,6 +24,48 @@ For development from a clone, run the same commands through `pnpm cli <command>`
 
 Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched.
 
+### Modes: Human and Programmatic
+
+`install` and `sync` accept two mutually-exclusive installation modes. The choice is global (not per runtime) and is saved in `~/.jorgex-stack/install-mode.json` on first run; subsequent `sync` calls reuse it. Re-run `install` with `--mode` to switch.
+
+| Mode | Audience | Final assistant response | Subagents |
+|------|----------|--------------------------|-----------|
+| `human` (default) | interactive users, TUI | natural language, in the user's language | today's behavior (parallel where safe) |
+| `programmatic` | external orchestrators, CI, scripts, other agents | **strict JSON**, English | serial by default, parallel opt-in |
+
+`human` is the recommended mode for humans. `programmatic` exists for agent/script consumers and low-resource headless machines; it is not a "better" mode for humans.
+
+Flags:
+
+```
+--mode human|programmatic
+--subagent-concurrency serial|parallel   # only valid with --mode programmatic
+```
+
+- Non-interactive / agent install:
+
+  ```
+  pnpm dlx jorgex-stack install --mode programmatic --subagent-concurrency serial --yes
+  ```
+
+  This installs into all detected runtimes. To be explicit, add `--agents opencode,claude-code,codex` or a comma-separated subset. Always pass `--mode programmatic`; without `--mode`, `--yes` and non-TTY installs default to `human`.
+
+- `--mode human` cannot be combined with `--subagent-concurrency`.
+- Without `--mode`, the first run asks interactively; `--yes`, non-TTY, and `--target-dir` default to `human`.
+- `pnpm dlx jorgex-stack sync` reuses the saved mode; pass `--mode` to change and save the preference.
+
+Programmatic mode guarantees:
+
+- The final assistant response is **exactly one strict JSON object**, no Markdown fences or prose around it. Schema in `stack/modes/programmatic/final-output.schema.json` — required keys: `status`, `decision`, `confidence` (0..1), `summary`, `risks[]`, `next_steps[]`, `delegations[]`; `status` is `done|partial|blocked` and each `delegations[]` item uses `agent: work — paths — inputs`.
+- English only, compact and direct.
+- Subagents default to **serial** delegation (one at a time, no parallel). Pass `--subagent-concurrency parallel` to allow it.
+
+Programmatic mode does **not** provide:
+
+- An opt-out from Engram (Engram is always part of the install).
+- Any special stdout streaming guarantee — the runtime's normal output rules apply.
+- Telemetry, JSONL streams, or runtime token-budget enforcement.
+
 ### Update: Interactive Flow
 
 `update` manages two sources for the end user, plus a maintainer-only one:
