@@ -48,7 +48,7 @@ Flags:
 
 Programmatic mode guarantees:
 
-- The final assistant response is **exactly one strict JSON object**, no Markdown fences or prose around it. Schema in `stack/modes/programmatic/final-output.schema.json` — required keys: `status`, `decision`, `confidence` (0..1), `summary`, `risks[]`, `next_steps[]`.
+- The final assistant response is **exactly one strict JSON object**, no Markdown fences or prose around it. Schema in `stack/modes/programmatic/final-output.schema.json` — required keys: `status`, `decision`, `confidence` (0..1), `summary`, `risks[]`, `next_steps[]`, `delegations[]`; `status` is `done|partial|blocked` and each `delegations[]` item uses `agent: work — paths — inputs`.
 - English only, compact and direct.
 - Subagents default to **serial** delegation (one at a time, no parallel). Pass `--subagent-concurrency parallel` to allow it.
 

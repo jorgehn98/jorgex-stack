@@ -216,9 +216,6 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
-      if (useManifest && !opts.dryRun) {
-        saveInstallModePreference(installModePreferenceFile(), modePreference);
-      }
       continue;
     }
 
@@ -259,10 +256,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
-      if (useManifest && !opts.dryRun) {
-        saveInstallModePreference(installModePreferenceFile(), modePreference);
-      }
     }
+  }
+
+  if (useManifest && !opts.dryRun && exitCode === 0 && successfulRuns > 0) {
+    saveInstallModePreference(installModePreferenceFile(), modePreference);
   }
 
   p.outro(opts.dryRun ? "Dry-run: no se ha escrito nada." : "Hecho.");

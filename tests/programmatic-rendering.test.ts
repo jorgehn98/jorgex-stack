@@ -20,6 +20,7 @@ const RUNTIMES = [
 const canonicalAgents = loadCanonicalAgents(path.join(stackRoot(), "agents"));
 const primaryAgent = canonicalAgents.find((agent) => agent.mode === "primary")!;
 const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent")!;
+const legacyProgrammaticContractPattern = /\bResult contract\b|Status \/ Delegations \/ Risks/;
 
 type RenderedArtifact = { file: string; kind: "agent" | "command" | "output-style" | "skill" | "profile"; content: string; target: string };
 
@@ -70,6 +71,7 @@ function expectProgrammaticSystemPrompt(content: string): void {
 }
 
 function expectProgrammaticOrchestrator(content: string, concurrency: SubagentConcurrency): void {
+  expect(content).not.toMatch(legacyProgrammaticContractPattern);
   expect(content).toContain("strict JSON object");
   expect(content).toContain("status");
   expect(content).toContain("decision");
@@ -77,6 +79,7 @@ function expectProgrammaticOrchestrator(content: string, concurrency: SubagentCo
   expect(content).toContain("summary");
   expect(content).toContain("risks");
   expect(content).toContain("next_steps");
+  expect(content).toContain("delegations");
   expect(content).toMatch(/English[- ]only/i);
   expect(content).toContain("Do not wrap the final JSON in Markdown");
   if (concurrency === "serial") {
@@ -87,6 +90,7 @@ function expectProgrammaticOrchestrator(content: string, concurrency: SubagentCo
 }
 
 function expectProgrammaticSubagent(content: string): void {
+  expect(content).not.toMatch(legacyProgrammaticContractPattern);
   expect(content).toMatch(/English[- ]only/i);
   expect(content).toMatch(/compact/i);
   expect(content).toMatch(/long Markdown reports/i);

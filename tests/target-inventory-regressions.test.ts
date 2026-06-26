@@ -139,6 +139,74 @@ describe("target inventory regressions", () => {
     });
   });
 
+  it("usa la preferencia guardada de modo programmatic en doctor y no reporta drift falso", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-doctor-mode-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(tmp, "opencode");
+
+    await withTempHome(homeDir, async () => {
+      const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
+      mocks.modelMapOverride = {
+        opencode: DEFAULT_MODEL_MAP.opencode,
+        codex: DEFAULT_MODEL_MAP.codex,
+        "claude-code": DEFAULT_MODEL_MAP["claude-code"],
+      };
+      mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+      mocks.runDetectedBin.mockReturnValue("1.2.3");
+
+      const install = await import("../src/install.js");
+      const opencode = install.ADAPTERS.opencode!;
+      const codex = install.ADAPTERS.codex!;
+      const claudeCode = install.ADAPTERS["claude-code"]!;
+      const originalOpencodeDetect = opencode.detect;
+      const originalCodexDetect = codex.detect;
+      const originalClaudeDetect = claudeCode.detect;
+
+      opencode.detect = () => ({
+        id: "opencode",
+        name: "OpenCode",
+        installed: true,
+        binPath: null,
+        configDir,
+      });
+      codex.detect = () => ({
+        id: "codex",
+        name: "Codex CLI",
+        installed: false,
+        binPath: null,
+        configDir: path.join(homeDir, ".codex"),
+      });
+      claudeCode.detect = () => ({
+        id: "claude-code",
+        name: "Claude Code",
+        installed: false,
+        binPath: null,
+        configDir: path.join(homeDir, ".claude"),
+      });
+
+      try {
+        await expect(
+          install.runInstall({
+            runtimes: ["opencode"],
+            dryRun: false,
+            yes: true,
+            mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+          }),
+        ).resolves.toBe(0);
+
+        const { runDoctor } = await import("../src/doctor.js");
+        await expect(runDoctor()).resolves.toBe(0);
+        expect(mocks.prompts.log.warn).not.toHaveBeenCalledWith(
+          expect.stringMatching(/OpenCode: .*desactualizados o ausentes/i),
+        );
+      } finally {
+        opencode.detect = originalOpencodeDetect;
+        codex.detect = originalCodexDetect;
+        claudeCode.detect = originalClaudeDetect;
+      }
+    });
+  });
+
   it("no borra huérfanos de manifest cuando el inventario global está incompleto", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-orphan-"));
     const homeDir = path.join(tmp, "home");

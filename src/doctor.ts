@@ -5,6 +5,7 @@ import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, collectAllCurrentTargets, diffPlan, makeContext } from "./install.js";
 import { detectEngram, runDetectedBin } from "./lib/detect.js";
 import { readTextIfExists } from "./lib/fsx.js";
+import { loadInstallModePreference } from "./lib/install-mode.js";
 import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { HOME } from "./lib/paths.js";
@@ -58,7 +59,8 @@ export async function runDoctor(): Promise<number> {
   if (!fs.existsSync(modelMapFile())) p.log.info("model-map: aún no creado (se crea en el primer install o con 'models').");
 
   const manifest = readManifest();
-  const current = collectAllCurrentTargets();
+  const modePreference = loadInstallModePreference();
+  const current = collectAllCurrentTargets(modePreference);
 
   if (!current.complete || current.warnings.length > 0) {
     p.log.warn("Limpieza de huérfanos deshabilitada: no se pudo construir el plan completo de todos los runtimes.");
@@ -72,7 +74,7 @@ export async function runDoctor(): Promise<number> {
       p.log.warn(`${adapter.name}: no instalado en esta máquina.`);
       continue;
     }
-    const ctx = makeContext(adapter, detection.configDir);
+    const ctx = makeContext(adapter, detection.configDir, modePreference);
     if (!ctx) continue;
 
     let pending: number;

@@ -3,10 +3,11 @@
   "title": "Programmatic final output",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "decision", "confidence", "summary", "risks", "next_steps"],
+  "required": ["status", "decision", "confidence", "summary", "risks", "next_steps", "delegations"],
   "properties": {
     "status": {
-      "type": "string"
+      "type": "string",
+      "enum": ["done", "partial", "blocked"]
     },
     "decision": {
       "type": "string"
@@ -29,6 +30,13 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "delegations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][^:\\n]*: [^—\\n]+ — [^—\\n]+ — [^—\\n]+$"
       }
     }
   }

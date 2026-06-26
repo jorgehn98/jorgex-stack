@@ -196,7 +196,7 @@ describe("install-mode regressions", () => {
     }
   });
 
-  it("persiste el modo resuelto aunque un runtime posterior falle", async () => {
+  it("no persiste el modo resuelto si un runtime posterior falla", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-partial-save-"));
     const homeDir = path.join(tmp, "home");
     const opencodeConfigDir = path.join(tmp, "opencode");
@@ -251,8 +251,8 @@ describe("install-mode regressions", () => {
       ).rejects.toThrow("codex runtime failed");
 
       expect(JSON.parse(fs.readFileSync(preferenceFile(homeDir), "utf8")) as { mode: string; subagentConcurrency: string }).toEqual({
-        mode: "programmatic",
-        subagentConcurrency: "parallel",
+        mode: "human",
+        subagentConcurrency: "serial",
       });
     } finally {
       opencodeAdapter.detect = originalOpencodeDetect;
