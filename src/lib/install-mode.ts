@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.js";
-import { readTextIfExists, writeText } from "./fsx.js";
+import { writeText } from "./fsx.js";
 import type { InstallMode, InstallModePreference, SubagentConcurrency } from "../adapters/types.js";
 
 const INSTALL_MODES = new Set<InstallMode>(["human", "programmatic"]);
@@ -30,13 +30,17 @@ export function isSubagentConcurrency(value: string): value is SubagentConcurren
 
 export function normalizeInstallModePreference(
   value: Partial<InstallModePreference> | null | undefined,
-  fallback: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
 ): InstallModePreference {
-  if (!value) return fallback;
+  if (!value) {
+    throw new Error("Preferencia de instalación vacía o corrupta.");
+  }
   const mode = value.mode;
   const subagentConcurrency = value.subagentConcurrency;
   if (!isInstallMode(mode ?? "") || !isSubagentConcurrency(subagentConcurrency ?? "")) {
-    return fallback;
+    throw new Error("Preferencia de instalación inválida o corrupta.");
+  }
+  if (mode === "human" && subagentConcurrency !== "serial") {
+    throw new Error("Preferencia de instalación inconsistente: human solo puede usar serial.");
   }
   return {
     mode: mode as InstallMode,
@@ -45,12 +49,13 @@ export function normalizeInstallModePreference(
 }
 
 export function loadInstallModePreference(file = installModePreferenceFile()): InstallModePreference {
-  const raw = readTextIfExists(file);
-  if (raw === null) return DEFAULT_INSTALL_MODE_PREFERENCE;
+  if (!fs.existsSync(file)) return DEFAULT_INSTALL_MODE_PREFERENCE;
   try {
+    const raw = fs.readFileSync(file, "utf8");
     return normalizeInstallModePreference(JSON.parse(raw) as Partial<InstallModePreference>);
-  } catch {
-    return DEFAULT_INSTALL_MODE_PREFERENCE;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`No se pudo leer la preferencia de instalación en ${file}: ${message}`);
   }
 }
 
@@ -69,6 +74,10 @@ export function parseInstallModePreferenceFlags(
     return { error: `Concurrencia de subagentes inválida: ${subagentConcurrency}` };
   }
 
+  if (subagentConcurrency !== undefined && mode !== "programmatic") {
+    return { error: "--subagent-concurrency requiere --mode programmatic." };
+  }
+
   if (mode === "human") {
     if (subagentConcurrency !== undefined) {
       return { error: "--subagent-concurrency no se puede usar con --mode human." };
@@ -81,15 +90,6 @@ export function parseInstallModePreferenceFlags(
       preference: {
         mode,
         subagentConcurrency: subagentConcurrency ?? "serial",
-      },
-    };
-  }
-
-  if (subagentConcurrency !== undefined) {
-    return {
-      preference: {
-        mode: "programmatic",
-        subagentConcurrency,
       },
     };
   }

@@ -115,7 +115,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const engramBin = detectEngram();
   const modelMap = loadModelMap();
   ensureModelMapFile();
-  const modePreference = opts.mode ?? loadInstallModePreference();
+  const modePreference = opts.mode ?? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE);
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 
@@ -126,11 +126,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const canonicalMcp = loadCanonicalMcp(stackDir);
   const canonicalHooks = loadCanonicalHooks(stackDir);
 
-  if (useManifest && !opts.dryRun) {
-    saveInstallModePreference(installModePreferenceFile(), modePreference);
-  }
-
   let exitCode = 0;
+  let successfulRuns = 0;
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
@@ -196,6 +193,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (changes.length === 0 && orphans.length === 0) {
       writeManifest();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
+      successfulRuns++;
       continue;
     }
 
@@ -235,7 +233,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     } else {
       writeManifest();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
+      successfulRuns++;
     }
+  }
+
+  if (useManifest && !opts.dryRun && exitCode === 0 && successfulRuns > 0) {
+    saveInstallModePreference(installModePreferenceFile(), modePreference);
   }
 
   p.outro(opts.dryRun ? "Dry-run: no se ha escrito nada." : "Hecho.");

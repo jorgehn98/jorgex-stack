@@ -107,9 +107,19 @@ async function resolveInstallMode(flags: Flags): Promise<InstallModePreference |
   }
   if (explicit.preference) return explicit.preference;
 
+  if (flags.targetDir !== undefined) return DEFAULT_INSTALL_MODE_PREFERENCE;
+
   const preferenceFile = installModePreferenceFile();
-  if (hasInstallModePreference(preferenceFile)) return loadInstallModePreference(preferenceFile);
-  if (flags.yes || !process.stdout.isTTY || flags.targetDir !== undefined) return DEFAULT_INSTALL_MODE_PREFERENCE;
+  if (hasInstallModePreference(preferenceFile)) {
+    try {
+      return loadInstallModePreference(preferenceFile);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+      return null;
+    }
+  }
+  if (flags.yes || !process.stdout.isTTY) return DEFAULT_INSTALL_MODE_PREFERENCE;
 
   const selected = await p.select({
     message: "¿Cómo quieres instalar el modo del stack?",
@@ -284,7 +294,7 @@ async function main(): Promise<void> {
           targetDir: flags.targetDir,
           dryRun: flags.dryRun,
           yes: true,
-          mode: loadInstallModePreference(installModePreferenceFile()),
+          mode: flags.targetDir !== undefined ? DEFAULT_INSTALL_MODE_PREFERENCE : loadInstallModePreference(installModePreferenceFile()),
         });
         if (code !== 0) {
           process.exitCode = code;
@@ -302,7 +312,7 @@ async function main(): Promise<void> {
             targetDir: flags.targetDir,
             dryRun: false,
             yes: false,
-            mode: loadInstallModePreference(installModePreferenceFile()),
+            mode: flags.targetDir !== undefined ? DEFAULT_INSTALL_MODE_PREFERENCE : loadInstallModePreference(installModePreferenceFile()),
           });
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");

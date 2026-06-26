@@ -32,6 +32,31 @@ describe("install-mode preference helper", () => {
     });
   });
 
+  it("falla en loud si la preferencia existe pero no se puede leer", async () => {
+    const mod = await importInstallModeModule();
+
+    await withTempPreferenceFile(async (file) => {
+      fs.mkdirSync(file);
+      const loadInstallModePreference = mod.loadInstallModePreference as undefined | ((filePath: string) => unknown);
+
+      expect(typeof loadInstallModePreference).toBe("function");
+      expect(() => loadInstallModePreference!(file)).toThrow();
+    });
+  });
+
+  it("rechaza --subagent-concurrency sin --mode programmatic", async () => {
+    const mod = await importInstallModeModule();
+
+    const parseInstallModePreferenceFlags = mod.parseInstallModePreferenceFlags as undefined | ((mode?: string, subagentConcurrency?: string) => { preference?: unknown; error?: string });
+
+    expect(typeof parseInstallModePreferenceFlags).toBe("function");
+
+    const result = parseInstallModePreferenceFlags!(undefined, "serial");
+
+    expect(result.error).toBeDefined();
+    expect(result.preference).toBeUndefined();
+  });
+
   it("round-tripea programmatic/serial en un fichero temporal", async () => {
     const mod = await importInstallModeModule();
 
@@ -54,18 +79,18 @@ describe("install-mode preference helper", () => {
     });
   });
 
-  it("cae a human defaults si el fichero está corrupto", async () => {
+  it.each([
+    ["corrupto", "{ not-json"],
+    ["modo/combinación inválidos", JSON.stringify({ mode: "human", subagentConcurrency: "parallel" })],
+  ] as const)("falla en loud al leer preferencia guardada %s", async (_label, raw) => {
     const mod = await importInstallModeModule();
 
     await withTempPreferenceFile(async (file) => {
-      fs.writeFileSync(file, "{ not-json");
+      fs.writeFileSync(file, raw);
       const loadInstallModePreference = mod.loadInstallModePreference as undefined | ((filePath: string) => unknown);
 
       expect(typeof loadInstallModePreference).toBe("function");
-      expect(await Promise.resolve(loadInstallModePreference!(file))).toEqual({
-        mode: "human",
-        subagentConcurrency: "serial",
-      });
+      expect(() => loadInstallModePreference!(file)).toThrow();
     });
   });
 });
