@@ -42,6 +42,14 @@ Flags:
 --subagent-concurrency serial|parallel   # only valid with --mode programmatic
 ```
 
+- Non-interactive / agent install:
+
+  ```
+  pnpm dlx jorgex-stack install --mode programmatic --subagent-concurrency serial --yes
+  ```
+
+  This installs into all detected runtimes. To be explicit, add `--agents opencode,claude-code,codex` or a comma-separated subset. Always pass `--mode programmatic`; without `--mode`, `--yes` and non-TTY installs default to `human`.
+
 - `--mode human` cannot be combined with `--subagent-concurrency`.
 - Without `--mode`, the first run asks interactively; `--yes`, non-TTY, and `--target-dir` default to `human`.
 - `pnpm dlx jorgex-stack sync` reuses the saved mode; pass `--mode` to change and save the preference.
