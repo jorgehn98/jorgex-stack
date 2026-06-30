@@ -146,10 +146,25 @@ function stripPrivateTags(str: string): string {
  * swallowed here so the TUI does not crash. The error is visible only in OpenCode's
  * log stream (visible to the user via `opencode logs`).
  */
-function logToOpenCode(client: unknown, level: string, message: string, extra?: unknown): void {
+async function logToOpenCode(client: unknown, level: string, message: string, extra?: unknown): Promise<void> {
+  if (typeof client !== "object" || client === null) return;
+  const app = (client as { app?: unknown }).app;
+  if (typeof app !== "object" || app === null) return;
+  const log = (app as { log?: unknown }).log;
+  if (typeof log !== "function") return;
+  const safeExtra = extra instanceof Error ? { message: extra.message, stack: extra.stack } : extra;
   try {
-    (client as any)?.app?.log({ body: { service: "engram", level, message, extra } })
-  } catch {}
+    await log.call(app, {
+      body: {
+        service: "engram",
+        level,
+        message,
+        extra: safeExtra,
+      },
+    });
+  } catch {
+    // Logging must never break the plugin path.
+  }
 }
 
 // ─── Plugin Export ───────────────────────────────────────────────────────────

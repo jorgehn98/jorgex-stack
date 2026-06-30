@@ -55,7 +55,7 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
       try {
         await fn(...args);
       } catch (error) {
-        deps.logger?.error?.(`Goal Mode hook ${name} failed`, error);
+        try { deps.logger?.error?.(`Goal Mode hook ${name} failed`, error); } catch {}
       }
     };
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createGoalStore } from "./goal/store.js";
-import { createOpenCodeGoalHooks } from "./goal/opencode-hooks.js";
+import { createOpenCodeGoalHooks, type OpenCodeGoalHooks } from "./goal/opencode-hooks.js";
 
 interface GoalPluginLogger {
   warn?: (message: string, details?: unknown) => void;
@@ -51,7 +51,7 @@ function parseRemoteProjectKey(remote: string): string | undefined {
   return genericMatch?.[1];
 }
 
-export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }) => {
+export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }): Promise<OpenCodeGoalHooks> => {
   const logger = createGoalPluginLogger(ctx.client);
   let store: ReturnType<typeof createGoalStore> | undefined;
   try {
@@ -98,13 +98,14 @@ async function logToOpenCode(client: unknown, level: "warn" | "error", message: 
   if (typeof app !== "object" || app === null) return;
   const log = (app as { log?: unknown }).log;
   if (typeof log !== "function") return;
+  const safeExtra = details instanceof Error ? { message: details.message, stack: details.stack } : details;
   try {
     await log.call(app, {
       body: {
         service: "goal-mode",
         level,
         message,
-        extra: details,
+        extra: safeExtra,
       },
     });
   } catch {
