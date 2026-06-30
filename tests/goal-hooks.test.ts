@@ -361,6 +361,65 @@ describe("OpenCode Goal Mode hooks", () => {
     expect((errors[0]![1] as Error).message).toMatch(/unsupported opencode command output/i);
   });
 
+  it("experimental.chat.system.transform logs and resolves when output.system is missing", async () => {
+    // Requires an active goal so renderSystemContext() returns a non-null block
+    // (otherwise the hook short-circuits and never touches output.system).
+    await seedGoal("System transform throw safety");
+    const errors: Array<[string, unknown]> = [];
+    const hooks = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+      logger: { error: (msg, details) => errors.push([msg, details]) },
+    });
+
+    // Passing {} (no system array) causes output.system.length → TypeError.
+    // The safe wrapper must catch and log it without re-throwing.
+    await expect(
+      hooks["experimental.chat.system.transform"]?.({}, {} as any),
+    ).resolves.toBeUndefined();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]![0]).toMatch(/experimental\.chat\.system\.transform/i);
+  });
+
+  it("experimental.session.compacting logs and resolves when output.context is missing", async () => {
+    // Requires an active goal so renderSystemContext() returns a non-null block.
+    await seedGoal("Compacting throw safety");
+    const errors: Array<[string, unknown]> = [];
+    const hooks = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+      logger: { error: (msg, details) => errors.push([msg, details]) },
+    });
+
+    // Passing {} (no context array) causes output.context.some(…) → TypeError.
+    // The safe wrapper must catch and log it without re-throwing.
+    await expect(
+      hooks["experimental.session.compacting"]?.({ sessionID: "s1" }, {} as any),
+    ).resolves.toBeUndefined();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]![0]).toMatch(/experimental\.session\.compacting/i);
+  });
+
+  it("event hook logs and resolves when input event is missing", async () => {
+    const errors: Array<[string, unknown]> = [];
+    const hooks = createOpenCodeGoalHooks({
+      store: store!,
+      project: PROJECT,
+      logger: { error: (msg, details) => errors.push([msg, details]) },
+    });
+
+    // Passing {} (no event property) makes event = undefined inside the hook.
+    // event.type throws TypeError; the safe wrapper must catch and log it.
+    await expect(
+      hooks.event?.({} as any),
+    ).resolves.toBeUndefined();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]![0]).toMatch(/\bevent\b/i);
+  });
+
   it("derives a stable owner/repo project key from git remote before worktree basename", () => {
     const repoDir = path.join(tempDir, "repo-with-origin");
     fs.mkdirSync(repoDir, { recursive: true });

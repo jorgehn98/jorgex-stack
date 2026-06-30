@@ -125,3 +125,75 @@ describe("GoalModePlugin — fail-safe when JORGEX_GOAL_DB is outside allowed di
 // (Bun.spawnSync es llamado con múltiples patrones de args internamente).
 // Se omite deliberadamente para evitar un falso verde que acople el test a
 // detalles de implementación internos.
+
+// ─── Engram plugin hooks — error logging ────────────────────────────────────
+
+describe("Engram plugin hooks — error logging to OpenCode TUI", () => {
+  it("logs hook errors to app.log with service, level, message and serialized extra", async () => {
+    const appLog = vi.fn();
+    stubBunAndFetchForSafety();
+    const plugin = await Engram({
+      directory: process.cwd(),
+      client: { app: { log: appLog } },
+    } as any);
+
+    // Force a throw: experimental.session.compacting expects output.context to be an array.
+    // Passing {} makes output.context undefined → TypeError on output.context.push(…).
+    await expect(
+      plugin["experimental.session.compacting"]!({ sessionID: "s" }, {} as any),
+    ).resolves.toBeUndefined();
+
+    // logToOpenCode calls log.call(app, …) synchronously before its first await,
+    // so by the time the hook promise resolves the call is already recorded.
+    expect(appLog).toHaveBeenCalledOnce();
+    const arg = appLog.mock.calls[0]![0] as {
+      body: { service: string; level: string; message: string; extra: unknown };
+    };
+    expect(arg.body.service).toBe("engram");
+    expect(arg.body.level).toBe("error");
+    expect(arg.body.message).toContain("experimental.session.compacting");
+    expect(arg.body.extra).toMatchObject({ message: expect.any(String), stack: expect.any(String) });
+  });
+
+  it("app.log that rejects does not produce an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const rejectionHandler = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", rejectionHandler);
+
+    stubBunAndFetchForSafety();
+    const plugin = await Engram({
+      directory: process.cwd(),
+      client: { app: { log: () => Promise.reject(new Error("ipc closed")) } },
+    } as any);
+
+    try {
+      await expect(
+        plugin["experimental.session.compacting"]!({ sessionID: "s" }, {} as any),
+      ).resolves.toBeUndefined();
+
+      // One microtask tick: logToOpenCode's internal try/catch absorbs the rejection
+      // before Node.js can classify it as unhandled.
+      await Promise.resolve();
+
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", rejectionHandler);
+    }
+  });
+});
+
+// ─── Engram plugin hooks — event with absent properties ─────────────────────
+
+describe("Engram plugin hooks — event with absent properties", () => {
+  it("event hook resolves cleanly when properties field is absent from the payload", async () => {
+    stubBunAndFetchForSafety();
+    const plugin = await Engram({ directory: process.cwd() } as any);
+
+    // Before the fix: accessing event.properties.info.id without optional chaining
+    // would throw TypeError when properties is undefined.
+    // After the fix: optional chaining handles the absent field gracefully.
+    await expect(
+      plugin.event!({ event: { type: "session.created" } }),
+    ).resolves.toBeUndefined();
+  });
+});
