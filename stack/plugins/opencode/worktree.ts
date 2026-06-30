@@ -358,7 +358,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
 
         const branchName = `${config.branchPrefix || "feature/"}${worktreeName}`;
 
-        const gitRoot = await $`git rev-parse --show-toplevel`.text();
+        const gitRoot = await $`git rev-parse --show-toplevel`.quiet().text();
         const projectRoot = String(gitRoot).trim().replace(/\\/g, "/");
         const commandCwd = getCommandCwd(args, directory);
         const absoluteWorktreePath = resolvePath(commandCwd, parsedWorktreePath);
