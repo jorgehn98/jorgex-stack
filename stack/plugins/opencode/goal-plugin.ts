@@ -53,9 +53,10 @@ function parseRemoteProjectKey(remote: string): string | undefined {
 
 export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }) => {
   const logger = createGoalPluginLogger(ctx.client);
-  const databasePath = resolveGoalDatabasePath(process.env.JORGEX_GOAL_DB);
-  const store = createGoalStore({ databasePath });
+  let store: ReturnType<typeof createGoalStore> | undefined;
   try {
+    const databasePath = resolveGoalDatabasePath(process.env.JORGEX_GOAL_DB);
+    store = createGoalStore({ databasePath });
     store.migrate();
     const project = resolveGoalProjectName(ctx.directory, logger);
 
@@ -67,8 +68,9 @@ export const GoalModePlugin = async (ctx: { directory: string; client?: unknown 
       logger,
     });
   } catch (error) {
-    store.close();
-    throw error;
+    logger.error?.("Goal Mode failed to initialize; Goal hooks disabled.", error);
+    store?.close();
+    return {};
   }
 };
 
@@ -76,11 +78,9 @@ function createGoalPluginLogger(client: unknown): GoalPluginLogger {
   return {
     warn: (message, details) => {
       void logToOpenCode(client, "warn", message, details);
-      console.warn(message, details);
     },
     error: (message, details) => {
       void logToOpenCode(client, "error", message, details);
-      console.error(message, details);
     },
   };
 }
