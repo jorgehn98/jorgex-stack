@@ -44,6 +44,12 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
     project: deps.project,
   });
 
+  // ─── Safe Hook Wrapper ─────────────────────────────────────────
+  // Wraps every hook to catch errors and log them via the logger instead
+  // of letting them propagate. This prevents OpenCode from crashing when
+  // Goal Mode hooks encounter malformed payloads or internal errors.
+  // Errors are logged (if a logger is provided) and swallowed (promise
+  // resolves cleanly even on failure).
   const safe = <A extends unknown[]>(name: string, fn: (...args: A) => Promise<void>) =>
     async (...args: A): Promise<void> => {
       try {

@@ -140,6 +140,12 @@ function stripPrivateTags(str: string): string {
   return str.replace(/<private>[\s\S]*?<\/private>/gi, "[REDACTED]").trim()
 }
 
+/**
+ * Log errors and warnings to OpenCode's TUI log.
+ * Errors in hooks must not propagate to the plugin surface — they are silently
+ * swallowed here so the TUI does not crash. The error is visible only in OpenCode's
+ * log stream (visible to the user via `opencode logs`).
+ */
 function logToOpenCode(client: unknown, level: string, message: string, extra?: unknown): void {
   try {
     (client as any)?.app?.log({ body: { service: "engram", level, message, extra } })
@@ -235,6 +241,11 @@ export const Engram: Plugin = async (ctx) => {
     // Manifest doesn't exist or binary not found — silently skip
   }
 
+  // ─── Safe Hook Wrapper ─────────────────────────────────────────
+  // Wraps every hook to catch errors and log them to OpenCode instead
+  // of letting them propagate. This prevents malformed payloads or
+  // missing fields (output.context, output.system, etc.) from crashing
+  // the TUI. Errors are logged and swallowed (promise resolves cleanly).
   const safe = <A extends unknown[]>(name: string, fn: (...args: A) => Promise<void>) =>
     async (...args: A): Promise<void> => {
       try { await fn(...args) }

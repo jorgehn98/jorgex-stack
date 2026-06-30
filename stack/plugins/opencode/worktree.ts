@@ -358,6 +358,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
 
         const branchName = `${config.branchPrefix || "feature/"}${worktreeName}`;
 
+        // .quiet() suppresses stderr to prevent noisy TUI logs from git calls
         const gitRoot = await $`git rev-parse --show-toplevel`.quiet().text();
         const projectRoot = String(gitRoot).trim().replace(/\\/g, "/");
         const commandCwd = getCommandCwd(args, directory);

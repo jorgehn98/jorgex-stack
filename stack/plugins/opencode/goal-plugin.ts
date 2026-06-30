@@ -68,6 +68,9 @@ export const GoalModePlugin = async (ctx: { directory: string; client?: unknown 
       logger,
     });
   } catch (error) {
+    // If Goal Mode initialization fails (e.g., JORGEX_GOAL_DB points outside
+    // the allowed directory), log the error and return empty hooks. This
+    // prevents Goal Mode from crashing the entire plugin layer.
     logger.error?.("Goal Mode failed to initialize; Goal hooks disabled.", error);
     store?.close();
     return {};
@@ -77,9 +80,13 @@ export const GoalModePlugin = async (ctx: { directory: string; client?: unknown 
 function createGoalPluginLogger(client: unknown): GoalPluginLogger {
   return {
     warn: (message, details) => {
+      // Log to OpenCode only; console.warn is omitted to avoid log pollution
+      // in user terminals. All logs go through OpenCode's log stream.
       void logToOpenCode(client, "warn", message, details);
     },
     error: (message, details) => {
+      // Log to OpenCode only; console.error is omitted to avoid log pollution
+      // in user terminals. All logs go through OpenCode's log stream.
       void logToOpenCode(client, "error", message, details);
     },
   };
