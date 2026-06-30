@@ -65,3 +65,53 @@ describe("CLI argument parsing", () => {
     expect(parsed.flags.positional).toEqual([]);
   });
 });
+
+describe("flags desconocidos", () => {
+  it.each([
+    [["install", "--frobnicate"], ["--frobnicate"]],
+    [["install", "--mode=programmatic", "--frobnicate"], ["--frobnicate"]],
+    [["install", "-x"], ["-x"]],
+    [["--frobnicate"], ["--frobnicate"]],
+    [["install", "--foo", "--bar"], ["--foo", "--bar"]],
+  ] as const)("%j → action unknown-flags con los flags recogidos", (argv, expected) => {
+    const parsed = parseCliArgs([...argv]);
+
+    expect(parsed.action).toBe("unknown-flags");
+    expect(parsed.flags.unknownFlags).toEqual([...expected]);
+  });
+
+  it("no marca como desconocido un argumento posicional legítimo (restore <id>)", () => {
+    const parsed = parseCliArgs(["restore", "20260626-094855"]);
+
+    expect(parsed.action).toBe("run");
+    expect(parsed.flags.unknownFlags).toEqual([]);
+    expect(parsed.flags.positional).toEqual(["20260626-094855"]);
+  });
+
+  it("un comando desconocido gana sobre el flag desconocido (precedencia)", () => {
+    const parsed = parseCliArgs(["instal", "--frobnicate"]);
+
+    expect(parsed.action).toBe("unknown");
+    expect(parsed.unknownCommand).toBe("instal");
+  });
+
+  it("un flag conocido sin valor no traga el siguiente token: este cae a desconocido", () => {
+    const parsed = parseCliArgs(["install", "--target-dir", "--frobnicate"]);
+
+    expect(parsed.action).toBe("unknown-flags");
+    expect(parsed.flags.targetDir).toBeUndefined();
+    expect(parsed.flags.unknownFlags).toEqual(["--frobnicate"]);
+  });
+
+  it("--help gana sobre un flag desconocido", () => {
+    const parsed = parseCliArgs(["install", "--frobnicate", "--help"]);
+
+    expect(parsed.action).toBe("help");
+  });
+
+  it("--version gana sobre un flag desconocido", () => {
+    const parsed = parseCliArgs(["install", "--frobnicate", "--version"]);
+
+    expect(parsed.action).toBe("version");
+  });
+});

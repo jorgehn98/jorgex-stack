@@ -34,10 +34,11 @@ export interface Flags {
   check: boolean;
   removeEngram: boolean;
   positional: string[];
+  unknownFlags: string[];
 }
 
 export interface ParsedCli {
-  action: "run" | "help" | "version" | "unknown";
+  action: "run" | "help" | "version" | "unknown" | "unknown-flags";
   command: Command;
   flags: Flags;
   unknownCommand?: string;
@@ -56,6 +57,7 @@ export function parseFlags(args: string[]): Flags {
     check: false,
     removeEngram: false,
     positional: [],
+    unknownFlags: [],
   };
   const readValue = (index: number): [string | undefined, number] => {
     const value = args[index + 1];
@@ -93,6 +95,7 @@ export function parseFlags(args: string[]): Flags {
     else if (arg === "--list") flags.list = true;
     else if (arg === "--check") flags.check = true;
     else if (arg === "--remove-engram") flags.removeEngram = true;
+    else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
   }
   return flags;
@@ -183,6 +186,7 @@ export function parseCliArgs(argv: string[]): ParsedCli {
 
   if (first === "--help" || first === "-h" || flags.help) return { action: "help", command, flags };
   if (first === "--version" || first === "-v" || flags.version) return { action: "version", command, flags };
+  if (flags.unknownFlags.length > 0) return { action: "unknown-flags", command, flags };
 
   return { action: "run", command, flags };
 }
@@ -240,6 +244,19 @@ async function main(): Promise<void> {
   if (parsed.action === "unknown") {
     console.error(`Comando desconocido: ${parsed.unknownCommand}`);
     printHelp();
+    process.exitCode = 1;
+    return;
+  }
+  if (parsed.action === "unknown-flags") {
+    const { unknownFlags } = parsed.flags;
+    const plural = unknownFlags.length > 1;
+    console.error(`Flag${plural ? "s" : ""} no reconocido${plural ? "s" : ""}: ${unknownFlags.join(", ")}`);
+    console.error(
+      `jorgex-stack v${VERSION} no reconoce ${plural ? "esos flags" : "ese flag"}. ` +
+        `Si esperabas que existiera, puede que estés ejecutando un binario cacheado antiguo:\n` +
+        `  pnpm dlx jorgex-stack@latest ...\n` +
+        `Flags disponibles: jorgex-stack --help`,
+    );
     process.exitCode = 1;
     return;
   }
