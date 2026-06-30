@@ -88,6 +88,21 @@ describe("flags desconocidos", () => {
     expect(parsed.flags.positional).toEqual(["20260626-094855"]);
   });
 
+  it("un comando desconocido gana sobre el flag desconocido (precedencia)", () => {
+    const parsed = parseCliArgs(["instal", "--frobnicate"]);
+
+    expect(parsed.action).toBe("unknown");
+    expect(parsed.unknownCommand).toBe("instal");
+  });
+
+  it("un flag conocido sin valor no traga el siguiente token: este cae a desconocido", () => {
+    const parsed = parseCliArgs(["install", "--target-dir", "--frobnicate"]);
+
+    expect(parsed.action).toBe("unknown-flags");
+    expect(parsed.flags.targetDir).toBeUndefined();
+    expect(parsed.flags.unknownFlags).toEqual(["--frobnicate"]);
+  });
+
   it("--help gana sobre un flag desconocido", () => {
     const parsed = parseCliArgs(["install", "--frobnicate", "--help"]);
 

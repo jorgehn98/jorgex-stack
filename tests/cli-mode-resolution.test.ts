@@ -232,3 +232,41 @@ describe("CLI follow-up sync mode resolution", () => {
     expect(mocks.prompts.log.info).toHaveBeenCalledWith(expect.stringMatching(/--target-dir.*human.*--mode programmatic/i));
   });
 });
+
+describe("rechazo de flags desconocidos en main()", () => {
+  it("un flag desconocido sale con código 1 sin ejecutar install y avisa en singular", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-unknown-flag-single-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["install", "--frobnicate"], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      const messages = collectedMessages([error]);
+      expect(messages.some((m) => /Flag no reconocido: --frobnicate/.test(m))).toBe(true);
+      expect(messages.some((m) => /no reconoce ese flag/.test(m))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("varios flags desconocidos salen con código 1 y avisan en plural con la lista", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-unknown-flag-multi-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["install", "--foo", "--bar"], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      const messages = collectedMessages([error]);
+      expect(messages.some((m) => /Flags no reconocidos: --foo, --bar/.test(m))).toBe(true);
+      expect(messages.some((m) => /no reconoce esos flags/.test(m))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
