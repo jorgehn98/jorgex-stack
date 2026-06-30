@@ -24,7 +24,7 @@ const makePlugin = async (root: string, spawn = vi.fn()) => {
     }),
   });
 
-  const dollar = (() => ({ text: async () => `${root}\n` })) as any;
+  const dollar = (() => { const r: any = { text: async () => `${root}\n` }; r.quiet = () => r; return r; }) as any;
   const client = { app: { log: vi.fn() } };
   const plugin = await WorktreePlugin({ $, client, directory: root } as any);
   return { plugin, spawn };

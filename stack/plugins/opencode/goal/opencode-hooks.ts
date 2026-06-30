@@ -44,16 +44,31 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
     project: deps.project,
   });
 
+  // ─── Safe Hook Wrapper ─────────────────────────────────────────
+  // Wraps every hook to catch errors and log them via the logger instead
+  // of letting them propagate. This prevents OpenCode from crashing when
+  // Goal Mode hooks encounter malformed payloads or internal errors.
+  // Errors are logged (if a logger is provided) and swallowed (promise
+  // resolves cleanly even on failure).
+  const safe = <A extends unknown[]>(name: string, fn: (...args: A) => Promise<void>) =>
+    async (...args: A): Promise<void> => {
+      try {
+        await fn(...args);
+      } catch (error) {
+        try { deps.logger?.error?.(`Goal Mode hook ${name} failed`, error); } catch {}
+      }
+    };
+
   return {
-    "command.execute.before": async (input, output) => {
+    "command.execute.before": safe("command.execute.before", async (input, output) => {
       const command = extractCommandName(input);
       if (command !== "goal") return;
 
       const response = commands.handleGoalCommand(extractCommandArguments(input));
       replaceGoalCommandPrompt(input, output, response.message);
-    },
+    }),
 
-    "experimental.chat.system.transform": async (_input, output) => {
+    "experimental.chat.system.transform": safe("experimental.chat.system.transform", async (_input, output) => {
       const block = supervisor.renderSystemContext();
       if (!block) return;
 
@@ -64,18 +79,18 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
 
       const lastIndex = output.system.length - 1;
       output.system[lastIndex] = upsertMarkedBlock(output.system[lastIndex]!, block);
-    },
+    }),
 
-    "experimental.session.compacting": async (_input, output) => {
+    "experimental.session.compacting": safe("experimental.session.compacting", async (_input, output) => {
       const block = supervisor.renderSystemContext();
       if (!block) return;
 
       if (!output.context.some((entry) => entry.includes(GOAL_MODE_MARKER_START))) {
         output.context.push(block);
       }
-    },
+    }),
 
-    event: async ({ event }) => {
+    event: safe("event", async ({ event }) => {
       if (event.type !== "session.idle") return;
 
       const decision = supervisor.decide();
@@ -147,7 +162,7 @@ export function createOpenCodeGoalHooks(deps: OpenCodeGoalHooksDeps): OpenCodeGo
       } finally {
         autoContinueInFlight.delete(dedupeKey);
       }
-    },
+    }),
   };
 }
 

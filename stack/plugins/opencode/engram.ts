@@ -18,7 +18,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 declare const Bun: {
   which?: (bin: string) => string | null
-  spawnSync: (args: string[]) => { exitCode: number; stdout?: { toString(): string } | string }
+  spawnSync: (args: string[], options?: Record<string, unknown>) => { exitCode: number; stdout?: { toString(): string } | string }
   spawn: (args: string[], options?: Record<string, unknown>) => unknown
   file: (path: string) => { exists: () => Promise<boolean> }
 }
@@ -102,7 +102,7 @@ async function isEngramRunning(): Promise<boolean> {
 function extractProjectName(directory: string): string {
   // Try git remote origin URL
   try {
-    const result = Bun.spawnSync(["git", "-C", directory, "remote", "get-url", "origin"])
+    const result = Bun.spawnSync(["git", "-C", directory, "remote", "get-url", "origin"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" })
     if (result.exitCode === 0) {
       const url = result.stdout?.toString().trim()
       if (url) {
@@ -114,7 +114,7 @@ function extractProjectName(directory: string): string {
 
   // Fallback: git root directory name (works in worktrees)
   try {
-    const result = Bun.spawnSync(["git", "-C", directory, "rev-parse", "--show-toplevel"])
+    const result = Bun.spawnSync(["git", "-C", directory, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" })
     if (result.exitCode === 0) {
       const root = result.stdout?.toString().trim()
       if (root) return root.split(/[\\/]/).pop() ?? "unknown"
@@ -140,11 +140,39 @@ function stripPrivateTags(str: string): string {
   return str.replace(/<private>[\s\S]*?<\/private>/gi, "[REDACTED]").trim()
 }
 
+/**
+ * Log errors and warnings to OpenCode's TUI log.
+ * Errors in hooks must not propagate to the plugin surface — they are silently
+ * swallowed here so the TUI does not crash. The error is visible only in OpenCode's
+ * log stream (visible to the user via `opencode logs`).
+ */
+async function logToOpenCode(client: unknown, level: string, message: string, extra?: unknown): Promise<void> {
+  if (typeof client !== "object" || client === null) return;
+  const app = (client as { app?: unknown }).app;
+  if (typeof app !== "object" || app === null) return;
+  const log = (app as { log?: unknown }).log;
+  if (typeof log !== "function") return;
+  const safeExtra = extra instanceof Error ? { message: extra.message, stack: extra.stack } : extra;
+  try {
+    await log.call(app, {
+      body: {
+        service: "engram",
+        level,
+        message,
+        extra: safeExtra,
+      },
+    });
+  } catch {
+    // Logging must never break the plugin path.
+  }
+}
+
 // ─── Plugin Export ───────────────────────────────────────────────────────────
 
 export const Engram: Plugin = async (ctx) => {
   const oldProject = ctx.directory.split(/[\\/]/).pop() ?? "unknown"
   const project = extractProjectName(ctx.directory)
+  const client = (ctx as { client?: unknown }).client
   const engramBin = resolveEngramBin()
 
   // Track tool counts per session (in-memory only, not critical)
@@ -228,10 +256,21 @@ export const Engram: Plugin = async (ctx) => {
     // Manifest doesn't exist or binary not found — silently skip
   }
 
+  // ─── Safe Hook Wrapper ─────────────────────────────────────────
+  // Wraps every hook to catch errors and log them to OpenCode instead
+  // of letting them propagate. This prevents malformed payloads or
+  // missing fields (output.context, output.system, etc.) from crashing
+  // the TUI. Errors are logged and swallowed (promise resolves cleanly).
+  const safe = <A extends unknown[]>(name: string, fn: (...args: A) => Promise<void>) =>
+    async (...args: A): Promise<void> => {
+      try { await fn(...args) }
+      catch (error) { void logToOpenCode(client, "error", `Engram hook ${name} failed`, error) }
+    }
+
   return {
     // ─── Event Listeners ───────────────────────────────────────────
 
-    event: async ({ event }: { event: { type: string; properties?: unknown } }) => {
+    event: safe("event", async ({ event }: { event: { type: string; properties?: unknown } }) => {
       // --- Session Created ---
       if (event.type === "session.created") {
         // Bug fix (#116): session data is nested under event.properties.info,
@@ -271,7 +310,7 @@ export const Engram: Plugin = async (ctx) => {
         }
       }
 
-    },
+    }),
 
     // ─── User Prompt Capture ──────────────────────────────────────
     // chat.message is called once per user message, before the LLM sees it.
@@ -279,7 +318,7 @@ export const Engram: Plugin = async (ctx) => {
     // output.message is typed as UserMessage (role:"user" already guaranteed).
     // output.parts contains TextPart[] with the actual message text.
 
-    "chat.message": async (input: any, output: any) => {
+    "chat.message": safe("chat.message", async (input: any, output: any) => {
       // Skip sub-agent sessions — they inflate session counts (issue #116)
       if (subAgentSessions.has(input.sessionID)) return
 
@@ -313,7 +352,7 @@ export const Engram: Plugin = async (ctx) => {
           })
         }
       }
-    },
+    }),
 
     // ─── Tool Execution Hook ─────────────────────────────────────
     // Count tool calls per session (for session end stats).
@@ -321,7 +360,7 @@ export const Engram: Plugin = async (ctx) => {
     // Passive capture: when a Task tool completes, POST its output to
     // the passive capture endpoint so the server extracts learnings.
 
-    "tool.execute.after": async (input: any, output: any) => {
+    "tool.execute.after": safe("tool.execute.after", async (input: any, output: any) => {
       if (ENGRAM_TOOLS.has(input.tool.toLowerCase())) return
 
       // input.sessionID comes from OpenCode — always available
@@ -347,7 +386,7 @@ export const Engram: Plugin = async (ctx) => {
           })
         }
       }
-    },
+    }),
 
     // ─── System Prompt: Always-on memory instructions ──────────
     // Injects MEMORY_INSTRUCTIONS into the system prompt of every message.
@@ -359,13 +398,13 @@ export const Engram: Plugin = async (ctx) => {
     // block at the beginning. By concatenating, we avoid adding extra system
     // messages that would break these models. See: GitHub issue #23.
 
-    "experimental.chat.system.transform": async (_input: any, output: any) => {
+    "experimental.chat.system.transform": safe("experimental.chat.system.transform", async (_input: any, output: any) => {
       if (output.system.length > 0) {
         output.system[output.system.length - 1] += "\n\n" + MEMORY_INSTRUCTIONS
       } else {
         output.system.push(MEMORY_INSTRUCTIONS)
       }
-    },
+    }),
 
     // ─── Compaction Hook: Persist memory + inject context ──────────
     // Compaction is triggered by the system (not the agent) when context
@@ -375,7 +414,7 @@ export const Engram: Plugin = async (ctx) => {
     // 2. Inject context from previous sessions into the compaction prompt
     // 3. Tell the compressor to remind the new agent to save memories
 
-    "experimental.session.compacting": async (input: any, output: any) => {
+    "experimental.session.compacting": safe("experimental.session.compacting", async (input: any, output: any) => {
       if (input.sessionID) {
         await ensureSession(input.sessionID)
       }
@@ -400,6 +439,6 @@ export const Engram: Plugin = async (ctx) => {
         `Do this BEFORE any other work. After that, delegate to the global engram subagent to recover only the relevant previous context."\n\n` +
         `This is NOT optional. Without this, everything done before compaction is lost from memory.`
       )
-    },
+    }),
   }
 }

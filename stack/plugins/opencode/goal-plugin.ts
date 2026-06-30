@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createGoalStore } from "./goal/store.js";
-import { createOpenCodeGoalHooks } from "./goal/opencode-hooks.js";
+import { createOpenCodeGoalHooks, type OpenCodeGoalHooks } from "./goal/opencode-hooks.js";
 
 interface GoalPluginLogger {
   warn?: (message: string, details?: unknown) => void;
@@ -51,11 +51,12 @@ function parseRemoteProjectKey(remote: string): string | undefined {
   return genericMatch?.[1];
 }
 
-export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }) => {
+export const GoalModePlugin = async (ctx: { directory: string; client?: unknown }): Promise<OpenCodeGoalHooks> => {
   const logger = createGoalPluginLogger(ctx.client);
-  const databasePath = resolveGoalDatabasePath(process.env.JORGEX_GOAL_DB);
-  const store = createGoalStore({ databasePath });
+  let store: ReturnType<typeof createGoalStore> | undefined;
   try {
+    const databasePath = resolveGoalDatabasePath(process.env.JORGEX_GOAL_DB);
+    store = createGoalStore({ databasePath });
     store.migrate();
     const project = resolveGoalProjectName(ctx.directory, logger);
 
@@ -67,20 +68,26 @@ export const GoalModePlugin = async (ctx: { directory: string; client?: unknown 
       logger,
     });
   } catch (error) {
-    store.close();
-    throw error;
+    // If Goal Mode initialization fails (e.g., JORGEX_GOAL_DB points outside
+    // the allowed directory), log the error and return empty hooks. This
+    // prevents Goal Mode from crashing the entire plugin layer.
+    logger.error?.("Goal Mode failed to initialize; Goal hooks disabled.", error);
+    store?.close();
+    return {};
   }
 };
 
 function createGoalPluginLogger(client: unknown): GoalPluginLogger {
   return {
     warn: (message, details) => {
+      // Log to OpenCode only; console.warn is omitted to avoid log pollution
+      // in user terminals. All logs go through OpenCode's log stream.
       void logToOpenCode(client, "warn", message, details);
-      console.warn(message, details);
     },
     error: (message, details) => {
+      // Log to OpenCode only; console.error is omitted to avoid log pollution
+      // in user terminals. All logs go through OpenCode's log stream.
       void logToOpenCode(client, "error", message, details);
-      console.error(message, details);
     },
   };
 }
@@ -91,13 +98,14 @@ async function logToOpenCode(client: unknown, level: "warn" | "error", message: 
   if (typeof app !== "object" || app === null) return;
   const log = (app as { log?: unknown }).log;
   if (typeof log !== "function") return;
+  const safeExtra = details instanceof Error ? { message: details.message, stack: details.stack } : details;
   try {
     await log.call(app, {
       body: {
         service: "goal-mode",
         level,
         message,
-        extra: details,
+        extra: safeExtra,
       },
     });
   } catch {
