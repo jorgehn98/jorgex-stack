@@ -2,7 +2,7 @@
 name: code-simplifier
 description: Read-only code simplifier. Use it AFTER code is written or changed to propose simplifications that improve readability and reduce complexity while preserving exact behavior. Returns proposed refinements only — never writes or edits code. Not for implementing features, finding bugs (that's code-reviewer) or broad rewrites.
 mode: subagent
-tier: strong
+tier: standard
 readonly: true
 bash: git-read
 ---

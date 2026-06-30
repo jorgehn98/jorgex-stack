@@ -2,7 +2,7 @@
 name: type-design-analyzer
 description: Read-only type design analyst. Use it AFTER code changes to evaluate type invariants, type safety and encapsulation quality in the diff. Reports analysis and recommendations only — never writes or edits code. Not for implementing features or general code review.
 mode: subagent
-tier: strong
+tier: standard
 readonly: true
 bash: git-read
 ---
