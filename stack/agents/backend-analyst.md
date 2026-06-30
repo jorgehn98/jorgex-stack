@@ -2,7 +2,7 @@
 name: backend-analyst
 description: Read-only backend analyst. Use it BEFORE implementing to map services, database, APIs, server functions or data-access patterns, and to surface performance/security/consistency risks. Returns analysis and recommendations only — never writes code or applies changes. Not for implementing features or fixing bugs.
 mode: subagent
-tier: strong
+tier: standard
 readonly: true
 bash: git-read
 ---

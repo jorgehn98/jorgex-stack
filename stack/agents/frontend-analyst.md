@@ -2,7 +2,7 @@
 name: frontend-analyst
 description: Read-only frontend analyst. Use it BEFORE implementing or reviewing to map components, hooks, state, rendering and UI patterns, and to surface re-render, hydration, coupling or complexity risks. Returns analysis and recommendations only — never writes code. Not for implementing features or fixing bugs.
 mode: subagent
-tier: strong
+tier: standard
 readonly: true
 bash: git-read
 ---

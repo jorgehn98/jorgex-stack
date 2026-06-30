@@ -2,7 +2,7 @@
 name: test-analyzer
 description: Read-only test coverage analyst. Use it AFTER code changes to review the diff for test coverage quality and completeness, surfacing critical gaps and brittle tests. Reports analysis only — NEVER writes tests (that's the tester). Not for implementing features or writing tests.
 mode: subagent
-tier: strong
+tier: standard
 readonly: true
 bash: git-read
 ---
