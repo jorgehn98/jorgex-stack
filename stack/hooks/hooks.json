@@ -12,6 +12,16 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell|EnterWorktree|ExitWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{SCRIPTS_DIR}}/repair-worktree-config.cjs\"",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
