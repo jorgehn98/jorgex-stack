@@ -83,7 +83,7 @@ GitHub authentication: requests use `GH_TOKEN`/`GITHUB_TOKEN` from the environme
 
 ### OpenCode Goal Mode
 
-Goal Mode is an OpenCode plugin for long-running goals: multiple sessions, multiple slices, multiple worktrees, and, when needed, multiple PRs. It is not meant for short tasks. If the change fits without extended autonomy, do not use `/goal`.
+The normal work-lifecycle already supports multi-PR plans: `work/{name}/PRD.md` and `plan.md` stay alive across intermediate merges, `work/{name}/pr/{NN}` stores each checkpoint, and `work/{name}/done` is reserved for the final close. Goal Mode is separate: an OpenCode plugin for long-running goals, multiple sessions, multiple slices, multiple worktrees, and, when needed, multiple PRs. It is not meant for short tasks. If the change fits without extended autonomy, do not use `/goal`.
 
 It only exists in OpenCode. Claude Code and Codex do not receive it.
 

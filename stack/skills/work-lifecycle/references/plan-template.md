@@ -36,6 +36,17 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 [Why it wasn't chosen]
 
+## PR Roadmap
+
+> This is the intended PR split only. Live status stays in the task table below.
+
+| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |
+|----|-------|--------|----------|------|--------|----------------|
+| 01 | [scope] | [branch] | [worktree] | [base] | ⬜ | [evidence] |
+| 02 | [scope] | [branch] | [worktree] | [base] | ⬜ | [evidence] |
+
+> Intermediate PRs do not delete `work/[name]/`; only the final close does.
+
 ## Success criteria
 
 - [ ] [Verifiable behavior 1]
@@ -46,13 +57,14 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 > Full spec of task NN → Engram topic_key `work/[name]/task/NN`.
 > Status lives ONLY in this table — update it with a surgical edit per task.
+> Map each task to the PR that carries it; intermediate PRs keep `work/[name]/` alive.
 
-| # | Task | One-liner | Status | Wave | Deps |
-|---|------|-----------|--------|------|------|
-| 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
-| 02 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
-| 03 | [descriptive name] | [one-line description] | ⬜ | 2 | 01 |
-| 04 | [descriptive name] | [one-line description] | ⬜ | 2 | 01, 02 |
+| # | PR | Task | One-liner | Status | Wave | Deps |
+|---|----|------|-----------|--------|------|------|
+| 01 | 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
+| 02 | 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
+| 03 | 02 | [descriptive name] | [one-line description] | ⬜ | 2 | 01 |
+| 04 | 02 | [descriptive name] | [one-line description] | ⬜ | 2 | 01, 02 |
 
 **Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
 ```

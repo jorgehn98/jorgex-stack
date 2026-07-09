@@ -1,6 +1,6 @@
 ---
 name: work-lifecycle
-description: Single source for how a piece of work is tracked and advances — PRD and plan as files in work/{name}/ while in progress; task specs, phase outcomes and history in Engram memory. Use when starting, tracking, resuming or closing a piece of work, or when deciding where a PRD, plan, task or backlog item should live.
+description: Single source for how a piece of work is tracked and advances — PRD and plan as files in work/{name}/ while in progress; task specs, phase outcomes, PR checkpoints and history in Engram memory. Use when starting, tracking, resuming or closing a piece of work, or when deciding where a PRD, plan, task or backlog item should live.
 ---
 
 # Work Lifecycle
@@ -18,8 +18,9 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 | PRD | `work/{name}/PRD.md` | Written once, reviewed by the human |
 | Plan (goal, approach, task board) | `work/{name}/plan.md` | The status board: humans glance at it; statuses flip with surgical edits |
 | Full spec of each atomic task | Engram `work/{name}/task/{NN}` | Only subagents consume it; visible from any worktree |
+| PR checkpoint outcome | Engram `work/{name}/pr/{NN}` | Intermediate PR merge record |
 | Phase outcomes, decisions, findings | Engram `work/{name}/{phase}` | History — must survive the folder and compactions |
-| Final outcome | Engram `work/{name}/done` | Permanent record of what shipped |
+| Final outcome | Engram `work/{name}/done` | Permanent record of what shipped after the last PR |
 | Pending / backlog items | Engram `work/backlog` — ONE key per project | All pending ideas in a single upserted list |
 
 `work/` is **scaffolding, not product**: add it to the project's `.gitignore`. It contains ONLY work in progress — an empty `work/` means nothing is half-done. No `1-TODOs/`, no `3-finalized/`, no phase subfolders.
@@ -28,16 +29,17 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 
 1. Pick the canonical name and create `work/{name}/`. If the item came from the backlog, remove it from `work/backlog` in the same step.
 2. Produce the PRD with the `to-prd` skill → `work/{name}/PRD.md`. The human reviews it there.
-3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, success criteria, and the task table — number, title, one-line description, status, wave, deps.
+3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, success criteria, PR roadmap, and the task table — number, PR, title, one-line description, status, wave, deps.
 4. Save the full spec of each atomic task to memory: one `mem_save` per task with topic_key `work/{name}/task/{NN}` (content structure in `references/plan-template.md`).
 
 ## Executing
 
 - Execution happens inside a git worktree created for the work; the user's main checkout stays untouched until merge.
-- Worktree path is fixed: first resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` (branch = canonical name). Never place worktrees in the repo root, next to the repo, under `work/`, or outside the project.
+- Worktree path is fixed: first resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/{canonical-name}-prNN` for multi-PR checkpoints. Never place worktrees in the repo root, next to the repo, under `work/`, or outside the project.
 - Delegation handoff: the subagent receives its **topic_key + task title**, never the task content inline. It retrieves the spec itself (`mem_search` → `mem_get_observation`).
 - The subagent saves its phase outcome under the topic_key the orchestrator gave it (`work/{name}/{phase}`) BEFORE its final report.
 - Task status lives ONLY in the plan.md table: flip it (⬜ → ✅) with a surgical edit when the task closes. Do not mirror statuses into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
+- For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree is enough and the roadmap collapses to one checkpoint.
 
 ## HTML review view (on demand)
 
@@ -61,12 +63,27 @@ If the project manages work through an issue tracker, issues (`to-issues`) take 
 
 ## Closing
 
-When the work is finalized (e.g. PR created and merged into its target branch):
+There are two close levels:
+
+### PR checkpoint
+
+When an intermediate PR is merged:
+
+1. `mem_save` under `work/{name}/pr/{NN}`: what merged, what remains, and any blockers.
+2. Update the PR roadmap and task statuses in `work/{name}/plan.md`.
+3. Delete that PR's worktree if appropriate.
+4. Keep `work/{name}/` alive for the remaining PRs.
+
+### Final work close
+
+When all PRs are merged, cancelled, or deferred:
 
 1. `mem_save` under `work/{name}/done`: outcome, what shipped, anything left pending.
 2. If the PRD has lasting documentation value, move it to where the project keeps docs (e.g. `docs/`); otherwise its key decisions already live in `done`.
-3. **Delete `work/{name}/`** and remove the work's worktree. Nothing to archive — git has the code, memory has the story.
+3. **Delete `work/{name}/`** and remove the remaining worktree(s). Nothing to archive — git has the code, memory has the story.
 4. `mem_session_summary` covers the session as usual.
+
+For single-PR work, the PR checkpoint and final work close happen together: one merge, one `work/{name}/done`, then cleanup.
 
 ## Rules
 
