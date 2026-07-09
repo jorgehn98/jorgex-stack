@@ -25,7 +25,7 @@ src/
 upstreams.json → terceros gestionados por `update` (engram, skills open-source) con fuente y versión
 ```
 
-Mapeo de formatos por runtime: cada adapter en `src/adapters/` declara su formato nativo. Modelos: tiers `strong|standard|cheap` resueltos con picker por runtime — Claude Code solo alias Claude (`fable`/`opus`/`sonnet`/`haiku`), Codex solo OpenAI, OpenCode lista en vivo de `opencode models`. La elección del usuario va a `model-map.json` local, nunca al repo.
+Mapeo de formatos por runtime: cada adapter en `src/adapters/` declara su formato nativo. Modelos: tiers `strong|standard|cheap` resueltos con picker por runtime — Claude Code solo alias Claude (`fable`/`opus`/`sonnet`/`haiku`), Codex solo OpenAI, OpenCode lista en vivo de `opencode models`.
 
 ## Comandos
 
