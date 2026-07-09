@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { DESTRUCTIVE_GIT_DENY } from "../src/lib/git-guard.js";
 import type { CanonicalAgent } from "../src/lib/canonical.js";
-import type { RuntimeModelMap } from "../src/lib/model-map.js";
+import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 
 const MODELS: RuntimeModelMap = {
   strong: { model: "fable" },
@@ -25,6 +25,22 @@ function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
 }
 
 describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
+  it("defaults GPT-5.6: Terra/xhigh para standard y Luna/medium para cheap", () => {
+    const [standard] = opencodeAdapter.renderAgent(
+      agent({ name: "implementer", tier: "standard" }),
+      DEFAULT_MODEL_MAP.opencode,
+    );
+    expect(standard!.content).toContain("model: openai/gpt-5.6-terra");
+    expect(standard!.content).toContain("variant: xhigh");
+
+    const [cheap] = opencodeAdapter.renderAgent(
+      agent({ name: "docs-maintainer", tier: "cheap" }),
+      DEFAULT_MODEL_MAP.opencode,
+    );
+    expect(cheap!.content).toContain("model: openai/gpt-5.6-luna");
+    expect(cheap!.content).toContain("variant: medium");
+  });
+
   it("full-bash: '*' allow primero y luego los deny (última regla gana en OpenCode)", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ bash: "full" }), MODELS);
     const content = out!.content;
@@ -52,6 +68,8 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
   it("primary no fija permisos (usa los defaults globales)", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
     expect(out!.content).not.toContain("permission:");
+    expect(out!.content).not.toContain("model:");
+    expect(out!.content).not.toContain("variant:");
     expect(out!.content).not.toContain('"git reset*": deny');
   });
 });

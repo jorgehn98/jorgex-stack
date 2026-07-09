@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, upsertTomlSection } from "../src/lib/filemerge.js";
 import type { CanonicalAgent } from "../src/lib/canonical.js";
-import type { RuntimeModelMap } from "../src/lib/model-map.js";
+import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 
 const MODELS: RuntimeModelMap = {
   strong: { model: "default", variant: "high" },
@@ -57,6 +57,16 @@ describe("codexAdapter.renderAgent", () => {
     const [out] = codexAdapter.renderAgent(agent({}), models);
     expect(out!.content).toContain('model = "gpt-5.4-mini"');
     expect(out!.content).not.toContain("model_reasoning_effort");
+  });
+
+  it("defaults GPT-5.6: Terra/xhigh para standard y Luna/medium para cheap", () => {
+    const [standard] = codexAdapter.renderAgent(agent({ name: "implementer", tier: "standard" }), DEFAULT_MODEL_MAP.codex);
+    expect(standard!.content).toContain('model = "gpt-5.6-terra"');
+    expect(standard!.content).toContain('model_reasoning_effort = "xhigh"');
+
+    const [cheap] = codexAdapter.renderAgent(agent({ name: "docs-maintainer", tier: "cheap" }), DEFAULT_MODEL_MAP.codex);
+    expect(cheap!.content).toContain('model = "gpt-5.6-luna"');
+    expect(cheap!.content).toContain('model_reasoning_effort = "medium"');
   });
 
   it("el primary (orchestrator) → profile + skill, sin model ni effort (usa el del usuario)", () => {

@@ -24,7 +24,7 @@ For development from a clone, run the same commands through `pnpm cli <command>`
 
 Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched.
 
-Permission defaults by runtime (what gets installed, what stays custom, and the read-anywhere limitations) are documented in [docs/references/permissions.md](docs/references/permissions.md).
+Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for model selection, GPT-5.6 subagent tiers, and orchestrator inheritance.
 
 ### Modes: Human and Programmatic
 
