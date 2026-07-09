@@ -8,14 +8,19 @@ let tmp: string;
 
 const toSlashes = (value: string) => value.replace(/\\/g, "/");
 
-const makePlugin = async (root: string, spawn = vi.fn()) => {
+const makePlugin = async (
+  root: string,
+  config: Record<string, unknown> = {},
+  spawn = vi.fn(),
+) => {
   vi.stubGlobal("Bun", {
     file: () => ({
-      text: async () => JSON.stringify({
-        setupScript: "setup.ps1",
-        pathContains: "worktrees\\",
-        branchPrefix: "",
-      }),
+      text: async () =>
+        JSON.stringify({
+          setupScript: "setup.ps1",
+          pathContains: "worktrees\\",
+          ...config,
+        }),
     }),
     spawn: spawn.mockReturnValue({
       stdout: "setup ok",
@@ -24,14 +29,15 @@ const makePlugin = async (root: string, spawn = vi.fn()) => {
     }),
   });
 
-  const dollar = (() => { const r: any = { text: async () => `${root}\n` }; r.quiet = () => r; return r; }) as any;
+  const dollar = (() => {
+    const r: any = { text: async () => `${root}\n` };
+    r.quiet = () => r;
+    return r;
+  }) as any;
+  const $ = ((strings: TemplateStringsArray) => dollar(strings)) as any;
   const client = { app: { log: vi.fn() } };
   const plugin = await WorktreePlugin({ $, client, directory: root } as any);
   return { plugin, spawn };
-
-  function $(strings: TemplateStringsArray) {
-    return dollar(strings);
-  }
 };
 
 beforeEach(() => {
@@ -63,8 +69,42 @@ describe("WorktreePlugin", () => {
 
     const expectedPath = `${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/canonical-name`;
     expect(spawn).toHaveBeenCalledOnce();
-    expect(spawn.mock.calls[0]![1].env.OPENCODE_WORKTREE_PATH).toBe(expectedPath);
+    const [, options] = spawn.mock.calls[0]!;
+    const payload = JSON.parse(await (options as { stdin: Response }).stdin.text()) as Record<string, string>;
+
+    expect((options as { env: Record<string, string> }).env.OPENCODE_WORKTREE_PATH).toBe(expectedPath);
+    expect(payload.worktreeName).toBe("canonical-name");
+    expect(payload.branchName).toBe("canonical-name");
     expect(spawn.mock.calls[0]![0]).toContain(expectedPath);
+    expect(output.output).toContain("Worktree setup complete: canonical-name");
+  });
+
+  it("keeps explicit branchPrefix support for single-PR worktrees", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, { branchPrefix: "feature/" });
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).toHaveBeenCalledOnce();
+    const [, options] = spawn.mock.calls[0]!;
+    const payload = JSON.parse(await (options as { stdin: Response }).stdin.text()) as Record<string, string>;
+
+    expect((options as { env: Record<string, string> }).env.OPENCODE_WORKTREE_PATH).toBe(
+      `${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/canonical-name`,
+    );
+    expect(payload.worktreeName).toBe("canonical-name");
+    expect(payload.branchName).toBe("feature/canonical-name");
     expect(output.output).toContain("Worktree setup complete: canonical-name");
   });
 

@@ -292,7 +292,6 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
   let config: WorktreePluginConfig = {
     setupScript: "scripts/setup-worktree.ps1",
     pathContains: "worktrees/",
-    branchPrefix: "feature/",
     reminderLines: [],
   };
 
@@ -360,7 +359,9 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
 
         const branchName = isPerPrWorktreeName(worktreeName)
           ? worktreeName
-          : `${config.branchPrefix || "feature/"}${worktreeName}`;
+          : config.branchPrefix
+            ? `${config.branchPrefix}${worktreeName}`
+            : worktreeName;
 
         // .quiet() suppresses stderr to prevent noisy TUI logs from git calls
         const gitRoot = await $`git rev-parse --show-toplevel`.quiet().text();
