@@ -11,34 +11,11 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
-import { deepEqual } from "../lib/deep-equal.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
   return JSON.stringify(value);
 }
-
-const LEGACY_PERMISSION_DEFAULT = {
-  edit: "allow",
-  read: "allow",
-  glob: "allow",
-  grep: "allow",
-  list: "allow",
-  lsp: "allow",
-  webfetch: "allow",
-  websearch: "allow",
-  bash: {
-    "*": "allow",
-    "rm *": "ask",
-    "del *": "ask",
-    "rmdir *": "ask",
-    "git push --force*": "ask",
-    "format *": "deny",
-    "mkfs *": "deny",
-    "dd *": "deny",
-    "shred *": "deny",
-  },
-} as const;
 
 export const opencodeAdapter: Adapter = {
   id: "opencode",
@@ -172,18 +149,17 @@ export const opencodeAdapter: Adapter = {
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "opencode.json");
     const { pluginsDir } = this.paths(ctx.configDir);
+    const original = readTextIfExists(file);
+    const contentSource = original === null || original.trim() === "" ? null : original;
+    const isFreshConfig = contentSource === null;
 
-    const content = upsertJson(readTextIfExists(file), (root) => {
+    const content = upsertJson(contentSource, (root) => {
       root["$schema"] ??= "https://opencode.ai/config.json";
 
-      // Permisos por defecto: solo si el usuario no tiene ya la clave —
-      // una config de permisos existente no se toca ni se re-impone jamás.
+      // Permisos por defecto: solo en config fresca o vacía. Una config
+      // existente no se auto-expande jamás.
       const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
-      const currentPermission = root["permission"];
-      if (
-        defaults?.["permission"] !== undefined &&
-        (currentPermission === undefined || deepEqual(currentPermission, LEGACY_PERMISSION_DEFAULT))
-      ) {
+      if (isFreshConfig && defaults?.["permission"] !== undefined) {
         root["permission"] = defaults["permission"];
       }
 

@@ -237,7 +237,7 @@ describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
     expect(content).not.toContain("disableBypassPermissionsMode");
   });
 
-  it("migra el default viejo exacto y preserva permisos custom sin mezclar un nuevo default", () => {
+  it("preserva permisos custom y no auto-migra el legacy exacto", () => {
     fs.writeFileSync(
       settingsFile,
       JSON.stringify({
@@ -264,11 +264,11 @@ describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
       }),
     );
 
-    const migrated = run(makeCtx());
-    const migratedPermissions = migrated.settings.permissions as { allow?: string[]; deny?: string[] };
-    expect(migratedPermissions.allow).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
-    expect(migratedPermissions.deny).toEqual(
-      expect.arrayContaining(["Read(//**/.env)", "Read(//**/.env.*)"]),
-    );
+    const legacy = run(makeCtx());
+    expect(legacy.settings.permissions).toEqual({
+      allow: ["Bash", "Edit", "Write", "WebFetch", "WebSearch"],
+      ask: ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
+      deny: ["Bash(format:*)", "Bash(mkfs:*)", "Bash(dd:*)", "Bash(shred:*)", "Read(./.env)", "Read(./.env.*)"],
+    });
   });
 });

@@ -181,7 +181,7 @@ describe("backup: dedup de snapshots idénticos", () => {
   });
 });
 
-describe("permisos por defecto: lectura externa sin permisos", () => {
+describe("permisos por defecto: lectura externa sin write-anywhere", () => {
   const makeCtx = (id: "opencode" | "codex") => ({
     stackDir: stackRoot(),
     configDir: tmp,
@@ -191,14 +191,14 @@ describe("permisos por defecto: lectura externa sin permisos", () => {
   });
   const mcp = () => loadCanonicalMcp(stackRoot());
 
-  it("opencode: la config fresca abre lectura externa y reglas read/env, pero no broad bypass", () => {
+  it("opencode: la config fresca abre lectura externa y reglas read/env, pero no write-anywhere", () => {
     const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
     const fresh = JSON.parse((action as { content: string }).content);
     expect(fresh.permission).toMatchObject({
       external_directory: { "*": "allow" },
       read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
       bash: {
-        "*": "allow",
+        "*": "ask",
         "rm *": "ask",
         "del *": "ask",
         "rmdir *": "ask",
@@ -209,10 +209,11 @@ describe("permisos por defecto: lectura externa sin permisos", () => {
         "shred *": "deny",
       },
     });
-    expect(JSON.stringify(fresh)).not.toMatch(/danger-full-access|bypassPermissions/);
+    expect(fresh.permission.edit).not.toBe("allow");
+    expect(fresh.permission.bash["*"]).not.toBe("allow");
   });
 
-  it("opencode: migra el default viejo exacto y deja intacta la config custom", () => {
+  it("opencode: deja intacta la config custom y no auto-migra el legacy exacto", () => {
     writeText(path.join(tmp, "opencode.json"), JSON.stringify({ permission: { edit: "deny", read: "ask" } }));
     const [custom] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
     expect(JSON.parse((custom as { content: string }).content).permission).toEqual({ edit: "deny", read: "ask" });
@@ -246,11 +247,86 @@ describe("permisos por defecto: lectura externa sin permisos", () => {
 
     const [legacy] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
     const migrated = JSON.parse((legacy as { content: string }).content);
-    expect(migrated.permission).toMatchObject({
-      external_directory: { "*": "allow" },
-      read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+    expect(migrated.permission).toEqual({
+      edit: "allow",
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      list: "allow",
+      lsp: "allow",
+      webfetch: "allow",
+      websearch: "allow",
+      bash: {
+        "*": "allow",
+        "rm *": "ask",
+        "del *": "ask",
+        "rmdir *": "ask",
+        "git push --force*": "ask",
+        "format *": "deny",
+        "mkfs *": "deny",
+        "dd *": "deny",
+        "shred *": "deny",
+      },
     });
-    expect(migrated.permission.read).not.toBe("allow");
+    expect(migrated.permission.external_directory).toBeUndefined();
+    expect(migrated.permission.read).toBe("allow");
+  });
+
+  it("opencode: el legacy exacto no se auto-migra ni avisa", () => {
+    writeText(
+      path.join(tmp, "opencode.json"),
+      JSON.stringify({
+        permission: {
+          edit: "allow",
+          read: "allow",
+          glob: "allow",
+          grep: "allow",
+          list: "allow",
+          lsp: "allow",
+          webfetch: "allow",
+          websearch: "allow",
+          bash: {
+            "*": "allow",
+            "rm *": "ask",
+            "del *": "ask",
+            "rmdir *": "ask",
+            "git push --force*": "ask",
+            "format *": "deny",
+            "mkfs *": "deny",
+            "dd *": "deny",
+            "shred *": "deny",
+          },
+        },
+      }),
+    );
+
+    const ctx = { ...makeCtx("opencode"), engramBin: "/opt/engram" };
+    const [legacy] = opencodeAdapter.planMainConfig(mcp(), ctx);
+    const migrated = JSON.parse((legacy as { content: string }).content);
+
+    expect(migrated.permission).toEqual({
+      edit: "allow",
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      list: "allow",
+      lsp: "allow",
+      webfetch: "allow",
+      websearch: "allow",
+      bash: {
+        "*": "allow",
+        "rm *": "ask",
+        "del *": "ask",
+        "rmdir *": "ask",
+        "git push --force*": "ask",
+        "format *": "deny",
+        "mkfs *": "deny",
+        "dd *": "deny",
+        "shred *": "deny",
+      },
+    });
+    expect(migrated.permission.external_directory).toBeUndefined();
+    expect(ctx.warnings.join("\n")).not.toMatch(/external\s+directory|read-anywhere|external edits/i);
   });
 
   it("codex: la config fresca publica jorgex-read-anywhere sin sandbox_mode", () => {
@@ -272,6 +348,32 @@ describe("permisos por defecto: lectura externa sin permisos", () => {
     expect(existing).not.toContain('[permissions.jorgex-read-anywhere]');
   });
 
+  it.each(["read-only", "danger-full-access"] as const)(
+    "codex: sandbox_mode %s sin permisos no deja un default_permissions colgando",
+    (sandboxMode) => {
+      writeText(path.join(tmp, "config.toml"), `approval_policy = "never"\nsandbox_mode = "${sandboxMode}"\n`);
+
+      const [action] = codexAdapter.planMainConfig(mcp(), makeCtx("codex"));
+      const content = (action as { content: string }).content;
+
+      expect(content).toContain(`sandbox_mode = "${sandboxMode}"`);
+      expect(content).not.toContain('default_permissions = "jorgex-read-anywhere"');
+      expect(content).not.toContain('[permissions.jorgex-read-anywhere]');
+    },
+  );
+
+  it("codex: sandbox_mode con comentario inline se respeta como sandbox custom y no activa el perfil jorgex", () => {
+    writeText(
+      path.join(tmp, "config.toml"),
+      'approval_policy = "never"\nsandbox_mode = "read-only" # custom\n',
+    );
+
+    const custom = (codexAdapter.planMainConfig(mcp(), makeCtx("codex"))[0] as { content: string }).content;
+    expect(custom).toContain('sandbox_mode = "read-only" # custom');
+    expect(custom).not.toContain('default_permissions = "jorgex-read-anywhere"');
+    expect(custom).not.toContain('[permissions.jorgex-read-anywhere]');
+  });
+
   it("codex: la config con [permissions.custom] no recibe default_permissions ni el perfil jorgex", () => {
     writeText(path.join(tmp, "config.toml"), 'approval_policy = "never"\n[permissions.custom]\nallow = ["Read"]\n');
     const custom = (codexAdapter.planMainConfig(mcp(), makeCtx("codex"))[0] as { content: string }).content;
@@ -283,10 +385,24 @@ describe("permisos por defecto: lectura externa sin permisos", () => {
     writeText(path.join(tmp, "config.toml"), 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n');
 
     const [legacy] = codexAdapter.planMainConfig(mcp(), makeCtx("codex"));
-    const migrated = (legacy as { content: string }).content;
-    expect(migrated).toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(migrated).toContain("[permissions.jorgex-read-anywhere]");
-    expect(migrated).not.toContain('sandbox_mode = "workspace-write"');
+    const preserved = (legacy as { content: string }).content;
+    expect(preserved).toContain('approval_policy = "on-request"');
+    expect(preserved).toContain('sandbox_mode = "workspace-write"');
+    expect(preserved).not.toContain('default_permissions = "jorgex-read-anywhere"');
+    expect(preserved).not.toContain("[permissions.jorgex-read-anywhere]");
+  });
+
+  it("codex: el legacy workspace-write con comentario inline se preserva sin perfil jorgex", () => {
+    writeText(
+      path.join(tmp, "config.toml"),
+      'approval_policy = "on-request"\nsandbox_mode = "workspace-write" # old default\n',
+    );
+
+    const preserved = (codexAdapter.planMainConfig(mcp(), makeCtx("codex"))[0] as { content: string }).content;
+    expect(preserved).toContain('approval_policy = "on-request"');
+    expect(preserved).toContain('sandbox_mode = "workspace-write" # old default');
+    expect(preserved).not.toContain('default_permissions = "jorgex-read-anywhere"');
+    expect(preserved).not.toContain("[permissions.jorgex-read-anywhere]");
   });
 });
 

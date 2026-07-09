@@ -50,22 +50,6 @@ function hasEngramProtocol(configDir: string): boolean {
   return config !== null && /engram-instructions\.md/.test(config);
 }
 
-function hasCustomPermissionConfig(content: string): boolean {
-  return /^\s*default_permissions\s*=/m.test(content) || /^\s*\[permissions(?:\.|])/m.test(content);
-}
-
-function readSandboxMode(content: string | null): string | null {
-  const match = content === null ? null : /^\s*sandbox_mode\s*=\s*"([^"]+)"\s*$/m.exec(content);
-  return match === null ? null : match[1]!;
-}
-
-function shouldAddReadAnywhereProfile(content: string | null): boolean {
-  if (content === null || content.trim() === "") return true;
-  if (hasCustomPermissionConfig(content)) return false;
-  const sandbox = readSandboxMode(content);
-  return sandbox === null || sandbox === "workspace-write";
-}
-
 function appendTomlBlock(existing: string | null, header: string, body: string): string {
   const block = `${header}\n${body.trim()}\n`;
   if (existing === null || existing.trim() === "") return block;
@@ -185,25 +169,18 @@ export const codexAdapter: Adapter = {
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "config.toml");
     const original = readTextIfExists(file);
-    let content = original;
+    const contentSource = original === null || original.trim() === "" ? null : original;
+    let content = contentSource;
 
-    // Permisos por defecto (claves top-level): solo si el usuario no las
-    // tiene — una config existente no se toca ni se re-impone jamás. Se
-    // anteponen al inicio del archivo, donde siempre son top-level.
-    const defaults = loadCanonicalDefaults(ctx.stackDir)["codex"] ?? {};
-    const hasCustomPermissions = original !== null && hasCustomPermissionConfig(original);
-    for (const [key, value] of Object.entries(defaults)) {
-      if (key === "default_permissions" && hasCustomPermissions) continue;
-      if (content !== null && new RegExp(`^\\s*${key}\\s*=`, "m").test(content)) continue;
-      const line = `${key} = ${tomlString(String(value))}\n`;
-      content = content === null ? line : line + content;
-    }
+    // Permisos por defecto: solo en config fresca o vacía. Una config
+    // existente no se auto-expande jamás.
+    if (contentSource === null) {
+      const defaults = loadCanonicalDefaults(ctx.stackDir)["codex"] ?? {};
+      for (const [key, value] of Object.entries(defaults)) {
+        const line = `${key} = ${tomlString(String(value))}\n`;
+        content = content === null ? line : line + content;
+      }
 
-    if (original !== null && readSandboxMode(original) === "workspace-write" && !hasCustomPermissionConfig(original) && content !== null) {
-      content = content.replace(/^\s*sandbox_mode\s*=\s*"workspace-write"\s*\r?\n?/m, "");
-    }
-
-    if (shouldAddReadAnywhereProfile(original)) {
       content = upsertTomlSection(content, "permissions.jorgex-read-anywhere", 'extends = ":workspace"');
       content = upsertTomlSection(
         content,

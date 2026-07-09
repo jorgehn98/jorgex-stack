@@ -9,7 +9,6 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
-import { deepEqual } from "../lib/deep-equal.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -33,12 +32,6 @@ const ENGRAM_AGENT_TOOLS = [
   "Skill",
   ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
-
-const LEGACY_CLAUDE_PERMISSIONS = {
-  allow: ["Bash", "Edit", "Write", "WebFetch", "WebSearch"],
-  ask: ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
-  deny: ["Bash(format:*)", "Bash(mkfs:*)", "Bash(dd:*)", "Bash(shred:*)", "Read(./.env)", "Read(./.env.*)"],
-} as const;
 
 /**
  * readonly → allowlist explícita; sin restricción → se omite `tools` y el
@@ -152,17 +145,19 @@ export const claudeCodeAdapter: Adapter = {
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
     const { scriptsDir } = this.paths(ctx.configDir);
+    const original = readTextIfExists(path.join(ctx.configDir, "settings.json"));
+    const contentSource = original === null || original.trim() === "" ? null : original;
 
     // El formato canónico ES el de Claude Code: upsert directo en settings.json.
     const settingsFile = path.join(ctx.configDir, "settings.json");
-    let content = upsertNativeHooks(readTextIfExists(settingsFile), canonical, scriptsDir);
-    // Permisos por defecto: solo si el usuario no tiene ya la clave —
-    // una config de permisos existente no se toca ni se re-impone jamás.
+    let content = upsertNativeHooks(contentSource, canonical, scriptsDir);
+
+    // Permisos por defecto: solo en config fresca o vacía. Una config
+    // existente no se auto-expande jamás.
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
-    if (defaults?.["permissions"] !== undefined) {
+    if (contentSource === null && defaults?.["permissions"] !== undefined) {
       content = upsertJson(content, (root) => {
-        const permissions = root["permissions"];
-        if (permissions === undefined || deepEqual(permissions, LEGACY_CLAUDE_PERMISSIONS)) {
+        if (root["permissions"] === undefined) {
           root["permissions"] = defaults["permissions"];
         }
       });

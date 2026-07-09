@@ -1,10 +1,13 @@
 # Permisos por defecto del stack
 
 Lo que `pnpm dlx jorgex-stack install` (o `sync`) escribe en la config de cada
-runtime cuando el usuario **no** tiene ya la clave correspondiente. Si el
-usuario tiene su propia config, el stack la respeta: no la toca ni la
-re-impone. Revisado y aceptado el 2026-07-09 tras el commit
-`feat(config): allow external read defaults`.
+runtime cuando el usuario **no** tiene config previa. Si el usuario ya
+tiene su propia config, el stack la respeta: no la toca, no la re-impone
+y no la migra — ni siquiera si coincide exactamente con el default
+anterior. Revisado y aceptado el 2026-07-09 tras el commit
+`feat(config): allow external read defaults`, endurecido tras T13/T14
+para retirar la auto-migración de legacy exacto y endurecer el default
+fresco de OpenCode contra write-anywhere silencioso.
 
 > Fuente canónica: `stack/config/defaults.json`. Los detalles de la limitación
 > posicional del matching de `Bash` en Claude Code viven en
@@ -20,21 +23,25 @@ re-impone. Revisado y aceptado el 2026-07-09 tras el commit
 | Claude Code  | `~/.claude/settings.json`        | `permissions`                                           |
 | Codex CLI    | `~/.codex/config.toml`           | `approval_policy` + `default_permissions` + perfil      |
 
-Cada adapter escribe **solo** si la clave no existe ya en ese archivo. Una
-vez escrita, esa sección pasa a ser **config del usuario**: quitarla o
-editarla a mano es seguro, y el próximo `sync` ya no la sobrescribirá
-porque ya existe. Esta es la regla "casi todo allow, lo destructivo ask/deny"
-del briefing del repo.
+Cada adapter escribe su bloque **solo** en config fresca o vacía (el
+archivo de usuario no existe o está vacío). Una config existente — sea
+custom o coincidente con el legacy exacto — se preserva tal cual; el
+adapter no la toca, no la re-impone y no la migra automáticamente. Una
+vez escrita (en la primera instalación), esa sección pasa a ser
+**config del usuario**: quitarla o editarla a mano es seguro, y el
+próximo `sync` ya no la sobrescribirá porque ya no es "fresca". Esta
+es la regla "read-anywhere fresco, writes approval-gated" del briefing
+del repo.
 
 ---
 
 ## 2. OpenCode — `permission`
 
-Bloque escrito bajo la clave `permission`:
+Bloque escrito bajo la clave `permission` **solo en config fresca o vacía**:
 
 ```jsonc
 {
-  "edit": "allow",
+  "edit": "ask",
   "read": {
     "*": "allow",
     "*.env": "deny",
@@ -49,7 +56,10 @@ Bloque escrito bajo la clave `permission`:
   "webfetch": "allow",
   "websearch": "allow",
   "bash": {
-    "*": "allow",
+    "*": "ask",
+    "git diff*": "allow",
+    "git log*": "allow",
+    "git status*": "allow",
     "rm *": "ask",
     "del *": "ask",
     "rmdir *": "ask",
@@ -65,24 +75,33 @@ Bloque escrito bajo la clave `permission`:
 - **`read` como objeto**: `* = allow` quita el prompt para cualquier ruta;
   `*.env` y `*.env.*` niegan secretos locales; `*.env.example` se permite
   como fixture.
-- **`external_directory` amplio**: rutas fuera del cwd no preguntan.
+- **`external_directory: * = allow`**: rutas fuera del cwd no preguntan
+  para lecturas (`read`/`glob`/`grep`). Es la pieza que habilita el
+  read-anywhere.
+- **`edit: ask`**: ningún edit (interno ni externo) corre sin aprobación
+  explícita del usuario. Endurecimiento T14: el default fresco ya no
+  concede `edit: allow`.
+- **`bash: { "*": "ask", ... }`**: cualquier comando arbitrario pide
+  aprobación. Solo los sub-comandos de **lectura** explícitamente
+  inocuos van con `allow`: `git diff*`, `git log*`, `git status*`. El
+  resto de comandos peligrosos sigue con `ask`/`deny` como en el
+  default anterior.
 
-**Limitación documentada — los edits externos también pasan.** En OpenCode,
-`external_directory` no es una puerta solo de lectura: aplica a `read`,
-`edit`, `glob`, `grep` y a muchos comandos `bash`. No existe (en la doc
-actual de OpenCode) un camino cwd-independiente que diga "todo lo externo es
-legible, nada editable" mientras se conservan los edits dentro del
-workspace. Por eso el default trae `external_directory: * = allow` **y**
-`edit: allow`: la consecuencia honesta es que el agente **puede escribir
-fuera del cwd**. Quien no lo quiera debe cambiar `edit` a `ask` o `deny` a
+**Por qué `external_directory: * = allow` no implica write-anywhere
+silencioso.** `external_directory` aplica a `read`/`glob`/`grep` y a
+algunos comandos `bash`, pero los `edit` y el resto de `bash` se rigen
+por sus propias claves — que en este default están en `ask`. La
+combinación es: leer sin prompt, escribir con prompt. Quien quiera
+endurecer más puede bajar `external_directory: *` a `ask` o `deny` a
 mano — el stack no lo sobreescribirá después, porque ya no es la clave
 ausente.
 
-**Migración desde el default anterior.** El default viejo era `read: "allow"`
-(string plano, sin denies) y carecía de `external_directory`. El adapter
-reemplaza el bloque entero solo cuando coincide **exactamente** con ese
-legacy (helper `deepEqual` en `src/lib/deep-equal.ts`, invocado por el
-adapter de OpenCode). Config personalizada → se preserva intacta.
+**El adapter no migra.** El default viejo era `read: "allow"` (string
+plano) y `bash: { "*": "allow", ... }`, sin `external_directory`. Si tu
+`opencode.json` ya trae una `permission` (custom o exactamente igual a
+ese legacy), el adapter la deja intacta: no la reemplaza, no la expande,
+no emite warning. Para subir al nuevo default manualmente, edita a mano
+o borra la clave `permission` y re-ejecuta `sync`.
 
 ---
 
@@ -108,10 +127,9 @@ Bloque escrito bajo la clave `permissions`:
   mostrando.
 - **Denies `Read(//**/.env)` y `Read(//**/.env.*)`**: sintaxis POSIX
   absoluta (`//**/` es la raíz virtual de Claude Code en Windows; casa a
-  través de discos, no solo del cwd). El default viejo era
-  `Read(./.env)` / `Read(./.env.*)` (relativo al cwd); el adapter reemplaza
-  el bloque solo si coincide exactamente con ese legacy (comparación
-  estricta en el adapter de Claude Code).
+  través de discos, no solo del cwd). El default viejo usaba patrones
+  relativos al cwd (`Read(./.env)` / `Read(./.env.*)`), que no cubrían
+  rutas absolutas.
 - **`Bash(git push --force:*)` sigue siendo `ask` y sigue siendo
   posicional**. Ver `docs/references/claude-code-limits.md` §1: no captura
   `git push origin main --force` con `--force` al final. La cobertura real
@@ -133,18 +151,20 @@ Bloque escrito bajo la clave `permissions`:
 La solución correcta es añadir manualmente la entrada que falte — el stack
 no va a "rellenar" lo que el usuario haya decidido no declarar.
 
-**Migración desde el default anterior.** Si tu `permissions` coincide
-exactamente con el legacy (allow sin Read/Grep/Glob, deny con
-`Read(./.env*)`), el adapter lo reemplaza por el nuevo bloque. Cualquier
-configuración personalizada se preserva.
+**El adapter no migra.** El default viejo era `allow` sin
+`Read`/`Grep`/`Glob` y `deny` con `Read(./.env*)`. Si tu `settings.json`
+ya trae una `permissions` (custom o exactamente igual a ese legacy), el
+adapter la deja intacta: no la reemplaza, no la expande, no emite
+warning. Para subir al nuevo default manualmente, edita a mano o borra
+la clave `permissions` y re-ejecuta `sync`.
 
 ---
 
 ## 4. Codex CLI — permission profile `jorgex-read-anywhere`
 
 Codex no usa `permissions` top-level para esto: usa **permission profiles**
-(beta). El adapter escribe, **si y solo si** la config del usuario no tiene
-ya `default_permissions` ni ninguna sección `[permissions.*]`:
+(beta). El adapter escribe el siguiente bloque **solo en `config.toml`
+fresco o vacío** (archivo ausente o vacío):
 
 ```toml
 approval_policy = "on-request"
@@ -171,46 +191,56 @@ extends = ":workspace"
 
 **Limitación — los profiles no se mezclan con `sandbox_mode`.** La doc de
 Codex indica que un perfil de permisos y `sandbox_mode` no componen: si
-defines ambos, uno gana de forma no especificada. Por eso el adapter **no
-escribe `sandbox_mode`** cuando va a usar el perfil. Si tu `config.toml`
-trae el viejo `sandbox_mode = "workspace-write"` del default anterior **y**
-no trae `default_permissions` ni `[permissions.*]`, el adapter lo retira y
-añade el perfil. Si tienes tu propio `sandbox_mode` o tu propio
-`[permissions.*]`, **no** se toca nada en esta zona.
+defines ambos, uno gana de forma no especificada. Por eso el adapter, en
+instalación fresca, escribe `default_permissions` + perfil y **no**
+escribe `sandbox_mode` (lo deja ausente, que es el comportamiento neutro
+de Codex).
 
-**Guard de `default_permissions`.** Si tu `config.toml` ya tiene
-`default_permissions = "..."` o cualquier sección `[permissions.*]`
-(incluido un `[permissions.custom]` de un proyecto), el adapter no añade
-ni `default_permissions` ni el perfil — interpreta que ya gestionas
-permisos a tu manera y deja tu config aislada (predicado
-`hasCustomPermissions` y rama de migración del adapter de Codex).
+**`config.toml` existente se preserva tal cual.** Si tu `config.toml`
+existe, el adapter no lo modifica. En particular:
 
-**Migración desde el default anterior.** El default viejo era
-`approval_policy = "on-request"` + `sandbox_mode = "workspace-write"`. Si tu
-`config.toml` tiene solo eso (sin `default_permissions`, sin
-`[permissions.*]`), el adapter retira `sandbox_mode` y añade el perfil.
-Cualquier otra combinación se respeta.
+- Si ya tienes `default_permissions = "..."` o cualquier sección
+  `[permissions.*]` (incluido un `[permissions.custom]` de un proyecto),
+  el adapter no añade ni `default_permissions` ni el perfil
+  `jorgex-read-anywhere` — interpreta que ya gestionas permisos a tu
+  manera y deja tu config aislada.
+- Si ya tienes `sandbox_mode = "..."` (`"workspace-write"`,
+  `"read-only"`, `"danger-full-access"`, …) con o sin comentario inline,
+  el adapter respeta ese valor. **No** se sustituye por el perfil
+  `jorgex-read-anywhere` ni se reescribe `default_permissions`.
+
+El matching de `sandbox_mode` es por línea e ignora un `# comentario`
+final: `sandbox_mode = "workspace-write" # por qué` se reconoce igual que
+la versión sin comentario. Esto es deliberado: una línea de sandbox con
+comentario es una línea de sandbox, no un default ausente.
 
 ---
 
-## 5. Cuándo NO migra (y qué hacer)
+## 5. Cómo subirte al nuevo default manualmente
 
-El adapter **no** migra cuando la config existente difiere del legacy
-exacto en **cualquier** clave. Esto es deliberado: perder una config
-personalizada por asumir que coincide con el default sería un bug de
-seguridad, no una mejora.
+El adapter **nunca** migra una config existente (custom o coincidente
+con el legacy exacto). Esto es deliberado: reescribir permisos a espaldas
+del usuario sería un bug de seguridad, no una mejora. La regla "config
+existente gana" es absoluta y no se atenúa con avisos.
 
-Si tienes una config custom que querrías alinear al nuevo default:
+Si quieres alinear tu `permission` / `permissions` / `config.toml` al
+nuevo default:
 
-1. Compara tu bloque actual con el legacy correspondiente en
-   `stack/config/defaults.json` (cualquier commit anterior a
-   `feat(config): allow external read defaults`).
-2. Si difiere, edita a mano — el adapter no va a tocar tu config.
-3. Como alternativa nuclear: borra la clave entera (`permission`,
-   `permissions`, o las secciones `[permissions.*]` de Codex) y re-ejecuta
-   `sync`; el adapter verá "ausente" y escribirá el default nuevo. Haz
-   backup antes (cada `sync` ya hace backup automático de los archivos que
-   toca; `uninstall` también restaura, ver README §Usage).
+1. Compara tu bloque actual con el default canónico en
+   `stack/config/defaults.json`.
+2. Si difiere a mano, edita a mano — el adapter no va a tocar tu
+   config.
+3. Como alternativa limpia: borra la clave entera (`permission` en
+   OpenCode, `permissions` en Claude Code, o las secciones
+   `[permissions.*]` en Codex) y re-ejecuta `sync`. El adapter verá
+   "ausente" y escribirá el default nuevo. Cada `sync` ya hace backup
+   automático de los archivos que toca; `uninstall` también restaura
+   desde backup (ver README §Usage).
+
+> Importante: la opción 3 **no** se ofrece como flujo automático
+> (`jorgex-stack upgrade`, etc.). La idea es que la decisión de
+> sobrescribir tu config la tomes tú, de forma explícita, con un
+> `sync` por detrás.
 
 ---
 

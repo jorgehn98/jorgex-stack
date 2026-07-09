@@ -1,8 +1,8 @@
 {
-  "$comment": "Permisos por defecto del stack: casi todo permitido, lo destructivo pregunta o se bloquea. REGLA DE ORO: cada bloque se escribe SOLO si el usuario aún no tiene esa clave en su config — si ya la tiene (suya o ajustada después), el sync no la toca jamás. Quitar o editar estos valores tras el install es seguro: pasan a ser config del usuario.",
+  "$comment": "Permisos por defecto del stack: cada bloque se escribe SOLO en config fresca o vacía; una config existente no se auto-expande jamás. OpenCode fresh default permite leer fuera del cwd, pero deja edit/bash en ask salvo allow explícito para lecturas seguras.",
   "opencode": {
     "permission": {
-      "edit": "allow",
+      "edit": "ask",
       "read": {
         "*": "allow",
         "*.env": "deny",
@@ -19,7 +19,10 @@
       "webfetch": "allow",
       "websearch": "allow",
       "bash": {
-        "*": "allow",
+        "*": "ask",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git status*": "allow",
         "rm *": "ask",
         "del *": "ask",
         "rmdir *": "ask",
