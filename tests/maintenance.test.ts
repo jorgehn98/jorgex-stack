@@ -449,6 +449,15 @@ describe("worktree workflow contract", () => {
     ]);
   });
 
+  it("keeps the root AGENTS multi-PR contract aligned with the worktree naming rules", () => {
+    expectFragments(fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8"), [
+      "<project-root>/worktrees/<canonical-name>-prNN",
+      "branch = worktree name",
+      "work/{name}/pr/{NN}",
+      "work/{name}/done",
+    ]);
+  });
+
   it.each(MULTI_PR_LIFECYCLE_CASES)("$relativePath preserves the multi-PR checkpoint contract", ({ relativePath, fragments }) => {
     expectFragments(readStackFile(relativePath), [...fragments]);
   });

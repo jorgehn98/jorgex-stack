@@ -9,7 +9,7 @@ One rule kills duplication: **every piece of information has exactly ONE home**.
 
 ## Identity
 
-Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `checkout-refactor`), shared with the branch if applicable. The name stays the same across its whole life — it is the key to everything else.
+Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `checkout-refactor`), shared with the single-PR branch/worktree name and the base name for multi-PR checkpoints. The name stays the same across its whole life — it is the key to everything else.
 
 ## Where everything lives
 
@@ -35,11 +35,11 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 ## Executing
 
 - Execution happens inside a git worktree created for the work; the user's main checkout stays untouched until merge.
-- Worktree path is fixed: first resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/{canonical-name}-prNN` for multi-PR checkpoints. Never place worktrees in the repo root, next to the repo, under `work/`, or outside the project.
+- Worktree path is fixed: first resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/{canonical-name}-prNN` for multi-PR checkpoints, with the branch matching the worktree name. Never place worktrees in the repo root, next to the repo, under `work/`, or outside the project.
 - Delegation handoff: the subagent receives its **topic_key + task title**, never the task content inline. It retrieves the spec itself (`mem_search` → `mem_get_observation`).
 - The subagent saves its phase outcome under the topic_key the orchestrator gave it (`work/{name}/{phase}`) BEFORE its final report.
 - Task status lives ONLY in the plan.md table: flip it (⬜ → ✅) with a surgical edit when the task closes. Do not mirror statuses into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
-- For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree is enough and the roadmap collapses to one checkpoint.
+- For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree/branch is enough and the roadmap collapses to one checkpoint.
 
 ## HTML review view (on demand)
 

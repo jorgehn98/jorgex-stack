@@ -68,6 +68,35 @@ describe("WorktreePlugin", () => {
     expect(output.output).toContain("Worktree setup complete: canonical-name");
   });
 
+  it("passes feature-pr01 as branchName for a multi-PR worktree", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/feature-pr01",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).toHaveBeenCalledOnce();
+    const [, options] = spawn.mock.calls[0]!;
+    const payload = JSON.parse(await (options as { stdin: Response }).stdin.text()) as Record<string, string>;
+
+    expect((options as { env: Record<string, string> }).env.OPENCODE_WORKTREE_PATH).toBe(
+      `${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/feature-pr01`,
+    );
+    expect(payload.worktreeName).toBe("feature-pr01");
+    expect(payload.branchName).toBe("feature-pr01");
+    expect(output.output).toContain("Worktree setup complete: feature-pr01");
+  });
+
   it("warns and skips setup for non-canonical worktree paths", async () => {
     const { plugin, spawn } = await makePlugin(tmp);
     const output: Record<string, string> = {};

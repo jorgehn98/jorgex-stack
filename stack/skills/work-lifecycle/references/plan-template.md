@@ -1,6 +1,6 @@
 # Plan & Task Templates
 
-Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and the atomic tasks (Engram observations). `[name]` is the canonical kebab-case name shared by `work/[name]/`, the branch and every topic_key.
+Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and the atomic tasks (Engram observations). `[name]` is the canonical kebab-case name shared by `work/[name]/` and every topic_key. PR branches/worktrees derive from it: `[name]` for single-PR work, `[name]-prNN` for multi-PR checkpoints.
 
 ---
 
