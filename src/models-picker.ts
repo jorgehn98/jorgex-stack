@@ -24,10 +24,18 @@ const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku", "inherit"];
 /**
  * Lista curada de modelos de Codex (login ChatGPT) — sin typos: se elige, no
  * se escribe. "default" usa el modelo vigente del CLI y nunca caduca; los IDs
- * concretos se refrescan con cada release del stack (junio 2026:
+ * concretos se refrescan con cada release del stack (julio 2026:
  * developers.openai.com/codex/models). "custom" queda como vía de escape.
  */
-const CODEX_MODELS = ["default", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+export const CODEX_MODELS = [
+  "default",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+];
 const CODEX_CUSTOM = "__custom__";
 
 const CANCEL = Symbol("cancel");

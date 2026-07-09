@@ -42,21 +42,22 @@ export function resolveAgentModel(models: RuntimeModelMap, agentName: string, ti
  */
 export const DEFAULT_MODEL_MAP: Required<ModelMap> = {
   opencode: {
-    strong: { model: "openai/gpt-5.4", variant: "high" },
-    standard: { model: "openai/gpt-5.4-mini", variant: "high" },
-    cheap: { model: "minimax/MiniMax-M3" },
+    strong: { model: "openai/gpt-5.6-terra", variant: "xhigh" },
+    standard: { model: "openai/gpt-5.6-terra", variant: "xhigh" },
+    cheap: { model: "openai/gpt-5.6-luna", variant: "medium" },
   },
   "claude-code": {
     strong: { model: "fable" },
     standard: { model: "sonnet" },
     cheap: { model: "haiku" },
   },
-  // Codex: "default" = no fijar modelo (usa el del CLI, que OpenAI actualiza
-  // solo — D6); variant → model_reasoning_effort.
+  // El primary (orchestrator) no usa estos tiers: tanto el profile de CLI como
+  // la skill de la app heredan el modelo elegido por el usuario. Estos defaults
+  // son solo para subagentes; variant → model_reasoning_effort.
   codex: {
-    strong: { model: "default", variant: "high" },
-    standard: { model: "default", variant: "medium" },
-    cheap: { model: "default", variant: "low" },
+    strong: { model: "gpt-5.6-terra", variant: "xhigh" },
+    standard: { model: "gpt-5.6-terra", variant: "xhigh" },
+    cheap: { model: "gpt-5.6-luna", variant: "medium" },
   },
 };
 
