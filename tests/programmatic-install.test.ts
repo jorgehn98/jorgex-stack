@@ -73,6 +73,11 @@ function expectProgrammaticPrimary(content: string, concurrency: SubagentConcurr
   expect(content).toContain("delegations");
   expect(content).toMatch(/English[- ]only/i);
   expect(content).toContain("Do not wrap the final JSON in Markdown");
+  expect(content).toContain("If a subagent reports `partial`");
+  expect(content).toContain("keep the safe work and relaunch only what still needs guidance");
+  expect(content).toContain("If a subagent reports `blocked`");
+  expect(content).toContain("one concrete question");
+  expect(content).toContain("explicit guidance");
   if (concurrency === "serial") {
     expect(content).toMatch(/one subagent at a time|no parallel delegation/i);
   } else {
@@ -84,6 +89,11 @@ function expectProgrammaticSubagent(content: string): void {
   expect(content).toMatch(/English[- ]only/i);
   expect(content).toMatch(/compact/i);
   expect(content).toMatch(/long Markdown reports/i);
+  expect(content).toContain("task-critical uncertainty");
+  expect(content).toContain("set `status` to `blocked`");
+  expect(content).toContain("one concrete question");
+  expect(content).toContain("main agent/orchestrator");
+  expect(content).toContain("report the remainder as `partial`");
 }
 
 function expectHumanSafe(content: string): void {
@@ -142,10 +152,15 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     for (const file of subagentTargets) expectProgrammaticSubagent(snapshot.get(file)!);
 
     expect(fs.existsSync(finalSchemaPath)).toBe(true);
-    const schema = JSON.parse(readText(finalSchemaPath)) as { required?: string[]; properties?: Record<string, unknown> };
+    const schema = JSON.parse(readText(finalSchemaPath)) as { required?: string[]; properties?: Record<string, unknown>; additionalProperties?: boolean };
     const required = schema.required ?? [];
     expect(required).toEqual(["status", "decision", "confidence", "summary", "risks", "next_steps", "delegations"]);
+    expect(schema.additionalProperties).toBe(false);
     expect(Object.keys(schema.properties ?? {})).toEqual(expect.arrayContaining(required));
+    const validSample = Object.fromEntries(required.map((key) => [key, key]));
+    const invalidSample = { ...validSample, unexpected: "boom" };
+    const allowedKeys = new Set(Object.keys(schema.properties ?? {}));
+    expect(Object.keys(invalidSample).filter((key) => !allowedKeys.has(key))).toEqual(["unexpected"]);
 
     await expect(
       runInstall({
@@ -172,8 +187,9 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       expect(readText(file)).not.toMatch(legacyDelegationLinePattern);
     }
 
-    const schema = JSON.parse(readText(finalSchemaPath)) as { required?: string[] };
+    const schema = JSON.parse(readText(finalSchemaPath)) as { required?: string[]; additionalProperties?: boolean };
     expect(schema.required).toEqual([...programmaticRequiredKeys]);
+    expect(schema.additionalProperties).toBe(false);
 
     const agentsAddendum = readText(path.join(stackRoot(), "modes", "programmatic", "AGENTS.addendum.md"));
     expect(agentsAddendum).toContain(programmaticRequiredKeysLine);

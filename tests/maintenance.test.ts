@@ -28,6 +28,15 @@ const expectFragments = (content: string, fragments: string[]) => {
   }
 };
 
+const expectFragmentsInOrder = (content: string, fragments: string[]) => {
+  let cursor = 0;
+  for (const fragment of fragments) {
+    const index = content.indexOf(fragment, cursor);
+    expect(index).toBeGreaterThanOrEqual(cursor);
+    cursor = index + fragment.length;
+  }
+};
+
 const REVIEW_ENTRYPOINT_CASES = [
   {
     relativePath: "commands/xreview.md",
@@ -554,25 +563,32 @@ describe("subagent uncertainty escalation contract", () => {
   it("agent-delegation fija la incertidumbre crítica de tarea como pregunta concreta al main agent/orchestrator y no como otro delegate", () => {
     const content = readStackFile("skills/agent-delegation/SKILL.md");
 
-    expect(content).toMatch(/task[- ]critical uncertainty/i);
-    expect(content).toMatch(/do not improvise/i);
-    expect(content).toMatch(/concrete question.*main agent.*orchestrator/i);
-    expect(content).toMatch(/delegations/i);
-    expect(content).toMatch(/another specialist/i);
+    expectFragments(content, [
+      "task-critical uncertainty",
+      "Do not improvise",
+      "one concrete question to the main agent/orchestrator",
+      "delegations",
+      "another specialist",
+    ]);
     expect(content).not.toMatch(/^\|\s*`orchestrator`\s*\|/m);
   });
 
   it("orchestrator explica cómo procesar un blocker/pregunta del subagent y relanzarlo con guidance", () => {
     const content = readStackFile("agents/orchestrator.md");
 
-    expect(content).toMatch(/subagent.*(question|blocker)[\s\S]{0,200}relaunch[\s\S]{0,120}guidance/i);
+    expectFragments(content, [
+      "If a subagent reports `partial`",
+      "keep the safe work and relaunch only what still needs guidance",
+      "If a subagent reports `blocked` with one concrete uncertainty question",
+      "answer it from existing context when possible",
+      "relaunch the original or a suitable specialist with explicit guidance",
+    ]);
   });
 
   it.each(DESTRUCTIVE_GIT_ESCALATION_CASES)("%s routea la duda sobre destructive git al main agent/orchestrator", (_name, relativePath) => {
     const content = readStackFile(relativePath);
 
-    expect(content).toMatch(/Never run destructive git/i);
-    expect(content).toMatch(/Never run destructive git[\s\S]{0,220}(main agent|orchestrator)/i);
+    expectFragmentsInOrder(content, ["Never run destructive git", "main agent/orchestrator"]);
     expect(content).not.toMatch(/Never run destructive git[\s\S]{0,220}ask the user/i);
   });
 });

@@ -82,6 +82,11 @@ function expectProgrammaticOrchestrator(content: string, concurrency: SubagentCo
   expect(content).toContain("delegations");
   expect(content).toMatch(/English[- ]only/i);
   expect(content).toContain("Do not wrap the final JSON in Markdown");
+  expect(content).toContain("If a subagent reports `partial`");
+  expect(content).toContain("keep the safe work and relaunch only what still needs guidance");
+  expect(content).toContain("If a subagent reports `blocked`");
+  expect(content).toContain("one concrete question");
+  expect(content).toContain("explicit guidance");
   if (concurrency === "serial") {
     expect(content).toMatch(/one subagent at a time|no parallel delegation/i);
   } else {
@@ -94,6 +99,11 @@ function expectProgrammaticSubagent(content: string): void {
   expect(content).toMatch(/English[- ]only/i);
   expect(content).toMatch(/compact/i);
   expect(content).toMatch(/long Markdown reports/i);
+  expect(content).toContain("task-critical uncertainty");
+  expect(content).toContain("set `status` to `blocked`");
+  expect(content).toContain("one concrete question");
+  expect(content).toContain("main agent/orchestrator");
+  expect(content).toContain("report the remainder as `partial`");
 }
 
 function expectHumanSafe(content: string): void {
