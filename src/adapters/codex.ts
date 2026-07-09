@@ -50,6 +50,12 @@ function hasEngramProtocol(configDir: string): boolean {
   return config !== null && /engram-instructions\.md/.test(config);
 }
 
+/**
+ * Upsert "tonto" de un header TOML literal: necesario cuando el último
+ * segmento del path contiene caracteres que `upsertTomlSection` normaliza
+ * (p. ej. `[….":workspace_roots"]`: el `.` dentro del quoted segment rompe
+ * el matching por path segmentado). Aquí solo se evita duplicar el header.
+ */
 export const codexAdapter: Adapter = {
   id: "codex",
   name: "Codex CLI",
@@ -161,16 +167,56 @@ export const codexAdapter: Adapter = {
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "config.toml");
-    let content = readTextIfExists(file);
+    const original = readTextIfExists(file);
+    const contentSource = original === null || original.trim() === "" ? null : original;
+    let content = contentSource;
 
-    // Permisos por defecto (claves top-level): solo si el usuario no las
-    // tiene — una config existente no se toca ni se re-impone jamás. Se
-    // anteponen al inicio del archivo, donde siempre son top-level.
-    const defaults = loadCanonicalDefaults(ctx.stackDir)["codex"] ?? {};
-    for (const [key, value] of Object.entries(defaults)) {
-      if (content !== null && new RegExp(`^\\s*${key}\\s*=`, "m").test(content)) continue;
-      const line = `${key} = ${tomlString(String(value))}\n`;
-      content = content === null ? line : line + content;
+    // Permisos por defecto: solo en config fresca o vacía. Una config
+    // existente no se auto-expande jamás.
+    if (contentSource === null) {
+      const defaults = loadCanonicalDefaults(ctx.stackDir)["codex"] ?? {};
+      for (const [key, value] of Object.entries(defaults)) {
+        const line = `${key} = ${tomlString(String(value))}\n`;
+        content = content === null ? line : line + content;
+      }
+
+      ctx.warnings.push(
+        "Codex: fresh config enables read-anywhere via the jorgex-read-anywhere permission profile; broad local reads can expose secrets not covered by deny rules.",
+      );
+
+      content = upsertTomlSection(content, "permissions.jorgex-read-anywhere", 'extends = ":workspace"');
+      content = upsertTomlSection(
+        content,
+        "permissions.jorgex-read-anywhere.filesystem",
+        [
+          '":root" = "read"',
+          '"*.env" = "deny"',
+          '"*.env.*" = "deny"',
+          '"~/.ssh/**" = "deny"',
+          '"~/.aws/credentials" = "deny"',
+          '"~/.npmrc" = "deny"',
+          '"~/.git-credentials" = "deny"',
+          '"**/id_rsa" = "deny"',
+          '"**/id_ed25519" = "deny"',
+          '"**/*.pem" = "deny"',
+          '"**/*.key" = "deny"',
+        ].join("\n"),
+      );
+      content += [
+        '\n[permissions.jorgex-read-anywhere.filesystem.":workspace_roots"]',
+        '"." = "write"',
+        '"*.env" = "deny"',
+        '"*.env.*" = "deny"',
+        '".ssh/**" = "deny"',
+        '".aws/credentials" = "deny"',
+        '".npmrc" = "deny"',
+        '".git-credentials" = "deny"',
+        '"**/id_rsa" = "deny"',
+        '"**/id_ed25519" = "deny"',
+        '"**/*.pem" = "deny"',
+        '"**/*.key" = "deny"',
+        "",
+      ].join("\n");
     }
 
     for (const [name, server] of Object.entries(canonical.servers)) {

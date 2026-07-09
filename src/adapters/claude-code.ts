@@ -145,16 +145,24 @@ export const claudeCodeAdapter: Adapter = {
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
     const { scriptsDir } = this.paths(ctx.configDir);
+    const original = readTextIfExists(path.join(ctx.configDir, "settings.json"));
+    const contentSource = original === null || original.trim() === "" ? null : original;
 
     // El formato canónico ES el de Claude Code: upsert directo en settings.json.
     const settingsFile = path.join(ctx.configDir, "settings.json");
-    let content = upsertNativeHooks(readTextIfExists(settingsFile), canonical, scriptsDir);
-    // Permisos por defecto: solo si el usuario no tiene ya la clave —
-    // una config de permisos existente no se toca ni se re-impone jamás.
+    let content = upsertNativeHooks(contentSource, canonical, scriptsDir);
+
+    // Permisos por defecto: solo en config fresca o vacía. Una config
+    // existente no se auto-expande jamás.
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
-    if (defaults?.["permissions"] !== undefined) {
+    if (contentSource === null && defaults?.["permissions"] !== undefined) {
       content = upsertJson(content, (root) => {
-        if (!("permissions" in root)) root["permissions"] = defaults["permissions"];
+        if (root["permissions"] === undefined) {
+          root["permissions"] = defaults["permissions"];
+          ctx.warnings.push(
+            "Claude Code: fresh config enables read-anywhere via Read/Grep/Glob allow rules; shell, writes and web egress remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+          );
+        }
       });
     }
     actions.push({ kind: "write", target: settingsFile, content });

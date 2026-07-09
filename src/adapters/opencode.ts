@@ -149,15 +149,21 @@ export const opencodeAdapter: Adapter = {
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "opencode.json");
     const { pluginsDir } = this.paths(ctx.configDir);
+    const original = readTextIfExists(file);
+    const contentSource = original === null || original.trim() === "" ? null : original;
+    const isFreshConfig = contentSource === null;
 
-    const content = upsertJson(readTextIfExists(file), (root) => {
+    const content = upsertJson(contentSource, (root) => {
       root["$schema"] ??= "https://opencode.ai/config.json";
 
-      // Permisos por defecto: solo si el usuario no tiene ya la clave —
-      // una config de permisos existente no se toca ni se re-impone jamás.
+      // Permisos por defecto: solo en config fresca o vacía. Una config
+      // existente no se auto-expande jamás.
       const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
-      if (defaults?.["permission"] !== undefined && !("permission" in root)) {
+      if (isFreshConfig && defaults?.["permission"] !== undefined) {
         root["permission"] = defaults["permission"];
+        ctx.warnings.push(
+          "OpenCode: fresh config enables read-anywhere via external_directory:*; edits, web egress and arbitrary bash remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+        );
       }
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
