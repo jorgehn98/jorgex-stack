@@ -820,6 +820,37 @@ describe("contención de rutas (manifest/backup manipulados)", () => {
   });
 });
 
+describe("work backlog mutation contract", () => {
+  it("requires serialized read-modify-write updates that preserve the complete backlog", () => {
+    const fragments = [
+      "single writer",
+      "mem_get_observation",
+      "mem_update",
+      "complete content",
+      "verify",
+      "concurrent",
+    ];
+
+    for (const relativePath of [
+      "agents/orchestrator.md",
+      "skills/work-lifecycle/SKILL.md",
+      "system-prompt/AGENTS.md",
+      "system-prompt/engram-protocol.md",
+    ]) {
+      expectFragments(readStackFile(relativePath), fragments);
+    }
+
+    expectFragments(fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8"), [
+      "único escritor",
+      "mem_get_observation",
+      "mem_update",
+      "contenido completo",
+      "verificar",
+      "concurrentes",
+    ]);
+  });
+});
+
 describe("subagent uncertainty escalation contract", () => {
   it("agent-delegation fija la incertidumbre crítica de tarea como pregunta concreta al main agent/orchestrator y no como otro delegate", () => {
     const content = readStackFile("skills/agent-delegation/SKILL.md");

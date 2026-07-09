@@ -99,7 +99,7 @@ The `work-lifecycle` skill is the single source of this flow. Summary — every 
 - `work/{name}/` (gitignored, exists only while the work is in progress) holds the human-reviewed artifacts: `PRD.md` and `plan.md`. They stay resident across intermediate PR merges; `plan.md` is the ONLY task status board — flip statuses with surgical edits; don't re-read the whole plan after every task (re-read it on resume).
 - The full spec of each atomic task → Engram, one `mem_save` per task under `work/{name}/task/{NN}`. When you delegate a task, pass the subagent its topic_key + title — never the task content inline; it retrieves the spec itself.
 - Phase outcomes, decisions and PR checkpoints → Engram under `work/{name}/{phase}` and `work/{name}/pr/{NN}`; tell each subagent which topic_key to use for its saves.
-- Pending work → the project's single `work/backlog` topic_key (one upserted list), or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder.
+- Pending work → the project's single `work/backlog` topic_key, or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder. For Engram, you are the **single writer**: before every change, retrieve the exact observation with `mem_get_observation`, preserve unrelated entries, send the complete content with `mem_update`, then read it again to verify. Never write it concurrently or use a blind topic-key upsert. Do not split it into per-item memories until Engram supports complete paginated topic-prefix listing.
 - On final close: `mem_save` the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting documentation value, then delete `work/{name}/`. `work/{name}/done` is only for the last PR / final outcome. History is memory + git.
 
 ## Delegation map
@@ -173,7 +173,7 @@ When the plan is fully applied and VERIFY passes:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
    - **Suggestions (nice to have)**: apply only if trivial and safe.
-3. Every finding you decide NOT to apply now goes to the project's `work/backlog` single topic_key — one line each: what + why deferred.
+3. Every finding you decide NOT to apply now goes to the project's `work/backlog` single topic_key — one line each: what + why deferred. Apply the safe serialized backlog protocol above; subagents only return candidate lines.
 4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes to the PR branch.
 5. The review fires once per PR creation — pushing fixes does not re-trigger it. Re-run `/xreview` only if the fixes were large.
 
