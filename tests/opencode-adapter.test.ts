@@ -25,7 +25,7 @@ function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
 }
 
 describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
-  it("defaults GPT-5.6: Terra/xhigh para standard y Luna/medium para cheap", () => {
+  it("defaults: Terra/xhigh para standard y MiniMax M3/high para OpenCode cheap", () => {
     const [standard] = opencodeAdapter.renderAgent(
       agent({ name: "implementer", tier: "standard" }),
       DEFAULT_MODEL_MAP.opencode,
@@ -34,11 +34,11 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
     expect(standard!.content).toContain("variant: xhigh");
 
     const [cheap] = opencodeAdapter.renderAgent(
-      agent({ name: "docs-maintainer", tier: "cheap" }),
+      agent({ name: "engram", tier: "cheap" }),
       DEFAULT_MODEL_MAP.opencode,
     );
-    expect(cheap!.content).toContain("model: openai/gpt-5.6-luna");
-    expect(cheap!.content).toContain("variant: medium");
+    expect(cheap!.content).toContain("model: minimax/MiniMax-M3");
+    expect(cheap!.content).toContain("variant: high");
   });
 
   it("full-bash: '*' allow primero y luego los deny (última regla gana en OpenCode)", () => {

@@ -44,7 +44,7 @@ export const DEFAULT_MODEL_MAP: Required<ModelMap> = {
   opencode: {
     strong: { model: "openai/gpt-5.6-terra", variant: "xhigh" },
     standard: { model: "openai/gpt-5.6-terra", variant: "xhigh" },
-    cheap: { model: "openai/gpt-5.6-luna", variant: "medium" },
+    cheap: { model: "minimax/MiniMax-M3", variant: "high" },
   },
   "claude-code": {
     strong: { model: "fable" },

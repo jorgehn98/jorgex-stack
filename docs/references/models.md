@@ -6,7 +6,7 @@ JorgeX Stack separa el modelo del orquestador de los modelos de sus subagentes:
 - Los **subagentes** reciben defaults por tier desde `~/.jorgex-stack/model-map.json`.
 - `jorgex-stack models` permite cambiar esos defaults por tier o individualmente por subagente.
 
-## Defaults GPT-5.6
+## Defaults por runtime
 
 Estos defaults se escriben al crear un model-map nuevo:
 
@@ -14,7 +14,7 @@ Estos defaults se escriben al crear un model-map nuevo:
 |---|---|---|
 | `strong` | `gpt-5.6-terra` + `xhigh` | `openai/gpt-5.6-terra` + `xhigh` |
 | `standard` | `gpt-5.6-terra` + `xhigh` | `openai/gpt-5.6-terra` + `xhigh` |
-| `cheap` | `gpt-5.6-luna` + `medium` | `openai/gpt-5.6-luna` + `medium` |
+| `cheap` | `gpt-5.6-luna` + `medium` | `minimax/MiniMax-M3` + `high` |
 
 El tier canónico de cada agente vive en `stack/agents/*.md`. El model-map solo traduce ese tier al dialecto de cada runtime.
 
@@ -56,7 +56,9 @@ El picker ofrece dos modos:
 - **Por tier**: una elección para `strong`, otra para `standard` y otra para `cheap`.
 - **Por subagente**: elección independiente de modelo y variant para cada subagente.
 
-Por tanto, Luna es el default barato, pero cualquier agente puede cambiarse a `minimax/MiniMax-M3` u otro modelo si ese proveedor aparece en `opencode models`. El orquestador no entra en este reparto porque su modelo se selecciona en la sesión.
+MiniMax M3 es el default barato de OpenCode. Luna permanece en el catálogo descubierto, pero no se usa como default porque puede aparecer en `opencode models` y aun así ser rechazado por el backend conectado con `Model not found`. El listado confirma que OpenCode conoce el identificador; no garantiza acceso efectivo al modelo.
+
+El picker sigue permitiendo elegir Luna, MiniMax u otro modelo por tier o por agente. El orquestador no entra en este reparto porque su modelo se selecciona en la sesión.
 
 OpenCode documenta la selección `provider/model`, el catálogo de proveedores configurados y las variants incorporadas en [Models](https://opencode.ai/docs/models/) y la herencia de modelo de los agentes en [Agents](https://opencode.ai/docs/agents/).
 
