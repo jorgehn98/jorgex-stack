@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import type { InstallContext } from "../src/adapters/types.js";
 import type { CanonicalAgent } from "../src/lib/canonical.js";
-import { loadCanonicalMcp } from "../src/lib/canonical.js";
+import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
 import type { RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
@@ -190,5 +190,85 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     const { servers } = run(makeCtx());
     expect(servers.ajeno).toEqual({ type: "http", url: "https://x" });
     expect(servers.engram).toMatchObject({ type: "stdio" });
+  });
+});
+
+describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
+  let tmp: string;
+  let configDir: string;
+  let settingsFile: string;
+
+  const makeCtx = (overrides: Partial<InstallContext> = {}): InstallContext => ({
+    stackDir: stackRoot(),
+    configDir,
+    engramBin: "/opt/engram",
+    models: MODELS,
+    warnings: [],
+    ...overrides,
+  });
+
+  const run = (ctx: InstallContext): { content: string; settings: Record<string, unknown> } => {
+    const [action] = claudeCodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), ctx);
+    const content = (action as { content: string }).content;
+    return { content, settings: JSON.parse(content) as Record<string, unknown> };
+  };
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cc-perm-"));
+    configDir = path.join(tmp, ".claude");
+    settingsFile = path.join(configDir, "settings.json");
+    fs.mkdirSync(configDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("la config fresca mezcla hooks con permissions read-anywhere y denies de .env", () => {
+    const { settings, content } = run(makeCtx());
+    expect(settings).toHaveProperty("hooks");
+    expect(settings).toHaveProperty("permissions");
+
+    const permissions = settings.permissions as { allow?: string[]; deny?: string[] };
+    expect(permissions.allow).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
+    expect(permissions.deny).toEqual(
+      expect.arrayContaining(["Read(//**/.env)", "Read(//**/.env.*)", "Bash(format:*)", "Bash(mkfs:*)"]),
+    );
+    expect(content).not.toContain("disableBypassPermissionsMode");
+  });
+
+  it("migra el default viejo exacto y preserva permisos custom sin mezclar un nuevo default", () => {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify({
+        permissions: {
+          allow: ["Bash", "Edit"],
+          deny: ["Bash(shred:*)"],
+        },
+        hooks: { existing: [] },
+      }),
+    );
+
+    const custom = run(makeCtx());
+    expect(custom.settings.permissions).toEqual({ allow: ["Bash", "Edit"], deny: ["Bash(shred:*)"] });
+    expect(custom.settings).toHaveProperty("hooks");
+
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify({
+        permissions: {
+          allow: ["Bash", "Edit", "Write", "WebFetch", "WebSearch"],
+          ask: ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
+          deny: ["Bash(format:*)", "Bash(mkfs:*)", "Bash(dd:*)", "Bash(shred:*)", "Read(./.env)", "Read(./.env.*)"],
+        },
+      }),
+    );
+
+    const migrated = run(makeCtx());
+    const migratedPermissions = migrated.settings.permissions as { allow?: string[]; deny?: string[] };
+    expect(migratedPermissions.allow).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
+    expect(migratedPermissions.deny).toEqual(
+      expect.arrayContaining(["Read(//**/.env)", "Read(//**/.env.*)"]),
+    );
   });
 });

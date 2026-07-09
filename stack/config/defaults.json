@@ -3,7 +3,15 @@
   "opencode": {
     "permission": {
       "edit": "allow",
-      "read": "allow",
+      "read": {
+        "*": "allow",
+        "*.env": "deny",
+        "*.env.*": "deny",
+        "*.env.example": "allow"
+      },
+      "external_directory": {
+        "*": "allow"
+      },
       "glob": "allow",
       "grep": "allow",
       "list": "allow",
@@ -25,13 +33,20 @@
   },
   "claude-code": {
     "permissions": {
-      "allow": ["Bash", "Edit", "Write", "WebFetch", "WebSearch"],
+      "allow": ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "WebFetch", "WebSearch"],
       "ask": ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
-      "deny": ["Bash(format:*)", "Bash(mkfs:*)", "Bash(dd:*)", "Bash(shred:*)", "Read(./.env)", "Read(./.env.*)"]
+      "deny": [
+        "Bash(format:*)",
+        "Bash(mkfs:*)",
+        "Bash(dd:*)",
+        "Bash(shred:*)",
+        "Read(//**/.env)",
+        "Read(//**/.env.*)"
+      ]
     }
   },
   "codex": {
     "approval_policy": "on-request",
-    "sandbox_mode": "workspace-write"
+    "default_permissions": "jorgex-read-anywhere"
   }
 }

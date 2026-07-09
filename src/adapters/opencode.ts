@@ -11,11 +11,34 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
+import { deepEqual } from "../lib/deep-equal.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
   return JSON.stringify(value);
 }
+
+const LEGACY_PERMISSION_DEFAULT = {
+  edit: "allow",
+  read: "allow",
+  glob: "allow",
+  grep: "allow",
+  list: "allow",
+  lsp: "allow",
+  webfetch: "allow",
+  websearch: "allow",
+  bash: {
+    "*": "allow",
+    "rm *": "ask",
+    "del *": "ask",
+    "rmdir *": "ask",
+    "git push --force*": "ask",
+    "format *": "deny",
+    "mkfs *": "deny",
+    "dd *": "deny",
+    "shred *": "deny",
+  },
+} as const;
 
 export const opencodeAdapter: Adapter = {
   id: "opencode",
@@ -156,7 +179,11 @@ export const opencodeAdapter: Adapter = {
       // Permisos por defecto: solo si el usuario no tiene ya la clave —
       // una config de permisos existente no se toca ni se re-impone jamás.
       const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
-      if (defaults?.["permission"] !== undefined && !("permission" in root)) {
+      const currentPermission = root["permission"];
+      if (
+        defaults?.["permission"] !== undefined &&
+        (currentPermission === undefined || deepEqual(currentPermission, LEGACY_PERMISSION_DEFAULT))
+      ) {
         root["permission"] = defaults["permission"];
       }
 

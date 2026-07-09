@@ -9,6 +9,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
+import { deepEqual } from "../lib/deep-equal.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -32,6 +33,12 @@ const ENGRAM_AGENT_TOOLS = [
   "Skill",
   ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
+
+const LEGACY_CLAUDE_PERMISSIONS = {
+  allow: ["Bash", "Edit", "Write", "WebFetch", "WebSearch"],
+  ask: ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
+  deny: ["Bash(format:*)", "Bash(mkfs:*)", "Bash(dd:*)", "Bash(shred:*)", "Read(./.env)", "Read(./.env.*)"],
+} as const;
 
 /**
  * readonly → allowlist explícita; sin restricción → se omite `tools` y el
@@ -154,7 +161,10 @@ export const claudeCodeAdapter: Adapter = {
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
     if (defaults?.["permissions"] !== undefined) {
       content = upsertJson(content, (root) => {
-        if (!("permissions" in root)) root["permissions"] = defaults["permissions"];
+        const permissions = root["permissions"];
+        if (permissions === undefined || deepEqual(permissions, LEGACY_CLAUDE_PERMISSIONS)) {
+          root["permissions"] = defaults["permissions"];
+        }
       });
     }
     actions.push({ kind: "write", target: settingsFile, content });
