@@ -9,6 +9,7 @@ import {
   modelMapFile,
   resolveAgentModel,
   type ModelMap,
+  type RuntimeModelMap,
   type TierModel,
 } from "./lib/model-map.js";
 import { stackRoot } from "./lib/paths.js";
@@ -60,6 +61,10 @@ function agentsByTier(): Record<Tier, string[]> {
   return grouped;
 }
 
+function isCompleteRuntimeModelMap(models: Partial<RuntimeModelMap>): models is RuntimeModelMap {
+  return TIERS.every((tier) => models[tier]?.model);
+}
+
 interface Detection {
   id: RuntimeId;
   name: string;
@@ -74,8 +79,9 @@ interface Detection {
  * - Claude Code → select de alias; no existe effort por subagente.
  * - Codex → select de effort + select curado de modelos (con vía de escape).
  */
-async function askModel(det: Detection, subject: string, current: TierModel): Promise<TierModel | typeof CANCEL> {
+async function askModel(det: Detection, subject: string, current?: TierModel): Promise<TierModel | typeof CANCEL> {
   if (det.id === "codex") {
+    if (!current) throw new Error("Codex requiere un model-map base.");
     const effort = await p.select({
       message: `${det.name} · ${subject} — reasoning effort`,
       options: EFFORTS.map((v) => ({ value: v, label: v })),
@@ -111,11 +117,13 @@ async function askModel(det: Detection, subject: string, current: TierModel): Pr
 
   const optionsList = det.options!;
   const options = optionsList.map((m) => ({ value: m, label: m }));
-  if (!optionsList.includes(current.model)) options.unshift({ value: current.model, label: `${current.model} (actual)` });
+  if (current && !optionsList.includes(current.model)) {
+    options.unshift({ value: current.model, label: `${current.model} (actual)` });
+  }
   const choice = await p.select({
     message: `${det.name} · ${subject} — modelo`,
     options,
-    initialValue: current.model,
+    initialValue: current?.model,
     maxItems: 12,
   });
   if (p.isCancel(choice)) return CANCEL;
@@ -127,7 +135,7 @@ async function askModel(det: Detection, subject: string, current: TierModel): Pr
   // variants soporta cada modelo, así que la lista es genérica: si el modelo
   // no los soporta, deja "(sin variant)". Nunca se arrastra el variant del
   // modelo anterior (podría no existir en el nuevo).
-  const keptCurrent = choice === current.model && current.variant ? current.variant : null;
+  const keptCurrent = current && choice === current.model && current.variant ? current.variant : null;
   const variant = await p.select({
     message: `${det.name} · ${subject} — reasoning effort (variant; solo si el modelo lo soporta)`,
     options: [
@@ -143,13 +151,17 @@ async function askModel(det: Detection, subject: string, current: TierModel): Pr
 
 export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[] }): Promise<number> {
   const file = ensureModelMapFile();
+  const map = loadModelMap();
   if (opts.yes || !process.stdout.isTTY) {
-    console.log(`Model-map en ${file} (defaults). Edítalo o ejecuta 'models' sin --yes para el picker.`);
+    if (opts.runtimes.includes("opencode") && !map.opencode) {
+      console.error("OpenCode requiere selección interactiva desde los proveedores conectados; ejecuta 'models --agents opencode' sin --yes.");
+      return 1;
+    }
+    console.log(`Model-map en ${file}. Edítalo o ejecuta 'models' sin --yes para el picker.`);
     return 0;
   }
 
   p.intro("jorgex-stack models — modelos por tier o por subagente");
-  const map = loadModelMap();
   const grouped = agentsByTier();
   const tierLine = (tier: Tier): string => grouped[tier].join(", ");
   const agentCount = TIERS.reduce((n, tier) => n + grouped[tier].length, 0);
@@ -181,7 +193,10 @@ export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[
       continue;
     }
 
-    const runtimeMap = { ...map[det.id]! };
+    const existingRuntimeMap = map[det.id];
+    const runtimeMap: Partial<RuntimeModelMap> & Pick<RuntimeModelMap, "overrides"> = {
+      ...existingRuntimeMap,
+    };
 
     p.log.message(
       `${det.name} — tiers y sus subagentes:\n` +
@@ -201,7 +216,7 @@ export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[
 
     if (mode === "tier") {
       for (const tier of TIERS) {
-        const asked = await askModel(det, `tier ${tier} (${tierLine(tier)})`, runtimeMap[tier]);
+        const asked = await askModel(det, `tier ${tier} (${tierLine(tier)})`, existingRuntimeMap?.[tier]);
         if (asked === CANCEL) return cancelled();
         runtimeMap[tier] = asked;
       }
@@ -217,10 +232,17 @@ export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[
       // sobre los agentes no personalizados.
       const overrides = { ...(runtimeMap.overrides ?? {}) };
       for (const tier of TIERS) {
-        const base = runtimeMap[tier];
+        let base = runtimeMap[tier];
         for (const name of grouped[tier]) {
-          const asked = await askModel(det, `${name} (tier ${tier})`, resolveAgentModel(runtimeMap, name, tier));
+          const current = existingRuntimeMap
+            ? resolveAgentModel(existingRuntimeMap, name, tier)
+            : undefined;
+          const asked = await askModel(det, `${name} (tier ${tier})`, current);
           if (asked === CANCEL) return cancelled();
+          if (!base) {
+            base = asked;
+            runtimeMap[tier] = base;
+          }
           const sameAsTier = asked.model === base.model && (asked.variant ?? "") === (base.variant ?? "");
           if (sameAsTier) {
             delete overrides[name];
@@ -238,6 +260,9 @@ export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[
       else delete runtimeMap.overrides;
     }
 
+    if (!isCompleteRuntimeModelMap(runtimeMap)) {
+      throw new Error(`${det.name}: selección de modelos incompleta.`);
+    }
     map[det.id] = runtimeMap;
   }
 

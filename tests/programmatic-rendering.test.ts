@@ -8,8 +8,8 @@ import { opencodeAdapter } from "../src/adapters/opencode.js";
 import type { Adapter, FileAction, InstallContext, InstallMode, SubagentConcurrency } from "../src/adapters/types.js";
 import { buildPlan } from "../src/install.js";
 import { loadCanonicalAgents } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { testModelsForRuntime } from "./fixtures/model-map.js";
 
 const RUNTIMES = [
   ["OpenCode", opencodeAdapter],
@@ -31,7 +31,7 @@ function makeContext(adapter: Adapter, configDir: string, mode: InstallMode, sub
     mode,
     subagentConcurrency,
     engramBin: path.join(configDir, "engram"),
-    models: DEFAULT_MODEL_MAP[adapter.id] as RuntimeModelMap,
+    models: testModelsForRuntime(adapter.id),
     warnings: [],
   };
 }

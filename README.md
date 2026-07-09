@@ -9,7 +9,7 @@ Portable multi-agent harness: one configuration source — 15 agents, 17 skills,
 Install and run via npm without cloning the repository:
 
 ```
-pnpm dlx jorgex-stack install    # apply config to your runtimes (interactive pick; idempotent, removes orphans)
+pnpm dlx jorgex-stack install    # install runtimes; first OpenCode setup selects connected models
 pnpm dlx jorgex-stack models     # model picker by runtime and tier (strong/standard/cheap)
 pnpm dlx jorgex-stack sync       # alias of install (same idempotent apply)
 pnpm dlx jorgex-stack doctor     # checks that everything is healthy (Engram, drift, hooks, keys)
@@ -24,7 +24,7 @@ For development from a clone, run the same commands through `pnpm cli <command>`
 
 Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched.
 
-Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for model selection, GPT-5.6 subagent tiers, and orchestrator inheritance.
+Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for provider-aware model selection, Codex tiers, and orchestrator inheritance. OpenCode has no provider defaults.
 
 ### Modes: Human and Programmatic
 
@@ -51,6 +51,8 @@ Flags:
   ```
 
   This installs into all detected runtimes. To be explicit, add `--agents opencode,claude-code,codex` or a comma-separated subset. Always pass `--mode programmatic`; without `--mode`, `--yes` and non-TTY installs default to `human`.
+
+  OpenCode also requires an existing selection in `~/.jorgex-stack/model-map.json`; run `pnpm dlx jorgex-stack models --agents opencode` interactively once before a headless install.
 
 - `--mode human` cannot be combined with `--subagent-concurrency`.
 - Without `--mode`, the first run asks interactively; `--yes`, non-TTY, and `--target-dir` default to `human`.

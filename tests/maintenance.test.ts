@@ -17,6 +17,7 @@ import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { runInstall } from "../src/install.js";
 import { planCommands } from "../src/components/commands.js";
+import { OPEN_CODE_TEST_MODELS } from "./fixtures/model-map.js";
 
 let tmp: string;
 
@@ -484,7 +485,7 @@ describe("planPlugins: placeholders resueltos", () => {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: "C:\\bin\\engram.exe",
-      models: DEFAULT_MODEL_MAP.opencode!,
+      models: OPEN_CODE_TEST_MODELS,
       warnings: [],
     };
     const actions = planPlugins(opencodeAdapter, ctx);
@@ -504,7 +505,7 @@ describe("planPlugins: Goal Mode de OpenCode", () => {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: DEFAULT_MODEL_MAP.opencode!,
+      models: OPEN_CODE_TEST_MODELS,
       warnings: [],
     };
     const actions = planPlugins(opencodeAdapter, ctx);

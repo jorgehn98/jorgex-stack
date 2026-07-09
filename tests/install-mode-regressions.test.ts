@@ -4,8 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, RuntimeId } from "../src/adapters/types.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { loadCanonicalAgents } from "../src/lib/canonical.js";
+
+const OPEN_CODE_MODELS = {
+  strong: { model: "provider/strong" },
+  standard: { model: "provider/standard" },
+  cheap: { model: "provider/cheap" },
+};
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalAgents = loadCanonicalAgents(path.join(ROOT, "stack", "agents"));
@@ -80,12 +85,29 @@ async function importInstallModule(homeDir: string): Promise<typeof import("../s
 }
 
 describe("install-mode regressions", () => {
+  it("runInstall rejects OpenCode without an explicit user model map", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-no-opencode-models-"));
+    const homeDir = path.join(tmp, "home");
+    const targetDir = path.join(tmp, "target");
+    const { runInstall } = await importInstallModule(homeDir);
+
+    await expect(runInstall({
+      runtimes: ["opencode"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+      mode: { mode: "human", subagentConcurrency: "serial" },
+    })).resolves.toBe(1);
+    expect(fs.existsSync(path.join(targetDir, "agents"))).toBe(false);
+  });
+
   it("ignora la preferencia guardada cuando --target-dir debería forzar artefactos human", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-target-dir-"));
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
 
     writePreference(homeDir, { mode: "programmatic", subagentConcurrency: "parallel" });
+    writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
 
     await runCli(["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"], homeDir);
 
@@ -107,7 +129,7 @@ describe("install-mode regressions", () => {
 
     writeModelMap(homeDir, {
       opencode: {
-        ...DEFAULT_MODEL_MAP.opencode,
+        ...OPEN_CODE_MODELS,
         [sampleSubagent.tier]: { model: overrideModel, variant: overrideVariant },
       },
     });
@@ -149,6 +171,7 @@ describe("install-mode regressions", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-mode-noop-"));
     const homeDir = path.join(tmp, "home");
     const opencodeConfigDir = path.join(tmp, "opencode");
+    writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
 
     const install = await importInstallModule(homeDir);
     const opencodeAdapter = install.ADAPTERS.opencode!;
@@ -281,6 +304,7 @@ describe("install-mode regressions", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-orphan-warning-"));
     const homeDir = path.join(tmp, "home");
     const brokenOpenCodeDir = path.join(tmp, "opencode");
+    writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
 
     const install = await importInstallModule(homeDir);
     const originalAdapters = { ...install.ADAPTERS };

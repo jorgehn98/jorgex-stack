@@ -8,6 +8,7 @@ import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } fr
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { readPackageVersion } from "./lib/release.js";
+import { loadModelMap } from "./lib/model-map.js";
 import {
   DEFAULT_INSTALL_MODE_PREFERENCE,
   hasInstallModePreference,
@@ -42,6 +43,25 @@ export interface ParsedCli {
   command: Command;
   flags: Flags;
   unknownCommand?: string;
+}
+
+async function ensureOpenCodeModelsForInstall(
+  command: "install" | "sync",
+  flags: Flags,
+  runtimes: RuntimeId[],
+): Promise<boolean> {
+  if (!runtimes.includes("opencode") || loadModelMap().opencode) return true;
+
+  const canPrompt = command === "install" && !flags.yes && !flags.dryRun && process.stdout.isTTY;
+  if (canPrompt) {
+    const code = await runModelsPicker({ yes: false, runtimes: ["opencode"] });
+    if (code === 0 && loadModelMap().opencode) return true;
+  }
+
+  console.error(
+    "OpenCode no tiene modelos configurados. Ejecuta 'jorgex-stack models --agents opencode' de forma interactiva antes de install/sync.",
+  );
+  return false;
 }
 
 export function parseFlags(args: string[]): Flags {
@@ -213,9 +233,9 @@ function printHelp(): void {
 Uso: pnpm dlx jorgex-stack [comando] [opciones]
 
 Comandos:
-  install     Instala el stack en los runtimes elegidos (default, interactivo)
-  sync        Re-aplica la config (idempotente; alias de install)
-  models      Picker de modelos por tier (OpenCode: lista en vivo de 'opencode models')
+  install     Instala el stack; OpenCode fresh exige elegir modelos conectados
+  sync        Re-aplica la config y el model-map existente (idempotente; sin picker)
+  models      Picker por tier o subagente (OpenCode: 'opencode models' en vivo)
   update      --check: compara stack/Engram/skills con sus upstreams
   doctor      Estado: Engram, drift de config, hooks de Codex, key de context7
   restore     --list para ver backups · 'restore <id>' para restaurar
@@ -278,6 +298,10 @@ async function main(): Promise<void> {
       if (runtimes === null) return;
       if (runtimes.length === 0) {
         console.error("Ningún runtime detectado (opencode, claude-code, codex).");
+        process.exitCode = 1;
+        return;
+      }
+      if (!(await ensureOpenCodeModelsForInstall(command, flags, runtimes))) {
         process.exitCode = 1;
         return;
       }

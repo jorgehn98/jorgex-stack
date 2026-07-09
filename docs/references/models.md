@@ -2,32 +2,54 @@
 
 JorgeX Stack separa el modelo del orquestador de los modelos de sus subagentes:
 
-- El **orquestador** siempre usa el modelo y el nivel de razonamiento elegidos por el usuario en la sesión.
-- Los **subagentes** reciben defaults por tier desde `~/.jorgex-stack/model-map.json`.
-- `jorgex-stack models` permite cambiar esos defaults por tier o individualmente por subagente.
+- El **orquestador** usa el modelo y el nivel de razonamiento elegidos por el usuario en la sesión.
+- Los **subagentes** reciben su selección desde `~/.jorgex-stack/model-map.json`.
+- `jorgex-stack models` permite cambiar la selección por tier o individualmente por subagente.
 
-## Defaults por runtime
+## Política por runtime
 
-Estos defaults se escriben al crear un model-map nuevo:
+### OpenCode: sin defaults de proveedor
 
-| Tier | Codex | OpenCode |
+El stack no presupone OpenAI, MiniMax ni ningún otro proveedor para OpenCode. Una instalación puede tener Grok, GLM, modelos locales o cualquier combinación compatible; un default universal podría ser inválido.
+
+En la primera instalación interactiva de OpenCode:
+
+1. El stack ejecuta `opencode models`.
+2. Muestra los identificadores `provider/model` descubiertos.
+3. Exige elegir modelos **por tier** (`strong`, `standard`, `cheap`) o **por subagente**.
+4. Permite seleccionar una variant cuando el modelo la soporte.
+5. Guarda la elección y genera los agentes.
+
+El agente primary `orchestrator` queda fuera del model-map: omite `model` y `variant`, y hereda la selección activa de OpenCode.
+
+`opencode models` confirma que OpenCode conoce un identificador, no que el backend conectado vaya a aceptarlo. Por eso la elección pertenece al usuario y el stack no convierte su propio catálogo en un default.
+
+### Codex
+
+Codex conserva defaults curados para sus subagentes:
+
+| Tier | Modelo | Reasoning effort |
 |---|---|---|
-| `strong` | `gpt-5.6-terra` + `xhigh` | `openai/gpt-5.6-terra` + `xhigh` |
-| `standard` | `gpt-5.6-terra` + `xhigh` | `openai/gpt-5.6-terra` + `xhigh` |
-| `cheap` | `gpt-5.6-luna` + `medium` | `minimax/MiniMax-M3` + `high` |
+| `strong` | `gpt-5.6-terra` | `xhigh` |
+| `standard` | `gpt-5.6-terra` | `xhigh` |
+| `cheap` | `gpt-5.6-luna` | `medium` |
 
-El tier canónico de cada agente vive en `stack/agents/*.md`. El model-map solo traduce ese tier al dialecto de cada runtime.
+El tier canónico de cada agente vive en `stack/agents/*.md`. El model-map traduce ese tier al modelo elegido para cada runtime.
 
-## Orquestador: modelo elegido en runtime
+### Claude Code
 
-El stack no escribe `model`, `model_reasoning_effort` ni `variant` en ningún orquestador.
+Claude Code conserva sus alias autoactualizables (`fable`, `sonnet`, `haiku`) y también permite cambiarlos con el picker.
+
+## Orquestador de Codex
+
+El stack no escribe `model` ni `model_reasoning_effort` en el orquestador.
 
 ### Aplicación de Codex
 
 1. Elige el modelo y el nivel de razonamiento en el compositor de la aplicación.
 2. Activa el orquestador con `/orchestrator` o `$orchestrator`.
 
-La skill cambia las instrucciones de la tarea; no cambia el modelo activo. Los subagentes que lance sí usan sus asignaciones Terra/Luna del model-map.
+La skill cambia las instrucciones de la tarea; no cambia el modelo activo. Los subagentes sí usan las asignaciones del model-map.
 
 ### Codex CLI
 
@@ -37,39 +59,31 @@ El perfil instala las instrucciones del orquestador, pero no fija modelo ni esfu
 codex --profile orchestrator -m gpt-5.6-sol -c model_reasoning_effort='"xhigh"'
 ```
 
-También puedes arrancar una sesión normal, seleccionar modelo con `/model` y activar la skill del orquestador dentro de esa sesión.
+También puedes seleccionar modelo con `/model` y activar la skill dentro de esa sesión.
 
-### OpenCode
-
-El agente primary `orchestrator` omite `model` y hereda el modelo seleccionado en OpenCode. Los subagentes sí pueden fijar un `provider/model` y una `variant` propios.
-
-## Picker y proveedores de OpenCode
-
-OpenCode descubre los modelos disponibles desde sus proveedores configurados. El stack ejecuta `opencode models` y usa directamente sus identificadores `provider/model` en el picker.
+## Cambiar modelos
 
 ```powershell
-pnpm dlx jorgex-stack models
+pnpm dlx jorgex-stack models --agents opencode
 ```
 
-El picker ofrece dos modos:
+El picker de OpenCode ofrece:
 
 - **Por tier**: una elección para `strong`, otra para `standard` y otra para `cheap`.
 - **Por subagente**: elección independiente de modelo y variant para cada subagente.
 
-MiniMax M3 es el default barato de OpenCode. Luna permanece en el catálogo descubierto, pero no se usa como default porque puede aparecer en `opencode models` y aun así ser rechazado por el backend conectado con `Model not found`. El listado confirma que OpenCode conoce el identificador; no garantiza acceso efectivo al modelo.
+Al terminar ofrece aplicar la selección mediante `sync`.
 
-El picker sigue permitiendo elegir Luna, MiniMax u otro modelo por tier o por agente. El orquestador no entra en este reparto porque su modelo se selecciona en la sesión.
+## Flujos no interactivos
 
-OpenCode documenta la selección `provider/model`, el catálogo de proveedores configurados y las variants incorporadas en [Models](https://opencode.ai/docs/models/) y la herencia de modelo de los agentes en [Agents](https://opencode.ai/docs/agents/).
+`install --yes`, `sync` y procesos sin TTY nunca inventan proveedores OpenCode. Si el model-map todavía no contiene una selección OpenCode, terminan con error e indican que se ejecute primero el picker interactivo.
+
+Para automatización, prepara `~/.jorgex-stack/model-map.json` antes del install. Después, los comandos no interactivos reutilizan esa selección.
 
 ## Model-maps existentes
 
-Actualizar el paquete no sobrescribe `~/.jorgex-stack/model-map.json`. Una selección existente puede ser deliberada y el stack no intenta adivinarlo.
+Actualizar el paquete no sobrescribe selecciones existentes. `install` y `sync` reutilizan el mapa actual sin abrir el picker; solo una primera instalación interactiva de OpenCode exige configurarlo.
 
-Para adoptar los nuevos defaults después de actualizar:
+Los overrides por nombre de agente tienen precedencia sobre su tier.
 
-```powershell
-pnpm dlx jorgex-stack models
-```
-
-Revisa las elecciones y acepta el `sync` ofrecido al final. También puedes editar el JSON manualmente; los overrides por nombre de agente tienen precedencia sobre su tier.
+OpenCode documenta la selección `provider/model` y los proveedores configurados en [Models](https://opencode.ai/docs/models/), y la herencia de modelo de los agentes en [Agents](https://opencode.ai/docs/agents/).
