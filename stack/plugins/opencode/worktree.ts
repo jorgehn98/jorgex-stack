@@ -377,7 +377,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
           appendToolOutput(output, [
             `Worktree path is not canonical: ${absoluteWorktreePath}`,
             `Use the project-local path instead: ${expectedWorktreePath}`,
-            "Canonical rule: <project-root>/worktrees/<canonical-name>.",
+            "Canonical rule: <project-root>/worktrees/<canonical-name> or <project-root>/worktrees/<canonical-name>-prNN.",
           ]);
           return;
         }
