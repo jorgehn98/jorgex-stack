@@ -19,7 +19,7 @@ INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → SHIP → CLOSE
 
 ### Autonomy
 
-The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no questions, no confirmation pauses: plan approval authorizes commits, pushes to the work branch and the PR creation. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order.
+The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no questions, no confirmation pauses: plan approval authorizes commits, pushes to the work branch and the PR creation. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order. For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished.
 
 ## 1. INIT
 
@@ -96,11 +96,11 @@ If the work is large enough to benefit from explicit vertical slices, use the `t
 
 The `work-lifecycle` skill is the single source of this flow. Summary — every piece has exactly ONE home:
 
-- `work/{name}/` (gitignored, exists only while the work is in progress) holds the human-reviewed artifacts: `PRD.md` and `plan.md`. plan.md is the ONLY task status board — flip statuses with surgical edits; don't re-read the whole plan after every task (re-read it on resume).
+- `work/{name}/` (gitignored, exists only while the work is in progress) holds the human-reviewed artifacts: `PRD.md` and `plan.md`. They stay resident across intermediate PR merges; `plan.md` is the ONLY task status board — flip statuses with surgical edits; don't re-read the whole plan after every task (re-read it on resume).
 - The full spec of each atomic task → Engram, one `mem_save` per task under `work/{name}/task/{NN}`. When you delegate a task, pass the subagent its topic_key + title — never the task content inline; it retrieves the spec itself.
-- Phase outcomes and decisions → Engram under `work/{name}/{phase}`; tell each subagent which topic_key to use for its saves.
+- Phase outcomes, decisions and PR checkpoints → Engram under `work/{name}/{phase}` and `work/{name}/pr/{NN}`; tell each subagent which topic_key to use for its saves.
 - Pending work → the project's single `work/backlog` topic_key (one upserted list), or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder.
-- On close: `mem_save` the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting documentation value, then delete `work/{name}/`. History is memory + git.
+- On final close: `mem_save` the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting documentation value, then delete `work/{name}/`. `work/{name}/done` is only for the last PR / final outcome. History is memory + git.
 
 ## Delegation map
 
@@ -118,7 +118,7 @@ Every subagent ends with a **Result contract** (Status / Delegations / Risks). P
 
 Before the first task, create a git worktree for this work and run the ENTIRE execution inside it — implementation, tests, commits and pushes happen there, never on the user's main checkout.
 
-Canonical location is mandatory: resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, create `worktrees/` inside that root if needed, and create the worktree at `<project-root>/worktrees/<canonical-name>` (branch = canonical name). Do not create worktrees next to the repo, in the repo root, under `work/`, or in any external temp/shared folder.
+Canonical location is mandatory: resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, create `worktrees/` inside that root if needed, and create the worktree at `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/<canonical-name>-prNN` for multi-PR checkpoints (branch = worktree name). Do not create worktrees next to the repo, in the repo root, under `work/`, or in any external temp/shared folder.
 
 Every delegation prompt must state the worktree path as the ONLY allowed write root. After each writer subagent finishes, verify the user's main checkout is still clean (`git status` there); if the subagent wrote outside the worktree, STOP, move those changes into the worktree (patch/apply) and restore the main checkout before continuing. Subagent obedience is not a safety boundary — this check is.
 
@@ -178,7 +178,7 @@ When the plan is fully applied and VERIFY passes:
 ## 8. CLOSE
 
 - STOP here and hand control back to the user: report what shipped, review findings applied vs deferred to `work/backlog`, and whether manual testing is advisable (recommend it for big or user-facing changes; small well-tested changes may not need it).
-- NEVER merge the PR yourself — merge only on an explicit user order. After the merge: persist the outcome to memory, clean up `work/{name}/` and remove the worktree (see Work state).
+- NEVER merge the PR yourself — merge only on an explicit user order. After each intermediate merge: persist the checkpoint to `work/{name}/pr/{NN}`, update `plan.md`, and keep `work/{name}/` alive. After the final merge: persist the final outcome to memory, clean up `work/{name}/` and remove the worktree (see Work state).
 - If the repo has its own skill for the closing steps (release, deploy, git, cleanup), that skill takes precedence over the default behavior.
 
 ## Task rule

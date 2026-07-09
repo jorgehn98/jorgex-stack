@@ -90,11 +90,12 @@ docs/
 
 Every piece of information about a piece of work has exactly ONE home — never two. The `work-lifecycle` skill is the single source of this flow.
 
-- In-progress work lives in `work/{name}/` (gitignored): `PRD.md` + `plan.md`. plan.md is the ONLY task status board — update statuses with surgical edits. An empty `work/` means nothing is half-done.
-- Execution worktrees always live inside the current project's root under `worktrees/{name}`. Resolve the root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>`; never create worktrees next to the repo, in the repo root, under `work/`, or in external temp/shared folders.
-- Full task specs, phase outcomes and history live in Engram: `work/{name}/task/{NN}`, `work/{name}/{phase}`, `work/{name}/done`. Subagents receive a topic_key + title, never the task content inline.
+- In-progress work lives in `work/{name}/` (gitignored): `PRD.md` + `plan.md`. They stay there across intermediate PR merges; `plan.md` is the ONLY task status board — update statuses with surgical edits. An empty `work/` means nothing is half-done.
+- Execution worktrees and their branches always use the same name. Resolve the root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/<canonical-name>-prNN` for multi-PR checkpoints; never create worktrees next to the repo, in the repo root, under `work/`, or in external temp/shared folders.
+- Full task specs, phase outcomes, PR checkpoints and history live in Engram: `work/{name}/task/{NN}`, `work/{name}/{phase}`, `work/{name}/pr/{NN}`, `work/{name}/done`. Subagents receive a topic_key + title, never the task content inline.
 - Pending work: the project's single `work/backlog` topic_key (one upserted list — never one key per idea), or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder.
-- On close: save the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting value, then delete `work/{name}/`. History is memory + git — no archive folders.
+- On intermediate PR merge: save the checkpoint under `work/{name}/pr/{NN}` and keep `work/{name}/` alive for the remaining PRs.
+- On final close: save the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting value, then delete `work/{name}/`. `work/{name}/done` is the final outcome only. History is memory + git — no archive folders.
 
 ---
 

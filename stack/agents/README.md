@@ -30,4 +30,4 @@ Una sola fuente por agente. El instalador los traduce al formato de cada runtime
 
 - Todo subagente termina con el **Result contract** (Status / Delegations / Risks) — el orchestrator lo procesa.
 - Las delegaciones usan el formato `→ [agent]: [work] — [paths] — [inputs]` (skill `agent-delegation`).
-- El flujo de trabajo lo define la skill `work-lifecycle` (PRD D9): `work/{nombre}/plan.md` es el tablero de estado; las specs de tareas (`work/{nombre}/task/{NN}`), los resultados de fase (`work/{nombre}/{fase}`) y el backlog (`work/backlog`) viven en Engram. Los subagentes reciben topic_key + título, nunca la tarea inline.
+- El flujo de trabajo lo define la skill `work-lifecycle`: `work/{nombre}/plan.md` es el tablero de estado y se mantiene entre merges intermedios; las specs de tareas (`work/{nombre}/task/{NN}`), los resultados de fase (`work/{nombre}/{fase}`), los checkpoints de PR (`work/{nombre}/pr/{NN}`) y el cierre final (`work/{nombre}/done`) viven en Engram. Los subagentes reciben topic_key + título, nunca la tarea inline.

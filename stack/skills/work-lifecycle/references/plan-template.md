@@ -1,6 +1,6 @@
 # Plan & Task Templates
 
-Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and the atomic tasks (Engram observations). `[name]` is the canonical kebab-case name shared by `work/[name]/`, the branch and every topic_key.
+Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and the atomic tasks (Engram observations). `[name]` is the canonical kebab-case name shared by `work/[name]/` and every topic_key. PR branches/worktrees derive from it: `[name]` for single-PR work, `[name]-prNN` for multi-PR checkpoints.
 
 ---
 
@@ -36,6 +36,19 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 [Why it wasn't chosen]
 
+## PR Roadmap
+
+> This is the live PR-level board: scope, PR status, and merge evidence live here.
+> Task-level status stays in the task table below.
+> Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.
+
+| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |
+|----|-------|--------|----------|------|--------|----------------|
+| 01 | [scope] | [branch] | [worktree] | [base] | ⬜ | [evidence] |
+| 02 | [scope] | [branch] | [worktree] | [base] | ⬜ | [evidence] |
+
+> Intermediate PRs do not delete `work/[name]/`; only the final close does.
+
 ## Success criteria
 
 - [ ] [Verifiable behavior 1]
@@ -45,14 +58,16 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 ## Tasks
 
 > Full spec of task NN → Engram topic_key `work/[name]/task/NN`.
-> Status lives ONLY in this table — update it with a surgical edit per task.
+> Task status lives ONLY in this table — update it with a surgical edit per task.
+> PR status/evidence lives in the PR Roadmap above.
+> Map each task to the PR that carries it; intermediate PRs keep `work/[name]/` alive.
 
-| # | Task | One-liner | Status | Wave | Deps |
-|---|------|-----------|--------|------|------|
-| 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
-| 02 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
-| 03 | [descriptive name] | [one-line description] | ⬜ | 2 | 01 |
-| 04 | [descriptive name] | [one-line description] | ⬜ | 2 | 01, 02 |
+| # | PR | Task | One-liner | Status | Wave | Deps |
+|---|----|------|-----------|--------|------|------|
+| 01 | 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
+| 02 | 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
+| 03 | 02 | [descriptive name] | [one-line description] | ⬜ | 2 | 01 |
+| 04 | 02 | [descriptive name] | [one-line description] | ⬜ | 2 | 01, 02 |
 
 **Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
 ```

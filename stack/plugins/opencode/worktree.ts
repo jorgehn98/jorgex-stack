@@ -5,7 +5,6 @@ interface WorktreePluginConfig {
   setupScript?: string;
   docsReminderScript?: string;
   pathContains?: string;
-  branchPrefix?: string;
   reminderLines?: string[];
 }
 
@@ -290,7 +289,6 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
   let config: WorktreePluginConfig = {
     setupScript: "scripts/setup-worktree.ps1",
     pathContains: "worktrees/",
-    branchPrefix: "feature/",
     reminderLines: [],
   };
 
@@ -356,7 +354,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
         const worktreeName = getWorktreeName(parsedWorktreePath);
         if (!worktreeName) return;
 
-        const branchName = `${config.branchPrefix || "feature/"}${worktreeName}`;
+        const branchName = worktreeName;
 
         // .quiet() suppresses stderr to prevent noisy TUI logs from git calls
         const gitRoot = await $`git rev-parse --show-toplevel`.quiet().text();
@@ -372,7 +370,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
           appendToolOutput(output, [
             `Worktree path is not canonical: ${absoluteWorktreePath}`,
             `Use the project-local path instead: ${expectedWorktreePath}`,
-            "Canonical rule: <project-root>/worktrees/<canonical-name>.",
+            "Canonical rule: <project-root>/worktrees/<canonical-name> or <project-root>/worktrees/<canonical-name>-prNN.",
           ]);
           return;
         }

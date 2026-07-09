@@ -53,6 +53,16 @@ Do NOT include specific file paths or code snippets. They may end up being outda
 
 Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
 
+## Delivery / PR Roadmap
+
+This section captures the intended PR split only. Live status, checkpoints, and task progress belong in `plan.md`.
+
+1. PR 01 — [scope / outcome]
+2. PR 02 — [scope / outcome]
+3. PR 03 — [scope / outcome]
+
+Keep this static: describe the planned delivery slices, not the current state.
+
 ## Testing Decisions
 
 A list of testing decisions that were made. Include:
