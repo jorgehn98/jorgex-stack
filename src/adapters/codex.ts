@@ -50,6 +50,12 @@ function hasEngramProtocol(configDir: string): boolean {
   return config !== null && /engram-instructions\.md/.test(config);
 }
 
+/**
+ * Upsert "tonto" de un header TOML literal: necesario cuando el último
+ * segmento del path contiene caracteres que `upsertTomlSection` normaliza
+ * (p. ej. `[….":workspace_roots"]`: el `.` dentro del quoted segment rompe
+ * el matching por path segmentado). Aquí solo se evita duplicar el header.
+ */
 function appendTomlBlock(existing: string | null, header: string, body: string): string {
   const block = `${header}\n${body.trim()}\n`;
   if (existing === null || existing.trim() === "") return block;
