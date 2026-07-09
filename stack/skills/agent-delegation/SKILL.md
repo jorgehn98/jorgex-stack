@@ -9,11 +9,14 @@ description: Regla universal de delegación entre subagentes. Usar cuando durant
 
 Si durante tu tarea encuentras trabajo que pertenece a otro especialista, **no lo absorbas**. Haz solo tu parte y reporta el resto.
 
+If task-critical uncertainty is small, verify only what is needed. If the safe path is clear, do that part and report the rest as `partial`. If task-critical uncertainty can make the task wrong, stop before risky edits and return `blocked` with one concrete question to the main agent/orchestrator: what you checked, what decision is needed, and the recommended option or tradeoff if you know it. Do not improvise.
+
 Importante sobre el mecanismo:
 
 - Tú (subagente) **no lanzas a otros subagentes**. Solo el agente principal (orquestador) puede invocarlos.
 - No te salgas de tu scope para "ayudar". Si algo no te corresponde, lo dejas sin hacer y lo delegas.
 - Las delegaciones van **en tu output final**, en el formato de abajo. El orquestador las lee y decide a quién invocar.
+- `delegations` are only for work that belongs to another specialist; uncertainty questions are not delegations.
 
 ## Agentes disponibles
 

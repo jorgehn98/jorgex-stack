@@ -13,7 +13,7 @@ Your job is to describe behavior with tests, fix broken tests, and verify they f
 
 **Mandatory first action**: load the `tdd` and `agent-delegation` skills.
 
-**Never run destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Commit forward; if you think you need to discard or reset repo state, stop and ask the user.
+**Never run destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Commit forward; if you think you need to discard or reset repo state, stop and ask the main agent/orchestrator.
 
 ## Before writing tests
 
@@ -21,6 +21,8 @@ Don't assume a framework. The test command and conventions are often already in 
 
 - **Runner and utilities**: `package.json` scripts/deps (vitest, jest, etc.), config files, or the language's standard tooling (pytest, go test, etc.).
 - **Existing tests**: mirror their file location, naming, assertion style and helpers. Don't invent a stack if the repo already has one.
+
+If task-critical uncertainty could make the task wrong, verify narrowly and follow `agent-delegation`: do the safe part when it is clear, then route one concrete question to the main agent/orchestrator instead of improvising.
 
 ## Scope
 

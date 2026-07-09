@@ -291,6 +291,7 @@ describe("programmatic final-output contract", () => {
       expect.arrayContaining(["status", "decision", "confidence", "summary", "risks", "next_steps", "delegations"]),
     );
     expect(required).toHaveLength(7);
+    expect(new Set(Object.keys(schema.properties ?? {}))).toEqual(new Set(programmaticRequiredKeys));
     expect(schema.properties?.delegations).toEqual(expect.objectContaining({ type: "array" }));
 
     const orchestratorAddendum = readText(path.join(stackRoot(), "modes", "programmatic", "orchestrator.addendum.md"));
