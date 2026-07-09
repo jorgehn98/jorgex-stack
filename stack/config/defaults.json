@@ -7,7 +7,15 @@
         "*": "allow",
         "*.env": "deny",
         "*.env.*": "deny",
-        "*.env.example": "allow"
+        "*.env.example": "allow",
+        "*/.ssh/*": "deny",
+        "*/.aws/credentials": "deny",
+        "*/.npmrc": "deny",
+        "*/.git-credentials": "deny",
+        "*/id_rsa": "deny",
+        "*/id_ed25519": "deny",
+        "*.pem": "deny",
+        "*.key": "deny"
       },
       "external_directory": {
         "*": "allow"
@@ -16,11 +24,11 @@
       "grep": "allow",
       "list": "allow",
       "lsp": "allow",
-      "webfetch": "allow",
-      "websearch": "allow",
+      "webfetch": "ask",
+      "websearch": "ask",
       "bash": {
         "*": "ask",
-        "git diff*": "allow",
+        "git diff*": "ask",
         "git log*": "allow",
         "git status*": "allow",
         "rm *": "ask",
@@ -36,15 +44,23 @@
   },
   "claude-code": {
     "permissions": {
-      "allow": ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "WebFetch", "WebSearch"],
-      "ask": ["Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
+      "allow": ["Read", "Grep", "Glob"],
+      "ask": ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "Bash(rm:*)", "Bash(rmdir:*)", "Bash(del:*)", "Bash(git push --force:*)"],
       "deny": [
         "Bash(format:*)",
         "Bash(mkfs:*)",
         "Bash(dd:*)",
         "Bash(shred:*)",
         "Read(//**/.env)",
-        "Read(//**/.env.*)"
+        "Read(//**/.env.*)",
+        "Read(//**/.ssh/**)",
+        "Read(//**/.aws/credentials)",
+        "Read(//**/.npmrc)",
+        "Read(//**/.git-credentials)",
+        "Read(//**/id_rsa)",
+        "Read(//**/id_ed25519)",
+        "Read(//**/*.pem)",
+        "Read(//**/*.key)"
       ]
     }
   },

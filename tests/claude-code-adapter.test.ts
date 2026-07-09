@@ -207,10 +207,10 @@ describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
     ...overrides,
   });
 
-  const run = (ctx: InstallContext): { content: string; settings: Record<string, unknown> } => {
+  const run = (ctx: InstallContext): { content: string; settings: Record<string, unknown>; warnings: string[] } => {
     const [action] = claudeCodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), ctx);
     const content = (action as { content: string }).content;
-    return { content, settings: JSON.parse(content) as Record<string, unknown> };
+    return { content, settings: JSON.parse(content) as Record<string, unknown>, warnings: [...ctx.warnings] };
   };
 
   beforeEach(() => {
@@ -229,12 +229,54 @@ describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
     expect(settings).toHaveProperty("hooks");
     expect(settings).toHaveProperty("permissions");
 
-    const permissions = settings.permissions as { allow?: string[]; deny?: string[] };
+    const permissions = settings.permissions as { allow?: string[]; ask?: string[]; deny?: string[] };
     expect(permissions.allow).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
+    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "WebSearch"]) {
+      expect(permissions.allow).not.toContain(tool);
+    }
+    expect(permissions.ask).toEqual(expect.arrayContaining(["Bash", "Edit", "Write", "WebFetch", "WebSearch"]));
     expect(permissions.deny).toEqual(
       expect.arrayContaining(["Read(//**/.env)", "Read(//**/.env.*)", "Bash(format:*)", "Bash(mkfs:*)"]),
     );
     expect(content).not.toContain("disableBypassPermissionsMode");
+  });
+
+  it("la config fresca también avisa y endurece secretos más allá de .env", () => {
+    const { settings, warnings } = run(makeCtx());
+    const permissions = settings.permissions as { deny?: string[] };
+
+    expect(permissions.deny).toEqual(
+      expect.arrayContaining([
+        "Read(//**/.ssh/**)",
+        "Read(//**/.aws/credentials)",
+        "Read(//**/.npmrc)",
+        "Read(//**/.git-credentials)",
+        "Read(//**/id_rsa)",
+        "Read(//**/id_ed25519)",
+        "Read(//**/*.pem)",
+        "Read(//**/*.key)",
+      ]),
+    );
+    expect(warnings.join("\n")).toMatch(/read-anywhere|broad/i);
+  });
+
+  it("la config fresca ya no concede escritura, shell ni egress web; las manda a ask", () => {
+    const { settings } = run(makeCtx());
+    const permissions = settings.permissions as { allow?: string[]; ask?: string[] };
+
+    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "WebSearch"]) {
+      expect(permissions.allow).not.toContain(tool);
+    }
+    expect(permissions.ask).toEqual(expect.arrayContaining(["Bash", "Edit", "Write", "WebFetch", "WebSearch"]));
+  });
+
+  it("la config no vacía sin permissions no recibe permissions", () => {
+    fs.writeFileSync(settingsFile, JSON.stringify({ other: true }));
+
+    const { settings } = run(makeCtx());
+
+    expect(settings.other).toBe(true);
+    expect(settings).not.toHaveProperty("permissions");
   });
 
   it("preserva permisos custom y no auto-migra el legacy exacto", () => {

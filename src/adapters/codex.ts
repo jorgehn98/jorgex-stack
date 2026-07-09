@@ -56,13 +56,6 @@ function hasEngramProtocol(configDir: string): boolean {
  * (p. ej. `[….":workspace_roots"]`: el `.` dentro del quoted segment rompe
  * el matching por path segmentado). Aquí solo se evita duplicar el header.
  */
-function appendTomlBlock(existing: string | null, header: string, body: string): string {
-  const block = `${header}\n${body.trim()}\n`;
-  if (existing === null || existing.trim() === "") return block;
-  if (existing.includes(header)) return existing.endsWith("\n") ? existing : `${existing}\n`;
-  return `${existing}${existing.endsWith("\n") ? "\n" : "\n\n"}${block}`;
-}
-
 export const codexAdapter: Adapter = {
   id: "codex",
   name: "Codex CLI",
@@ -187,17 +180,43 @@ export const codexAdapter: Adapter = {
         content = content === null ? line : line + content;
       }
 
+      ctx.warnings.push(
+        "Codex: fresh config enables read-anywhere via the jorgex-read-anywhere permission profile; broad local reads can expose secrets not covered by deny rules.",
+      );
+
       content = upsertTomlSection(content, "permissions.jorgex-read-anywhere", 'extends = ":workspace"');
       content = upsertTomlSection(
         content,
         "permissions.jorgex-read-anywhere.filesystem",
-        '":root" = "read"\n"*.env" = "deny"\n"*.env.*" = "deny"',
+        [
+          '":root" = "read"',
+          '"*.env" = "deny"',
+          '"*.env.*" = "deny"',
+          '"~/.ssh/**" = "deny"',
+          '"~/.aws/credentials" = "deny"',
+          '"~/.npmrc" = "deny"',
+          '"~/.git-credentials" = "deny"',
+          '"**/id_rsa" = "deny"',
+          '"**/id_ed25519" = "deny"',
+          '"**/*.pem" = "deny"',
+          '"**/*.key" = "deny"',
+        ].join("\n"),
       );
-      content = appendTomlBlock(
-        content,
-        '[permissions.jorgex-read-anywhere.filesystem.":workspace_roots"]',
-        '"." = "write"\n"*.env" = "deny"\n"*.env.*" = "deny"',
-      );
+      content += [
+        '\n[permissions.jorgex-read-anywhere.filesystem.":workspace_roots"]',
+        '"." = "write"',
+        '"*.env" = "deny"',
+        '"*.env.*" = "deny"',
+        '".ssh/**" = "deny"',
+        '".aws/credentials" = "deny"',
+        '".npmrc" = "deny"',
+        '".git-credentials" = "deny"',
+        '"**/id_rsa" = "deny"',
+        '"**/id_ed25519" = "deny"',
+        '"**/*.pem" = "deny"',
+        '"**/*.key" = "deny"',
+        "",
+      ].join("\n");
     }
 
     for (const [name, server] of Object.entries(canonical.servers)) {

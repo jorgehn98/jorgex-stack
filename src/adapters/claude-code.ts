@@ -159,6 +159,9 @@ export const claudeCodeAdapter: Adapter = {
       content = upsertJson(content, (root) => {
         if (root["permissions"] === undefined) {
           root["permissions"] = defaults["permissions"];
+          ctx.warnings.push(
+            "Claude Code: fresh config enables read-anywhere via Read/Grep/Glob allow rules; shell, writes and web egress remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+          );
         }
       });
     }

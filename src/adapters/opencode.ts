@@ -161,6 +161,9 @@ export const opencodeAdapter: Adapter = {
       const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
       if (isFreshConfig && defaults?.["permission"] !== undefined) {
         root["permission"] = defaults["permission"];
+        ctx.warnings.push(
+          "OpenCode: fresh config enables read-anywhere via external_directory:*; edits, web egress and arbitrary bash remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+        );
       }
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
