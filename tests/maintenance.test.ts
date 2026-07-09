@@ -83,6 +83,52 @@ const FOUR_R_LENS_CASES = [
   },
 ] as const;
 
+const MULTI_PR_LIFECYCLE_CASES = [
+  {
+    relativePath: "skills/work-lifecycle/SKILL.md",
+    fragments: [
+      "PR checkpoint outcome",
+      "Final work close",
+      "work/{name}/pr/{NN}",
+      "work/{name}/done",
+      "For multi-PR work, resume from the first PR/task not done in the roadmap/table.",
+      "For single-PR work, the PR checkpoint and final work close happen together: one merge, one `work/{name}/done`, then cleanup.",
+    ],
+  },
+  {
+    relativePath: "agents/orchestrator.md",
+    fragments: [
+      "For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished.",
+      "Phase outcomes, decisions and PR checkpoints → Engram under `work/{name}/{phase}` and `work/{name}/pr/{NN}`",
+      "After each intermediate merge: persist the checkpoint to `work/{name}/pr/{NN}`",
+    ],
+  },
+  {
+    relativePath: "system-prompt/engram-protocol.md",
+    fragments: [
+      "PR checkpoints",
+      "final outcome in `work/{name}/done` only after the last PR",
+    ],
+  },
+  {
+    relativePath: "skills/work-lifecycle/references/plan-template.md",
+    fragments: [
+      "## PR Roadmap",
+      "| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |",
+      "Intermediate PRs do not delete `work/[name]/`; only the final close does.",
+      "| # | PR | Task | One-liner | Status | Wave | Deps |",
+    ],
+  },
+  {
+    relativePath: "skills/to-prd/SKILL.md",
+    fragments: [
+      "## Delivery / PR Roadmap",
+      "Live status, checkpoints, and task progress belong in `plan.md`.",
+      "Keep this static: describe the planned delivery slices, not the current state.",
+    ],
+  },
+] as const;
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-maint-"));
 });
@@ -401,6 +447,10 @@ describe("worktree workflow contract", () => {
       "<project-root>/worktrees/<canonical-name>",
       ".git/info/exclude",
     ]);
+  });
+
+  it.each(MULTI_PR_LIFECYCLE_CASES)("$relativePath preserves the multi-PR checkpoint contract", ({ relativePath, fragments }) => {
+    expectFragments(readStackFile(relativePath), [...fragments]);
   });
 });
 
