@@ -42,6 +42,8 @@ Use the `engram` subagent for non-trivial memory reads — it filters and return
 
 Work tracking follows the `work-lifecycle` skill: `work/{name}/plan.md` (file) is the only status board; memory holds the task specs (`work/{name}/task/{NN}`), phase outcomes (`work/{name}/{phase}`), PR checkpoints (`work/{name}/pr/{NN}`), and the final outcome in `work/{name}/done` only after the last PR; the project backlog stays under the single key `work/backlog`. Subagents retrieve their task by the topic_key the orchestrator passes them and save their phase outcome under the topic_key they were given BEFORE their final report.
 
+`work/backlog` has a stricter mutation rule because Engram replaces complete content rather than applying a patch. The coordinator/orchestrator is the **single writer**; subagents only return candidates. Before every add, edit or removal, locate the exact observation and call `mem_get_observation`; preserve all unrelated entries, pass the complete content to `mem_update`, then read it again to verify. Never write it concurrently and never use a blind `mem_save` upsert. Separate `work/backlog/{slug}` memories are not safe yet because Engram lacks complete paginated topic-prefix listing; use tracker issues instead when available.
+
 ## Before ending a session
 
 Call `mem_session_summary` with: Goal, Instructions, Discoveries, Accomplished, Next Steps, Relevant Files. This is NOT optional — without it the next session starts blind.

@@ -21,7 +21,7 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 | PR checkpoint outcome | Engram `work/{name}/pr/{NN}` | Intermediate PR merge record |
 | Phase outcomes, decisions, findings | Engram `work/{name}/{phase}` | History — must survive the folder and compactions |
 | Final outcome | Engram `work/{name}/done` | Permanent record of what shipped after the last PR |
-| Pending / backlog items | Engram `work/backlog` — ONE key per project | All pending ideas in a single upserted list |
+| Pending / backlog items | Engram `work/backlog` — ONE key per project | All pending ideas in one serialized list |
 
 `work/` is **scaffolding, not product**: add it to the project's `.gitignore`. It contains ONLY work in progress — an empty `work/` means nothing is half-done. No `1-TODOs/`, no `3-finalized/`, no phase subfolders.
 
@@ -51,7 +51,18 @@ When presenting the PRD or the plan for human review on non-trivial work, OFFER 
 
 ## Pending work (backlog)
 
-All pending or future work of a project lives under the SINGLE topic_key `work/backlog` (upsert): one list, each item a short title + one-liner. Never one topic_key per idea, never a TODOs folder. When an item starts, it graduates: remove it from the backlog and create its `work/{name}/`. Review findings deliberately NOT applied also land here, one line each (what + why deferred).
+All pending or future work of a project lives under the SINGLE topic_key `work/backlog`: one list, each item a short title + one-liner. Never one topic_key per idea, never a TODOs folder. When an item starts, it graduates: remove it from the backlog and create its `work/{name}/`. Review findings deliberately NOT applied also land here, one line each (what + why deferred).
+
+### Safe backlog mutation
+
+Engram replaces an observation's complete content on both `mem_update` and a `mem_save` topic-key upsert. Until Engram offers complete, paginated listing by topic-key prefix, use this serialized protocol for every backlog add, edit or removal:
+
+1. The active coordinator/orchestrator is the **single writer**. Subagents return candidate backlog lines; they never mutate `work/backlog` themselves. Never run backlog writes concurrently.
+2. Find the exact `work/backlog` observation, then call `mem_get_observation` to read its full, untruncated content. If it does not exist, create it once with `mem_save`.
+3. Change only the intended lines while preserving every unrelated entry, then call `mem_update` on that exact observation ID with the **complete content**. Never send only the delta and never use a blind `mem_save` upsert for an existing backlog.
+4. Call `mem_get_observation` again and **verify** both the intended change and the preserved entries.
+
+Engram has no atomic append or compare-and-swap, so concurrent writers can still lose data even if both read first. Do not split items into `work/backlog/{slug}` yet: `mem_search` is capped and has no paginated topic-prefix listing, so older active items could become invisible. Once that capability exists, one observation per item is the preferred migration. If the project has an issue tracker, use issues instead now and do not keep an Engram backlog too.
 
 If the project manages work through an issue tracker, issues (`to-issues`) take this role instead — don't keep both.
 
@@ -91,6 +102,7 @@ For single-PR work, the PR checkpoint and final work close happen together: one 
 - Don't mix several distinct pieces of work under the same name/topic_key.
 - Same evolving phase → same topic_key (upsert). Different phases and different tasks must not overwrite each other.
 - Never persist the same artifact in two homes — no file + memory copies, no hybrid writes.
+- Treat `work/backlog` as the exceptional serialized list described above; ordinary topic-key upserts are not a safe substitute for its read-modify-write protocol.
 
 ## Legacy `work/` folders
 

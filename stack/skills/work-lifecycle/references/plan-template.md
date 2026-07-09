@@ -161,13 +161,15 @@ Status, wave and dependencies live in the plan.md table (single home) — do NOT
 
 ## Backlog entry — Template (`work/backlog`)
 
-ONE observation per project holds every pending idea (topic_key `work/backlog`, upserted). Each item is just:
+ONE observation per project holds every pending idea (topic_key `work/backlog`). Each item is just:
 
 ```markdown
 - **[short title]** — [one-line description of the idea and its value]
 ```
 
 When an item starts, remove it from this list and create its `work/[name]/`.
+
+Mutation is serialized: the coordinator is the single writer, reads the exact observation with `mem_get_observation`, preserves all unrelated lines, sends the complete content through `mem_update`, then reads it again to verify. Never send a delta or use a blind topic-key upsert. See **Safe backlog mutation** in the parent skill for the full protocol and the current reason not to use one observation per item.
 
 ---
 
