@@ -5,7 +5,6 @@ interface WorktreePluginConfig {
   setupScript?: string;
   docsReminderScript?: string;
   pathContains?: string;
-  branchPrefix?: string;
   reminderLines?: string[];
 }
 
@@ -286,8 +285,6 @@ const getCommandCwd = (args: Record<string, unknown>, directory: string) => {
 const replaceToken = (value: string, token: string, replacement: string) =>
   value.split(token).join(replacement);
 
-const isPerPrWorktreeName = (value: string) => /-pr\d+$/i.test(value);
-
 export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
   let config: WorktreePluginConfig = {
     setupScript: "scripts/setup-worktree.ps1",
@@ -357,11 +354,7 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
         const worktreeName = getWorktreeName(parsedWorktreePath);
         if (!worktreeName) return;
 
-        const branchName = isPerPrWorktreeName(worktreeName)
-          ? worktreeName
-          : config.branchPrefix
-            ? `${config.branchPrefix}${worktreeName}`
-            : worktreeName;
+        const branchName = worktreeName;
 
         // .quiet() suppresses stderr to prevent noisy TUI logs from git calls
         const gitRoot = await $`git rev-parse --show-toplevel`.quiet().text();

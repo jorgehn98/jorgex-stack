@@ -79,7 +79,7 @@ describe("WorktreePlugin", () => {
     expect(output.output).toContain("Worktree setup complete: canonical-name");
   });
 
-  it("keeps explicit branchPrefix support for single-PR worktrees", async () => {
+  it("ignores legacy branchPrefix config and keeps branchName equal to worktreeName", async () => {
     const srcDir = path.join(tmp, "src");
     fs.mkdirSync(srcDir);
     const { plugin, spawn } = await makePlugin(tmp, { branchPrefix: "feature/" });
@@ -104,7 +104,7 @@ describe("WorktreePlugin", () => {
       `${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/canonical-name`,
     );
     expect(payload.worktreeName).toBe("canonical-name");
-    expect(payload.branchName).toBe("feature/canonical-name");
+    expect(payload.branchName).toBe("canonical-name");
     expect(output.output).toContain("Worktree setup complete: canonical-name");
   });
 
@@ -132,6 +132,32 @@ describe("WorktreePlugin", () => {
     expect((options as { env: Record<string, string> }).env.OPENCODE_WORKTREE_PATH).toBe(
       `${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/feature-pr01`,
     );
+    expect(payload.worktreeName).toBe("feature-pr01");
+    expect(payload.branchName).toBe("feature-pr01");
+    expect(output.output).toContain("Worktree setup complete: feature-pr01");
+  });
+
+  it("ignores legacy branchPrefix config for multi-PR worktrees", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, { branchPrefix: "feature/" });
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/feature-pr01",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).toHaveBeenCalledOnce();
+    const [, options] = spawn.mock.calls[0]!;
+    const payload = JSON.parse(await (options as { stdin: Response }).stdin.text()) as Record<string, string>;
+
     expect(payload.worktreeName).toBe("feature-pr01");
     expect(payload.branchName).toBe("feature-pr01");
     expect(output.output).toContain("Worktree setup complete: feature-pr01");

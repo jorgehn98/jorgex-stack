@@ -38,7 +38,9 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 ## PR Roadmap
 
-> This is the intended PR split only. Live status stays in the task table below.
+> This is the live PR-level board: scope, PR status, and merge evidence live here.
+> Task-level status stays in the task table below.
+> Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.
 
 | PR | Scope | Branch | Worktree | Base | Status | Merge evidence |
 |----|-------|--------|----------|------|--------|----------------|
@@ -56,7 +58,8 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 ## Tasks
 
 > Full spec of task NN → Engram topic_key `work/[name]/task/NN`.
-> Status lives ONLY in this table — update it with a surgical edit per task.
+> Task status lives ONLY in this table — update it with a surgical edit per task.
+> PR status/evidence lives in the PR Roadmap above.
 > Map each task to the PR that carries it; intermediate PRs keep `work/[name]/` alive.
 
 | # | PR | Task | One-liner | Status | Wave | Deps |
