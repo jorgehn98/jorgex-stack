@@ -19,7 +19,7 @@ INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → SHIP → CLOSE
 
 ### Autonomy
 
-The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no questions, no confirmation pauses: plan approval authorizes commits, pushes to the work branch and the PR creation. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order. For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished.
+The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no confirmation pauses: plan approval authorizes commits, pushes to the work branch and the PR creation. Task-critical uncertainty from a subagent is an operational blocker, not a pause in autonomy: answer from existing context first; only if the decision genuinely cannot be made from available context may you ask the user, then relaunch with explicit guidance. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order. For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished.
 
 ## 1. INIT
 
@@ -109,6 +109,8 @@ Load the `agent-delegation` skill: it defines the available subagents, the scope
 Every subagent ends with a **Result contract** (Status / Delegations / Risks). Process it:
 
 - For each `→ [agent]: ...` line, launch the corresponding specialist.
+- If a subagent reports `partial`, keep the safe work and relaunch only what still needs guidance.
+- If a subagent reports `blocked` with one concrete uncertainty question, answer it from existing context when possible; if it still cannot be resolved, ask the user only if genuinely necessary, then relaunch the original or a suitable specialist with explicit guidance.
 - Don't declare a phase done while a delegation line remains unprocessed.
 - If Status is `partial` or `blocked`, resolve the cause before moving on.
 

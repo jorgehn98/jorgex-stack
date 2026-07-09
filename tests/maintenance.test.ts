@@ -28,6 +28,15 @@ const expectFragments = (content: string, fragments: string[]) => {
   }
 };
 
+const expectFragmentsInOrder = (content: string, fragments: string[]) => {
+  let cursor = 0;
+  for (const fragment of fragments) {
+    const index = content.indexOf(fragment, cursor);
+    expect(index).toBeGreaterThanOrEqual(cursor);
+    cursor = index + fragment.length;
+  }
+};
+
 const REVIEW_ENTRYPOINT_CASES = [
   {
     relativePath: "commands/xreview.md",
@@ -132,6 +141,12 @@ const MULTI_PR_LIFECYCLE_CASES = [
       "Keep this static: describe the planned delivery slices, not the current state.",
     ],
   },
+] as const;
+
+const DESTRUCTIVE_GIT_ESCALATION_CASES = [
+  ["implementer", "agents/implementer.md"],
+  ["tester", "agents/tester.md"],
+  ["translator", "agents/translator.md"],
 ] as const;
 
 beforeEach(() => {
@@ -541,6 +556,40 @@ describe("contención de rutas (manifest/backup manipulados)", () => {
     expect(restoreBackup(info.id, root, boundary)).toBe(1);
     expect(fs.existsSync(inside)).toBe(true);
     expect(fs.existsSync(outside)).toBe(false);
+  });
+});
+
+describe("subagent uncertainty escalation contract", () => {
+  it("agent-delegation fija la incertidumbre crítica de tarea como pregunta concreta al main agent/orchestrator y no como otro delegate", () => {
+    const content = readStackFile("skills/agent-delegation/SKILL.md");
+
+    expectFragments(content, [
+      "task-critical uncertainty",
+      "Do not improvise",
+      "one concrete question to the main agent/orchestrator",
+      "delegations",
+      "another specialist",
+    ]);
+    expect(content).not.toMatch(/^\|\s*`orchestrator`\s*\|/m);
+  });
+
+  it("orchestrator explica cómo procesar un blocker/pregunta del subagent y relanzarlo con guidance", () => {
+    const content = readStackFile("agents/orchestrator.md");
+
+    expectFragments(content, [
+      "If a subagent reports `partial`",
+      "keep the safe work and relaunch only what still needs guidance",
+      "If a subagent reports `blocked` with one concrete uncertainty question",
+      "answer it from existing context when possible",
+      "relaunch the original or a suitable specialist with explicit guidance",
+    ]);
+  });
+
+  it.each(DESTRUCTIVE_GIT_ESCALATION_CASES)("%s routea la duda sobre destructive git al main agent/orchestrator", (_name, relativePath) => {
+    const content = readStackFile(relativePath);
+
+    expectFragmentsInOrder(content, ["Never run destructive git", "main agent/orchestrator"]);
+    expect(content).not.toMatch(/Never run destructive git[\s\S]{0,220}ask the user/i);
   });
 });
 

@@ -29,5 +29,6 @@ Una sola fuente por agente. El instalador los traduce al formato de cada runtime
 ## Convenciones de contenido
 
 - Todo subagente termina con el **Result contract** (Status / Delegations / Risks) — el orchestrator lo procesa.
+- **Incertidumbre crítica no se improvisa**: si una decisión puede hacer la tarea incorrecta, el subagente devuelve `Status: blocked`/`partial` con **una pregunta concreta** al main agent/orchestrator dentro del Result contract; el trabajo de otro especialista sigue yendo como delegación normal. La regla completa está en la skill `agent-delegation`.
 - Las delegaciones usan el formato `→ [agent]: [work] — [paths] — [inputs]` (skill `agent-delegation`).
 - El flujo de trabajo lo define la skill `work-lifecycle`: `work/{nombre}/plan.md` es el tablero de estado y se mantiene entre merges intermedios; las specs de tareas (`work/{nombre}/task/{NN}`), los resultados de fase (`work/{nombre}/{fase}`), los checkpoints de PR (`work/{nombre}/pr/{NN}`) y el cierre final (`work/{nombre}/done`) viven en Engram. Los subagentes reciben topic_key + título, nunca la tarea inline.
