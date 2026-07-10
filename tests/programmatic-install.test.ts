@@ -9,8 +9,9 @@ import type { Adapter, InstallContext, InstallMode, SubagentConcurrency } from "
 import { runInstall } from "../src/install.js";
 import { loadCanonicalAgents } from "../src/lib/canonical.js";
 import * as backup from "../src/lib/backup.js";
+import * as modelMap from "../src/lib/model-map.js";
 import { dataDir, stackRoot } from "../src/lib/paths.js";
-import { testModelsForRuntime } from "./fixtures/model-map.js";
+import { TEST_MODEL_MAP, testModelsForRuntime } from "./fixtures/model-map.js";
 
 const RUNTIMES = [
   ["OpenCode", opencodeAdapter],
@@ -120,6 +121,7 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-programmatic-install-"));
     const configDir = path.join(tempRoot, adapter.id);
     const ctx = makeContext(adapter, configDir, mode, subagentConcurrency);
+    vi.spyOn(modelMap, "loadModelMap").mockReturnValue(TEST_MODEL_MAP);
 
     await expect(
       runInstall({
@@ -334,6 +336,7 @@ describe("agent-delegation skill en programmatic installs", () => {
     const configDir = path.join(tmp, "opencode");
 
     try {
+      vi.spyOn(modelMap, "loadModelMap").mockReturnValue(TEST_MODEL_MAP);
       await expect(
         runInstall({
           runtimes: ["opencode"],
@@ -351,6 +354,7 @@ describe("agent-delegation skill en programmatic installs", () => {
       expect(skill).toContain("delegations[]");
       expect(skill).toMatch(/\bJSON\b/i);
     } finally {
+      vi.restoreAllMocks();
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
