@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { OPEN_CODE_TEST_MODELS } from "./fixtures/model-map.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -147,7 +148,7 @@ describe("target inventory regressions", () => {
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
       mocks.modelMapOverride = {
-        opencode: DEFAULT_MODEL_MAP.opencode,
+        opencode: OPEN_CODE_TEST_MODELS,
         codex: DEFAULT_MODEL_MAP.codex,
         "claude-code": DEFAULT_MODEL_MAP["claude-code"],
       };
@@ -215,7 +216,7 @@ describe("target inventory regressions", () => {
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
-      mocks.modelMapOverride = { opencode: DEFAULT_MODEL_MAP.opencode };
+      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
 
@@ -274,7 +275,7 @@ describe("target inventory regressions", () => {
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
-      mocks.modelMapOverride = { opencode: DEFAULT_MODEL_MAP.opencode };
+      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
 
@@ -334,7 +335,7 @@ describe("target inventory regressions", () => {
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
-      mocks.modelMapOverride = { opencode: DEFAULT_MODEL_MAP.opencode };
+      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
 

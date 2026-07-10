@@ -19,6 +19,11 @@ export type RuntimeModelMap = Record<Tier, TierModel> & {
   overrides?: Record<string, Partial<TierModel>>;
 };
 export type ModelMap = Partial<Record<RuntimeId, RuntimeModelMap>>;
+type DefaultModelMap = {
+  "claude-code": RuntimeModelMap;
+  codex: RuntimeModelMap;
+  opencode?: never;
+};
 
 /**
  * Modelo efectivo de un subagente: override por nombre > tier. Un override
@@ -35,17 +40,12 @@ export function resolveAgentModel(models: RuntimeModelMap, agentName: string, ti
 }
 
 /**
- * Defaults por runtime (PRD §6.1). La elección real del usuario vive en
- * ~/.jorgex-stack/model-map.json (local, nunca en el repo); `jorgex-stack models`
- * la regenera. Claude Code usa alias auto-actualizables; fable es el nivel
- * superior (2026).
+ * Defaults de los runtimes con catálogo controlado. OpenCode se omite porque
+ * sus proveedores dependen de cada usuario: la primera instalación interactiva
+ * construye su mapa desde `opencode models`. La elección vive en
+ * ~/.jorgex-stack/model-map.json (local, nunca en el repo).
  */
-export const DEFAULT_MODEL_MAP: Required<ModelMap> = {
-  opencode: {
-    strong: { model: "openai/gpt-5.6-terra", variant: "xhigh" },
-    standard: { model: "openai/gpt-5.6-terra", variant: "xhigh" },
-    cheap: { model: "openai/gpt-5.6-luna", variant: "medium" },
-  },
+export const DEFAULT_MODEL_MAP: DefaultModelMap = {
   "claude-code": {
     strong: { model: "fable" },
     standard: { model: "sonnet" },
@@ -77,9 +77,9 @@ export function loadModelMap(): ModelMap {
     return DEFAULT_MODEL_MAP;
   }
   // Merge por tier: un runtime editado a mano sin algún tier hereda el default.
-  const merged: ModelMap = {};
+  const merged: ModelMap = { ...fromDisk };
   for (const id of Object.keys(DEFAULT_MODEL_MAP) as RuntimeId[]) {
-    merged[id] = { ...DEFAULT_MODEL_MAP[id], ...(fromDisk[id] ?? {}) };
+    merged[id] = { ...DEFAULT_MODEL_MAP[id]!, ...(fromDisk[id] ?? {}) } as RuntimeModelMap;
   }
   return merged;
 }

@@ -162,7 +162,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     }
     const models = modelMap[id];
     if (!models) {
-      p.log.warn(`${adapter.name}: sin model-map para este runtime — omitido.`);
+      p.log.error(`${adapter.name}: sin modelos seleccionados — ejecuta 'jorgex-stack models --agents ${id}'.`);
+      exitCode = 1;
       continue;
     }
 

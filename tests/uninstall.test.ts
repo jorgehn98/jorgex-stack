@@ -12,6 +12,12 @@ import { codexAdapter } from "../src/adapters/codex.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
+const OPEN_CODE_MODELS = {
+  strong: { model: "provider/strong" },
+  standard: { model: "provider/standard" },
+  cheap: { model: "provider/cheap" },
+};
+
 describe("removeMarkdownSection", () => {
   it("install → uninstall deja el contenido del usuario intacto", () => {
     const user = "# Mis notas\n\nContenido propio.\n";
@@ -132,7 +138,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: DEFAULT_MODEL_MAP.opencode,
+      models: OPEN_CODE_MODELS,
       warnings: [],
       preserveEngram: true,
     };
@@ -163,7 +169,7 @@ describe("paridad entre adapters (los 15 agentes canónicos reales)", () => {
     ["claude-code", claudeCodeAdapter],
     ["codex", codexAdapter],
   ] as const)("%s renderiza todos los agentes con el body íntegro", (id, adapter) => {
-    const models = DEFAULT_MODEL_MAP[id]!;
+    const models = id === "opencode" ? OPEN_CODE_MODELS : DEFAULT_MODEL_MAP[id]!;
     for (const agent of agents) {
       const rendered = adapter.renderAgent(agent, models);
       expect(rendered.length).toBeGreaterThan(0);
@@ -177,7 +183,7 @@ describe("paridad entre adapters (los 15 agentes canónicos reales)", () => {
 
   it("el orchestrator nunca es un subagente: agent solo en opencode, modo principal en el resto", () => {
     const orchestrator = agents.find((a) => a.mode === "primary")!;
-    const oc = opencodeAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP.opencode);
+    const oc = opencodeAdapter.renderAgent(orchestrator, OPEN_CODE_MODELS);
     expect(oc.map((o) => o.kind)).toEqual(["agent"]);
     const cc = claudeCodeAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP["claude-code"]);
     expect(cc.map((o) => o.kind).sort()).toEqual(["output-style", "skill"]);

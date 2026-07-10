@@ -63,6 +63,18 @@ function writePreference(homeDir: string, value: unknown): void {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
 }
 
+function writeOpenCodeModelMap(homeDir: string): void {
+  const file = path.join(homeDir, ".jorgex-stack", "model-map.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    opencode: {
+      strong: { model: "provider/strong" },
+      standard: { model: "provider/standard" },
+      cheap: { model: "provider/cheap" },
+    },
+  }, null, 2) + "\n");
+}
+
 function setStdoutTty(value: boolean): () => void {
   const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
   Object.defineProperty(process.stdout, "isTTY", { configurable: true, value, writable: true });
@@ -111,6 +123,50 @@ function collectedMessages(spies: Array<{ mock: { calls: unknown[][] } }>): stri
 }
 
 describe("CLI follow-up sync mode resolution", () => {
+  it("fresh interactive OpenCode install requires provider-aware model selection first", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-picker-"));
+    const homeDir = path.join(tmp, "home");
+    mocks.runModelsPicker.mockImplementationOnce(async () => {
+      writeOpenCodeModelMap(homeDir);
+      return 0;
+    });
+
+    const exitCode = await runCli(["install", "--agents", "opencode", "--mode", "human"], homeDir, true);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runModelsPicker).toHaveBeenCalledWith({ yes: false, runtimes: ["opencode"] });
+    expect(mocks.runInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("OpenCode reinstall preserves an existing model selection without reopening the picker", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-existing-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli(["install", "--agents", "opencode", "--mode", "human"], homeDir, true);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runModelsPicker).not.toHaveBeenCalled();
+    expect(mocks.runInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("fresh non-interactive OpenCode install fails instead of inventing a provider", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-required-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["install", "--agents", "opencode", "--mode", "human", "--yes"], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runModelsPicker).not.toHaveBeenCalled();
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(expect.stringMatching(/OpenCode.*models/i));
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("update reusa el modo explícito programmatic/parallel al lanzar el sync", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-mode-"));
     const homeDir = path.join(tmp, "home");
@@ -207,6 +263,7 @@ describe("CLI follow-up sync mode resolution", () => {
     const targetDir = path.join(tmp, "target");
 
     writePreference(homeDir, { mode: "programmatic", subagentConcurrency: "parallel" });
+    writeOpenCodeModelMap(homeDir);
 
     await runCli(["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"], homeDir);
 

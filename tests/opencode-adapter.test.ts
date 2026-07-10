@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { DESTRUCTIVE_GIT_DENY } from "../src/lib/git-guard.js";
 import type { CanonicalAgent } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
+import type { RuntimeModelMap } from "../src/lib/model-map.js";
 
 const MODELS: RuntimeModelMap = {
-  strong: { model: "fable" },
-  standard: { model: "sonnet" },
-  cheap: { model: "haiku" },
+  strong: { model: "provider/strong", variant: "high" },
+  standard: { model: "provider/standard", variant: "medium" },
+  cheap: { model: "provider/cheap" },
 };
 
 function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
@@ -25,20 +25,20 @@ function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
 }
 
 describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
-  it("defaults GPT-5.6: Terra/xhigh para standard y Luna/medium para cheap", () => {
+  it("renders the OpenCode models explicitly selected by the user", () => {
     const [standard] = opencodeAdapter.renderAgent(
       agent({ name: "implementer", tier: "standard" }),
-      DEFAULT_MODEL_MAP.opencode,
+      MODELS,
     );
-    expect(standard!.content).toContain("model: openai/gpt-5.6-terra");
-    expect(standard!.content).toContain("variant: xhigh");
+    expect(standard!.content).toContain("model: provider/standard");
+    expect(standard!.content).toContain("variant: medium");
 
     const [cheap] = opencodeAdapter.renderAgent(
-      agent({ name: "docs-maintainer", tier: "cheap" }),
-      DEFAULT_MODEL_MAP.opencode,
+      agent({ name: "engram", tier: "cheap" }),
+      MODELS,
     );
-    expect(cheap!.content).toContain("model: openai/gpt-5.6-luna");
-    expect(cheap!.content).toContain("variant: medium");
+    expect(cheap!.content).toContain("model: provider/cheap");
+    expect(cheap!.content).not.toContain("variant:");
   });
 
   it("full-bash: '*' allow primero y luego los deny (última regla gana en OpenCode)", () => {
