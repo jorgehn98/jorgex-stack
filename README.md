@@ -8,16 +8,24 @@ Portable multi-agent harness: one configuration source — 15 agents, 17 skills,
 
 Install and run via npm without cloning the repository:
 
+```bash
+# First installation
+pnpm dlx jorgex-stack install
+
+# Already installed: apply the latest published stack while keeping the existing model selection
+pnpm dlx jorgex-stack sync
 ```
-pnpm dlx jorgex-stack install    # install runtimes; first OpenCode setup selects connected models
-pnpm dlx jorgex-stack models     # model picker by runtime and tier (strong/standard/cheap)
-pnpm dlx jorgex-stack sync       # alias of install (same idempotent apply)
-pnpm dlx jorgex-stack doctor     # checks that everything is healthy (Engram, drift, hooks, keys)
-pnpm dlx jorgex-stack update     # interactive: scans stack + Engram, multiselect, diff/confirm
-                                 # With --check: report only, no changes
-                                 # With --yes: batch mode (report only)
-pnpm dlx jorgex-stack restore    # restores a backup
-pnpm dlx jorgex-stack uninstall  # uninstalls our files and keeps user data (Engram intact)
+
+Other important commands:
+
+```bash
+pnpm dlx jorgex-stack doctor          # check Engram, config drift, hooks and keys
+pnpm dlx jorgex-stack models          # change models by runtime, tier or subagent
+pnpm dlx jorgex-stack update --check  # report available stack, Engram and skill updates
+pnpm dlx jorgex-stack update          # interactively review and apply available updates
+pnpm dlx jorgex-stack restore --list  # list automatic backups
+pnpm dlx jorgex-stack restore <id>    # restore one backup
+pnpm dlx jorgex-stack uninstall       # remove managed files; keep Engram data intact
 ```
 
 For development from a clone, run the same commands through `pnpm cli <command>` (see [Development](#development)).
