@@ -100,8 +100,8 @@ A \`gh pr create\` or \`gh pr ready\` command was attempted. Do not infer succes
 
 - If the PR should still be under development, it must be draft. If it is ready, run \`gh pr ready --undo <number>\` before any change or push.
 - While draft, finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, final diff inspection, and the full review on the candidate SHA.
-- If the PR is actually ready, do not push. Wait for the complete Quality Gates, run \`gh pr checks <number>\`, and verify the checked headRefOid is the candidate SHA.
-- Merge only with explicit user approval and passing checks for that same SHA.
+- If the PR is actually ready, do not push. If the project has PR checks configured, wait for the complete Quality Gates, run \`gh pr checks <number>\`, and verify the checked headRefOid is the candidate SHA.
+- If no PR checks are configured, confirm and record that fact; their absence does not block the merge. Merge still requires explicit user approval.
 </pr-lifecycle-state-required>`;
 
 let raw = "";

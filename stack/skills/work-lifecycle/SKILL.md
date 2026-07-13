@@ -47,9 +47,9 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 2. Implement one coherent first slice, commit it, push the work branch, and open the PR immediately as draft with `gh pr create --draft`.
 3. Continue implementation, commits and pushes only while the PR is draft. Draft means the code can still change; ready means the current SHA is the candidate to merge.
 4. Before ready, complete every applicable preflight item: code, version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview review when the project uses Vercel, final diff inspection, and full PR review.
-5. Mark ready once with `gh pr ready <number>`, wait for Quality Gates, run `gh pr checks <number>`, and verify the checks belong to the latest commit.
-6. Never push to a ready PR. If it needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft, repeat preflight and review, mark ready again, and wait for a fresh complete gate.
-7. Merge only after explicit user approval and only when the passing checks match the current candidate SHA.
+5. Mark ready once with `gh pr ready <number>`. If the project has PR checks configured, wait for Quality Gates, run `gh pr checks <number>`, and verify the checks belong to the latest commit. If no PR checks are configured, record that fact; their absence does not block the merge.
+6. Never push to a ready PR. If it needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft, repeat preflight and review, mark ready again, and wait for a fresh complete gate when checks are configured.
+7. Merge only after explicit user approval. When PR checks are configured, their passing result must match the current candidate SHA.
 
 Dependent PRs are sequential: merge one checkpoint, update the production branch, then create the next worktree/branch from that updated base. Do not stack a dependent PR from an unmerged work branch unless the human explicitly chooses a stacked-PR strategy.
 

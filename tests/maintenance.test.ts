@@ -758,7 +758,7 @@ describe("worktree workflow contract", () => {
 });
 
 describe("PR draft lifecycle contract", () => {
-  it("keeps review before ready and gates after ready across operational prompts", () => {
+  it("keeps review before ready and requires gates only when the project configures them", () => {
     const xreview = fs.readFileSync(path.join(stackRoot(), "skills", "xreview", "SKILL.md"), "utf8");
 
     expect(xreview).toContain("code-simplifier");
@@ -787,6 +787,9 @@ describe("PR draft lifecycle contract", () => {
         "gh pr ready <number>",
         "gh pr checks <number>",
       ]);
+      expect(content).toContain("If the project has PR checks configured");
+      expect(content).toContain("If no PR checks are configured");
+      expect(content).toContain("does not block the merge");
       expect(content).toContain("latest commit");
     }
 
@@ -797,7 +800,14 @@ describe("PR draft lifecycle contract", () => {
       "gh pr ready <number>",
       "gh pr checks <number>",
     ]);
+    expect(briefing).toContain("Cuando el proyecto tenga checks/CI de PR configurados");
+    expect(briefing).toContain("Si no existen checks de PR configurados");
+    expect(briefing).toContain("su ausencia no bloquea el merge");
     expect(briefing).toContain("último commit");
+
+    const planTemplate = readStackFile("skills/work-lifecycle/references/plan-template.md");
+    expect(planTemplate).toContain("gates when configured");
+    expect(planTemplate).toContain("no PR checks are configured");
   });
 
   it("routes the lifecycle hook for create and ready commands", () => {
