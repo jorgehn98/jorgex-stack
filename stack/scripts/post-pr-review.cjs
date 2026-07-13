@@ -46,6 +46,8 @@ function shellCommandSegments(command) {
     } else if (character === '"' || character === "'") {
       quote = character;
       started = true;
+    } else if (character === "\r" || character === "\n") {
+      pushSegment();
     } else if (/\s/.test(character)) {
       pushToken();
     } else if (character === ";" || character === "&" || character === "|") {
@@ -59,10 +61,8 @@ function shellCommandSegments(command) {
   return segments;
 }
 
-function isLifecycleSegment(tokens) {
-  if (!/(?:^|[\\/])gh(?:\.exe)?$/i.test(tokens[0] ?? "")) return false;
-
-  let index = 1;
+function skipRepoOptions(tokens, start) {
+  let index = start;
   while (index < tokens.length) {
     const option = tokens[index];
     if (option === "-R" || option === "--repo") {
@@ -74,9 +74,18 @@ function isLifecycleSegment(tokens) {
       break;
     }
   }
+  return index;
+}
 
-  const action = tokens[index + 1]?.toLowerCase();
-  return tokens[index]?.toLowerCase() === "pr" && (action === "create" || action === "ready");
+function isLifecycleSegment(tokens) {
+  if (!/(?:^|[\\/])gh(?:\.exe)?$/i.test(tokens[0] ?? "")) return false;
+
+  let index = skipRepoOptions(tokens, 1);
+  if (tokens[index]?.toLowerCase() !== "pr") return false;
+  index = skipRepoOptions(tokens, index + 1);
+
+  const action = tokens[index]?.toLowerCase();
+  return action === "create" || action === "ready";
 }
 
 function isPrLifecycleCommand(command) {
