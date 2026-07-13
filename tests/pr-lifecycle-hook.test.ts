@@ -10,6 +10,7 @@ const runHook = (payload: unknown) =>
   spawnSync(process.execPath, [script], {
     encoding: "utf8",
     input: JSON.stringify(payload),
+    timeout: 1_000,
   });
 
 const shellPayload = (toolName: string, command: string | string[]) => ({
@@ -67,9 +68,17 @@ describe("PR lifecycle hook", () => {
     expect(result.stderr).toContain("<pr-lifecycle-state-required>");
   });
 
-  it("ignores unrelated commands", () => {
-    const result = runHook(shellPayload("shell", "gh pr view 123"));
+  it.each([
+    "gh pr view 123",
+    'echo "x; gh pr ready 48"',
+    "Write-Output 'x; gh pr create --draft'",
+    "gh --help pr ready 48",
+    `gh ${Array.from({ length: 20 }, () => "--flag").join(" ")} pr view`,
+  ])("ignores unrelated command without stalling: %s", (command) => {
+    const result = runHook(shellPayload("shell", command));
 
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("");
   });

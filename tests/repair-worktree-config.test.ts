@@ -328,4 +328,21 @@ describe("repair-worktree-config: cableado en los 3 runtimes", () => {
     expect(bash.legacy).toBe("scripts/user-invalid.cjs");
     expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
   });
+
+  it("opencode: preserva y avisa si el trigger canónico no es un array", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: {
+          gh: "scripts/user-invalid.cjs",
+        },
+      },
+    }));
+    const ctx = makeCtx("opencode");
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), ctx);
+    const bash = JSON.parse(writeContent(actions, "hooks.json"))["tool.execute.after"].bash;
+
+    expect(bash.gh).toBe("scripts/user-invalid.cjs");
+    expect(ctx.warnings).toContain("opencode: trigger bash 'gh' no es un array; hook gestionado omitido.");
+  });
 });

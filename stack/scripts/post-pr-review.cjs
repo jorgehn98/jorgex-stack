@@ -19,16 +19,71 @@ function writeWarning(message) {
   process.stderr.write(`post-pr-review: warning: ${message}\n`);
 }
 
-const shellValue = String.raw`(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|]+)`;
-const ghExecutable = String.raw`(?:"(?:[^"\r\n]*[\\/])?gh(?:\.exe)?"|'(?:[^'\r\n]*[\\/])?gh(?:\.exe)?'|(?:[^\s"';&|]*[\\/])?gh(?:\.exe)?)`;
-const globalOption = String.raw`-{1,2}[\w-]+(?:=${shellValue})?(?:\s+${shellValue})?`;
-const prLifecycleCommand = new RegExp(
-  String.raw`(?:^|(?:&&|\|\||[;&|])\s*)${ghExecutable}(?:\s+${globalOption})*\s+pr\s+(?:create|ready)\b`,
-  "i",
-);
+function shellCommandSegments(command) {
+  const segments = [];
+  let tokens = [];
+  let token = "";
+  let quote = null;
+  let started = false;
+
+  const pushToken = () => {
+    if (!started) return;
+    tokens.push(token);
+    token = "";
+    started = false;
+  };
+  const pushSegment = () => {
+    pushToken();
+    if (tokens.length > 0) segments.push(tokens);
+    tokens = [];
+  };
+
+  for (const character of command) {
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else token += character;
+      started = true;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      started = true;
+    } else if (/\s/.test(character)) {
+      pushToken();
+    } else if (character === ";" || character === "&" || character === "|") {
+      pushSegment();
+    } else {
+      token += character;
+      started = true;
+    }
+  }
+  pushSegment();
+  return segments;
+}
+
+function isLifecycleSegment(tokens) {
+  if (!/(?:^|[\\/])gh(?:\.exe)?$/i.test(tokens[0] ?? "")) return false;
+
+  let index = 1;
+  while (index < tokens.length) {
+    const option = tokens[index];
+    if (option === "-R" || option === "--repo") {
+      if (tokens[index + 1] === undefined) return false;
+      index += 2;
+    } else if (/^(?:-R|--repo=).+/i.test(option)) {
+      index += 1;
+    } else {
+      break;
+    }
+  }
+
+  const action = tokens[index + 1]?.toLowerCase();
+  return tokens[index]?.toLowerCase() === "pr" && (action === "create" || action === "ready");
+}
 
 function isPrLifecycleCommand(command) {
-  return prLifecycleCommand.test(command);
+  const segments = Array.isArray(command)
+    ? [command.map(String)]
+    : shellCommandSegments(String(command));
+  return segments.some(isLifecycleSegment);
 }
 
 const message = `<pr-lifecycle-state-required>
@@ -55,11 +110,7 @@ process.stdin.on("end", () => {
   const toolName = String(data.tool_name || data.tool || "").toLowerCase();
   const shellTools = ["bash", "shell", "local_shell", "powershell"];
   const commandValue = data?.tool_input?.command ?? data?.args?.command ?? "";
-  const command = Array.isArray(commandValue)
-    ? commandValue.join(" ")
-    : String(commandValue);
-
-  if (!shellTools.includes(toolName) || !isPrLifecycleCommand(command)) {
+  if (!shellTools.includes(toolName) || !isPrLifecycleCommand(commandValue)) {
     process.exit(0);
   }
 
