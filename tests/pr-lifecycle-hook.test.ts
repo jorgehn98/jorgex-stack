@@ -6,61 +6,64 @@ const script = fileURLToPath(
   new URL("../stack/scripts/post-pr-review.cjs", import.meta.url),
 );
 
-const runHook = (command: string | string[], openCode = false) =>
+const runHook = (payload: unknown) =>
   spawnSync(process.execPath, [script], {
     encoding: "utf8",
-    input: JSON.stringify(
-      openCode
-        ? { tool: "bash", args: { command }, directory: process.cwd() }
-        : { tool_name: "shell", tool_input: { command }, cwd: process.cwd() },
-    ),
+    input: JSON.stringify(payload),
   });
+
+const shellPayload = (toolName: string, command: string | string[]) => ({
+  tool_name: toolName,
+  tool_input: { command },
+  cwd: process.cwd(),
+});
+
+const parseContext = (stdout: string) => {
+  const parsed = JSON.parse(stdout);
+  expect(parsed.hookSpecificOutput).toEqual({
+    hookEventName: "PostToolUse",
+    additionalContext: parsed.additionalContext,
+  });
+  return parsed.additionalContext as string;
+};
 
 describe("PR lifecycle hook", () => {
-  it("keeps a newly created draft open for further development", () => {
-    const result = runHook("gh pr create --draft --title test");
-    const output = result.stdout;
+  it.each([
+    ["Bash", "gh pr create --draft --title test"],
+    ["PowerShell", 'gh pr create --title "Why --draft matters"'],
+    ["shell", ["gh", "pr", "create", "--title", "test"]],
+    ["local_shell", "gh pr ready --undo 123"],
+    ["shell", "gh pr create --draft && gh pr ready 123"],
+    ["PowerShell", "gh.exe pr ready https://github.com/foo2/repo/pull/48"],
+  ])("requires checking actual PR state for %s: %j", (toolName, command) => {
+    const result = runHook(shellPayload(toolName as string, command as string | string[]));
 
     expect(result.status).toBe(0);
-    expect(output).toContain("<pr-draft-created>");
-    expect(output).toContain("Keep the PR in draft");
-    expect(output).toContain("Do not mark it ready yet");
-    expect(output).not.toContain("post-pr-review-required");
-  });
-
-  it("flags a PR created without --draft and tells the agent to undo ready", () => {
-    const output = runHook(["gh", "pr", "create", "--title", "test"]).stdout;
-
-    expect(output).toContain("<pr-created-ready-violation>");
-    expect(output).toContain("gh pr ready --undo");
-  });
-
-  it("allows changes again after returning a ready PR to draft", () => {
-    const output = runHook("gh pr ready --undo 123").stdout;
-
-    expect(output).toContain("<pr-returned-to-draft>");
-    expect(output).toContain("Repeat the local verification and final review");
-  });
-
-  it("requires gates for the final SHA after marking the PR ready", () => {
-    const output = runHook("gh pr ready 123").stdout;
-
-    expect(output).toContain("<pr-ready-gates-required>");
-    expect(output).toContain("gh pr checks 123");
-    expect(output).toContain("latest commit");
-    expect(output).toContain("Do not push while the PR is ready");
+    expect(result.stderr).toBe("");
+    const context = parseContext(result.stdout);
+    expect(context).toContain("<pr-lifecycle-state-required>");
+    expect(context).toContain("command was attempted");
+    expect(context).toContain("gh pr view --json number,isDraft,headRefOid");
+    expect(context).toContain("gh pr ready --undo <number>");
+    expect(context).toContain("gh pr checks <number>");
+    expect(context).not.toContain("was created correctly");
+    expect(context).not.toContain("is now ready");
   });
 
   it("uses stderr for the OpenCode bridge", () => {
-    const result = runHook("gh pr ready 123", true);
+    const result = runHook({
+      tool: "bash",
+      args: { command: "gh.exe pr ready 123" },
+      directory: process.cwd(),
+    });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("<pr-ready-gates-required>");
+    expect(result.stderr).toContain("<pr-lifecycle-state-required>");
   });
 
   it("ignores unrelated commands", () => {
-    const result = runHook("gh pr view 123");
+    const result = runHook(shellPayload("shell", "gh pr view 123"));
 
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("");

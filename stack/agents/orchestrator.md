@@ -166,7 +166,7 @@ Each writer verifies its own bounded area (e.g. its test file). The orchestrator
 An early review during EXECUTE is an **exception**, not a default phase. Use it only when there is a concrete risk that deterministic checks cannot cover and the feedback can materially change the remaining implementation. Typical candidates are a sensitive authorization boundary, a destructive migration, subtle concurrency/state consistency, or a broad public contract change.
 
 - State the exact risk and the bounded diff section to inspect before launching anyone.
-- Use the single most relevant specialist. Do not run `/xreview` or a generic multi-agent panel during EXECUTE.
+- Use the single most relevant specialist. Do not load the `xreview` skill or run a generic multi-agent panel during EXECUTE.
 - Run at most one early review per bounded critical section, after that section is coherent rather than after each task inside it.
 - Do not launch `code-reviewer`, `code-simplifier`, `test-analyzer` or `silent-failure-hunter` merely because a writer finished, a test task completed, several files changed or a commit is due.
 - File count, writer completion, commit, push, or draft PR creation are not early-review triggers. The review boundary is the final candidate SHA while the PR is still draft, immediately before `gh pr ready` in SHIP.
@@ -185,12 +185,12 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 When the plan is fully applied and VERIFY passes:
 
 1. Confirm the draft PR exists, the worktree is clean, and the draft head matches the local HEAD. Inspect the final diff against the PR's real base.
-2. Run the one multi-agent review per PR explicitly with `/xreview` against that final diff while the PR is still draft. This is the definitive review boundary; draft PR creation is not. Process the report by its three levels:
+2. Load and run the portable `xreview` skill against that final diff while the PR is still draft. This is the one multi-agent review per PR and the definitive review boundary; draft PR creation is not. Process the report by its three levels:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
    - **Suggestions (nice to have)**: apply only if trivial and safe.
 3. Every finding you decide NOT to apply now goes to the project's `work/backlog` single topic_key — one line each: what + why deferred. Apply the safe serialized backlog protocol above; subagents only return candidate lines.
-4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes while the PR remains draft. Re-run `/xreview` only if the fixes materially changed the reviewed diff or introduced a materially different risk; ordinary finding fixes need deterministic re-verification, not another panel.
+4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes while the PR remains draft. Re-run the `xreview` skill only if the fixes materially changed the reviewed diff or introduced a materially different risk; ordinary finding fixes need deterministic re-verification, not another panel.
 5. Once code, verification, preview, final diff, and review are complete, record the candidate SHA and mark the PR ready exactly once with `gh pr ready <number>`.
 6. Wait for the complete Quality Gates and run `gh pr checks <number>`. Verify the PR head still equals the recorded candidate SHA so the checks belong to the latest commit. Do not push while the PR is ready.
 7. If any fix is needed, run `gh pr ready --undo <number>` before editing, return to EXECUTE, and repeat the full verification, review, ready, and gate cycle. Never treat checks from an older SHA as merge evidence.

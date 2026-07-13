@@ -42,7 +42,7 @@ const expectFragmentsInOrder = (content: string, fragments: string[]) => {
 
 const REVIEW_ENTRYPOINT_CASES = [
   {
-    relativePath: "commands/xreview.md",
+    relativePath: "skills/xreview/SKILL.md",
     contractFragments: [
       "4R internally",
       "comment-fixer",
@@ -608,6 +608,20 @@ describe("planCommands: comandos específicos por runtime", () => {
       .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
     expect(codexTargets).not.toContain("skills/goal/SKILL.md");
   });
+
+  it("instala wrappers de /xreview en Claude/OpenCode y deja Codex usar la skill portable", () => {
+    const opencodeTargets = planCommands(opencodeAdapter, makeCtx("opencode"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    const claudeTargets = planCommands(claudeCodeAdapter, makeCtx("claude-code"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    const codexTargets = planCommands(codexAdapter, makeCtx("codex"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+
+    expect(opencodeTargets).toContain("commands/xreview.md");
+    expect(claudeTargets).toContain("commands/xreview.md");
+    expect(codexTargets).not.toContain("skills/xreview/SKILL.md");
+    expect(fs.existsSync(path.join(stackRoot(), "skills", "xreview", "SKILL.md"))).toBe(true);
+  });
 });
 
 describe("renderCommand de OpenCode", () => {
@@ -735,7 +749,7 @@ describe("worktree workflow contract", () => {
 
 describe("PR draft lifecycle contract", () => {
   it("keeps review before ready and gates after ready across operational prompts", () => {
-    const xreview = fs.readFileSync(path.join(stackRoot(), "commands", "xreview.md"), "utf8");
+    const xreview = fs.readFileSync(path.join(stackRoot(), "skills", "xreview", "SKILL.md"), "utf8");
 
     expect(xreview).toContain("code-simplifier");
     expect(xreview).toContain("lean/anti-bloat pass for diffs and PRs");
@@ -770,7 +784,7 @@ describe("PR draft lifecycle contract", () => {
         entry.hooks?.some((hook) => hook.command?.includes("post-pr-review.cjs")),
     );
 
-    expect(lifecycleHook?.["x-command-includes"]).toBe("gh pr ");
+    expect(lifecycleHook?.["x-command-includes"]).toBe("gh");
   });
 });
 

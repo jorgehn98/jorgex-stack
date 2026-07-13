@@ -288,9 +288,10 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
 // ---------------------------------------------------------------------------
 
 describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
-  it("PROTECTED_SKILLS incluye agent-delegation y work-lifecycle", () => {
+  it("PROTECTED_SKILLS incluye las skills propias del stack", () => {
     expect(PROTECTED_SKILLS.has("agent-delegation")).toBe(true);
     expect(PROTECTED_SKILLS.has("work-lifecycle")).toBe(true);
+    expect(PROTECTED_SKILLS.has("xreview")).toBe(true);
   });
 
   it("replaceSkill lanza con agent-delegation sin tocar el disco", () => {

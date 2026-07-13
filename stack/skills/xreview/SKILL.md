@@ -1,4 +1,5 @@
 ---
+name: xreview
 description: Conditional multi-agent code review — determines what to review (asking if unclear), resolves the exact diff, and launches only the relevant subagents in parallel
 ---
 
@@ -6,7 +7,7 @@ Run a comprehensive multi-agent review. Your job as the main agent: determine WH
 
 ## 0. Determine the review target
 
-User input (may be empty): {{input}}
+Review target (may be empty): use the invocation context or the explicit target supplied by the caller.
 
 - If the input names a branch → review `git diff <that-branch>...HEAD`.
 - If the input references a PR (number or URL) → use that PR's base branch as BASE.

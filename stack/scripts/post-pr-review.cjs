@@ -2,10 +2,10 @@
 /**
  * Global PostToolUse guardrail for the PR draft → ready lifecycle.
  *
- * The historical filename is intentionally preserved so sync can update the
+ * The historical filename is intentionally preserved so sync can migrate the
  * existing hook entry instead of leaving an orphan in user configuration.
- * The definitive multi-agent review now runs explicitly on the final draft SHA
- * before `gh pr ready`; creating the draft is no longer a review boundary.
+ * The hook never infers success or PR state from command text: PostToolUse
+ * payloads are not consistent enough across runtimes to prove either.
  *
  * Payload compatibility (stdin JSON):
  * - Claude Code hooks: { tool_name: "Bash", tool_input: { command: "..." }, cwd }
@@ -19,64 +19,18 @@ function writeWarning(message) {
   process.stderr.write(`post-pr-review: warning: ${message}\n`);
 }
 
-function commandKind(command) {
-  const create = /\bgh(?:\.exe)?\s+pr\s+create\b/i.test(command);
-  const ready = /\bgh(?:\.exe)?\s+pr\s+ready\b/i.test(command);
-
-  if (create) {
-    return /(?:^|\s)--draft(?:\s|$)/i.test(command)
-      ? "create-draft"
-      : "create-ready";
-  }
-
-  if (ready) {
-    return /(?:^|\s)--undo(?:\s|$)/i.test(command)
-      ? "ready-undo"
-      : "ready";
-  }
-
-  return null;
+function isPrLifecycleCommand(command) {
+  return /\bgh(?:\.exe)?\s+pr\s+(?:create|ready)\b/i.test(command);
 }
 
-function prArgument(command) {
-  const tail = command.match(/\bgh(?:\.exe)?\s+pr\s+ready\b([\s\S]*)/i)?.[1] ?? "";
-  return tail.match(/\b\d+\b/)?.[0] ?? "<number>";
-}
+const message = `<pr-lifecycle-state-required>
+A \`gh pr create\` or \`gh pr ready\` command was attempted. Do not infer success or PR state from the command text. Resolve the current PR and run \`gh pr view --json number,isDraft,headRefOid\` before the next action.
 
-function lifecycleMessage(kind, command) {
-  const number = prArgument(command);
-
-  switch (kind) {
-    case "create-draft":
-      return `<pr-draft-created>
-The PR was created correctly as draft. Keep the PR in draft while its code can still change. Do not mark it ready yet.
-
-Continue commits and pushes only while draft. Before ready, finish the code, applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, final diff inspection, and the full PR review on the final draft SHA.
-</pr-draft-created>`;
-
-    case "create-ready":
-      return `<pr-created-ready-violation>
-The PR was created without \`--draft\`, which violates the required lifecycle. Run \`gh pr ready --undo ${number}\` immediately and keep all further changes and pushes in draft.
-
-Only mark it ready again after local verification, preview, final diff, and review are complete for the candidate SHA.
-</pr-created-ready-violation>`;
-
-    case "ready-undo":
-      return `<pr-returned-to-draft>
-The PR is draft again. Make changes and pushes only in this state. Repeat the local verification and final review for the new candidate SHA before running \`gh pr ready ${number}\` again.
-</pr-returned-to-draft>`;
-
-    case "ready":
-      return `<pr-ready-gates-required>
-The PR is now ready. Do not push while the PR is ready. Wait for the complete Quality Gates, then run \`gh pr checks ${number}\` and verify the passing checks belong to the latest commit.
-
-If any change is needed, first run \`gh pr ready --undo ${number}\`, modify and push while draft, repeat local verification and final review, then mark ready and wait for a fresh complete gate.
-</pr-ready-gates-required>`;
-
-    default:
-      return null;
-  }
-}
+- If the PR should still be under development, it must be draft. If it is ready, run \`gh pr ready --undo <number>\` before any change or push.
+- While draft, finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, final diff inspection, and the full review on the candidate SHA.
+- If the PR is actually ready, do not push. Wait for the complete Quality Gates, run \`gh pr checks <number>\`, and verify the checked headRefOid is the candidate SHA.
+- Merge only with explicit user approval and passing checks for that same SHA.
+</pr-lifecycle-state-required>`;
 
 let raw = "";
 process.stdin.setEncoding("utf8");
@@ -97,13 +51,7 @@ process.stdin.on("end", () => {
     ? commandValue.join(" ")
     : String(commandValue);
 
-  if (!shellTools.includes(toolName)) {
-    process.exit(0);
-  }
-
-  const kind = commandKind(command);
-  const message = kind === null ? null : lifecycleMessage(kind, command);
-  if (message === null) {
+  if (!shellTools.includes(toolName) || !isPrLifecycleCommand(command)) {
     process.exit(0);
   }
 

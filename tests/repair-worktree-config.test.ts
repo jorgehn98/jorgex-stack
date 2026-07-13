@@ -278,4 +278,24 @@ describe("repair-worktree-config: cableado en los 3 runtimes", () => {
     expect(parsed["tool.execute.after"].bash["*"]).toContain(`scripts/${SCRIPT_NAME}`);
     expect(copiesScript(actions)).toBe(true);
   });
+
+  it("opencode: migra el filtro antiguo del mismo script sin duplicarlo ni borrar scripts de usuario", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: {
+          "gh pr create": ["scripts/post-pr-review.cjs", "scripts/user.cjs"],
+          "user command": ["scripts/user-only.cjs"],
+        },
+      },
+    }));
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), makeCtx("opencode"));
+    const parsed = JSON.parse(writeContent(actions, "hooks.json"));
+    const bash = parsed["tool.execute.after"].bash;
+
+    expect(bash["gh pr create"]).toEqual(["scripts/user.cjs"]);
+    expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
+    expect(bash["user command"]).toEqual(["scripts/user-only.cjs"]);
+    expect(Object.values(bash).flat().filter((script) => script === "scripts/post-pr-review.cjs")).toHaveLength(1);
+  });
 });

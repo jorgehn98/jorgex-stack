@@ -32,7 +32,7 @@ describe("orchestrator review cadence", () => {
     expect(agent.body).toMatch(/at most one early review per bounded critical section/is);
     expect(agent.body).toMatch(/use the single most relevant specialist/i);
     expect(agent.body).toMatch(
-      /do not run `\/xreview` or a generic multi-agent panel during EXECUTE/i,
+      /do not load the `xreview` skill or run a generic multi-agent panel during EXECUTE/i,
     );
     expect(agent.body).toMatch(
       /file count, writer completion, commit, push, or draft PR creation are not early-review triggers/i,
@@ -41,6 +41,7 @@ describe("orchestrator review cadence", () => {
 
   it("keeps the multi-agent review on the final draft SHA before ready", () => {
     expect(agent.body).toMatch(/one multi-agent review per PR/i);
+    expect(agent.body).toMatch(/load and run the portable `xreview` skill/i);
     expect(agent.body).toMatch(/while the PR is still draft/i);
     expect(agent.body).toMatch(/before `gh pr ready`/i);
     expect(agent.body).toMatch(/re-run.+only if.+materially different risk/is);

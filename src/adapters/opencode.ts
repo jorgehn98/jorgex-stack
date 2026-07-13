@@ -129,6 +129,12 @@ export const opencodeAdapter: Adapter = {
     const content = upsertJson(readTextIfExists(hooksFile), (root) => {
       const after = (root["tool.execute.after"] ??= {}) as Record<string, Record<string, string[]>>;
       const bash = (after["bash"] ??= {});
+      const managedScripts = new Set(Object.values(bashEntries).flat());
+      for (const [includes, scripts] of Object.entries(bash)) {
+        const preserved = scripts.filter((script) => !managedScripts.has(script));
+        if (preserved.length > 0) bash[includes] = preserved;
+        else delete bash[includes];
+      }
       for (const [includes, scripts] of Object.entries(bashEntries)) {
         const list = (bash[includes] ??= []);
         for (const s of scripts) if (!list.includes(s)) list.push(s);
