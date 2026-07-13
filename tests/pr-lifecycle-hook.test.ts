@@ -60,6 +60,9 @@ describe("PR lifecycle hook", () => {
     expect(context).toContain("If the project has PR checks configured");
     expect(context).toContain("If no PR checks are configured");
     expect(context).toContain("does not block the merge");
+    expect(context).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
+    expect(context).toContain("Immediately before reporting or merging");
+    expect(context).toContain("gh pr view --json headRefOid");
     expect(context).not.toContain("was created correctly");
     expect(context).not.toContain("is now ready");
   });

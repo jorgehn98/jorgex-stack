@@ -42,7 +42,7 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 > Task-level status stays in the task table below.
 > Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.
 > PR status advances: ⬜ Pending → 📝 Draft → 🔍 Reviewed → ⏳ Ready / gates when configured → ✅ Merged.
-> If a ready PR changes, return it to Draft with `gh pr ready --undo`, clear stale gate evidence, and repeat review plus configured gates for the new SHA. If no PR checks are configured, record their absence instead of blocking the merge.
+> If a ready PR changes, return it to Draft with `gh pr ready --undo`, clear stale gate evidence, and repeat review plus configured gates for the new SHA. If no PR checks are configured, confirm that from project configuration and record their absence instead of blocking the merge. An empty `gh pr checks` result immediately after ready is not evidence that no checks are configured. Immediately before reporting or merging, compare `gh pr view --json headRefOid` with the recorded candidate SHA.
 
 | PR | Scope | Branch | Worktree | Base | Status | Merge evidence |
 |----|-------|--------|----------|------|--------|----------------|

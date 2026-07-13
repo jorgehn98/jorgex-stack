@@ -791,6 +791,9 @@ describe("PR draft lifecycle contract", () => {
       expect(content).toContain("If no PR checks are configured");
       expect(content).toContain("does not block the merge");
       expect(content).toContain("latest commit");
+      expect(content).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
+      expect(content).toContain("Immediately before reporting or merging");
+      expect(content).toContain("gh pr view --json headRefOid");
     }
 
     const briefing = fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8");
@@ -804,10 +807,15 @@ describe("PR draft lifecycle contract", () => {
     expect(briefing).toContain("Si no existen checks de PR configurados");
     expect(briefing).toContain("su ausencia no bloquea el merge");
     expect(briefing).toContain("último commit");
+    expect(briefing).toContain("Un resultado vacío de `gh pr checks` justo después de ready no demuestra");
+    expect(briefing).toContain("Inmediatamente antes de reportar o mergear");
+    expect(briefing).toContain("gh pr view --json headRefOid");
 
     const planTemplate = readStackFile("skills/work-lifecycle/references/plan-template.md");
     expect(planTemplate).toContain("gates when configured");
     expect(planTemplate).toContain("no PR checks are configured");
+    expect(planTemplate).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
+    expect(planTemplate).toContain("Immediately before reporting or merging");
   });
 
   it("routes the lifecycle hook for create and ready commands", () => {
