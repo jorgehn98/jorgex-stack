@@ -48,12 +48,10 @@ Once a task crosses any of these thresholds, delegating stops being optional:
 | Trigger | Expected behavior |
 | --- | --- |
 | Reading 4+ files just to understand a flow | Delegate exploration to the matching analyst. |
-| Touching 2+ non-trivial files | One writer (`implementer`) per scope; fresh `code-reviewer` pass before closing. |
-| Commit, push or PR after code changes | Run `code-reviewer` on the diff unless it is trivial docs/text. |
 | Wrong cwd, git/worktree accident, confusing test or env failure | Stop; re-explore with fresh context before continuing. |
 | Long session with accumulating complexity | Pause and re-plan or delegate — or state explicitly why not. |
 
-The goal is not ceremony: it is one responsible coordinator, one writer per scope, and fresh eyes before anything ships.
+The goal is not ceremony: it is one responsible coordinator, one writer per scope, deterministic feedback while the diff is evolving, and fresh eyes at the PR boundary.
 
 ## 3. SPEC
 
@@ -109,6 +107,7 @@ Load the `agent-delegation` skill: it defines the available subagents, the scope
 Every subagent ends with a **Result contract** (Status / Delegations / Risks). Process it:
 
 - For each `→ [agent]: ...` line, launch the corresponding specialist.
+- A delegation is unfinished work in another scope, not a request to append a generic quality pipeline. Normal handoffs between `implementer` and `tester` do not by themselves justify reviewers or analyzers.
 - If a subagent reports `partial`, keep the safe work and relaunch only what still needs guidance.
 - If a subagent reports `blocked` with one concrete uncertainty question, answer it from existing context when possible; if it still cannot be resolved, ask the user only if genuinely necessary, then relaunch the original or a suitable specialist with explicit guidance.
 - Don't declare a phase done while a delegation line remains unprocessed.
@@ -152,9 +151,19 @@ implementer (direct change)
 
 ### Verification cadence
 
-Verify by bounded, coherent sections (e.g. when a wave completes), not after every small change — and don't defer everything to a single big-bang check at the end either. Launch a verification subagent only when its trigger area actually changed in that section.
+Deterministic checks are the routine feedback loop while implementation is in progress: run the relevant tests, lint and typecheck/build checks at the cheapest seam that can catch the section's regressions. Verify by bounded, coherent sections (e.g. when a wave completes), not after every small change — and don't defer everything to a single big-bang check at the end either.
 
-In parallel waves, each writer's minimum verification is its own bounded area (e.g. its test file) PLUS the project's global typecheck when one exists — typecheck is cheap, global, and catches cross-file breakage that per-area runs miss. The full suite runs once per wave, by the orchestrator, when the wave closes — never concurrently by several writers.
+Each writer verifies its own bounded area (e.g. its test file). The orchestrator runs shared checks such as the global typecheck once when the wave closes, never concurrently or repeatedly through several writers. Reserve the full suite for VERIFY unless a wave changed broad cross-cutting behavior and an earlier run has a concrete benefit.
+
+### Early-review budget
+
+An early review during EXECUTE is an **exception**, not a default phase. Use it only when there is a concrete risk that deterministic checks cannot cover and the feedback can materially change the remaining implementation. Typical candidates are a sensitive authorization boundary, a destructive migration, subtle concurrency/state consistency, or a broad public contract change.
+
+- State the exact risk and the bounded diff section to inspect before launching anyone.
+- Use the single most relevant specialist. Do not run `/xreview` or a generic multi-agent panel during EXECUTE.
+- Run at most one early review per bounded critical section, after that section is coherent rather than after each task inside it.
+- Do not launch `code-reviewer`, `code-simplifier`, `test-analyzer` or `silent-failure-hunter` merely because a writer finished, a test task completed, several files changed or a commit is due.
+- File count, writer completion, commit, push, or PR creation are not early-review triggers. PR creation has its own single review boundary in SHIP.
 
 ## 6. VERIFY
 
@@ -168,14 +177,14 @@ In parallel waves, each writer's minimum verification is its own bounded area (e
 
 When the plan is fully applied and VERIFY passes:
 
-1. Push the work branch (commits already exist per task from EXECUTE) and create the PR (`gh pr create`) against its real base — no permission needed for either. The post-PR hook fires the conditional multi-agent review automatically — let it run and wait for the unified report. If the hook does NOT fire (no review instruction arrives after the PR is created), don't skip the review: launch `/xreview` yourself against the PR's base, with the same scope the hook would have used.
+1. Push the work branch (commits already exist per task from EXECUTE) and create the PR (`gh pr create`) against its real base — no permission needed for either. This is the one multi-agent review per PR: the post-PR hook fires it automatically, so let it run and wait for the unified report. If the hook does NOT fire (no review instruction arrives after the PR is created), launch `/xreview` yourself against the PR's base with the same scope; never run both.
 2. Process the report by its three levels:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
    - **Suggestions (nice to have)**: apply only if trivial and safe.
 3. Every finding you decide NOT to apply now goes to the project's `work/backlog` single topic_key — one line each: what + why deferred. Apply the safe serialized backlog protocol above; subagents only return candidate lines.
 4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes to the PR branch.
-5. The review fires once per PR creation — pushing fixes does not re-trigger it. Re-run `/xreview` only if the fixes were large.
+5. The review fires once per PR creation — pushing fixes does not re-trigger it. Re-run `/xreview` only if the fixes materially changed the reviewed diff or introduced a materially different risk; ordinary finding fixes need deterministic re-verification, not another panel.
 
 ## 8. CLOSE
 
