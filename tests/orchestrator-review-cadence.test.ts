@@ -20,12 +20,20 @@ describe("orchestrator review cadence", () => {
     expect(agent.body).toMatch(
       /do not launch.+code-reviewer.+code-simplifier.+test-analyzer.+silent-failure-hunter.+merely because a writer finished/is,
     );
+    expect(agent.body).toMatch(/test task completed/i);
+    expect(agent.body).toMatch(
+      /normal handoffs between `implementer` and `tester` do not by themselves justify reviewers or analyzers/i,
+    );
   });
 
   it("allows at most one early review for a concrete high-risk section", () => {
     expect(agent.body).toMatch(/early review.+exception/is);
     expect(agent.body).toMatch(/concrete risk.+deterministic checks cannot cover/is);
     expect(agent.body).toMatch(/at most one early review per bounded critical section/is);
+    expect(agent.body).toMatch(/use the single most relevant specialist/i);
+    expect(agent.body).toMatch(
+      /do not run `\/xreview` or a generic multi-agent panel during EXECUTE/i,
+    );
     expect(agent.body).toMatch(
       /file count, writer completion, commit, push, or PR creation are not early-review triggers/i,
     );
@@ -33,6 +41,7 @@ describe("orchestrator review cadence", () => {
 
   it("keeps the multi-agent review at the PR boundary", () => {
     expect(agent.body).toMatch(/one multi-agent review per PR/i);
+    expect(agent.body).toMatch(/never run both/i);
     expect(agent.body).toMatch(/re-run.+only if.+materially different risk/is);
   });
 
