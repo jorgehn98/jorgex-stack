@@ -18,6 +18,7 @@ import * as modelMap from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { runInstall } from "../src/install.js";
 import { planCommands } from "../src/components/commands.js";
+import { planSkills } from "../src/components/skills.js";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
 
 let tmp: string;
@@ -42,7 +43,7 @@ const expectFragmentsInOrder = (content: string, fragments: string[]) => {
 
 const REVIEW_ENTRYPOINT_CASES = [
   {
-    relativePath: "commands/xreview.md",
+    relativePath: "skills/xreview/SKILL.md",
     contractFragments: [
       "4R internally",
       "comment-fixer",
@@ -53,21 +54,6 @@ const REVIEW_ENTRYPOINT_CASES = [
       "code-simplifier",
       "security-auditor",
       "not add a separate 4R section or taxonomy",
-    ],
-  },
-  {
-    relativePath: "scripts/post-pr-review.cjs",
-    contractFragments: [
-      "stays internal",
-      "Reliability / Resilience / Readability / Risk",
-      "comment-fixer",
-      "test-analyzer",
-      "silent-failure-hunter",
-      "type-design-analyzer",
-      "code-reviewer",
-      "code-simplifier",
-      "security-auditor",
-      "extra agents",
     ],
   },
 ] as const;
@@ -623,6 +609,29 @@ describe("planCommands: comandos específicos por runtime", () => {
       .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
     expect(codexTargets).not.toContain("skills/goal/SKILL.md");
   });
+
+  it("instala wrappers de /xreview en Claude/OpenCode y deja Codex usar la skill portable", () => {
+    const opencodeTargets = planCommands(opencodeAdapter, makeCtx("opencode"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    const claudeTargets = planCommands(claudeCodeAdapter, makeCtx("claude-code"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+    const codexTargets = planCommands(codexAdapter, makeCtx("codex"))
+      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
+
+    expect(opencodeTargets).toContain("commands/xreview.md");
+    expect(claudeTargets).toContain("commands/xreview.md");
+    expect(codexTargets).not.toContain("skills/xreview/SKILL.md");
+
+    for (const [adapter, id] of [
+      [opencodeAdapter, "opencode"],
+      [claudeCodeAdapter, "claude-code"],
+      [codexAdapter, "codex"],
+    ] as const) {
+      const ctx = makeCtx(id);
+      const expectedTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "xreview", "SKILL.md");
+      expect(planSkills(adapter, ctx).some((action) => action.target === expectedTarget)).toBe(true);
+    }
+  });
 });
 
 describe("renderCommand de OpenCode", () => {
@@ -748,19 +757,75 @@ describe("worktree workflow contract", () => {
   });
 });
 
-describe("lean integration: xreview y post-pr-review alineados", () => {
-  it("ambos tratan code-simplifier como el pase lean/anti-bloat y xreview deja lean-audit fuera de post-PR", () => {
-    const xreview = fs.readFileSync(path.join(stackRoot(), "commands", "xreview.md"), "utf8");
-    const postPrReview = fs.readFileSync(path.join(stackRoot(), "scripts", "post-pr-review.cjs"), "utf8");
+describe("PR draft lifecycle contract", () => {
+  it("keeps review before ready and requires gates only when the project configures them", () => {
+    const xreview = fs.readFileSync(path.join(stackRoot(), "skills", "xreview", "SKILL.md"), "utf8");
 
     expect(xreview).toContain("code-simplifier");
     expect(xreview).toContain("lean/anti-bloat pass for diffs and PRs");
     expect(xreview).toContain("`/lean-audit` is a separate manual repo/path command");
     expect(xreview).toContain("not post-PR automation");
+    expect(xreview).toContain("delegation mechanism available in the current runtime");
+    expect(xreview).not.toContain("Task(subagent_type=");
 
-    expect(postPrReview).toContain("code-simplifier");
-    expect(postPrReview).toContain("lean/anti-bloat pass for diffs and PRs");
-    expect(postPrReview).not.toContain("lean-audit");
+    const fragments = [
+      "gh pr create --draft",
+      "gh pr ready --undo",
+      "gh pr ready",
+      "gh pr checks",
+    ];
+
+    for (const relativePath of [
+      "agents/orchestrator.md",
+      "skills/work-lifecycle/SKILL.md",
+      "system-prompt/AGENTS.md",
+    ]) {
+      const content = readStackFile(relativePath);
+      expectFragments(content, fragments);
+      expectFragmentsInOrder(content, [
+        "gh pr create --draft",
+        "gh pr ready <number>",
+        "gh pr checks <number>",
+      ]);
+      expect(content).toContain("If the project has PR checks configured");
+      expect(content).toContain("If no PR checks are configured");
+      expect(content).toContain("does not block the merge");
+      expect(content).toContain("latest commit");
+      expect(content).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
+      expect(content).toContain("Immediately before reporting or merging");
+      expect(content).toContain("gh pr view --json headRefOid");
+    }
+
+    const briefing = fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8");
+    expectFragments(briefing, fragments);
+    expectFragmentsInOrder(briefing, [
+      "gh pr create --draft",
+      "gh pr ready <number>",
+      "gh pr checks <number>",
+    ]);
+    expect(briefing).toContain("Cuando el proyecto tenga checks/CI de PR configurados");
+    expect(briefing).toContain("Si no existen checks de PR configurados");
+    expect(briefing).toContain("su ausencia no bloquea el merge");
+    expect(briefing).toContain("último commit");
+    expect(briefing).toContain("Un resultado vacío de `gh pr checks` justo después de ready no demuestra");
+    expect(briefing).toContain("Inmediatamente antes de reportar o mergear");
+    expect(briefing).toContain("gh pr view --json headRefOid");
+
+    const planTemplate = readStackFile("skills/work-lifecycle/references/plan-template.md");
+    expect(planTemplate).toContain("gates when configured");
+    expect(planTemplate).toContain("no PR checks are configured");
+    expect(planTemplate).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
+    expect(planTemplate).toContain("Immediately before reporting or merging");
+  });
+
+  it("routes the lifecycle hook for create and ready commands", () => {
+    const hooks = JSON.parse(readStackFile("hooks/hooks.json"));
+    const lifecycleHook = hooks.hooks.PostToolUse.find(
+      (entry: { hooks?: Array<{ command?: string }> }) =>
+        entry.hooks?.some((hook) => hook.command?.includes("post-pr-review.cjs")),
+    );
+
+    expect(lifecycleHook?.["x-command-includes"]).toBe("gh");
   });
 });
 

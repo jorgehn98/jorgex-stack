@@ -6,7 +6,7 @@ import { createBackup } from "./backup.js";
 import { stackRoot } from "./paths.js";
 
 // Skills propias (sin upstream) y de tipo release: nunca se reemplazan con esta función.
-export const PROTECTED_SKILLS = new Set(["agent-delegation", "work-lifecycle"]);
+export const PROTECTED_SKILLS = new Set(["agent-delegation", "work-lifecycle", "xreview"]);
 
 /** Forma canónica de un skill en upstreams.json (compartida con update.ts y replaceSkill). */
 export interface SkillUpstreamInfo {

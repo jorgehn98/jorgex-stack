@@ -29,11 +29,13 @@ principal no se restringe— y el daño irreversible ya lo cubre GitHub.
 
 ---
 
-## 2. El hook post-PR se evalúa en cada comando Bash/PowerShell
+## 2. El guardrail del lifecycle de PR se evalúa en cada comando Bash/PowerShell
 
 **Qué.** El matcher del hook en `stack/hooks/hooks.json` es `Bash|PowerShell`. El filtro
-real por `gh pr create` lo hace el propio `stack/scripts/post-pr-review.cjs`, que sale en
-`exit 0` cuando el comando no aplica.
+real por `gh pr create` y `gh pr ready` lo hace el propio
+`stack/scripts/post-pr-review.cjs`, que sale en `exit 0` cuando el comando no aplica. El
+nombre histórico del script se conserva para que `sync` actualice la entrada existente sin
+dejar un hook huérfano en la configuración del usuario.
 
 **Por qué.** Claude Code no tiene filtro nativo por *contenido* del comando en el matcher
 (la extensión `x-command-includes` del formato canónico solo la aplica el puente de
@@ -42,9 +44,9 @@ OpenCode; en Claude Code y Codex se omite y filtra el script).
 **Coste.** Arrancar `node` una vez por comando shell (~ms), no bloqueante.
 
 **Por qué se deja así.** El campo `if:` (Claude Code v2.1.85+) afinaría el disparo, pero su
-matching también es posicional: perdería el caso `cd x && gh pr create`, que el filtro por
-substring del script sí captura. Afinarlo lo haría **menos** correcto, y rompería la
-abstracción canónica multi-runtime.
+matching también es posicional: perdería casos como `cd x && gh pr create --draft` o
+`cd x && gh pr ready 123`, que el filtro del script sí captura. Afinarlo lo haría **menos**
+correcto, y rompería la abstracción canónica multi-runtime.
 
 ---
 
@@ -52,7 +54,7 @@ abstracción canónica multi-runtime.
 
 **Qué.** Los hooks se escriben como `command: "node \"<ruta>\""` (shell-form), no en
 exec-form (`command: "node"`, `args: [...]`). Aplica tanto al hook de `settings.json`
-(post-PR) como al hook `PreToolUse` del frontmatter de los subagentes (git-guard).
+(lifecycle de PR) como al hook `PreToolUse` del frontmatter de los subagentes (git-guard).
 
 **Por qué.** Es el formato canónico único que comparten los tres runtimes (Claude Code,
 Codex, OpenCode); ver `src/lib/hooks-format.ts`.
@@ -63,7 +65,7 @@ PowerShell) mientras `node` esté en el `PATH` del sistema.
 
 **Por qué se deja así.** Pasar a exec-form es un refactor multi-runtime (`hooks-format.ts`
 + el render del frontmatter en los tres adapters) por un caso —`node` fuera del `PATH`—
-que no se da entre el público objetivo: quien usa `gh pr create` ya tiene Git for Windows
+que no se da entre el público objetivo: quien usa `gh pr create`/`gh pr ready` ya tiene Git for Windows
 (y por tanto Git Bash) instalado.
 
 ---

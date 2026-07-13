@@ -4,7 +4,7 @@
     "PostToolUse": [
       {
         "matcher": "Bash|PowerShell",
-        "x-command-includes": "gh pr create",
+        "x-command-includes": "gh",
         "hooks": [
           {
             "type": "command",

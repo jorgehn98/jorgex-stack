@@ -278,4 +278,71 @@ describe("repair-worktree-config: cableado en los 3 runtimes", () => {
     expect(parsed["tool.execute.after"].bash["*"]).toContain(`scripts/${SCRIPT_NAME}`);
     expect(copiesScript(actions)).toBe(true);
   });
+
+  it("opencode: migra el filtro antiguo del mismo script sin duplicarlo ni borrar scripts de usuario", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: {
+          "gh pr create": ["scripts/post-pr-review.cjs", "scripts/user.cjs"],
+          "user command": ["scripts/user-only.cjs"],
+        },
+      },
+    }));
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), makeCtx("opencode"));
+    const parsed = JSON.parse(writeContent(actions, "hooks.json"));
+    const bash = parsed["tool.execute.after"].bash;
+
+    expect(bash["gh pr create"]).toEqual(["scripts/user.cjs"]);
+    expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
+    expect(bash["user command"]).toEqual(["scripts/user-only.cjs"]);
+    expect(Object.values(bash).flat().filter((script) => script === "scripts/post-pr-review.cjs")).toHaveLength(1);
+  });
+
+  it("opencode: convierte scripts bash globales en wildcard antes de añadir triggers", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: ["scripts/user-global.cjs"],
+      },
+    }));
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), makeCtx("opencode"));
+    const bash = JSON.parse(writeContent(actions, "hooks.json"))["tool.execute.after"].bash;
+
+    expect(bash["*"]).toContain("scripts/user-global.cjs");
+    expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
+  });
+
+  it("opencode: preserva triggers ajenos no-array al migrar scripts gestionados", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: {
+          legacy: "scripts/user-invalid.cjs",
+        },
+      },
+    }));
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), makeCtx("opencode"));
+    const bash = JSON.parse(writeContent(actions, "hooks.json"))["tool.execute.after"].bash;
+
+    expect(bash.legacy).toBe("scripts/user-invalid.cjs");
+    expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
+  });
+
+  it("opencode: preserva y avisa si el trigger canónico no es un array", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: {
+          gh: "scripts/user-invalid.cjs",
+        },
+      },
+    }));
+    const ctx = makeCtx("opencode");
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), ctx);
+    const bash = JSON.parse(writeContent(actions, "hooks.json"))["tool.execute.after"].bash;
+
+    expect(bash.gh).toBe("scripts/user-invalid.cjs");
+    expect(ctx.warnings).toContain("opencode: trigger bash 'gh' no es un array; hook gestionado omitido.");
+  });
 });

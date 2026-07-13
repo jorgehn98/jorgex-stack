@@ -1,4 +1,5 @@
 ---
+name: xreview
 description: Conditional multi-agent code review — determines what to review (asking if unclear), resolves the exact diff, and launches only the relevant subagents in parallel
 ---
 
@@ -6,7 +7,7 @@ Run a comprehensive multi-agent review. Your job as the main agent: determine WH
 
 ## 0. Determine the review target
 
-User input (may be empty): {{input}}
+Review target (may be empty): use the invocation context or the explicit target supplied by the caller.
 
 - If the input names a branch → review `git diff <that-branch>...HEAD`.
 - If the input references a PR (number or URL) → use that PR's base branch as BASE.
@@ -51,19 +52,19 @@ If the diff adds or changes comments/docstrings, run `comment-fixer` ALONE befor
 
 ## 4. Launch the remaining subagents in PARALLEL
 
-All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the Task tool. Each subagent fetches its OWN diff; all are read-only. Pass every one EXACTLY:
+All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the delegation mechanism available in the current runtime. Each subagent fetches its OWN diff; all are read-only. Pass every one EXACTLY:
 
 - the review scope: BASE and HEAD branches (verbatim), or "working diff" for uncommitted work
 - the instruction: review only that scope — never assume `main`, use the scope given
 
 Subagents and their triggers:
 
-1. Task(subagent_type='test-analyzer') — only if the diff touches tests or code that should be tested
-2. Task(subagent_type='silent-failure-hunter') — only if the diff includes error handling, try/catch, fallbacks, or async flows
-3. Task(subagent_type='type-design-analyzer') — only if the diff changes types, interfaces, schemas, or public contracts
-4. Task(subagent_type='code-reviewer') — for general code quality whenever non-trivial source code changed
-5. Task(subagent_type='code-simplifier') — only if the diff introduces complexity worth simplifying; this is the lean/anti-bloat pass for diffs and PRs
-6. Task(subagent_type='security-auditor') — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
+1. `test-analyzer` — only if the diff touches tests or code that should be tested
+2. `silent-failure-hunter` — only if the diff includes error handling, try/catch, fallbacks, or async flows
+3. `type-design-analyzer` — only if the diff changes types, interfaces, schemas, or public contracts
+4. `code-reviewer` — for general code quality whenever non-trivial source code changed
+5. `code-simplifier` — only if the diff introduces complexity worth simplifying; this is the lean/anti-bloat pass for diffs and PRs
+6. `security-auditor` — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
 
 If none of a subagent's triggers are present, skip it and note that it was skipped. Always state which subagents ran and which were skipped and why.
 

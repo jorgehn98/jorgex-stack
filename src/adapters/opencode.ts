@@ -127,10 +127,40 @@ export const opencodeAdapter: Adapter = {
 
     const hooksFile = path.join(ctx.configDir, "hooks.json");
     const content = upsertJson(readTextIfExists(hooksFile), (root) => {
-      const after = (root["tool.execute.after"] ??= {}) as Record<string, Record<string, string[]>>;
-      const bash = (after["bash"] ??= {});
+      const afterValue = (root["tool.execute.after"] ??= {});
+      if (afterValue === null || typeof afterValue !== "object" || Array.isArray(afterValue)) {
+        ctx.warnings.push("opencode: tool.execute.after no es un objeto; hooks gestionados omitidos.");
+        return;
+      }
+
+      const after = afterValue as Record<string, unknown>;
+      const bashValue = after["bash"];
+      if (bashValue !== undefined && !Array.isArray(bashValue)
+        && (bashValue === null || typeof bashValue !== "object")) {
+        ctx.warnings.push("opencode: tool.execute.after.bash no es un array ni un mapa; hooks gestionados omitidos.");
+        return;
+      }
+
+      const bash = Array.isArray(bashValue)
+        ? { "*": bashValue }
+        : (bashValue ?? {}) as Record<string, unknown>;
+      after["bash"] = bash;
+      const managedScripts = new Set(Object.values(bashEntries).flat());
+      for (const [includes, scripts] of Object.entries(bash)) {
+        if (!Array.isArray(scripts)) continue;
+        const preserved = scripts.filter(
+          (script) => typeof script !== "string" || !managedScripts.has(script),
+        );
+        if (preserved.length > 0) bash[includes] = preserved;
+        else delete bash[includes];
+      }
       for (const [includes, scripts] of Object.entries(bashEntries)) {
-        const list = (bash[includes] ??= []);
+        const current = bash[includes];
+        if (current !== undefined && !Array.isArray(current)) {
+          ctx.warnings.push(`opencode: trigger bash '${includes}' no es un array; hook gestionado omitido.`);
+          continue;
+        }
+        const list = (bash[includes] ??= []) as unknown[];
         for (const s of scripts) if (!list.includes(s)) list.push(s);
       }
     });
