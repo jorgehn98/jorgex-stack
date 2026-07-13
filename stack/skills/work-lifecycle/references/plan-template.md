@@ -41,6 +41,8 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 > This is the live PR-level board: scope, PR status, and merge evidence live here.
 > Task-level status stays in the task table below.
 > Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.
+> PR status advances: ⬜ Pending → 📝 Draft → 🔍 Reviewed → ⏳ Ready / gates → ✅ Merged.
+> If a ready PR changes, return it to Draft with `gh pr ready --undo`, clear stale gate evidence, and repeat review + gates for the new SHA.
 
 | PR | Scope | Branch | Worktree | Base | Status | Merge evidence |
 |----|-------|--------|----------|------|--------|----------------|

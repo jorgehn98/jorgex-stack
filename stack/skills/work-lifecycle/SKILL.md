@@ -41,6 +41,18 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 - Task status lives ONLY in the task table: flip it (⬜ → ✅) with a surgical edit when the task closes. PR status/evidence lives ONLY in the PR roadmap table. Do not mirror task progress into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
 - For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree/branch is enough and the roadmap collapses to one checkpoint.
 
+## Pull request lifecycle
+
+1. Start from the updated production branch in the canonical worktree/branch. Keep one concrete objective per PR.
+2. Implement one coherent first slice, commit it, push the work branch, and open the PR immediately as draft with `gh pr create --draft`.
+3. Continue implementation, commits and pushes only while the PR is draft. Draft means the code can still change; ready means the current SHA is the candidate to merge.
+4. Before ready, complete every applicable preflight item: code, version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview review when the project uses Vercel, final diff inspection, and full PR review.
+5. Mark ready once with `gh pr ready <number>`, wait for Quality Gates, run `gh pr checks <number>`, and verify the checks belong to the latest commit.
+6. Never push to a ready PR. If it needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft, repeat preflight and review, mark ready again, and wait for a fresh complete gate.
+7. Merge only after explicit user approval and only when the passing checks match the current candidate SHA.
+
+Dependent PRs are sequential: merge one checkpoint, update the production branch, then create the next worktree/branch from that updated base. Do not stack a dependent PR from an unmerged work branch unless the human explicitly chooses a stacked-PR strategy.
+
 ## HTML review view (on demand)
 
 When presenting the PRD or the plan for human review on non-trivial work, OFFER a disposable HTML view (e.g. side-by-side approach comparison for the PRD, task table + dependency graph for the plan). Rules:

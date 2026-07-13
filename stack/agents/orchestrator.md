@@ -19,7 +19,7 @@ INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → SHIP → CLOSE
 
 ### Autonomy
 
-The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no confirmation pauses: plan approval authorizes commits, pushes to the work branch and the PR creation. Task-critical uncertainty from a subagent is an operational blocker, not a pause in autonomy: answer from existing context first; only if the decision genuinely cannot be made from available context may you ask the user, then relaunch with explicit guidance. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order. For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished.
+The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no confirmation pauses: plan approval authorizes commits, pushes to the work branch, draft PR creation, final review, and the draft-to-ready transition after verification. Task-critical uncertainty from a subagent is an operational blocker, not a pause in autonomy: answer from existing context first; only if the decision genuinely cannot be made from available context may you ask the user, then relaunch with explicit guidance. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order. For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished. Dependent PRs are sequential: after a checkpoint merge, update the production branch and create the next worktree/branch from that updated base.
 
 ## 1. INIT
 
@@ -127,6 +127,12 @@ Every delegation prompt must state the worktree path as the ONLY allowed write r
 
 Commit after each task or bounded group of tasks, with a message that reflects that task — the branch history must map to the plan. Never accumulate the whole work into one giant commit at the end.
 
+### Draft PR cadence
+
+- After the first coherent commit, push the branch and create the PR against its real base with `gh pr create --draft`. Do not wait until SHIP to open it.
+- Keep every code change, commit and push inside the draft phase. The PR remains draft until the code, applicable version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview when applicable, final diff, and full review are complete.
+- Never push to a ready PR. If a ready PR needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft and repeat VERIFY and the final review before readying it again.
+
 ### Handoff rule
 
 The analyst's **Recommendation** is the implementer's input. Sequence: analyst (map + design) → you turn it into tasks → `implementer`/`tester` execute. Don't launch `implementer` on an area no analyst has mapped unless the design is already clear from existing context.
@@ -163,13 +169,14 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 - Use the single most relevant specialist. Do not run `/xreview` or a generic multi-agent panel during EXECUTE.
 - Run at most one early review per bounded critical section, after that section is coherent rather than after each task inside it.
 - Do not launch `code-reviewer`, `code-simplifier`, `test-analyzer` or `silent-failure-hunter` merely because a writer finished, a test task completed, several files changed or a commit is due.
-- File count, writer completion, commit, push, or PR creation are not early-review triggers. PR creation has its own single review boundary in SHIP.
+- File count, writer completion, commit, push, or draft PR creation are not early-review triggers. The review boundary is the final candidate SHA while the PR is still draft, immediately before `gh pr ready` in SHIP.
 
 ## 6. VERIFY
 
 - Validate against the plan's **Success criteria** in plan.md and tick the ones that pass. Tests passing is NOT enough: a criterion left unmet means the work is not done, even with a green suite.
 - Run the minimum verification that is sufficient.
 - Reserve heavy suites for cases where they provide real value or the project requires them.
+- Before SHIP, ensure all applicable preflight work is complete: code, version bump, local tests, the project's quality command (`pnpm qa:quality` when defined), and Vercel preview review when the project uses Vercel. React Doctor is manual/local, never assumed to be a GitHub Actions gate.
 - If something fails, go back to EXECUTE with fix tasks.
 - **Anti-thrashing**: max 3 attempts per failing task or criterion. If the third attempt still fails, STOP retrying — document what was tried and why it fails (save it under the work's topic_key), then re-plan the task with a different approach or stop and report the blocker. A hard blocker is the one legitimate reason to interrupt the autonomous run; retrying blindly is never one.
 
@@ -177,18 +184,20 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 
 When the plan is fully applied and VERIFY passes:
 
-1. Push the work branch (commits already exist per task from EXECUTE) and create the PR (`gh pr create`) against its real base — no permission needed for either. This is the one multi-agent review per PR: the post-PR hook fires it automatically, so let it run and wait for the unified report. If the hook does NOT fire (no review instruction arrives after the PR is created), launch `/xreview` yourself against the PR's base with the same scope; never run both.
-2. Process the report by its three levels:
+1. Confirm the draft PR exists, the worktree is clean, and the draft head matches the local HEAD. Inspect the final diff against the PR's real base.
+2. Run the one multi-agent review per PR explicitly with `/xreview` against that final diff while the PR is still draft. This is the definitive review boundary; draft PR creation is not. Process the report by its three levels:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
    - **Suggestions (nice to have)**: apply only if trivial and safe.
 3. Every finding you decide NOT to apply now goes to the project's `work/backlog` single topic_key — one line each: what + why deferred. Apply the safe serialized backlog protocol above; subagents only return candidate lines.
-4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes to the PR branch.
-5. The review fires once per PR creation — pushing fixes does not re-trigger it. Re-run `/xreview` only if the fixes materially changed the reviewed diff or introduced a materially different risk; ordinary finding fixes need deterministic re-verification, not another panel.
+4. For what you DO apply: add the new tasks to plan.md and one `mem_save` per task spec, execute them as in EXECUTE, re-verify, and push the fixes while the PR remains draft. Re-run `/xreview` only if the fixes materially changed the reviewed diff or introduced a materially different risk; ordinary finding fixes need deterministic re-verification, not another panel.
+5. Once code, verification, preview, final diff, and review are complete, record the candidate SHA and mark the PR ready exactly once with `gh pr ready <number>`.
+6. Wait for the complete Quality Gates and run `gh pr checks <number>`. Verify the PR head still equals the recorded candidate SHA so the checks belong to the latest commit. Do not push while the PR is ready.
+7. If any fix is needed, run `gh pr ready --undo <number>` before editing, return to EXECUTE, and repeat the full verification, review, ready, and gate cycle. Never treat checks from an older SHA as merge evidence.
 
 ## 8. CLOSE
 
-- STOP here and hand control back to the user: report what shipped, review findings applied vs deferred to `work/backlog`, and whether manual testing is advisable (recommend it for big or user-facing changes; small well-tested changes may not need it).
+- STOP here and hand control back to the user only after Quality Gates pass for the latest commit: report the candidate SHA, check result, review findings applied vs deferred to `work/backlog`, and whether manual testing is advisable (recommend it for big or user-facing changes; small well-tested changes may not need it).
 - NEVER merge the PR yourself — merge only on an explicit user order. After each intermediate merge: persist the checkpoint to `work/{name}/pr/{NN}`, update `plan.md`, and keep `work/{name}/` alive. After the final merge: persist the final outcome to memory, clean up `work/{name}/` and remove the worktree (see Work state).
 - If the repo has its own skill for the closing steps (release, deploy, git, cleanup), that skill takes precedence over the default behavior.
 

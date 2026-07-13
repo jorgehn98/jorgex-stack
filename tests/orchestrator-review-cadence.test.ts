@@ -35,13 +35,14 @@ describe("orchestrator review cadence", () => {
       /do not run `\/xreview` or a generic multi-agent panel during EXECUTE/i,
     );
     expect(agent.body).toMatch(
-      /file count, writer completion, commit, push, or PR creation are not early-review triggers/i,
+      /file count, writer completion, commit, push, or draft PR creation are not early-review triggers/i,
     );
   });
 
-  it("keeps the multi-agent review at the PR boundary", () => {
+  it("keeps the multi-agent review on the final draft SHA before ready", () => {
     expect(agent.body).toMatch(/one multi-agent review per PR/i);
-    expect(agent.body).toMatch(/never run both/i);
+    expect(agent.body).toMatch(/while the PR is still draft/i);
+    expect(agent.body).toMatch(/before `gh pr ready`/i);
     expect(agent.body).toMatch(/re-run.+only if.+materially different risk/is);
   });
 

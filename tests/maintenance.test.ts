@@ -55,21 +55,6 @@ const REVIEW_ENTRYPOINT_CASES = [
       "not add a separate 4R section or taxonomy",
     ],
   },
-  {
-    relativePath: "scripts/post-pr-review.cjs",
-    contractFragments: [
-      "stays internal",
-      "Reliability / Resilience / Readability / Risk",
-      "comment-fixer",
-      "test-analyzer",
-      "silent-failure-hunter",
-      "type-design-analyzer",
-      "code-reviewer",
-      "code-simplifier",
-      "security-auditor",
-      "extra agents",
-    ],
-  },
 ] as const;
 
 const FOUR_R_LENS_CASES = [
@@ -748,19 +733,44 @@ describe("worktree workflow contract", () => {
   });
 });
 
-describe("lean integration: xreview y post-pr-review alineados", () => {
-  it("ambos tratan code-simplifier como el pase lean/anti-bloat y xreview deja lean-audit fuera de post-PR", () => {
+describe("PR draft lifecycle contract", () => {
+  it("keeps review before ready and gates after ready across operational prompts", () => {
     const xreview = fs.readFileSync(path.join(stackRoot(), "commands", "xreview.md"), "utf8");
-    const postPrReview = fs.readFileSync(path.join(stackRoot(), "scripts", "post-pr-review.cjs"), "utf8");
 
     expect(xreview).toContain("code-simplifier");
     expect(xreview).toContain("lean/anti-bloat pass for diffs and PRs");
     expect(xreview).toContain("`/lean-audit` is a separate manual repo/path command");
     expect(xreview).toContain("not post-PR automation");
 
-    expect(postPrReview).toContain("code-simplifier");
-    expect(postPrReview).toContain("lean/anti-bloat pass for diffs and PRs");
-    expect(postPrReview).not.toContain("lean-audit");
+    const fragments = [
+      "gh pr create --draft",
+      "gh pr ready --undo",
+      "gh pr ready",
+      "gh pr checks",
+    ];
+
+    for (const relativePath of [
+      "agents/orchestrator.md",
+      "skills/work-lifecycle/SKILL.md",
+      "system-prompt/AGENTS.md",
+    ]) {
+      expectFragments(readStackFile(relativePath), fragments);
+      expect(readStackFile(relativePath)).toContain("latest commit");
+    }
+
+    const briefing = fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8");
+    expectFragments(briefing, fragments);
+    expect(briefing).toContain("último commit");
+  });
+
+  it("routes the lifecycle hook for create and ready commands", () => {
+    const hooks = JSON.parse(readStackFile("hooks/hooks.json"));
+    const lifecycleHook = hooks.hooks.PostToolUse.find(
+      (entry: { hooks?: Array<{ command?: string }> }) =>
+        entry.hooks?.some((hook) => hook.command?.includes("post-pr-review.cjs")),
+    );
+
+    expect(lifecycleHook?.["x-command-includes"]).toBe("gh pr ");
   });
 });
 
