@@ -18,6 +18,7 @@ import * as modelMap from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { runInstall } from "../src/install.js";
 import { planCommands } from "../src/components/commands.js";
+import { planSkills } from "../src/components/skills.js";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
 
 let tmp: string;
@@ -620,7 +621,16 @@ describe("planCommands: comandos específicos por runtime", () => {
     expect(opencodeTargets).toContain("commands/xreview.md");
     expect(claudeTargets).toContain("commands/xreview.md");
     expect(codexTargets).not.toContain("skills/xreview/SKILL.md");
-    expect(fs.existsSync(path.join(stackRoot(), "skills", "xreview", "SKILL.md"))).toBe(true);
+
+    for (const [adapter, id] of [
+      [opencodeAdapter, "opencode"],
+      [claudeCodeAdapter, "claude-code"],
+      [codexAdapter, "codex"],
+    ] as const) {
+      const ctx = makeCtx(id);
+      const expectedTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "xreview", "SKILL.md");
+      expect(planSkills(adapter, ctx).some((action) => action.target === expectedTarget)).toBe(true);
+    }
   });
 });
 
@@ -755,6 +765,8 @@ describe("PR draft lifecycle contract", () => {
     expect(xreview).toContain("lean/anti-bloat pass for diffs and PRs");
     expect(xreview).toContain("`/lean-audit` is a separate manual repo/path command");
     expect(xreview).toContain("not post-PR automation");
+    expect(xreview).toContain("delegation mechanism available in the current runtime");
+    expect(xreview).not.toContain("Task(subagent_type=");
 
     const fragments = [
       "gh pr create --draft",
@@ -768,12 +780,23 @@ describe("PR draft lifecycle contract", () => {
       "skills/work-lifecycle/SKILL.md",
       "system-prompt/AGENTS.md",
     ]) {
-      expectFragments(readStackFile(relativePath), fragments);
-      expect(readStackFile(relativePath)).toContain("latest commit");
+      const content = readStackFile(relativePath);
+      expectFragments(content, fragments);
+      expectFragmentsInOrder(content, [
+        "gh pr create --draft",
+        "gh pr ready <number>",
+        "gh pr checks <number>",
+      ]);
+      expect(content).toContain("latest commit");
     }
 
     const briefing = fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8");
     expectFragments(briefing, fragments);
+    expectFragmentsInOrder(briefing, [
+      "gh pr create --draft",
+      "gh pr ready <number>",
+      "gh pr checks <number>",
+    ]);
     expect(briefing).toContain("último commit");
   });
 

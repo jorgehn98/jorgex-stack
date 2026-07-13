@@ -298,4 +298,34 @@ describe("repair-worktree-config: cableado en los 3 runtimes", () => {
     expect(bash["user command"]).toEqual(["scripts/user-only.cjs"]);
     expect(Object.values(bash).flat().filter((script) => script === "scripts/post-pr-review.cjs")).toHaveLength(1);
   });
+
+  it("opencode: convierte scripts bash globales en wildcard antes de añadir triggers", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: ["scripts/user-global.cjs"],
+      },
+    }));
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), makeCtx("opencode"));
+    const bash = JSON.parse(writeContent(actions, "hooks.json"))["tool.execute.after"].bash;
+
+    expect(bash["*"]).toContain("scripts/user-global.cjs");
+    expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
+  });
+
+  it("opencode: preserva triggers ajenos no-array al migrar scripts gestionados", () => {
+    fs.writeFileSync(path.join(cfg, "hooks.json"), JSON.stringify({
+      "tool.execute.after": {
+        bash: {
+          legacy: "scripts/user-invalid.cjs",
+        },
+      },
+    }));
+
+    const actions = opencodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), makeCtx("opencode"));
+    const bash = JSON.parse(writeContent(actions, "hooks.json"))["tool.execute.after"].bash;
+
+    expect(bash.legacy).toBe("scripts/user-invalid.cjs");
+    expect(bash["gh"]).toContain("scripts/post-pr-review.cjs");
+  });
 });

@@ -19,8 +19,16 @@ function writeWarning(message) {
   process.stderr.write(`post-pr-review: warning: ${message}\n`);
 }
 
+const shellValue = String.raw`(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|]+)`;
+const ghExecutable = String.raw`(?:"(?:[^"\r\n]*[\\/])?gh(?:\.exe)?"|'(?:[^'\r\n]*[\\/])?gh(?:\.exe)?'|(?:[^\s"';&|]*[\\/])?gh(?:\.exe)?)`;
+const globalOption = String.raw`-{1,2}[\w-]+(?:=${shellValue})?(?:\s+${shellValue})?`;
+const prLifecycleCommand = new RegExp(
+  String.raw`(?:^|(?:&&|\|\||[;&|])\s*)${ghExecutable}(?:\s+${globalOption})*\s+pr\s+(?:create|ready)\b`,
+  "i",
+);
+
 function isPrLifecycleCommand(command) {
-  return /\bgh(?:\.exe)?\s+pr\s+(?:create|ready)\b/i.test(command);
+  return prLifecycleCommand.test(command);
 }
 
 const message = `<pr-lifecycle-state-required>

@@ -35,6 +35,11 @@ describe("PR lifecycle hook", () => {
     ["local_shell", "gh pr ready --undo 123"],
     ["shell", "gh pr create --draft && gh pr ready 123"],
     ["PowerShell", "gh.exe pr ready https://github.com/foo2/repo/pull/48"],
+    ["shell", "gh --repo owner/repo pr ready 48"],
+    ["shell", "gh -R owner/repo pr create --draft"],
+    ["PowerShell", '& "gh" pr ready 48'],
+    ["PowerShell", '& "C:\\Program Files\\GitHub CLI\\gh.exe" pr ready 48'],
+    ["PowerShell", '"gh.exe" pr create --draft'],
   ])("requires checking actual PR state for %s: %j", (toolName, command) => {
     const result = runHook(shellPayload(toolName as string, command as string | string[]));
 
