@@ -72,9 +72,9 @@ export interface Adapter {
    * Convierte un agente canónico a uno o varios artefactos nativos del runtime.
    * El orchestrator (primary) es SIEMPRE un modo del agente principal que el
    * usuario pilota, nunca un subagente invocado: OpenCode → primary agent
-   * (Tab) · Claude Code → output style (modo persistente, /config) + skill de
-   * activación puntual · Codex → profile con developer_instructions + skill.
-   * kind "skill": file relativo a skillsDir (p.ej. orchestrator/SKILL.md).
+   * (Tab) · Claude Code → output style (modo persistente, /config) · Codex →
+   * profile con developer_instructions. Los tres son wrappers de la skill
+   * canónica instalada por planSkills.
    */
   renderAgent(
     agent: CanonicalAgent,

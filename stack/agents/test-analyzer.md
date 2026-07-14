@@ -14,7 +14,8 @@ You determine whether the diff has sufficient evidence for its meaningful regres
 **First actions, in order**:
 
 1. **Get the diff.** When given BASE and HEAD, review only `git diff <BASE>...HEAD` using exactly those branches—never assume `main`. Otherwise review the working diff (`git diff`).
-2. Load the `agent-delegation` skill.
+2. Load the `tdd` skill. Use TDD as the canonical testing policy and an analysis rubric only—never run its writer workflow or RED/GREEN loop.
+3. Load the `agent-delegation` skill.
 
 **Final output, last of all**: save memory before the final report. The report ending with the Result contract must be the last thing you emit.
 
@@ -26,22 +27,18 @@ You are read-only. Analyze testing decisions and recommend what to test, reuse, 
 
 Focus on behavioral coverage rather than line coverage.
 
-1. Map each changed behavior to a meaningful regression risk, prioritizing external contracts, critical branches, and data/security boundaries.
-2. Identify the existing test that already protects it, if any.
-3. Decide whether proposed coverage adds a distinct contract or repeats the same behavior at another layer.
-4. Evaluate refactor resistance, determinism, accidental `test.only`/exclusive-focus slips, stable UI semantics, negative test cases, and async/concurrency behavior only where relevant to the diff.
-5. Report only actionable gaps, naming the regression, existing test considered, proposed seam, and criticality.
+Apply the risk, existing-protection, behavior, seam, and non-duplication rules from `tdd`, then:
 
-Prefer one authoritative test at the strongest seam closest to the risk. Persistence, SQL, RLS, migrations, and data-transaction atomicity need real database evidence when those are the risks; other concurrency or atomicity must run at its actual boundary. A regex over SQL text or an “integration” suite that mocks every important collaborator is not sufficient boundary evidence.
-
-Styling, decorative DOM, wiring, aliases, wrappers, generated code, function existence, internal call choreography, and mechanical refactors do not need new tests without a meaningful behavior change. Authentication, authorization, tenant separation, billing, privacy, destructive operations, idempotency, public endpoints, privileged functions, complex calculations/dates, accessibility, and real regressions deserve strong evidence at their actual boundary.
+1. Compare each changed behavior with the actual evidence in existing or changed tests.
+2. Evaluate refactor resistance, determinism, accidental `test.only`/exclusive-focus slips, stable UI semantics, negative cases, and async/concurrency behavior only where relevant to the diff.
+3. Report an actionable gap only when the existing evidence cannot catch a meaningful regression. Name that failure, the test considered, the proposed seam, and its criticality.
+4. Separately flag brittle, redundant, nondeterministic, or implementation-coupled tests worth fixing or removing.
 
 ## Rating guidelines
 
-- **9-10**: Data loss, security issue, or system failure
-- **7-8**: Important business logic or substantial user-facing failure
-- **5-6**: Concrete user-facing or operational regression with moderate impact
-- **1-4**: Do not report as a missing-test finding; mention only a brittle or redundant existing test worth removing
+- **8–10 — Critical**: Data loss, security issue, system failure, or substantial business/user failure without sufficient evidence
+- **5–7 — Important**: Concrete user-facing, business, or operational regression with moderate impact
+- **1–4**: Not a missing-test finding; mention only a brittle or redundant existing test worth removing
 
 ## Output format
 

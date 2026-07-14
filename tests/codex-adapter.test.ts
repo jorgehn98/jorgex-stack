@@ -69,21 +69,25 @@ describe("codexAdapter.renderAgent", () => {
     expect(cheap!.content).toContain('model_reasoning_effort = "medium"');
   });
 
-  it("el primary (orchestrator) → profile + skill, sin model ni effort (usa el del usuario)", () => {
+  it("el primary (orchestrator) → profile wrapper, sin skill duplicada, model ni effort", () => {
     const models: RuntimeModelMap = { ...MODELS, strong: { model: "gpt-5.4", variant: "high" } };
-    const out = codexAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), models);
-    expect(out).toHaveLength(2);
+    const out = codexAdapter.renderAgent(agent({
+      name: "orchestrator",
+      mode: "primary",
+      body: "Load and follow the `orchestrator` skill.",
+    }), models);
+    expect(out).toHaveLength(1);
 
-    const profile = out.find((o) => o.kind === "profile")!;
+    const profile = out[0]!;
+    expect(profile.kind).toBe("profile");
     expect(profile.file).toBe("orchestrator.config.toml");
     expect(profile.content).toContain("developer_instructions = '''");
     expect(profile.content).toContain("codex --profile orchestrator");
+    expect(profile.content).toContain("Load and follow the `orchestrator` skill");
+    expect(profile.content).not.toContain("## Phases");
     expect(profile.content).not.toContain("model =");
     expect(profile.content).not.toContain("model_reasoning_effort");
-
-    const skill = out.find((o) => o.kind === "skill")!;
-    expect(skill.file).toBe("orchestrator/SKILL.md");
-    expect(skill.content).toContain("Invoke to switch into orchestrator mode");
+    expect(out.some((artifact) => artifact.kind === "skill")).toBe(false);
   });
 });
 

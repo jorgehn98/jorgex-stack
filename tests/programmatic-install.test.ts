@@ -58,6 +58,10 @@ function renderTargets(adapter: Adapter, ctx: InstallContext, agent = primaryAge
   });
 }
 
+function orchestratorSkillTarget(adapter: Adapter, ctx: InstallContext): string {
+  return path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator", "SKILL.md");
+}
+
 function expectProgrammaticSystemPrompt(content: string): void {
   expect(content).toContain("PROGRAMMATIC MODE");
   expect(content).toContain("strict JSON object");
@@ -104,6 +108,11 @@ function expectHumanSafe(content: string): void {
   expect(content).not.toContain("Do not wrap the final JSON in Markdown");
 }
 
+function expectPrimaryWrapper(content: string): void {
+  expect(content).toContain("Load and follow the `orchestrator` skill");
+  expect(content).not.toContain("## Phases");
+}
+
 function readText(file: string): string {
   return fs.readFileSync(file, "utf8");
 }
@@ -142,15 +151,21 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     const { configDir, ctx } = await install("programmatic", "serial");
     const paths = adapter.paths(configDir);
     const primaryTargets = renderTargets(adapter, ctx, primaryAgent);
+    const orchestratorSkill = orchestratorSkillTarget(adapter, ctx);
     const subagentTargets = renderTargets(adapter, ctx, sampleSubagent);
 
     const snapshot = new Map<string, string>();
     snapshot.set(paths.systemPromptFile, readText(paths.systemPromptFile));
     for (const file of primaryTargets) snapshot.set(file, readText(file));
+    snapshot.set(orchestratorSkill, readText(orchestratorSkill));
     for (const file of subagentTargets) snapshot.set(file, readText(file));
 
     expectProgrammaticSystemPrompt(snapshot.get(paths.systemPromptFile)!);
-    for (const file of primaryTargets) expectProgrammaticPrimary(snapshot.get(file)!, "serial");
+    for (const file of primaryTargets) {
+      expectPrimaryWrapper(snapshot.get(file)!);
+      expectHumanSafe(snapshot.get(file)!);
+    }
+    expectProgrammaticPrimary(snapshot.get(orchestratorSkill)!, "serial");
     for (const file of subagentTargets) expectProgrammaticSubagent(snapshot.get(file)!);
 
     expect(fs.existsSync(finalSchemaPath)).toBe(true);
@@ -176,15 +191,17 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
 
     expect(readText(paths.systemPromptFile)).toBe(snapshot.get(paths.systemPromptFile));
     for (const file of primaryTargets) expect(readText(file)).toBe(snapshot.get(file));
+    expect(readText(orchestratorSkill)).toBe(snapshot.get(orchestratorSkill));
     for (const file of subagentTargets) expect(readText(file)).toBe(snapshot.get(file));
   });
 
   it("programmatic artifacts no arrastran el Result contract markdown y comparten el contrato JSON de siete claves", async () => {
     const { ctx } = await install("programmatic", "serial");
     const primaryTargets = renderTargets(adapter, ctx, primaryAgent);
+    const orchestratorSkill = orchestratorSkillTarget(adapter, ctx);
     const subagentTargets = renderTargets(adapter, ctx, sampleSubagent);
 
-    for (const file of [...primaryTargets, ...subagentTargets]) {
+    for (const file of [...primaryTargets, orchestratorSkill, ...subagentTargets]) {
       expect(readText(file)).not.toMatch(legacyProgrammaticContractPattern);
       expect(readText(file)).not.toMatch(legacyDelegationLinePattern);
     }
@@ -220,10 +237,15 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     const { configDir, ctx } = await install("human", "serial");
     const paths = adapter.paths(configDir);
     const primaryTargets = renderTargets(adapter, ctx, primaryAgent);
+    const orchestratorSkill = orchestratorSkillTarget(adapter, ctx);
     const subagentTargets = renderTargets(adapter, ctx, sampleSubagent);
 
     expectHumanSafe(readText(paths.systemPromptFile));
-    for (const file of primaryTargets) expectHumanSafe(readText(file));
+    for (const file of primaryTargets) {
+      expectPrimaryWrapper(readText(file));
+      expectHumanSafe(readText(file));
+    }
+    expectHumanSafe(readText(orchestratorSkill));
     for (const file of subagentTargets) expectHumanSafe(readText(file));
   });
 });
@@ -242,6 +264,7 @@ describe("Codex: cambio de modo con skills compartidos", () => {
     const configDir = path.join(tempRoot, "codex");
     const ctx = makeContext(codexAdapter, configDir, "human", "serial");
     const primaryTargets = renderTargets(codexAdapter, ctx, primaryAgent);
+    const orchestratorSkill = orchestratorSkillTarget(codexAdapter, ctx);
     const subagentTargets = renderTargets(codexAdapter, ctx, sampleSubagent);
     const backupsRoot = path.join(dataDir(), "backups");
     const backupIdsBefore = backup.listBackups(backupsRoot).map((entry) => entry.id);
@@ -261,6 +284,7 @@ describe("Codex: cambio de modo con skills compartidos", () => {
     const codexPaths = codexAdapter.paths(configDir);
     humanSnapshot.set(codexPaths.systemPromptFile, readText(codexPaths.systemPromptFile));
     for (const file of primaryTargets) humanSnapshot.set(file, readText(file));
+    humanSnapshot.set(orchestratorSkill, readText(orchestratorSkill));
     for (const file of subagentTargets) humanSnapshot.set(file, readText(file));
 
     for (const content of humanSnapshot.values()) expectHumanSafe(content);
@@ -277,7 +301,11 @@ describe("Codex: cambio de modo con skills compartidos", () => {
 
     const programmaticPaths = codexAdapter.paths(configDir);
     expectProgrammaticSystemPrompt(readText(programmaticPaths.systemPromptFile));
-    for (const file of primaryTargets) expectProgrammaticPrimary(readText(file), "parallel");
+    for (const file of primaryTargets) {
+      expectPrimaryWrapper(readText(file));
+      expectHumanSafe(readText(file));
+    }
+    expectProgrammaticPrimary(readText(orchestratorSkill), "parallel");
     for (const file of subagentTargets) expectProgrammaticSubagent(readText(file));
 
     await expect(
@@ -292,6 +320,7 @@ describe("Codex: cambio de modo con skills compartidos", () => {
 
     expect(readText(programmaticPaths.systemPromptFile)).toBe(humanSnapshot.get(programmaticPaths.systemPromptFile));
     for (const file of primaryTargets) expect(readText(file)).toBe(humanSnapshot.get(file));
+    expect(readText(orchestratorSkill)).toBe(humanSnapshot.get(orchestratorSkill));
     for (const file of subagentTargets) expect(readText(file)).toBe(humanSnapshot.get(file));
     expect(createBackupSpy).not.toHaveBeenCalled();
     expect(backup.listBackups(backupsRoot).map((entry) => entry.id)).toEqual(backupIdsBefore);

@@ -186,8 +186,8 @@ describe("paridad entre adapters (los 15 agentes canónicos reales)", () => {
     const oc = opencodeAdapter.renderAgent(orchestrator, OPEN_CODE_MODELS);
     expect(oc.map((o) => o.kind)).toEqual(["agent"]);
     const cc = claudeCodeAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP["claude-code"]);
-    expect(cc.map((o) => o.kind).sort()).toEqual(["output-style", "skill"]);
+    expect(cc.map((o) => o.kind)).toEqual(["output-style"]);
     const cx = codexAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP.codex);
-    expect(cx.map((o) => o.kind).sort()).toEqual(["profile", "skill"]);
+    expect(cx.map((o) => o.kind)).toEqual(["profile"]);
   });
 });

@@ -1,6 +1,6 @@
 /**
- * Compone addenda de programmatic mode (concatenadas al final de los agentes
- * canónicos y del system prompt) cuando el install corre en modo programmatic.
+ * Compone addenda de programmatic mode sobre el system prompt, subagentes y
+ * skills canónicas cuando el install corre en modo programmatic.
  * El marcador <!-- jorgex:programmatic-mode --> en los addenda garantiza
  * idempotencia: re-aplicar no duplica el contenido.
  */
@@ -62,29 +62,36 @@ export function composeProgrammaticSystemPrompt(stackDir: string, content: strin
 }
 
 /**
- * Aplica el addendum de agent (orchestrator para primary, subagent para el
- * resto) solo en modo programmatic. En primary sustituye el placeholder
- * {{CONCURRENCY_RULE}} por la regla de concurrencia resuelta.
+ * Aplica el addendum de subagente solo en modo programmatic. El primary es un
+ * wrapper estable; el contrato del orchestrator se compone sobre su skill.
  */
 export function composeProgrammaticAgentBody(
   stackDir: string,
   agent: CanonicalAgent,
   mode: InstallMode | undefined,
-  concurrency: SubagentConcurrency | undefined,
 ): string {
-  if (mode !== "programmatic") return normalize(agent.body);
+  if (mode !== "programmatic" || agent.mode === "primary") return normalize(agent.body);
 
-  const fileName = agent.mode === "primary" ? "orchestrator.addendum.md" : "subagent.addendum.md";
-  let addendum = loadProgrammaticAddendum(stackDir, fileName);
-  if (agent.mode === "primary") {
-    addendum = addendum.replace("{{CONCURRENCY_RULE}}", concurrencyRule(concurrency ?? "serial"));
-  }
+  const addendum = loadProgrammaticAddendum(stackDir, "subagent.addendum.md");
   return appendAddendum(stripLegacyResultContract(agent.body), addendum);
 }
 
 /** Aplica el overlay programmatic solo a skills puntuales, sin tocar el resto. */
-export function composeProgrammaticSkillBody(stackDir: string, skillPath: string, content: string, mode?: InstallMode): string {
+export function composeProgrammaticSkillBody(
+  stackDir: string,
+  skillPath: string,
+  content: string,
+  mode?: InstallMode,
+  concurrency?: SubagentConcurrency,
+): string {
   if (mode !== "programmatic") return normalize(content);
+
+  if (skillPath === path.join("orchestrator", "SKILL.md")) {
+    const addendum = loadProgrammaticAddendum(stackDir, "orchestrator.addendum.md")
+      .replace("{{CONCURRENCY_RULE}}", concurrencyRule(concurrency ?? "serial"));
+    return appendAddendum(stripLegacyResultContract(content), addendum);
+  }
+
   if (skillPath !== path.join("agent-delegation", "SKILL.md")) return normalize(content);
 
   const base = normalize(content)

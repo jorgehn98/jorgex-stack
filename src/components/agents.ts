@@ -20,7 +20,7 @@ export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] 
   return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) => {
     const composedAgent = {
       ...agent,
-      body: composeProgrammaticAgentBody(ctx.stackDir, agent, ctx.mode, ctx.subagentConcurrency),
+      body: composeProgrammaticAgentBody(ctx.stackDir, agent, ctx.mode),
     };
 
     return adapter.renderAgent(composedAgent, ctx.models).flatMap((rendered): FileAction[] => {

@@ -72,7 +72,12 @@ const FOUR_R_LENS_CASES = [
   {
     relativePath: "agents/test-analyzer.md",
     header: "## 4R Reliability Lens",
-    fragments: ["external contracts", "negative test cases", "async/concurrency behavior", "behavioral coverage rather than line coverage"],
+    fragments: [
+      "actual evidence",
+      "accidental `test.only`/exclusive-focus slips",
+      "implementation-coupled tests",
+      "behavioral coverage rather than line coverage",
+    ],
   },
   {
     relativePath: "agents/silent-failure-hunter.md",
@@ -95,7 +100,7 @@ const MULTI_PR_LIFECYCLE_CASES = [
     ],
   },
   {
-    relativePath: "agents/orchestrator.md",
+    relativePath: "skills/orchestrator/SKILL.md",
     fragments: [
       "For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished.",
       "Phase outcomes, decisions and PR checkpoints → Engram under `work/{name}/{phase}` and `work/{name}/pr/{NN}`",
@@ -704,7 +709,7 @@ describe("lean integration: prompt wiring", () => {
   });
 
   it("orchestrator usa lean-code como gate de alcance", () => {
-    const content = fs.readFileSync(path.join(stackRoot(), "agents", "orchestrator.md"), "utf8");
+    const content = fs.readFileSync(path.join(stackRoot(), "skills", "orchestrator", "SKILL.md"), "utf8");
 
     expect(content).toContain("Apply the `lean-code` skill as a scope gate");
     expect(content).toContain("whether the smallest obvious change is enough");
@@ -728,7 +733,7 @@ describe("worktree workflow contract", () => {
     ];
 
     for (const relativePath of [
-      "agents/orchestrator.md",
+      "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
       "system-prompt/AGENTS.md",
     ]) {
@@ -776,7 +781,7 @@ describe("PR draft lifecycle contract", () => {
     ];
 
     for (const relativePath of [
-      "agents/orchestrator.md",
+      "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
       "system-prompt/AGENTS.md",
     ]) {
@@ -901,7 +906,7 @@ describe("work backlog mutation contract", () => {
     ];
 
     for (const relativePath of [
-      "agents/orchestrator.md",
+      "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
       "system-prompt/AGENTS.md",
       "system-prompt/engram-protocol.md",
@@ -935,7 +940,7 @@ describe("subagent uncertainty escalation contract", () => {
   });
 
   it("orchestrator explica cómo procesar un blocker/pregunta del subagent y relanzarlo con guidance", () => {
-    const content = readStackFile("agents/orchestrator.md");
+    const content = readStackFile("skills/orchestrator/SKILL.md");
 
     expectFragments(content, [
       "If a subagent reports `partial`",
@@ -976,5 +981,28 @@ describe("contrato 4R", () => {
 
   it.each(FOUR_R_LENS_CASES)("$relativePath conserva las señales de su lente 4R", ({ relativePath, header, fragments }) => {
     expectFragments(readStackFile(relativePath), [header, ...fragments]);
+  });
+});
+
+describe("test-analyzer: rúbrica canónica de testing", () => {
+  it("carga tdd y agent-delegation antes de analizar, sin asumir funciones de writer", () => {
+    const content = readStackFile("agents/test-analyzer.md");
+
+    expectFragmentsInOrder(content, [
+      "**First actions, in order**",
+      "Load the `tdd` skill",
+      "Load the `agent-delegation` skill",
+    ]);
+    expect(content).toMatch(/TDD[^\n]+analysis rubric only/i);
+    expect(content).toContain("NEVER write tests");
+  });
+
+  it("usa bandas de severidad exhaustivas y sin solape", () => {
+    const content = readStackFile("agents/test-analyzer.md");
+
+    expect(content).toMatch(/8(?:-|–)10[^\n]+critical/i);
+    expect(content).toMatch(/5(?:-|–)7[^\n]+important/i);
+    expect(content).toMatch(/1(?:-|–)4[^\n]+not a missing-test finding/i);
+    expect(content).not.toMatch(/9(?:-|–)10|7(?:-|–)8|5(?:-|–)6/);
   });
 });

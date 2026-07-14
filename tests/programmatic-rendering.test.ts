@@ -65,6 +65,16 @@ function findWrite(plan: FileAction[], target: string): { content: string } {
   return action as { content: string };
 }
 
+function plannedContent(plan: FileAction[], target: string): string {
+  const action = plan.find((entry) => entry.target === target);
+  expect(action, `No se generó ${target}`).toBeDefined();
+  return action!.kind === "write" ? action!.content : fs.readFileSync(action!.source, "utf8");
+}
+
+function orchestratorSkillTarget(adapter: Adapter, ctx: InstallContext): string {
+  return path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator", "SKILL.md");
+}
+
 function expectProgrammaticSystemPrompt(content: string): void {
   expect(content).toContain("PROGRAMMATIC MODE");
   expect(content).toContain("strict JSON object");
@@ -113,6 +123,11 @@ function expectHumanSafe(content: string): void {
   expect(content).not.toContain("Do not wrap the final JSON in Markdown");
 }
 
+function expectPrimaryWrapper(content: string): void {
+  expect(content).toContain("Load and follow the `orchestrator` skill");
+  expect(content).not.toContain("## Phases");
+}
+
 describe.each(RUNTIMES)("%s", (_name, adapter) => {
   let tempRoot = "";
 
@@ -127,14 +142,17 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     return { ctx, plan: buildPlan(adapter, ctx) };
   }
 
-  it("programmatic/serial compone system prompt, orquestador y subagente", () => {
+  it("programmatic/serial compone el contrato en la skill canónica, no en el wrapper primary", () => {
     const { ctx, plan: fileActions } = plan("programmatic", "serial");
 
     expectProgrammaticSystemPrompt(findWrite(fileActions, adapter.paths(ctx.configDir).systemPromptFile).content);
 
     for (const artifact of renderedArtifacts(adapter, ctx, primaryAgent)) {
-      expectProgrammaticOrchestrator(findWrite(fileActions, artifact.target).content, "serial");
+      const content = findWrite(fileActions, artifact.target).content;
+      expectPrimaryWrapper(content);
+      expectHumanSafe(content);
     }
+    expectProgrammaticOrchestrator(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)), "serial");
 
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectProgrammaticSubagent(findWrite(fileActions, subagent.target).content);
@@ -146,8 +164,11 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     expectProgrammaticSystemPrompt(findWrite(fileActions, adapter.paths(ctx.configDir).systemPromptFile).content);
 
     for (const artifact of renderedArtifacts(adapter, ctx, primaryAgent)) {
-      expectProgrammaticOrchestrator(findWrite(fileActions, artifact.target).content, "parallel");
+      const content = findWrite(fileActions, artifact.target).content;
+      expectPrimaryWrapper(content);
+      expectHumanSafe(content);
     }
+    expectProgrammaticOrchestrator(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)), "parallel");
 
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectProgrammaticSubagent(findWrite(fileActions, subagent.target).content);
@@ -159,8 +180,11 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     expectHumanSafe(findWrite(fileActions, adapter.paths(ctx.configDir).systemPromptFile).content);
 
     for (const artifact of renderedArtifacts(adapter, ctx, primaryAgent)) {
-      expectHumanSafe(findWrite(fileActions, artifact.target).content);
+      const content = findWrite(fileActions, artifact.target).content;
+      expectPrimaryWrapper(content);
+      expectHumanSafe(content);
     }
+    expectHumanSafe(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)));
 
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectHumanSafe(findWrite(fileActions, subagent.target).content);
