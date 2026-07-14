@@ -13,12 +13,6 @@ import type { InstallMode, SubagentConcurrency } from "../adapters/types.js";
 const PROGRAMMATIC_ROOT = ["modes", "programmatic"] as const;
 const PROGRAMMATIC_MARKER = "<!-- jorgex:programmatic-mode -->";
 const LEGACY_RESULT_CONTRACT_SECTION = /\n?##\s+Result contract[\s\S]*$/;
-const LEGACY_DELEGATION_LINE = /- For each `→ \[agent\]: \.\.\.` line, launch the corresponding specialist\./;
-const LEGACY_PROGRAMMATIC_PHRASES: Array<[RegExp, string]> = [
-  [/\bResult contract\b/g, "strict JSON handoff"],
-  [/Status \/ Delegations \/ Risks/g, "status, delegations, and risks"],
-  [LEGACY_DELEGATION_LINE, "- Process the JSON `delegations[]` array and launch the corresponding specialist."],
-];
 
 const normalize = (value: string): string => value.replace(/\r\n/g, "\n");
 
@@ -34,10 +28,10 @@ function appendAddendum(base: string, addendum: string): string {
 }
 
 function stripLegacyResultContract(body: string): string {
-  return LEGACY_PROGRAMMATIC_PHRASES.reduce(
-    (text, [pattern, replacement]) => text.replace(pattern, replacement),
-    normalize(body).replace(LEGACY_RESULT_CONTRACT_SECTION, ""),
-  ).trimEnd();
+  return normalize(body)
+    .replace(LEGACY_RESULT_CONTRACT_SECTION, "")
+    .replace(/\bResult contract\b/g, "strict JSON handoff")
+    .trimEnd();
 }
 
 function concurrencyRule(concurrency: SubagentConcurrency): string {
@@ -75,7 +69,7 @@ export function composeProgrammaticAgentBody(
   if (agent.mode === "primary") {
     const addendum = loadProgrammaticAddendum(stackDir, "orchestrator.addendum.md")
       .replace("{{CONCURRENCY_RULE}}", concurrencyRule(concurrency ?? "serial"));
-    return appendAddendum(stripLegacyResultContract(agent.body), addendum);
+    return appendAddendum(agent.body, addendum);
   }
 
   const addendum = loadProgrammaticAddendum(stackDir, "subagent.addendum.md");

@@ -63,16 +63,6 @@ function findWrite(plan: FileAction[], target: string): { content: string } {
   return action as { content: string };
 }
 
-function plannedContent(plan: FileAction[], target: string): string {
-  const action = plan.find((entry) => entry.target === target);
-  expect(action, `No se generó ${target}`).toBeDefined();
-  return action!.kind === "write" ? action!.content : fs.readFileSync(action!.source, "utf8");
-}
-
-function orchestratorSkillTarget(adapter: Adapter, ctx: InstallContext): string {
-  return path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator", "SKILL.md");
-}
-
 function expectProgrammaticSystemPrompt(content: string): void {
   expect(content).toContain("PROGRAMMATIC MODE");
   expect(content).toContain("strict JSON object");
@@ -150,8 +140,6 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       expectPrimaryWrapper(content);
       expectProgrammaticOrchestrator(content, "serial");
     }
-    expectHumanSafe(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)));
-
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectProgrammaticSubagent(findWrite(fileActions, subagent.target).content);
   });
@@ -166,8 +154,6 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       expectPrimaryWrapper(content);
       expectProgrammaticOrchestrator(content, "parallel");
     }
-    expectHumanSafe(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)));
-
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectProgrammaticSubagent(findWrite(fileActions, subagent.target).content);
   });
@@ -182,8 +168,6 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       expectPrimaryWrapper(content);
       expectHumanSafe(content);
     }
-    expectHumanSafe(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)));
-
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectHumanSafe(findWrite(fileActions, subagent.target).content);
   });
