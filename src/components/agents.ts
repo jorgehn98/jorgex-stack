@@ -4,12 +4,11 @@ import { loadCanonicalAgents } from "../lib/canonical.js";
 import { composeProgrammaticAgentBody } from "../lib/mode-composition.js";
 
 export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] {
-  const { agentsDir, commandsDir, outputStylesDir, skillsDir, profilesDir, scriptsDir } = adapter.paths(ctx.configDir);
+  const { agentsDir, commandsDir, outputStylesDir, profilesDir, scriptsDir } = adapter.paths(ctx.configDir);
   const dirFor = {
     agent: agentsDir,
     command: commandsDir,
     "output-style": outputStylesDir,
-    skill: skillsDir,
     profile: profilesDir,
   } as const;
 
@@ -20,7 +19,7 @@ export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] 
   return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) => {
     const composedAgent = {
       ...agent,
-      body: composeProgrammaticAgentBody(ctx.stackDir, agent, ctx.mode),
+      body: composeProgrammaticAgentBody(ctx.stackDir, agent, ctx.mode, ctx.subagentConcurrency),
     };
 
     return adapter.renderAgent(composedAgent, ctx.models).flatMap((rendered): FileAction[] => {

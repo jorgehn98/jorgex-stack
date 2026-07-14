@@ -79,7 +79,7 @@ export interface Adapter {
   renderAgent(
     agent: CanonicalAgent,
     models: RuntimeModelMap,
-  ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "skill" | "profile" }[];
+  ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "profile" }[];
   /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
   renderCommand(file: string, content: string): { file: string; content: string };
   /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */

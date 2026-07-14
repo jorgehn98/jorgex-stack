@@ -45,7 +45,6 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(style.content).toContain("keep-coding-instructions: true");
     expect(style.content).toContain("Load and follow the `orchestrator` skill");
     expect(style.content).not.toContain("## Phases");
-    expect(out.some((artifact) => artifact.kind === "skill")).toBe(false);
   });
 
   it("subagente readonly con git-read: allowlist con Skill, Bash y tools de memoria", () => {

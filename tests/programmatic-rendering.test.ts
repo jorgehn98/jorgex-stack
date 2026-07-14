@@ -22,7 +22,7 @@ const primaryAgent = canonicalAgents.find((agent) => agent.mode === "primary")!;
 const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent")!;
 const legacyProgrammaticContractPattern = /\bResult contract\b|Status \/ Delegations \/ Risks/;
 
-type RenderedArtifact = { file: string; kind: "agent" | "command" | "output-style" | "skill" | "profile"; content: string; target: string };
+type RenderedArtifact = { file: string; kind: "agent" | "command" | "output-style" | "profile"; content: string; target: string };
 
 function makeContext(adapter: Adapter, configDir: string, mode: InstallMode, subagentConcurrency: SubagentConcurrency): InstallContext {
   return {
@@ -45,8 +45,6 @@ function targetFor(adapter: Adapter, ctx: InstallContext, artifact: { file: stri
       return path.join(paths.commandsDir, artifact.file);
     case "output-style":
       return path.join(paths.outputStylesDir!, artifact.file);
-    case "skill":
-      return path.join(paths.skillsDir, artifact.file);
     case "profile":
       return path.join(paths.profilesDir!, artifact.file);
   }
@@ -142,7 +140,7 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     return { ctx, plan: buildPlan(adapter, ctx) };
   }
 
-  it("programmatic/serial compone el contrato en la skill canónica, no en el wrapper primary", () => {
+  it("programmatic/serial compone el contrato en el wrapper primary, no en la skill compartida", () => {
     const { ctx, plan: fileActions } = plan("programmatic", "serial");
 
     expectProgrammaticSystemPrompt(findWrite(fileActions, adapter.paths(ctx.configDir).systemPromptFile).content);
@@ -150,9 +148,9 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     for (const artifact of renderedArtifacts(adapter, ctx, primaryAgent)) {
       const content = findWrite(fileActions, artifact.target).content;
       expectPrimaryWrapper(content);
-      expectHumanSafe(content);
+      expectProgrammaticOrchestrator(content, "serial");
     }
-    expectProgrammaticOrchestrator(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)), "serial");
+    expectHumanSafe(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)));
 
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectProgrammaticSubagent(findWrite(fileActions, subagent.target).content);
@@ -166,9 +164,9 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     for (const artifact of renderedArtifacts(adapter, ctx, primaryAgent)) {
       const content = findWrite(fileActions, artifact.target).content;
       expectPrimaryWrapper(content);
-      expectHumanSafe(content);
+      expectProgrammaticOrchestrator(content, "parallel");
     }
-    expectProgrammaticOrchestrator(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)), "parallel");
+    expectHumanSafe(plannedContent(fileActions, orchestratorSkillTarget(adapter, ctx)));
 
     const subagent = renderedArtifacts(adapter, ctx, sampleSubagent)[0]!;
     expectProgrammaticSubagent(findWrite(fileActions, subagent.target).content);

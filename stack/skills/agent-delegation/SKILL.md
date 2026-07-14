@@ -15,7 +15,7 @@ Importante sobre el mecanismo:
 
 - Tú (subagente) **no lanzas a otros subagentes**. Solo el agente principal (orquestador) puede invocarlos.
 - No te salgas de tu scope para "ayudar". Si algo no te corresponde, lo dejas sin hacer y lo delegas.
-- Las delegaciones van **en tu output final**, en el formato de abajo. El orquestador las lee y decide a quién invocar.
+- Las delegaciones van en el contrato de resultado activo del agente. El orquestador las lee y decide a quién invocar.
 - `delegations` are only for work that belongs to another specialist; uncertainty questions are not delegations.
 
 ## Agentes disponibles
@@ -39,9 +39,9 @@ Importante sobre el mecanismo:
 
 Nota: `test-analyzer` analiza cobertura pero no escribe tests; escribir los tests recomendados es de `tester`.
 
-## Formato obligatorio
+## Fallback humano
 
-Una línea por delegación, al final de tu output:
+Si el contrato activo no define un campo o formato de delegaciones, usa una línea por delegación al final de tu output:
 
 ```markdown
 → [agente]: [trabajo pendiente] — [archivos/rutas] — [inputs mínimos]

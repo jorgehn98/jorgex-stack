@@ -50,8 +50,6 @@ function renderTargets(adapter: Adapter, ctx: InstallContext, agent = primaryAge
         return path.join(paths.commandsDir, artifact.file);
       case "output-style":
         return path.join(paths.outputStylesDir!, artifact.file);
-      case "skill":
-        return path.join(paths.skillsDir, artifact.file);
       case "profile":
         return path.join(paths.profilesDir!, artifact.file);
     }
@@ -163,9 +161,9 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     expectProgrammaticSystemPrompt(snapshot.get(paths.systemPromptFile)!);
     for (const file of primaryTargets) {
       expectPrimaryWrapper(snapshot.get(file)!);
-      expectHumanSafe(snapshot.get(file)!);
+      expectProgrammaticPrimary(snapshot.get(file)!, "serial");
     }
-    expectProgrammaticPrimary(snapshot.get(orchestratorSkill)!, "serial");
+    expectHumanSafe(snapshot.get(orchestratorSkill)!);
     for (const file of subagentTargets) expectProgrammaticSubagent(snapshot.get(file)!);
 
     expect(fs.existsSync(finalSchemaPath)).toBe(true);
@@ -303,9 +301,9 @@ describe("Codex: cambio de modo con skills compartidos", () => {
     expectProgrammaticSystemPrompt(readText(programmaticPaths.systemPromptFile));
     for (const file of primaryTargets) {
       expectPrimaryWrapper(readText(file));
-      expectHumanSafe(readText(file));
+      expectProgrammaticPrimary(readText(file), "parallel");
     }
-    expectProgrammaticPrimary(readText(orchestratorSkill), "parallel");
+    expect(readText(orchestratorSkill)).toBe(humanSnapshot.get(orchestratorSkill));
     for (const file of subagentTargets) expectProgrammaticSubagent(readText(file));
 
     await expect(
@@ -359,8 +357,8 @@ describe("programmatic final-output contract", () => {
   });
 });
 
-describe("agent-delegation skill en programmatic installs", () => {
-  it("no reintroduce la gramática Markdown vieja y documenta delegations[]", async () => {
+describe("shared skills en programmatic installs", () => {
+  it("agent-delegation permanece independiente del modo", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-programmatic-skill-"));
     const configDir = path.join(tmp, "opencode");
 
@@ -378,13 +376,50 @@ describe("agent-delegation skill en programmatic installs", () => {
 
       const skill = readText(path.join(opencodeAdapter.paths(configDir).skillsDir, "agent-delegation", "SKILL.md"));
 
-      expect(skill).not.toContain("→ [agent]:");
-      expect(skill).not.toContain("→ [agente]:");
-      expect(skill).toContain("delegations[]");
-      expect(skill).toMatch(/\bJSON\b/i);
+      expect(skill).not.toContain("PROGRAMMATIC MODE");
+      expect(skill).toContain("contrato de resultado activo");
     } finally {
       vi.restoreAllMocks();
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Codex y OpenCode comparten skills sin compartir el modo", () => {
+  let tempRoot = "";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true });
+    tempRoot = "";
+  });
+
+  it("un sync programmatic parcial no contamina un OpenCode human existente", async () => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-shared-skills-mode-"));
+    const opencodeDir = path.join(tempRoot, "opencode");
+    const codexDir = path.join(tempRoot, "codex");
+    vi.spyOn(modelMap, "loadModelMap").mockReturnValue(TEST_MODEL_MAP);
+
+    await expect(runInstall({
+      runtimes: ["opencode"], targetDir: opencodeDir, dryRun: false, yes: true,
+      mode: { mode: "human", subagentConcurrency: "serial" },
+    })).resolves.toBe(0);
+
+    const sharedSkill = path.join(opencodeAdapter.paths(opencodeDir).skillsDir, "orchestrator", "SKILL.md");
+    const humanSkill = readText(sharedSkill);
+    const opencodePrimary = renderTargets(opencodeAdapter, makeContext(opencodeAdapter, opencodeDir, "human", "serial"), primaryAgent)[0]!;
+
+    await expect(runInstall({
+      runtimes: ["codex"], targetDir: codexDir, dryRun: false, yes: true,
+      mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+    })).resolves.toBe(0);
+
+    expect(codexAdapter.paths(codexDir).skillsDir).toBe(opencodeAdapter.paths(opencodeDir).skillsDir);
+    expect(readText(sharedSkill)).toBe(humanSkill);
+    expectHumanSafe(readText(sharedSkill));
+    expectHumanSafe(readText(opencodePrimary));
+
+    const codexPrimary = renderTargets(codexAdapter, makeContext(codexAdapter, codexDir, "programmatic", "parallel"), primaryAgent)[0]!;
+    expectProgrammaticPrimary(readText(codexPrimary), "parallel");
   });
 });

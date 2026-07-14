@@ -87,7 +87,6 @@ describe("codexAdapter.renderAgent", () => {
     expect(profile.content).not.toContain("## Phases");
     expect(profile.content).not.toContain("model =");
     expect(profile.content).not.toContain("model_reasoning_effort");
-    expect(out.some((artifact) => artifact.kind === "skill")).toBe(false);
   });
 });
 

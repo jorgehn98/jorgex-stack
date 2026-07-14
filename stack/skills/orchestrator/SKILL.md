@@ -100,14 +100,14 @@ The `work-lifecycle` skill is the single source of this flow. Summary — every 
 
 Load the `agent-delegation` skill: it defines the available subagents, the scope of each and when to delegate. It is the single source of the agent map — don't duplicate the list here.
 
-Every subagent ends with a **Result contract** (Status / Delegations / Risks). Process it:
+Every subagent follows its active result contract. Process it:
 
-- For each `→ [agent]: ...` line, launch the corresponding specialist.
+- Launch every specialist named by the active delegation field or format.
 - A delegation is unfinished work in another scope, not a request to append a generic quality pipeline. Normal handoffs between `implementer` and `tester` do not by themselves justify reviewers or analyzers.
 - If a subagent reports `partial`, keep the safe work and relaunch only what still needs guidance.
 - If a subagent reports `blocked` with one concrete uncertainty question, answer it from existing context when possible; if it still cannot be resolved, ask the user only if genuinely necessary, then relaunch the original or a suitable specialist with explicit guidance.
-- Don't declare a phase done while a delegation line remains unprocessed.
-- If Status is `partial` or `blocked`, resolve the cause before moving on.
+- Don't declare a phase done while a delegation remains unprocessed.
+- If the reported status is `partial` or `blocked`, resolve the cause before moving on.
 
 ## 5. EXECUTE
 
