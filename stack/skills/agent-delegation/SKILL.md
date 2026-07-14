@@ -23,7 +23,7 @@ Importante sobre el mecanismo:
 | Agente | Scope | Delega aquí cuando aparezca... |
 |---|---|---|
 | `implementer` | escribe código de producción | falta código para que algo funcione; hay que implementar el cambio real |
-| `tester` | escribe/ejecuta tests | faltan tests, hay tests rotos por un cambio de contrato, o hay que verificar comportamiento |
+| `tester` | decide/escribe/ejecuta tests según riesgo | hay que decidir la protección adecuada, falta un test valioso, hay tests rotos por un cambio de contrato, o hay que verificar comportamiento |
 | `translator` | traducciones, locales, multiidioma | strings hardcodeadas visibles, locales desincronizados, copy en varios idiomas |
 | `docs-maintainer` | documentación (/docs y docs site público) | el cambio deja docs desactualizadas o requiere nueva documentación |
 | `backend-analyst` | análisis backend (read-only) | hace falta mapear servicios, DB, APIs o riesgos backend antes de actuar |
@@ -54,7 +54,7 @@ Una línea por delegación, al final de tu output:
 - `tester` detecta que falta código de producción → `implementer`
 - cualquier agente detecta auth, permisos o datos sensibles → `security-auditor`
 - cualquier agente detecta cambio documental relevante → `docs-maintainer`
-- `test-analyzer` detecta gaps de cobertura → `tester` (que los escribe)
+- `test-analyzer` detecta un gap de riesgo concreto → `tester` (que decide si añade, actualiza o reutiliza cobertura)
 
 ## Regla de conflicto
 

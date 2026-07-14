@@ -9,7 +9,9 @@ This skill takes the current conversation context and codebase understanding and
 
 1. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's domain glossary vocabulary throughout the PRD, and respect any ADRs in the area you're touching.
 
-2. Sketch out the seams at which you're going to test the feature. Existing seams should be preferred to new ones. Use the highest seam possible. If new seams are needed, propose them at the highest point you can.
+2. Sketch out the seams at which you're going to test the feature. Prefer an existing seam when it is strong enough, and choose the closest seam that can fail for the concrete regression risk. Introduce a new seam only when existing ones cannot provide reliable evidence.
+
+Do not choose from a fixed test pyramid or a requirement to add tests. Prefer one authoritative test at the strongest seam closest to the risk; another layer is justified only for a distinct contract. Record existing coverage and valid no-new-test decisions for trivial, mechanical, generated, styling, or wiring changes.
 
 Check with the user that these seams match their expectations.
 
@@ -67,9 +69,13 @@ Keep this static: describe the planned delivery slices, not the current state.
 
 A list of testing decisions that were made. Include:
 
-- A description of what makes a good test (only test external behavior, not implementation details)
-- Which modules will be tested
-- Prior art for the tests (i.e. similar types of tests in the codebase)
+- The meaningful regression risk introduced by each behavior change
+- Which existing tests already protect it
+- Which new behavior requires protection
+- The chosen seam and why it is closest to the risk
+- Why another layer would protect a distinct contract rather than duplicate the same behavior
+- Why no new test is needed for trivial, mechanical, generated, styling, wiring, or already-covered changes
+- Prior art for the selected tests (i.e. similar valuable tests in the codebase)
 
 ## Out of Scope
 

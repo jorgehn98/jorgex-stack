@@ -74,7 +74,8 @@
     "tdd": {
       "source": "github:mattpocock/skills",
       "path": "skills/engineering/tdd",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f"
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "modified": true
     },
     "to-issues": {
       "source": "github:mattpocock/skills",
