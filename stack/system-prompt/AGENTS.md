@@ -110,9 +110,11 @@ Every piece of information about a piece of work has exactly ONE home — never 
 
 ## Testing and Verification
 
-- When the project has tests or the change affects behavior, testing is mandatory.
-- For new features, bug fixes, or behavior changes, use TDD when it fits.
-- Use the `tdd` skill for red-green-refactor, test-first work, or integration-style behavior testing.
+- When the project has tests or the change affects behavior, verification is mandatory. A new test is not.
+- Make one explicit testing decision per change: what risk it introduces, what existing test already covers it, what new behavior needs protection, and why no new test is needed when the change is trivial, mechanical, or already covered.
+- Use TDD for business rules, bugs/regressions, public contracts, and invariants. Do not impose it on styling, wiring, generated code, mechanical refactors, or trivial code unless they change meaningful behavior.
+- Prefer one authoritative test at the strongest seam closest to the risk. Add coverage at another layer only when it protects a distinct contract, not to repeat the same behavior.
+- Use the `tdd` skill for red-green-refactor, test-first work, or risk-based behavior testing.
 - Prefer targeted verification before broad suites.
 - Default order: specific test > partial suite > full suite.
 - Use the real test commands and test stack of the project.

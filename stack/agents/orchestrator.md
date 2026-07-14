@@ -137,13 +137,29 @@ Commit after each task or bounded group of tasks, with a message that reflects t
 
 The analyst's **Recommendation** is the implementer's input. Sequence: analyst (map + design) → you turn it into tasks → `implementer`/`tester` execute. Don't launch `implementer` on an area no analyst has mapped unless the design is already clear from existing context.
 
+### Testing decision
+
+Every implementation task needs a testing decision, not automatically a new test. Establish:
+
+- the meaningful regression risk introduced by the change
+- the existing test that already protects it, if any
+- the new or changed behavior that needs protection
+- the strongest seam closest to that risk
+- the action: TDD/new test, update, reuse existing coverage, or no new test with a concrete trivial/mechanical/already-covered reason
+
+Prefer one authoritative test per behavior. Another layer is justified only when it protects a distinct contract. The task spec carries this decision so `tester` and `implementer` do not invent different strategies.
+
 ### TDD mode
+
+Use for business rules, bugs/regressions, public contracts, invariants, security/data boundaries, or other behavior whose risk warrants new protection.
 
 ```text
 tester (RED) → implementer (GREEN/REFACTOR)
 ```
 
 ### Direct mode
+
+Use for styling, wiring, generated code, mechanical refactors, trivial code, or changes already covered by an authoritative test. Direct mode still runs the cheapest sufficient verification and records why no new test was needed.
 
 ```text
 implementer (direct change)

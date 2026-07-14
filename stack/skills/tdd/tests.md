@@ -1,61 +1,59 @@
-# Good and Bad Tests
+# Choosing Valuable Tests
 
-## Good Tests
+## One behavior, one authoritative seam
 
-**Integration-style**: Test through real interfaces, not mocks of internal parts.
+Choose the seam from the regression you need to catch.
 
 ```typescript
-// GOOD: Tests observable behavior
-test("user can checkout with valid cart", async () => {
-  const cart = createCart();
-  cart.add(product);
-  const result = await checkout(cart, paymentMethod);
-  expect(result.status).toBe("confirmed");
+// Pure pricing rule: a focused module test is closest to the risk.
+test("applies the reduced tax rate to eligible items", () => {
+  expect(calculateTax(eligibleItem)).toBe(4.2);
 });
 ```
 
-Characteristics:
-
-- Tests behavior users/callers care about
-- Uses public API only
-- Survives internal refactors
-- Describes WHAT, not HOW
-- One logical assertion per test
-
-## Bad Tests
-
-**Implementation-detail tests**: Coupled to internal structure.
-
 ```typescript
-// BAD: Tests implementation details
-test("checkout calls paymentService.process", async () => {
-  const mockPayment = jest.mock(paymentService);
-  await checkout(cart, payment);
-  expect(mockPayment.process).toHaveBeenCalledWith(cart.total);
+// User interaction: verify the accessible outcome, not DOM decoration.
+test("submits a valid checkout", async () => {
+  await user.click(screen.getByRole("button", { name: "Pay" }));
+  expect(await screen.findByText("Payment confirmed")).toBeVisible();
 });
 ```
 
-Red flags:
+```sql
+-- Tenant isolation: execute against a real test database with two users.
+-- Regex matching a CREATE POLICY statement does not prove RLS behavior.
+```
 
-- Mocking internal collaborators
-- Testing private methods
-- Asserting on call counts/order
-- Test breaks when refactoring without behavior change
-- Test name describes HOW not WHAT
-- Verifying through external means instead of interface
+Characteristics of valuable tests:
+
+- Catch a concrete user, business, security, data, or contract regression
+- Observe a public interface or the real boundary at risk
+- Survive an internal refactor
+- Use the narrowest reliable setup
+- Add a second layer only for a different contract
+
+## Low-value and redundant tests
+
+Avoid tests whose only purpose is to assert:
+
+- Tailwind classes, decorative DOM, or incidental markup
+- That a wrapper, alias, constant, callback, or function exists
+- Exact internal call counts/order when the observable result is what matters
+- The same behavior already protected at a stronger seam
+- SQL policy or migration correctness exclusively through text/regex shape
+- “Integration” while every important collaborator is mocked
 
 ```typescript
-// BAD: Bypasses interface to verify
-test("createUser saves to database", async () => {
-  await createUser({ name: "Alice" });
-  const row = await db.query("SELECT * FROM users WHERE name = ?", ["Alice"]);
-  expect(row).toBeDefined();
-});
+// BAD: locks internal choreography.
+expect(paymentService.charge).toHaveBeenCalledTimes(1);
+expect(emailService.send).toHaveBeenCalledAfter(paymentService.charge);
 
-// GOOD: Verifies through interface
-test("createUser makes user retrievable", async () => {
-  const user = await createUser({ name: "Alice" });
-  const retrieved = await getUser(user.id);
-  expect(retrieved.name).toBe("Alice");
-});
+// BETTER: assert the contract callers rely on.
+expect(result).toMatchObject({ status: "confirmed", receiptId: expect.any(String) });
 ```
+
+Exact calls are valid only when the call itself is the external contract—for example, the precise payload sent to a payment provider or an idempotency key required by its protocol.
+
+## Valid no-new-test decisions
+
+A change may need no new test when it is styling-only, mechanical, generated, already covered by an authoritative test, or has no meaningful behavioral branch. State the reason and run the cheapest existing verification that could catch an accidental break.

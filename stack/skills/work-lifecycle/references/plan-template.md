@@ -146,6 +146,16 @@ Status, wave and dependencies live in the plan.md table (single home) — do NOT
 
 - [Rule]
 
+## Testing decision
+
+- **Risk**: [meaningful regression this task can introduce]
+- **Existing protection**: [specific existing test/evidence, or none]
+- **New behavior**: [behavior needing new protection, or none]
+- **Chosen seam**: [unit/component/database/integration/contract/e2e and why it is closest to the risk]
+- **Action**: [add | update | reuse | no new test] — [concrete reason]
+
+Prefer one authoritative test per behavior. Another layer is justified only when it protects a distinct contract. Styling, wiring, generated code, mechanical refactors, and trivial changes may use `no new test`; business rules, bugs/regressions, public contracts, and invariants should normally use TDD.
+
 ## Acceptance criteria
 
 [VERIFIABLE and SPECIFIC criteria — not generic. Each must be checkable manually or automatically.]

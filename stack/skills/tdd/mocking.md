@@ -1,59 +1,34 @@
-# When to Mock
+# Boundary Doubles and Mocks
 
-Mock at **system boundaries** only:
+Mocks are a cost/risk tradeoff, not a goal or a categorical ban.
 
-- External APIs (payment, email, etc.)
-- Databases (sometimes - prefer test DB)
-- Time/randomness
-- File system (sometimes)
+## Prefer real behavior when practical
 
-Don't mock:
+Use real owned code when it is fast, deterministic, safe, and easy to set up. Mocking internal collaborators just to assert call choreography couples the test to implementation and can let broken behavior pass.
 
-- Your own classes/modules
-- Internal collaborators
-- Anything you control
+Prefer real test infrastructure when the risk lives there:
 
-## Designing for Mockability
+- RLS, SQL, migrations, transactions, and data-transaction atomicity → test database
+- Other concurrency or atomicity → the actual filesystem, queue, process, or shared-state boundary
+- Filesystem semantics → isolated temp directory
+- Serialization/protocol parsing → real encoder/decoder
 
-At system boundaries, design interfaces that are easy to mock:
+## Use a boundary double when it is the reliable seam
 
-**1. Use dependency injection**
+A fake, stub, or mock is appropriate for a boundary that is unavailable, expensive, nondeterministic, destructive, or controlled by a third party:
 
-Pass external dependencies in rather than creating them internally:
+- Payment, email, identity, or other external APIs
+- Time, randomness, process execution, or network failures
+- A slow service when its protocol—not its implementation—is the contract under test
 
-```typescript
-// Easy to mock
-function processPayment(order, paymentClient) {
-  return paymentClient.charge(order.total);
-}
+Assert only the boundary contract needed by the behavior: payload, headers, idempotency key, returned error mapping, or observable result. Avoid exhaustive call counts and ordering unless the external protocol requires them.
 
-// Hard to mock
-function processPayment(order) {
-  const client = new StripeClient(process.env.STRIPE_KEY);
-  return client.charge(order.total);
-}
-```
+## Keep doubles simple
 
-**2. Prefer SDK-style interfaces over generic fetchers**
+- Inject the narrow boundary instead of mocking a large internal module graph.
+- Return one explicit shape per scenario.
+- Do not rebuild production branching logic inside the mock.
+- If every important collaborator is mocked, do not call the suite integration testing.
+- Prefer a reusable fake only after repeated real need; do not create abstraction for a single test.
 
-Create specific functions for each external operation instead of one generic function with conditional logic:
-
-```typescript
-// GOOD: Each function is independently mockable
-const api = {
-  getUser: (id) => fetch(`/users/${id}`),
-  getOrders: (userId) => fetch(`/users/${userId}/orders`),
-  createOrder: (data) => fetch('/orders', { method: 'POST', body: data }),
-};
-
-// BAD: Mocking requires conditional logic inside the mock
-const api = {
-  fetch: (endpoint, options) => fetch(endpoint, options),
-};
-```
-
-The SDK approach means:
-- Each mock returns one specific shape
-- No conditional logic in test setup
-- Easier to see which endpoints a test exercises
-- Type safety per endpoint
+The question is not “can this be mocked?” It is “which setup gives the strongest evidence for this risk at acceptable cost?”
