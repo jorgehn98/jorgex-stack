@@ -33,7 +33,8 @@ Principio: **un comportamiento, un test autoritativo en el seam más fuerte y ce
 
 - Regla o cálculo puro → unitario/módulo
 - Interacción o accesibilidad → componente/browser con semántica estable
-- Persistencia, SQL, RLS o atomicidad → base de datos real de test
+- Persistencia, SQL, RLS, migraciones o atomicidad transaccional de datos → base de datos real de test
+- Concurrencia o atomicidad fuera de datos → ejecución en la frontera real implicada (filesystem, cola, proceso o estado compartido)
 - Endpoint público o función privilegiada → contrato/integración en esa frontera
 - Flujo crítico entre sistemas → end-to-end
 

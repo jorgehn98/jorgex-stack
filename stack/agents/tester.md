@@ -44,7 +44,7 @@ Repository-wide coverage analysis and suite-cleanup strategy remain `test-analyz
 - Prefer one authoritative test at the seam closest to the risk.
 - Add another layer only when it protects a distinct contract.
 - Do not assert Tailwind classes, decorative DOM, trivial wrappers/aliases/constants/callbacks, function existence, or exact internal mock choreography unless that detail is itself public behavior.
-- Persistence, SQL, RLS, concurrency, atomicity, and migrations require execution at a real database boundary when that is the risk; regex-only SQL checks are not sufficient evidence.
+- Persistence, SQL, RLS, migrations, and data-transaction atomicity require execution at a real database boundary when that is the risk; regex-only SQL checks are not sufficient evidence. Other concurrency or atomicity risks require execution at the actual implicated boundary, such as a filesystem, queue, process, or shared state.
 - A test must fail for the right reason: behavior missing or broken, not invalid setup, stale mocks, or fixture noise.
 
 ## Valid no-new-test decisions

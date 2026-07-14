@@ -40,7 +40,8 @@ Use the cheapest seam that can fail for the real regression:
 
 - Pure rule or calculation → focused unit/module test
 - Component interaction or accessibility contract → component/browser test through stable semantics
-- Persistence, SQL, RLS, atomicity, or migration → real database/integration test
+- Persistence, SQL, RLS, migration, or data-transaction atomicity → real database/integration test
+- Other concurrency or atomicity → execute at the implicated filesystem, queue, process, or shared-state boundary
 - Public endpoint or privileged function → contract/integration test at that boundary
 - Critical cross-system user journey → end-to-end test
 
@@ -64,11 +65,7 @@ Then repeat for the next distinct behavior. Do not create separate tests merely 
 
 ### 1. Make the testing decision
 
-- Identify the concrete risk and changed behavior.
-- Search narrowly for existing coverage before adding anything.
-- Select the seam closest to the failure mode.
-- Record why another layer would or would not add distinct protection.
-- If no new test has material value, state that and use the cheapest sufficient verification.
+Complete the five-part decision under **Core principle**. If no new protection is warranted, record the reason and run the cheapest sufficient verification; otherwise continue to RED.
 
 ### 2. RED, when new protection is warranted
 
@@ -85,10 +82,8 @@ Refactor only while green. Remove duplication in production and tests, and delet
 ## Checklist
 
 ```text
-[ ] The concrete risk is stated
-[ ] Existing coverage was checked
-[ ] The test observes behavior or a real boundary contract
-[ ] The chosen seam is closest to the failure mode
+[ ] When new protection is warranted, RED fails for the intended behavioral reason
+[ ] The chosen seam observes behavior or the real boundary at risk
 [ ] Another layer would protect a distinct contract, not duplicate this one
 [ ] Mocks do not encode internal call choreography
 [ ] No-test decisions have a concrete trivial/mechanical/already-covered reason

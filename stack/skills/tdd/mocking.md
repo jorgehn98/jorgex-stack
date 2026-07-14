@@ -8,7 +8,8 @@ Use real owned code when it is fast, deterministic, safe, and easy to set up. Mo
 
 Prefer real test infrastructure when the risk lives there:
 
-- RLS, SQL, migrations, transactions, atomicity → test database
+- RLS, SQL, migrations, transactions, and data-transaction atomicity → test database
+- Other concurrency or atomicity → the actual filesystem, queue, process, or shared-state boundary
 - Filesystem semantics → isolated temp directory
 - Serialization/protocol parsing → real encoder/decoder
 
