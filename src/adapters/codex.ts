@@ -91,7 +91,7 @@ export const codexAdapter: Adapter = {
 
     // El orchestrator (primary) es un modo del agente principal: profile
     // (`codex --profile orchestrator`, developer_instructions con rol
-    // developer) + skill de activación puntual dentro de una sesión.
+    // developer). planSkills instala el workflow canónico compartido.
     // Sin model ni effort: el primary usa SIEMPRE el modelo que el usuario
     // tenga por defecto (y puede cambiarlo en sesión) — solo los subagentes
     // fijan modelo por tier.
@@ -102,13 +102,7 @@ export const codexAdapter: Adapter = {
         `developer_instructions = ${tomlMultiline(agent.body)}`,
       ];
 
-      const skillDescription = `${agent.description} Invoke to switch into ${agent.name} mode and apply its flow to the current task.`;
-      const skill = `---\nname: ${agent.name}\ndescription: ${JSON.stringify(skillDescription)}\n---\n${agent.body}`;
-
-      return [
-        { file: `${agent.name}.config.toml`, content: profileLines.join("\n") + "\n", kind: "profile" as const },
-        { file: `${agent.name}/SKILL.md`, content: skill, kind: "skill" as const },
-      ];
+      return [{ file: `${agent.name}.config.toml`, content: profileLines.join("\n") + "\n", kind: "profile" as const }];
     }
 
     const lines = [

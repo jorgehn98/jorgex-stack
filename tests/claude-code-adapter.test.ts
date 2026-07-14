@@ -30,20 +30,21 @@ function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
 }
 
 describe("claudeCodeAdapter.renderAgent", () => {
-  it("el primary (orchestrator) es un MODO del main agent: output style + skill de activación", () => {
-    const out = claudeCodeAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
-    expect(out).toHaveLength(2);
+  it("el primary (orchestrator) es un output style wrapper; la skill canónica la instala planSkills", () => {
+    const out = claudeCodeAdapter.renderAgent(agent({
+      name: "orchestrator",
+      mode: "primary",
+      body: "Load and follow the `orchestrator` skill.",
+    }), MODELS);
+    expect(out).toHaveLength(1);
 
-    const style = out.find((o) => o.kind === "output-style")!;
+    const style = out[0]!;
+    expect(style.kind).toBe("output-style");
     expect(style.file).toBe("orchestrator.md");
     expect(style.content).toContain("name: Orchestrator");
     expect(style.content).toContain("keep-coding-instructions: true");
-
-    const skill = out.find((o) => o.kind === "skill")!;
-    expect(skill.file).toBe("orchestrator/SKILL.md");
-    expect(skill.content).toContain("name: orchestrator");
-    expect(skill.content).toContain("Invoke to switch into orchestrator mode");
-    expect(skill.content).not.toContain("keep-coding-instructions");
+    expect(style.content).toContain("Load and follow the `orchestrator` skill");
+    expect(style.content).not.toContain("## Phases");
   });
 
   it("subagente readonly con git-read: allowlist con Skill, Bash y tools de memoria", () => {

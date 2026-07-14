@@ -65,8 +65,25 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
     expect(out!.content).not.toContain('"git reset*": deny');
   });
 
+  it.each([
+    ["readonly", true, "deny"],
+    ["writer", false, "allow"],
+  ] as const)("%s usa permission.edit sin renderizar el bloque tools deprecado", (_label, readonly, edit) => {
+    const [out] = opencodeAdapter.renderAgent(agent({ readonly }), MODELS);
+    const content = out!.content;
+
+    expect(content).toContain(`permission:\n  edit: ${edit}`);
+    expect(content).not.toMatch(/^tools:/m);
+  });
+
   it("primary no fija permisos (usa los defaults globales)", () => {
-    const [out] = opencodeAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
+    const [out] = opencodeAdapter.renderAgent(agent({
+      name: "orchestrator",
+      mode: "primary",
+      body: "Load and follow the `orchestrator` skill.",
+    }), MODELS);
+    expect(out!.content).toContain("Load and follow the `orchestrator` skill");
+    expect(out!.content).not.toContain("## Phases");
     expect(out!.content).not.toContain("permission:");
     expect(out!.content).not.toContain("model:");
     expect(out!.content).not.toContain("variant:");

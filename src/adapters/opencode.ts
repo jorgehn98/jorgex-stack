@@ -72,9 +72,6 @@ export const opencodeAdapter: Adapter = {
         lines.push(`  bash:\n    "*": allow\n${deny}`);
       }
       if (!agent.spawn) lines.push("  task: deny");
-
-      lines.push("tools:");
-      lines.push(`  write: ${agent.readonly ? "false" : "true"}`);
     }
 
     // En OpenCode el primary ES nativo: aparece en el ciclo de Tab junto a
