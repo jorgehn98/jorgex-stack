@@ -176,6 +176,7 @@ export function makeContext(
     models,
     warnings: [],
     enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
+    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference() === true,
     ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
   };
 }
@@ -282,6 +283,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
   let exitCode = 0;
   let successfulRuns = 0;
+  const successfulContexts: { adapter: Adapter; ctx: InstallContext }[] = [];
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
@@ -311,6 +313,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       models,
       warnings: [],
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
+      playwrightCliEnabled: useManifest && loadPlaywrightCliPreference() === true,
       ownedMcpServers: ownedMcpServers(id, useManifest),
     };
 
@@ -363,6 +366,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
+      successfulContexts.push({ adapter, ctx });
       continue;
     }
 
@@ -405,6 +409,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
+      successfulContexts.push({ adapter, ctx });
     }
   }
 
@@ -431,7 +436,26 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
         exitCode = 1;
       } else {
-        p.log.success("Playwright CLI y navegador instalados.");
+        let promptReconciliationFailed = false;
+        for (const { adapter, ctx } of successfulContexts) {
+          const browserCtx: InstallContext = { ...ctx, playwrightCliEnabled: true, warnings: [] };
+          const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
+          if (browserChanges.length === 0) continue;
+
+          const browserUpdates = browserChanges.filter((change) => change.status === "update");
+          const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
+          if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+          applyChanges(browserChanges);
+
+          const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
+            .filter((change) => change.status !== "unchanged");
+          if (dirty.length > 0) {
+            p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+            exitCode = 1;
+            promptReconciliationFailed = true;
+          }
+        }
+        if (!promptReconciliationFailed) p.log.success("Playwright CLI y navegador instalados.");
       }
     }
   } else if (useManifest && opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {

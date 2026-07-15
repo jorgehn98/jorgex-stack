@@ -1,0 +1,1 @@
+Use **Chrome DevTools MCP** only for Chrome-specific console, network, Lighthouse, and performance diagnostics, not routine browser interaction. Network request and response bodies may contain sensitive data.

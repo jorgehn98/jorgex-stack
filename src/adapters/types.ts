@@ -47,6 +47,8 @@ export interface InstallContext {
   warnings: string[];
   /** MCPs opcionales habilitados explícitamente para este runtime. */
   enabledMcpServers?: ReadonlySet<string>;
+  /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
+  playwrightCliEnabled?: boolean;
   /** MCPs opcionales que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
   /**

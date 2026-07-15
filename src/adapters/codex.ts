@@ -301,6 +301,7 @@ export const codexAdapter: Adapter = {
     if (prompt !== null) {
       let content = removeMarkdownSection(prompt, "system-prompt");
       content = removeMarkdownSection(content, "engram-protocol");
+      content = removeMarkdownSection(content, "browser");
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 

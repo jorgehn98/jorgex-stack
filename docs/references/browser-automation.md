@@ -102,6 +102,22 @@ Bajo `--target-dir`, además, el CLI **nunca** lee ni escribe el estado real del
 
 El `--target-dir` sirve, en resumen, solo para validar el plan escrito contra un runtime temporal sin contaminar ni inspeccionar el estado real del usuario.
 
+### 2.7 Sección `jorgex:browser` en AGENTS.md / CLAUDE.md
+
+`install`/`sync` escriben una sección marcada `<!-- jorgex:browser -->` en el archivo de system prompt del runtime (`AGENTS.md` para OpenCode, `CLAUDE.md` para Claude Code y Codex) cuando al menos una de las dos capacidades está activa. La sección contiene el routing canónico entre ambas integraciones:
+
+- **Playwright CLI** (solo si la preferencia está habilitada tras un setup exitoso): un recordatorio breve para navegación, interacción, screenshots y QA, instando a cargar la skill `playwright-cli` y preferir snapshots/refs estables sobre selectores frágiles.
+- **Chrome DevTools MCP** (solo en los runtimes seleccionados): recordatorio de uso exclusivo para diagnóstico de consola, red, Lighthouse y rendimiento en Chrome, recordando que los cuerpos request/response pueden contener datos sensibles.
+
+Reglas del ciclo de vida de la sección:
+
+- **Inyección**: `playwright-cli` solo aparece cuando el setup global termina correctamente (paquete + navegador + persistencia de la preferencia); DevTools solo aparece en los runtimes cuya entrada en `~/.jorgex-stack/devtools-mcp.json` está habilitada.
+- **Idempotencia**: la sección se reescribe in-place (upsert) en cada `install`/`sync`; el contenido fuera de los marcadores se preserva.
+- **Disable / uninstall**: cuando ambas capacidades quedan desactivadas, la sección se retira vía `removeMarkdownSection("browser")`; el contenido del usuario fuera de los marcadores permanece intacto.
+- **`--target-dir`**: no lee preferencias reales, no carga `playwright-cli` ni DevTools MCP, y no inyecta la sección — el archivo generado en el directorio temporal queda sin guía de navegador.
+
+La marca canónica vive en `stack/system-prompt/browser-playwright.md` y `stack/system-prompt/browser-chrome-devtools.md`; los adapter generan el bloque completo vía `upsertMarkdownSection` y aplican la inversa en `planUnmerge`.
+
 ---
 
 ## 3. Chrome DevTools MCP (opt-in avanzado)
@@ -242,6 +258,7 @@ Constan aquí para que nadie intente reintroducirlos:
 - Skill vendorizada: `stack/skills/playwright-cli/SKILL.md` (frontmatter con `allowed-tools: Bash(playwright-cli:*)`; no declara `Bash(pnpm:*)`, pero esta declaración no es una frontera de seguridad: los permisos efectivos dependen del adapter/runtime y OpenCode/full-bash puede ser más amplio. Referencia de comandos: `snapshot`, `test-generation`, `tracing`, `video-recording`, `storage-state`, `session-management`, `request-mocking`, `element-attributes`, `running-code`, `playwright-tests`).
 - Pin canónico: `upstreams.json` → `skills.playwright-cli` (paquete `@playwright/cli@0.1.17`, binario `playwright-cli`).
 - Manifiesto MCP: `stack/mcp/servers.json` → `servers.chrome-devtools` (argv fijo `["dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]`).
+- Sección marcada `jorgex:browser` en AGENTS.md / CLAUDE.md: fuentes `stack/system-prompt/browser-playwright.md` y `stack/system-prompt/browser-chrome-devtools.md`; montaje en `src/components/system-prompt.ts` vía `upsertMarkdownSection("browser", …)` / `removeMarkdownSection("browser")`; ver §2.7 para el ciclo de vida.
 - Preferencias: `~/.jorgex-stack/playwright-cli.json` y `~/.jorgex-stack/devtools-mcp.json`, validadas por `browserPreferenceErrors()`. Un JSON corrupto aborta `install`/`uninstall`/`update`/`update --check`/`update` interactivo con exit 1 y aparece en `doctor` con la ruta exacta y `Corrige o borra ese archivo antes de reintentar`.
 - Puente seguro de invocación Windows: `src/lib/detect.ts` → `planDetectedBinCommand` (shims `.cmd`/`.bat` requieren `cmd.exe /d /s /c` con partes saneadas de metacaracteres; argv directo, sin `shell: true`).
 - Contratos RED/GREEN cubiertos en `tests/external-tools.test.ts`, `tests/playwright-lifecycle.test.ts`, `tests/devtools-mcp.test.ts`, `tests/cli-mode-resolution.test.ts`, `tests/playwright-update.test.ts` (realinea `update` + `install-browser`), `tests/playwright-uninstall.test.ts` (`outro` correcto en errores de `remove`), `tests/playwright-windows-execution.test.ts` (shims `.cmd` por `cmd.exe` sin shell) y `tests/browser-preferences-safety.test.ts` (estado real aislado bajo `--target-dir` y preferencias corruptas bloquean mutaciones).
