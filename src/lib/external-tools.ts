@@ -38,7 +38,7 @@ export interface CommandPlan {
 
 function parsePlaywrightCliVersion(output: string | null): string | null {
   if (output === null) return null;
-  return /^playwright-cli\s+(\d+\.\d+\.\d+)\s*$/i.exec(output.trim())?.[1] ?? null;
+  return /^(?:playwright-cli\s+)?(\d+\.\d+\.\d+)$/i.exec(output.trim())?.[1] ?? null;
 }
 
 /** Resuelve el estado desde valores inyectables para no acoplarlo a PATH ni a procesos. */

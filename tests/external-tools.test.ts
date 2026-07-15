@@ -71,6 +71,11 @@ describe("Playwright CLI external tool core", () => {
       expected: { status: "current", detectedVersion: "0.1.17", binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
     {
+      name: "current when the CLI reports the bare approved release",
+      input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "0.1.17" },
+      expected: { status: "current", detectedVersion: "0.1.17", binPath: WINDOWS_PLAYWRIGHT_BIN },
+    },
+    {
       name: "outdated for another parseable release",
       input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "playwright-cli 0.1.16\n" },
       expected: { status: "outdated", detectedVersion: "0.1.16", binPath: WINDOWS_PLAYWRIGHT_BIN },
