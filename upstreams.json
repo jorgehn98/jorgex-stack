@@ -9,10 +9,15 @@
     }
   },
   "skills": {
-    "agent-browser": {
-      "source": "github:vercel-labs/agent-browser",
-      "path": "skills/agent-browser",
-      "commit": "5185339ca3fdab9848e11b8ec676eecfdec3733f"
+    "playwright-cli": {
+      "source": "github:microsoft/playwright-cli",
+      "path": "skills/playwright-cli",
+      "package": "@playwright/cli",
+      "binary": "playwright-cli",
+      "version": "0.1.17",
+      "commit": "793cfb32572733cbcb401e6f28d05a7a914ce408",
+      "license": "Apache-2.0",
+      "modified": true
     },
     "deploy-to-vercel": {
       "source": "github:vercel-labs/agent-skills",
