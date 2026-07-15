@@ -14,6 +14,14 @@
       },
       "optionalSecrets": ["CONTEXT7_API_KEY"],
       "note": "Se instala vacío: cada usuario conecta su propia cuenta. Sin key, el instalador deja el header sin valor y context7 queda listo para configurar después."
+    },
+    "chrome-devtools": {
+      "transport": "stdio",
+      "command": "pnpm",
+      "args": ["dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+      "optional": true,
+      "defaultEnabled": false,
+      "note": "Diagnóstico avanzado opt-in: modo full (~29 tools; ~5.8–7.7k tokens de schemas). Lanza Chrome instalado con un perfil temporal aislado, redacta cabeceras de red y desactiva CrUX/estadísticas."
     }
   }
 }

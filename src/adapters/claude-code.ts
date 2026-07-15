@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
-import type { Adapter, FileAction, InstallContext } from "./types.js";
-import { loadCanonicalDefaults } from "../lib/canonical.js";
+import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
+import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
@@ -64,6 +64,20 @@ function hasEngramPlugin(configDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  if (!server.optional || server.transport !== "stdio" || value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const current = value as Record<string, unknown>;
+  const expectedArgs = server.args ?? [];
+  return Object.keys(current).length === 3
+    && current.type === "stdio"
+    && current.command === server.command
+    && Array.isArray(current.args)
+    && current.args.length === expectedArgs.length
+    && current.args.every((arg, index) => arg === expectedArgs[index]);
 }
 
 export const claudeCodeAdapter: Adapter = {
@@ -172,9 +186,26 @@ export const claudeCodeAdapter: Adapter = {
     // estado del CLI: upsert quirúrgico SOLO de mcpServers gestionados + backup.
     const file = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
 
+    const mcpOwnership: McpOwnershipChange[] = [];
     const content = upsertJson(readTextIfExists(file), (root) => {
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
+        const existing = servers[name];
+        const owned = ctx.ownedMcpServers?.has(name) === true;
+        if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
+          if (owned) {
+            if (isManagedOptionalStdioServer(server, existing)) delete servers[name];
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
+        if (server.optional && existing !== undefined) {
+          if (!owned || !isManagedOptionalStdioServer(server, existing)) {
+            if (owned) mcpOwnership.push({ server: name, owned: false });
+            ctx.warnings.push(`Claude Code: MCP opcional '${name}' ya pertenece a la configuración del usuario; se conserva.`);
+            continue;
+          }
+        }
         if (server.transport === "stdio") {
           // El plugin oficial ya provee el MCP: registrarlo duplicaría las
           // tools. Si un sync anterior (pre-plugin) lo registró, se retira.
@@ -196,6 +227,7 @@ export const claudeCodeAdapter: Adapter = {
           // lo infiere por `command`, pero la doc actual siempre lo declara y es
           // robusto frente a versiones más estrictas.
           servers[name] = { type: "stdio", command, args: server.args ?? [] };
+          if (server.optional && existing === undefined && !owned) mcpOwnership.push({ server: name, owned: true });
         } else {
           const previous = servers[name] as { headers?: Record<string, string> } | undefined;
           const headers: Record<string, string> = {};
@@ -216,7 +248,7 @@ export const claudeCodeAdapter: Adapter = {
       }
     });
 
-    return [{ kind: "write", target: file, content }];
+    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }];
   },
 
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
@@ -227,6 +259,7 @@ export const claudeCodeAdapter: Adapter = {
     if (prompt !== null) {
       let content = removeMarkdownSection(prompt, "system-prompt");
       content = removeMarkdownSection(content, "engram-protocol");
+      content = removeMarkdownSection(content, "browser");
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 
@@ -242,15 +275,25 @@ export const claudeCodeAdapter: Adapter = {
     const mainFile = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
     const main = readTextIfExists(mainFile);
     if (main !== null) {
+      const mcpOwnership: McpOwnershipChange[] = [];
       const content = upsertJson(main, (root) => {
         const servers = root["mcpServers"] as Record<string, unknown> | undefined;
         if (!servers) return;
-        for (const name of Object.keys(mcp.servers)) delete servers[name];
+        for (const [name, server] of Object.entries(mcp.servers)) {
+          if (!server.optional) {
+            delete servers[name];
+            continue;
+          }
+          if (ctx.ownedMcpServers?.has(name) === true) {
+            if (isManagedOptionalStdioServer(server, servers[name])) delete servers[name];
+            mcpOwnership.push({ server: name, owned: false });
+          }
+        }
         if (Object.keys(servers).length === 0) delete root["mcpServers"];
       });
       // ~/.claude.json es el archivo de ESTADO del CLI de Claude (onboarding,
       // proyectos): aunque quede vacío, jamás se borra — se deja {}.
-      actions.push({ kind: "write", target: mainFile, content });
+      actions.push({ kind: "write", target: mainFile, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) });
     }
 
     return actions;

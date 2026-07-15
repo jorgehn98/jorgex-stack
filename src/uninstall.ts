@@ -8,6 +8,14 @@ import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
+import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
+import {
+  browserPreferenceErrors,
+  devtoolsMcpPreferenceFile,
+  playwrightCliPreferenceFile,
+  saveDevtoolsMcpOwnership,
+  savePlaywrightCliPreference,
+} from "./lib/tool-preferences.js";
 
 export interface UninstallOptions {
   runtimes: RuntimeId[];
@@ -16,6 +24,18 @@ export interface UninstallOptions {
   yes: boolean;
   /** D7: desregistrar Engram exige el sí explícito (flag o confirmación). */
   removeEngram: boolean;
+  /** Retira solo el paquete global de Playwright; nunca sus datos/navegadores. */
+  removePlaywright: boolean;
+}
+
+export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }): {
+  actions: PlaywrightToolAction[];
+  preserveBrowserData: boolean;
+} {
+  return {
+    actions: input.removePackage ? ["remove"] : [],
+    preserveBrowserData: true,
+  };
 }
 
 /**
@@ -25,9 +45,17 @@ export interface UninstallOptions {
  */
 export async function runUninstall(opts: UninstallOptions): Promise<number> {
   p.intro(`jorgex-stack ${opts.dryRun ? "uninstall (dry-run)" : "uninstall"}`);
+  const useBrowserPreferences = opts.targetDir === undefined;
+  const preferenceErrors = useBrowserPreferences ? browserPreferenceErrors() : [];
+  if (preferenceErrors.length > 0) {
+    for (const error of preferenceErrors) p.log.error(error);
+    p.outro("Uninstall cancelado: corrige las preferencias de navegador antes de reintentar.");
+    return 1;
+  }
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
+  let exitCode = 0;
 
   // D7: Engram guarda las memorias del usuario. Por defecto se CONSERVA todo
   // (registro MCP, plugin engram.ts); desregistrarlo exige el sí explícito.
@@ -57,13 +85,15 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   // targets se conservan — desinstalar Codex no debe llevarse las skills que
   // OpenCode usa.
   const retained = new Set<string>();
-  for (const keep of Object.values(ADAPTERS)) {
-    if (opts.runtimes.includes(keep.id)) continue;
-    const detection = keep.detect();
-    if (!detection.installed) continue;
-    const keepCtx = makeContext(keep, detection.configDir);
-    if (!keepCtx) continue;
-    for (const action of buildPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
+  if (useBrowserPreferences) {
+    for (const keep of Object.values(ADAPTERS)) {
+      if (opts.runtimes.includes(keep.id)) continue;
+      const detection = keep.detect();
+      if (!detection.installed) continue;
+      const keepCtx = makeContext(keep, detection.configDir);
+      if (!keepCtx) continue;
+      for (const action of buildPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
+    }
   }
 
   for (const id of opts.runtimes) {
@@ -78,7 +108,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       p.log.warn(`${adapter.name} no detectado — omitido.`);
       continue;
     }
-    const ctx = makeContext(adapter, configDir);
+    const ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences);
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
 
@@ -106,10 +136,17 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
 
     if (opts.dryRun) continue;
 
-    const backup = createBackup(
-      [...deleteTargets, ...unmerge.map((a) => a.target).filter((t) => fs.existsSync(t))],
-      `uninstall-${id}`,
-    );
+    let backup;
+    try {
+      backup = createBackup(
+        [...deleteTargets, ...unmerge.map((a) => a.target).filter((t) => fs.existsSync(t))],
+        `uninstall-${id}`,
+      );
+    } catch (error) {
+      p.log.error(`${adapter.name}: no se pudo respaldar una configuración ilegible en ${configDir} — ${error instanceof Error ? error.message : String(error)}.`);
+      exitCode = 1;
+      continue;
+    }
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
     for (const target of deleteTargets) {
@@ -123,11 +160,46 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       } else {
         writeText(action.target, action.content);
       }
+      if (usingRealConfig) {
+        for (const change of action.mcpOwnership ?? []) {
+          saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, change.server, change.owned);
+        }
+      }
     }
     if (usingRealConfig) removeRuntimeManifest(id);
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 
-  p.outro(opts.dryRun ? "Dry-run: no se ha tocado nada." : "Hecho. Usa 'restore' si quieres volver atrás.");
-  return 0;
+  // --target-dir es una simulación/paridad de config: no debe afectar paquetes
+  // globales ni la preferencia real del usuario.
+  const playwrightPlan = resolvePlaywrightUninstallPlan({
+    removePackage: opts.targetDir === undefined && opts.removePlaywright,
+  });
+  if (opts.removePlaywright && opts.targetDir !== undefined) {
+    p.log.info("Playwright CLI: --target-dir conserva el paquete global y los datos del navegador.");
+  } else if (playwrightPlan.actions.length > 0) {
+    if (opts.dryRun) {
+      p.log.info("Playwright CLI: se retiraría solo el paquete global; los datos y navegadores se conservan.");
+    } else if (executePlaywrightToolAction("remove")) {
+      try {
+        savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
+        p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
+      } catch (error) {
+        p.log.error(`Playwright CLI: paquete global retirado, pero no se pudo guardar la preferencia (${error instanceof Error ? error.message : String(error)}). Corrige la preferencia antes de reintentar.`);
+        exitCode = 1;
+      }
+    } else {
+      p.log.error("Playwright CLI: no se pudo retirar el paquete global; los datos y la preferencia se conservan.");
+      exitCode = 1;
+    }
+  } else {
+    p.log.info("Playwright CLI: paquete global y datos del navegador conservados (usa --remove-playwright para retirar solo el paquete).");
+  }
+
+  p.outro(opts.dryRun
+    ? "Dry-run: no se ha tocado nada."
+    : exitCode === 0
+      ? "Hecho. Usa 'restore' si quieres volver atrás."
+      : "Uninstall completado con errores (revisa arriba).");
+  return exitCode;
 }

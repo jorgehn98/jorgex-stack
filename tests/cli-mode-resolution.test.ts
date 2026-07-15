@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const runInstall = vi.fn().mockResolvedValue(0);
-  const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false });
+  const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
   const prompts = {
     confirm: vi.fn().mockResolvedValue(true),
@@ -203,7 +203,7 @@ describe("CLI follow-up sync mode resolution", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    mocks.runInteractiveUpdate.mockResolvedValueOnce({ exitCode: 0, appliedUpdates: true });
+    mocks.runInteractiveUpdate.mockResolvedValueOnce({ exitCode: 0, appliedUpdates: true, syncRequired: true });
 
     try {
       const exitCode = await runCli(["update", "--agents", "opencode"], homeDir, true);
@@ -216,6 +216,31 @@ describe("CLI follow-up sync mode resolution", () => {
           /pendiente.*sync|sync.*pendiente|pending sync/i.test(message),
         ),
       ).toBe(true);
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it("update binario-only no anuncia un sync pendiente", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-binary-only-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    mocks.runInteractiveUpdate.mockResolvedValueOnce({ exitCode: 0, appliedUpdates: true, syncRequired: false });
+
+    try {
+      const exitCode = await runCli(["update", "--agents", "opencode"], homeDir, true);
+
+      expect(exitCode).toBe(0);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(mocks.runInteractiveUpdate).toHaveBeenCalledTimes(1);
+      expect(
+        collectedMessages([error, log, mocks.prompts.log.warn, mocks.prompts.log.info]).some((message) =>
+          /pendiente.*sync|sync.*pendiente|pending sync/i.test(message),
+        ),
+      ).toBe(false);
     } finally {
       error.mockRestore();
       log.mockRestore();
@@ -325,5 +350,63 @@ describe("rechazo de flags desconocidos en main()", () => {
     } finally {
       error.mockRestore();
     }
+  });
+});
+
+describe("opciones de navegador en main()", () => {
+  it("muestra las opciones de Playwright y DevTools en la ayuda", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-help-"));
+    const homeDir = path.join(tmp, "home");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["--help"], homeDir);
+
+      expect(exitCode).toBeUndefined();
+      const output = collectedMessages([log]);
+      for (const flag of ["--playwright", "--remove-playwright", "--devtools", "--no-devtools"]) {
+        expect(output.some((line) => line.includes(flag))).toBe(true);
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("rechaza seleccionar DevTools y no-devtools a la vez", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-conflict-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "opencode", "--mode", "human", "--devtools", "--no-devtools"],
+        homeDir,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(collectedMessages([error]).some((message) => /solo uno de --devtools o --no-devtools/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("entrega el consentimiento de Playwright y la selección DevTools a install", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-install-flags-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    await runCli(
+      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--playwright", "--devtools"],
+      homeDir,
+    );
+
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({
+        command: "install",
+        explicitToolSelection: true,
+      }),
+      devtoolsMcpSelection: { opencode: true },
+    }));
   });
 });

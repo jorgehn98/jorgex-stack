@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
-import type { Adapter, FileAction, InstallContext } from "./types.js";
+import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
-import { loadCanonicalDefaults } from "../lib/canonical.js";
+import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertTomlSection } from "../lib/filemerge.js";
@@ -23,6 +23,17 @@ function tomlString(value: string): string {
 function tomlMultiline(value: string): string {
   if (value.includes("'''")) return JSON.stringify(value);
   return `'''\n${value.replace(/\r\n/g, "\n").trim()}\n'''`;
+}
+
+function stdioMcpSection(server: CanonicalMcp["servers"][string]): string {
+  const args = (server.args ?? []).map(tomlString).join(", ");
+  return `command = ${tomlString(server.command!)}\nargs = [${args}]`;
+}
+
+function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], section: string | null): boolean {
+  return server.optional === true
+    && server.transport === "stdio"
+    && section?.trim() === stdioMcpSection(server);
 }
 
 /**
@@ -164,6 +175,7 @@ export const codexAdapter: Adapter = {
     const original = readTextIfExists(file);
     const contentSource = original === null || original.trim() === "" ? null : original;
     let content = contentSource;
+    const mcpOwnership: McpOwnershipChange[] = [];
 
     // Permisos por defecto: solo en config fresca o vacía. Una config
     // existente no se auto-expande jamás.
@@ -215,6 +227,22 @@ export const codexAdapter: Adapter = {
 
     for (const [name, server] of Object.entries(canonical.servers)) {
       const section = `mcp_servers.${name}`;
+      const existing = readTomlSection(content, section);
+      const owned = ctx.ownedMcpServers?.has(name) === true;
+      if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
+        if (owned) {
+          if (isManagedOptionalStdioServer(server, existing)) content = removeTomlSection(content!, section);
+          mcpOwnership.push({ server: name, owned: false });
+        }
+        continue;
+      }
+      if (server.optional && existing !== null) {
+        if (!owned || !isManagedOptionalStdioServer(server, existing)) {
+          if (owned) mcpOwnership.push({ server: name, owned: false });
+          ctx.warnings.push(`Codex: MCP opcional '${name}' ya pertenece a la configuración del usuario; se conserva.`);
+          continue;
+        }
+      }
       if (server.transport === "stdio") {
         // Con el plugin de marketplace ACTIVO, el MCP duplicaría las tools.
         // Si un sync anterior (pre-plugin) lo registró, se retira.
@@ -232,8 +260,8 @@ export const codexAdapter: Adapter = {
           continue;
         }
         const command = server.command === "{{ENGRAM_BIN}}" ? ctx.engramBin! : server.command!;
-        const args = (server.args ?? []).map(tomlString).join(", ");
-        content = upsertTomlSection(content, section, `command = ${tomlString(command)}\nargs = [${args}]`);
+        content = upsertTomlSection(content, section, `command = ${tomlString(command)}\nargs = [${(server.args ?? []).map(tomlString).join(", ")}]`);
+        if (server.optional && existing === null && !owned) mcpOwnership.push({ server: name, owned: true });
       } else {
         const previousSection = readTomlSection(content, section);
         // D5: si el usuario tiene un valor LITERAL configurado, se preserva
@@ -262,7 +290,7 @@ export const codexAdapter: Adapter = {
 
     if (content === null) return [];
     if (!content.endsWith("\n")) content += "\n";
-    return [{ kind: "write", target: file, content }];
+    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }];
   },
 
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
@@ -273,6 +301,7 @@ export const codexAdapter: Adapter = {
     if (prompt !== null) {
       let content = removeMarkdownSection(prompt, "system-prompt");
       content = removeMarkdownSection(content, "engram-protocol");
+      content = removeMarkdownSection(content, "browser");
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 
@@ -280,8 +309,21 @@ export const codexAdapter: Adapter = {
     const config = readTextIfExists(configFile);
     if (config !== null) {
       let content = config;
-      for (const name of Object.keys(mcp.servers)) content = removeTomlSection(content, `mcp_servers.${name}`);
-      actions.push({ kind: "write", target: configFile, content });
+      const mcpOwnership: McpOwnershipChange[] = [];
+      for (const [name, server] of Object.entries(mcp.servers)) {
+        const section = `mcp_servers.${name}`;
+        if (!server.optional) {
+          content = removeTomlSection(content, section);
+          continue;
+        }
+        if (ctx.ownedMcpServers?.has(name) === true) {
+          if (isManagedOptionalStdioServer(server, readTomlSection(content, section))) {
+            content = removeTomlSection(content, section);
+          }
+          mcpOwnership.push({ server: name, owned: false });
+        }
+      }
+      actions.push({ kind: "write", target: configFile, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) });
     }
 
     const hooksFile = path.join(ctx.configDir, "hooks.json");

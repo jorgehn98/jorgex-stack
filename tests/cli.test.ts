@@ -64,6 +64,19 @@ describe("CLI argument parsing", () => {
 
     expect(parsed.flags.positional).toEqual([]);
   });
+
+  it.each([
+    ["--playwright", "playwright"],
+    ["--remove-playwright", "removePlaywright"],
+    ["--devtools", "devtools"],
+    ["--no-devtools", "noDevtools"],
+  ] as const)("reconoce %s como flag de navegador", (flag, property) => {
+    const parsed = parseCliArgs(["install", flag]);
+
+    expect(parsed.action).toBe("run");
+    expect(parsed.flags[property]).toBe(true);
+    expect(parsed.flags.unknownFlags).toEqual([]);
+  });
 });
 
 describe("flags desconocidos", () => {
