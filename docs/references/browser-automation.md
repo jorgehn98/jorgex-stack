@@ -104,7 +104,7 @@ El `--target-dir` sirve, en resumen, solo para validar el plan escrito contra un
 
 ### 2.7 Sección `jorgex:browser` en AGENTS.md / CLAUDE.md
 
-`install`/`sync` escriben una sección marcada `<!-- jorgex:browser -->` en el archivo de system prompt del runtime (`AGENTS.md` para OpenCode, `CLAUDE.md` para Claude Code y Codex) cuando al menos una de las dos capacidades está activa. La sección contiene el routing canónico entre ambas integraciones:
+`install`/`sync` escriben una sección marcada `<!-- jorgex:browser -->` en el archivo de system prompt del runtime (`AGENTS.md` para OpenCode y Codex; `CLAUDE.md` para Claude Code) cuando al menos una de las dos capacidades está activa. La sección contiene el routing canónico entre ambas integraciones:
 
 - **Playwright CLI** (solo si la preferencia está habilitada tras un setup exitoso): un recordatorio breve para navegación, interacción, screenshots y QA, instando a cargar la skill `playwright-cli` y preferir snapshots/refs estables sobre selectores frágiles.
 - **Chrome DevTools MCP** (solo en los runtimes seleccionados): recordatorio de uso exclusivo para diagnóstico de consola, red, Lighthouse y rendimiento en Chrome, recordando que los cuerpos request/response pueden contener datos sensibles.
@@ -114,7 +114,10 @@ Reglas del ciclo de vida de la sección:
 - **Inyección**: `playwright-cli` solo aparece cuando el setup global termina correctamente (paquete + navegador + persistencia de la preferencia); DevTools solo aparece en los runtimes cuya entrada en `~/.jorgex-stack/devtools-mcp.json` está habilitada.
 - **Idempotencia**: la sección se reescribe in-place (upsert) en cada `install`/`sync`; el contenido fuera de los marcadores se preserva.
 - **Disable / uninstall**: cuando ambas capacidades quedan desactivadas, la sección se retira vía `removeMarkdownSection("browser")`; el contenido del usuario fuera de los marcadores permanece intacto.
-- **`--target-dir`**: no lee preferencias reales, no carga `playwright-cli` ni DevTools MCP, y no inyecta la sección — el archivo generado en el directorio temporal queda sin guía de navegador.
+- **`--target-dir`** (defecto): no lee preferencias reales, no carga `playwright-cli` ni DevTools MCP y no inyecta la sección — el archivo generado en el directorio temporal queda sin guía de navegador.
+- **`--target-dir --devtools`** (simulación explícita): fuerza `chrome-devtools` como servidor habilitado en el `InstallContext` aunque `useManifest` sea `false`, así que la entrada MCP **y** el bloque DevTools de la sección `jorgex:browser` se reflejan dentro del target temporal. Sigue sin tocar `~/.jorgex-stack/devtools-mcp.json`, sin instalar Chrome y sin leer preferencia real: la simulación queda contenida en el `target-dir`.
+- **`--dry-run --playwright`** (proyección sin escritura): durante el dry-run, `runInstall` marca `projectPlaywrightPrompt = true` cuando `--playwright` autoriza el setup; el plan no ejecuta `pnpm add --global` ni `pnpm dlx install-browser`, pero la acción prevista sobre el `systemPromptFile` del runtime (con la sección `jorgex:browser` ya conteniendo el bloque Playwright) se añade al preview del dry-run para que se vea lo que el setup autorizó, no lo que terminó escrito. Sin `--dry-run`, `--playwright` bajo `--target-dir` no inyecta la sección: la simulación del Playwright depende explícitamente del dry-run.
+- **Reconciliación post-setup parcial**: si la instalación del paquete y del navegador termina bien pero la reconciliación del `systemPromptFile` (upsert de la sección) falla — verificación de idempotencia inestable o excepción al planificar/aplicar la guía — el CLI devuelve `exit 1` y reporta que *la guía de navegador quedó en estado parcial*, recomendando `jorgex-stack sync` para repararla. El paquete queda instalado y la preferencia habilitada; solo la sección marcada está desalineada.
 
 La marca canónica vive en `stack/system-prompt/browser-playwright.md` y `stack/system-prompt/browser-chrome-devtools.md`; los adapter generan el bloque completo vía `upsertMarkdownSection` y aplican la inversa en `planUnmerge`.
 

@@ -202,6 +202,51 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
 });
 
 describe("Playwright prompt install ordering", () => {
+  it("dry-run --playwright previews the browser prompt diff without running setup or persisting state", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const promptFile = path.join(configDir, "AGENTS.md");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    const toolRun = vi.fn(async () => true);
+    const persistEnabled = vi.fn();
+    writeOpenCodeModelMap(homeDir);
+
+    await withTempHome(homeDir, async () => {
+      const baseline = promptContent(opencodeAdapter, context(opencodeAdapter, configDir, false, false));
+      fs.mkdirSync(path.dirname(promptFile), { recursive: true });
+      fs.writeFileSync(promptFile, baseline);
+
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: true,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+          },
+          playwrightToolDeps: { run: toolRun, persistEnabled },
+        })).resolves.toBe(0);
+
+        expect(prompts.log.message).toHaveBeenCalledWith(`  ~ ${promptFile}`);
+        expect(toolRun).not.toHaveBeenCalled();
+        expect(persistEnabled).not.toHaveBeenCalled();
+        expect(fs.readFileSync(promptFile, "utf8")).toBe(baseline);
+        expect(fs.existsSync(preferenceFile)).toBe(false);
+      } finally {
+        restoreDetect();
+      }
+    });
+  });
+
   it.each([
     { name: "successful", toolResult: true, expectedCode: 0, announcesPlaywright: true },
     { name: "failed", toolResult: false, expectedCode: 1, announcesPlaywright: false },
@@ -248,7 +293,114 @@ describe("Playwright prompt install ordering", () => {
     });
   });
 
-  it("--target-dir never reads enabled real browser preferences into its prompt", async () => {
+  it("reports an actionable recovery when setup succeeds but browser prompt reconciliation fails", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    writeOpenCodeModelMap(homeDir);
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const adapter = install.ADAPTERS.opencode!;
+      const originalInjectEngramProtocol = adapter.injectEngramProtocol;
+      let browserReconciliationCalls = 0;
+      try {
+        const code = await install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+          },
+          playwrightToolDeps: {
+            run: async (action) => {
+              if (action === "install-browser") {
+                adapter.injectEngramProtocol = () => browserReconciliationCalls++ === 0;
+              }
+              return true;
+            },
+            persistEnabled(enabled) {
+              fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+              fs.writeFileSync(preferenceFile, JSON.stringify({ version: 1, enabled }) + "\n");
+            },
+          },
+        });
+
+        const output = [
+          ...prompts.log.error.mock.calls.flat(),
+          ...prompts.log.info.mock.calls.flat(),
+          ...prompts.log.warn.mock.calls.flat(),
+          ...prompts.log.message.mock.calls.flat(),
+        ].join("\n");
+        expect(code).toBe(1);
+        expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toMatchObject({ enabled: true });
+        expect(output).toMatch(/Playwright CLI/i);
+        expect(output).toMatch(/instalad[oa]|preparad[oa]/i);
+        expect(output).toMatch(/preferencia.*activ[ao]|activ[ao].*preferencia/i);
+        expect(output).toMatch(/jorgex-stack (?:sync|install --playwright)/i);
+      } finally {
+        adapter.injectEngramProtocol = originalInjectEngramProtocol;
+        restoreDetect();
+      }
+    });
+  });
+
+  it("renders and removes the combined browser section from persisted Playwright and DevTools preferences", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const stateDir = path.join(homeDir, ".jorgex-stack");
+    const playwrightPreference = path.join(stateDir, "playwright-cli.json");
+    const devtoolsPreference = path.join(stateDir, "devtools-mcp.json");
+    writeOpenCodeModelMap(homeDir);
+    fs.writeFileSync(playwrightPreference, JSON.stringify({ version: 1, enabled: true }) + "\n");
+    fs.writeFileSync(
+      devtoolsPreference,
+      JSON.stringify({ version: 1, enabled: { opencode: true }, owned: {} }) + "\n",
+    );
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+        })).resolves.toBe(0);
+
+        expectCapabilities(fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8"), true, true);
+
+        fs.writeFileSync(playwrightPreference, JSON.stringify({ version: 1, enabled: false }) + "\n");
+        const devtools = JSON.parse(fs.readFileSync(devtoolsPreference, "utf8"));
+        devtools.enabled.opencode = false;
+        fs.writeFileSync(devtoolsPreference, JSON.stringify(devtools) + "\n");
+
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+        })).resolves.toBe(0);
+
+        expect(browserSection(fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8"))).toBeNull();
+        expect(JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER]).toBeUndefined();
+      } finally {
+        restoreDetect();
+      }
+    });
+  });
+
+  it("--target-dir ignores real browser preferences but accepts an explicit DevTools simulation without persisting it", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
     const targetDir = path.join(root, "target");
@@ -259,6 +411,8 @@ describe("Playwright prompt install ordering", () => {
       path.join(stateDir, "devtools-mcp.json"),
       JSON.stringify({ version: 1, enabled: { opencode: true }, owned: {} }) + "\n",
     );
+    const realPlaywrightPreference = fs.readFileSync(path.join(stateDir, "playwright-cli.json"), "utf8");
+    const realDevtoolsPreference = fs.readFileSync(path.join(stateDir, "devtools-mcp.json"), "utf8");
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
@@ -276,6 +430,20 @@ describe("Playwright prompt install ordering", () => {
         expect(browserSection(content)).toBeNull();
         expect(content).not.toContain("Playwright CLI");
         expect(content).not.toContain("Chrome DevTools");
+
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          targetDir,
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          devtoolsMcpSelection: { opencode: true },
+        })).resolves.toBe(0);
+
+        expectCapabilities(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8"), false, true);
+        expect(JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER]).toBeDefined();
+        expect(fs.readFileSync(path.join(stateDir, "playwright-cli.json"), "utf8")).toBe(realPlaywrightPreference);
+        expect(fs.readFileSync(path.join(stateDir, "devtools-mcp.json"), "utf8")).toBe(realDevtoolsPreference);
       } finally {
         restoreDetect();
       }

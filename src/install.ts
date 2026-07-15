@@ -263,6 +263,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     p.outro("Install cancelado: corrige las preferencias de navegador antes de reintentar.");
     return 1;
   }
+  const toolPlan = opts.playwrightToolConsent === undefined
+    ? null
+    : resolvePlaywrightToolPlan({
+      ...opts.playwrightToolConsent,
+      targetDir: opts.targetDir !== undefined || opts.playwrightToolConsent.targetDir,
+    });
+  const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const modelMap = loadModelMap();
   if (useManifest) ensureModelMapFile();
 
@@ -313,7 +320,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       models,
       warnings: [],
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
-      playwrightCliEnabled: useManifest && loadPlaywrightCliPreference() === true,
+      playwrightCliEnabled: projectPlaywrightPrompt || (useManifest && loadPlaywrightCliPreference() === true),
       ownedMcpServers: ownedMcpServers(id, useManifest),
     };
 
@@ -344,8 +351,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     for (const w of ctx.warnings) p.log.warn(w);
 
     if (opts.dryRun) {
-      for (const c of changes.slice(0, 40)) p.log.message(`  ${c.status === "create" ? "+" : "~"} ${c.action.target}`);
-      if (changes.length > 40) p.log.message(`  … y ${changes.length - 40} más`);
+      const preview = changes.slice(0, 40);
+      const projectedPrompt = projectPlaywrightPrompt
+        ? changes.find((change) => change.action.target === adapter.paths(configDir).systemPromptFile)
+        : undefined;
+      if (projectedPrompt && !preview.includes(projectedPrompt)) preview.push(projectedPrompt);
+      for (const c of preview) p.log.message(`  ${c.status === "create" ? "+" : "~"} ${c.action.target}`);
+      if (changes.length > preview.length) p.log.message(`  … y ${changes.length - preview.length} más`);
       for (const o of orphans) p.log.message(`  - ${o}`);
       continue;
     }
@@ -413,12 +425,6 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     }
   }
 
-  const toolPlan = opts.playwrightToolConsent === undefined
-    ? null
-    : resolvePlaywrightToolPlan({
-      ...opts.playwrightToolConsent,
-      targetDir: opts.targetDir !== undefined || opts.playwrightToolConsent.targetDir,
-    });
   if (toolPlan?.actions.length) {
     if (opts.dryRun) {
       p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
@@ -439,23 +445,33 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         let promptReconciliationFailed = false;
         for (const { adapter, ctx } of successfulContexts) {
           const browserCtx: InstallContext = { ...ctx, playwrightCliEnabled: true, warnings: [] };
-          const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
-          if (browserChanges.length === 0) continue;
+          try {
+            const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
+            if (browserChanges.length === 0) continue;
 
-          const browserUpdates = browserChanges.filter((change) => change.status === "update");
-          const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
-          if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
-          applyChanges(browserChanges);
+            const browserUpdates = browserChanges.filter((change) => change.status === "update");
+            const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
+            if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+            applyChanges(browserChanges);
 
-          const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
-            .filter((change) => change.status !== "unchanged");
-          if (dirty.length > 0) {
-            p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+            const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
+              .filter((change) => change.status !== "unchanged");
+            if (dirty.length > 0) {
+              p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+              promptReconciliationFailed = true;
+            }
+          } catch (error) {
+            p.log.error(`${adapter.name}: no se pudo actualizar la guía de navegador (${error instanceof Error ? error.message : String(error)}).`);
             exitCode = 1;
             promptReconciliationFailed = true;
           }
         }
-        if (!promptReconciliationFailed) p.log.success("Playwright CLI y navegador instalados.");
+        if (promptReconciliationFailed) {
+          exitCode = 1;
+          p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
+        } else {
+          p.log.success("Playwright CLI y navegador instalados.");
+        }
       }
     }
   } else if (useManifest && opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {
