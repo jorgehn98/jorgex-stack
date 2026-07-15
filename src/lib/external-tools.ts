@@ -61,7 +61,7 @@ export function detectPlaywrightCli(): PlaywrightCliState {
 
 /** Resuelve pnpm para que los callers ejecuten el plan sin shell. */
 export function resolvePnpmBin(): string | null {
-  return lookPath("pnpm") ?? lookPath("pnpm.cmd") ?? lookPath("pnpm.ps1");
+  return lookPath("pnpm") ?? lookPath("pnpm.cmd");
 }
 
 /**

@@ -1,6 +1,7 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { RuntimeId } from "../adapters/types.js";
-import { readTextIfExists, writeText } from "./fsx.js";
+import { writeText } from "./fsx.js";
 import { dataDir } from "./paths.js";
 
 const PLAYWRIGHT_CLI_PREFERENCE_VERSION = 1;
@@ -15,6 +16,17 @@ interface DevtoolsMcpPreference {
   version: typeof DEVTOOLS_MCP_PREFERENCE_VERSION;
   enabled: Partial<Record<RuntimeId, boolean>>;
   owned: Partial<Record<RuntimeId, Record<string, true>>>;
+}
+
+function readPreference(file: string): { raw: string | null; errorCode: string | null } {
+  try {
+    return { raw: fs.readFileSync(file, "utf8"), errorCode: null };
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    return code === "ENOENT" ? { raw: null, errorCode: null } : { raw: null, errorCode: code };
+  }
 }
 
 export function playwrightCliPreferenceFile(stateDir = dataDir()): string {
@@ -33,14 +45,17 @@ function parsePlaywrightCliPreference(raw: string): boolean | undefined {
 
 /** Devuelve un remedio concreto sin normalizar ni reescribir la preferencia. */
 export function playwrightCliPreferenceError(file = playwrightCliPreferenceFile()): string | null {
-  const raw = readTextIfExists(file);
+  const { raw, errorCode } = readPreference(file);
+  if (errorCode !== null) {
+    return `Playwright CLI: no se pudo leer la preferencia en ${file} (${errorCode}). Corrige o borra ese archivo antes de reintentar.`;
+  }
   if (raw === null || parsePlaywrightCliPreference(raw) !== undefined) return null;
   return `Playwright CLI: preferencia inválida en ${file}. Corrige o borra ese archivo antes de reintentar.`;
 }
 
 /** Missing, unreadable, or invalid state is deliberately not an authorization. */
 export function loadPlaywrightCliPreference(file = playwrightCliPreferenceFile()): boolean | undefined {
-  const raw = readTextIfExists(file);
+  const { raw } = readPreference(file);
   if (raw === null) return undefined;
   return parsePlaywrightCliPreference(raw);
 }
@@ -98,7 +113,7 @@ function parseDevtoolsMcpState(raw: string): DevtoolsMcpPreference | null {
 
 function loadDevtoolsMcpState(file: string): DevtoolsMcpPreference {
   const empty: DevtoolsMcpPreference = { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled: {}, owned: {} };
-  const raw = readTextIfExists(file);
+  const { raw } = readPreference(file);
   if (raw === null) return empty;
 
   return parseDevtoolsMcpState(raw) ?? empty;
@@ -106,7 +121,10 @@ function loadDevtoolsMcpState(file: string): DevtoolsMcpPreference {
 
 /** Devuelve un remedio concreto sin convertir un estado inválido en defaults. */
 export function devtoolsMcpPreferenceError(file = devtoolsMcpPreferenceFile()): string | null {
-  const raw = readTextIfExists(file);
+  const { raw, errorCode } = readPreference(file);
+  if (errorCode !== null) {
+    return `Chrome DevTools MCP: no se pudo leer la preferencia en ${file} (${errorCode}). Corrige o borra ese archivo antes de reintentar.`;
+  }
   if (raw === null || parseDevtoolsMcpState(raw) !== null) return null;
   return `Chrome DevTools MCP: preferencia inválida en ${file}. Corrige o borra ese archivo antes de reintentar.`;
 }

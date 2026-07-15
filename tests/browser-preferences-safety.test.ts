@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
     binPath: "C:/pnpm/playwright-cli.cmd",
     detectedVersion: "0.1.17",
   })),
+  executePlaywrightToolAction: vi.fn(() => true),
   prompts: {
     intro: vi.fn(),
     outro: vi.fn(),
@@ -34,7 +35,11 @@ vi.mock("@clack/prompts", () => mocks.prompts);
 
 vi.mock("../src/lib/external-tools.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/external-tools.js")>();
-  return { ...actual, detectPlaywrightCli: mocks.detectPlaywrightCli };
+  return {
+    ...actual,
+    detectPlaywrightCli: mocks.detectPlaywrightCli,
+    executePlaywrightToolAction: mocks.executePlaywrightToolAction,
+  };
 });
 
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
@@ -97,7 +102,9 @@ function setOnlyOpenCodeDetected(install: typeof import("../src/install.js"), co
 
 afterEach(() => {
   mocks.detectPlaywrightCli.mockClear();
+  mocks.executePlaywrightToolAction.mockClear();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("browser preference safety", () => {
@@ -224,6 +231,151 @@ describe("browser preference safety", () => {
             .join("\n");
           expect(messages).toMatch(/(devtools-mcp|playwright-cli)\.json/i);
           expect(messages).toMatch(/corrupt|inv[aá]lid|repar|corrige|borra/i);
+        } finally {
+          restoreDetect();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks install, update, and uninstall when existing browser preferences are directories", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-state-eisdir-"));
+    const homeDir = path.join(root, "home");
+    const devtoolsPreference = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+    const playwrightPreference = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+
+    try {
+      fs.mkdirSync(devtoolsPreference, { recursive: true });
+      fs.mkdirSync(playwrightPreference, { recursive: true });
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ version: "1.1.0" }))));
+
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        const { runUpdateCheck } = await import("../src/update.js");
+        const { runUninstall } = await import("../src/uninstall.js");
+
+        const installCode = await install.runInstall({
+          runtimes: [],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+        });
+        const updateCode = await runUpdateCheck("1.1.0");
+        const uninstallCode = await runUninstall({
+          runtimes: [],
+          dryRun: false,
+          yes: true,
+          removeEngram: false,
+          removePlaywright: false,
+        });
+
+        expect([installCode, updateCode, uninstallCode]).toEqual([1, 1, 1]);
+        expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringContaining(devtoolsPreference));
+        expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringContaining(playwrightPreference));
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not finish install with a success outro when Playwright setup fails", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-install-failure-"));
+    const homeDir = path.join(root, "home");
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const { runInstall } = await import("../src/install.js");
+
+        await expect(runInstall({
+          runtimes: [],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+          },
+          playwrightToolDeps: {
+            run: async () => false,
+            persistEnabled: () => undefined,
+          },
+        })).resolves.toBe(1);
+
+        expect(mocks.prompts.outro).toHaveBeenCalledWith(expect.stringMatching(/errores/i));
+        expect(mocks.prompts.outro).not.toHaveBeenCalledWith(expect.stringMatching(/^Hecho\./i));
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit Playwright flags under target-dir from executing global actions", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-browser-flags-"));
+    const homeDir = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const stateDir = path.join(homeDir, ".jorgex-stack");
+    const devtoolsPreference = path.join(stateDir, "devtools-mcp.json");
+    const playwrightPreference = path.join(stateDir, "playwright-cli.json");
+    const devtoolsState = JSON.stringify({ version: 1, enabled: { opencode: true }, owned: { opencode: { [DEVTOOLS_SERVER]: true } } }) + "\n";
+    const playwrightState = JSON.stringify({ version: 1, enabled: true }) + "\n";
+    const installActions: string[] = [];
+
+    try {
+      writeModelMap(homeDir);
+      fs.writeFileSync(devtoolsPreference, devtoolsState);
+      fs.writeFileSync(playwrightPreference, playwrightState);
+
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        const { runUninstall } = await import("../src/uninstall.js");
+        const restoreDetect = setOnlyOpenCodeDetected(install, targetDir);
+        try {
+          writeDevtoolsConfig(targetDir);
+          const installCode = await install.runInstall({
+            runtimes: ["opencode"],
+            targetDir,
+            dryRun: false,
+            yes: true,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+            playwrightToolConsent: {
+              command: "install",
+              interactive: false,
+              yes: true,
+              targetDir: true,
+              explicitToolSelection: true,
+              confirmed: false,
+            },
+            playwrightToolDeps: {
+              run: async (action) => {
+                installActions.push(action);
+                return true;
+              },
+              persistEnabled: () => undefined,
+            },
+          });
+          const uninstallCode = await runUninstall({
+            runtimes: ["opencode"],
+            targetDir,
+            dryRun: false,
+            yes: true,
+            removeEngram: false,
+            removePlaywright: true,
+          });
+
+          expect({ installCode, uninstallCode, installActions }).toEqual({
+            installCode: 0,
+            uninstallCode: 0,
+            installActions: [],
+          });
+          expect(mocks.executePlaywrightToolAction).not.toHaveBeenCalled();
+          expect(fs.readFileSync(devtoolsPreference, "utf8")).toBe(devtoolsState);
+          expect(fs.readFileSync(playwrightPreference, "utf8")).toBe(playwrightState);
         } finally {
           restoreDetect();
         }

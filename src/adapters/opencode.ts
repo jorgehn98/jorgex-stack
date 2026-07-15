@@ -23,7 +23,8 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], v
   }
   const current = value as Record<string, unknown>;
   const expectedCommand = [server.command, ...(server.args ?? [])];
-  return current.type === "local"
+  return Object.keys(current).length === 2
+    && current.type === "local"
     && Array.isArray(current.command)
     && current.command.length === expectedCommand.length
     && current.command.every((arg, index) => arg === expectedCommand[index]);

@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe("Playwright pnpm execution on Windows", () => {
-  it("runs an injected real pnpm.cmd shim through cmd.exe without shell:true", async () => {
+  it.skipIf(process.platform !== "win32")("runs an injected real pnpm.cmd shim through cmd.exe without shell:true", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-pnpm-cmd-"));
     tempDirs.push(dir);
     const shim = path.join(dir, "pnpm.cmd");

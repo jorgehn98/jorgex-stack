@@ -745,6 +745,12 @@ describe("contrato upstreams.json ↔ skills vendorizadas", () => {
     expect(content).not.toMatch(/\b(?:npm|npx)\b/i);
     expect(content).toContain("pnpm dlx @playwright/cli@0.1.17");
     expect(content).toContain("pnpm add --global @playwright/cli@0.1.17");
+
+    const frontmatter = /^---\n[\s\S]*?\n---\n/.exec(fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8"))?.[0];
+    expect(frontmatter).toBe(
+      "---\nname: playwright-cli\ndescription: Automate browser interactions, test web pages and work with Playwright tests.\nallowed-tools: Bash(playwright-cli:*)\n---\n",
+    );
+    expect(frontmatter).not.toContain("Bash(pnpm:*)");
   });
 });
 

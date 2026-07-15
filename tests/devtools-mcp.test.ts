@@ -164,6 +164,31 @@ function expectDevToolsAbsent(runtime: RuntimeId, content: string): void {
   expect(parsed[mcpKey]?.[DEVTOOLS_SERVER]).toBeUndefined();
 }
 
+function addUserFieldToDevToolsServer(runtime: RuntimeId, content: string): string {
+  if (runtime === "codex") {
+    return content.replace(
+      'args = ["dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]',
+      '$&\nuser_marker = "preserve"',
+    );
+  }
+
+  const root = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
+  const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
+  root[mcpKey]![DEVTOOLS_SERVER]! = {
+    ...root[mcpKey]![DEVTOOLS_SERVER]!,
+    user_marker: { source: "manual" },
+  };
+  return JSON.stringify(root, null, 2) + "\n";
+}
+
+function devToolsServerSnapshot(runtime: RuntimeId, content: string): unknown {
+  if (runtime === "codex") return readTomlSection(content, `mcp_servers.${DEVTOOLS_SERVER}`);
+
+  const root = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
+  const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
+  return root[mcpKey]![DEVTOOLS_SERVER];
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
@@ -277,6 +302,30 @@ describe("optional Chrome DevTools MCP", () => {
     const uninstalledContent = (uninstalled as { content: string }).content;
     expectDevToolsAbsent(runtime, uninstalledContent);
     expectUserConfigPreserved(runtime, uninstalledContent);
+  });
+
+  it.each(RUNTIMES)("%s releases ownership but preserves a formerly owned server extended by the user", (runtime) => {
+    const root = tempDir();
+    const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
+    const file = configFile(runtime, configDir);
+    const adapter = adapterFor(runtime);
+    const enabled = context(runtime, configDir, true);
+    const ownedDisabled = context(runtime, configDir, false, true);
+    const hooks = { hooks: {} } as CanonicalHooks;
+
+    writeUserConfig(runtime, file);
+    const extendedContent = addUserFieldToDevToolsServer(runtime, plannedContent(adapter, enabled));
+    const originalServer = devToolsServerSnapshot(runtime, extendedContent);
+    fs.writeFileSync(file, extendedContent);
+
+    const [syncAction] = adapter.planMainConfig(loadCanonicalMcp(stackRoot()), ownedDisabled);
+    expect(syncAction).toMatchObject({ kind: "write", mcpOwnership: [{ server: DEVTOOLS_SERVER, owned: false }] });
+    expect(devToolsServerSnapshot(runtime, (syncAction as { content: string }).content)).toEqual(originalServer);
+
+    const uninstallAction = adapter.planUnmerge(loadCanonicalMcp(stackRoot()), hooks, ownedDisabled)
+      .find((action) => action.target === file);
+    expect(uninstallAction).toMatchObject({ kind: "write", mcpOwnership: [{ server: DEVTOOLS_SERVER, owned: false }] });
+    expect(devToolsServerSnapshot(runtime, (uninstallAction as { content: string }).content)).toEqual(originalServer);
   });
 
   it("claims ownership only after its DevTools config entry is written", async () => {

@@ -61,6 +61,7 @@ export interface InstallOptions {
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
+export type PlaywrightInstallAction = Exclude<PlaywrightToolAction, "remove">;
 
 /** Puente de compatibilidad: la ejecución vive en external-tools; aquí solo se resuelve la dependencia inyectable. */
 export function executePlaywrightToolAction(action: PlaywrightCliAction): boolean {
@@ -68,7 +69,7 @@ export function executePlaywrightToolAction(action: PlaywrightCliAction): boolea
 }
 
 export interface PlaywrightToolPlan {
-  actions: PlaywrightToolAction[];
+  actions: PlaywrightInstallAction[];
   persistEnabledOnSuccess?: boolean;
 }
 
@@ -82,7 +83,7 @@ export interface PlaywrightToolConsent {
 }
 
 export interface PlaywrightToolPlanDeps {
-  run: (action: Exclude<PlaywrightToolAction, "remove">) => Promise<boolean>;
+  run: (action: PlaywrightInstallAction) => Promise<boolean>;
   persistEnabled: (enabled: boolean) => void;
 }
 
@@ -109,7 +110,7 @@ export async function runPlaywrightToolPlan(
 ): Promise<{ ok: boolean }> {
   try {
     for (const action of plan.actions) {
-      if (action === "remove" || !(await deps.run(action))) return { ok: false };
+      if (!(await deps.run(action))) return { ok: false };
     }
     if (plan.persistEnabledOnSuccess) deps.persistEnabled(true);
     return { ok: true };
@@ -431,6 +432,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     saveInstallModePreference(installModePreferenceFile(), modePreference);
   }
 
-  p.outro(opts.dryRun ? "Dry-run: no se ha escrito nada." : "Hecho.");
+  p.outro(opts.dryRun
+    ? exitCode === 0
+      ? "Dry-run: no se ha escrito nada."
+      : "Dry-run completado con errores (revisa arriba)."
+    : exitCode === 0
+      ? "Hecho."
+      : "Install completado con errores (revisa arriba).");
   return exitCode;
 }

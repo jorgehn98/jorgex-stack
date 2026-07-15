@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PLAYWRIGHT_CLI,
   planPlaywrightCliCommand,
+  resolvePnpmBin,
   resolvePlaywrightCliState,
 } from "../src/lib/external-tools.js";
 import {
@@ -17,6 +18,14 @@ const PINNED_PACKAGE = "@playwright/cli@0.1.17";
 const WINDOWS_PLAYWRIGHT_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\playwright-cli.cmd";
 const WINDOWS_PNPM_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.cmd";
 const tempDirs: string[] = [];
+const mocks = vi.hoisted(() => ({
+  lookPath: vi.fn<(command: string) => string | null>(),
+}));
+
+vi.mock("../src/lib/detect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/detect.js")>();
+  return { ...actual, lookPath: mocks.lookPath };
+});
 
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-external-tools-"));
@@ -26,6 +35,7 @@ function tempDir(): string {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  mocks.lookPath.mockReset();
 });
 
 describe("Playwright CLI external tool core", () => {
@@ -77,6 +87,17 @@ describe("Playwright CLI external tool core", () => {
       command: WINDOWS_PNPM_BIN,
       args,
     });
+  });
+
+  it("does not resolve an unsupported pnpm.ps1 shim", () => {
+    mocks.lookPath.mockImplementation((command) => command === "pnpm.ps1"
+      ? "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.ps1"
+      : null);
+
+    expect(resolvePnpmBin()).toBeNull();
+    expect(mocks.lookPath).toHaveBeenCalledWith("pnpm");
+    expect(mocks.lookPath).toHaveBeenCalledWith("pnpm.cmd");
+    expect(mocks.lookPath).not.toHaveBeenCalledWith("pnpm.ps1");
   });
 
   it.each([
