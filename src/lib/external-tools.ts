@@ -26,6 +26,11 @@ export interface PlaywrightCliDetectionInput {
 
 export type PlaywrightCliAction = "install" | "update" | "remove" | "install-browser";
 
+export type PlaywrightBrowserCacheState =
+  | { status: "ready"; path: string }
+  | { status: "missing"; path: string; errorCode?: string }
+  | { status: "unreadable"; path: string; errorCode: string };
+
 export interface CommandPlan {
   command: string;
   args: string[];
@@ -61,7 +66,11 @@ export function detectPlaywrightCli(): PlaywrightCliState {
 
 /** Resuelve pnpm para que los callers ejecuten el plan sin shell. */
 export function resolvePnpmBin(): string | null {
-  return lookPath("pnpm") ?? lookPath("pnpm.cmd");
+  const pnpm = lookPath("pnpm");
+  if (pnpm !== null && !pnpm.toLowerCase().endsWith(".ps1")) return pnpm;
+
+  const pnpmCmd = lookPath("pnpm.cmd");
+  return pnpmCmd !== null && !pnpmCmd.toLowerCase().endsWith(".ps1") ? pnpmCmd : null;
 }
 
 /**
@@ -73,9 +82,8 @@ export function isPlaywrightBrowserReady(
   env: NodeJS.ProcessEnv = process.env,
   platform = process.platform,
   homeDir = os.homedir(),
-): boolean {
+): PlaywrightBrowserCacheState {
   const configuredPath = env.PLAYWRIGHT_BROWSERS_PATH;
-  if (configuredPath === "0") return false;
   const cacheDir = configuredPath ?? (
     platform === "win32"
       ? path.join(env.LOCALAPPDATA ?? path.join(homeDir, "AppData", "Local"), "ms-playwright")
@@ -83,13 +91,20 @@ export function isPlaywrightBrowserReady(
         ? path.join(homeDir, "Library", "Caches", "ms-playwright")
         : path.join(env.XDG_CACHE_HOME ?? path.join(homeDir, ".cache"), "ms-playwright")
   );
+  if (configuredPath === "0") return { status: "missing", path: cacheDir, errorCode: "DISABLED" };
 
   try {
-    return fs.readdirSync(cacheDir, { withFileTypes: true }).some(
+    const ready = fs.readdirSync(cacheDir, { withFileTypes: true }).some(
       (entry) => entry.isDirectory() && /^chromium(?:_headless_shell)?-/.test(entry.name),
     );
-  } catch {
-    return false;
+    return ready ? { status: "ready", path: cacheDir } : { status: "missing", path: cacheDir };
+  } catch (error) {
+    const errorCode = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    return errorCode === "ENOENT"
+      ? { status: "missing", path: cacheDir, errorCode }
+      : { status: "unreadable", path: cacheDir, errorCode };
   }
 }
 

@@ -87,6 +87,10 @@ export interface PlaywrightToolPlanDeps {
   persistEnabled: (enabled: boolean) => void;
 }
 
+export type PlaywrightToolPlanResult =
+  | { ok: true }
+  | { ok: false; failedAction: PlaywrightInstallAction | "persist" };
+
 /**
  * Un --yes no autoriza software global nuevo por sí mismo. En modo interactivo
  * la confirmación explícita de la recomendación es el consentimiento; sin TTY
@@ -107,16 +111,22 @@ export function resolvePlaywrightToolPlan(consent: PlaywrightToolConsent): Playw
 export async function runPlaywrightToolPlan(
   plan: PlaywrightToolPlan,
   deps: PlaywrightToolPlanDeps,
-): Promise<{ ok: boolean }> {
-  try {
-    for (const action of plan.actions) {
-      if (!(await deps.run(action))) return { ok: false };
+): Promise<PlaywrightToolPlanResult> {
+  for (const action of plan.actions) {
+    try {
+      if (!(await deps.run(action))) return { ok: false, failedAction: action };
+    } catch {
+      return { ok: false, failedAction: action };
     }
-    if (plan.persistEnabledOnSuccess) deps.persistEnabled(true);
-    return { ok: true };
-  } catch {
-    return { ok: false };
   }
+  if (plan.persistEnabledOnSuccess) {
+    try {
+      deps.persistEnabled(true);
+    } catch {
+      return { ok: false, failedAction: "persist" };
+    }
+  }
+  return { ok: true };
 }
 
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
@@ -413,7 +423,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         persistEnabled: (enabled) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
       });
       if (!result.ok) {
-        p.log.error("Playwright CLI: no se pudo instalar el paquete o el navegador; la preferencia no se ha marcado como habilitada.");
+        const reason = result.failedAction === "install"
+          ? "no se pudo instalar el paquete global"
+          : result.failedAction === "install-browser"
+            ? "no se pudo descargar el navegador"
+            : "se instalaron los componentes, pero no se pudo guardar la preferencia";
+        p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
         exitCode = 1;
       } else {
         p.log.success("Playwright CLI y navegador instalados.");
@@ -423,8 +438,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const cli = detectPlaywrightCli();
     if (cli.status !== "current") {
       p.log.warn("Playwright CLI sigue habilitado, pero el paquete no está listo; sync no instala herramientas. Ejecuta 'jorgex-stack install --playwright'.");
-    } else if (!isPlaywrightBrowserReady()) {
-      p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
+    } else {
+      const browserCache = isPlaywrightBrowserReady();
+      if (browserCache.status === "unreadable") {
+        p.log.warn(`Playwright CLI sigue habilitado, pero no se puede leer la caché de navegadores en ${browserCache.path} (${browserCache.errorCode}). Revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
+      } else if (browserCache.status === "missing") {
+        p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
+      }
     }
   }
 

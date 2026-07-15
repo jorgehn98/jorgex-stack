@@ -82,4 +82,28 @@ describe("Playwright update", () => {
       else Object.defineProperty(process.stdout, "isTTY", originalTty);
     }
   });
+
+  it("reports a browser-only failure with the install --playwright remedy", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ version: "1.1.0" }))));
+    mocks.executePlaywrightToolAction.mockImplementation((action) => action !== "install-browser");
+    const originalTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true, writable: true });
+    try {
+      const { runInteractiveUpdate } = await import("../src/update.js");
+
+      await expect(runInteractiveUpdate("1.1.0", false)).resolves.toMatchObject({
+        exitCode: 1,
+        appliedUpdates: false,
+        syncRequired: false,
+      });
+      expect(mocks.executePlaywrightToolAction.mock.calls.map(([action]) => action)).toEqual([
+        "update",
+        "install-browser",
+      ]);
+      expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/install --playwright/i));
+    } finally {
+      if (originalTty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+      else Object.defineProperty(process.stdout, "isTTY", originalTty);
+    }
+  });
 });

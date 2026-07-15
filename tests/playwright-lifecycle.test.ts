@@ -12,6 +12,8 @@ interface PlaywrightToolPlanDeps {
   persistEnabled: (enabled: boolean) => void;
 }
 
+type PlaywrightToolFailure = Exclude<PlaywrightToolAction, "remove"> | "persist";
+
 interface PlaywrightToolConsent {
   command: "install" | "sync";
   interactive: boolean;
@@ -25,6 +27,7 @@ interface PlaywrightDoctorState {
   enabled: boolean | undefined;
   cli: { status: "absent" | "broken" | "current" | "outdated" };
   browserReady: boolean;
+  browserCache?: { status: "ready" | "missing" | "unreadable"; path: string; errorCode?: string };
 }
 
 async function resolveToolPlan(input: PlaywrightToolConsent): Promise<PlaywrightToolPlan> {
@@ -39,21 +42,31 @@ async function resolveToolPlan(input: PlaywrightToolConsent): Promise<Playwright
 async function runToolPlan(
   plan: PlaywrightToolPlan,
   deps: PlaywrightToolPlanDeps,
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; failedAction?: PlaywrightToolFailure }> {
   const mod = await import("../src/install.js") as {
     runPlaywrightToolPlan?: (
       plan: PlaywrightToolPlan,
       deps: PlaywrightToolPlanDeps,
-    ) => Promise<{ ok: boolean }>;
+    ) => Promise<{ ok: boolean; failedAction?: PlaywrightToolFailure }>;
   };
 
   expect(mod.runPlaywrightToolPlan).toBeTypeOf("function");
   return mod.runPlaywrightToolPlan!(plan, deps);
 }
 
-async function doctorState(input: PlaywrightDoctorState): Promise<{ status: string; missing?: string }> {
+async function doctorState(input: PlaywrightDoctorState): Promise<{
+  status: string;
+  missing?: string;
+  path?: string;
+  errorCode?: string;
+}> {
   const mod = await import("../src/doctor.js") as {
-    resolvePlaywrightDoctorState?: (input: PlaywrightDoctorState) => { status: string; missing?: string };
+    resolvePlaywrightDoctorState?: (input: PlaywrightDoctorState) => {
+      status: string;
+      missing?: string;
+      path?: string;
+      errorCode?: string;
+    };
   };
 
   expect(mod.resolvePlaywrightDoctorState).toBeTypeOf("function");
@@ -144,10 +157,35 @@ describe("Playwright lifecycle contracts", () => {
         return action !== "install-browser";
       },
       persistEnabled: (enabled) => persistedOnFailure.push(enabled),
-    })).resolves.toEqual({ ok: false });
+    })).resolves.toEqual({ ok: false, failedAction: "install-browser" });
 
     expect(failedActions).toEqual(["install", "install-browser"]);
     expect(persistedOnFailure).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "the package action",
+      failedAction: "install",
+      run: async (action: Exclude<PlaywrightToolAction, "remove">) => action !== "install",
+      persistEnabled: () => undefined,
+    },
+    {
+      name: "the browser action",
+      failedAction: "install-browser",
+      run: async (action: Exclude<PlaywrightToolAction, "remove">) => action !== "install-browser",
+      persistEnabled: () => undefined,
+    },
+    {
+      name: "preference persistence",
+      failedAction: "persist",
+      run: async () => true,
+      persistEnabled: () => { throw new Error("preference write failed"); },
+    },
+  ] as const)("reports failedAction when $name fails", async ({ failedAction, run, persistEnabled }) => {
+    const plan: PlaywrightToolPlan = { actions: ["install", "install-browser"], persistEnabledOnSuccess: true };
+
+    await expect(runToolPlan(plan, { run, persistEnabled })).resolves.toEqual({ ok: false, failedAction });
   });
 
   it("reports the disabled, healthy, missing, broken, and browser-not-ready doctor states", async () => {
@@ -157,6 +195,23 @@ describe("Playwright lifecycle contracts", () => {
       { input: { enabled: true, cli: { status: "absent" }, browserReady: true }, expected: { status: "missing", missing: "package" } },
       { input: { enabled: true, cli: { status: "broken" }, browserReady: true }, expected: { status: "broken" } },
       { input: { enabled: true, cli: { status: "current" }, browserReady: false }, expected: { status: "missing", missing: "browser" } },
+      {
+        input: {
+          enabled: true,
+          cli: { status: "current" },
+          browserReady: true,
+          browserCache: {
+            status: "unreadable",
+            path: "C:/Users/test/AppData/Local/ms-playwright",
+            errorCode: "EACCES",
+          },
+        },
+        expected: {
+          status: "unreadable",
+          path: "C:/Users/test/AppData/Local/ms-playwright",
+          errorCode: "EACCES",
+        },
+      },
     ] as const;
 
     await expect(Promise.all(cases.map(({ input }) => doctorState(input)))).resolves.toEqual(

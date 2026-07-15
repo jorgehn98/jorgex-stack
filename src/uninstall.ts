@@ -136,10 +136,17 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
 
     if (opts.dryRun) continue;
 
-    const backup = createBackup(
-      [...deleteTargets, ...unmerge.map((a) => a.target).filter((t) => fs.existsSync(t))],
-      `uninstall-${id}`,
-    );
+    let backup;
+    try {
+      backup = createBackup(
+        [...deleteTargets, ...unmerge.map((a) => a.target).filter((t) => fs.existsSync(t))],
+        `uninstall-${id}`,
+      );
+    } catch (error) {
+      p.log.error(`${adapter.name}: no se pudo respaldar una configuración ilegible en ${configDir} — ${error instanceof Error ? error.message : String(error)}.`);
+      exitCode = 1;
+      continue;
+    }
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
     for (const target of deleteTargets) {
@@ -153,9 +160,11 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       } else {
         writeText(action.target, action.content);
       }
-    }
-    for (const [name, server] of Object.entries(mcp.servers)) {
-      if (usingRealConfig && server.optional) saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, name, false);
+      if (usingRealConfig) {
+        for (const change of action.mcpOwnership ?? []) {
+          saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, change.server, change.owned);
+        }
+      }
     }
     if (usingRealConfig) removeRuntimeManifest(id);
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
@@ -172,8 +181,13 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     if (opts.dryRun) {
       p.log.info("Playwright CLI: se retiraría solo el paquete global; los datos y navegadores se conservan.");
     } else if (executePlaywrightToolAction("remove")) {
-      savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
-      p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
+      try {
+        savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
+        p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
+      } catch (error) {
+        p.log.error(`Playwright CLI: paquete global retirado, pero no se pudo guardar la preferencia (${error instanceof Error ? error.message : String(error)}). Corrige la preferencia antes de reintentar.`);
+        exitCode = 1;
+      }
     } else {
       p.log.error("Playwright CLI: no se pudo retirar el paquete global; los datos y la preferencia se conservan.");
       exitCode = 1;

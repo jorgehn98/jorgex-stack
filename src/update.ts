@@ -974,13 +974,18 @@ export async function runInteractiveUpdate(
     });
     if (p.isCancel(confirmPlaywright) || !confirmPlaywright) {
       p.log.info("Playwright CLI: actualización omitida.");
-    } else if (executePlaywrightToolAction("update") && executePlaywrightToolAction("install-browser")) {
-      p.log.success("Playwright CLI actualizado al pin aprobado.");
-      appliedUpdates = true;
-      updated.push("playwright-cli");
     } else {
-      p.log.error("Playwright CLI: no se pudo actualizar el paquete global o el navegador.");
-      exitCode = 1;
+      const packageUpdated = executePlaywrightToolAction("update");
+      const browserInstalled = packageUpdated && executePlaywrightToolAction("install-browser");
+      if (packageUpdated && browserInstalled) {
+        p.log.success("Playwright CLI actualizado al pin aprobado.");
+        appliedUpdates = true;
+        updated.push("playwright-cli");
+      } else {
+        const failedStep = packageUpdated ? "descargar el navegador" : "actualizar el paquete global";
+        p.log.error(`Playwright CLI: no se pudo ${failedStep}. Ejecuta 'jorgex-stack install --playwright' para reintentar el paquete y el navegador.`);
+        exitCode = 1;
+      }
     }
   }
 

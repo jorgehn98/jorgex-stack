@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PLAYWRIGHT_CLI,
+  isPlaywrightBrowserReady,
   planPlaywrightCliCommand,
   resolvePnpmBin,
   resolvePlaywrightCliState,
@@ -36,6 +37,7 @@ function tempDir(): string {
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   mocks.lookPath.mockReset();
+  vi.restoreAllMocks();
 });
 
 describe("Playwright CLI external tool core", () => {
@@ -90,14 +92,40 @@ describe("Playwright CLI external tool core", () => {
   });
 
   it("does not resolve an unsupported pnpm.ps1 shim", () => {
-    mocks.lookPath.mockImplementation((command) => command === "pnpm.ps1"
+    mocks.lookPath.mockImplementation((command) => command === "pnpm"
       ? "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.ps1"
       : null);
 
     expect(resolvePnpmBin()).toBeNull();
     expect(mocks.lookPath).toHaveBeenCalledWith("pnpm");
     expect(mocks.lookPath).toHaveBeenCalledWith("pnpm.cmd");
-    expect(mocks.lookPath).not.toHaveBeenCalledWith("pnpm.ps1");
+  });
+
+  it.each([
+    ["ENOENT", "missing"],
+    ["ENOTDIR", "unreadable"],
+  ] as const)("classifies a browser cache %s error with its path and code", (errorCode, status) => {
+    const cachePath = path.join(tempDir(), "ms-playwright");
+    if (errorCode === "ENOTDIR") fs.writeFileSync(cachePath, "not a directory");
+
+    expect(isPlaywrightBrowserReady(
+      { PLAYWRIGHT_BROWSERS_PATH: cachePath },
+      "win32",
+      "C:\\Users\\test",
+    )).toEqual({ status, path: cachePath, errorCode });
+  });
+
+  it("classifies an unreadable browser cache with its path and EACCES code", () => {
+    const cachePath = "C:\\Users\\test\\AppData\\Local\\ms-playwright";
+    vi.spyOn(fs, "readdirSync").mockImplementation((() => {
+      throw Object.assign(new Error("EACCES reading browser cache"), { code: "EACCES" });
+    }) as typeof fs.readdirSync);
+
+    expect(isPlaywrightBrowserReady(
+      { PLAYWRIGHT_BROWSERS_PATH: cachePath },
+      "win32",
+      "C:\\Users\\test",
+    )).toEqual({ status: "unreadable", path: cachePath, errorCode: "EACCES" });
   });
 
   it.each([

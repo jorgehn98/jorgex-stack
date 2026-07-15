@@ -16,6 +16,15 @@ const mocks = vi.hoisted(() => ({
     binPath: "C:/pnpm/playwright-cli.cmd",
     detectedVersion: "0.1.17",
   })),
+  isPlaywrightBrowserReady: vi.fn<() => {
+    status: "missing" | "unreadable";
+    path: string;
+    errorCode: string;
+  }>(() => ({
+    status: "missing" as const,
+    path: "C:/Users/test/AppData/Local/ms-playwright",
+    errorCode: "ENOENT",
+  })),
   executePlaywrightToolAction: vi.fn(() => true),
   prompts: {
     intro: vi.fn(),
@@ -38,6 +47,7 @@ vi.mock("../src/lib/external-tools.js", async (importOriginal) => {
   return {
     ...actual,
     detectPlaywrightCli: mocks.detectPlaywrightCli,
+    isPlaywrightBrowserReady: mocks.isPlaywrightBrowserReady,
     executePlaywrightToolAction: mocks.executePlaywrightToolAction,
   };
 });
@@ -102,6 +112,7 @@ function setOnlyOpenCodeDetected(install: typeof import("../src/install.js"), co
 
 afterEach(() => {
   mocks.detectPlaywrightCli.mockClear();
+  mocks.isPlaywrightBrowserReady.mockClear();
   mocks.executePlaywrightToolAction.mockClear();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -309,6 +320,133 @@ describe("browser preference safety", () => {
 
         expect(mocks.prompts.outro).toHaveBeenCalledWith(expect.stringMatching(/errores/i));
         expect(mocks.prompts.outro).not.toHaveBeenCalledWith(expect.stringMatching(/^Hecho\./i));
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unreadable browser cache with its path and code during sync", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-sync-cache-"));
+    const homeDir = path.join(root, "home");
+    const stateDir = path.join(homeDir, ".jorgex-stack");
+    const cachePath = path.join(homeDir, "AppData", "Local", "ms-playwright");
+
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(path.join(stateDir, "playwright-cli.json"), JSON.stringify({ version: 1, enabled: true }) + "\n");
+      mocks.isPlaywrightBrowserReady.mockReturnValueOnce({
+        status: "unreadable",
+        path: cachePath,
+        errorCode: "EACCES",
+      });
+
+      await withTempHome(homeDir, async () => {
+        const { runInstall } = await import("../src/install.js");
+        await expect(runInstall({
+          runtimes: [],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "sync",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: false,
+            confirmed: false,
+          },
+        })).resolves.toBe(0);
+
+        expect(mocks.isPlaywrightBrowserReady).toHaveBeenCalledOnce();
+        expect(mocks.prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining(cachePath));
+        expect(mocks.prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "an applied ownership-release action", configPresent: true, remainsOwned: false },
+    { name: "no ownership-release action", configPresent: false, remainsOwned: true },
+  ])("releases DevTools ownership only after $name", async ({ configPresent, remainsOwned }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-uninstall-ownership-"));
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const preference = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+
+    try {
+      writeModelMap(homeDir);
+      fs.writeFileSync(preference, JSON.stringify({
+        version: 1,
+        enabled: { opencode: false },
+        owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+      }) + "\n");
+      if (configPresent) writeDevtoolsConfig(configDir);
+
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        const { runUninstall } = await import("../src/uninstall.js");
+        const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+        try {
+          await expect(runUninstall({
+            runtimes: ["opencode"],
+            dryRun: false,
+            yes: true,
+            removeEngram: false,
+            removePlaywright: false,
+          })).resolves.toBe(0);
+
+          const state = JSON.parse(fs.readFileSync(preference, "utf8")) as {
+            owned?: { opencode?: Record<string, true> };
+          };
+          expect(state.owned?.opencode?.[DEVTOOLS_SERVER] === true).toBe(remainsOwned);
+        } finally {
+          restoreDetect();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps DevTools ownership when its runtime config is unreadable", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-uninstall-unreadable-"));
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const configFile = path.join(configDir, "opencode.json");
+    const preference = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+
+    try {
+      writeModelMap(homeDir);
+      fs.writeFileSync(preference, JSON.stringify({
+        version: 1,
+        enabled: { opencode: false },
+        owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+      }) + "\n");
+      fs.mkdirSync(configFile, { recursive: true });
+
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        const { runUninstall } = await import("../src/uninstall.js");
+        const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+        try {
+          await expect(runUninstall({
+            runtimes: ["opencode"],
+            dryRun: false,
+            yes: true,
+            removeEngram: false,
+            removePlaywright: false,
+          })).resolves.toBe(1);
+
+          const state = JSON.parse(fs.readFileSync(preference, "utf8")) as {
+            owned?: { opencode?: Record<string, true> };
+          };
+          expect(state.owned?.opencode?.[DEVTOOLS_SERVER]).toBe(true);
+        } finally {
+          restoreDetect();
+        }
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
