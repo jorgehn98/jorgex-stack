@@ -9,7 +9,12 @@ import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
-import { playwrightCliPreferenceFile, savePlaywrightCliPreference } from "./lib/tool-preferences.js";
+import {
+  devtoolsMcpPreferenceFile,
+  playwrightCliPreferenceFile,
+  saveDevtoolsMcpOwnership,
+  savePlaywrightCliPreference,
+} from "./lib/tool-preferences.js";
 
 export interface UninstallOptions {
   runtimes: RuntimeId[];
@@ -138,6 +143,9 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       } else {
         writeText(action.target, action.content);
       }
+    }
+    for (const [name, server] of Object.entries(mcp.servers)) {
+      if (server.optional) saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, name, false);
     }
     if (usingRealConfig) removeRuntimeManifest(id);
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);

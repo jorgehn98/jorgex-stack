@@ -22,8 +22,13 @@ export type InstallModePreference =
 export type Tier = "strong" | "standard" | "cheap";
 
 /** Acción de instalación planificada. El pipeline la compara con el disco antes de aplicar. */
+export interface McpOwnershipChange {
+  server: string;
+  owned: boolean;
+}
+
 export type FileAction =
-  | { kind: "write"; target: string; content: string }
+  | { kind: "write"; target: string; content: string; mcpOwnership?: McpOwnershipChange[] }
   | { kind: "copy"; target: string; source: string };
 
 export interface InstallContext {
@@ -40,6 +45,10 @@ export interface InstallContext {
   models: RuntimeModelMap;
   /** Avisos no fatales que el pipeline muestra al final. */
   warnings: string[];
+  /** MCPs opcionales habilitados explícitamente para este runtime. */
+  enabledMcpServers?: ReadonlySet<string>;
+  /** MCPs opcionales que una escritura previa del stack creó realmente. */
+  ownedMcpServers?: ReadonlySet<string>;
   /**
    * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,
    * plugin engram.ts, entrada en configs). Es el default — desregistrar

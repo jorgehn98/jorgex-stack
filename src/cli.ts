@@ -16,6 +16,7 @@ import {
   loadInstallModePreference,
   parseInstallModePreferenceFlags,
 } from "./lib/install-mode.js";
+import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference } from "./lib/tool-preferences.js";
 
 const VERSION = readPackageVersion();
 
@@ -36,6 +37,8 @@ export interface Flags {
   removeEngram: boolean;
   playwright: boolean;
   removePlaywright: boolean;
+  devtools: boolean;
+  noDevtools: boolean;
   positional: string[];
   unknownFlags: string[];
 }
@@ -80,6 +83,8 @@ export function parseFlags(args: string[]): Flags {
     removeEngram: false,
     playwright: false,
     removePlaywright: false,
+    devtools: false,
+    noDevtools: false,
     positional: [],
     unknownFlags: [],
   };
@@ -121,6 +126,8 @@ export function parseFlags(args: string[]): Flags {
     else if (arg === "--remove-engram") flags.removeEngram = true;
     else if (arg === "--playwright") flags.playwright = true;
     else if (arg === "--remove-playwright") flags.removePlaywright = true;
+    else if (arg === "--devtools") flags.devtools = true;
+    else if (arg === "--no-devtools") flags.noDevtools = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
   }
@@ -223,6 +230,36 @@ async function resolvePlaywrightToolConsent(
     explicitToolSelection: flags.playwright,
     confirmed,
   };
+}
+
+async function resolveDevtoolsMcpSelection(
+  command: "install" | "sync",
+  flags: Flags,
+  runtimes: RuntimeId[],
+): Promise<Partial<Record<RuntimeId, boolean>> | null> {
+  if (flags.devtools && flags.noDevtools) {
+    console.error("Usa solo uno de --devtools o --no-devtools.");
+    process.exitCode = 1;
+    return null;
+  }
+
+  if (flags.devtools || flags.noDevtools) {
+    return Object.fromEntries(runtimes.map((runtime) => [runtime, flags.devtools]));
+  }
+
+  if (command !== "install" || flags.yes || flags.dryRun || flags.targetDir !== undefined || !process.stdout.isTTY) {
+    return {};
+  }
+
+  const file = devtoolsMcpPreferenceFile();
+  const selected = await p.multiselect({
+    message: "Chrome DevTools MCP avanzado (full: ~29 tools y ~5.8–7.7k tokens de schemas). ¿En qué runtimes activarlo?",
+    options: runtimes.map((runtime) => ({ value: runtime, label: ADAPTERS[runtime]?.name ?? runtime })),
+    initialValues: runtimes.filter((runtime) => loadDevtoolsMcpPreference(file, runtime)),
+  });
+  if (p.isCancel(selected)) return null;
+  const enabled = new Set(selected as RuntimeId[]);
+  return Object.fromEntries(runtimes.map((runtime) => [runtime, enabled.has(runtime)]));
 }
 
 export function parseCliArgs(argv: string[]): ParsedCli {
@@ -341,20 +378,25 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, runtimes);
+      if (devtoolsMcpSelection === null) return;
       const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
       if (playwrightToolConsent === null) return;
-      if (!(await ensureOpenCodeModelsForInstall(command, flags, runtimes))) {
+      const hasOpenCodeModels = await ensureOpenCodeModelsForInstall(command, flags, runtimes);
+      if (!hasOpenCodeModels) {
         process.exitCode = 1;
         return;
       }
-      process.exitCode = await runInstall({
+      const installExitCode = await runInstall({
         runtimes,
         targetDir: flags.targetDir,
         dryRun: flags.dryRun,
         yes: flags.yes,
         mode,
         playwrightToolConsent,
+        devtoolsMcpSelection,
       });
+      process.exitCode = installExitCode;
       return;
     }
     case "uninstall": {
@@ -491,7 +533,7 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err: unknown) => {
+  await main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
   });

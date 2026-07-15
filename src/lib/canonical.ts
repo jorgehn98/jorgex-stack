@@ -74,10 +74,24 @@ export interface CanonicalMcpServer {
   args?: string[];
   url?: string;
   headers?: Record<string, string>;
+  optional?: boolean;
+  defaultEnabled?: boolean;
+  note?: string;
 }
 
 export interface CanonicalMcp {
   servers: Record<string, CanonicalMcpServer & Record<string, unknown>>;
+}
+
+export const DEVTOOLS_MCP_SERVER = "chrome-devtools";
+
+/** Los MCP opcionales no entran en un plan salvo selección explícita por runtime. */
+export function isCanonicalMcpServerEnabled(
+  name: string,
+  server: CanonicalMcpServer,
+  enabledServers: ReadonlySet<string> | undefined,
+): boolean {
+  return !server.optional || server.defaultEnabled === true || enabledServers?.has(name) === true;
 }
 
 export function loadCanonicalMcp(stackDir: string): CanonicalMcp {

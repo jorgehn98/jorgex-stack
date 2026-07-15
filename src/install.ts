@@ -12,7 +12,7 @@ import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText 
 import { ensureModelMapFile, loadModelMap } from "./lib/model-map.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { planAgents } from "./components/agents.js";
@@ -29,8 +29,13 @@ import {
   type PlaywrightCliAction,
 } from "./lib/external-tools.js";
 import {
+  devtoolsMcpPreferenceFile,
+  loadDevtoolsMcpOwnership,
+  loadDevtoolsMcpPreference,
   loadPlaywrightCliPreference,
   playwrightCliPreferenceFile,
+  saveDevtoolsMcpPreference,
+  saveDevtoolsMcpOwnership,
   savePlaywrightCliPreference,
 } from "./lib/tool-preferences.js";
 
@@ -51,6 +56,8 @@ export interface InstallOptions {
   playwrightToolConsent?: PlaywrightToolConsent;
   /** Seams para verificar el flujo sin ejecutar instalaciones globales. */
   playwrightToolDeps?: PlaywrightToolPlanDeps;
+  /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
+  devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
@@ -122,6 +129,27 @@ export function executePlaywrightToolAction(action: PlaywrightToolAction): boole
 
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 
+function enabledMcpServers(runtime: RuntimeId, explicitDevtoolsEnabled?: boolean): ReadonlySet<string> {
+  const devtoolsEnabled = explicitDevtoolsEnabled ?? loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), runtime);
+  return devtoolsEnabled ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
+}
+
+function ownedMcpServers(runtime: RuntimeId): ReadonlySet<string> {
+  const file = devtoolsMcpPreferenceFile();
+  return loadDevtoolsMcpOwnership(file, runtime, DEVTOOLS_MCP_SERVER) ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
+}
+
+/** El estado de ownership solo avanza tras observar la entrada escrita o ausente. */
+function persistMcpOwnershipChanges(runtime: RuntimeId, plan: FileAction[]): void {
+  const latest = new Map<string, boolean>();
+  for (const action of plan) {
+    if (action.kind !== "write") continue;
+    for (const change of action.mcpOwnership ?? []) latest.set(change.server, change.owned);
+  }
+  const file = devtoolsMcpPreferenceFile();
+  for (const [server, owned] of latest) saveDevtoolsMcpOwnership(file, runtime, server, owned);
+}
+
 /** Contexto de instalación para un runtime, o null si no hay model-map. */
 export function makeContext(adapter: Adapter, configDir: string, mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE): InstallContext | null {
   const models = loadModelMap()[adapter.id];
@@ -134,6 +162,8 @@ export function makeContext(adapter: Adapter, configDir: string, mode: InstallMo
     engramBin: detectEngram(),
     models,
     warnings: [],
+    enabledMcpServers: enabledMcpServers(adapter.id),
+    ownedMcpServers: ownedMcpServers(adapter.id),
   };
 }
 
@@ -161,10 +191,12 @@ export function diffPlan(plan: FileAction[]): PlannedChange[] {
   });
 }
 
-function applyChanges(changes: PlannedChange[]): void {
+function applyChanges(changes: PlannedChange[], onMcpOwnershipWritten?: (action: FileAction) => void): void {
   for (const { action } of changes) {
-    if (action.kind === "write") writeText(action.target, action.content);
-    else copyFile(action.source, action.target);
+    if (action.kind === "write") {
+      writeText(action.target, action.content);
+      if (action.mcpOwnership !== undefined) onMcpOwnershipWritten?.(action);
+    } else copyFile(action.source, action.target);
   }
 }
 
@@ -259,6 +291,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       engramBin,
       models,
       warnings: [],
+      enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id]),
+      ownedMcpServers: ownedMcpServers(id),
+    };
+
+    const persistDevtoolsSelection = (): void => {
+      const selection = opts.devtoolsMcpSelection?.[id];
+      if (useManifest && selection !== undefined) {
+        saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), id, selection);
+      }
     };
 
     let plan = buildPlan(adapter, ctx);
@@ -299,6 +340,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
     if (changes.length === 0 && orphans.length === 0) {
       writeManifest();
+      persistMcpOwnershipChanges(id, plan);
+      persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       continue;
@@ -323,7 +366,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
-    applyChanges(changes);
+    applyChanges(changes, (action) => persistMcpOwnershipChanges(id, [action]));
     const pruneRoot = useManifest ? HOME : path.dirname(configDir);
     for (const orphan of orphans) {
       fs.rmSync(orphan, { force: true });
@@ -339,6 +382,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       exitCode = 1;
     } else {
       writeManifest();
+      persistMcpOwnershipChanges(id, plan);
+      persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
     }

@@ -1,8 +1,8 @@
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import type { Adapter, FileAction, InstallContext } from "./types.js";
-import { loadCanonicalDefaults } from "../lib/canonical.js";
+import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
+import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
@@ -15,6 +15,18 @@ import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  if (!server.optional || server.transport !== "stdio" || value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const current = value as Record<string, unknown>;
+  const expectedCommand = [server.command, ...(server.args ?? [])];
+  return current.type === "local"
+    && Array.isArray(current.command)
+    && current.command.length === expectedCommand.length
+    && current.command.every((arg, index) => arg === expectedCommand[index]);
 }
 
 export const opencodeAdapter: Adapter = {
@@ -180,6 +192,7 @@ export const opencodeAdapter: Adapter = {
     const contentSource = original === null || original.trim() === "" ? null : original;
     const isFreshConfig = contentSource === null;
 
+    const mcpOwnership: McpOwnershipChange[] = [];
     const content = upsertJson(contentSource, (root) => {
       root["$schema"] ??= "https://opencode.ai/config.json";
 
@@ -195,6 +208,22 @@ export const opencodeAdapter: Adapter = {
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
+        const existing = mcp[name];
+        const owned = ctx.ownedMcpServers?.has(name) === true;
+        if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
+          if (owned) {
+            if (isManagedOptionalStdioServer(server, existing)) delete mcp[name];
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
+        if (server.optional && existing !== undefined) {
+          if (!owned || !isManagedOptionalStdioServer(server, existing)) {
+            if (owned) mcpOwnership.push({ server: name, owned: false });
+            ctx.warnings.push(`OpenCode: MCP opcional '${name}' ya pertenece a la configuración del usuario; se conserva.`);
+            continue;
+          }
+        }
         if (server.transport === "stdio") {
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
@@ -204,6 +233,7 @@ export const opencodeAdapter: Adapter = {
           }
           const command = server.command === "{{ENGRAM_BIN}}" ? ctx.engramBin! : server.command!;
           mcp[name] = { type: "local", command: [command, ...(server.args ?? [])] };
+          if (server.optional && existing === undefined && !owned) mcpOwnership.push({ server: name, owned: true });
         } else {
           const previous = mcp[name] as { headers?: Record<string, string> } | undefined;
           const headers: Record<string, string> = {};
@@ -245,7 +275,7 @@ export const opencodeAdapter: Adapter = {
       }
     });
 
-    return [{ kind: "write", target: file, content }];
+    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }];
   },
 
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
@@ -262,10 +292,20 @@ export const opencodeAdapter: Adapter = {
     const configFile = path.join(ctx.configDir, "opencode.json");
     const config = readTextIfExists(configFile);
     if (config !== null) {
+      const mcpOwnership: McpOwnershipChange[] = [];
       const content = upsertJson(config, (root) => {
         const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
         if (mcpBlock) {
-          for (const name of Object.keys(mcp.servers)) delete mcpBlock[name];
+          for (const [name, server] of Object.entries(mcp.servers)) {
+            if (!server.optional) {
+              delete mcpBlock[name];
+              continue;
+            }
+            if (ctx.ownedMcpServers?.has(name) === true) {
+              if (isManagedOptionalStdioServer(server, mcpBlock[name])) delete mcpBlock[name];
+              mcpOwnership.push({ server: name, owned: false });
+            }
+          }
           if (Object.keys(mcpBlock).length === 0) delete root["mcp"];
         }
         const plugin = root["plugin"] as string[] | undefined;
@@ -279,7 +319,7 @@ export const opencodeAdapter: Adapter = {
           else root["plugin"] = kept;
         }
       });
-      actions.push({ kind: "write", target: configFile, content });
+      actions.push({ kind: "write", target: configFile, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) });
     }
 
     const hooksFile = path.join(ctx.configDir, "hooks.json");
