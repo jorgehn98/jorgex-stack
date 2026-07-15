@@ -21,12 +21,12 @@ export type InstallModePreference =
 /** Tier canónico de modelo por agente; el model-map lo resuelve por runtime (PRD §6.1). */
 export type Tier = "strong" | "standard" | "cheap";
 
-/** Acción de instalación planificada. El pipeline la compara con el disco antes de aplicar. */
 export interface McpOwnershipChange {
   server: string;
   owned: boolean;
 }
 
+/** Acción de instalación planificada. El pipeline la compara con el disco antes de aplicar. */
 export type FileAction =
   | { kind: "write"; target: string; content: string; mcpOwnership?: McpOwnershipChange[] }
   | { kind: "copy"; target: string; source: string };
