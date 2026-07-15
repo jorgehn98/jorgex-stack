@@ -23,6 +23,9 @@ function rateLimitHint(prefix: string): string {
 }
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
+import { detectPlaywrightCli } from "./lib/external-tools.js";
+import { loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
+import { executePlaywrightToolAction } from "./install.js";
 
 export interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
@@ -606,8 +609,15 @@ export function buildEligibleSkillUpdates(skills: SkillQueryResult[]): EligibleS
 /** Resultado del flujo interactivo de update. */
 export interface InteractiveUpdateResult {
   exitCode: number;
-  /** true si se aplicó al menos un update de stack o skill con éxito (requiere sync). */
+  /** true si se aplicó alguna actualización con éxito. */
   appliedUpdates: boolean;
+  /** true solo si la actualización cambió los archivos que los runtimes consumen. */
+  syncRequired: boolean;
+}
+
+/** Los binarios globales no cambian los artefactos instalados en los runtimes. */
+export function resolveUpdateSyncRequired(updated: string[]): boolean {
+  return updated.some((item) => item === "stack" || item === "skill" || item.startsWith("skill:"));
 }
 
 /**
@@ -618,13 +628,14 @@ export interface InteractiveUpdateResult {
 export async function runInteractiveUpdate(localVersion: string, yes: boolean, dryRun = false): Promise<InteractiveUpdateResult> {
   // Con --dry-run, --yes o sin TTY: comportarse como el check original
   if (dryRun || yes || !process.stdout.isTTY) {
-    return { exitCode: await runUpdateCheck(localVersion), appliedUpdates: false };
+    return { exitCode: await runUpdateCheck(localVersion), appliedUpdates: false, syncRequired: false };
   }
 
   p.intro("jorgex-stack update");
   const upstreams = loadUpstreams();
   let exitCode = 0;
   let appliedUpdates = false;
+  const updated: string[] = [];
 
   // Las skills de terceros solo se revisan/actualizan desde el clon del repo
   // (mantenedor): ahí los cambios persisten y se commitean/publican. En el
@@ -703,6 +714,24 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     }
   }
 
+  // Playwright CLI: solo se consulta/ofrece si el usuario lo habilitó antes.
+  // No se infiere consentimiento de que el binario aparezca casualmente en PATH.
+  let playwrightNeedsUpdate = false;
+  if (loadPlaywrightCliPreference() === true) {
+    const playwright = detectPlaywrightCli();
+    if (playwright.status === "current") {
+      p.log.success("Playwright CLI: al día.");
+    } else {
+      playwrightNeedsUpdate = true;
+      const current = playwright.detectedVersion ?? playwright.status;
+      updateItems.push({
+        value: "playwright-cli",
+        label: `Playwright CLI: ${current} → pin aprobado`,
+        hint: "pnpm add --global @playwright/cli@0.1.17",
+      });
+    }
+  }
+
   // Skills: primero loguear las no-elegibles (pasada de I/O separada), luego calcular elegibles con la función pura.
   const typedSkillHeads = skillHeads as SkillQueryResult[];
 
@@ -754,7 +783,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
   // Nada que actualizar
   if (updateItems.length === 0) {
     p.outro("Todo al día. No hay actualizaciones disponibles.");
-    return { exitCode: 0, appliedUpdates: false };
+    return { exitCode: 0, appliedUpdates: false, syncRequired: false };
   }
 
   // -------------------------------------------------------------------------
@@ -769,12 +798,12 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
 
   if (p.isCancel(selected)) {
     p.outro("Update cancelado.");
-    return { exitCode: 0, appliedUpdates: false };
+    return { exitCode: 0, appliedUpdates: false, syncRequired: false };
   }
 
   if ((selected as string[]).length === 0) {
     p.outro("Nada seleccionado.");
-    return { exitCode: 0, appliedUpdates: false };
+    return { exitCode: 0, appliedUpdates: false, syncRequired: false };
   }
 
   const sel = selected as string[];
@@ -802,6 +831,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
         }
         p.log.success("Stack actualizado correctamente.");
         appliedUpdates = true;
+        updated.push("stack");
       } catch (err) {
         p.log.error(`Stack: error al actualizar — ${err instanceof Error ? err.message : err}`);
         exitCode = 1;
@@ -868,6 +898,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
       replaceSkill(skillInfo.name, tmpDir, skillInfo.head, {});
       p.log.success(`skill ${skillInfo.name}: actualizada y re-pineada a ${skillInfo.head.slice(0, 7)}.`);
       appliedUpdates = true;
+      updated.push("skill");
     } catch (err) {
       p.log.error(`skill ${skillInfo.name}: error — ${err instanceof Error ? err.message : err}`);
       exitCode = 1;
@@ -876,7 +907,26 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     }
   }
 
-  // 4c. Engram
+  // 4c. Playwright CLI: el multiselect selecciona el binario, pero una segunda
+  // confirmación evita que una opción preseleccionada modifique software global.
+  if (playwrightNeedsUpdate && sel.includes("playwright-cli")) {
+    const confirmPlaywright = await p.confirm({
+      message: "Actualizar Playwright CLI global al pin aprobado con pnpm add --global?",
+      initialValue: true,
+    });
+    if (p.isCancel(confirmPlaywright) || !confirmPlaywright) {
+      p.log.info("Playwright CLI: actualización omitida.");
+    } else if (executePlaywrightToolAction("install")) {
+      p.log.success("Playwright CLI actualizado al pin aprobado.");
+      appliedUpdates = true;
+      updated.push("playwright-cli");
+    } else {
+      p.log.error("Playwright CLI: no se pudo actualizar el paquete global.");
+      exitCode = 1;
+    }
+  }
+
+  // 4d. Engram
   if (engramNeedsUpdate && sel.includes("engram") && engramData?.version) {
     const confirmEngram = await p.confirm({
       message: `Actualizar engram a v${engramData.version} (canal nativo: brew → go install → URL)`,
@@ -898,10 +948,12 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
           p.log.warn("Engram actualizado, pero no se pudo verificar la versión — comprueba con engram --version");
         }
         p.log.info("Reinicia los clientes (Claude Code/OpenCode/Codex) para que sus MCP usen la versión nueva.");
+        appliedUpdates = true;
+        updated.push("engram");
       }
     }
   }
 
   p.outro(exitCode === 0 ? "Update completado." : "Update completado con errores (revisa arriba).");
-  return { exitCode, appliedUpdates };
+  return { exitCode, appliedUpdates, syncRequired: resolveUpdateSyncRequired(updated) };
 }

@@ -8,6 +8,8 @@ import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
+import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
+import { playwrightCliPreferenceFile, savePlaywrightCliPreference } from "./lib/tool-preferences.js";
 
 export interface UninstallOptions {
   runtimes: RuntimeId[];
@@ -16,6 +18,18 @@ export interface UninstallOptions {
   yes: boolean;
   /** D7: desregistrar Engram exige el sí explícito (flag o confirmación). */
   removeEngram: boolean;
+  /** Retira solo el paquete global de Playwright; nunca sus datos/navegadores. */
+  removePlaywright: boolean;
+}
+
+export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }): {
+  actions: PlaywrightToolAction[];
+  preserveBrowserData: boolean;
+} {
+  return {
+    actions: input.removePackage ? ["remove"] : [],
+    preserveBrowserData: true,
+  };
 }
 
 /**
@@ -28,6 +42,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
+  let exitCode = 0;
 
   // D7: Engram guarda las memorias del usuario. Por defecto se CONSERVA todo
   // (registro MCP, plugin engram.ts); desregistrarlo exige el sí explícito.
@@ -128,6 +143,27 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 
+  // --target-dir es una simulación/paridad de config: no debe afectar paquetes
+  // globales ni la preferencia real del usuario.
+  const playwrightPlan = resolvePlaywrightUninstallPlan({
+    removePackage: opts.targetDir === undefined && opts.removePlaywright,
+  });
+  if (opts.removePlaywright && opts.targetDir !== undefined) {
+    p.log.info("Playwright CLI: --target-dir conserva el paquete global y los datos del navegador.");
+  } else if (playwrightPlan.actions.length > 0) {
+    if (opts.dryRun) {
+      p.log.info("Playwright CLI: se retiraría solo el paquete global; los datos y navegadores se conservan.");
+    } else if (executePlaywrightToolAction("remove")) {
+      savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
+      p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
+    } else {
+      p.log.error("Playwright CLI: no se pudo retirar el paquete global; los datos y la preferencia se conservan.");
+      exitCode = 1;
+    }
+  } else {
+    p.log.info("Playwright CLI: paquete global y datos del navegador conservados (usa --remove-playwright para retirar solo el paquete).");
+  }
+
   p.outro(opts.dryRun ? "Dry-run: no se ha tocado nada." : "Hecho. Usa 'restore' si quieres volver atrás.");
-  return 0;
+  return exitCode;
 }

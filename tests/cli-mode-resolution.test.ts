@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const runInstall = vi.fn().mockResolvedValue(0);
-  const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false });
+  const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
   const prompts = {
     confirm: vi.fn().mockResolvedValue(true),
@@ -203,7 +203,7 @@ describe("CLI follow-up sync mode resolution", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    mocks.runInteractiveUpdate.mockResolvedValueOnce({ exitCode: 0, appliedUpdates: true });
+    mocks.runInteractiveUpdate.mockResolvedValueOnce({ exitCode: 0, appliedUpdates: true, syncRequired: true });
 
     try {
       const exitCode = await runCli(["update", "--agents", "opencode"], homeDir, true);
@@ -216,6 +216,31 @@ describe("CLI follow-up sync mode resolution", () => {
           /pendiente.*sync|sync.*pendiente|pending sync/i.test(message),
         ),
       ).toBe(true);
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it("update binario-only no anuncia un sync pendiente", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-binary-only-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    mocks.runInteractiveUpdate.mockResolvedValueOnce({ exitCode: 0, appliedUpdates: true, syncRequired: false });
+
+    try {
+      const exitCode = await runCli(["update", "--agents", "opencode"], homeDir, true);
+
+      expect(exitCode).toBe(0);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(mocks.runInteractiveUpdate).toHaveBeenCalledTimes(1);
+      expect(
+        collectedMessages([error, log, mocks.prompts.log.warn, mocks.prompts.log.info]).some((message) =>
+          /pendiente.*sync|sync.*pendiente|pending sync/i.test(message),
+        ),
+      ).toBe(false);
     } finally {
       error.mockRestore();
       log.mockRestore();

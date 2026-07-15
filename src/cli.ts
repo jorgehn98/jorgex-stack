@@ -34,6 +34,8 @@ export interface Flags {
   list: boolean;
   check: boolean;
   removeEngram: boolean;
+  playwright: boolean;
+  removePlaywright: boolean;
   positional: string[];
   unknownFlags: string[];
 }
@@ -76,6 +78,8 @@ export function parseFlags(args: string[]): Flags {
     list: false,
     check: false,
     removeEngram: false,
+    playwright: false,
+    removePlaywright: false,
     positional: [],
     unknownFlags: [],
   };
@@ -115,6 +119,8 @@ export function parseFlags(args: string[]): Flags {
     else if (arg === "--list") flags.list = true;
     else if (arg === "--check") flags.check = true;
     else if (arg === "--remove-engram") flags.removeEngram = true;
+    else if (arg === "--playwright") flags.playwright = true;
+    else if (arg === "--remove-playwright") flags.removePlaywright = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
   }
@@ -188,6 +194,37 @@ async function resolveInstallMode(flags: Flags, promptIfMissing = true): Promise
   };
 }
 
+async function resolvePlaywrightToolConsent(
+  command: "install" | "sync",
+  flags: Flags,
+): Promise<{
+  command: "install" | "sync";
+  interactive: boolean;
+  yes: boolean;
+  targetDir: boolean;
+  explicitToolSelection: boolean;
+  confirmed: boolean;
+} | null> {
+  const interactive = Boolean(process.stdout.isTTY);
+  let confirmed = false;
+  if (command === "install" && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
+    const answer = await p.confirm({
+      message: "Recomendado: ¿instalar Playwright CLI global y descargar sus navegadores?",
+      initialValue: true,
+    });
+    if (p.isCancel(answer)) return null;
+    confirmed = answer === true;
+  }
+  return {
+    command,
+    interactive,
+    yes: flags.yes,
+    targetDir: flags.targetDir !== undefined,
+    explicitToolSelection: flags.playwright,
+    confirmed,
+  };
+}
+
 export function parseCliArgs(argv: string[]): ParsedCli {
   const [first, ...rest] = argv;
   const isCommand = (COMMANDS as readonly string[]).includes(first ?? "install");
@@ -250,8 +287,11 @@ Opciones:
   --target-dir <dir>    Dir alternativo (pruebas de paridad; requiere 1 runtime)
   --dry-run             Muestra el plan sin escribir nada
   --yes, -y             No interactivo
+  --playwright          Autoriza Playwright CLI global y sus navegadores (requerido con --yes/sin TTY)
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
                         memorias y binario quedan intactos igualmente
+  --remove-playwright   (uninstall) retira solo el paquete global de Playwright;
+                        nunca perfiles, caché ni navegadores
 
 Ver PRD.md para el diseño completo.`);
 }
@@ -301,17 +341,26 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
+      if (playwrightToolConsent === null) return;
       if (!(await ensureOpenCodeModelsForInstall(command, flags, runtimes))) {
         process.exitCode = 1;
         return;
       }
-      process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: flags.yes, mode });
+      process.exitCode = await runInstall({
+        runtimes,
+        targetDir: flags.targetDir,
+        dryRun: flags.dryRun,
+        yes: flags.yes,
+        mode,
+        playwrightToolConsent,
+      });
       return;
     }
     case "uninstall": {
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
-      if (runtimes.length === 0) {
+      if (runtimes.length === 0 && !flags.removePlaywright) {
         console.error("Ningún runtime detectado (opencode, claude-code, codex).");
         process.exitCode = 1;
         return;
@@ -322,6 +371,7 @@ async function main(): Promise<void> {
         dryRun: flags.dryRun,
         yes: flags.yes,
         removeEngram: flags.removeEngram,
+        removePlaywright: flags.removePlaywright,
       });
       return;
     }
@@ -369,10 +419,10 @@ async function main(): Promise<void> {
       }
       const result: InteractiveUpdateResult = await runInteractiveUpdate(VERSION, flags.yes, flags.dryRun);
       process.exitCode = result.exitCode;
-      // Ofrecer sync si se aplicaron skills o stack y hay runtimes disponibles.
-      if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && !canSync) {
+      // Solo skills/stack cambian los artefactos que el sync propaga.
+      if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && !canSync) {
         p.log.warn("Skills/stack actualizados, pero el sync con los runtimes sigue pendiente. Ejecuta jorgex-stack sync --mode human|programmatic.");
-      } else if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
+      } else if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });
         if (!p.isCancel(apply) && apply) {
           process.exitCode = await runInstall({
@@ -385,7 +435,7 @@ async function main(): Promise<void> {
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
         }
-      } else if (result.exitCode === 0 && result.appliedUpdates && runtimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
+      } else if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
         console.log("Skills/stack actualizados. Ejecuta jorgex-stack sync para aplicarlos a los runtimes.");
       }
       return;

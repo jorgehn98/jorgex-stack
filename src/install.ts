@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import * as p from "@clack/prompts";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
@@ -20,6 +21,18 @@ import { planCommands } from "./components/commands.js";
 import { planHooks } from "./components/hooks.js";
 import { planMcp } from "./components/mcp.js";
 import { planPlugins } from "./components/plugins.js";
+import {
+  detectPlaywrightCli,
+  isPlaywrightBrowserReady,
+  planPlaywrightCliCommand,
+  resolvePnpmBin,
+  type PlaywrightCliAction,
+} from "./lib/external-tools.js";
+import {
+  loadPlaywrightCliPreference,
+  playwrightCliPreferenceFile,
+  savePlaywrightCliPreference,
+} from "./lib/tool-preferences.js";
 
 export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
   opencode: opencodeAdapter,
@@ -34,6 +47,77 @@ export interface InstallOptions {
   dryRun: boolean;
   yes: boolean;
   mode?: InstallModePreference;
+  /** Consentimiento explícito para la herramienta global opcional. */
+  playwrightToolConsent?: PlaywrightToolConsent;
+  /** Seams para verificar el flujo sin ejecutar instalaciones globales. */
+  playwrightToolDeps?: PlaywrightToolPlanDeps;
+}
+
+export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
+
+export interface PlaywrightToolPlan {
+  actions: PlaywrightToolAction[];
+  persistEnabledOnSuccess?: boolean;
+}
+
+export interface PlaywrightToolConsent {
+  command: "install" | "sync";
+  interactive: boolean;
+  yes: boolean;
+  targetDir: boolean;
+  explicitToolSelection: boolean;
+  confirmed: boolean;
+}
+
+export interface PlaywrightToolPlanDeps {
+  run: (action: Exclude<PlaywrightToolAction, "remove">) => Promise<boolean>;
+  persistEnabled: (enabled: boolean) => void;
+}
+
+/**
+ * Un --yes no autoriza software global nuevo por sí mismo. En modo interactivo
+ * la confirmación explícita de la recomendación es el consentimiento; sin TTY
+ * hace falta además --playwright. sync y --target-dir nunca instalan herramientas.
+ */
+export function resolvePlaywrightToolPlan(consent: PlaywrightToolConsent): PlaywrightToolPlan {
+  if (consent.command !== "install" || consent.targetDir) return { actions: [] };
+
+  const approved = consent.interactive
+    ? (consent.yes ? consent.explicitToolSelection : consent.confirmed)
+    : consent.yes && consent.explicitToolSelection;
+  return approved
+    ? { actions: ["install", "install-browser"], persistEnabledOnSuccess: true }
+    : { actions: [] };
+}
+
+/** Ejecuta el plan inyectable en orden y solo persiste tras éxito completo. */
+export async function runPlaywrightToolPlan(
+  plan: PlaywrightToolPlan,
+  deps: PlaywrightToolPlanDeps,
+): Promise<{ ok: boolean }> {
+  try {
+    for (const action of plan.actions) {
+      if (action === "remove" || !(await deps.run(action))) return { ok: false };
+    }
+    if (plan.persistEnabledOnSuccess) deps.persistEnabled(true);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** Ejecuta únicamente argv directos de pnpm; nunca abre un shell. */
+export function executePlaywrightToolAction(action: PlaywrightToolAction): boolean {
+  const pnpmBin = resolvePnpmBin();
+  if (pnpmBin === null) return false;
+
+  try {
+    const command = planPlaywrightCliCommand(action, pnpmBin);
+    execFileSync(command.command, command.args, { stdio: "inherit" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
@@ -257,6 +341,36 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
+    }
+  }
+
+  const toolPlan = opts.playwrightToolConsent === undefined
+    ? null
+    : resolvePlaywrightToolPlan({
+      ...opts.playwrightToolConsent,
+      targetDir: opts.targetDir !== undefined || opts.playwrightToolConsent.targetDir,
+    });
+  if (toolPlan?.actions.length) {
+    if (opts.dryRun) {
+      p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
+    } else if (exitCode === 0) {
+      const result = await runPlaywrightToolPlan(toolPlan, opts.playwrightToolDeps ?? {
+        run: async (action) => executePlaywrightToolAction(action),
+        persistEnabled: (enabled) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
+      });
+      if (!result.ok) {
+        p.log.error("Playwright CLI: no se pudo instalar el paquete o el navegador; la preferencia no se ha marcado como habilitada.");
+        exitCode = 1;
+      } else {
+        p.log.success("Playwright CLI y navegador instalados.");
+      }
+    }
+  } else if (opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {
+    const cli = detectPlaywrightCli();
+    if (cli.status !== "current") {
+      p.log.warn("Playwright CLI sigue habilitado, pero el paquete no está listo; sync no instala herramientas. Ejecuta 'jorgex-stack install --playwright'.");
+    } else if (!isPlaywrightBrowserReady()) {
+      p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
     }
   }
 

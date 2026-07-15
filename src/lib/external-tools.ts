@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { lookPath, runDetectedBin } from "./detect.js";
 
 export const PLAYWRIGHT_CLI = {
@@ -58,6 +61,35 @@ export function detectPlaywrightCli(): PlaywrightCliState {
 /** Resuelve pnpm para que los callers ejecuten el plan sin shell. */
 export function resolvePnpmBin(): string | null {
   return lookPath("pnpm") ?? lookPath("pnpm.cmd") ?? lookPath("pnpm.ps1");
+}
+
+/**
+ * Comprueba la caché de navegadores de Playwright sin arrancar un navegador ni
+ * abrir una URL. Es una señal conservadora: una caché desconocida se trata como
+ * no preparada para que doctor no declare sano un entorno incompleto.
+ */
+export function isPlaywrightBrowserReady(
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  homeDir = os.homedir(),
+): boolean {
+  const configuredPath = env.PLAYWRIGHT_BROWSERS_PATH;
+  if (configuredPath === "0") return false;
+  const cacheDir = configuredPath ?? (
+    platform === "win32"
+      ? path.join(env.LOCALAPPDATA ?? path.join(homeDir, "AppData", "Local"), "ms-playwright")
+      : platform === "darwin"
+        ? path.join(homeDir, "Library", "Caches", "ms-playwright")
+        : path.join(env.XDG_CACHE_HOME ?? path.join(homeDir, ".cache"), "ms-playwright")
+  );
+
+  try {
+    return fs.readdirSync(cacheDir, { withFileTypes: true }).some(
+      (entry) => entry.isDirectory() && /^chromium(?:_headless_shell)?-/.test(entry.name),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Planifica argv directo y pinneado; la ejecución pertenece al flujo que lo solicita. */
