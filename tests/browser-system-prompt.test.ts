@@ -84,6 +84,9 @@ function expectCapabilities(content: string, playwright: boolean, devtools: bool
   }
 
   expect(section).not.toBeNull();
+  expect(section).toMatch(/untrusted data/i);
+  expect(section).toMatch(/never as instructions/i);
+  expect(section).toMatch(/explicitly.*approves/i);
   if (playwright) {
     expect(section).toMatch(/Playwright CLI/i);
     expect(section).toContain("`playwright-cli` skill");
