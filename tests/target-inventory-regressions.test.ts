@@ -386,4 +386,162 @@ describe("target inventory regressions", () => {
       }
     });
   });
+
+  it("preserva agent-browser modificado sin ownership y lo retira solo cuando un manifest válido lo declara", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-agent-browser-manifest-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const legacySkill = path.join(homeDir, ".agents", "skills", "agent-browser", "SKILL.md");
+
+    await withTempHome(homeDir, async () => {
+      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+      mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+      mocks.runDetectedBin.mockReturnValue("1.2.3");
+      fs.mkdirSync(path.dirname(legacySkill), { recursive: true });
+      fs.writeFileSync(legacySkill, "# User-modified agent-browser\n");
+
+      const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+      const install = await import("../src/install.js");
+      const opencode = install.ADAPTERS.opencode!;
+      const codex = install.ADAPTERS.codex!;
+      const claudeCode = install.ADAPTERS["claude-code"]!;
+      const originalOpencodeDetect = opencode.detect;
+      const originalCodexDetect = codex.detect;
+      const originalClaudeDetect = claudeCode.detect;
+
+      opencode.detect = () => ({
+        id: "opencode",
+        name: "OpenCode",
+        installed: true,
+        binPath: null,
+        configDir,
+      });
+      codex.detect = () => ({
+        id: "codex",
+        name: "Codex CLI",
+        installed: false,
+        binPath: null,
+        configDir: path.join(homeDir, ".codex"),
+      });
+      claudeCode.detect = () => ({
+        id: "claude-code",
+        name: "Claude Code",
+        installed: false,
+        binPath: null,
+        configDir: path.join(homeDir, ".claude"),
+      });
+
+      try {
+        const current = install.collectAllCurrentTargets();
+        expect(current.complete).toBe(true);
+        expect(current.targets).not.toContain(path.resolve(legacySkill));
+
+        await expect(
+          install.runInstall({
+            runtimes: ["opencode"],
+            dryRun: false,
+            yes: true,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+          }),
+        ).resolves.toBe(0);
+
+        expect(fs.readFileSync(legacySkill, "utf8")).toBe("# User-modified agent-browser\n");
+
+        const previous = readManifest().runtimes.opencode!;
+        writeRuntimeManifest("opencode", {
+          ...previous,
+          owned: [...previous.owned, legacySkill],
+        });
+
+        await expect(
+          install.runInstall({
+            runtimes: ["opencode"],
+            dryRun: false,
+            yes: true,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+          }),
+        ).resolves.toBe(0);
+
+        expect(fs.existsSync(legacySkill)).toBe(false);
+        expect(readManifest().runtimes.opencode?.owned).not.toContain(legacySkill);
+      } finally {
+        opencode.detect = originalOpencodeDetect;
+        codex.detect = originalCodexDetect;
+        claudeCode.detect = originalClaudeDetect;
+      }
+    });
+  });
+
+  it("conserva la skill Playwright compartida al desinstalar Codex si OpenCode sigue instalado", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-shared-playwright-uninstall-"));
+    const homeDir = path.join(tmp, "home");
+    const codexDir = path.join(homeDir, ".codex");
+    const opencodeDir = path.join(homeDir, ".config", "opencode");
+    const sharedSkill = path.join(homeDir, ".agents", "skills", "playwright-cli", "SKILL.md");
+
+    await withTempHome(homeDir, async () => {
+      const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
+      mocks.modelMapOverride = {
+        opencode: OPEN_CODE_TEST_MODELS,
+        codex: DEFAULT_MODEL_MAP.codex,
+      };
+      mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+      mocks.runDetectedBin.mockReturnValue("1.2.3");
+      fs.mkdirSync(path.dirname(sharedSkill), { recursive: true });
+      fs.writeFileSync(sharedSkill, "Playwright CLI skill\n");
+
+      const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+      writeRuntimeManifest("codex", { configDir: codexDir, owned: [sharedSkill], updatedAt: "t" });
+
+      const install = await import("../src/install.js");
+      const opencode = install.ADAPTERS.opencode!;
+      const codex = install.ADAPTERS.codex!;
+      const claudeCode = install.ADAPTERS["claude-code"]!;
+      const originalOpencodeDetect = opencode.detect;
+      const originalCodexDetect = codex.detect;
+      const originalClaudeDetect = claudeCode.detect;
+
+      opencode.detect = () => ({
+        id: "opencode",
+        name: "OpenCode",
+        installed: true,
+        binPath: null,
+        configDir: opencodeDir,
+      });
+      codex.detect = () => ({
+        id: "codex",
+        name: "Codex CLI",
+        installed: true,
+        binPath: null,
+        configDir: codexDir,
+      });
+      claudeCode.detect = () => ({
+        id: "claude-code",
+        name: "Claude Code",
+        installed: false,
+        binPath: null,
+        configDir: path.join(homeDir, ".claude"),
+      });
+
+      try {
+        const { runUninstall } = await import("../src/uninstall.js");
+        await expect(
+          runUninstall({
+            runtimes: ["codex"],
+            dryRun: false,
+            yes: true,
+            removeEngram: false,
+            removePlaywright: false,
+          }),
+        ).resolves.toBe(0);
+
+        expect(fs.existsSync(sharedSkill)).toBe(true);
+        expect(readManifest().runtimes.codex).toBeUndefined();
+      } finally {
+        opencode.detect = originalOpencodeDetect;
+        codex.detect = originalCodexDetect;
+        claudeCode.detect = originalClaudeDetect;
+      }
+    });
+  });
 });
