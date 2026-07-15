@@ -23,7 +23,7 @@ function rateLimitHint(prefix: string): string {
 }
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
-import { detectPlaywrightCli } from "./lib/external-tools.js";
+import { detectPlaywrightCli, PLAYWRIGHT_CLI, type PlaywrightCliState } from "./lib/external-tools.js";
 import { loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
 
@@ -58,6 +58,34 @@ async function latestNpmVersion(pkg: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+export interface PlaywrightUpdateCheckReport {
+  level: "success" | "warn";
+  message: string;
+}
+
+/** Resume el estado local frente al pin aprobado, sin consultar npm. */
+export function resolvePlaywrightUpdateCheck(input: {
+  enabled: boolean | undefined;
+  cli: PlaywrightCliState;
+}): PlaywrightUpdateCheckReport | null {
+  if (input.enabled !== true) return null;
+
+  if (input.cli.status === "current") {
+    return {
+      level: "success",
+      message: `Playwright CLI: ${PLAYWRIGHT_CLI.version} — al día con el pin aprobado.`,
+    };
+  }
+
+  const local = input.cli.detectedVersion ?? (input.cli.status === "absent" ? "no instalado" : "no verificable");
+  return {
+    level: "warn",
+    message:
+      `Playwright CLI: ${local} local, pin aprobado ${PLAYWRIGHT_CLI.version} → ` +
+      "ejecuta 'jorgex-stack update' o 'jorgex-stack install --playwright'.",
+  };
 }
 
 /**
@@ -96,7 +124,16 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
       );
   }
 
-  // 3. Skills de terceros: solo se revisan desde el clon del repo (mantenedor).
+  // 3. Playwright CLI: es opcional; solo se inspecciona tras consentimiento explícito.
+  if (loadPlaywrightCliPreference() === true) {
+    const playwright = resolvePlaywrightUpdateCheck({
+      enabled: true,
+      cli: detectPlaywrightCli(),
+    });
+    if (playwright) p.log[playwright.level](playwright.message);
+  }
+
+  // 4. Skills de terceros: solo se revisan desde el clon del repo (mantenedor).
   // El pin es la última revisión aceptada: si el repo se movió, el contenido
   // nuevo NO está revisado — actualizar exige diff manual + re-pin deliberado.
   // Para el usuario final van pineadas con el stack: no se consulta su upstream.

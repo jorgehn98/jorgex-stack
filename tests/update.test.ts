@@ -1,9 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { resolveEngramRollback, type EngramRollbackAction } from "../src/update.js";
+import { resolvePlaywrightCliState, type PlaywrightCliState } from "../src/lib/external-tools.js";
 
 // Rutas usadas en los tests — constantes para poder verificar que aparecen en mensajes.
 const BIN = "C:/u/.engram/engram.exe";
 const ROTATED = "C:/u/.engram/engram.exe.old-123";
+
+interface PlaywrightUpdateCheckReport {
+  level: "success" | "warn";
+  message: string;
+}
+
+async function resolvePlaywrightUpdateCheck(input: {
+  enabled: boolean | undefined;
+  cli: PlaywrightCliState;
+}): Promise<PlaywrightUpdateCheckReport | null> {
+  const mod = await import("../src/update.js") as {
+    resolvePlaywrightUpdateCheck?: (input: {
+      enabled: boolean | undefined;
+      cli: PlaywrightCliState;
+    }) => PlaywrightUpdateCheckReport | null;
+  };
+
+  expect(mod.resolvePlaywrightUpdateCheck).toBeTypeOf("function");
+  return mod.resolvePlaywrightUpdateCheck!(input);
+}
 
 // ---------------------------------------------------------------------------
 // resolveEngramRollback — 3 caminos de la review del PR #3 + casos none
@@ -177,5 +198,35 @@ describe("resolveEngramRollback: casos none", () => {
     });
 
     expect(result.action).toBe("none");
+  });
+});
+
+describe("resolvePlaywrightUpdateCheck", () => {
+  it("informa el pin aprobado solo cuando Playwright fue habilitado explícitamente", async () => {
+    const current = resolvePlaywrightCliState({
+      binPath: "C:/u/pnpm/playwright-cli.cmd",
+      versionOutput: "playwright-cli 0.1.17\n",
+    });
+    const outdated = resolvePlaywrightCliState({
+      binPath: "C:/u/pnpm/playwright-cli.cmd",
+      versionOutput: "playwright-cli 0.1.16\n",
+    });
+
+    const [notConfigured, disabled, healthy, stale] = await Promise.all([
+      resolvePlaywrightUpdateCheck({ enabled: undefined, cli: outdated }),
+      resolvePlaywrightUpdateCheck({ enabled: false, cli: outdated }),
+      resolvePlaywrightUpdateCheck({ enabled: true, cli: current }),
+      resolvePlaywrightUpdateCheck({ enabled: true, cli: outdated }),
+    ]);
+
+    expect(notConfigured).toBeNull();
+    expect(disabled).toBeNull();
+    expect(healthy).toMatchObject({ level: "success" });
+    expect(healthy?.message).toContain("0.1.17");
+    expect(healthy?.message).toContain("pin aprobado");
+    expect(stale).toMatchObject({ level: "warn" });
+    expect(stale?.message).toContain("0.1.16");
+    expect(stale?.message).toContain("0.1.17");
+    expect(stale?.message).toContain("pin aprobado");
   });
 });

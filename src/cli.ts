@@ -325,6 +325,8 @@ Opciones:
   --dry-run             Muestra el plan sin escribir nada
   --yes, -y             No interactivo
   --playwright          Autoriza Playwright CLI global y sus navegadores (requerido con --yes/sin TTY)
+  --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
+  --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
                         memorias y binario quedan intactos igualmente
   --remove-playwright   (uninstall) retira solo el paquete global de Playwright;

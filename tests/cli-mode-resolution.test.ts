@@ -352,3 +352,42 @@ describe("rechazo de flags desconocidos en main()", () => {
     }
   });
 });
+
+describe("opciones de navegador en main()", () => {
+  it("muestra las opciones de Playwright y DevTools en la ayuda", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-help-"));
+    const homeDir = path.join(tmp, "home");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["--help"], homeDir);
+
+      expect(exitCode).toBeUndefined();
+      const output = collectedMessages([log]);
+      for (const flag of ["--playwright", "--remove-playwright", "--devtools", "--no-devtools"]) {
+        expect(output.some((line) => line.includes(flag))).toBe(true);
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("rechaza seleccionar DevTools y no-devtools a la vez", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-conflict-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "opencode", "--mode", "human", "--devtools", "--no-devtools"],
+        homeDir,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(collectedMessages([error]).some((message) => /solo uno de --devtools o --no-devtools/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
