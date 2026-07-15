@@ -24,7 +24,7 @@ function rateLimitHint(prefix: string): string {
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 import { detectPlaywrightCli, PLAYWRIGHT_CLI, type PlaywrightCliState } from "./lib/external-tools.js";
-import { loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
+import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
 
 export interface Upstreams {
@@ -93,8 +93,16 @@ export function resolvePlaywrightUpdateCheck(input: {
  * solo se revisan en contexto mantenedor (clon del repo): para el usuario final
  * van pineadas con la versión del stack y no se consulta su upstream.
  */
-export async function runUpdateCheck(localVersion: string): Promise<number> {
+export async function runUpdateCheck(localVersion: string, includeBrowserState = true): Promise<number> {
   p.intro("jorgex-stack update --check");
+  if (includeBrowserState) {
+    const preferenceErrors = browserPreferenceErrors();
+    if (preferenceErrors.length > 0) {
+      for (const error of preferenceErrors) p.log.error(error);
+      p.outro("Check cancelado: corrige las preferencias de navegador antes de reintentar.");
+      return 1;
+    }
+  }
   const upstreams = loadUpstreams();
 
   // 1. El propio stack (npm).
@@ -125,7 +133,7 @@ export async function runUpdateCheck(localVersion: string): Promise<number> {
   }
 
   // 3. Playwright CLI: es opcional; solo se inspecciona tras consentimiento explícito.
-  if (loadPlaywrightCliPreference() === true) {
+  if (includeBrowserState && loadPlaywrightCliPreference() === true) {
     const playwright = resolvePlaywrightUpdateCheck({
       enabled: true,
       cli: detectPlaywrightCli(),
@@ -662,13 +670,26 @@ export function resolveUpdateSyncRequired(updated: string[]): boolean {
  * y aplica lo marcado. Respeta --yes y no-TTY: en esos casos, solo informe.
  * dryRun: cortocircuita al check sin aplicar nada.
  */
-export async function runInteractiveUpdate(localVersion: string, yes: boolean, dryRun = false): Promise<InteractiveUpdateResult> {
+export async function runInteractiveUpdate(
+  localVersion: string,
+  yes: boolean,
+  dryRun = false,
+  includeBrowserState = true,
+): Promise<InteractiveUpdateResult> {
   // Con --dry-run, --yes o sin TTY: comportarse como el check original
   if (dryRun || yes || !process.stdout.isTTY) {
-    return { exitCode: await runUpdateCheck(localVersion), appliedUpdates: false, syncRequired: false };
+    return { exitCode: await runUpdateCheck(localVersion, includeBrowserState), appliedUpdates: false, syncRequired: false };
   }
 
   p.intro("jorgex-stack update");
+  if (includeBrowserState) {
+    const preferenceErrors = browserPreferenceErrors();
+    if (preferenceErrors.length > 0) {
+      for (const error of preferenceErrors) p.log.error(error);
+      p.outro("Update cancelado: corrige las preferencias de navegador antes de reintentar.");
+      return { exitCode: 1, appliedUpdates: false, syncRequired: false };
+    }
+  }
   const upstreams = loadUpstreams();
   let exitCode = 0;
   let appliedUpdates = false;
@@ -754,7 +775,7 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
   // Playwright CLI: solo se consulta/ofrece si el usuario lo habilitó antes.
   // No se infiere consentimiento de que el binario aparezca casualmente en PATH.
   let playwrightNeedsUpdate = false;
-  if (loadPlaywrightCliPreference() === true) {
+  if (includeBrowserState && loadPlaywrightCliPreference() === true) {
     const playwright = detectPlaywrightCli();
     if (playwright.status === "current") {
       p.log.success("Playwright CLI: al día.");
@@ -953,12 +974,12 @@ export async function runInteractiveUpdate(localVersion: string, yes: boolean, d
     });
     if (p.isCancel(confirmPlaywright) || !confirmPlaywright) {
       p.log.info("Playwright CLI: actualización omitida.");
-    } else if (executePlaywrightToolAction("install")) {
+    } else if (executePlaywrightToolAction("update") && executePlaywrightToolAction("install-browser")) {
       p.log.success("Playwright CLI actualizado al pin aprobado.");
       appliedUpdates = true;
       updated.push("playwright-cli");
     } else {
-      p.log.error("Playwright CLI: no se pudo actualizar el paquete global.");
+      p.log.error("Playwright CLI: no se pudo actualizar el paquete global o el navegador.");
       exitCode = 1;
     }
   }

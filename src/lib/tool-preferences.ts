@@ -21,11 +21,7 @@ export function playwrightCliPreferenceFile(stateDir = dataDir()): string {
   return path.join(stateDir, "playwright-cli.json");
 }
 
-/** Missing, unreadable, or invalid state is deliberately not an authorization. */
-export function loadPlaywrightCliPreference(file = playwrightCliPreferenceFile()): boolean | undefined {
-  const raw = readTextIfExists(file);
-  if (raw === null) return undefined;
-
+function parsePlaywrightCliPreference(raw: string): boolean | undefined {
   try {
     const value = JSON.parse(raw) as Partial<PlaywrightCliPreference>;
     if (value.version !== PLAYWRIGHT_CLI_PREFERENCE_VERSION || typeof value.enabled !== "boolean") return undefined;
@@ -35,8 +31,24 @@ export function loadPlaywrightCliPreference(file = playwrightCliPreferenceFile()
   }
 }
 
+/** Devuelve un remedio concreto sin normalizar ni reescribir la preferencia. */
+export function playwrightCliPreferenceError(file = playwrightCliPreferenceFile()): string | null {
+  const raw = readTextIfExists(file);
+  if (raw === null || parsePlaywrightCliPreference(raw) !== undefined) return null;
+  return `Playwright CLI: preferencia inválida en ${file}. Corrige o borra ese archivo antes de reintentar.`;
+}
+
+/** Missing, unreadable, or invalid state is deliberately not an authorization. */
+export function loadPlaywrightCliPreference(file = playwrightCliPreferenceFile()): boolean | undefined {
+  const raw = readTextIfExists(file);
+  if (raw === null) return undefined;
+  return parsePlaywrightCliPreference(raw);
+}
+
 /** Stores only an explicit choice, atomically, outside runtime manifests. */
 export function savePlaywrightCliPreference(file: string, enabled: boolean): void {
+  const error = playwrightCliPreferenceError(file);
+  if (error !== null) throw new Error(error);
   writeText(file, JSON.stringify({ version: PLAYWRIGHT_CLI_PREFERENCE_VERSION, enabled }) + "\n");
 }
 
@@ -48,32 +60,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isRuntimeId(value: string): value is RuntimeId {
+  return value === "claude-code" || value === "codex" || value === "opencode";
+}
+
+function parseDevtoolsMcpState(raw: string): DevtoolsMcpPreference | null {
+  try {
+    const value = JSON.parse(raw) as Partial<DevtoolsMcpPreference>;
+    if (
+      !isRecord(value)
+      || value.version !== DEVTOOLS_MCP_PREFERENCE_VERSION
+      || !isRecord(value.enabled)
+      || !isRecord(value.owned)
+    ) return null;
+
+    const enabled: DevtoolsMcpPreference["enabled"] = {};
+    for (const [runtime, selected] of Object.entries(value.enabled)) {
+      if (!isRuntimeId(runtime) || typeof selected !== "boolean") return null;
+      enabled[runtime] = selected;
+    }
+
+    const owned: DevtoolsMcpPreference["owned"] = {};
+    for (const [runtime, servers] of Object.entries(value.owned)) {
+      if (!isRuntimeId(runtime) || !isRecord(servers)) return null;
+      const managed: Record<string, true> = {};
+      for (const [server, marked] of Object.entries(servers)) {
+        if (marked !== true) return null;
+        managed[server] = true;
+      }
+      if (Object.keys(managed).length > 0) owned[runtime] = managed;
+    }
+    return { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled, owned };
+  } catch {
+    return null;
+  }
+}
+
 function loadDevtoolsMcpState(file: string): DevtoolsMcpPreference {
   const empty: DevtoolsMcpPreference = { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled: {}, owned: {} };
   const raw = readTextIfExists(file);
   if (raw === null) return empty;
 
-  try {
-    const value = JSON.parse(raw) as Partial<DevtoolsMcpPreference>;
-    if (value.version !== DEVTOOLS_MCP_PREFERENCE_VERSION || !isRecord(value.enabled)) return empty;
-    const enabled = Object.fromEntries(
-      Object.entries(value.enabled).filter(([, selected]) => typeof selected === "boolean"),
-    ) as Partial<Record<RuntimeId, boolean>>;
-    const owned: DevtoolsMcpPreference["owned"] = {};
-    if (isRecord(value.owned)) {
-      for (const [runtime, servers] of Object.entries(value.owned)) {
-        if (!isRecord(servers)) continue;
-        const managed = Object.fromEntries(Object.entries(servers).filter(([, marked]) => marked === true)) as Record<string, true>;
-        if (Object.keys(managed).length > 0) owned[runtime as RuntimeId] = managed;
-      }
-    }
-    return { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled, owned };
-  } catch {
-    return empty;
-  }
+  return parseDevtoolsMcpState(raw) ?? empty;
+}
+
+/** Devuelve un remedio concreto sin convertir un estado inválido en defaults. */
+export function devtoolsMcpPreferenceError(file = devtoolsMcpPreferenceFile()): string | null {
+  const raw = readTextIfExists(file);
+  if (raw === null || parseDevtoolsMcpState(raw) !== null) return null;
+  return `Chrome DevTools MCP: preferencia inválida en ${file}. Corrige o borra ese archivo antes de reintentar.`;
 }
 
 function saveDevtoolsMcpState(file: string, state: DevtoolsMcpPreference): void {
+  const error = devtoolsMcpPreferenceError(file);
+  if (error !== null) throw new Error(error);
   writeText(file, JSON.stringify(state) + "\n");
 }
 
@@ -103,4 +143,12 @@ export function saveDevtoolsMcpOwnership(file: string, runtime: RuntimeId, serve
     if (state.owned[runtime] !== undefined && Object.keys(state.owned[runtime]).length === 0) delete state.owned[runtime];
   }
   saveDevtoolsMcpState(file, state);
+}
+
+/** Estados inválidos bloquean mutaciones para no reconciliarlos destructivamente. */
+export function browserPreferenceErrors(stateDir = dataDir()): string[] {
+  return [
+    playwrightCliPreferenceError(playwrightCliPreferenceFile(stateDir)),
+    devtoolsMcpPreferenceError(devtoolsMcpPreferenceFile(stateDir)),
+  ].filter((error): error is string => error !== null);
 }

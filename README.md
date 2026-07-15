@@ -82,13 +82,13 @@ Programmatic mode does **not** provide:
 
 Browser automation is opt-in and explicit. The legacy `agent-browser` integration has been removed; rely on the two surfaces below.
 
-- **Playwright CLI** (recommended): `@playwright/cli@0.1.17` plus a vendored skill that ships pinned with the stack. The skill is loaded on demand and contributes no permanent MCP schemas. See [docs/references/browser-automation.md](docs/references/browser-automation.md) for the full lifecycle, the security profile and troubleshooting.
-- **Chrome DevTools MCP** (advanced diagnostics, opt-in): exposes ~29 tools and ~5,800–7,700 tokens of schemas in full mode. Disabled by default, selected per runtime, version-pinned, telemetry-disabled, runs against an installed Chrome with a dedicated profile. `--slim` and Playwright MCP are intentionally excluded.
+- **Playwright CLI** (recommended): `@playwright/cli@0.1.17` plus a vendored skill that ships pinned with the stack. The skill is loaded on demand, contributes no permanent MCP schemas, and declares `allowed-tools: Bash(playwright-cli:*)` only (no `Bash(pnpm:*)`), so subagents cannot fall back to `pnpm dlx` from this skill scope. See [docs/references/browser-automation.md](docs/references/browser-automation.md) for the full lifecycle, the security profile and troubleshooting.
+- **Chrome DevTools MCP** (advanced diagnostics, opt-in): exposes ~29 tools and ~5,800–7,700 tokens of schemas in full mode. Disabled by default, selected per runtime, version-pinned, and launched with a fixed argv `pnpm dlx chrome-devtools-mcp@1.6.0 --isolated --redact-network-headers --no-performance-crux --no-usage-statistics`. `--isolated` starts Chrome with an ephemeral, isolated profile that is deleted when Chrome closes (no persistent dedicated profile, no shared cookies/extensions/sessions with your personal Chrome); `--redact-network-headers` redacts sensitive headers in any captured network traffic; `--no-performance-crux` disables CrUX reporting; `--no-usage-statistics` disables telemetry. `--slim` and Playwright MCP are intentionally excluded.
 
 Setup that respects the zero-secrets, pnpm-only and explicit-consent rules:
 
 ```bash
-# Interactive (TTY): consent prompt recommends Playwright CLI globally.
+# Interactive (TTY): the install prompt suggests Playwright CLI but defaults to "No" (opt-in consent). Press `y` to install.
 pnpm dlx jorgex-stack install
 
 # Non-interactive / agent: --playwright authorizes the global install.
@@ -103,10 +103,10 @@ Under the hood, `--playwright` runs two `pnpm` argv-only plans back to back: `pn
 
 Daily operation:
 
-- `sync` reconciles configuration without installing global tools or browsers; if Playwright is enabled but the binary or browser is missing, it warns and points to `install --playwright`.
-- `doctor` reports the Playwright CLI state (`disabled`, `healthy`, `missing:package`, `missing:browser`, `broken`, `outdated`) without opening sites or repairing state.
+- `sync` reconciles configuration without installing global tools or browsers; if Playwright is enabled but the binary or browser is missing, it warns and points to `install --playwright`. Under `--target-dir`, `sync`/`install`/`uninstall` never read or write the real browser state (`~/.jorgex-stack/playwright-cli.json` and `~/.jorgex-stack/devtools-mcp.json` are untouched, `detectPlaywrightCli()` is not called, no MCP ownership is persisted).
+- `doctor` reports the Playwright CLI state (`disabled`, `healthy`, `missing:package`, `missing:browser`, `broken`, `outdated`) without opening sites or repairing state. If either preference file is corrupt, doctor prints the exact path and the remedy (`Corrige o borra ese archivo antes de reintentar`) before any other browser check; in that case `install`/`uninstall`/`update`/`update --check` will abort with exit 1 until the file is fixed, so the corruption cannot be reconciled destructively.
 - `update --check` only inspects Playwright CLI when its preference is `enabled` (a binary appearing in `PATH` is not consent). It compares the installed version against the approved pin `0.1.17` — it does not consult npm latest, and a Playwright CLI binary-only update does not require `sync` afterwards.
-- `uninstall` preserves the global `@playwright/cli` package and all browser data by default; `--remove-playwright` removes the package only (never the browser cache, profiles, cookies, storage state, traces, screenshots or videos).
+- `uninstall` preserves the global `@playwright/cli` package and all browser data by default; `--remove-playwright` removes the package only (never the browser cache, profiles, cookies, storage state, traces, screenshots or videos). If `pnpm remove --global @playwright/cli` exits non-zero, `uninstall` reports the failure instead of a success outro.
 
 ### Update: Interactive Flow
 
@@ -114,7 +114,7 @@ Daily operation:
 
 1. **Stack** (jorgex-stack): detects whether it is a git clone or a global install, then offers an update with confirmation.
 2. **Engram** (binary): detects the installed version and offers an update through the **native channel** (brew -> `go install` -> release URL). Nothing needs to be stopped: as in upstream macOS/Linux, live processes keep using the old version until clients restart; on Windows, the in-use `.exe` is rotated by rename before installation. **Automatic DB backup before updating**. The database and memories are never touched.
-3. **Playwright CLI** (only when explicitly enabled): compares the detected binary with the approved bundle pin and offers to realign it with explicit confirmation. Binary-only updates do not require `sync`.
+3. **Playwright CLI** (only when explicitly enabled): compares the detected binary with the approved bundle pin and offers to realign it with explicit confirmation. The realignment re-applies **both** plans — `pnpm add --global @playwright/cli@0.1.17` (package) and `pnpm dlx @playwright/cli@0.1.17 install-browser` (browser cache) — and fails closed if either step returns non-zero; a Playwright update does not require `sync`.
 4. **Vendored skills** (maintainer only): third-party skills ship **pinned** with the stack version, so the installed package never reaches out to their upstreams. Only when running from a git clone (`pnpm cli update`) does `update` scan the upstreams in `upstreams.json`, download to a temp directory, **show a mandatory diff**, and ask for confirmation — so the review and re-pin persist in the repo and get published. Skills with local changes (`modified: true`) warn and require double confirmation.
 
 Usage:

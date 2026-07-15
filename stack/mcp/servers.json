@@ -18,10 +18,10 @@
     "chrome-devtools": {
       "transport": "stdio",
       "command": "pnpm",
-      "args": ["dlx", "chrome-devtools-mcp@1.6.0", "--no-usage-statistics"],
+      "args": ["dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
       "optional": true,
       "defaultEnabled": false,
-      "note": "Diagnóstico avanzado opt-in: modo full (~29 tools; ~5.8–7.7k tokens de schemas). Lanza Chrome instalado con un perfil dedicado."
+      "note": "Diagnóstico avanzado opt-in: modo full (~29 tools; ~5.8–7.7k tokens de schemas). Lanza Chrome instalado con un perfil temporal aislado, redacta cabeceras de red y desactiva CrUX/estadísticas."
     }
   }
 }

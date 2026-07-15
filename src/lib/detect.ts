@@ -1,6 +1,6 @@
 import path from "node:path";
 import { existsSync, statSync } from "node:fs";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { HOME } from "./paths.js";
 import type { RuntimeId } from "../adapters/types.js";
 
@@ -27,6 +27,26 @@ export function lookPath(cmd: string): string | null {
   return null;
 }
 
+export interface DetectedBinCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * Los shims .cmd/.bat requieren cmd.exe en Windows. El intérprete recibe argv
+ * directo (no `shell: true`) y solo acepta partes sin metacaracteres de cmd.
+ */
+export function planDetectedBinCommand(bin: string, args: string[]): DetectedBinCommand | null {
+  if (process.platform !== "win32" || !/\.(cmd|bat)$/i.test(bin)) return { command: bin, args };
+  if ([bin, ...args].some((part) => /[&|<>()^%!"\r\n]/.test(part))) return null;
+
+  const quote = (part: string): string => part === "" || /\s/.test(part) ? `"${part}"` : part;
+  return {
+    command: process.env.ComSpec ?? "cmd.exe",
+    args: ["/d", "/s", "/c", [quote(bin), ...args.map(quote)].join(" ")],
+  };
+}
+
 /**
  * Ejecuta un binario detectado con args fijos y devuelve su stdout, o null.
  * Argv directo sin shell: una ruta con metacaracteres nunca se interpreta.
@@ -35,15 +55,13 @@ export function lookPath(cmd: string): string | null {
  */
 export function runDetectedBin(bin: string, args: string[], timeoutMs: number): string | null {
   try {
-    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(bin)) {
-      if (/[&|<>^%!"]/.test(bin)) return null;
-      return execSync(`"${bin}" ${args.join(" ")}`, {
-        encoding: "utf8",
-        timeout: timeoutMs,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    }
-    return execFileSync(bin, args, { encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
+    const command = planDetectedBinCommand(bin, args);
+    if (command === null) return null;
+    return execFileSync(command.command, command.args, {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   } catch {
     return null;
   }

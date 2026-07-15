@@ -10,7 +10,7 @@ import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { HOME } from "./lib/paths.js";
 import { detectPlaywrightCli, isPlaywrightBrowserReady, type PlaywrightCliStatus } from "./lib/external-tools.js";
-import { loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
+import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
 
 export function engramVersion(bin: string): string | null {
   const out = runDetectedBin(bin, ["--version"], 5_000);
@@ -81,25 +81,31 @@ export async function runDoctor(): Promise<number> {
 
   if (!fs.existsSync(modelMapFile())) p.log.info("model-map: aún no creado (se crea en el primer install o con 'models').");
 
-  const playwright = resolvePlaywrightDoctorState({
-    enabled: loadPlaywrightCliPreference(),
-    cli: detectPlaywrightCli(),
-    browserReady: isPlaywrightBrowserReady(),
-  });
-  if (playwright.status === "disabled") {
-    p.log.info("Playwright CLI: deshabilitado (opcional). Usa 'install --playwright' para instalarlo de forma explícita.");
-  } else if (playwright.status === "healthy") {
-    p.log.success("Playwright CLI: paquete y navegador listos.");
-  } else if (playwright.status === "missing") {
-    const target = playwright.missing === "package" ? "el paquete global" : "el navegador de Playwright";
-    p.log.warn(`Playwright CLI: habilitado, pero falta ${target} → ejecuta 'jorgex-stack install --playwright'.`);
-    problems++;
-  } else if (playwright.status === "broken") {
-    p.log.error("Playwright CLI: el binario detectado no responde correctamente → ejecuta 'jorgex-stack install --playwright'.");
-    problems++;
+  const preferenceErrors = browserPreferenceErrors();
+  if (preferenceErrors.length > 0) {
+    for (const error of preferenceErrors) p.log.error(error);
+    problems += preferenceErrors.length;
   } else {
-    p.log.warn("Playwright CLI: versión distinta del pin aprobado → ejecuta 'jorgex-stack update' o 'install --playwright'.");
-    problems++;
+    const playwright = resolvePlaywrightDoctorState({
+      enabled: loadPlaywrightCliPreference(),
+      cli: detectPlaywrightCli(),
+      browserReady: isPlaywrightBrowserReady(),
+    });
+    if (playwright.status === "disabled") {
+      p.log.info("Playwright CLI: deshabilitado (opcional). Usa 'install --playwright' para instalarlo de forma explícita.");
+    } else if (playwright.status === "healthy") {
+      p.log.success("Playwright CLI: paquete y navegador listos.");
+    } else if (playwright.status === "missing") {
+      const target = playwright.missing === "package" ? "el paquete global" : "el navegador de Playwright";
+      p.log.warn(`Playwright CLI: habilitado, pero falta ${target} → ejecuta 'jorgex-stack install --playwright'.`);
+      problems++;
+    } else if (playwright.status === "broken") {
+      p.log.error("Playwright CLI: el binario detectado no responde correctamente → ejecuta 'jorgex-stack install --playwright'.");
+      problems++;
+    } else {
+      p.log.warn("Playwright CLI: versión distinta del pin aprobado → ejecuta 'jorgex-stack update' o 'install --playwright'.");
+      problems++;
+    }
   }
 
   const manifest = readManifest();

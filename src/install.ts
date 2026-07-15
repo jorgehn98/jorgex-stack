@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import * as p from "@clack/prompts";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
@@ -23,12 +22,13 @@ import { planMcp } from "./components/mcp.js";
 import { planPlugins } from "./components/plugins.js";
 import {
   detectPlaywrightCli,
+  executePlaywrightToolAction as executeExternalPlaywrightToolAction,
   isPlaywrightBrowserReady,
-  planPlaywrightCliCommand,
   resolvePnpmBin,
   type PlaywrightCliAction,
 } from "./lib/external-tools.js";
 import {
+  browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
   loadDevtoolsMcpOwnership,
   loadDevtoolsMcpPreference,
@@ -61,6 +61,11 @@ export interface InstallOptions {
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
+
+/** Puente de compatibilidad: la ejecución vive en external-tools; aquí solo se resuelve la dependencia inyectable. */
+export function executePlaywrightToolAction(action: PlaywrightCliAction): boolean {
+  return executeExternalPlaywrightToolAction(action, resolvePnpmBin());
+}
 
 export interface PlaywrightToolPlan {
   actions: PlaywrightToolAction[];
@@ -113,28 +118,20 @@ export async function runPlaywrightToolPlan(
   }
 }
 
-/** Ejecuta únicamente argv directos de pnpm; nunca abre un shell. */
-export function executePlaywrightToolAction(action: PlaywrightToolAction): boolean {
-  const pnpmBin = resolvePnpmBin();
-  if (pnpmBin === null) return false;
-
-  try {
-    const command = planPlaywrightCliCommand(action, pnpmBin);
-    execFileSync(command.command, command.args, { stdio: "inherit" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 
-function enabledMcpServers(runtime: RuntimeId, explicitDevtoolsEnabled?: boolean): ReadonlySet<string> {
-  const devtoolsEnabled = explicitDevtoolsEnabled ?? loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), runtime);
+function enabledMcpServers(
+  runtime: RuntimeId,
+  explicitDevtoolsEnabled?: boolean,
+  useBrowserPreferences = true,
+): ReadonlySet<string> {
+  const devtoolsEnabled = explicitDevtoolsEnabled
+    ?? (useBrowserPreferences && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), runtime));
   return devtoolsEnabled ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
 }
 
-function ownedMcpServers(runtime: RuntimeId): ReadonlySet<string> {
+function ownedMcpServers(runtime: RuntimeId, useBrowserPreferences = true): ReadonlySet<string> {
+  if (!useBrowserPreferences) return new Set();
   const file = devtoolsMcpPreferenceFile();
   return loadDevtoolsMcpOwnership(file, runtime, DEVTOOLS_MCP_SERVER) ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
 }
@@ -151,7 +148,12 @@ function persistMcpOwnershipChanges(runtime: RuntimeId, plan: FileAction[]): voi
 }
 
 /** Contexto de instalación para un runtime, o null si no hay model-map. */
-export function makeContext(adapter: Adapter, configDir: string, mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE): InstallContext | null {
+export function makeContext(
+  adapter: Adapter,
+  configDir: string,
+  mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
+  useBrowserPreferences = true,
+): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
   return {
@@ -162,8 +164,8 @@ export function makeContext(adapter: Adapter, configDir: string, mode: InstallMo
     engramBin: detectEngram(),
     models,
     warnings: [],
-    enabledMcpServers: enabledMcpServers(adapter.id),
-    ownedMcpServers: ownedMcpServers(adapter.id),
+    enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
+    ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
   };
 }
 
@@ -243,6 +245,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     ? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE)
     : normalizeInstallModePreference(opts.mode);
   const useManifest = opts.targetDir === undefined;
+  const preferenceErrors = useManifest ? browserPreferenceErrors() : [];
+  if (preferenceErrors.length > 0) {
+    for (const error of preferenceErrors) p.log.error(error);
+    p.outro("Install cancelado: corrige las preferencias de navegador antes de reintentar.");
+    return 1;
+  }
   const modelMap = loadModelMap();
   if (useManifest) ensureModelMapFile();
 
@@ -291,8 +299,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       engramBin,
       models,
       warnings: [],
-      enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id]),
-      ownedMcpServers: ownedMcpServers(id),
+      enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
+      ownedMcpServers: ownedMcpServers(id, useManifest),
     };
 
     const persistDevtoolsSelection = (): void => {
@@ -340,7 +348,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
     if (changes.length === 0 && orphans.length === 0) {
       writeManifest();
-      persistMcpOwnershipChanges(id, plan);
+      if (useManifest) persistMcpOwnershipChanges(id, plan);
       persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
@@ -366,7 +374,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
-    applyChanges(changes, (action) => persistMcpOwnershipChanges(id, [action]));
+    applyChanges(changes, useManifest ? (action) => persistMcpOwnershipChanges(id, [action]) : undefined);
     const pruneRoot = useManifest ? HOME : path.dirname(configDir);
     for (const orphan of orphans) {
       fs.rmSync(orphan, { force: true });
@@ -382,7 +390,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       exitCode = 1;
     } else {
       writeManifest();
-      persistMcpOwnershipChanges(id, plan);
+      if (useManifest) persistMcpOwnershipChanges(id, plan);
       persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
@@ -410,7 +418,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         p.log.success("Playwright CLI y navegador instalados.");
       }
     }
-  } else if (opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {
+  } else if (useManifest && opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {
     const cli = detectPlaywrightCli();
     if (cli.status !== "current") {
       p.log.warn("Playwright CLI sigue habilitado, pero el paquete no está listo; sync no instala herramientas. Ejecuta 'jorgex-stack install --playwright'.");

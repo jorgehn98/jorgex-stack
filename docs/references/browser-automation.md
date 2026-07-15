@@ -4,8 +4,8 @@ JorgeX Stack reemplaza la antigua skill `agent-browser` por dos integraciones **
 
 > **TL;DR**
 >
-> - **Recomendado**: Playwright CLI (`@playwright/cli@0.1.17`) + skill `playwright-cli` vendorizada. Cero schemas MCP permanentes, coste contextual casi nulo para sesiones que no navegan.
-> - **Avanzado opt-in**: Chrome DevTools MCP en modo **full** (~29 tools, ~5,8–7,7k tokens de schemas). Default-off, selección por runtime, paquete fijado, telemetría deshabilitada, perfil dedicado en Chrome instalado.
+> - **Recomendado**: Playwright CLI (`@playwright/cli@0.1.17`) + skill `playwright-cli` vendorizada. Cero schemas MCP permanentes, coste contextual casi nulo para sesiones que no navegan. El prompt de `install` sugiere instalarlo pero el cursor por defecto es **No** (`initialValue: false`): el consentimiento sigue siendo opt-in.
+> - **Avanzado opt-in**: Chrome DevTools MCP en modo **full** (~29 tools, ~5,8–7,7k tokens de schemas). Default-off, selección por runtime, paquete fijado, argv `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics`: Chrome se levanta con un **perfil temporal aislado, eliminado al cerrar** (no hay perfil persistente dedicado), las cabeceras sensibles se redactan y CrUX + telemetría están deshabilitados.
 > - **Excluidos por diseño**: Playwright MCP y Chrome DevTools MCP en modo `--slim` (duplican peor lo que Playwright CLI ya hace).
 
 ---
@@ -35,12 +35,14 @@ El stack trata **skill + paquete como un bundle versionado**: una skill de `main
 La instalación global del paquete y la descarga del navegador son **siempre explícitas**. Ni `sync`, ni `--target-dir`, ni `--yes` las disparan por su cuenta.
 
 ```powershell
-# Interactivo (TTY): pregunta consentimiento con recomendación activa.
+# Interactivo (TTY): el prompt sugiere Playwright CLI pero el cursor por defecto es "No" (opt-in). Pulsa `y` para instalar.
 pnpm dlx jorgex-stack install
 
 # No interactivo / agente: --playwright autoriza la instalación global.
 pnpm dlx jorgex-stack install --yes --playwright
 ```
+
+> **Cursor por defecto = `false`.** El prompt dice literalmente *"Recomendado: ¿instalar Playwright CLI global y descargar sus navegadores?"*, pero `initialValue: false`. Pulsar `Enter` omite la instalación. Solo se persiste la preferencia tras `y` o `--playwright`; el prompt por sí solo nunca escribe el archivo.
 
 Bajo el capó, `--playwright` ejecuta **dos** planes pnpm consecutivos como argv directo (`execFileSync`, sin shell):
 
@@ -64,17 +66,17 @@ playwright-cli click e15
 playwright-cli close
 ```
 
-No hay fallback automático a `pnpm dlx` desde los subagentes: el binario se espera instalado globalmente. Si no está, la invocación falla con `command not found` y `doctor` lo reporta como `missing:package`. La propia skill vendorizada incluye una nota `## Installation` con `pnpm dlx @playwright/cli@0.1.17 --version` para **verificar manualmente** la versión pinneada, no como canal operativo.
+El frontmatter de la skill declara `allowed-tools: Bash(playwright-cli:*)` y **no** permite `Bash(pnpm:*)`: los subagentes no pueden recurrir a `pnpm dlx` desde este scope, ni como canal operativo ni como "fallback". Si un subagente necesita instalar o actualizar el binario, devuelve el control al orquestador; esa operación la cubre `install --playwright` o `update` interactivo. La propia skill vendorizada incluye una nota `## Installation` con `pnpm dlx @playwright/cli@0.1.17 --version` para **verificar manualmente** la versión pinneada por un humano, no como canal que un agente pueda ejecutar. El binario se espera instalado globalmente: si no está, la invocación falla con `command not found` y `doctor` lo reporta como `missing:package`.
 
 ### 2.4 Lifecycle — `sync`, `doctor`, `update`, `uninstall`
 
 | Comando | Comportamiento respecto a Playwright CLI |
 |---|---|
 | `sync` | Reaplica config y skills. **No instala** paquetes globales ni descarga navegadores. Si la preferencia dice "habilitado" pero falta binario o navegador, `sync` avisa y sugiere `install --playwright`. |
-| `doctor` | Reporta el estado como `disabled` (sin preferencia), `healthy` (CLI + navegador listos), `missing:package` / `missing:browser` (preferencia activa pero algo falta), `broken` (binario no responde) u `outdated` (versión distinta del pin). No abre sitios ni repara estado. |
-| `update --check` | Solo inspecciona Playwright CLI si la preferencia está `enabled` (un binario casual en `PATH` no es consentimiento). Compara la versión detectada contra el pin `0.1.17`; **no** consulta `npm latest` y **no** requiere `sync` después. |
-| `update` interactivo | El multiselect incluye `playwright-cli` cuando la versión detectada no coincide con el pin; aplica `pnpm add --global @playwright/cli@0.1.17` con argv directo y una segunda confirmación explícita. No exige `sync` posterior (`resolveUpdateSyncRequired` solo dispara para cambios en `stack` o `skill:*`). |
-| `uninstall` | Conserva el paquete global y los datos del navegador por defecto. `--remove-playwright` ejecuta `pnpm remove --global @playwright/cli` (sin sufijo de versión). |
+| `doctor` | Reporta el estado como `disabled` (sin preferencia), `healthy` (CLI + navegador listos), `missing:package` / `missing:browser` (preferencia activa pero algo falta), `broken` (binario no responde) u `outdated` (versión distinta del pin). No abre sitios ni repara estado. Si `~/.jorgex-stack/playwright-cli.json` o `~/.jorgex-stack/devtools-mcp.json` están ilegibles, imprime la ruta exacta y `Corrige o borra ese archivo antes de reintentar` antes de evaluar el resto del estado browser; los counts de "problemas" suben por cada archivo corrupto. |
+| `update --check` | Solo inspecciona Playwright CLI si la preferencia está `enabled` (un binario casual en `PATH` no es consentimiento). Compara la versión detectada contra el pin `0.1.17`; **no** consulta `npm latest` y **no** requiere `sync` después. Si alguna preferencia de navegador está corrupta, aborta con exit 1 antes de imprimir nada. |
+| `update` interactivo | El multiselect incluye `playwright-cli` cuando la versión detectada no coincide con el pin; el realineamiento aplica **ambos** planes con argv directo y una segunda confirmación explícita — `pnpm add --global @playwright/cli@0.1.17` (paquete) y `pnpm dlx @playwright/cli@0.1.17 install-browser` (navegador). Falla cerrado si cualquiera de los dos pasos devuelve código no-cero: hasta que ambos tengan éxito, no se considera la preferencia realineada. No exige `sync` posterior (`resolveUpdateSyncRequired` solo dispara para cambios en `stack` o `skill:*`). |
+| `uninstall` | Conserva el paquete global y los datos del navegador por defecto. `--remove-playwright` ejecuta `pnpm remove --global @playwright/cli` (sin sufijo de versión). Si el `pnpm remove` devuelve código no-cero, `uninstall` reporta el error en el `outro` en lugar de "Hecho". |
 
 ### 2.5 Datos del navegador — el stack **nunca** los toca
 
@@ -89,6 +91,16 @@ El stack **nunca** borra ni modifica:
 ### 2.6 Comportamiento bajo `--target-dir`
 
 `--target-dir` es **solo** un modo de pruebas con un runtime específico. **Nunca** dispara instalaciones globales: ni del paquete, ni del navegador, ni de Chrome. Los planes `install`/`install-browser` se omiten aunque la preferencia esté activa.
+
+Bajo `--target-dir`, además, el CLI **nunca** lee ni escribe el estado real del navegador (`target-dir` queda completamente aislado del estado global):
+
+- No se valida ni se corrige `~/.jorgex-stack/playwright-cli.json` ni `~/.jorgex-stack/devtools-mcp.json`: el parser de preferencias y el chequeo de corrupción se desactivan (`useBrowserPreferences = false`, `includeBrowserState = false`); un JSON corrupto en el `target-dir` no bloquea la operación de prueba.
+- No se llama a `detectPlaywrightCli()`: un binario real presente en `PATH` no se inspecciona ni se reporta desde `--target-dir`. Los sub-tests que mockean esa función la reciben sin invocarse.
+- No se persiste ownership de MCP ni se reescriben entradas gestionadas contra `~/.jorgex-stack/devtools-mcp.json`.
+- Los planes pnpm globales (`pnpm add --global`, `pnpm dlx`, `pnpm remove --global`) nunca se ejecutan aunque el flag `--playwright` o `--remove-playwright` esté presente; solo se ejecutan contra el binario pinneado cuando `--target-dir` no se pasa.
+- `doctor` no entra en esta rama: es un comando sin `--target-dir`. Las verificaciones de browser en `doctor` leen siempre el estado real.
+
+El `--target-dir` sirve, en resumen, solo para validar el plan escrito contra un runtime temporal sin contaminar ni inspeccionar el estado real del usuario.
 
 ---
 
@@ -124,23 +136,29 @@ pnpm dlx jorgex-stack sync --no-devtools       # desactiva vía sync
 
 ### 3.3 Comando y argumentos
 
-El stack lanza siempre el mismo argv (versión pinneada, telemetría deshabilitada):
+El stack lanza siempre el mismo argv (versión pinneada, perfil aislado, cabeceras sensibles redactadas, CrUX y telemetría deshabilitados):
 
 ```powershell
-pnpm dlx chrome-devtools-mcp@1.6.0 --no-usage-statistics
+pnpm dlx chrome-devtools-mcp@1.6.0 \
+  --isolated \
+  --redact-network-headers \
+  --no-performance-crux \
+  --no-usage-statistics
 ```
 
-Sin keys, sin capabilities experimentales (`memory`, `vision`, `screencast`, `extensions`, `third-party`, `WebMCP`) habilitadas por defecto.
+Sin keys, sin capabilities experimentales (`memory`, `vision`, `screencast`, `extensions`, `third-party`, `WebMCP`) habilitadas por defecto. Los cuatro flags son **parte del argv fijo** declarado en `stack/mcp/servers.json`; cambiarlos (o su orden) requiere editar ese archivo y mergear el cambio — el CLI no acepta overrides desde flags de línea de comandos.
 
-### 3.4 Chrome y perfil dedicado
+### 3.4 Chrome y perfil temporal aislado
 
 El MCP **no** necesita un Chrome abierto. Por defecto:
 
 - Usa el Chrome instalado del sistema (estable o Chrome for Testing).
-- Lanza un **perfil dedicado**, separado de tu Chrome personal (no contamina cookies, extensiones ni sesiones).
+- Lanza Chrome con `--isolated`, que crea un **perfil temporal aislado** en un directorio efímero y lo **elimina al cerrar Chrome**. No hay un perfil persistente dedicado: cookies, `localStorage`, extensiones, historial y credenciales de la sesión del MCP no sobreviven al cierre del proceso y no contaminan tu Chrome personal.
+- Las cabeceras de red capturadas se redactan con `--redact-network-headers` (Authorization, Cookie, Set-Cookie y cabeceras equivalentes quedan enmascaradas en cualquier respuesta emitida por el MCP).
+- `--no-performance-crux` desactiva el reporte a Chrome CrUX y `--no-usage-statistics` desactiva la telemetría del propio paquete.
 - Conexión a un Chrome existente vía remote debugging es un modo avanzado opcional del upstream; el stack **no** lo automatiza ni lo activa por defecto.
 
-Si Chrome no está instalado en la máquina, DevTools MCP falla con un mensaje claro al invocarse; el stack **no** descarga Chrome por ti.
+Si Chrome no está instalado en la máquina, DevTools MCP falla con un mensaje claro al invocarse; el stack **no** descarga Chrome por ti. La limpieza del perfil temporal es responsabilidad del propio `--isolated` al cerrar Chrome: el stack nunca conserva ni restaura estado entre invocaciones del MCP.
 
 ### 3.5 Reconciliación quirúrgica
 
@@ -170,10 +188,12 @@ La retirada de `agent-browser` es **ownership-safe** y se basa **solo en el mani
 ## 5. Seguridad y privacidad
 
 - **Cero secretos**: el stack no inyecta keys en DevTools MCP. `chrome-devtools-mcp` y su launcher no aceptan keys; la regla "cero secretos en el repo" se mantiene.
-- **Telemetría deshabilitada por stack**: el flag `--no-usage-statistics` está fijo en el argv. Cambiarlo requiere editar `stack/mcp/servers.json` y mergear.
-- **Perfiles aislados**: DevTools MCP usa un perfil dedicado por defecto; no comparte estado con tu Chrome personal.
+- **Telemetría deshabilitada por stack**: los flags `--no-usage-statistics` y `--no-performance-crux` están fijos en el argv. Cambiarlos requiere editar `stack/mcp/servers.json` y mergear.
+- **Cabeceras sensibles redactadas**: el flag `--redact-network-headers` está fijo en el argv; cabeceras de autenticación, cookies y equivalentes se enmascaran en cualquier traza o respuesta emitida por el MCP.
+- **Perfil temporal aislado, eliminado al cerrar**: el flag `--isolated` levanta Chrome con un perfil temporal en un directorio efímero y lo borra al cerrar el proceso. El stack no crea ni mantiene un perfil persistente dedicado para DevTools MCP; no hay cookies, extensiones ni sesiones que sobrevivan entre invocaciones.
 - **Sin conexión automática a tu Chrome personal**: el modo "conectar a Chrome existente vía remote debugging" es avanzado y opcional en el upstream; el stack no lo automatiza.
-- **Comandos sin shell**: todas las invocaciones se planifican como argv directo (`execFileSync`); los shims `.cmd`/`.bat` de pnpm se validan antes de invocarse en Windows.
+- **Preferencias corruptas bloquean mutaciones**: si `~/.jorgex-stack/playwright-cli.json` o `~/.jorgex-stack/devtools-mcp.json` están ilegibles, `install`/`uninstall`/`update`/`update --check`/`update` interactivo fallan con exit 1 antes de tocar nada y `doctor` imprime la ruta exacta del archivo y el remedio (`Corrige o borra ese archivo antes de reintentar`). El CLI nunca sobrescribe un archivo corrupto con un default para no perder contexto del usuario.
+- **Comandos sin shell**: todas las invocaciones se planifican como argv directo (`execFileSync`); los shims `.cmd`/`.bat` de pnpm se validan antes de invocarse en Windows (puente `planDetectedBinCommand` que rechaza metacaracteres de `cmd.exe` y los pasa como `cmd.exe /d /s /c` solo cuando hace falta).
 - **Sin cloud browser / stealth / CAPTCHA bypass**: Playwright CLI y DevTools MCP operan sobre el navegador local. El stack no añade proxies, rotación de identidad ni automatización anti-bot.
 
 ---
@@ -183,13 +203,17 @@ La retirada de `agent-browser` es **ownership-safe** y se basa **solo en el mani
 | Síntoma | Causa probable | Solución |
 |---|---|---|
 | `install` no pregunta por Playwright | Falta TTY o está `--yes` sin `--playwright` | Ejecuta sin `--yes` con TTY, o añade `--playwright` para autorizar. |
+| `install` pregunta "¿instalar Playwright CLI global…?" pero el cursor por defecto es No | Comportamiento esperado (opt-in) | Pulsa `y` para confirmar, o ejecuta con `--playwright` en modo no interactivo. El texto del prompt *recomienda*, pero el cursor no lo hace. |
+| `install`/`uninstall`/`update`/`update --check` aborta con `Playwright CLI: preferencia inválida en ~/.jorgex-stack/playwright-cli.json` (o el mensaje análogo para `devtools-mcp.json`) | El JSON de la preferencia está corrupto o tiene un esquema no soportado | Corrige el archivo a mano (debe tener la `version` correcta y los campos esperados) o bórralo: el CLI nunca lo sobreescribe con un default. Tras corregirlo, repite el comando. `doctor` imprime exactamente la ruta del archivo y el remedio `Corrige o borra ese archivo antes de reintentar`. |
 | `doctor` dice `Playwright CLI: deshabilitado (opcional)` | Nunca se ha confirmado la preferencia | Ejecuta `install --playwright` o confirma la opción en la próxima install interactiva. |
 | `doctor` dice `Playwright CLI: … falta el navegador` | Paquete global presente, navegador no descargado | Ejecuta `install --playwright` (repite el plan `install-browser`). |
 | `doctor` dice `versión distinta del pin aprobado` | `@playwright/cli` no coincide con `0.1.17` | `update` interactivo (TTY) lo alinea, o `install --playwright` para reescribir. |
-| `playwright-cli: command not found` desde un subagente | Binario no en `PATH` global | El stack no fallback automático: `pnpm add --global @playwright/cli@0.1.17` para registrarlo. Para verificar manualmente: `pnpm dlx @playwright/cli@0.1.17 --version` (solo info, no operativo). |
+| `update` interactivo realinea Playwright pero `pnpm add --global` OK y `pnpm dlx ... install-browser` falla | El segundo paso del realineamiento devuelve código no-cero | El CLI falla cerrado: ningún paso se reporta como aplicado. Reintenta `update`; hasta que **ambos** planes (`install` + `install-browser`) tengan éxito, la preferencia no implica un realineamiento completo. |
+| `playwright-cli: command not found` desde un subagente | Binario no en `PATH` global | El stack no fallback automático: `pnpm add --global @playwright/cli@0.1.17` para registrarlo. La skill `playwright-cli` no permite `Bash(pnpm:*)`; el subagente debe devolver el control al orquestador para instalar. Para verificar manualmente: `pnpm dlx @playwright/cli@0.1.17 --version` (solo info, no operativo). |
 | DevTools MCP no aparece en un runtime | No se activó por runtime o falta `sync` | Re-ejecuta `install --devtools` (o multiselect interactivo) y luego `sync`. |
 | DevTools MCP falla con `Chrome not found` | Chrome no está instalado en la máquina | Instala Chrome (estable o Chrome for Testing) y reintenta. El stack no lo descarga. |
-| `uninstall` retiró Playwright sin haberlo pedido | No es lo que ocurre por defecto | El paquete y los datos se conservan siempre que no se pase `--remove-playwright`. Si fue un error, restaura con `restore --list`. |
+| `--target-dir` parece "ver" el binario real de Playwright o mover `~/.jorgex-stack/devtools-mcp.json` | Comportamiento esperado, no bug | `--target-dir` no llama a `detectPlaywrightCli()`, no valida preferencias, no persiste ownership de MCP ni ejecuta planes pnpm globales. Las pruebas que cubren este aislamiento viven en `tests/browser-preferences-safety.test.ts`. |
+| `uninstall` retiró Playwright sin haberlo pedido | No es lo que ocurre por defecto | El paquete y los datos se conservan siempre que no se pase `--remove-playwright`. Si fue un error, restaura con `restore --list`. Si `--remove-playwright` falla, `uninstall` reporta el error en el `outro` en lugar de "Hecho" — no se trata como éxito silencioso. |
 | `agent-browser` viejo en `~/.agents/skills/` | Migración ownership-safe (solo manifest) | Si está en el manifest, desapareció; si no, sigue intacto. Verifica con el manifest en `~/.jorgex-stack/manifest.json`. No hay warning automático para residuo unowned. |
 | Claude Code no arranca DevTools MCP aunque `~/.claude.json` lo liste | El plugin oficial de Engram ya provee el MCP — `engram` se retira del `~/.claude.json` para no duplicar tools; pero DevTools MCP no tiene esa duplicación. Comprueba que la entrada `mcpServers.chrome-devtools` existe y que Chrome está instalado. |
 
@@ -204,15 +228,18 @@ Constan aquí para que nadie intente reintroducirlos:
 - **Browser Use / Stagehand / Skyvern / Firecrawl** y proveedores cloud: orquestan navegadores remotos o agénticos; no se alinean con el modelo local-only del stack.
 - **Conexión automática al Chrome personal del usuario**: deliberadamente no soportada por el stack. Si la necesitas, es un modo avanzado opcional del upstream que aquí se documenta pero no se automatiza.
 - **Instalar Chrome** automáticamente: fuera de scope. El stack respeta la decisión del usuario sobre qué navegador instalar.
+- **Perfil persistente dedicado para DevTools MCP**: el `--isolated` fija un perfil temporal que se elimina al cerrar Chrome. El stack no crea ni migra un perfil dedicado persistente; si quieres reutilizar cookies, sesiones o `localStorage` entre invocaciones del MCP, esa responsabilidad es tuya.
+- **Auto-reparar preferencias corruptas**: las preferencias ilegibles (`playwright-cli.json` / `devtools-mcp.json`) bloquean `install`/`uninstall`/`update` y `doctor` se limita a reportar la ruta y el remedio; el CLI nunca sobrescribe un archivo corrupto con un default para no destruir contexto del usuario.
 - **Borrar perfiles, cookies, storage state, traces, vídeos, capturas**: nunca. Ni en `uninstall`, ni en `update`, ni en `sync`. Limpieza manual si la quieres.
 
 ---
 
 ## 8. Referencias
 
-- Skill vendorizada: `stack/skills/playwright-cli/SKILL.md` (referencias de `snapshot`, `test-generation`, `tracing`, `video-recording`, `storage-state`, `session-management`, `request-mocking`, `element-attributes`, `running-code`, `playwright-tests`).
-- Pin canónico: `upstreams.json` → `skills.playwright-cli`.
-- Manifiesto MCP: `stack/mcp/servers.json` → `servers.chrome-devtools`.
-- Preferencias: `~/.jorgex-stack/playwright-cli.json` y `~/.jorgex-stack/devtools-mcp.json`.
-- Contratos RED/GREEN cubiertos en `tests/external-tools.test.ts`, `tests/playwright-lifecycle.test.ts` y `tests/devtools-mcp.test.ts`.
+- Skill vendorizada: `stack/skills/playwright-cli/SKILL.md` (frontmatter con `allowed-tools: Bash(playwright-cli:*)`; `Bash(pnpm:*)` está explícitamente fuera del scope. Referencia de comandos: `snapshot`, `test-generation`, `tracing`, `video-recording`, `storage-state`, `session-management`, `request-mocking`, `element-attributes`, `running-code`, `playwright-tests`).
+- Pin canónico: `upstreams.json` → `skills.playwright-cli` (paquete `@playwright/cli@0.1.17`, binario `playwright-cli`).
+- Manifiesto MCP: `stack/mcp/servers.json` → `servers.chrome-devtools` (argv fijo `["dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]`).
+- Preferencias: `~/.jorgex-stack/playwright-cli.json` y `~/.jorgex-stack/devtools-mcp.json`, validadas por `browserPreferenceErrors()`. Un JSON corrupto aborta `install`/`uninstall`/`update`/`update --check`/`update` interactivo con exit 1 y aparece en `doctor` con la ruta exacta y `Corrige o borra ese archivo antes de reintentar`.
+- Puente seguro de invocación Windows: `src/lib/detect.ts` → `planDetectedBinCommand` (shims `.cmd`/`.bat` requieren `cmd.exe /d /s /c` con partes saneadas de metacaracteres; argv directo, sin `shell: true`).
+- Contratos RED/GREEN cubiertos en `tests/external-tools.test.ts`, `tests/playwright-lifecycle.test.ts`, `tests/devtools-mcp.test.ts`, `tests/cli-mode-resolution.test.ts`, `tests/playwright-update.test.ts` (realinea `update` + `install-browser`), `tests/playwright-uninstall.test.ts` (`outro` correcto en errores de `remove`), `tests/playwright-windows-execution.test.ts` (shims `.cmd` por `cmd.exe` sin shell) y `tests/browser-preferences-safety.test.ts` (estado real aislado bajo `--target-dir` y preferencias corruptas bloquean mutaciones).
 - Migración ownership-safe cubierta en `tests/target-inventory-regressions.test.ts` ("preserva agent-browser modificado sin ownership y lo retira solo cuando un manifest válido lo declara").

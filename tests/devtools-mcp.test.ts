@@ -125,7 +125,10 @@ function expectUserConfigPreserved(runtime: RuntimeId, content: string): void {
 function expectDevToolsServer(runtime: RuntimeId, content: string): void {
   const expectedArgs = [
     "dlx",
-    expect.stringMatching(/^chrome-devtools-mcp@\d+\.\d+\.\d+$/),
+    "chrome-devtools-mcp@1.6.0",
+    "--isolated",
+    "--redact-network-headers",
+    "--no-performance-crux",
     "--no-usage-statistics",
   ];
 
@@ -134,7 +137,9 @@ function expectDevToolsServer(runtime: RuntimeId, content: string): void {
     expect(section).not.toBeNull();
     if (section === null) return;
     expect(section).toContain('command = "pnpm"');
-    expect(section).toMatch(/args = \["dlx", "chrome-devtools-mcp@\d+\.\d+\.\d+", "--no-usage-statistics"\]/);
+    expect(section).toContain(
+      'args = ["dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]',
+    );
     return;
   }
 
@@ -182,7 +187,10 @@ describe("optional Chrome DevTools MCP", () => {
     });
     expect(server?.args).toEqual([
       "dlx",
-      expect.stringMatching(/^chrome-devtools-mcp@\d+\.\d+\.\d+$/),
+      "chrome-devtools-mcp@1.6.0",
+      "--isolated",
+      "--redact-network-headers",
+      "--no-performance-crux",
       "--no-usage-statistics",
     ]);
   });

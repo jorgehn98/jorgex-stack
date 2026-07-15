@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { lookPath, runDetectedBin } from "./detect.js";
+import { execFileSync } from "node:child_process";
+import { lookPath, planDetectedBinCommand, runDetectedBin } from "./detect.js";
 
 export const PLAYWRIGHT_CLI = {
   packageName: "@playwright/cli",
@@ -104,5 +105,21 @@ export function planPlaywrightCliCommand(action: PlaywrightCliAction, pnpmBin: s
       return { command: pnpmBin, args: ["remove", "--global", PLAYWRIGHT_CLI.packageName] };
     case "install-browser":
       return { command: pnpmBin, args: ["dlx", pinnedPackage, PLAYWRIGHT_CLI.browserInstallAction] };
+  }
+}
+
+/** Ejecuta el plan pinneado sin shell y reutiliza el puente seguro para shims Windows. */
+export function executePlaywrightToolAction(action: PlaywrightCliAction, pnpmBin = resolvePnpmBin()): boolean {
+  if (pnpmBin === null) return false;
+
+  const command = planPlaywrightCliCommand(action, pnpmBin);
+  const invocation = planDetectedBinCommand(command.command, command.args);
+  if (invocation === null) return false;
+
+  try {
+    execFileSync(invocation.command, invocation.args, { stdio: "inherit" });
+    return true;
+  } catch {
+    return false;
   }
 }

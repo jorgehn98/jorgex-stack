@@ -217,7 +217,7 @@ async function resolvePlaywrightToolConsent(
   if (command === "install" && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
     const answer = await p.confirm({
       message: "Recomendado: ¿instalar Playwright CLI global y descargar sus navegadores?",
-      initialValue: true,
+      initialValue: false,
     });
     if (p.isCancel(answer)) return null;
     confirmed = answer === true;
@@ -426,12 +426,12 @@ async function main(): Promise<void> {
     case "update": {
       if (flags.check) {
         // --check: solo informar (comportamiento anterior, byte-compatible).
-        process.exitCode = await runUpdateCheck(VERSION);
+        process.exitCode = await runUpdateCheck(VERSION, flags.targetDir === undefined);
         return;
       }
       // --dry-run: cortocircuita al check sin sync previo ni flujo interactivo.
       if (flags.dryRun) {
-        process.exitCode = await runUpdateCheck(VERSION);
+        process.exitCode = await runUpdateCheck(VERSION, flags.targetDir === undefined);
         return;
       }
       // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
@@ -461,10 +461,15 @@ async function main(): Promise<void> {
       } else if (runtimes.length > 0) {
         console.error("No hay modo guardado; se omite el sync previo y se continúa con update. Usa --mode explícito si quieres sincronizar.");
       }
-      const result: InteractiveUpdateResult = await runInteractiveUpdate(VERSION, flags.yes, flags.dryRun);
+      const result: InteractiveUpdateResult = await runInteractiveUpdate(
+        VERSION,
+        flags.yes,
+        flags.dryRun,
+        flags.targetDir === undefined,
+      );
       process.exitCode = result.exitCode;
       // Solo skills/stack cambian los artefactos que el sync propaga.
-      if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && !canSync) {
+      if (result.syncRequired && runtimes.length > 0 && (result.exitCode !== 0 || !canSync)) {
         p.log.warn("Skills/stack actualizados, pero el sync con los runtimes sigue pendiente. Ejecuta jorgex-stack sync --mode human|programmatic.");
       } else if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });

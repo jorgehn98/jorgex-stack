@@ -10,6 +10,7 @@ import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import {
+  browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
   playwrightCliPreferenceFile,
   saveDevtoolsMcpOwnership,
@@ -44,6 +45,13 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
  */
 export async function runUninstall(opts: UninstallOptions): Promise<number> {
   p.intro(`jorgex-stack ${opts.dryRun ? "uninstall (dry-run)" : "uninstall"}`);
+  const useBrowserPreferences = opts.targetDir === undefined;
+  const preferenceErrors = useBrowserPreferences ? browserPreferenceErrors() : [];
+  if (preferenceErrors.length > 0) {
+    for (const error of preferenceErrors) p.log.error(error);
+    p.outro("Uninstall cancelado: corrige las preferencias de navegador antes de reintentar.");
+    return 1;
+  }
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
@@ -77,13 +85,15 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   // targets se conservan — desinstalar Codex no debe llevarse las skills que
   // OpenCode usa.
   const retained = new Set<string>();
-  for (const keep of Object.values(ADAPTERS)) {
-    if (opts.runtimes.includes(keep.id)) continue;
-    const detection = keep.detect();
-    if (!detection.installed) continue;
-    const keepCtx = makeContext(keep, detection.configDir);
-    if (!keepCtx) continue;
-    for (const action of buildPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
+  if (useBrowserPreferences) {
+    for (const keep of Object.values(ADAPTERS)) {
+      if (opts.runtimes.includes(keep.id)) continue;
+      const detection = keep.detect();
+      if (!detection.installed) continue;
+      const keepCtx = makeContext(keep, detection.configDir);
+      if (!keepCtx) continue;
+      for (const action of buildPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
+    }
   }
 
   for (const id of opts.runtimes) {
@@ -98,7 +108,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       p.log.warn(`${adapter.name} no detectado — omitido.`);
       continue;
     }
-    const ctx = makeContext(adapter, configDir);
+    const ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences);
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
 
@@ -145,7 +155,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       }
     }
     for (const [name, server] of Object.entries(mcp.servers)) {
-      if (server.optional) saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, name, false);
+      if (usingRealConfig && server.optional) saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, name, false);
     }
     if (usingRealConfig) removeRuntimeManifest(id);
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
@@ -172,6 +182,10 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.log.info("Playwright CLI: paquete global y datos del navegador conservados (usa --remove-playwright para retirar solo el paquete).");
   }
 
-  p.outro(opts.dryRun ? "Dry-run: no se ha tocado nada." : "Hecho. Usa 'restore' si quieres volver atrás.");
+  p.outro(opts.dryRun
+    ? "Dry-run: no se ha tocado nada."
+    : exitCode === 0
+      ? "Hecho. Usa 'restore' si quieres volver atrás."
+      : "Uninstall completado con errores (revisa arriba).");
   return exitCode;
 }

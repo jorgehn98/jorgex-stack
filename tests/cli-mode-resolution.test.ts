@@ -390,4 +390,23 @@ describe("opciones de navegador en main()", () => {
       error.mockRestore();
     }
   });
+
+  it("entrega el consentimiento de Playwright y la selección DevTools a install", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-install-flags-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    await runCli(
+      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--playwright", "--devtools"],
+      homeDir,
+    );
+
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({
+        command: "install",
+        explicitToolSelection: true,
+      }),
+      devtoolsMcpSelection: { opencode: true },
+    }));
+  });
 });
