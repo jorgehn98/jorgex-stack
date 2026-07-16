@@ -26,6 +26,33 @@ export interface PlaywrightCliDetectionInput {
 
 export type PlaywrightCliAction = "install" | "update" | "remove" | "install-browser";
 
+export type PlaywrightToolActionFailureReason =
+  | "pnpm-unavailable"
+  | "pnpm-command"
+  | "pnpm-global-bin"
+  | "action-failed";
+
+export type PlaywrightToolActionResult =
+  | { ok: true }
+  | { ok: false; reason: PlaywrightToolActionFailureReason };
+
+export const PNPM_GLOBAL_BIN_REMEDY =
+  "Ejecuta 'pnpm setup', abre una terminal nueva y reintenta. El stack no modifica PNPM_HOME ni PATH.";
+
+/** Devuelve un remedio accionable solo para fallos atribuibles a pnpm. */
+export function resolvePnpmFailureRemedy(reason: PlaywrightToolActionFailureReason): string | null {
+  switch (reason) {
+    case "pnpm-unavailable":
+      return "Instala pnpm o añádelo a PATH antes de reintentar.";
+    case "pnpm-command":
+      return "No se pudo ejecutar pnpm. Revisa su instalación, PATH y permisos antes de reintentar.";
+    case "pnpm-global-bin":
+      return PNPM_GLOBAL_BIN_REMEDY;
+    case "action-failed":
+      return null;
+  }
+}
+
 export type PlaywrightBrowserCacheState =
   | { status: "ready"; path: string }
   | { status: "missing"; path: string; errorCode?: string }
@@ -34,6 +61,14 @@ export type PlaywrightBrowserCacheState =
 export interface CommandPlan {
   command: string;
   args: string[];
+}
+
+function hasNonzeroProcessStatus(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "status" in error
+    && typeof error.status === "number"
+    && error.status !== 0;
 }
 
 function parsePlaywrightCliVersion(output: string | null): string | null {
@@ -124,17 +159,30 @@ export function planPlaywrightCliCommand(action: PlaywrightCliAction, pnpmBin: s
 }
 
 /** Ejecuta el plan pinneado sin shell y reutiliza el puente seguro para shims Windows. */
-export function executePlaywrightToolAction(action: PlaywrightCliAction, pnpmBin = resolvePnpmBin()): boolean {
-  if (pnpmBin === null) return false;
+export function executePlaywrightToolAction(
+  action: PlaywrightCliAction,
+  pnpmBin = resolvePnpmBin(),
+): PlaywrightToolActionResult {
+  if (pnpmBin === null) return { ok: false, reason: "pnpm-unavailable" };
+
+  if (action !== "install-browser") {
+    const preflight = planDetectedBinCommand(pnpmBin, ["bin", "--global"]);
+    if (preflight === null) return { ok: false, reason: "pnpm-command" };
+    try {
+      execFileSync(preflight.command, preflight.args, { stdio: "inherit" });
+    } catch (error) {
+      return { ok: false, reason: hasNonzeroProcessStatus(error) ? "pnpm-global-bin" : "pnpm-command" };
+    }
+  }
 
   const command = planPlaywrightCliCommand(action, pnpmBin);
   const invocation = planDetectedBinCommand(command.command, command.args);
-  if (invocation === null) return false;
+  if (invocation === null) return { ok: false, reason: "pnpm-command" };
 
   try {
     execFileSync(invocation.command, invocation.args, { stdio: "inherit" });
-    return true;
+    return { ok: true };
   } catch {
-    return false;
+    return { ok: false, reason: "action-failed" };
   }
 }

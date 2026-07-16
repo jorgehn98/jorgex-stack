@@ -9,6 +9,7 @@ import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
+import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -180,17 +181,24 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   } else if (playwrightPlan.actions.length > 0) {
     if (opts.dryRun) {
       p.log.info("Playwright CLI: se retiraría solo el paquete global; los datos y navegadores se conservan.");
-    } else if (executePlaywrightToolAction("remove")) {
-      try {
-        savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
-        p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
-      } catch (error) {
-        p.log.error(`Playwright CLI: paquete global retirado, pero no se pudo guardar la preferencia (${error instanceof Error ? error.message : String(error)}). Corrige la preferencia antes de reintentar.`);
+    } else {
+      const removal = executePlaywrightToolAction("remove");
+      if (removal.ok) {
+        try {
+          savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
+          p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
+        } catch (error) {
+          p.log.error(`Playwright CLI: paquete global retirado, pero no se pudo guardar la preferencia (${error instanceof Error ? error.message : String(error)}). Corrige la preferencia antes de reintentar.`);
+          exitCode = 1;
+        }
+      } else {
+        const pnpmRemedy = resolvePnpmFailureRemedy(removal.reason);
+        const recovery = pnpmRemedy === null
+          ? " Revisa el error de pnpm anterior y ejecuta 'jorgex-stack uninstall --remove-playwright' para reintentar."
+          : ` ${pnpmRemedy} Después, ejecuta 'jorgex-stack uninstall --remove-playwright' para reintentar.`;
+        p.log.error(`Playwright CLI: no se pudo retirar el paquete global; los datos y la preferencia se conservan.${recovery}`);
         exitCode = 1;
       }
-    } else {
-      p.log.error("Playwright CLI: no se pudo retirar el paquete global; los datos y la preferencia se conservan.");
-      exitCode = 1;
     }
   } else {
     p.log.info("Playwright CLI: paquete global y datos del navegador conservados (usa --remove-playwright para retirar solo el paquete).");

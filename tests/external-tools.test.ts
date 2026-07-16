@@ -4,10 +4,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PLAYWRIGHT_CLI,
+  PNPM_GLOBAL_BIN_REMEDY,
   isPlaywrightBrowserReady,
   planPlaywrightCliCommand,
   resolvePnpmBin,
+  resolvePnpmFailureRemedy,
   resolvePlaywrightCliState,
+  executePlaywrightToolAction,
 } from "../src/lib/external-tools.js";
 import {
   loadPlaywrightCliPreference,
@@ -20,8 +23,14 @@ const WINDOWS_PLAYWRIGHT_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\playwrigh
 const WINDOWS_PNPM_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.cmd";
 const tempDirs: string[] = [];
 const mocks = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
   lookPath: vi.fn<(command: string) => string | null>(),
 }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFileSync: mocks.execFileSync };
+});
 
 vi.mock("../src/lib/detect.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/detect.js")>();
@@ -36,6 +45,7 @@ function tempDir(): string {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  mocks.execFileSync.mockReset();
   mocks.lookPath.mockReset();
   vi.restoreAllMocks();
 });
@@ -94,6 +104,58 @@ describe("Playwright CLI external tool core", () => {
       command: WINDOWS_PNPM_BIN,
       args,
     });
+  });
+
+  it("returns a typed global-bin failure without mutating global actions, but keeps browser downloads successful", () => {
+    const preflightCalls: string[][] = [];
+    const globalMutationCalls: string[][] = [];
+    const browserInstallCalls: string[][] = [];
+    mocks.execFileSync.mockImplementation((_command, args: string[]) => {
+      if (args[0] === "bin" && args[1] === "--global") {
+        preflightCalls.push(args);
+        throw Object.assign(new Error("Unable to find the global bin directory"), { status: 1 });
+      }
+      if (args[1] === "--global") globalMutationCalls.push(args);
+      if (args[0] === "dlx") browserInstallCalls.push(args);
+      return "";
+    });
+    const pnpmBin = "C:\\tools\\pnpm.exe";
+    const globalActions = ["install", "update", "remove"] as const;
+
+    const globalResults = globalActions.map((action) => executePlaywrightToolAction(action, pnpmBin));
+    const browserResult = executePlaywrightToolAction("install-browser", pnpmBin);
+
+    expect(globalResults).toEqual(globalActions.map(() => ({ ok: false, reason: "pnpm-global-bin" })));
+    expect(browserResult).toEqual({ ok: true });
+    expect(preflightCalls).toEqual(globalActions.map(() => ["bin", "--global"]));
+    expect(globalMutationCalls).toEqual([]);
+    expect(browserInstallCalls).toEqual([["dlx", PINNED_PACKAGE, "install-browser"]]);
+  });
+
+  it.each(["ENOENT", "EACCES"] as const)("classifies a %s preflight spawn failure as a pnpm command error", (code) => {
+    const globalMutationCalls: string[][] = [];
+    mocks.execFileSync.mockImplementation((_command, args: string[]) => {
+      if (args[0] === "bin" && args[1] === "--global") {
+        throw Object.assign(new Error(`pnpm preflight ${code}`), { code });
+      }
+      if (args[1] === "--global") globalMutationCalls.push(args);
+      return "";
+    });
+
+    expect(executePlaywrightToolAction("install", "C:\\tools\\pnpm.exe")).toEqual({
+      ok: false,
+      reason: "pnpm-command",
+    });
+    expect(globalMutationCalls).toEqual([]);
+  });
+
+  it.each([
+    ["pnpm-unavailable", "Instala pnpm o añádelo a PATH antes de reintentar."],
+    ["pnpm-command", "No se pudo ejecutar pnpm. Revisa su instalación, PATH y permisos antes de reintentar."],
+    ["pnpm-global-bin", PNPM_GLOBAL_BIN_REMEDY],
+    ["action-failed", null],
+  ] as const)("maps %s to its reusable pnpm remedy", (reason, expected) => {
+    expect(resolvePnpmFailureRemedy(reason)).toBe(expected);
   });
 
   it("does not resolve an unsupported pnpm.ps1 shim", () => {

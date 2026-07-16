@@ -326,6 +326,49 @@ describe("browser preference safety", () => {
     }
   });
 
+  it("short-circuits global-bin setup, keeps the preference unpersisted, and gives the setup remedy", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-global-bin-"));
+    const homeDir = path.join(root, "home");
+    const actions: string[] = [];
+    const persistEnabled = vi.fn();
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const { runInstall } = await import("../src/install.js");
+
+        await expect(runInstall({
+          runtimes: [],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+          },
+          playwrightToolDeps: {
+            run: async (action) => {
+              actions.push(action);
+              return { ok: false as const, reason: "pnpm-global-bin" as const };
+            },
+            persistEnabled,
+          },
+        })).resolves.toBe(1);
+
+        expect(actions).toEqual(["install"]);
+        expect(persistEnabled).not.toHaveBeenCalled();
+        expect(mocks.prompts.log.error).toHaveBeenCalledWith(
+          expect.stringMatching(/pnpm setup.*jorgex-stack install --playwright/i),
+        );
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports an unreadable browser cache with its path and code during sync", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-sync-cache-"));
     const homeDir = path.join(root, "home");

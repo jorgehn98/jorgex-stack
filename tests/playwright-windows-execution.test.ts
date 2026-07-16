@@ -42,10 +42,14 @@ describe("Playwright pnpm execution on Windows", () => {
     mocks.execFileSync.mockImplementation(actualChildProcess.execFileSync);
     const { executePlaywrightToolAction } = await import("../src/install.js");
 
-    expect(executePlaywrightToolAction("install")).toBe(true);
+    expect(executePlaywrightToolAction("install")).toEqual({ ok: true });
     expect(fs.readFileSync(observedArgs, "utf8").trim()).toBe("add --global @playwright/cli@0.1.17");
 
-    const [command, args, options] = mocks.execFileSync.mock.calls[0] as [string, string[], { shell?: boolean }];
+    const mutationCall = mocks.execFileSync.mock.calls.find(([, args]) =>
+      Array.isArray(args) && args.at(-1)?.includes("add --global @playwright/cli@0.1.17"),
+    );
+    expect(mutationCall).toBeDefined();
+    const [command, args, options] = mutationCall as [string, string[], { shell?: boolean }];
     expect(path.basename(command).toLowerCase()).toBe("cmd.exe");
     expect(args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
     expect(args.at(-1)).toContain(shim);
