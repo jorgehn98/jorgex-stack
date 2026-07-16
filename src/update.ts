@@ -23,7 +23,7 @@ function rateLimitHint(prefix: string): string {
 }
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
-import { detectPlaywrightCli, PLAYWRIGHT_CLI, type PlaywrightCliState } from "./lib/external-tools.js";
+import { detectPlaywrightCli, PLAYWRIGHT_CLI, resolvePnpmFailureRemedy, type PlaywrightCliState } from "./lib/external-tools.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
 
@@ -975,15 +975,24 @@ export async function runInteractiveUpdate(
     if (p.isCancel(confirmPlaywright) || !confirmPlaywright) {
       p.log.info("Playwright CLI: actualización omitida.");
     } else {
-      const packageUpdated = executePlaywrightToolAction("update");
-      const browserInstalled = packageUpdated && executePlaywrightToolAction("install-browser");
-      if (packageUpdated && browserInstalled) {
+      const packageResult = executePlaywrightToolAction("update");
+      const browserResult = packageResult.ok
+        ? executePlaywrightToolAction("install-browser")
+        : null;
+      if (packageResult.ok && browserResult?.ok) {
         p.log.success("Playwright CLI actualizado al pin aprobado.");
         appliedUpdates = true;
         updated.push("playwright-cli");
       } else {
-        const failedStep = packageUpdated ? "descargar el navegador" : "actualizar el paquete global";
-        p.log.error(`Playwright CLI: no se pudo ${failedStep}. Ejecuta 'jorgex-stack install --playwright' para reintentar el paquete y el navegador.`);
+        const failedResult = packageResult.ok ? browserResult : packageResult;
+        const pnpmRemedy = failedResult && !failedResult.ok
+          ? resolvePnpmFailureRemedy(failedResult.reason)
+          : null;
+        const recovery = pnpmRemedy === null
+          ? "Ejecuta 'jorgex-stack install --playwright' para reintentar el paquete y el navegador."
+          : `${pnpmRemedy} Después, ejecuta 'jorgex-stack update' para reintentar.`;
+        const failedStep = packageResult.ok ? "descargar el navegador" : "actualizar el paquete global";
+        p.log.error(`Playwright CLI: no se pudo ${failedStep}. ${recovery}`);
         exitCode = 1;
       }
     }

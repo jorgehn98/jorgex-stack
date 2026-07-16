@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PlaywrightToolActionResult } from "../src/lib/external-tools.js";
 
 const mocks = vi.hoisted(() => ({
-  executePlaywrightToolAction: vi.fn(() => false),
+  executePlaywrightToolAction: vi.fn<() => PlaywrightToolActionResult>(() => ({ ok: false, reason: "action-failed" })),
   savePlaywrightCliPreference: vi.fn(),
   prompts: {
     intro: vi.fn(),
@@ -51,10 +52,13 @@ describe("Playwright uninstall failure", () => {
 
     expect(mocks.prompts.outro).toHaveBeenCalledWith(expect.stringMatching(/errores/i));
     expect(mocks.prompts.outro).not.toHaveBeenCalledWith(expect.stringMatching(/^Hecho\./i));
+    expect(mocks.prompts.log.error).toHaveBeenCalledWith(
+      expect.stringMatching(/jorgex-stack uninstall --remove-playwright/i),
+    );
   });
 
   it("reports the partial state when package removal succeeds but preference persistence fails", async () => {
-    mocks.executePlaywrightToolAction.mockReturnValueOnce(true);
+    mocks.executePlaywrightToolAction.mockReturnValueOnce({ ok: true });
     mocks.savePlaywrightCliPreference.mockImplementationOnce(() => {
       throw new Error("preference write failed");
     });
@@ -70,5 +74,25 @@ describe("Playwright uninstall failure", () => {
 
     expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/paquete.*retirado.*preferencia/i));
     expect(mocks.prompts.outro).toHaveBeenCalledWith(expect.stringMatching(/errores/i));
+  });
+
+  it("keeps the preference unpersisted and gives the setup remedy when the global bin is unavailable", async () => {
+    mocks.executePlaywrightToolAction.mockReturnValueOnce({ ok: false, reason: "pnpm-global-bin" });
+    const { runUninstall } = await import("../src/uninstall.js");
+
+    await expect(runUninstall({
+      runtimes: [],
+      dryRun: false,
+      yes: true,
+      removeEngram: false,
+      removePlaywright: true,
+    })).resolves.toBe(1);
+
+    expect(mocks.executePlaywrightToolAction).toHaveBeenCalledTimes(1);
+    expect(mocks.executePlaywrightToolAction).toHaveBeenCalledWith("remove");
+    expect(mocks.savePlaywrightCliPreference).not.toHaveBeenCalled();
+    expect(mocks.prompts.log.error).toHaveBeenCalledWith(
+      expect.stringMatching(/pnpm setup.*jorgex-stack uninstall --remove-playwright/i),
+    );
   });
 });

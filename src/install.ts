@@ -25,7 +25,10 @@ import {
   executePlaywrightToolAction as executeExternalPlaywrightToolAction,
   isPlaywrightBrowserReady,
   resolvePnpmBin,
+  resolvePnpmFailureRemedy,
   type PlaywrightCliAction,
+  type PlaywrightToolActionFailureReason,
+  type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
 import {
   browserPreferenceErrors,
@@ -63,8 +66,8 @@ export interface InstallOptions {
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
 export type PlaywrightInstallAction = Exclude<PlaywrightToolAction, "remove">;
 
-/** Puente de compatibilidad: la ejecución vive en external-tools; aquí solo se resuelve la dependencia inyectable. */
-export function executePlaywrightToolAction(action: PlaywrightCliAction): boolean {
+/** Puente de instalación al ejecutor tipado de external-tools. */
+export function executePlaywrightToolAction(action: PlaywrightCliAction): PlaywrightToolActionResult {
   return executeExternalPlaywrightToolAction(action, resolvePnpmBin());
 }
 
@@ -83,13 +86,17 @@ export interface PlaywrightToolConsent {
 }
 
 export interface PlaywrightToolPlanDeps {
-  run: (action: PlaywrightInstallAction) => Promise<boolean>;
+  run: (action: PlaywrightInstallAction) => Promise<boolean | PlaywrightToolActionResult>;
   persistEnabled: (enabled: boolean) => void;
 }
 
 export type PlaywrightToolPlanResult =
   | { ok: true }
-  | { ok: false; failedAction: PlaywrightInstallAction | "persist" };
+  | {
+      ok: false;
+      failedAction: PlaywrightInstallAction | "persist";
+      reason?: PlaywrightToolActionFailureReason;
+    };
 
 /**
  * Un --yes no autoriza software global nuevo por sí mismo. En modo interactivo
@@ -114,7 +121,9 @@ export async function runPlaywrightToolPlan(
 ): Promise<PlaywrightToolPlanResult> {
   for (const action of plan.actions) {
     try {
-      if (!(await deps.run(action))) return { ok: false, failedAction: action };
+      const result = await deps.run(action);
+      if (result === false) return { ok: false, failedAction: action };
+      if (result !== true && !result.ok) return { ok: false, failedAction: action, reason: result.reason };
     } catch {
       return { ok: false, failedAction: action };
     }
@@ -434,11 +443,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         persistEnabled: (enabled) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
       });
       if (!result.ok) {
-        const reason = result.failedAction === "install"
+        const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
+        const reason = result.reason === "pnpm-global-bin"
+          ? `la configuración global de pnpm no está lista. ${pnpmRemedy}`
+          : pnpmRemedy ?? (result.failedAction === "install"
           ? "no se pudo instalar el paquete global"
           : result.failedAction === "install-browser"
             ? "no se pudo descargar el navegador"
-            : "se instalaron los componentes, pero no se pudo guardar la preferencia";
+            : "se instalaron los componentes, pero no se pudo guardar la preferencia");
         p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
         exitCode = 1;
       } else {
