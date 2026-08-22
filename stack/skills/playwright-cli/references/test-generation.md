@@ -289,12 +289,12 @@ Goal: take a spec file and produce Playwright test files. Optionally update the 
 
 ### 2.2 Generate one scenario
 
-For each target scenario, in sequence (never in parallel — scenarios share the seed session):
+For each target scenario, run the CLI actions in sequence within its own seed session. Never run actions in parallel within one attached session; a seed session is single-threaded.
 
 ```bash
 PLAYWRIGHT_HTML_OPEN=never pnpm exec playwright test <seed-file> --debug=cli   # background
 playwright-cli attach tw-XXXX
-# resume
+playwright-cli resume
 ```
 
 **Do not** just open the app url with playwright-cli, always go through the test to capture any custom setup done there.
@@ -348,7 +348,7 @@ Rules:
 
 ### 2.3 Generate multiple scenarios
 
-Loop 2.2 over the targeted scenarios one at a time, restarting the seed between each so every test starts from a clean page. This is safe to parallelise due to unique generated session names - just make sure each test run is stopped.
+Loop 2.2 over the targeted scenarios, restarting the seed between each so every test starts from a clean page. Scenarios may run in parallel only when each has its own seed process and unique generated session name; never share a session or attach two scenario flows to the same seed. When isolation is uncertain, run scenarios serially. Stop every test run before moving on.
 
 ### 2.4 Run generated tests
 

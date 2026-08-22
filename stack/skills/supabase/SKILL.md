@@ -118,26 +118,34 @@ Before implementing any Supabase feature, find the relevant documentation. Use t
 
 ## Making and Committing Schema Changes
 
-First decide which schema workflow the project uses.
+Choose one project-level schema workflow before editing. Do not mix declarative schema files and hand-authored migrations for the same change.
 
 ### Option A: Declarative schemas
 
-Use this when `supabase/schemas/` exists or `config.toml` sets `schema_paths`. Edit the desired schema state in those files, then generate and review the migration. Do not start by hand-writing a migration. See the [Declarative database schemas guide](https://supabase.com/docs/guides/local-development/declarative-database-schemas).
+Use this when `supabase/schemas/` exists or `[db.migrations].schema_paths` is configured. The schema files are the source of truth; do not make the change directly in Studio, the SQL editor, or through `execute_sql`.
+
+1. Edit the desired state in `supabase/schemas/`.
+2. Generate a migration from that state → `supabase db diff -f <descriptive-name>`.
+3. Review the generated migration for one incremental change and any destructive SQL.
+4. Verify the full chain → `supabase db reset` (or apply pending migrations to a running local database with `supabase migration up`).
+5. Commit the schema files and generated migration together.
+
+`supabase db diff` does not read the live database. Changes made directly to a database are not captured by the declarative diff. DML and other documented schema-diff limitations belong in a versioned imperative migration instead. See the [Declarative database schemas guide](https://supabase.com/docs/guides/local-development/declarative-database-schemas).
 
 ### Option B: Imperative migrations
 
 Use this when the project does not use declarative schemas.
 
-**To make schema changes, use `execute_sql` (MCP) or `supabase db query` (CLI).** These run SQL directly on the database without creating migration history entries, so you can iterate freely and generate a clean migration when ready.
+1. Create the migration → `supabase migration new <descriptive-name>`.
+2. Add the SQL to the generated file; never invent a migration filename or rely on memory for its format.
+3. Verify the full chain → `supabase db reset` (or use `supabase migration up` when applying pending migrations to a running local database).
+4. Run advisors, review the Security Checklist above when applicable, and commit the migration.
 
-Do NOT use `apply_migration` to change a local database schema — it writes a migration history entry on every call, which means you can't iterate, and `supabase db diff` / `supabase db pull` will produce empty or conflicting diffs. If you use it, you'll be stuck with whatever SQL you passed on the first try.
+For an interactive local experiment, `execute_sql` (MCP) or `supabase db query` (CLI) may change the database without creating migration history. If the experiment is the intended change, capture it with `supabase db diff -f <descriptive-name>` and review the migration; otherwise reset or discard it before starting the migration. Do not use `supabase db pull` for local changes. `supabase db pull` is for pulling a linked remote schema into a local migration.
 
-**When ready to commit** your changes to a migration file:
+Do NOT use `apply_migration` to change a local database schema — it writes a migration history entry on every call, which prevents iterative work and can leave the migration history inconsistent. If you use it, you are stuck with whatever SQL you passed on the first try.
 
-1. **Run advisors** → `supabase db advisors` (CLI v2.81.3+) or MCP `get_advisors`. Fix any issues.
-2. **Review the Security Checklist above** if your changes involve views, functions, triggers, or storage.
-3. **Generate the migration** → `supabase db pull <descriptive-name> --local --yes`
-4. **Verify** → `supabase migration list --local`
+When a migration is ready, `supabase db advisors` (CLI v2.81.3+) or MCP `get_advisors` can check the resulting database. Fix findings before committing, then use `supabase migration list --local` when you need to compare local and remote migration history.
 
 ## Debugging
 

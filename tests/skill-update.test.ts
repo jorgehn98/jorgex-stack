@@ -12,6 +12,69 @@ import { listBackups } from "../src/lib/backup.js";
 let tmp: string;
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+const EXPECTED_UPSTREAM_METADATA = {
+  "playwright-cli": {
+    source: "github:microsoft/playwright-cli",
+    path: "skills/playwright-cli",
+    commit: "2f85a94b7b885dbf4a5d34462f253a8746a690c9",
+  },
+  "deploy-to-vercel": {
+    source: "github:vercel-labs/agent-skills",
+    path: "skills/deploy-to-vercel",
+    commit: "dd089a8c752c966dee8bf0f27cb625ba193ffd9e",
+  },
+  diagnose: {
+    source: "github:mattpocock/skills",
+    path: "skills/engineering/diagnosing-bugs",
+    commit: "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
+  },
+  "find-skills": {
+    source: "github:vercel-labs/skills",
+    path: "skills/find-skills",
+    commit: "435076e78988e1e6ec40d00b0b1d76bdbbc5419a",
+  },
+  "mcp-builder": {
+    source: "github:anthropics/skills",
+    path: "skills/mcp-builder",
+    commit: "3b3fad96af16a10759d930941b4520ba0c40edae",
+  },
+  "react-doctor": {
+    source: "github:millionco/react-doctor",
+    path: "skills/react-doctor",
+    commit: "e183c3519010599d929ed14d99a18bf1f8f8a44c",
+  },
+  "skill-creator": {
+    source: "github:anthropics/skills",
+    path: "skills/skill-creator",
+    commit: "3b3fad96af16a10759d930941b4520ba0c40edae",
+  },
+  supabase: {
+    source: "github:supabase/agent-skills",
+    path: "skills/supabase",
+    commit: "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
+  },
+  "supabase-postgres-best-practices": {
+    source: "github:supabase/agent-skills",
+    path: "skills/supabase-postgres-best-practices",
+    commit: "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
+  },
+  tdd: {
+    source: "github:mattpocock/skills",
+    path: "skills/engineering/tdd",
+    commit: "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
+  },
+  "to-issues": {
+    source: "github:mattpocock/skills",
+    path: "skills/engineering/to-tickets",
+    commit: "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
+  },
+  "to-prd": {
+    source: "github:mattpocock/skills",
+    path: "skills/engineering/to-spec",
+    commit: "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
+  },
+} as const;
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-skill-update-"));
 });
@@ -329,6 +392,14 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
     expect(localSkills.size).toBe(17);
     expect(localSkills.has("obsidian-cli")).toBe(false);
     expect(localSkills.has("obsidian-markdown")).toBe(false);
+    expect(
+      Object.fromEntries(
+        Object.entries(upstreams.skills).map(([name, info]) => [
+          name,
+          { source: info.source, path: info.path, commit: info.commit },
+        ]),
+      ),
+    ).toEqual(EXPECTED_UPSTREAM_METADATA);
     for (const [name, info] of Object.entries(upstreams.skills)) {
       expect(info.commit, `${name} sin pin SHA completo`).toMatch(/^[0-9a-f]{40}$/);
       expect(info.path, `${name} sin ruta upstream`).toMatch(/^skills\//);
