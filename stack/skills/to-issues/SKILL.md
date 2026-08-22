@@ -19,6 +19,8 @@ Work from whatever is already in the conversation context. If the user passes an
 
 If you have not already explored the codebase, do so to understand the current state of the code. Issue titles and descriptions should use the project's domain glossary vocabulary, and respect ADRs in the area you're touching.
 
+Look for opportunities to prefactor the code to make the implementation easier. If a prefactoring is useful but optional, record it explicitly in the plan; if selected, publish it as its own issue before the slices that depend on it. "Make the change easy, then make the easy change."
+
 ### 3. Draft vertical slices
 
 Break the plan into **tracer bullet** issues. Each issue is a thin vertical slice that cuts through ALL integration layers end-to-end, NOT a horizontal slice of one layer.
@@ -28,8 +30,20 @@ Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an
 <vertical-slice-rules>
 - Each slice delivers a narrow but COMPLETE path through every layer (schema, API, UI, tests)
 - A completed slice is demoable or verifiable on its own
+- Each slice is sized to fit in a single fresh context window
 - Prefer many thin slices over few thick ones
+- Any selected prefactoring should be completed first and block the dependent slices
 </vertical-slice-rules>
+
+Give each issue its **blocking edges**: the other issues that must complete before it can start. An issue with no blockers can start immediately. Keep the same edges in the project plan and the issue tracker.
+
+**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (for example, renaming a column or retyping a shared symbol) whose **blast radius** fans across the codebase, so a single edit breaks many call sites at once and no vertical slice can land green. Sequence it as **expand–contract**:
+
+1. **Expand:** add the new form beside the old so nothing breaks.
+2. **Migrate:** move call sites in batches sized by blast radius (for example, per package or directory), each as its own issue blocked by the expand issue, keeping the project green batch to batch while the old form still exists.
+3. **Contract:** delete the old form once no caller remains, in an issue blocked by every migration batch.
+
+When even the migration batches cannot stay green alone, keep the sequence but use an integration branch that all batches block, followed by a final integrate-and-verify issue; green is promised only there.
 
 ### 4. Quiz the user
 
@@ -43,7 +57,7 @@ Present the proposed breakdown as a numbered list. For each slice, show:
 Ask the user:
 
 - Does the granularity feel right? (too coarse / too fine)
-- Are the dependency relationships correct?
+- Are the blocking edges correct: does each slice only depend on issues that genuinely gate it?
 - Should any slices be merged or split further?
 - Are the correct slices marked as HITL and AFK?
 
