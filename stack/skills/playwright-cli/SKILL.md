@@ -345,13 +345,13 @@ playwright-cli kill-all
 If the global `playwright-cli` command is not available, use the pinned release with pnpm:
 
 ```bash
-pnpm dlx @playwright/cli@0.1.17 --version
+pnpm dlx @playwright/cli@0.1.18 --version
 ```
 
 For a global command, install the pinned release:
 
 ```bash
-pnpm add --global @playwright/cli@0.1.17
+pnpm add --global @playwright/cli@0.1.18
 ```
 
 ## Example: Form submission

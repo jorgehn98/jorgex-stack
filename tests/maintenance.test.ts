@@ -146,7 +146,7 @@ const DESTRUCTIVE_GIT_ESCALATION_CASES = [
 
 const EXACT_SEMVER = "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?";
 const EXACT_PACKAGE_SPEC = new RegExp(`^(?:@[^/\\s]+/[^@\\s]+|[^@\\s]+)@${EXACT_SEMVER}$`);
-const PINNED_PLAYWRIGHT_DLX = "pnpm dlx @playwright/cli@0.1.17 --version";
+const PINNED_PLAYWRIGHT_DLX = "pnpm dlx @playwright/cli@0.1.18 --version";
 
 const listFilesRecursively = (root: string): string[] =>
   fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -745,7 +745,7 @@ describe("contrato upstreams.json ↔ skills vendorizadas", () => {
     }
   });
 
-  it("vende Playwright CLI 0.1.17 completo, con pin y guía pnpm coherentes", () => {
+  it("vende Playwright CLI 0.1.18 completo, con pin y guía pnpm coherentes", () => {
     const root = path.join(stackRoot(), "..");
     const upstreams = JSON.parse(fs.readFileSync(path.join(root, "upstreams.json"), "utf8")) as {
       skills: Record<string, Record<string, unknown>>;
@@ -779,8 +779,8 @@ describe("contrato upstreams.json ↔ skills vendorizadas", () => {
       path: "skills/playwright-cli",
       package: "@playwright/cli",
       binary: "playwright-cli",
-      version: "0.1.17",
-      commit: "793cfb32572733cbcb401e6f28d05a7a914ce408",
+      version: "0.1.18",
+      commit: "2f85a94b7b885dbf4a5d34462f253a8746a690c9",
       license: "Apache-2.0",
       modified: true,
     });
@@ -796,8 +796,8 @@ describe("contrato upstreams.json ↔ skills vendorizadas", () => {
 
     const content = skillFiles.map((relativePath) => fs.readFileSync(path.join(skillRoot, relativePath), "utf8")).join("\n");
     expect(content).not.toMatch(/\b(?:npm|npx)\b/i);
-    expect(content).toContain("pnpm dlx @playwright/cli@0.1.17");
-    expect(content).toContain("pnpm add --global @playwright/cli@0.1.17");
+    expect(content).toContain("pnpm dlx @playwright/cli@0.1.18");
+    expect(content).toContain("pnpm add --global @playwright/cli@0.1.18");
 
     const frontmatter = /^---\n[\s\S]*?\n---\n/.exec(fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8"))?.[0];
     expect(frontmatter).toBe(

@@ -18,7 +18,7 @@ import {
   savePlaywrightCliPreference,
 } from "../src/lib/tool-preferences.js";
 
-const PINNED_PACKAGE = "@playwright/cli@0.1.17";
+const PINNED_PACKAGE = "@playwright/cli@0.1.18";
 const WINDOWS_PLAYWRIGHT_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\playwright-cli.cmd";
 const WINDOWS_PNPM_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.cmd";
 const tempDirs: string[] = [];
@@ -55,7 +55,7 @@ describe("Playwright CLI external tool core", () => {
     expect(PLAYWRIGHT_CLI).toMatchObject({
       packageName: "@playwright/cli",
       bin: "playwright-cli",
-      version: "0.1.17",
+      version: "0.1.18",
     });
   });
 
@@ -77,13 +77,13 @@ describe("Playwright CLI external tool core", () => {
     },
     {
       name: "current only at the approved release",
-      input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "playwright-cli 0.1.17\n" },
-      expected: { status: "current", detectedVersion: "0.1.17", binPath: WINDOWS_PLAYWRIGHT_BIN },
+      input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "playwright-cli 0.1.18\n" },
+      expected: { status: "current", detectedVersion: "0.1.18", binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
     {
       name: "current when the CLI reports the bare approved release",
-      input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "0.1.17" },
-      expected: { status: "current", detectedVersion: "0.1.17", binPath: WINDOWS_PLAYWRIGHT_BIN },
+      input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "0.1.18" },
+      expected: { status: "current", detectedVersion: "0.1.18", binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
     {
       name: "outdated for another parseable release",

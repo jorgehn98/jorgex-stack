@@ -14,49 +14,51 @@
       "path": "skills/playwright-cli",
       "package": "@playwright/cli",
       "binary": "playwright-cli",
-      "version": "0.1.17",
-      "commit": "793cfb32572733cbcb401e6f28d05a7a914ce408",
+      "version": "0.1.18",
+      "commit": "2f85a94b7b885dbf4a5d34462f253a8746a690c9",
       "license": "Apache-2.0",
-      "modified": true
+      "modified": true,
+      "note": "bundle release firmado 0.1.18 en ca196c297169a494ee5517584883eada60dc8d0e; el pin commit es el HEAD revisado del repo"
     },
     "deploy-to-vercel": {
       "source": "github:vercel-labs/agent-skills",
       "path": "skills/deploy-to-vercel",
       "version": "3.0.0",
-      "commit": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
+      "commit": "dd089a8c752c966dee8bf0f27cb625ba193ffd9e",
       "modified": true,
       "note": "por diseño empaqueta el proyecto entero (tarball) y lo sube a un endpoint de Vercel para desplegarlo; excluye .env/.env.*/.git/node_modules"
     },
     "diagnose": {
       "source": "github:mattpocock/skills",
       "path": "skills/engineering/diagnosing-bugs",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
-      "note": "upstream renombró la carpeta diagnose → diagnosing-bugs; mantenemos el nombre local 'diagnose'. El pin sigue en la última revisión aceptada hasta hacer diff y re-pin deliberado del contenido nuevo."
+      "commit": "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
+      "modified": true,
+      "note": "upstream renombró la carpeta diagnose → diagnosing-bugs; mantenemos el nombre y las adaptaciones locales sobre el HEAD revisado"
     },
     "find-skills": {
       "source": "github:vercel-labs/skills",
       "path": "skills/find-skills",
-      "commit": "be0dd25b4a8665894a56f45ef582cc02ca802c39",
+      "commit": "435076e78988e1e6ec40d00b0b1d76bdbbc5419a",
       "modified": true,
       "note": "la copia vendorizada se limita a descubrir skills; no acepta ni ejecuta instalación, actualización o inicialización de contenido upstream"
     },
     "mcp-builder": {
       "source": "github:anthropics/skills",
       "path": "skills/mcp-builder",
-      "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
+      "commit": "3b3fad96af16a10759d930941b4520ba0c40edae",
       "license": "Apache-2.0",
       "modified": true
     },
     "react-doctor": {
       "source": "github:millionco/react-doctor",
       "path": "skills/react-doctor",
-      "commit": "a48fb06ffbe7221655e18529fcc954ecae17a22f",
+      "commit": "e183c3519010599d929ed14d99a18bf1f8f8a44c",
       "modified": true
     },
     "skill-creator": {
       "source": "github:anthropics/skills",
       "path": "skills/skill-creator",
-      "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
+      "commit": "3b3fad96af16a10759d930941b4520ba0c40edae",
       "license": "Apache-2.0",
       "modified": true
     },
@@ -64,35 +66,35 @@
       "source": "github:supabase/agent-skills",
       "path": "skills/supabase",
       "version": "0.1.2",
-      "commit": "1356046015476711a769601079262b5635929427",
+      "commit": "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
       "modified": true
     },
     "supabase-postgres-best-practices": {
       "source": "github:supabase/agent-skills",
       "path": "skills/supabase-postgres-best-practices",
-      "commit": "1356046015476711a769601079262b5635929427",
+      "commit": "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
       "license": "MIT",
       "modified": true
     },
     "tdd": {
       "source": "github:mattpocock/skills",
       "path": "skills/engineering/tdd",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "commit": "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
       "modified": true
     },
     "to-issues": {
       "source": "github:mattpocock/skills",
       "path": "skills/engineering/to-tickets",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "commit": "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
       "modified": true,
-      "note": "upstream renombró to-issues → to-tickets; conservamos el nombre local to-issues y el pin de la última revisión aceptada hasta comparar y aceptar contenido nuevo deliberadamente"
+      "note": "upstream renombró to-issues → to-tickets; conservamos el nombre y las adaptaciones locales sobre el HEAD revisado"
     },
     "to-prd": {
       "source": "github:mattpocock/skills",
       "path": "skills/engineering/to-spec",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "commit": "5b15a47f2d7150f545fbcacbfe381787fc0230dc",
       "modified": true,
-      "note": "upstream renombró to-prd → to-spec; conservamos el nombre local to-prd y el pin de la última revisión aceptada hasta comparar y aceptar contenido nuevo deliberadamente"
+      "note": "upstream renombró to-prd → to-spec; conservamos el contrato D9 v2 local sobre el HEAD revisado"
     }
   }
 }

@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   detectPlaywrightCli: vi.fn(() => ({
     status: "current" as const,
     binPath: "C:/pnpm/playwright-cli.cmd",
-    detectedVersion: "0.1.17",
+    detectedVersion: "0.1.18",
   })),
   isPlaywrightBrowserReady: vi.fn<() => {
     status: "missing" | "unreadable";
