@@ -381,16 +381,15 @@ After creating your evaluation file, you can use the provided evaluation harness
 
 ## Setup
 
-1. **Install Dependencies**
+1. **Prepare the exact Python dependencies**
 
    ```bash
-   pip install -r scripts/requirements.txt
+   python -m pip install -r scripts/requirements.txt
    ```
 
-   Or install manually:
-   ```bash
-   pip install anthropic mcp
-   ```
+   The requirements file is the single dependency source for the evaluation
+   harness. It pins every package; do not replace it with an unversioned
+   package invocation or an upgrade command.
 
 2. **Set API Key**
 
@@ -550,10 +549,10 @@ Here's a complete example of creating and running an evaluation:
 </evaluation>
 ```
 
-2. **Install dependencies**:
+2. **Prepare the exact dependencies**:
 
 ```bash
-pip install -r scripts/requirements.txt
+python -m pip install -r scripts/requirements.txt
 export ANTHROPIC_API_KEY=your_api_key
 ```
 

@@ -10,9 +10,20 @@ Scans your React codebase for security, performance, correctness, and architectu
 
 ## Usage
 
+Run the project-pinned binary through the project's package manager:
+
 ```bash
-npx -y react-doctor@latest . --verbose --diff
+pnpm exec react-doctor . --verbose --diff
 ```
+
+`pnpm exec` resolves the binary from the current project's declared
+dependencies or workspace. It does not fetch an ad-hoc release and this skill
+does not modify `package.json`, the lockfile, or any global tool directory.
+
+If the command is unavailable, stop and return control to the user with a
+clear message that the project dependency is missing. The user can review and
+provision an exact project version through the normal dependency workflow,
+then rerun this skill.
 
 ## Workflow
 

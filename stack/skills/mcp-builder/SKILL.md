@@ -137,8 +137,11 @@ Review for:
 #### 3.2 Build and Test
 
 **TypeScript:**
-- Run `npm run build` to verify compilation
-- Test with MCP Inspector: `npx @modelcontextprotocol/inspector`
+- Run the project's locked build script with `pnpm run build` to verify compilation.
+- Test with the project-local MCP Inspector: `pnpm exec @modelcontextprotocol/inspector`.
+
+Use only tools declared by the project and resolved through its lockfile. Do
+not fetch a one-off package while implementing or evaluating a server.
 
 **Python:**
 - Verify syntax: `python -m py_compile your_server.py`
