@@ -1,5 +1,5 @@
 {
-  "$comment": "Terceros gestionados por `jorgex-stack update`: fuente, versión conocida y política. `commit` = pin del upstream en la última revisión aceptada (2026-06-11, auditoría de seguridad): update --check compara el HEAD del repo contra el pin y avisa si se movió; cualquier actualización de la copia vendorizada se hace con diff manual y re-pin deliberado, nunca a ciegas. El pin es del repo completo (no por path): en monorepos activos un pin movido no implica que la skill cambiara — el diff lo confirma. Las skills 'modified: true' tienen cambios locales respecto al upstream — update debe hacer diff/aviso, NUNCA reemplazo ciego (PRD §7.3). Skills propias sin upstream (no se actualizan desde fuera): agent-delegation, work-lifecycle. `path` = ruta dentro del repo upstream donde vive la skill (para diff/descarga quirúrgica). `kind: \"release\"` = la actualización se compara contra tags de release en vez de HEAD (e.g. paquetes Python sin SKILL.md en repo).",
+  "$comment": "Terceros gestionados por `jorgex-stack update`: fuente, versión conocida y política. `commit` = pin del upstream en la última revisión aceptada (2026-06-11, auditoría de seguridad): update --check compara el HEAD del repo contra el pin y avisa si se movió; cualquier actualización de la copia vendorizada se hace con diff manual y re-pin deliberado, nunca a ciegas. El pin es del repo completo (no por path): en monorepos activos un pin movido no implica que la skill cambiara — el diff lo confirma. Las skills 'modified: true' tienen cambios locales respecto al upstream — update debe hacer diff/aviso, NUNCA reemplazo ciego (PRD §7.3). Skills propias sin upstream (no se actualizan desde fuera): agent-delegation, lean-code, orchestrator, work-lifecycle y xreview. `path` = ruta dentro del repo upstream donde vive la skill (para diff/descarga quirúrgica). `kind: \"release\"` = la actualización se compara contra tags de release en vez de HEAD (e.g. paquetes Python sin SKILL.md en repo).",
   "tools": {
     "engram": {
       "kind": "binary",
@@ -24,6 +24,7 @@
       "path": "skills/deploy-to-vercel",
       "version": "3.0.0",
       "commit": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
+      "modified": true,
       "note": "por diseño empaqueta el proyecto entero (tarball) y lo sube a un endpoint de Vercel para desplegarlo; excluye .env/.env.*/.git/node_modules"
     },
     "diagnose": {
@@ -35,46 +36,43 @@
     "find-skills": {
       "source": "github:vercel-labs/skills",
       "path": "skills/find-skills",
-      "commit": "be0dd25b4a8665894a56f45ef582cc02ca802c39"
+      "commit": "be0dd25b4a8665894a56f45ef582cc02ca802c39",
+      "modified": true,
+      "note": "la copia vendorizada se limita a descubrir skills; no acepta ni ejecuta instalación, actualización o inicialización de contenido upstream"
     },
     "mcp-builder": {
       "source": "github:anthropics/skills",
       "path": "skills/mcp-builder",
       "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
-      "license": "Apache-2.0"
-    },
-    "obsidian-cli": {
-      "source": "github:kepano/obsidian-skills",
-      "path": "skills/obsidian-cli",
-      "commit": "a1dc48e68138490d522c04cbf5822214c6eb1202"
-    },
-    "obsidian-markdown": {
-      "source": "github:kepano/obsidian-skills",
-      "path": "skills/obsidian-markdown",
-      "commit": "a1dc48e68138490d522c04cbf5822214c6eb1202"
+      "license": "Apache-2.0",
+      "modified": true
     },
     "react-doctor": {
       "source": "github:millionco/react-doctor",
       "path": "skills/react-doctor",
-      "commit": "a48fb06ffbe7221655e18529fcc954ecae17a22f"
+      "commit": "a48fb06ffbe7221655e18529fcc954ecae17a22f",
+      "modified": true
     },
     "skill-creator": {
       "source": "github:anthropics/skills",
       "path": "skills/skill-creator",
       "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "modified": true
     },
     "supabase": {
       "source": "github:supabase/agent-skills",
       "path": "skills/supabase",
       "version": "0.1.2",
-      "commit": "1356046015476711a769601079262b5635929427"
+      "commit": "1356046015476711a769601079262b5635929427",
+      "modified": true
     },
     "supabase-postgres-best-practices": {
       "source": "github:supabase/agent-skills",
       "path": "skills/supabase-postgres-best-practices",
       "commit": "1356046015476711a769601079262b5635929427",
-      "license": "MIT"
+      "license": "MIT",
+      "modified": true
     },
     "tdd": {
       "source": "github:mattpocock/skills",
@@ -84,14 +82,17 @@
     },
     "to-issues": {
       "source": "github:mattpocock/skills",
-      "path": "skills/engineering/to-issues",
-      "commit": "694fa30311e02c2639942308513555e61ee84a6f"
+      "path": "skills/engineering/to-tickets",
+      "commit": "694fa30311e02c2639942308513555e61ee84a6f",
+      "modified": true,
+      "note": "upstream renombró to-issues → to-tickets; conservamos el nombre local to-issues y el pin de la última revisión aceptada hasta comparar y aceptar contenido nuevo deliberadamente"
     },
     "to-prd": {
       "source": "github:mattpocock/skills",
-      "path": "skills/engineering/to-prd",
+      "path": "skills/engineering/to-spec",
       "commit": "694fa30311e02c2639942308513555e61ee84a6f",
-      "modified": true
+      "modified": true,
+      "note": "upstream renombró to-prd → to-spec; conservamos el nombre local to-prd y el pin de la última revisión aceptada hasta comparar y aceptar contenido nuevo deliberadamente"
     }
   }
 }
