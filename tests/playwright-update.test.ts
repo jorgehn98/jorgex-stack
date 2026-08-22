@@ -74,6 +74,16 @@ describe("Playwright update", () => {
         appliedUpdates: true,
         syncRequired: false,
       });
+      expect(mocks.prompts.multiselect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.arrayContaining([
+            expect.objectContaining({
+              value: "playwright-cli",
+              hint: "pnpm add --global @playwright/cli@0.1.18",
+            }),
+          ]),
+        }),
+      );
       expect(mocks.executePlaywrightToolAction.mock.calls.map(([action]) => action)).toEqual([
         "update",
         "install-browser",

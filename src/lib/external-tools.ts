@@ -7,7 +7,7 @@ import { lookPath, planDetectedBinCommand, runDetectedBin } from "./detect.js";
 export const PLAYWRIGHT_CLI = {
   packageName: "@playwright/cli",
   bin: "playwright-cli",
-  version: "0.1.17",
+  version: "0.1.18",
   browserInstallAction: "install-browser",
 } as const;
 

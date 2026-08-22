@@ -47,6 +47,10 @@ Use the cheapest seam that can fail for the real regression:
 
 “Integration-style” is not inherently stronger. A broad test full of mocks may be weaker than a focused rule test, while a regex over SQL text is weaker than executing the database behavior it claims to protect.
 
+## Anti-pattern: tautological tests
+
+Do not let an assertion recompute the expected value the way the code does (`expect(add(a, b)).toBe(a + b)`, a snapshot derived by hand the same way, or a constant asserted equal to itself). It passes by construction and can never disagree with the code. Expected values must come from an independent source of truth: a known-good literal, a worked example, or the spec.
+
 ## Anti-pattern: horizontal slices
 
 Do not write all tests first and then all implementation. This outruns what has been learned and encourages tests of imagined shapes.

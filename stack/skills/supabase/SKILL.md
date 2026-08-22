@@ -1,6 +1,6 @@
 ---
 name: supabase
-description: "Use when doing ANY task involving Supabase. Triggers: Supabase products (Database, Auth, Edge Functions, Realtime, Storage, Vectors, Cron, Queues); client libraries and SSR integrations (supabase-js, @supabase/ssr) in Next.js, React, SvelteKit, Astro, Remix; auth issues (login, logout, sessions, JWT, cookies, getSession, getUser, getClaims, RLS); Supabase CLI or MCP server; schema changes, migrations, security audits, Postgres extensions (pg_graphql, pg_cron, pg_vector)."
+description: "Use for any Supabase task: Database, Auth, Edge Functions, Realtime, Storage, Vectors, Cron, Queues, clients, CLI/MCP, schema/migrations/declarative schemas, RLS/security, debugging, errors, troubleshooting, or logs."
 metadata:
   author: supabase
   version: "0.1.2"
@@ -88,7 +88,7 @@ supabase <group> <command> --help  # Flags for a specific command
 
 - `supabase db query` requires **CLI v2.79.0+** → use MCP `execute_sql` or `psql` as fallback
 - `supabase db advisors` requires **CLI v2.81.3+** → use MCP `get_advisors` as fallback
-- When you need a new migration SQL file, **always** create it with `supabase migration new <name>` first. Never invent a migration filename or rely on memory for the expected format.
+- In imperative migration projects, create new hand-authored migration files with `supabase migration new <name>` first. Never invent a migration filename or rely on memory for the expected format. Declarative schema projects generate migrations from `supabase/schemas/`; see "Making and Committing Schema Changes" below.
 
 **Version check and upgrade:** Run `supabase --version` to check. For CLI changelogs and version-specific features, consult the [CLI documentation](https://supabase.com/docs/reference/cli/introduction) or [GitHub releases](https://github.com/supabase/cli/releases).
 
@@ -118,16 +118,42 @@ Before implementing any Supabase feature, find the relevant documentation. Use t
 
 ## Making and Committing Schema Changes
 
-**To make schema changes, use `execute_sql` (MCP) or `supabase db query` (CLI).** These run SQL directly on the database without creating migration history entries, so you can iterate freely and generate a clean migration when ready.
+Choose one project-level schema workflow before editing. Do not mix declarative schema files and hand-authored migrations for the same change.
 
-Do NOT use `apply_migration` to change a local database schema — it writes a migration history entry on every call, which means you can't iterate, and `supabase db diff` / `supabase db pull` will produce empty or conflicting diffs. If you use it, you'll be stuck with whatever SQL you passed on the first try.
+### Option A: Declarative schemas
 
-**When ready to commit** your changes to a migration file:
+Use this when `supabase/schemas/` exists or `[db.migrations].schema_paths` is configured. The schema files are the source of truth; do not make the change directly in Studio, the SQL editor, or through `execute_sql`.
 
-1. **Run advisors** → `supabase db advisors` (CLI v2.81.3+) or MCP `get_advisors`. Fix any issues.
-2. **Review the Security Checklist above** if your changes involve views, functions, triggers, or storage.
-3. **Generate the migration** → `supabase db pull <descriptive-name> --local --yes`
-4. **Verify** → `supabase migration list --local`
+1. Edit the desired state in `supabase/schemas/`.
+2. Generate a migration from that state → `supabase db diff -f <descriptive-name>`.
+3. Review the generated migration for one incremental change and any destructive SQL.
+4. Verify the full chain → `supabase db reset` (or apply pending migrations to a running local database with `supabase migration up`).
+5. Commit the schema files and generated migration together.
+
+`supabase db diff` does not read the live database. Changes made directly to a database are not captured by the declarative diff. DML and other documented schema-diff limitations belong in a versioned imperative migration instead. See the [Declarative database schemas guide](https://supabase.com/docs/guides/local-development/declarative-database-schemas).
+
+### Option B: Imperative migrations
+
+Use this when the project does not use declarative schemas.
+
+1. Create the migration → `supabase migration new <descriptive-name>`.
+2. Add the SQL to the generated file; never invent a migration filename or rely on memory for its format.
+3. Verify the full chain → `supabase db reset` (or use `supabase migration up` when applying pending migrations to a running local database).
+4. Run advisors, review the Security Checklist above when applicable, and commit the migration.
+
+For an interactive experiment, target the local development database explicitly (for example, use `supabase db query` in the local project). Do not use the stack's default remote Supabase MCP for local iteration. If a local DDL experiment is the intended change, capture it with `supabase db diff -f <descriptive-name>` and review the migration; DML must be written explicitly into a versioned imperative migration because schema diff does not capture it. Otherwise reset or discard the experiment before starting the migration. Do not use `supabase db pull` for local changes. `supabase db pull` is for pulling a linked remote schema into a local migration.
+
+Do NOT use `apply_migration` to change a local database schema — it writes a migration history entry on every call, which prevents iterative work and can leave the migration history inconsistent. If you use it, you are stuck with whatever SQL you passed on the first try.
+
+When a migration is ready, `supabase db advisors` (CLI v2.81.3+) or MCP `get_advisors` can check the resulting database. Fix findings before committing, then use `supabase migration list --local` when you need to compare local and remote migration history.
+
+## Debugging
+
+When you get an error on a Supabase-related request, for example an error code from the Supabase REST API, Postgres database, or PostgREST, an empty result, getting blocked by RLS unexpectedly, or an error from a Supabase service like Auth, Realtime, Edge Functions, or Storage, you **must** fetch Supabase's [Monitoring and Debugging](https://supabase.com/docs/guides/monitoring-and-debugging.md) documentation before diagnosing or proposing a fix, rather than working from memory. The same docs also cover performance optimizations, such as slow queries and missing indexes.
+
+If the documentation or MCP is unavailable (offline or unauthenticated), explicitly label the result as an **offline fallback**. Use only checked-in guidance, local project evidence, and commands confirmed with `supabase --help`; do not guess version-specific behavior or run an unverified mutation. If the available evidence is insufficient, stop and ask for the missing context.
+
+Before inspecting, querying, or sharing logs and errors, redact API keys, access tokens, JWTs, cookies, authorization headers, connection strings, and sensitive request or user payloads. Never print or paste secrets.
 
 ## Reference Guides
 

@@ -789,7 +789,7 @@ export async function runInteractiveUpdate(
       updateItems.push({
         value: "playwright-cli",
         label: `Playwright CLI: ${current} → pin aprobado`,
-        hint: "pnpm add --global @playwright/cli@0.1.17",
+        hint: "pnpm add --global @playwright/cli@0.1.18",
       });
     }
   }

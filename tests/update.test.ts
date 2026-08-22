@@ -205,7 +205,7 @@ describe("resolvePlaywrightUpdateCheck", () => {
   it("informa el pin aprobado solo cuando Playwright fue habilitado explícitamente", async () => {
     const current = resolvePlaywrightCliState({
       binPath: "C:/u/pnpm/playwright-cli.cmd",
-      versionOutput: "playwright-cli 0.1.17\n",
+      versionOutput: "playwright-cli 0.1.18\n",
     });
     const outdated = resolvePlaywrightCliState({
       binPath: "C:/u/pnpm/playwright-cli.cmd",
@@ -222,11 +222,11 @@ describe("resolvePlaywrightUpdateCheck", () => {
     expect(notConfigured).toBeNull();
     expect(disabled).toBeNull();
     expect(healthy).toMatchObject({ level: "success" });
-    expect(healthy?.message).toContain("0.1.17");
+    expect(healthy?.message).toContain("0.1.18");
     expect(healthy?.message).toContain("pin aprobado");
     expect(stale).toMatchObject({ level: "warn" });
     expect(stale?.message).toContain("0.1.16");
-    expect(stale?.message).toContain("0.1.17");
+    expect(stale?.message).toContain("0.1.18");
     expect(stale?.message).toContain("pin aprobado");
   });
 });
