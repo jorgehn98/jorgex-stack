@@ -141,7 +141,7 @@ Use this when the project does not use declarative schemas.
 3. Verify the full chain → `supabase db reset` (or use `supabase migration up` when applying pending migrations to a running local database).
 4. Run advisors, review the Security Checklist above when applicable, and commit the migration.
 
-For an interactive local experiment, `execute_sql` (MCP) or `supabase db query` (CLI) may change the database without creating migration history. If the experiment is the intended change, capture it with `supabase db diff -f <descriptive-name>` and review the migration; otherwise reset or discard it before starting the migration. Do not use `supabase db pull` for local changes. `supabase db pull` is for pulling a linked remote schema into a local migration.
+For an interactive experiment, target the local development database explicitly (for example, use `supabase db query` in the local project). Do not use the stack's default remote Supabase MCP for local iteration. If a local DDL experiment is the intended change, capture it with `supabase db diff -f <descriptive-name>` and review the migration; DML must be written explicitly into a versioned imperative migration because schema diff does not capture it. Otherwise reset or discard the experiment before starting the migration. Do not use `supabase db pull` for local changes. `supabase db pull` is for pulling a linked remote schema into a local migration.
 
 Do NOT use `apply_migration` to change a local database schema — it writes a migration history entry on every call, which prevents iterative work and can leave the migration history inconsistent. If you use it, you are stuck with whatever SQL you passed on the first try.
 
