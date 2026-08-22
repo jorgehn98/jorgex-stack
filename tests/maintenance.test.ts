@@ -144,6 +144,53 @@ const DESTRUCTIVE_GIT_ESCALATION_CASES = [
   ["translator", "agents/translator.md"],
 ] as const;
 
+const EXACT_SEMVER = "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?";
+const EXACT_PACKAGE_SPEC = new RegExp(`^(?:@[^/\\s]+/[^@\\s]+|[^@\\s]+)@${EXACT_SEMVER}$`);
+const PINNED_PLAYWRIGHT_DLX = "pnpm dlx @playwright/cli@0.1.17 --version";
+
+const listFilesRecursively = (root: string): string[] =>
+  fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const absolutePath = path.join(root, entry.name);
+    return entry.isDirectory() ? listFilesRecursively(absolutePath) : [absolutePath];
+  });
+
+const mutableRuntimeViolations = (): string[] => {
+  const skillsRoot = path.join(stackRoot(), "skills");
+  const violations: string[] = [];
+
+  for (const file of listFilesRecursively(skillsRoot)) {
+    const relativePath = path.relative(stackRoot(), file).replace(/\\/g, "/");
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+
+    lines.forEach((line, index) => {
+      const location = `${relativePath}:${index + 1}`;
+      if (/@latest\b/i.test(line)) violations.push(`${location}: @latest: ${line.trim()}`);
+      if (/\bnpx\b/i.test(line)) violations.push(`${location}: npx: ${line.trim()}`);
+      if (/\bnpm\s+(?:install|i|exec|run)\b/i.test(line)) {
+        violations.push(`${location}: npm command: ${line.trim()}`);
+      }
+
+      for (const match of line.matchAll(/\bpnpm\s+dlx\s+(\S+)/gi)) {
+        if (!EXACT_PACKAGE_SPEC.test(match[1]!)) {
+          violations.push(`${location}: unpinned pnpm dlx package: ${match[1]}`);
+        }
+      }
+    });
+
+    if (path.basename(file) === "requirements.txt") {
+      lines.forEach((line, index) => {
+        const requirement = line.trim();
+        if (!requirement || requirement.startsWith("#")) return;
+        if (!/^[A-Za-z0-9_.-]+(?:\[[^\]]+\])?==[^<>=!~;\s]+(?:\s*;.*)?$/.test(requirement)) {
+          violations.push(`${relativePath}:${index + 1}: non-exact Python requirement: ${requirement}`);
+        }
+      });
+    }
+  }
+
+  return violations;
+};
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-maint-"));
   vi.spyOn(modelMap, "loadModelMap").mockReturnValue(TEST_MODEL_MAP);
@@ -751,6 +798,33 @@ describe("contrato upstreams.json ↔ skills vendorizadas", () => {
       "---\nname: playwright-cli\ndescription: Automate browser interactions, test web pages and work with Playwright tests.\nallowed-tools: Bash(playwright-cli:*)\n---\n",
     );
     expect(frontmatter).not.toContain("Bash(pnpm:*)");
+  });
+});
+
+describe("skills distribuidas: ejecución reproducible", () => {
+  it("rechaza gestores mutables y dependencias sin versión exacta", () => {
+    expect(mutableRuntimeViolations()).toEqual([]);
+
+    const playwright = readStackFile("skills/playwright-cli/SKILL.md");
+    expect(playwright.match(/pnpm dlx @playwright\/cli@\S+ --version/g)).toEqual([PINNED_PLAYWRIGHT_DLX]);
+  });
+
+  it("find-skills se limita a descubrir y no instruye instalar, actualizar o inicializar", () => {
+    const content = readStackFile("skills/find-skills/SKILL.md");
+
+    expect(content).toMatch(/discover/i);
+    expect(content).not.toMatch(
+      /\b(?:skills\s+(?:add|update|init)|offer to install|install with|to install it|install command)\b/i,
+    );
+  });
+
+  it.each([
+    ["React Doctor", "skills/react-doctor/SKILL.md"],
+    ["deploy-to-vercel", "skills/deploy-to-vercel/SKILL.md"],
+  ])("%s exige una herramienta preinstalada y no intenta instalarla", (_name, relativePath) => {
+    const content = readStackFile(relativePath);
+
+    expect(content).not.toMatch(/\b(?:npx|npm\s+(?:install|i|exec)|pnpm\s+(?:add|dlx)|yarn\s+add|bunx)\b/i);
   });
 });
 

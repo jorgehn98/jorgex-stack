@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
 import { validateExtractedTree } from "../src/lib/github.js";
@@ -9,6 +10,7 @@ import { writeText } from "../src/lib/fsx.js";
 import { listBackups } from "../src/lib/backup.js";
 
 let tmp: string;
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-skill-update-"));
@@ -289,9 +291,29 @@ describe("replaceSkill: backup, reemplazo y re-pin", () => {
 
 describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
   it("PROTECTED_SKILLS incluye las skills propias del stack", () => {
-    expect(PROTECTED_SKILLS.has("agent-delegation")).toBe(true);
-    expect(PROTECTED_SKILLS.has("work-lifecycle")).toBe(true);
-    expect(PROTECTED_SKILLS.has("xreview")).toBe(true);
+    expect([...PROTECTED_SKILLS].sort()).toEqual([
+      "agent-delegation",
+      "lean-code",
+      "orchestrator",
+      "work-lifecycle",
+      "xreview",
+    ]);
+  });
+
+  it("el canon local es la partición exacta de propias y upstreams vendorizadas", () => {
+    const localSkills = new Set(
+      fs.readdirSync(path.join(ROOT, "stack", "skills"), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name),
+    );
+    const upstreams = JSON.parse(fs.readFileSync(path.join(ROOT, "upstreams.json"), "utf8")) as Upstreams;
+    const vendoredSkills = new Set(Object.keys(upstreams.skills));
+
+    expect([...PROTECTED_SKILLS].filter((name) => vendoredSkills.has(name))).toEqual([]);
+    expect(new Set([...PROTECTED_SKILLS, ...vendoredSkills])).toEqual(localSkills);
+    expect(localSkills.size).toBe(17);
+    expect(localSkills.has("obsidian-cli")).toBe(false);
+    expect(localSkills.has("obsidian-markdown")).toBe(false);
   });
 
   it("replaceSkill lanza con agent-delegation sin tocar el disco", () => {
@@ -406,6 +428,31 @@ describe("buildEligibleSkillUpdates: lógica de elegibilidad del picker", () => 
       expect(r.head).toBe(head);
       expect(r.pinned).toBe(pin);
     }
+  });
+
+  it.each([
+    ["primero la skill al día", ["up-to-date", "outdated"]],
+    ["primero la skill desactualizada", ["outdated", "up-to-date"]],
+  ])("cada skill usa su pin aunque comparta repo: %s", (_label, order) => {
+    const oldPin = "aaa000aaa000aaa000aaa000aaa000aaa000aaa0";
+    const head = "bbb111bbb111bbb111bbb111bbb111bbb111bbb1";
+    const repo = "example/monorepo";
+    const byName = {
+      "up-to-date": makeSkill("up-to-date", repo, head, head),
+      outdated: makeSkill("outdated", repo, oldPin, head),
+    };
+    const skills = order.map((name) => byName[name as keyof typeof byName]);
+
+    expect(buildEligibleSkillUpdates(skills)).toEqual([
+      {
+        name: "outdated",
+        repo,
+        head,
+        pinned: oldPin,
+        skillPath: undefined,
+        modified: false,
+      },
+    ]);
   });
 
   it("mezcla de elegibles e inelegibles → solo los elegibles", () => {
@@ -845,4 +892,3 @@ describe("rotateLockedBinary", () => {
     expect(fs.existsSync(rotated!)).toBe(true);
   });
 });
-
