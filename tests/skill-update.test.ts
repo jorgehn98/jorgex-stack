@@ -338,7 +338,7 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
         .filter(([, info]) => info.modified === true)
         .map(([name]) => name)
         .sort(),
-    ).toEqual(expectedVendored.filter((name) => name !== "diagnose"));
+    ).toEqual(expectedVendored);
   });
 
   it("replaceSkill lanza con agent-delegation sin tocar el disco", () => {
