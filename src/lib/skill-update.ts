@@ -6,7 +6,13 @@ import { createBackup } from "./backup.js";
 import { stackRoot } from "./paths.js";
 
 // Skills propias (sin upstream) y de tipo release: nunca se reemplazan con esta función.
-export const PROTECTED_SKILLS = new Set(["agent-delegation", "work-lifecycle", "xreview"]);
+export const PROTECTED_SKILLS = new Set([
+  "agent-delegation",
+  "lean-code",
+  "orchestrator",
+  "work-lifecycle",
+  "xreview",
+]);
 
 /** Forma canónica de un skill en upstreams.json (compartida con update.ts y replaceSkill). */
 export interface SkillUpstreamInfo {
@@ -17,6 +23,10 @@ export interface SkillUpstreamInfo {
   version?: string;
   commit?: string;
   modified?: boolean;
+  package?: string;
+  binary?: string;
+  license?: string;
+  note?: string;
 }
 
 export interface SkillDiff {
@@ -155,7 +165,7 @@ export interface ReplaceSkillOpts {
  * y actualiza el pin `commit` en upstreams.json.
  *
  * Reglas:
- * - Skills protegidas (agent-delegation, work-lifecycle) y kind=release
+ * - Skills protegidas (las cinco skills propias del stack) y kind=release
  *   se rechazan sin tocar el disco.
  * - Se hace backup de la skill local antes de tocarla.
  * - La copia se hace en staging (dir hermano temporal) antes de renombrar,

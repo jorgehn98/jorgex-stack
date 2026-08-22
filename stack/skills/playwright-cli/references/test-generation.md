@@ -153,11 +153,10 @@ test -f playwright.config.ts || test -f playwright.config.js
 pnpm exec playwright --version
 ```
 
-If there is no Playwright install, bootstrap one and let the user pick the defaults:
-
-```bash
-pnpm create playwright
-```
+If there is no project-local Playwright install, stop and return control to the
+user. This skill does not bootstrap packages or change the dependency graph;
+the project must provision a reviewed exact version through its normal locked
+dependency workflow before planning or generating tests.
 
 ### 1.2 Prerequisite: seed test
 

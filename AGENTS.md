@@ -27,6 +27,23 @@ upstreams.json → terceros gestionados por `update` (engram, skills open-source
 
 Mapeo de formatos por runtime: cada adapter en `src/adapters/` declara su formato nativo. Modelos: tiers `strong|standard|cheap` resueltos con picker por runtime — Claude Code solo alias Claude (`fable`/`opus`/`sonnet`/`haiku`), Codex solo OpenAI, OpenCode lista en vivo de `opencode models`.
 
+## Inventario de skills y cadena de suministro
+
+Para el release minor objetivo **1.2.0**, la snapshot canónica vigente suma **17 skills: 5 propias + 12 vendorizadas**. Los adapters de runtime ejecutan únicamente las copias locales confirmadas en `stack/skills`; no descargan ni ejecutan contenido upstream durante la ejecución.
+
+| Grupo | Inventario vigente |
+|---|---|
+| Propias (5) | `agent-delegation`, `lean-code`, `orchestrator`, `work-lifecycle`, `xreview` |
+| Vendorizadas (12) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `playwright-cli`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
+
+Contrato operativo:
+
+- **Snapshot:** esas 17 carpetas son la entrada del release; el paquete publicado lleva esa copia local, no un espejo vivo.
+- **Pin por skill:** `upstreams.json` conserva source/path y el commit aceptado de cada skill vendorizada (además de package/binary cuando aplica). El pin describe la última snapshot revisada; no afirma que cambios upstream posteriores hayan sido aceptados.
+- **Review manual:** solo un mantenedor desde un clon git puede proponer cambios. `update` descarga a un temporal, exige diff visible y confirmación, y solo después permite actualizar la copia y hacer re-pin deliberado para un release futuro. `modified: true` añade advertencia y confirmación adicional.
+- **Discovery-only:** en un paquete instalado, `update --check` informa del estado pineado de las skills y no consulta ni ejecuta sus upstreams.
+- **Obsidian:** `obsidian-cli` y `obsidian-markdown` se retiraron por no ser esenciales. La limpieza es ownership-safe: solo elimina rutas declaradas como propias por el manifest y hace backup antes de retirar archivos gestionados; las rutas ajenas al manifest se conservan. Una copia gestionada modificada también se retira después del backup. Nunca toca vaults ni el binario de Obsidian.
+
 ## Comandos
 
 ```
@@ -66,7 +83,7 @@ pnpm cli <cmd>      # ejecutar el CLI local (node dist/cli.js)
 ## Estado
 
 - ✅ F0: spec inicial + scaffold + git init
-- ✅ F1: fuente canónica en `stack/` — 15 agentes portados (frontmatter canónico tier/readonly/bash + result contract + deslindes), AGENTS.md + engram-protocol.md (única fuente del protocolo), hooks.json + post-pr-review.cjs (payload dual Claude/OpenCode), commands, mcp/servers.json, 18 skills vendorizadas (14 third-party con upstream en upstreams.json; agent-delegation, lean-code, work-lifecycle y xreview son propias), work-lifecycle reescrita memory-first (D9), 3 plugins opencode vendorizados (copia fiel; rutas personales a parametrizar en F2: engram.ts:23, hooks.ts:76-78/299-300, worktree.ts:63-64/97-99, package.json main desactualizado)
+- ✅ F1 (histórico): fuente canónica en `stack/` — 15 agentes portados (frontmatter canónico tier/readonly/bash + result contract + deslindes), AGENTS.md + engram-protocol.md (única fuente del protocolo), hooks.json + post-pr-review.cjs (payload dual Claude/OpenCode), commands, **18 skills totales en aquella fase** (14 third-party con upstream en upstreams.json; agent-delegation, lean-code, work-lifecycle y xreview eran propias), work-lifecycle reescrita memory-first (D9), 3 plugins opencode vendorizados (copia fiel; rutas personales a parametrizar en F2: engram.ts:23, hooks.ts:76-78/299-300, worktree.ts:63-64/97-99, package.json main desactualizado). La cifra histórica se conserva para entender la evolución; el inventario vigente es el de la sección anterior.
 - ✅ F2: CLI core funcional — lib (paths/fsx/filemerge/detect/backup/model-map/canonical), adapter OpenCode completo, 7 components agnósticos, pipeline detect→plan→diff→backup→apply→verify con verificación de idempotencia automática, CLI real (install/sync/models/restore; --target-dir para pruebas). Verificado e2e: 120 archivos a dir temporal, 2ª pasada 0 cambios, key de usuario/claves propias/contenido manual preservados. Repo público: https://github.com/jorgehn98/jorgex-stack
 - ✅ F3: adapter Claude Code — 14 subagentes a ~/.claude/agents (readonly → allowlist Read/Grep/Glob[+Bash] + tools de memoria engram; sin restricción → hereda todo; agente engram solo lectura de memoria), orchestrator como slash command /orchestrator (los subagentes de Claude Code no pueden lanzar subagentes), commands con {{input}}→$ARGUMENTS, hooks upsert en settings.json (sin duplicar, identificados por matcher+script), MCP user-scope en ~/.claude.json (sibling del configDir → --target-dir nunca toca el real), CLAUDE.md con secciones marcadas. e2e: 117 archivos, idempotente, preservación de hooks/claves del usuario verificada.
 - ✅ F4: adapter Codex — 14 subagentes a ~/.codex/agents/*.toml (developer_instructions en literal multiline ''', sandbox read-only/workspace-write por readonly, model_reasoning_effort por tier, model omitido si "default"), orchestrator como profile ~/.codex/orchestrator.config.toml (codex --profile orchestrator) + skill, commands→skills en ~/.agents/skills (custom prompts deprecados; dir compartido con OpenCode, derivado del padre del configDir para que --target-dir no toque el real), hooks.json con matcher shell + aviso de trust manual /hooks (helper compartido lib/hooks-format.ts con Claude Code), MCP por upsert TOML quirúrgico (lib/filemerge.ts upsertTomlSection: preserva comentarios, secciones ajenas y keys del usuario). post-pr-review.cjs tolera tool_name shell/local_shell y command como array. e2e: 118 archivos idempotentes, preservación de config.toml verificada.

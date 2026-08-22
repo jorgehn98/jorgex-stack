@@ -132,20 +132,22 @@ The CLI is working but the project isn't linked yet. This is the opportunity to 
 
 ---
 
-### Not linked + CLI not authenticated → Install, auth, link, deploy
+### Not linked + CLI unavailable → user provisions or local fallback
 
-The Vercel CLI isn't set up at all.
+The Vercel CLI is not available or is not authenticated. This skill never
+provisions a global CLI and never changes the project's dependency graph.
 
-1. **Install the CLI (if not already installed):**
-   ```bash
-   npm install -g vercel
-   ```
+1. **Return control when the CLI is unavailable.** Tell the user that a
+   project-approved Vercel CLI must be provisioned before the CLI path can be
+   used. Do not run a package manager or choose a release on the user's behalf.
 
-2. **Authenticate:**
+2. **Authenticate when the user has supplied the CLI:**
    ```bash
    vercel login
    ```
-   The user completes auth in their browser. If running in a non-interactive environment where login is not possible, skip to the **no-auth fallback** below.
+   The user completes auth in their browser. If running in a non-interactive
+   environment where login is not possible, continue to the **no-auth
+   fallback** below.
 
 3. **Ask which team to deploy to** — present team slugs from `vercel teams list --format json` as a bulleted list. If only one team / personal account, skip. Once selected, proceed immediately.
 
@@ -156,6 +158,10 @@ The Vercel CLI isn't set up at all.
    ```
 
 5. **Deploy** using the best available method (git push if remote exists, otherwise `vercel deploy -y --no-wait --scope <team-slug>`, then `vercel inspect <url>` to check status).
+
+The vendored no-auth scripts below are a deployment fallback, not a CLI
+provisioning mechanism. Use them only after the user has explicitly requested
+the deployment and the CLI path is unavailable.
 
 ---
 

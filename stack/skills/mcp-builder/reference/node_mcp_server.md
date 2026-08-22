@@ -901,16 +901,19 @@ Always build your TypeScript code before running:
 
 ```bash
 # Build the project
-npm run build
+pnpm run build
 
 # Run the server
-npm start
+pnpm start
 
 # Development with auto-reload
-npm run dev
+pnpm run dev
 ```
 
-Always ensure `npm run build` completes successfully before considering the implementation complete.
+Always ensure `pnpm run build` completes successfully before considering the
+implementation complete. These commands must resolve the project's declared
+dependencies through its lockfile; do not fetch an unpinned tool while
+working on the server.
 
 ## Quality Checklist
 
@@ -963,7 +966,7 @@ Before finalizing your Node/TypeScript MCP server implementation, ensure:
 - [ ] Return types are consistent across similar operations
 
 ### Testing and Build
-- [ ] `npm run build` completes successfully without errors
+- [ ] `pnpm run build` completes successfully without errors
 - [ ] dist/index.js created and executable
 - [ ] Server runs: `node dist/index.js --help`
 - [ ] All imports resolve correctly

@@ -1,8 +1,25 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 15 agents, 19 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, and **OpenCode**.
+Portable multi-agent harness: one configuration source — 15 agents, 17 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, and **OpenCode**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
+
+## Skills: release snapshot and supply chain
+
+The 1.2.0 minor release carries a fixed **17-skill snapshot**: **5 stack-owned** skills and **12 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
+
+| Set | Skills |
+| --- | --- |
+| Stack-owned (5) | `agent-delegation`, `lean-code`, `orchestrator`, `work-lifecycle`, `xreview` |
+| Vendored (12) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `playwright-cli`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
+
+The supply-chain contract is deliberately explicit:
+
+- **Snapshot:** the 17 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
+- **Per-skill pin:** `upstreams.json` records each vendored source/path and its accepted commit pin (plus package/binary pins where applicable). A pin identifies the last reviewed snapshot; it does not mean that later upstream changes were accepted.
+- **Manual review:** only a maintainer running from a git clone may inspect and propose vendored-skill updates. The flow downloads to a temporary directory, shows a mandatory diff, requests confirmation, and re-pins only after deliberate review. Local changes marked `modified: true` receive an additional warning/confirmation.
+
+For an installed package, skill checks are **discovery-only**: `update --check` reports that vendored skills are pinned to the stack version and does not query or execute their upstreams. The two Obsidian skills (`obsidian-cli` and `obsidian-markdown`) were retired because they are non-essential to the stack. Their cleanup is ownership-safe: only manifest-owned files may be removed and they are backed up first; paths outside the manifest are preserved. A modified manifest-owned copy is still removed after backup. No Obsidian vault or binary is touched.
 
 ## Usage
 
@@ -21,7 +38,7 @@ Other important commands:
 ```bash
 pnpm dlx jorgex-stack doctor          # check Engram, config drift, hooks and keys
 pnpm dlx jorgex-stack models          # change models by runtime, tier or subagent
-pnpm dlx jorgex-stack update --check  # report available stack, Engram and skill updates
+pnpm dlx jorgex-stack update --check  # report stack/Engram updates and maintainer-only skill discovery
 pnpm dlx jorgex-stack update          # interactively review and apply available updates
 pnpm dlx jorgex-stack restore --list  # list automatic backups
 pnpm dlx jorgex-stack restore <id>    # restore one backup
@@ -116,7 +133,7 @@ Daily operation:
 1. **Stack** (jorgex-stack): detects whether it is a git clone or a global install, then offers an update with confirmation.
 2. **Engram** (binary): detects the installed version and offers an update through the **native channel** (brew -> `go install` -> release URL). Nothing needs to be stopped: as in upstream macOS/Linux, live processes keep using the old version until clients restart; on Windows, the in-use `.exe` is rotated by rename before installation. **Automatic DB backup before updating**. The database and memories are never touched.
 3. **Playwright CLI** (only when explicitly enabled): compares the detected binary with the approved bundle pin and offers to realign it with explicit confirmation. The realignment re-applies **both** plans — `pnpm add --global @playwright/cli@0.1.17` (package) and `pnpm dlx @playwright/cli@0.1.17 install-browser` (browser cache) — and fails closed if either step returns non-zero. The error identifies whether the package-update or browser-download phase failed and recommends `jorgex-stack install --playwright` to retry both; a Playwright update does not require `sync`.
-4. **Vendored skills** (maintainer only): third-party skills ship **pinned** with the stack version, so the installed package never reaches out to their upstreams. Only when running from a git clone (`pnpm cli update`) does `update` scan the upstreams in `upstreams.json`, download to a temp directory, **show a mandatory diff**, and ask for confirmation — so the review and re-pin persist in the repo and get published. Skills with local changes (`modified: true`) warn and require double confirmation.
+4. **Vendored skills** (maintainer only): third-party skills ship **pinned** with the stack version, so the installed package never reaches out to their upstreams. Only when running from a git clone (`pnpm cli update`) does `update` scan the upstreams in `upstreams.json`, download to a temp directory, **show a mandatory diff**, and ask for confirmation. A moved upstream is only a candidate until that review is accepted and a deliberate re-pin is made for a future release; it is never treated as an accepted official update automatically. Skills with local changes (`modified: true`) warn and require double confirmation.
 
 Usage:
 - `update --check`: scans versions without applying changes.

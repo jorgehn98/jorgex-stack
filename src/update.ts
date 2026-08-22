@@ -47,6 +47,33 @@ export function skillsToScan(maintainer: boolean, upstreams: Upstreams): string[
   return maintainer ? Object.keys(upstreams.skills) : [];
 }
 
+/**
+ * Consulta el HEAD una sola vez por repositorio y proyecta ese resultado sobre
+ * cada skill que lo consume. El pin sigue siendo propiedad de cada skill:
+ * dos skills del mismo monorepo pueden estar en revisiones aceptadas distintas.
+ */
+async function querySkillHeads(skillNames: string[], upstreams: Upstreams): Promise<SkillQueryResult[]> {
+  const requests = new Map<string, Promise<string | null>>();
+  for (const name of skillNames) {
+    const info = upstreams.skills[name]!;
+    const repo = info.source.replace(/^github:/, "");
+    if (!requests.has(repo)) requests.set(repo, latestGithubCommit(repo));
+  }
+
+  const heads = new Map<string, string | null>();
+  await Promise.all(
+    [...requests.entries()].map(async ([repo, request]) => {
+      heads.set(repo, await request);
+    }),
+  );
+
+  return skillNames.map((name) => {
+    const info = upstreams.skills[name]!;
+    const repo = info.source.replace(/^github:/, "");
+    return { name, repo, info, head: heads.get(repo) ?? null };
+  });
+}
+
 async function latestNpmVersion(pkg: string): Promise<string | null> {
   try {
     const res = await fetch(`https://registry.npmjs.org/${pkg}/latest`, {
@@ -151,38 +178,29 @@ export async function runUpdateCheck(localVersion: string, includeBrowserState =
       "Skills de terceros: pineadas con la versión del stack (su revisión upstream se hace desde el clon del repo).",
     );
   } else {
-    // Una consulta por repo único (varios skills comparten monorepo).
-    const byRepo = new Map<string, { skills: string[]; pinned?: string }>();
-    for (const name of checkSkillNames) {
-      const info = upstreams.skills[name]!;
-      const repo = info.source.replace(/^github:/, "");
-      const entry = byRepo.get(repo) ?? { skills: [], pinned: info.commit };
-      entry.skills.push(info.modified ? `${name} (modificada localmente)` : name);
-      byRepo.set(repo, entry);
-    }
-    const heads = await Promise.all(
-      [...byRepo.keys()].map(async (repo) => [repo, await latestGithubCommit(repo)] as const),
-    );
+    // Una consulta por repo único (varios skills comparten monorepo), pero
+    // conserva el resultado y el pin de cada skill para no ocultar una copia
+    // antigua cuando otra del mismo repo ya está al día.
+    const skillQueries = await querySkillHeads(checkSkillNames, upstreams);
     let moved = 0;
-    for (const [repo, head] of heads) {
-      const { skills, pinned } = byRepo.get(repo)!;
+    for (const { name, repo, info, head } of skillQueries) {
+      const label = info.modified ? `${name} (modificada localmente)` : name;
+      const pinned = info.commit;
       if (!pinned)
-        p.log.warn(
-          `${repo}: sin pin en upstreams.json — añade el commit revisado. Skills: ${skills.join(", ")}`,
-        );
+        p.log.warn(`${label}: sin pin en upstreams.json — añade el commit revisado.`);
       else if (head === null)
-        p.log.info(`${repo}: pin ${pinned.slice(0, 7)} (no se pudo consultar el upstream).`);
+        p.log.info(`${label}: pin ${pinned.slice(0, 7)} (no se pudo consultar el upstream).`);
       else if (head === pinned)
-        p.log.success(`${repo}: al día con el pin ${pinned.slice(0, 7)} (${skills.join(", ")}).`);
+        p.log.success(`${label}: al día con el pin ${pinned.slice(0, 7)}.`);
       else {
         moved++;
         p.log.warn(
-          `${repo}: el upstream se movió (pin ${pinned.slice(0, 7)} → ${head.slice(0, 7)}). Skills: ${skills.join(", ")}.\n` +
+          `${label}: el upstream se movió (pin ${pinned.slice(0, 7)} → ${head.slice(0, 7)}).\n` +
             `  Revisa el diff y, si lo aceptas, actualiza la copia vendorizada y el pin: github.com/${repo}/compare/${pinned.slice(0, 7)}...${head.slice(0, 7)}`,
         );
       }
     }
-    if (moved === 0 && heads.every(([, head]) => head !== null)) {
+    if (moved === 0 && skillQueries.every(({ head }) => head !== null)) {
       p.log.info("Skills de terceros: ningún upstream se ha movido respecto a su pin.");
     }
   }
@@ -612,43 +630,34 @@ export interface EligibleSkillUpdate {
  * - Sin conexión (head=null): excluida.
  * - head === pinned: al día, no incluir.
  * - Resto: elegible.
- * Agrupa por repo para no repetir: el pin y el head los toma del primero
- * del repo que encuentre; si hay varios skills en el mismo repo, todos usan
- * el mismo head/pinned.
+ * El HEAD ya viene deduplicado por repositorio en la fase de consulta, pero
+ * cada skill conserva su propio pin para que una copia antigua no desaparezca
+ * porque otra skill del mismo repo ya está al día.
  */
 export function buildEligibleSkillUpdates(skills: SkillQueryResult[]): EligibleSkillUpdate[] {
-  const byRepo = new Map<string, { names: string[]; pinned: string; headVal: string | null }>();
-
+  const result: EligibleSkillUpdate[] = [];
   for (const { name, repo, info, head } of skills) {
     // Excluir kind=release
     if (info.kind === "release") continue;
-    const existing = byRepo.get(repo);
-    if (!existing) {
-      byRepo.set(repo, { names: [name], pinned: info.commit ?? "", headVal: head });
-    } else {
-      existing.names.push(name);
-    }
-  }
-
-  const result: EligibleSkillUpdate[] = [];
-  for (const [repo, { names, pinned, headVal }] of byRepo) {
+    const pinned = info.commit;
     if (!pinned) continue;
-    if (headVal === null) continue;
-    if (headVal === pinned) continue;
-    // Upstream se movió — agregar cada skill con sus datos individuales
-    for (const name of names) {
-      const skill = skills.find((s) => s.name === name)!;
-      result.push({
-        name,
-        repo,
-        head: headVal,
-        pinned,
-        skillPath: skill.info.path,
-        modified: skill.info.modified ?? false,
-      });
-    }
+    if (head === null) continue;
+    if (head === pinned) continue;
+    result.push({
+      name,
+      repo,
+      head,
+      pinned,
+      skillPath: info.path,
+      modified: info.modified ?? false,
+    });
   }
   return result;
+}
+
+/** True when a maintainer scan could not establish the state of every skill. */
+export function hasIncompleteSkillScan(skills: SkillQueryResult[]): boolean {
+  return skills.some(({ info, head }) => info.kind !== "release" && (!info.commit || head === null));
 }
 
 /** Resultado del flujo interactivo de update. */
@@ -707,19 +716,14 @@ export async function runInteractiveUpdate(
   spin.start("Consultando versiones upstream…");
 
   const skillNames = skillsToScan(maintainer, upstreams);
-  const [npmLatest, engramLatestRaw, ...skillHeads] = await Promise.all([
+  const [npmLatest, engramLatestRaw, skillHeads] = await Promise.all([
     latestNpmVersion("jorgex-stack"),
     (async () => {
       const repo = upstreams.tools["engram"]?.source.replace(/^github:/, "");
       if (!repo) return null;
       return { repo, version: await latestGithubRelease(repo) };
     })(),
-    ...skillNames.map(async (name) => {
-      const info = upstreams.skills[name]!;
-      const repo = info.source.replace(/^github:/, "");
-      const head = await latestGithubCommit(repo);
-      return { name, repo, info, head };
-    }),
+    querySkillHeads(skillNames, upstreams),
   ]);
 
   spin.stop("Consulta completada.");
@@ -791,10 +795,10 @@ export async function runInteractiveUpdate(
   }
 
   // Skills: primero loguear las no-elegibles (pasada de I/O separada), luego calcular elegibles con la función pura.
-  const typedSkillHeads = skillHeads as SkillQueryResult[];
+  const typedSkillHeads = skillHeads;
 
-  // Pasada de logging: kind=release, sin pin, sin conexión, al día (agrupado por repo).
-  const loggedRepos = new Map<string, { names: string[]; pinned: string; headVal: string | null; anyRelease: boolean }>();
+  // Pasada de logging: kind=release, sin pin, sin conexión, al día. El HEAD
+  // se comparte por repo, pero el estado visible conserva el pin de cada skill.
   for (const { name, repo, info, head } of typedSkillHeads) {
     if (info.kind === "release") {
       // Informar solo si el upstream se movió respecto al pin
@@ -803,20 +807,14 @@ export async function runInteractiveUpdate(
       }
       continue;
     }
-    const existing = loggedRepos.get(repo);
-    if (!existing) {
-      loggedRepos.set(repo, { names: [name], pinned: info.commit ?? "", headVal: head, anyRelease: false });
-    } else {
-      existing.names.push(name);
-    }
-  }
-  for (const [repo, { names, pinned, headVal }] of loggedRepos) {
+    const label = info.modified ? `${name} (modificada localmente)` : name;
+    const pinned = info.commit;
     if (!pinned) {
-      p.log.warn(`${repo}: sin pin — no se puede actualizar. Skills: ${names.join(", ")}`);
-    } else if (headVal === null) {
-      p.log.info(`${repo}: sin conexión al upstream. Skills: ${names.join(", ")}`);
-    } else if (headVal === pinned) {
-      p.log.success(`${repo}: al día (pin ${pinned.slice(0, 7)}). Skills: ${names.join(", ")}`);
+      p.log.warn(`${label}: sin pin — no se puede actualizar.`);
+    } else if (head === null) {
+      p.log.info(`${label}: sin conexión al upstream.`);
+    } else if (head === pinned) {
+      p.log.success(`${label}: al día (pin ${pinned.slice(0, 7)}).`);
     }
     // Si el upstream se movió (elegible), no se logea aquí — aparece en el picker.
   }
@@ -840,6 +838,10 @@ export async function runInteractiveUpdate(
 
   // Nada que actualizar
   if (updateItems.length === 0) {
+    if (maintainer && hasIncompleteSkillScan(typedSkillHeads)) {
+      p.outro("Escaneo incompleto: no se pudo comprobar el estado de todas las skills.");
+      return { exitCode: 1, appliedUpdates: false, syncRequired: false };
+    }
     p.outro("Todo al día. No hay actualizaciones disponibles.");
     return { exitCode: 0, appliedUpdates: false, syncRequired: false };
   }
