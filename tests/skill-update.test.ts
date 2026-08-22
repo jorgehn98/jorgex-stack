@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { diffSkillDirs, renderSkillDiff, replaceSkill, PROTECTED_SKILLS } from "../src/lib/skill-update.js";
 import { validateExtractedTree } from "../src/lib/github.js";
-import { buildEligibleSkillUpdates, isGitClone, rotateLockedBinary, skillsToScan, type SkillQueryResult, type Upstreams } from "../src/update.js";
+import { buildEligibleSkillUpdates, hasIncompleteSkillScan, isGitClone, rotateLockedBinary, skillsToScan, type SkillQueryResult, type Upstreams } from "../src/update.js";
 import { writeText } from "../src/lib/fsx.js";
 import { listBackups } from "../src/lib/backup.js";
 
@@ -308,12 +308,37 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
     );
     const upstreams = JSON.parse(fs.readFileSync(path.join(ROOT, "upstreams.json"), "utf8")) as Upstreams;
     const vendoredSkills = new Set(Object.keys(upstreams.skills));
+    const expectedVendored = [
+      "deploy-to-vercel",
+      "diagnose",
+      "find-skills",
+      "mcp-builder",
+      "playwright-cli",
+      "react-doctor",
+      "skill-creator",
+      "supabase",
+      "supabase-postgres-best-practices",
+      "tdd",
+      "to-issues",
+      "to-prd",
+    ];
 
     expect([...PROTECTED_SKILLS].filter((name) => vendoredSkills.has(name))).toEqual([]);
+    expect([...vendoredSkills].sort()).toEqual(expectedVendored);
     expect(new Set([...PROTECTED_SKILLS, ...vendoredSkills])).toEqual(localSkills);
     expect(localSkills.size).toBe(17);
     expect(localSkills.has("obsidian-cli")).toBe(false);
     expect(localSkills.has("obsidian-markdown")).toBe(false);
+    for (const [name, info] of Object.entries(upstreams.skills)) {
+      expect(info.commit, `${name} sin pin SHA completo`).toMatch(/^[0-9a-f]{40}$/);
+      expect(info.path, `${name} sin ruta upstream`).toMatch(/^skills\//);
+    }
+    expect(
+      Object.entries(upstreams.skills)
+        .filter(([, info]) => info.modified === true)
+        .map(([name]) => name)
+        .sort(),
+    ).toEqual(expectedVendored.filter((name) => name !== "diagnose"));
   });
 
   it("replaceSkill lanza con agent-delegation sin tocar el disco", () => {
@@ -355,6 +380,13 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildEligibleSkillUpdates: lógica de elegibilidad del picker", () => {
+  it("distingue un escaneo incompleto de uno comprobado sin updates", () => {
+    const pin = "aaa000";
+    expect(hasIncompleteSkillScan([makeSkill("offline", "example/repo", pin, null)])).toBe(true);
+    expect(hasIncompleteSkillScan([makeSkill("missing-pin", "example/repo", undefined, "bbb111")])).toBe(true);
+    expect(hasIncompleteSkillScan([makeSkill("current", "example/repo", pin, pin)])).toBe(false);
+  });
+
   function makeSkill(
     name: string,
     repo: string,
@@ -405,12 +437,16 @@ describe("buildEligibleSkillUpdates: lógica de elegibilidad del picker", () => 
     expect(buildEligibleSkillUpdates(skills)).toEqual([]);
   });
 
-  it("skill modificada localmente aparece con modified=true", () => {
+  it("skill modificada localmente conserva modified=true y su ruta upstream", () => {
     const pin = "aaa000";
     const head = "bbb111";
-    const skills = [makeSkill("tdd", "mattpocock/skills", pin, head, { modified: true })];
+    const skills = [makeSkill("tdd", "mattpocock/skills", pin, head, {
+      modified: true,
+      path: "skills/engineering/tdd",
+    })];
     const result = buildEligibleSkillUpdates(skills);
     expect(result[0]!.modified).toBe(true);
+    expect(result[0]!.skillPath).toBe("skills/engineering/tdd");
   });
 
   it("varias skills en el mismo monorepo → todas aparecen con el mismo head", () => {

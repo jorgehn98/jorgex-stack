@@ -169,6 +169,12 @@ const mutableRuntimeViolations = (): string[] => {
       if (/\bnpm\s+(?:install|i|exec|run)\b/i.test(line)) {
         violations.push(`${location}: npm command: ${line.trim()}`);
       }
+      if (/\bpnpm\s+create\b/i.test(line)) {
+        violations.push(`${location}: mutable pnpm create: ${line.trim()}`);
+      }
+      if (/\b(?:python(?:3(?:\.\d+)?)?\s+-m\s+)?pip(?:3(?:\.\d+)?)?\s+install\b/i.test(line)) {
+        violations.push(`${location}: mutable pip install: ${line.trim()}`);
+      }
 
       for (const match of line.matchAll(/\bpnpm\s+dlx\s+(\S+)/gi)) {
         if (!EXACT_PACKAGE_SPEC.test(match[1]!)) {

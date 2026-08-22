@@ -655,6 +655,11 @@ export function buildEligibleSkillUpdates(skills: SkillQueryResult[]): EligibleS
   return result;
 }
 
+/** True when a maintainer scan could not establish the state of every skill. */
+export function hasIncompleteSkillScan(skills: SkillQueryResult[]): boolean {
+  return skills.some(({ info, head }) => info.kind !== "release" && (!info.commit || head === null));
+}
+
 /** Resultado del flujo interactivo de update. */
 export interface InteractiveUpdateResult {
   exitCode: number;
@@ -833,6 +838,10 @@ export async function runInteractiveUpdate(
 
   // Nada que actualizar
   if (updateItems.length === 0) {
+    if (maintainer && hasIncompleteSkillScan(typedSkillHeads)) {
+      p.outro("Escaneo incompleto: no se pudo comprobar el estado de todas las skills.");
+      return { exitCode: 1, appliedUpdates: false, syncRequired: false };
+    }
     p.outro("Todo al día. No hay actualizaciones disponibles.");
     return { exitCode: 0, appliedUpdates: false, syncRequired: false };
   }

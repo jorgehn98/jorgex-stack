@@ -381,15 +381,13 @@ After creating your evaluation file, you can use the provided evaluation harness
 
 ## Setup
 
-1. **Prepare the exact Python dependencies**
+1. **Prepare a locked Python environment**
 
-   ```bash
-   python -m pip install -r scripts/requirements.txt
-   ```
-
-   The requirements file is the single dependency source for the evaluation
-   harness. It pins every package; do not replace it with an unversioned
-   package invocation or an upgrade command.
+   Use a project-managed virtual environment whose complete transitive lock and
+   hashes have already been reviewed. The requirements file records the direct
+   versions expected by the harness, but it is not a complete lock and this
+   skill must not install from it. If the environment is unavailable, stop and
+   return control to the user.
 
 2. **Set API Key**
 
@@ -549,12 +547,8 @@ Here's a complete example of creating and running an evaluation:
 </evaluation>
 ```
 
-2. **Prepare the exact dependencies**:
-
-```bash
-python -m pip install -r scripts/requirements.txt
-export ANTHROPIC_API_KEY=your_api_key
-```
+2. **Activate the pre-provisioned locked environment**, then provide the API key
+   through the project's normal secret-management workflow.
 
 3. **Run evaluation**:
 

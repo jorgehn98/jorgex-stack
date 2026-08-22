@@ -138,7 +138,7 @@ Review for:
 
 **TypeScript:**
 - Run the project's locked build script with `pnpm run build` to verify compilation.
-- Test with the project-local MCP Inspector: `pnpm exec @modelcontextprotocol/inspector`.
+- Test with the project-local MCP Inspector binary: `pnpm exec mcp-inspector`.
 
 Use only tools declared by the project and resolved through its lockfile. Do
 not fetch a one-off package while implementing or evaluating a server.
