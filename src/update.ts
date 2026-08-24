@@ -394,7 +394,7 @@ export function rotateLockedBinary(binPath: string, sweepRoot = HOME): string | 
 }
 
 /** Actualiza engram usando el canal nativo replicado (brew → go install → URL releases). */
-async function updateEngram(engramRepo: string, latestVersion: string): Promise<boolean> {
+export async function updateEngram(engramRepo: string, latestVersion: string): Promise<boolean> {
   // 1. Procesos en ejecución: NO hay que parar nada — mismo comportamiento que
   // el upstream en macOS/Linux (brew reemplaza el binario con procesos vivos;
   // siguen con la versión antigua hasta reiniciar los clientes). En Windows la

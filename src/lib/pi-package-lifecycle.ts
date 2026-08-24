@@ -42,11 +42,16 @@ export interface PiPackageReceipt {
     tarball: CandidateTarball;
     provenance: CandidateProvenance;
   };
+  scope: {
+    kind: "real" | "target-dir";
+    codingAgentDir: string;
+  };
 }
 
 export interface PiPackageEnvironment {
+  [key: string]: string | undefined;
   PI_CODING_AGENT_DIR: string;
-  ENGRAM_BIN: string;
+  ENGRAM_BIN?: string;
   HOME?: string;
   XDG_CONFIG_HOME?: string;
   XDG_CACHE_HOME?: string;
@@ -66,6 +71,7 @@ export interface PiPackageLifecycleInput {
   receiptJson: string | null;
   scope: {
     kind: "real" | "target-dir";
+    codingAgentDir: string;
     receiptPath: string;
     environment: PiPackageEnvironment;
   };
@@ -145,7 +151,11 @@ function parsePackageSources(settingsJson: string): string[] | null {
   }
 }
 
-function expectedReceipt(candidate: PiRuntimeCandidate, state: PiPackageReceipt["state"]): PiPackageReceipt {
+function expectedReceipt(
+  candidate: PiRuntimeCandidate,
+  state: PiPackageReceipt["state"],
+  scope: PiPackageReceipt["scope"],
+): PiPackageReceipt {
   return {
     schemaVersion: 1,
     state,
@@ -154,16 +164,21 @@ function expectedReceipt(candidate: PiRuntimeCandidate, state: PiPackageReceipt[
       tarball: candidate.tarball,
       provenance: candidate.provenance,
     },
+    scope,
   };
 }
 
-function parseReceipt(receiptJson: string, candidate: PiRuntimeCandidate): PiPackageReceipt | null {
+function parseReceipt(
+  receiptJson: string,
+  candidate: PiRuntimeCandidate,
+  scope: PiPackageReceipt["scope"],
+): PiPackageReceipt | null {
   try {
     const parsed: unknown = JSON.parse(receiptJson);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const state = Reflect.get(parsed, "state");
     if (state !== "installing" && state !== "installed") return null;
-    const expected = expectedReceipt(candidate, state);
+    const expected = expectedReceipt(candidate, state, scope);
     return sameRecord(parsed, expected) ? expected : null;
   } catch {
     return null;
@@ -202,7 +217,10 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
 
   let receipt: PiPackageReceipt | null = null;
   if (input.receiptJson !== null) {
-    receipt = parseReceipt(input.receiptJson, input.candidate);
+    receipt = parseReceipt(input.receiptJson, input.candidate, {
+      kind: input.scope.kind,
+      codingAgentDir: path.resolve(input.scope.codingAgentDir),
+    });
     if (receipt === null) return blocked(input, "receipt-corrupt");
     if (receipt.state === "installing") return blocked(input, "partial-state");
     if (exactSources.length !== 1) return blocked(input, "partial-state");
@@ -231,7 +249,10 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
       args: ["install", input.candidate.package.source, "--no-approve"],
       environment: input.scope.environment,
     },
-    receipt: expectedReceipt(input.candidate, "installing"),
+    receipt: expectedReceipt(input.candidate, "installing", {
+      kind: input.scope.kind,
+      codingAgentDir: path.resolve(input.scope.codingAgentDir),
+    }),
     ownership: ownership(true),
   };
 }
@@ -346,7 +367,7 @@ export function executePiPackageLifecycle(
     if (doctorResult === null || typeof doctorResult !== "object" || Reflect.get(doctorResult, "healthy") !== true) {
       return { kind: "blocked", reason: "runner-unhealthy" };
     }
-    const receipt = expectedReceipt(input.candidate, "installed");
+    const receipt = { ...input.plan.receipt, state: "installed" as const };
     deps.writeReceipt(receipt);
     return { kind: "installed", receipt };
   }
@@ -377,6 +398,7 @@ export interface PiPackageRegistry {
   id: "pi";
   kind: "package-managed";
   candidate: PiRuntimeCandidate;
+  acceptedCandidates?: readonly PiRuntimeCandidate[];
 }
 
 export interface PiPackageManagedOperationInput {
@@ -392,12 +414,14 @@ export interface PiPackageManagedOperationInput {
   receiptJson: string | null;
   paths: {
     targetDir: boolean;
+    codingAgentDir: string;
     receiptPath: string;
     environment: Record<string, string>;
   };
 }
 
 export interface PiPackageManagedOperationDeps {
+  backupSettings(): void;
   run(invocation: {
     executable: string;
     args: string[];
@@ -429,9 +453,11 @@ function readReceiptCandidate(receiptJson: string): PiPackageReceipt | null {
     const packageValue = Reflect.get(candidate, "package");
     const tarball = Reflect.get(candidate, "tarball");
     const provenance = Reflect.get(candidate, "provenance");
+    const scope = Reflect.get(parsed, "scope");
     if (packageValue === null || typeof packageValue !== "object"
       || tarball === null || typeof tarball !== "object"
-      || provenance === null || typeof provenance !== "object") {
+      || provenance === null || typeof provenance !== "object"
+      || scope === null || typeof scope !== "object" || Array.isArray(scope)) {
       return null;
     }
     const source = Reflect.get(packageValue, "source");
@@ -443,6 +469,9 @@ function readReceiptCandidate(receiptJson: string): PiPackageReceipt | null {
       || source !== `npm:jorgex-pi@${version}`) {
       return null;
     }
+    const scopeKind = Reflect.get(scope, "kind");
+    const codingAgentDir = Reflect.get(scope, "codingAgentDir");
+    if ((scopeKind !== "real" && scopeKind !== "target-dir") || typeof codingAgentDir !== "string") return null;
     return parsed as PiPackageReceipt;
   } catch {
     return null;
@@ -462,6 +491,18 @@ function validateOwnedOperationState(
   const receipt = readReceiptCandidate(input.receiptJson);
   if (receipt === null) return { kind: "blocked", reason: "receipt-corrupt" };
   if (receipt.state !== "installed") return { kind: "blocked", reason: "partial-state" };
+  const accepted = input.registry.acceptedCandidates ?? [input.registry.candidate];
+  if (!accepted.some((candidate) => sameRecord(receipt.candidate, {
+    package: candidate.package,
+    tarball: candidate.tarball,
+    provenance: candidate.provenance,
+  }))) {
+    return { kind: "blocked", reason: "receipt-untrusted" };
+  }
+  if (receipt.scope.kind !== (input.paths.targetDir ? "target-dir" : "real")
+    || path.resolve(receipt.scope.codingAgentDir) !== path.resolve(input.paths.codingAgentDir)) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
   const source = receipt.candidate.package.source;
   if (matchingSources.length !== 1 || matchingSources[0] !== source) {
     return { kind: "blocked", reason: "source-divergent" };
@@ -506,7 +547,7 @@ export function runPiPackageManagedOperation(
   input: PiPackageManagedOperationInput,
   deps: PiPackageManagedOperationDeps,
 ): PiPackageManagedOperationResult {
-  if (input.engramBin === null) {
+  if (input.engramBin === null && input.operation !== "uninstall") {
     return {
       kind: "blocked",
       reason: "engram-missing",
@@ -542,6 +583,7 @@ export function runPiPackageManagedOperation(
     }
     const cleanup = runManagedRunner(input, deps, "cleanup");
     if (managedRunnerWasBlocked(cleanup)) return cleanup;
+    deps.backupSettings();
     const removed = deps.run({
       executable: input.detected.executable,
       args: ["remove", owned.source, "--no-approve"],
@@ -554,22 +596,10 @@ export function runPiPackageManagedOperation(
   }
 
   const nextSource = input.registry.candidate.package.source;
-  const remove = deps.run({
-    executable: input.detected.executable,
-    args: ["remove", owned.source, "--no-approve"],
-    environment: input.paths.environment,
-  });
-  if (remove.exitCode !== 0 || remove.stderr !== "") return { kind: "blocked", reason: "update-failed" };
-  const install = deps.run({
-    executable: input.detected.executable,
-    args: ["install", nextSource, "--no-approve"],
-    environment: input.paths.environment,
-  });
-  if (install.exitCode === 0 && install.stderr === "") return { kind: "healthy" };
-  deps.run({
-    executable: input.detected.executable,
-    args: ["install", owned.source, "--no-approve"],
-    environment: input.paths.environment,
-  });
-  return { kind: "blocked", reason: "update-failed" };
+  if (nextSource === owned.source) return { kind: "healthy" };
+  return {
+    kind: "blocked",
+    reason: "verified-update-required",
+    remedy: "A cross-version Pi update requires verified replacement and rollback tgz artifacts.",
+  };
 }

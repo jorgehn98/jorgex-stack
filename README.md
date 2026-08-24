@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 15 agents, 17 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, and **OpenCode**.
+Portable multi-agent harness: one configuration source — 15 agents, 17 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
@@ -75,7 +75,7 @@ Flags:
   pnpm dlx jorgex-stack install --mode programmatic --subagent-concurrency serial --yes
   ```
 
-  This installs into all detected runtimes. To be explicit, add `--agents opencode,claude-code,codex` or a comma-separated subset. Always pass `--mode programmatic`; without `--mode`, `--yes` and non-TTY installs default to `human`.
+  This installs into all detected runtimes. To be explicit, add `--agents opencode,claude-code,codex,pi` or a comma-separated subset. Always pass `--mode programmatic`; without `--mode`, `--yes` and non-TTY installs default to `human`.
 
   OpenCode also requires an existing selection in `~/.jorgex-stack/model-map.json`; run `pnpm dlx jorgex-stack models --agents opencode` interactively once before a headless install.
 
@@ -94,6 +94,24 @@ Programmatic mode does **not** provide:
 - An opt-out from Engram (Engram is always part of the install).
 - Any special stdout streaming guarantee — the runtime's normal output rules apply.
 - Telemetry, JSONL streams, or runtime token-budget enforcement.
+
+### Pi runtime
+
+Pi is package-managed rather than file-managed. Stack supports the exact tested pair **Pi 0.84.2 + `jorgex-pi@0.1.0`** and keeps Pi out of the adapter/component manifest and model map.
+
+```bash
+pnpm dlx jorgex-stack install --agents pi
+pnpm dlx jorgex-stack doctor --agents pi
+pnpm dlx jorgex-stack models --agents pi
+pnpm dlx jorgex-stack sync --agents pi
+pnpm dlx jorgex-stack uninstall --agents pi
+```
+
+Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. A scope-bound receipt under `~/.jorgex-stack/pi-receipt.json` records ownership only after the package runner reports a healthy install. Manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state fails closed and is never adopted or removed silently.
+
+Engram remains mandatory and user-owned. An existing binary is preserved. Interactive install may offer the existing native `brew`/`go`/release channel with a default-No confirmation; `--yes` and non-TTY installs fail with a remedy when Engram is absent. No Pi lifecycle operation updates or deletes the Engram database or memories. Under `--target-dir`, Stack accepts only `<target>/bin/engram`, isolates Pi/Home/XDG/AppData/temp/npm-cache paths inside the target, and never consults the host Engram or Pi configuration.
+
+`update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
 ### Browser automation
 

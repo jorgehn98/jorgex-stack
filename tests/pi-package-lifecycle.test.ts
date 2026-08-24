@@ -5,6 +5,7 @@ type PiPackageReceipt = {
   schemaVersion: 1;
   state: "installing" | "installed";
   candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
+  scope: { kind: "real" | "target-dir"; codingAgentDir: string };
 };
 
 type PiPackageEnvironment = {
@@ -29,6 +30,7 @@ type PiPackageLifecycleInput = {
   receiptJson: string | null;
   scope: {
     kind: "real" | "target-dir";
+    codingAgentDir: string;
     receiptPath: string;
     environment: PiPackageEnvironment;
   };
@@ -87,6 +89,7 @@ function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPacka
     receiptJson: null,
     scope: {
       kind: "real",
+      codingAgentDir: "/tmp/pi-agent",
       receiptPath: "/home/test/.jorgex-stack/pi-receipt.json",
       environment: {
         PI_CODING_AGENT_DIR: "/tmp/pi-agent",
@@ -106,6 +109,7 @@ function installedReceipt(): PiPackageReceipt {
       tarball: PI_RUNTIME_CANDIDATE.tarball,
       provenance: PI_RUNTIME_CANDIDATE.provenance,
     },
+    scope: { kind: "real", codingAgentDir: "/tmp/pi-agent" },
   };
 }
 
@@ -133,6 +137,7 @@ describe("Pi package-managed lifecycle", () => {
           tarball: PI_RUNTIME_CANDIDATE.tarball,
           provenance: PI_RUNTIME_CANDIDATE.provenance,
         },
+        scope: { kind: "real", codingAgentDir: "/tmp/pi-agent" },
       },
       ownership: {
         receipt: true,
@@ -208,6 +213,7 @@ describe("Pi package-managed lifecycle", () => {
     const isolated = planPiPackageLifecycle(healthyInput({
       scope: {
         kind: "target-dir",
+        codingAgentDir: "/tmp/jorgex-target/pi-agent",
         receiptPath: "/tmp/jorgex-target/state/pi-receipt.json",
         environment: targetEnvironment,
       },

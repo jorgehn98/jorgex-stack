@@ -1,10 +1,10 @@
 import * as p from "@clack/prompts";
 import { pathToFileURL } from "node:url";
-import type { InstallModePreference, RuntimeId, SubagentConcurrency } from "./adapters/types.js";
+import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentConcurrency } from "./adapters/types.js";
 import { ADAPTERS, runInstall } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
-import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
+import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { readPackageVersion } from "./lib/release.js";
@@ -17,6 +17,14 @@ import {
   parseInstallModePreferenceFlags,
 } from "./lib/install-mode.js";
 import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference } from "./lib/tool-preferences.js";
+import {
+  detectPiRuntime,
+  hasManagedPiRuntime,
+  resolvePiEngramBin,
+  resolvePiEngramRequirement,
+  runPiRuntimeSystem,
+  type PiRuntimeOperation,
+} from "./lib/pi-runtime.js";
 
 const VERSION = readPackageVersion();
 
@@ -24,7 +32,7 @@ const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "u
 export type Command = (typeof COMMANDS)[number];
 
 export interface Flags {
-  agents: RuntimeId[];
+  agents: SelectableRuntimeId[];
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
@@ -53,7 +61,7 @@ export interface ParsedCli {
 async function ensureOpenCodeModelsForInstall(
   command: "install" | "sync",
   flags: Flags,
-  runtimes: RuntimeId[],
+  runtimes: SelectableRuntimeId[],
 ): Promise<boolean> {
   if (!runtimes.includes("opencode") || loadModelMap().opencode) return true;
 
@@ -97,10 +105,10 @@ export function parseFlags(args: string[]): Flags {
     const arg = args[i]!;
     if (arg === "--agents" || arg === "-a") {
       const [value, nextIndex] = readValue(i);
-      flags.agents = (value ?? "").split(",").filter(Boolean) as RuntimeId[];
+      flags.agents = (value ?? "").split(",").filter(Boolean) as SelectableRuntimeId[];
       i = nextIndex;
     }
-    else if (arg.startsWith("--agents=")) flags.agents = arg.slice(9).split(",").filter(Boolean) as RuntimeId[];
+    else if (arg.startsWith("--agents=")) flags.agents = arg.slice(9).split(",").filter(Boolean) as SelectableRuntimeId[];
     else if (arg === "--target-dir") {
       const [value, nextIndex] = readValue(i);
       flags.targetDir = value;
@@ -286,19 +294,77 @@ export function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 /** Runtimes destino: --agents explícito, o multiselect interactivo de los detectados, o todos los detectados. */
-async function resolveRuntimes(flags: Flags): Promise<RuntimeId[] | null> {
+function isFileManagedRuntime(runtime: SelectableRuntimeId): runtime is RuntimeId {
+  return runtime !== "pi";
+}
+
+async function resolveRuntimes(flags: Flags, includeAvailablePi = false): Promise<SelectableRuntimeId[] | null> {
   if (flags.agents.length > 0) return flags.agents;
-  const detected = Object.values(ADAPTERS).filter((a) => a.detect().installed);
+  const detected: { id: SelectableRuntimeId; name: string }[] = Object.values(ADAPTERS)
+    .filter((adapter) => adapter.detect().installed)
+    .map((adapter) => ({ id: adapter.id, name: adapter.name }));
+  const pi = detectPiRuntime();
+  if (pi.installed && (includeAvailablePi || hasManagedPiRuntime(flags.targetDir))) {
+    detected.push({ id: "pi", name: "Pi" });
+  }
   if (detected.length === 0) return [];
-  if (flags.yes || !process.stdout.isTTY || flags.targetDir !== undefined) return detected.map((a) => a.id);
+  if (flags.yes || !process.stdout.isTTY || flags.targetDir !== undefined) return detected.map((runtime) => runtime.id);
 
   const choice = await p.multiselect({
     message: "¿En qué runtimes? (detectados en esta máquina)",
-    options: detected.map((a) => ({ value: a.id, label: a.name })),
-    initialValues: detected.map((a) => a.id),
+    options: detected.map((runtime) => ({ value: runtime.id, label: runtime.name })),
+    initialValues: detected.map((runtime) => runtime.id),
   });
   if (p.isCancel(choice)) return null;
   return choice;
+}
+
+async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, yes = false): Promise<number> {
+  const detected = detectPiRuntime();
+  if (!detected.installed || detected.executable === null) {
+    console.error("Pi no detectado. Instala el runtime Pi antes de gestionar jorgex-pi.");
+    return 1;
+  }
+  if (detected.version === null) {
+    console.error("No se pudo verificar la versión instalada de Pi sin ejecutarlo; revisa la instalación de Pi.");
+    return 1;
+  }
+  let engramBin = resolvePiEngramBin(targetDir);
+  if (operation === "install" && engramBin === null) {
+    const requirement = await resolvePiEngramRequirement({
+      targetDir,
+      interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+      yes,
+    }, {
+      detectHost: () => resolvePiEngramBin(),
+      detectTarget: (root) => resolvePiEngramBin(root),
+      confirm: async ({ message, initialValue }) => {
+        const answer = await p.confirm({ message, initialValue });
+        return !p.isCancel(answer) && answer;
+      },
+      installNative: async ({ version }) => updateEngram("Gentleman-Programming/engram", version),
+    });
+    if (requirement.kind !== "existing") {
+      console.error(requirement.kind === "offer"
+        ? "Pi: instalación cancelada; Engram sigue siendo obligatorio."
+        : `Pi: ${requirement.reason}. ${requirement.remedy}`);
+      return 1;
+    }
+    engramBin = requirement.bin;
+  }
+  const result = await runPiRuntimeSystem({
+    operation,
+    targetDir,
+    detected: { executable: detected.executable, version: detected.version },
+    engramBin,
+  });
+  if (result.kind === "blocked") {
+    console.error(`Pi: ${result.reason ?? "operación bloqueada"}${result.remedy ? `. ${result.remedy}` : ""}`);
+    return 1;
+  }
+  if (result.kind === "models" && result.models !== undefined) console.log(JSON.stringify(result.models));
+  else p.log.success(`Pi: ${result.kind}.`);
+  return 0;
 }
 
 function printHelp(): void {
@@ -318,7 +384,7 @@ Comandos:
               desregistrarlo exige --remove-engram o el sí explícito
 
 Opciones:
-  --agents, -a opencode,claude-code,codex   Runtimes destino (default: detectados)
+  --agents, -a opencode,claude-code,codex,pi   Runtimes destino (default: detectados)
   --mode human|programmatic   Modo de instalación (default: preferencia guardada o human)
   --subagent-concurrency serial|parallel  Concurrencia de subagentes en modo programmatic
   --target-dir <dir>    Dir alternativo (pruebas de paridad; requiere 1 runtime)
@@ -371,34 +437,42 @@ async function main(): Promise<void> {
   switch (command) {
     case "install":
     case "sync": {
-      const mode = await resolveInstallMode(flags);
-      if (mode === null) return;
-      const runtimes = await resolveRuntimes(flags);
+      const runtimes = await resolveRuntimes(flags, command === "install");
       if (runtimes === null) return;
       if (runtimes.length === 0) {
-        console.error("Ningún runtime detectado (opencode, claude-code, codex).");
+        console.error("Ningún runtime detectado (opencode, claude-code, codex, pi).");
         process.exitCode = 1;
         return;
       }
-      const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, runtimes);
-      if (devtoolsMcpSelection === null) return;
-      const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
-      if (playwrightToolConsent === null) return;
-      const hasOpenCodeModels = await ensureOpenCodeModelsForInstall(command, flags, runtimes);
-      if (!hasOpenCodeModels) {
-        process.exitCode = 1;
-        return;
+      const fileRuntimes = runtimes.filter(isFileManagedRuntime);
+      let exitCode = 0;
+      if (fileRuntimes.length > 0) {
+        const mode = await resolveInstallMode(flags);
+        if (mode === null) return;
+        const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, fileRuntimes);
+        if (devtoolsMcpSelection === null) return;
+        const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
+        if (playwrightToolConsent === null) return;
+        const hasOpenCodeModels = await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes);
+        if (!hasOpenCodeModels) {
+          process.exitCode = 1;
+          return;
+        }
+        exitCode = await runInstall({
+          runtimes: fileRuntimes,
+          targetDir: flags.targetDir,
+          dryRun: flags.dryRun,
+          yes: flags.yes,
+          mode,
+          playwrightToolConsent,
+          devtoolsMcpSelection,
+        });
       }
-      const installExitCode = await runInstall({
-        runtimes,
-        targetDir: flags.targetDir,
-        dryRun: flags.dryRun,
-        yes: flags.yes,
-        mode,
-        playwrightToolConsent,
-        devtoolsMcpSelection,
-      });
-      process.exitCode = installExitCode;
+      if (runtimes.includes("pi")) {
+        if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
+        else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes));
+      }
+      process.exitCode = exitCode;
       return;
     }
     case "uninstall": {
@@ -409,46 +483,64 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      process.exitCode = await runUninstall({
-        runtimes,
-        targetDir: flags.targetDir,
-        dryRun: flags.dryRun,
-        yes: flags.yes,
-        removeEngram: flags.removeEngram,
-        removePlaywright: flags.removePlaywright,
-      });
+      const fileRuntimes = runtimes.filter(isFileManagedRuntime);
+      let exitCode = fileRuntimes.length > 0 || flags.removePlaywright
+        ? await runUninstall({
+            runtimes: fileRuntimes,
+            targetDir: flags.targetDir,
+            dryRun: flags.dryRun,
+            yes: flags.yes,
+            removeEngram: flags.removeEngram,
+            removePlaywright: flags.removePlaywright,
+          })
+        : 0;
+      if (runtimes.includes("pi")) {
+        if (flags.dryRun) p.log.info("Pi: uninstall previsto; dry-run conserva paquete y receipt.");
+        else exitCode = Math.max(exitCode, await runSelectedPi("uninstall", flags.targetDir));
+      }
+      process.exitCode = exitCode;
       return;
     }
     case "doctor": {
-      process.exitCode = await runDoctor();
+      const fileDoctorSelected = flags.agents.length === 0 || flags.agents.some(isFileManagedRuntime);
+      let exitCode = fileDoctorSelected ? await runDoctor() : 0;
+      const piSelected = flags.agents.includes("pi")
+        || (flags.agents.length === 0 && detectPiRuntime().installed && hasManagedPiRuntime(flags.targetDir));
+      if (piSelected) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir));
+      process.exitCode = exitCode;
       return;
     }
     case "update": {
-      if (flags.check) {
-        // --check: solo informar (comportamiento anterior, byte-compatible).
-        process.exitCode = await runUpdateCheck(VERSION, flags.targetDir === undefined);
-        return;
-      }
-      // --dry-run: cortocircuita al check sin sync previo ni flujo interactivo.
-      if (flags.dryRun) {
-        process.exitCode = await runUpdateCheck(VERSION, flags.targetDir === undefined);
+      if (flags.check || flags.dryRun) {
+        const piExplicit = flags.agents.includes("pi");
+        const fileRuntimeExplicit = flags.agents.some(isFileManagedRuntime);
+        let exitCode = flags.agents.length === 0 || fileRuntimeExplicit
+          ? await runUpdateCheck(VERSION, flags.targetDir === undefined)
+          : 0;
+        if (piExplicit) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir));
+        process.exitCode = exitCode;
         return;
       }
       // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
+      const fileRuntimes = runtimes.filter(isFileManagedRuntime);
+      if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
+        process.exitCode = await runSelectedPi("update", flags.targetDir);
+        return;
+      }
       const preferenceFile = installModePreferenceFile();
       const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
       const hasSavedMode = hasInstallModePreference(preferenceFile);
       const canResolveMode = flags.targetDir !== undefined || explicitMode || hasSavedMode;
-      const mode = runtimes.length > 0 && canResolveMode
+      const mode = fileRuntimes.length > 0 && canResolveMode
         ? await resolveInstallMode(flags, false)
         : DEFAULT_INSTALL_MODE_PREFERENCE;
       if (mode === null) return;
-      const canSync = runtimes.length === 0 || canResolveMode;
-      if (runtimes.length > 0 && canSync) {
+      const canSync = fileRuntimes.length === 0 || canResolveMode;
+      if (fileRuntimes.length > 0 && canSync) {
         const code = await runInstall({
-          runtimes,
+          runtimes: fileRuntimes,
           targetDir: flags.targetDir,
           dryRun: flags.dryRun,
           yes: true,
@@ -458,7 +550,7 @@ async function main(): Promise<void> {
           process.exitCode = code;
           return;
         }
-      } else if (runtimes.length > 0) {
+      } else if (fileRuntimes.length > 0) {
         console.error("No hay modo guardado; se omite el sync previo y se continúa con update. Usa --mode explícito si quieres sincronizar.");
       }
       const result: InteractiveUpdateResult = await runInteractiveUpdate(
@@ -468,14 +560,17 @@ async function main(): Promise<void> {
         flags.targetDir === undefined,
       );
       process.exitCode = result.exitCode;
+      if (result.exitCode === 0 && runtimes.includes("pi")) {
+        process.exitCode = Math.max(process.exitCode, await runSelectedPi("update", flags.targetDir));
+      }
       // Solo skills/stack cambian los artefactos que el sync propaga.
-      if (result.syncRequired && runtimes.length > 0 && (result.exitCode !== 0 || !canSync)) {
+      if (result.syncRequired && fileRuntimes.length > 0 && (result.exitCode !== 0 || !canSync)) {
         p.log.warn("Skills/stack actualizados, pero el sync con los runtimes sigue pendiente. Ejecuta jorgex-stack sync --mode human|programmatic.");
-      } else if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
+      } else if (result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });
         if (!p.isCancel(apply) && apply) {
           process.exitCode = await runInstall({
-            runtimes,
+            runtimes: fileRuntimes,
             targetDir: flags.targetDir,
             dryRun: false,
             yes: false,
@@ -484,7 +579,7 @@ async function main(): Promise<void> {
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
         }
-      } else if (result.exitCode === 0 && result.syncRequired && runtimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
+      } else if (result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
         console.log("Skills/stack actualizados. Ejecuta jorgex-stack sync para aplicarlos a los runtimes.");
       }
       return;
@@ -495,16 +590,20 @@ async function main(): Promise<void> {
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
       if (runtimes.length === 0) {
-        console.error("Ningún runtime detectado (opencode, claude-code, codex).");
+        console.error("Ningún runtime detectado (opencode, claude-code, codex, pi).");
         process.exitCode = 1;
         return;
       }
-      const code = await runModelsPicker({ yes: flags.yes, runtimes });
+      const fileRuntimes = runtimes.filter(isFileManagedRuntime);
+      let code = fileRuntimes.length > 0
+        ? await runModelsPicker({ yes: flags.yes, runtimes: fileRuntimes })
+        : 0;
+      if (runtimes.includes("pi")) code = Math.max(code, await runSelectedPi("models", flags.targetDir));
       process.exitCode = code;
       // Elegir modelos solo escribe el model-map local; aplicarlos a los
       // agentes instalados es trabajo de sync. Ofrecerlo aquí evita el paso
       // manual que nadie recuerda.
-      if (code === 0 && !flags.yes && process.stdout.isTTY) {
+      if (code === 0 && fileRuntimes.length > 0 && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Aplicar ahora los modelos a los agentes instalados? (sync)" });
         if (!p.isCancel(apply) && apply) {
           const preferenceFile = installModePreferenceFile();
@@ -517,7 +616,7 @@ async function main(): Promise<void> {
           }
           const mode = await resolveInstallMode(flags, false);
           if (mode === null) return;
-          process.exitCode = await runInstall({ runtimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: false, mode });
+          process.exitCode = await runInstall({ runtimes: fileRuntimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: false, mode });
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
         }

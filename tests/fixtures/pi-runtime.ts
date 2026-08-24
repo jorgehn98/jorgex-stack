@@ -12,9 +12,9 @@ export const PI_RUNTIME_CANDIDATE = {
     commit: "02a109d9005f4c948dde2a599c3209a22852fb17",
   },
   tarball: {
-    bytes: 238_390,
-    sha256: "4645799fc7d03feaa9db924ccd6835a61ddad638563dd710c122e213556d4c6d",
-    sha512: "d29d9c0e02092fe0cea067d9482c82d1cca26751c3c7ad059ac83576f95f5bfd65ace5c792ae1995909056eaa1dbddf19920addfb2e3596e3c0cf6dbd072ab1c",
+    bytes: 89_066_153,
+    sha256: "6243bf8e3a8dbe7be9103d7ca9b03e196c41ac9eef6578f47ea6d03655366feb",
+    sha512: "07590abec9e9594b001e28d75eb810259c4088f9f2f6d1d5b9fe456bb2d15a7259ff31ee225d5f1f59b27a1c337a1f1f8e3e57089656bf7bbad966e653110ddd",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -41,6 +41,45 @@ export const PI_RUNTIME_CANDIDATE = {
     },
     managedExternalWrites: [] as string[],
   },
+} as const;
+
+/**
+ * Evidence about the exact frozen tarball. This is test-only metadata: the
+ * runtime receipt intentionally keeps only bytes and digests.
+ */
+export const PI_RUNTIME_ARCHIVE = {
+  entries: 13_392,
+  bundledDependencies: [
+    "@gotgenes/pi-permission-system",
+    "@juicesharp/rpiv-ask-user-question",
+    "pi-subagents",
+    "pi-web-access",
+    "@narumitw/pi-goal",
+    "pi-mcp-adapter",
+  ],
+  closurePackageManifests: [
+    "@napi-rs/keyring",
+    "tree-sitter-bash",
+  ],
+  nativeBindings: [
+    "@napi-rs/keyring-darwin-arm64/keyring.darwin-arm64.node",
+    "@napi-rs/keyring-darwin-x64/keyring.darwin-x64.node",
+    "@napi-rs/keyring-linux-arm-gnueabihf/keyring.linux-arm-gnueabihf.node",
+    "@napi-rs/keyring-linux-arm64-gnu/keyring.linux-arm64-gnu.node",
+    "@napi-rs/keyring-linux-arm64-musl/keyring.linux-arm64-musl.node",
+    "@napi-rs/keyring-linux-riscv64-gnu/keyring.linux-riscv64-gnu.node",
+    "@napi-rs/keyring-linux-x64-gnu/keyring.linux-x64-gnu.node",
+    "@napi-rs/keyring-linux-x64-musl/keyring.linux-x64-musl.node",
+    "@napi-rs/keyring-win32-arm64-msvc/keyring.win32-arm64-msvc.node",
+    "@napi-rs/keyring-win32-ia32-msvc/keyring.win32-ia32-msvc.node",
+    "@napi-rs/keyring-win32-x64-msvc/keyring.win32-x64-msvc.node",
+    "tree-sitter-bash/prebuilds/darwin-arm64/tree-sitter-bash.node",
+    "tree-sitter-bash/prebuilds/darwin-x64/tree-sitter-bash.node",
+    "tree-sitter-bash/prebuilds/linux-arm64/tree-sitter-bash.node",
+    "tree-sitter-bash/prebuilds/linux-x64/tree-sitter-bash.node",
+    "tree-sitter-bash/prebuilds/win32-arm64/tree-sitter-bash.node",
+    "tree-sitter-bash/prebuilds/win32-x64/tree-sitter-bash.node",
+  ],
 } as const;
 
 export type PiRuntimeCandidate = typeof PI_RUNTIME_CANDIDATE;

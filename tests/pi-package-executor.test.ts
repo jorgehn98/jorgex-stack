@@ -18,6 +18,7 @@ type Receipt = {
     tarball: typeof PI_RUNTIME_CANDIDATE.tarball;
     provenance: typeof PI_RUNTIME_CANDIDATE.provenance;
   };
+  scope: { kind: "target-dir"; codingAgentDir: string };
 };
 
 type Plan = {
@@ -78,6 +79,7 @@ function receipt(state: Receipt["state"]): Receipt {
       tarball: PI_RUNTIME_CANDIDATE.tarball,
       provenance: PI_RUNTIME_CANDIDATE.provenance,
     },
+    scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR },
   };
 }
 
