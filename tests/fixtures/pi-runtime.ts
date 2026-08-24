@@ -1,5 +1,5 @@
 /**
- * Candidate frozen from jorgex-pi main at 02a109d9005f4c948dde2a599c3209a22852fb17.
+ * Candidate frozen from jorgex-pi main at 791db79e33efd6661899995b5491e4dff5caa363.
  * It is deliberately data-only: lifecycle tests must not consume a live checkout.
  */
 export const PI_RUNTIME_CANDIDATE = {
@@ -9,7 +9,7 @@ export const PI_RUNTIME_CANDIDATE = {
     source: "npm:jorgex-pi@0.1.0",
   },
   provenance: {
-    commit: "02a109d9005f4c948dde2a599c3209a22852fb17",
+    commit: "791db79e33efd6661899995b5491e4dff5caa363",
   },
   tarball: {
     bytes: 89_066_153,
