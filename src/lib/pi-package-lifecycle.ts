@@ -1,3 +1,5 @@
+import path from "node:path";
+
 type CandidatePackage = {
   readonly name: string;
   readonly version: string;
@@ -232,4 +234,141 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
     receipt: expectedReceipt(input.candidate, "installing"),
     ownership: ownership(true),
   };
+}
+
+export type PiPackageOperation = "install" | "sync" | "models";
+
+export type PiPackageExecutorResult =
+  | { kind: "installed"; receipt: PiPackageReceipt }
+  | { kind: "synced"; actions: [] }
+  | { kind: "models"; models: { mode: "inherit-session"; tiers: ["strong", "standard", "cheap"] } }
+  | { kind: "manual-existing" }
+  | { kind: "blocked"; reason: "pi-install-failed" | "runner-output" | "runner-unhealthy" };
+
+export interface PiPackageExecutorInput {
+  operation: PiPackageOperation;
+  plan: Pick<PiPackageLifecyclePlan, "kind" | "receipt" | "invocation">;
+  candidate: PiRuntimeCandidate;
+  packageRunner: string;
+  environment: PiPackageEnvironment;
+}
+
+export interface PiPackageExecutorDeps {
+  writeReceipt(receipt: PiPackageReceipt): void;
+  run(invocation: {
+    executable: string;
+    args: string[];
+    environment: PiPackageEnvironment;
+  }): { exitCode: number; stdout: string; stderr: string };
+}
+
+type RunnerCommand = Exclude<PiPackageOperation, "install"> | "doctor";
+
+interface RunnerRecord {
+  schemaVersion: number;
+  command: string;
+  ok: boolean;
+  package: { name: string; version: string; root: string };
+  result: unknown;
+}
+
+function parseRunnerRecord(
+  stdout: string,
+  stderr: string,
+  command: RunnerCommand,
+  candidate: PiRuntimeCandidate,
+  packageRunner: string,
+): RunnerRecord | null {
+  if (stderr !== "" || !stdout.endsWith("\n") || Buffer.byteLength(stdout) > candidate.contract.runner.maxStdoutBytes) {
+    return null;
+  }
+  const body = stdout.slice(0, -1);
+  if (body === "" || body.includes("\n") || body.includes("\r")) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Partial<RunnerRecord>;
+    if (record.schemaVersion !== candidate.contract.runner.schemaVersion
+      || record.command !== command
+      || record.ok !== true
+      || record.package === null
+      || typeof record.package !== "object"
+      || record.package.name !== candidate.package.name
+      || record.package.version !== candidate.package.version
+      || typeof record.package.root !== "string"
+      || !path.isAbsolute(record.package.root)
+      || path.resolve(packageRunner) !== path.resolve(record.package.root, "bin", "jorgex-pi.mjs")) {
+      return null;
+    }
+    return record as RunnerRecord;
+  } catch {
+    return null;
+  }
+}
+
+function runPackageCommand(
+  input: PiPackageExecutorInput,
+  deps: PiPackageExecutorDeps,
+  command: RunnerCommand,
+): RunnerRecord | PiPackageExecutorResult {
+  const result = deps.run({
+    executable: input.packageRunner,
+    args: [command, "--json"],
+    environment: input.environment,
+  });
+  if (result.exitCode !== 0) return { kind: "blocked", reason: "runner-unhealthy" };
+  return parseRunnerRecord(result.stdout, result.stderr, command, input.candidate, input.packageRunner)
+    ?? { kind: "blocked", reason: "runner-output" };
+}
+
+function isBlockedResult(value: RunnerRecord | PiPackageExecutorResult): value is PiPackageExecutorResult {
+  return "kind" in value;
+}
+
+export function executePiPackageLifecycle(
+  input: PiPackageExecutorInput,
+  deps: PiPackageExecutorDeps,
+): PiPackageExecutorResult {
+  if (input.plan.kind === "manual-existing") return { kind: "manual-existing" };
+
+  if (input.operation === "install") {
+    if (input.plan.kind !== "install" || input.plan.receipt === undefined || input.plan.invocation === undefined) {
+      return { kind: "blocked", reason: "runner-unhealthy" };
+    }
+    deps.writeReceipt(input.plan.receipt);
+    const installed = deps.run(input.plan.invocation);
+    if (installed.exitCode !== 0 || installed.stderr !== "") {
+      return { kind: "blocked", reason: "pi-install-failed" };
+    }
+    const doctor = runPackageCommand(input, deps, "doctor");
+    if (isBlockedResult(doctor)) return doctor;
+    const doctorResult = doctor.result;
+    if (doctorResult === null || typeof doctorResult !== "object" || Reflect.get(doctorResult, "healthy") !== true) {
+      return { kind: "blocked", reason: "runner-unhealthy" };
+    }
+    const receipt = expectedReceipt(input.candidate, "installed");
+    deps.writeReceipt(receipt);
+    return { kind: "installed", receipt };
+  }
+
+  if (input.plan.kind !== "ready") return { kind: "blocked", reason: "runner-unhealthy" };
+  const command = runPackageCommand(input, deps, input.operation);
+  if (isBlockedResult(command)) return command;
+
+  if (input.operation === "sync") {
+    const result = command.result;
+    if (result === null || typeof result !== "object" || Reflect.get(result, "changed") !== false) {
+      return { kind: "blocked", reason: "runner-unhealthy" };
+    }
+    return { kind: "synced", actions: [] };
+  }
+
+  const models = command.result;
+  if (models === null
+    || typeof models !== "object"
+    || Reflect.get(models, "mode") !== "inherit-session"
+    || !sameRecord(Reflect.get(models, "tiers"), ["strong", "standard", "cheap"])) {
+    return { kind: "blocked", reason: "runner-unhealthy" };
+  }
+  return { kind: "models", models: { mode: "inherit-session", tiers: ["strong", "standard", "cheap"] } };
 }
