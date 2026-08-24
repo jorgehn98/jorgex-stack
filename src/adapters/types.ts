@@ -9,6 +9,7 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import type { RuntimeModelMap } from "../lib/model-map.js";
 
 export type RuntimeId = "claude-code" | "codex" | "opencode";
+export type SelectableRuntimeId = RuntimeId | "pi";
 
 export type InstallMode = "human" | "programmatic";
 
