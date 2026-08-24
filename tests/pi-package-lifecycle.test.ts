@@ -119,7 +119,7 @@ describe("Pi package-managed lifecycle", () => {
       receiptPath: "/home/test/.jorgex-stack/pi-receipt.json",
       invocation: {
         executable: "/opt/pi/bin/pi",
-        args: ["install", "npm:jorgex-pi@0.1.0"],
+        args: ["install", "npm:jorgex-pi@0.1.0", "--no-approve"],
         environment: {
           PI_CODING_AGENT_DIR: "/tmp/pi-agent",
           ENGRAM_BIN: "/opt/engram/bin/engram",

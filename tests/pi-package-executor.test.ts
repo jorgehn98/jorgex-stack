@@ -101,7 +101,7 @@ function installPlan(): Plan {
     kind: "install",
     invocation: {
       executable: "/opt/pi/bin/pi",
-      args: ["install", PI_RUNTIME_CANDIDATE.package.source],
+      args: ["install", PI_RUNTIME_CANDIDATE.package.source, "--no-approve"],
       environment,
     },
     receipt: receipt("installing"),
@@ -136,7 +136,7 @@ describe("Pi package executor", () => {
     expect(result).toEqual({ kind: "installed", receipt: receipt("installed") });
     expect(events).toEqual(["receipt:installing", "run:install", "run:doctor", "receipt:installed"]);
     expect(invocations).toEqual([
-      { executable: "/opt/pi/bin/pi", args: ["install", "npm:jorgex-pi@0.1.0"], environment },
+      { executable: "/opt/pi/bin/pi", args: ["install", "npm:jorgex-pi@0.1.0", "--no-approve"], environment },
       { executable: packageRunner, args: ["doctor", "--json"], environment },
     ]);
     expect(invocations.every((invocation) => invocation.environment.PI_CODING_AGENT_DIR === "/tmp/target/pi-agent")).toBe(true);

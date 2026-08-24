@@ -228,7 +228,7 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
     receiptPath: input.scope.receiptPath,
     invocation: {
       executable: input.pi.executable,
-      args: ["install", input.candidate.package.source],
+      args: ["install", input.candidate.package.source, "--no-approve"],
       environment: input.scope.environment,
     },
     receipt: expectedReceipt(input.candidate, "installing"),
