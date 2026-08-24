@@ -27,6 +27,18 @@ upstreams.json → terceros gestionados por `update` (engram, skills open-source
 
 Mapeo de formatos por runtime: cada adapter en `src/adapters/` declara su formato nativo. Modelos: tiers `strong|standard|cheap` resueltos con picker por runtime — Claude Code solo alias Claude (`fable`/`opus`/`sonnet`/`haiku`), Codex solo OpenAI, OpenCode lista en vivo de `opencode models`.
 
+## Relación con JorgeX Pi
+
+`jorgex-pi` puede instalarse directamente como paquete Pi, pero su canal principal es la instalación gestionada por JorgeX Stack. Los repos siguen separados: **Stack es la fuente canónica compartida y el fleet manager**; **JorgeX Pi posee la proyección Pi-native, su bootstrap, contratos, dependencias y lifecycle**. La integración nunca consume `latest`: `src/lib/pi-runtime.ts` fija una versión y un tarball concretos con tamaño, SHA-256 y SHA-512 verificados.
+
+Todo cambio con impacto cruzado exige revisar ambos repos, aunque finalmente solo uno necesite modificaciones:
+
+- Si Stack cambia agentes, skills, system prompt, permisos, Engram, browser routing, modelos o cualquier contrato compartido, revisar la snapshot/paridad, generadores, contratos, bootstrap y documentación de JorgeX Pi.
+- Si JorgeX Pi cambia versión, runner JSON, capacidades, assets, dependencias, ownership, instalación, actualización, doctor o cleanup, revisar `src/lib/pi-runtime.ts`, `tests/fixtures/pi-runtime.ts`, los tests Pi y `docs/references/pi-runtime.md` en Stack.
+- No duplicar la fuente: el contenido compartido nace en Stack y Pi registra el commit canónico en su contrato de paridad; la adaptación específica de Pi vive únicamente en el repo Pi.
+
+Orden de adopción gestionada: fusionar y publicar primero JorgeX Pi; esperar un mínimo de **24 horas en npm** salvo excepción explícita de Jorge documentada en el PR; después abrir un PR de Stack que descargue el artefacto publicado, verifique sus bytes y actualice conjuntamente versión, URL, tamaño, hashes, fixture, tests y rollback. Hasta que ese PR se fusione, Stack debe seguir instalando el candidato anterior. Una instalación directa de Pi queda fuera de esta ventana gestionada y puede solicitar una versión publicada explícita bajo responsabilidad del usuario.
+
 ## Inventario de skills y cadena de suministro
 
 Para el release minor objetivo **1.2.0**, la snapshot canónica vigente suma **17 skills: 5 propias + 12 vendorizadas**. Los adapters de runtime ejecutan únicamente las copias locales confirmadas en `stack/skills`; no descargan ni ejecutan contenido upstream durante la ejecución.
