@@ -1,0 +1,178 @@
+import { describe, expect, it } from "vitest";
+import { PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
+
+type Environment = Record<string, string>;
+type Invocation = { executable: string; args: string[]; environment: Environment };
+type Receipt = { schemaVersion: 1; state: "installed" | "installing"; candidate: unknown };
+type Result =
+  | { kind: "healthy" }
+  | { kind: "uninstalled" }
+  | { kind: "blocked"; reason: string; remedy?: string };
+
+type PiPackageOperations = {
+  runPiPackageManagedOperation(
+    input: {
+      operation: "doctor" | "uninstall" | "update";
+      interactive: boolean;
+      registry: { id: "pi"; kind: "package-managed"; candidate: typeof PI_RUNTIME_CANDIDATE };
+      detected: { executable: string; packageRunner: string; settingsJson: string };
+      engramBin: string | null;
+      receiptJson: string | null;
+      paths: { targetDir: boolean; receiptPath: string; environment: Environment };
+    },
+    deps: {
+      run(invocation: Invocation): { exitCode: number; stdout: string; stderr: string };
+      isPackageAbsent(): boolean;
+      deleteReceipt(): void;
+    },
+  ): Result;
+};
+
+async function operations(): Promise<PiPackageOperations> {
+  const mod = await import("../src/lib/pi-package-lifecycle.js") as Partial<PiPackageOperations>;
+  expect(mod.runPiPackageManagedOperation).toBeTypeOf("function");
+  return mod as PiPackageOperations;
+}
+
+const root = "/tmp/pi-target/pi-agent/packages/jorgex-pi-0.1.0";
+const runner = `${root}/bin/jorgex-pi.mjs`;
+const source = PI_RUNTIME_CANDIDATE.package.source;
+const environment: Environment = {
+  HOME: "/tmp/pi-target/home",
+  XDG_CONFIG_HOME: "/tmp/pi-target/config",
+  XDG_CACHE_HOME: "/tmp/pi-target/cache",
+  TMPDIR: "/tmp/pi-target/tmp",
+  PI_CODING_AGENT_DIR: "/tmp/pi-target/pi-agent",
+  ENGRAM_BIN: "/tmp/pi-target/bin/engram",
+};
+
+const receipt = (): Receipt => ({ schemaVersion: 1, state: "installed", candidate: {
+  package: PI_RUNTIME_CANDIDATE.package,
+  tarball: PI_RUNTIME_CANDIDATE.tarball,
+  provenance: PI_RUNTIME_CANDIDATE.provenance,
+} });
+
+function runnerJson(command: "doctor" | "cleanup" | "status", result: object): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    command,
+    ok: true,
+    package: { name: "jorgex-pi", version: "0.1.0", root },
+    result,
+  })}\n`;
+}
+
+function input(operation: "doctor" | "uninstall" | "update", overrides: Partial<{
+  settingsJson: string;
+  receiptJson: string | null;
+  engramBin: string | null;
+}> = {}) {
+  return {
+    operation,
+    interactive: false,
+    registry: { id: "pi" as const, kind: "package-managed" as const, candidate: PI_RUNTIME_CANDIDATE },
+    detected: {
+      executable: "/opt/pi/bin/pi",
+      packageRunner: runner,
+      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [source] }),
+    },
+    engramBin: overrides.engramBin === undefined ? environment.ENGRAM_BIN : overrides.engramBin,
+    receiptJson: overrides.receiptJson === undefined ? JSON.stringify(receipt()) : overrides.receiptJson,
+    paths: { targetDir: true, receiptPath: "/tmp/pi-target/state/pi-receipt.json", environment },
+  };
+}
+
+function deps(events: string[], responses: Record<string, { exitCode: number; stdout: string; stderr: string }>, absent = true) {
+  return {
+    run(call: Invocation) {
+      events.push(`${call.executable === runner ? "runner" : "pi"}:${call.args.join(" ")}`);
+      expect(call.environment).toEqual(environment);
+      return responses[call.args[0]] ?? { exitCode: 1, stdout: "", stderr: "" };
+    },
+    isPackageAbsent() {
+      events.push("verify-absent");
+      return absent;
+    },
+    deleteReceipt() {
+      events.push("delete-receipt");
+    },
+  };
+}
+
+describe("Pi package-managed operations", () => {
+  it("uses the package registry, isolated paths and allowlisted environment for a package-local JSON doctor", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+    const result = runPiPackageManagedOperation(input("doctor"), deps(events, {
+      doctor: { exitCode: 0, stdout: runnerJson("doctor", { healthy: true, checks: [{ id: "package", status: "ok" }, { id: "engram", status: "ok" }] }), stderr: "" },
+    }));
+
+    expect(result).toEqual({ kind: "healthy" });
+    expect(events).toEqual(["runner:doctor --json"]);
+    expect(Object.keys(environment).sort()).toEqual(["ENGRAM_BIN", "HOME", "PI_CODING_AGENT_DIR", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"]);
+    expect(environment).not.toHaveProperty("PI_PACKAGE_DIR");
+    expect(input("doctor").paths.receiptPath).not.toContain(".jorgex-stack");
+  });
+
+  it("blocks noninteractive missing Engram before a subprocess and never removes manual, foreign, or partial state", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const cases = [
+      { name: "missing Engram", value: input("doctor", { engramBin: null }), expected: { kind: "blocked", reason: "engram-missing", remedy: expect.stringMatching(/engram/i) } },
+      { name: "manual exact", value: input("uninstall", { receiptJson: null }), expected: { kind: "blocked", reason: "manual-existing" } },
+      { name: "foreign package", value: input("uninstall", { settingsJson: JSON.stringify({ packages: ["file:../jorgex-pi"] }) }), expected: { kind: "blocked", reason: "source-divergent" } },
+      { name: "partial receipt", value: input("uninstall", { receiptJson: JSON.stringify({ ...receipt(), state: "installing" }) }), expected: { kind: "blocked", reason: "partial-state" } },
+    ] as const;
+
+    for (const testCase of cases) {
+      const events: string[] = [];
+      expect(runPiPackageManagedOperation(testCase.value, deps(events, {})), testCase.name).toMatchObject(testCase.expected);
+      expect(events).toEqual([]);
+    }
+  });
+
+  it("cleans up before exact removal, verifies absence before dropping its receipt, and preserves it when verification fails", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const cleanup = { exitCode: 0, stdout: runnerJson("cleanup", { changed: false, actions: [] }), stderr: "" };
+    const remove = { exitCode: 0, stdout: "", stderr: "" };
+
+    const events: string[] = [];
+    expect(runPiPackageManagedOperation(input("uninstall"), deps(events, { cleanup, remove }))).toEqual({ kind: "uninstalled" });
+    expect(events).toEqual([
+      "runner:cleanup --json",
+      "pi:remove npm:jorgex-pi@0.1.0 --no-approve",
+      "verify-absent",
+      "delete-receipt",
+    ]);
+
+    const failedEvents: string[] = [];
+    expect(runPiPackageManagedOperation(input("uninstall"), deps(failedEvents, { cleanup, remove }, false))).toEqual({
+      kind: "blocked",
+      reason: "absence-unverified",
+    });
+    expect(failedEvents).not.toContain("delete-receipt");
+  });
+
+  it("models update as remove/install with a limited rollback and keeps the previous receipt when the replacement fails", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const next = {
+      ...PI_RUNTIME_CANDIDATE,
+      package: { ...PI_RUNTIME_CANDIDATE.package, version: "0.1.1", source: "npm:jorgex-pi@0.1.1" },
+    } as typeof PI_RUNTIME_CANDIDATE;
+    const events: string[] = [];
+    const result = runPiPackageManagedOperation({
+      ...input("update"),
+      registry: { id: "pi", kind: "package-managed", candidate: next },
+    }, deps(events, {
+      remove: { exitCode: 0, stdout: "", stderr: "" },
+      install: { exitCode: 1, stdout: "", stderr: "" },
+    }));
+
+    expect(result).toEqual({ kind: "blocked", reason: "update-failed" });
+    expect(events).toEqual([
+      "pi:remove npm:jorgex-pi@0.1.0 --no-approve",
+      "pi:install npm:jorgex-pi@0.1.1 --no-approve",
+      "pi:install npm:jorgex-pi@0.1.0 --no-approve",
+    ]);
+    expect(events).not.toContain("delete-receipt");
+  });
+});

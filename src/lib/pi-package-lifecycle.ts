@@ -262,7 +262,7 @@ export interface PiPackageExecutorDeps {
   }): { exitCode: number; stdout: string; stderr: string };
 }
 
-type RunnerCommand = Exclude<PiPackageOperation, "install"> | "doctor";
+type RunnerCommand = Exclude<PiPackageOperation, "install"> | "doctor" | "cleanup" | "status";
 
 interface RunnerRecord {
   schemaVersion: number;
@@ -371,4 +371,205 @@ export function executePiPackageLifecycle(
     return { kind: "blocked", reason: "runner-unhealthy" };
   }
   return { kind: "models", models: { mode: "inherit-session", tiers: ["strong", "standard", "cheap"] } };
+}
+
+export interface PiPackageRegistry {
+  id: "pi";
+  kind: "package-managed";
+  candidate: PiRuntimeCandidate;
+}
+
+export interface PiPackageManagedOperationInput {
+  operation: "doctor" | "uninstall" | "update";
+  interactive: boolean;
+  registry: PiPackageRegistry;
+  detected: {
+    executable: string;
+    packageRunner: string;
+    settingsJson: string;
+  };
+  engramBin: string | null;
+  receiptJson: string | null;
+  paths: {
+    targetDir: boolean;
+    receiptPath: string;
+    environment: Record<string, string>;
+  };
+}
+
+export interface PiPackageManagedOperationDeps {
+  run(invocation: {
+    executable: string;
+    args: string[];
+    environment: Record<string, string>;
+  }): { exitCode: number; stdout: string; stderr: string };
+  isPackageAbsent(): boolean;
+  deleteReceipt(): void;
+}
+
+export type PiPackageManagedOperationResult =
+  | { kind: "healthy" }
+  | { kind: "uninstalled" }
+  | { kind: "blocked"; reason: string; remedy?: string };
+
+function readReceiptCandidate(receiptJson: string): PiPackageReceipt | null {
+  try {
+    const parsed: unknown = JSON.parse(receiptJson);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const schemaVersion = Reflect.get(parsed, "schemaVersion");
+    const state = Reflect.get(parsed, "state");
+    const candidate = Reflect.get(parsed, "candidate");
+    if (schemaVersion !== 1
+      || (state !== "installing" && state !== "installed")
+      || candidate === null
+      || typeof candidate !== "object"
+      || Array.isArray(candidate)) {
+      return null;
+    }
+    const packageValue = Reflect.get(candidate, "package");
+    const tarball = Reflect.get(candidate, "tarball");
+    const provenance = Reflect.get(candidate, "provenance");
+    if (packageValue === null || typeof packageValue !== "object"
+      || tarball === null || typeof tarball !== "object"
+      || provenance === null || typeof provenance !== "object") {
+      return null;
+    }
+    const source = Reflect.get(packageValue, "source");
+    const name = Reflect.get(packageValue, "name");
+    const version = Reflect.get(packageValue, "version");
+    if (name !== "jorgex-pi"
+      || typeof version !== "string"
+      || typeof source !== "string"
+      || source !== `npm:jorgex-pi@${version}`) {
+      return null;
+    }
+    return parsed as PiPackageReceipt;
+  } catch {
+    return null;
+  }
+}
+
+function validateOwnedOperationState(
+  input: PiPackageManagedOperationInput,
+): { receipt: PiPackageReceipt; source: string } | PiPackageManagedOperationResult {
+  const sources = parsePackageSources(input.detected.settingsJson);
+  if (sources === null) return { kind: "blocked", reason: "settings-corrupt" };
+  const matchingSources = sources.filter(isJorgeXPiSource);
+  if (matchingSources.length > 1) return { kind: "blocked", reason: "duplicate-package" };
+  if (input.receiptJson === null) {
+    return { kind: "blocked", reason: matchingSources.length === 1 ? "manual-existing" : "source-divergent" };
+  }
+  const receipt = readReceiptCandidate(input.receiptJson);
+  if (receipt === null) return { kind: "blocked", reason: "receipt-corrupt" };
+  if (receipt.state !== "installed") return { kind: "blocked", reason: "partial-state" };
+  const source = receipt.candidate.package.source;
+  if (matchingSources.length !== 1 || matchingSources[0] !== source) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  return { receipt, source };
+}
+
+function operationWasBlocked(
+  value: { receipt: PiPackageReceipt; source: string } | PiPackageManagedOperationResult,
+): value is PiPackageManagedOperationResult {
+  return "kind" in value;
+}
+
+function runManagedRunner(
+  input: PiPackageManagedOperationInput,
+  deps: PiPackageManagedOperationDeps,
+  command: RunnerCommand,
+): RunnerRecord | PiPackageManagedOperationResult {
+  const result = deps.run({
+    executable: input.detected.packageRunner,
+    args: [command, "--json"],
+    environment: input.paths.environment,
+  });
+  if (result.exitCode !== 0) return { kind: "blocked", reason: "runner-unhealthy" };
+  const parsed = parseRunnerRecord(
+    result.stdout,
+    result.stderr,
+    command,
+    input.registry.candidate,
+    input.detected.packageRunner,
+  );
+  return parsed ?? { kind: "blocked", reason: "runner-output" };
+}
+
+function managedRunnerWasBlocked(
+  value: RunnerRecord | PiPackageManagedOperationResult,
+): value is PiPackageManagedOperationResult {
+  return "kind" in value;
+}
+
+export function runPiPackageManagedOperation(
+  input: PiPackageManagedOperationInput,
+  deps: PiPackageManagedOperationDeps,
+): PiPackageManagedOperationResult {
+  if (input.engramBin === null) {
+    return {
+      kind: "blocked",
+      reason: "engram-missing",
+      remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
+    };
+  }
+  const owned = validateOwnedOperationState(input);
+  if (operationWasBlocked(owned)) return owned;
+
+  if (input.operation === "doctor") {
+    if (!sameRecord(owned.receipt.candidate, {
+      package: input.registry.candidate.package,
+      tarball: input.registry.candidate.tarball,
+      provenance: input.registry.candidate.provenance,
+    })) {
+      return { kind: "blocked", reason: "source-divergent" };
+    }
+    const doctor = runManagedRunner(input, deps, "doctor");
+    if (managedRunnerWasBlocked(doctor)) return doctor;
+    const result = doctor.result;
+    return result !== null && typeof result === "object" && Reflect.get(result, "healthy") === true
+      ? { kind: "healthy" }
+      : { kind: "blocked", reason: "runner-unhealthy" };
+  }
+
+  if (input.operation === "uninstall") {
+    if (!sameRecord(owned.receipt.candidate, {
+      package: input.registry.candidate.package,
+      tarball: input.registry.candidate.tarball,
+      provenance: input.registry.candidate.provenance,
+    })) {
+      return { kind: "blocked", reason: "source-divergent" };
+    }
+    const cleanup = runManagedRunner(input, deps, "cleanup");
+    if (managedRunnerWasBlocked(cleanup)) return cleanup;
+    const removed = deps.run({
+      executable: input.detected.executable,
+      args: ["remove", owned.source, "--no-approve"],
+      environment: input.paths.environment,
+    });
+    if (removed.exitCode !== 0 || removed.stderr !== "") return { kind: "blocked", reason: "remove-failed" };
+    if (!deps.isPackageAbsent()) return { kind: "blocked", reason: "absence-unverified" };
+    deps.deleteReceipt();
+    return { kind: "uninstalled" };
+  }
+
+  const nextSource = input.registry.candidate.package.source;
+  const remove = deps.run({
+    executable: input.detected.executable,
+    args: ["remove", owned.source, "--no-approve"],
+    environment: input.paths.environment,
+  });
+  if (remove.exitCode !== 0 || remove.stderr !== "") return { kind: "blocked", reason: "update-failed" };
+  const install = deps.run({
+    executable: input.detected.executable,
+    args: ["install", nextSource, "--no-approve"],
+    environment: input.paths.environment,
+  });
+  if (install.exitCode === 0 && install.stderr === "") return { kind: "healthy" };
+  deps.run({
+    executable: input.detected.executable,
+    args: ["install", owned.source, "--no-approve"],
+    environment: input.paths.environment,
+  });
+  return { kind: "blocked", reason: "update-failed" };
 }
