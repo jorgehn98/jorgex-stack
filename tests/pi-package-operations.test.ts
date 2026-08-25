@@ -7,7 +7,7 @@ type Environment = Record<string, string> & {
 };
 type Invocation = { executable: string; args: string[]; environment: Environment };
 type Receipt = {
-  schemaVersion: 2;
+  schemaVersion: 1;
   state: "installed" | "installing";
   candidate: unknown;
   scope: { kind: "target-dir"; codingAgentDir: string };
@@ -61,7 +61,7 @@ const environment: Environment = {
   ENGRAM_BIN: "/tmp/pi-target/bin/engram",
 };
 
-const receipt = (): Receipt => ({ schemaVersion: 2, state: "installed", candidate: {
+const receipt = (): Receipt => ({ schemaVersion: 1, state: "installed", candidate: {
   package: PI_RUNTIME_CANDIDATE.package,
   tarball: PI_RUNTIME_CANDIDATE.tarball,
   provenance: PI_RUNTIME_CANDIDATE.provenance,
@@ -241,10 +241,10 @@ describe("Pi package-managed operations", () => {
     expect(events).toEqual(expectedEvents);
   });
 
-  it("blocks a v1 receipt before running doctor and does not adopt it", async () => {
+  it("blocks a receipt without an Engram binding before running doctor", async () => {
     const { runPiPackageManagedOperation } = await operations();
     const events: string[] = [];
-    const legacyReceipt = { ...receipt(), schemaVersion: 1 };
+    const { engram: _engram, ...legacyReceipt } = receipt();
     const result = runPiPackageManagedOperation(input("doctor", {
       receiptJson: JSON.stringify(legacyReceipt),
     }), deps(events, {

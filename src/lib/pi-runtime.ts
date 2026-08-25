@@ -198,7 +198,7 @@ function flatCandidateReceipt(
     source: candidate.source,
   };
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     state,
     candidate: {
       package: packageValue,

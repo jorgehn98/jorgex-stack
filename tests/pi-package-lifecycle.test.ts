@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PI_RUNTIME_CANDIDATE, type PiRuntimeCandidate } from "./fixtures/pi-runtime.js";
 
 type PiPackageReceipt = {
-  schemaVersion: 2;
+  schemaVersion: 1;
   state: "installing" | "installed";
   candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
   scope: { kind: "real" | "target-dir"; codingAgentDir: string };
@@ -106,7 +106,7 @@ function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPacka
 
 function installedReceipt(): PiPackageReceipt {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     state: "installed",
     candidate: {
       package: PI_RUNTIME_CANDIDATE.package,
@@ -135,7 +135,7 @@ describe("Pi package-managed lifecycle", () => {
         },
       },
       receipt: {
-        schemaVersion: 2,
+        schemaVersion: 1,
         state: "installing",
         candidate: {
           package: PI_RUNTIME_CANDIDATE.package,
@@ -276,9 +276,9 @@ describe("Pi package-managed lifecycle", () => {
     expect(plan).toMatchObject(expected);
   });
 
-  it("blocks a legacy v1 receipt with a stable upgrade diagnostic instead of adopting ownership", async () => {
+  it("blocks a legacy receipt without an Engram binding instead of adopting ownership", async () => {
     const { planPiPackageLifecycle } = await lifecycle();
-    const legacyReceipt = { ...installedReceipt(), schemaVersion: 1 };
+    const { engram: _engram, ...legacyReceipt } = installedReceipt();
     const plan = planPiPackageLifecycle(healthyInput({
       pi: { ...healthyInput().pi, settingsJson: EXACT_SETTINGS },
       receiptJson: JSON.stringify(legacyReceipt),

@@ -11,7 +11,7 @@ type PiPackageEnvironment = {
 };
 
 type Receipt = {
-  schemaVersion: 2;
+  schemaVersion: 1;
   state: "installing" | "installed";
   candidate: {
     package: typeof PI_RUNTIME_CANDIDATE.package;
@@ -73,7 +73,7 @@ const packageRunner = `/tmp/target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CAND
 
 function receipt(state: Receipt["state"]): Receipt {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     state,
     candidate: {
       package: PI_RUNTIME_CANDIDATE.package,

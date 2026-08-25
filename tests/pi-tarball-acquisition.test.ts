@@ -13,7 +13,7 @@ type Invocation = { executable: string; args: string[]; environment: Environment
 type InstallResult = {
   kind: "installed";
   receipt: {
-    schemaVersion: 2;
+    schemaVersion: 1;
     scope: { kind: "target-dir"; codingAgentDir: string };
     engram: { binary: string };
   };
@@ -121,7 +121,7 @@ describe("Pi tarball acquisition and portable scope", () => {
     expect(result).toMatchObject({
       kind: "installed",
       receipt: {
-        schemaVersion: 2,
+        schemaVersion: 1,
         scope: { kind: "target-dir", codingAgentDir: path.resolve(codingAgentDir) },
         engram: { binary: targetEnvironment.ENGRAM_BIN },
       },

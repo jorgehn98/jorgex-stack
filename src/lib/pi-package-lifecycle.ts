@@ -35,7 +35,7 @@ export interface PiRuntimeCandidate {
 }
 
 export interface PiPackageReceipt {
-  schemaVersion: 2;
+  schemaVersion: 1;
   state: "installing" | "installed";
   candidate: {
     package: CandidatePackage;
@@ -176,7 +176,7 @@ function expectedReceipt(
   engramBin: string,
 ): PiPackageReceipt {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     state,
     candidate: {
       package: candidate.package,
@@ -195,8 +195,7 @@ function parseReceiptShape(receiptJson: string): ReceiptParseResult {
     const parsed: unknown = JSON.parse(receiptJson);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const schemaVersion = Reflect.get(parsed, "schemaVersion");
-    if (schemaVersion === 1) return "upgrade-required";
-    if (schemaVersion !== 2) return null;
+    if (schemaVersion !== 1) return null;
     const state = Reflect.get(parsed, "state");
     const candidate = Reflect.get(parsed, "candidate");
     if ((state !== "installing" && state !== "installed")
@@ -211,10 +210,7 @@ function parseReceiptShape(receiptJson: string): ReceiptParseResult {
     if (packageValue === null || typeof packageValue !== "object"
       || tarball === null || typeof tarball !== "object"
       || provenance === null || typeof provenance !== "object"
-      || scope === null || typeof scope !== "object" || Array.isArray(scope)
-      || engram === null || typeof engram !== "object" || Array.isArray(engram)
-      || typeof Reflect.get(engram, "binary") !== "string"
-      || !path.isAbsolute(Reflect.get(engram, "binary") as string)) {
+      || scope === null || typeof scope !== "object" || Array.isArray(scope)) {
       return null;
     }
     const source = Reflect.get(packageValue, "source");
@@ -228,6 +224,12 @@ function parseReceiptShape(receiptJson: string): ReceiptParseResult {
       || source !== `npm:jorgex-pi@${version}`
       || (scopeKind !== "real" && scopeKind !== "target-dir")
       || typeof codingAgentDir !== "string") {
+      return null;
+    }
+    if (engram === undefined) return "upgrade-required";
+    if (engram === null || typeof engram !== "object" || Array.isArray(engram)
+      || typeof Reflect.get(engram, "binary") !== "string"
+      || !path.isAbsolute(Reflect.get(engram, "binary") as string)) {
       return null;
     }
     return parsed as PiPackageReceipt;
@@ -510,7 +512,7 @@ function receiptUpgradeRequired(): PiPackageManagedOperationResult {
   return {
     kind: "blocked",
     reason: "receipt-upgrade-required",
-    remedy: "El receipt pertenece a un schema anterior; reinstala JorgeX Pi con Stack antes de reintentar.",
+    remedy: "El receipt no enlaza Engram; usa la versión anterior de Stack para desinstalarlo y luego reinstala.",
   };
 }
 

@@ -253,7 +253,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(result).toEqual(expect.objectContaining({
       kind: "installed",
       receipt: expect.objectContaining({
-        schemaVersion: 2,
+        schemaVersion: 1,
         state: "installed",
         scope: { kind: "target-dir", codingAgentDir: agentDir },
         engram: { binary: engramBin },

@@ -60,7 +60,7 @@ const environment: Environment = {
   ENGRAM_BIN: `${target}/bin/engram`,
 };
 const installedReceipt = JSON.stringify({
-  schemaVersion: 2,
+  schemaVersion: 1,
   state: "installed",
   candidate: {
     package: PI_RUNTIME_CANDIDATE.package,
