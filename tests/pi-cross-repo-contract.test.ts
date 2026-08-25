@@ -94,7 +94,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expect(contract.pi?.testedVersions).toEqual(PI_RUNTIME_CANDIDATE.pi.testedVersions);
     expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
     expectArchiveInventory(tarball);
-  });
+  }, 60_000);
 });
 
 crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
