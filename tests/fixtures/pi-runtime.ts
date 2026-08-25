@@ -1,20 +1,21 @@
 /**
- * Candidate frozen from jorgex-pi main at 791db79e33efd6661899995b5491e4dff5caa363.
+ * Candidate frozen from the jorgex-pi@0.2.2 npm provenance commit
+ * 99631aa3712f51a625d196e949e48e27f55031a2.
  * It is deliberately data-only: lifecycle tests must not consume a live checkout.
  */
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.1.0",
-    source: "npm:jorgex-pi@0.1.0",
+    version: "0.2.2",
+    source: "npm:jorgex-pi@0.2.2",
   },
   provenance: {
-    commit: "791db79e33efd6661899995b5491e4dff5caa363",
+    commit: "99631aa3712f51a625d196e949e48e27f55031a2",
   },
   tarball: {
-    bytes: 89_066_153,
-    sha256: "6243bf8e3a8dbe7be9103d7ca9b03e196c41ac9eef6578f47ea6d03655366feb",
-    sha512: "07590abec9e9594b001e28d75eb810259c4088f9f2f6d1d5b9fe456bb2d15a7259ff31ee225d5f1f59b27a1c337a1f1f8e3e57089656bf7bbad966e653110ddd",
+    bytes: 89_101_513,
+    sha256: "e1c6b63719995cf7ba2c96c3b753f19d8f2f0be74f2af9bc319576b7383913f4",
+    sha512: "7b81dc1eb6030d562c70857dcf739798df94c88bddd240b2752c558fc1d21403faa411aa88e182a01664a17e06e2caeef35f1507eff45c97f4acc521469c45a1",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -32,6 +33,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
       "runner-json-v1",
+      "tui-branding-v1",
     ],
     runner: {
       bin: "jorgex-pi",
@@ -48,7 +50,11 @@ export const PI_RUNTIME_CANDIDATE = {
  * runtime receipt intentionally keeps only bytes and digests.
  */
 export const PI_RUNTIME_ARCHIVE = {
-  entries: 13_392,
+  entries: 13_396,
+  brandingAssets: [
+    "assets/brand/eye-logo.svg",
+    "themes/JorgeX.json",
+  ],
   bundledDependencies: [
     "@gotgenes/pi-permission-system",
     "@juicesharp/rpiv-ask-user-question",

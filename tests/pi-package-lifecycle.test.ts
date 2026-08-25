@@ -73,7 +73,7 @@ async function lifecycle(): Promise<PiPackageLifecycleModule> {
   return mod as PiPackageLifecycleModule;
 }
 
-const PACKAGE_ROOT = "/tmp/pi-agent/packages/jorgex-pi-0.1.0";
+const PACKAGE_ROOT = `/tmp/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`;
 const EXACT_SETTINGS = JSON.stringify({
   packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
 });
@@ -127,7 +127,7 @@ describe("Pi package-managed lifecycle", () => {
       receiptPath: "/home/test/.jorgex-stack/pi-receipt.json",
       invocation: {
         executable: "/opt/pi/bin/pi",
-        args: ["install", "npm:jorgex-pi@0.1.0", "--no-approve"],
+        args: ["install", PI_RUNTIME_CANDIDATE.package.source, "--no-approve"],
         environment: {
           PI_CODING_AGENT_DIR: "/tmp/pi-agent",
           ENGRAM_BIN: "/opt/engram/bin/engram",
@@ -170,7 +170,7 @@ describe("Pi package-managed lifecycle", () => {
       },
       {
         name: "a divergent source",
-        input: healthyInput({ pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages: ["npm:jorgex-pi@0.1.1"] }) } }),
+        input: healthyInput({ pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages: ["npm:jorgex-pi@0.2.3"] }) } }),
         expected: { kind: "blocked", reason: "source-divergent" },
       },
       {

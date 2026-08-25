@@ -49,7 +49,7 @@ async function operations(): Promise<PiPackageOperations> {
   return mod as PiPackageOperations;
 }
 
-const root = "/tmp/pi-target/pi-agent/packages/jorgex-pi-0.1.0";
+const root = `/tmp/pi-target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`;
 const runner = `${root}/bin/jorgex-pi.mjs`;
 const source = PI_RUNTIME_CANDIDATE.package.source;
 const environment: Environment = {
@@ -72,7 +72,7 @@ function runnerJson(command: "doctor" | "cleanup" | "status", result: object): s
     schemaVersion: 1,
     command,
     ok: true,
-    package: { name: "jorgex-pi", version: "0.1.0", root },
+    package: { name: "jorgex-pi", version: PI_RUNTIME_CANDIDATE.package.version, root },
     result,
   })}\n`;
 }
@@ -174,7 +174,7 @@ describe("Pi package-managed operations", () => {
     expect(events).toEqual([
       "runner:cleanup --json",
       "backup-settings",
-      "pi:remove npm:jorgex-pi@0.1.0 --no-approve",
+      `pi:remove ${source} --no-approve`,
       "verify-absent",
       "delete-receipt",
     ]);
@@ -194,7 +194,7 @@ describe("Pi package-managed operations", () => {
     expect(missingEngramEvents).toEqual([
       "runner:cleanup --json",
       "backup-settings",
-      "pi:remove npm:jorgex-pi@0.1.0 --no-approve",
+      `pi:remove ${source} --no-approve`,
       "verify-absent",
       "delete-receipt",
     ]);
@@ -208,7 +208,7 @@ describe("Pi package-managed operations", () => {
 
     const next = {
       ...PI_RUNTIME_CANDIDATE,
-      package: { ...PI_RUNTIME_CANDIDATE.package, version: "0.1.1", source: "npm:jorgex-pi@0.1.1" },
+      package: { ...PI_RUNTIME_CANDIDATE.package, version: "0.2.3", source: "npm:jorgex-pi@0.2.3" },
     } as unknown as typeof PI_RUNTIME_CANDIDATE;
     const events: string[] = [];
     const result = runPiPackageManagedOperation({

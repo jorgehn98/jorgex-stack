@@ -69,7 +69,7 @@ const environment: PiPackageEnvironment = {
   PI_CODING_AGENT_DIR: "/tmp/target/pi-agent",
   ENGRAM_BIN: "/tmp/target/bin/engram",
 };
-const packageRunner = "/tmp/target/pi-agent/packages/jorgex-pi-0.1.0/bin/jorgex-pi.mjs";
+const packageRunner = `/tmp/target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}/bin/jorgex-pi.mjs`;
 
 function receipt(state: Receipt["state"]): Receipt {
   return {
@@ -95,7 +95,11 @@ function runnerResponse(command: "doctor" | "sync" | "models"): string {
     schemaVersion: 1,
     command,
     ok: true,
-    package: { name: "jorgex-pi", version: "0.1.0", root: "/tmp/target/pi-agent/packages/jorgex-pi-0.1.0" },
+    package: {
+      name: "jorgex-pi",
+      version: PI_RUNTIME_CANDIDATE.package.version,
+      root: `/tmp/target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`,
+    },
     result,
   });
 }
@@ -140,7 +144,7 @@ describe("Pi package executor", () => {
     expect(result).toEqual({ kind: "installed", receipt: receipt("installed") });
     expect(events).toEqual(["receipt:installing", "run:install", "run:doctor", "receipt:installed"]);
     expect(invocations).toEqual([
-      { executable: "/opt/pi/bin/pi", args: ["install", "npm:jorgex-pi@0.1.0", "--no-approve"], environment },
+      { executable: "/opt/pi/bin/pi", args: ["install", PI_RUNTIME_CANDIDATE.package.source, "--no-approve"], environment },
       { executable: packageRunner, args: ["doctor", "--json"], environment },
     ]);
     expect(invocations.every((invocation) => invocation.environment.PI_CODING_AGENT_DIR === "/tmp/target/pi-agent")).toBe(true);

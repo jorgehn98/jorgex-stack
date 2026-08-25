@@ -18,16 +18,16 @@ import {
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.1.0",
-    source: "npm:jorgex-pi@0.1.0",
+    version: "0.2.2",
+    source: "npm:jorgex-pi@0.2.2",
   },
   provenance: {
-    commit: "791db79e33efd6661899995b5491e4dff5caa363",
+    commit: "99631aa3712f51a625d196e949e48e27f55031a2",
   },
   tarball: {
-    bytes: 89_066_153,
-    sha256: "6243bf8e3a8dbe7be9103d7ca9b03e196c41ac9eef6578f47ea6d03655366feb",
-    sha512: "07590abec9e9594b001e28d75eb810259c4088f9f2f6d1d5b9fe456bb2d15a7259ff31ee225d5f1f59b27a1c337a1f1f8e3e57089656bf7bbad966e653110ddd",
+    bytes: 89_101_513,
+    sha256: "e1c6b63719995cf7ba2c96c3b753f19d8f2f0be74f2af9bc319576b7383913f4",
+    sha512: "7b81dc1eb6030d562c70857dcf739798df94c88bddd240b2752c558fc1d21403faa411aa88e182a01664a17e06e2caeef35f1507eff45c97f4acc521469c45a1",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -45,6 +45,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
       "runner-json-v1",
+      "tui-branding-v1",
     ],
     runner: {
       bin: "jorgex-pi",
@@ -193,7 +194,7 @@ function flatCandidateReceipt(
   const match = /^npm:jorgex-pi@([^\s]+)$/.exec(candidate.source);
   const packageValue = candidate.package ?? {
     name: "jorgex-pi",
-    version: match?.[1] ?? "0.1.0",
+    version: match?.[1] ?? PI_RUNTIME_CANDIDATE.package.version,
     source: candidate.source,
   };
   return {
@@ -259,8 +260,8 @@ export function installPiFromVerifiedTarball(
     ? userPaths(input.engramBin, input.piExecutable)
     : targetPaths(input.targetDir, input.engramBin, input.piExecutable);
   const destination = input.targetDir === undefined
-    ? path.join(dataDir(), "packages", "jorgex-pi-0.1.0.tgz")
-    : path.join(path.resolve(input.targetDir), "downloads", "jorgex-pi-0.1.0.tgz");
+    ? path.join(dataDir(), "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`)
+    : path.join(path.resolve(input.targetDir), "downloads", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`);
   const artifact = deps.download(destination);
   if (artifact.bytes !== input.candidate.bytes
     || artifact.sha256 !== input.candidate.sha256
@@ -547,11 +548,11 @@ async function acquirePiTarball(destination: string): Promise<{ path: string; by
 
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   const partial = `${destination}.partial-${process.pid}`;
-  const response = await fetch("https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.1.0.tgz", {
+  const response = await fetch(`https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`, {
     redirect: "error",
     headers: { accept: "application/octet-stream" },
   });
-  if (!response.ok || response.body === null) throw new Error(`No se pudo descargar jorgex-pi@0.1.0 (${response.status}).`);
+  if (!response.ok || response.body === null) throw new Error(`No se pudo descargar jorgex-pi@${PI_RUNTIME_CANDIDATE.package.version} (${response.status}).`);
   const descriptor = fs.openSync(partial, "wx", 0o600);
   let bytes = 0;
   try {
@@ -618,8 +619,8 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
       };
     }
     const destination = input.targetDir === undefined
-      ? path.join(dataDir(), "packages", "jorgex-pi-0.1.0.tgz")
-      : path.join(path.resolve(input.targetDir), "downloads", "jorgex-pi-0.1.0.tgz");
+      ? path.join(dataDir(), "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`)
+      : path.join(path.resolve(input.targetDir), "downloads", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`);
     let artifact: ReturnType<typeof hashPiTarball>;
     try {
       artifact = await acquirePiTarball(destination);

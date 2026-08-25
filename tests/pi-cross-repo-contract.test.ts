@@ -8,6 +8,8 @@ import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.
 
 const piDirectory = process.env.JORGEX_PI_DIR;
 const crossRepo = piDirectory === undefined ? describe.skip : describe;
+const registryTarball = process.env.JORGEX_PI_TARBALL;
+const registryArtifact = registryTarball === undefined ? describe.skip : describe;
 const temporaryPaths: string[] = [];
 
 function readJson(file: string): unknown {
@@ -45,23 +47,60 @@ function packTarball(root: string): string {
   return path.join(packDir, tarballs[0]!);
 }
 
+function expectArchiveInventory(tarball: string): void {
+  const entries = new Set(listTarEntries(tarball));
+  expect(entries.size).toBe(PI_RUNTIME_ARCHIVE.entries);
+  for (const asset of PI_RUNTIME_ARCHIVE.brandingAssets) {
+    expect(entries.has(`package/${asset}`), asset).toBe(true);
+  }
+  const packedManifest = readTarJson(tarball, "package/package.json") as { bundledDependencies?: unknown };
+  expect(packedManifest.bundledDependencies).toEqual(PI_RUNTIME_ARCHIVE.bundledDependencies);
+  for (const dependency of PI_RUNTIME_ARCHIVE.bundledDependencies) {
+    expect(entries.has(`package/node_modules/${dependency}/package.json`), dependency).toBe(true);
+  }
+  for (const dependency of PI_RUNTIME_ARCHIVE.closurePackageManifests) {
+    expect(entries.has(`package/node_modules/${dependency}/package.json`), dependency).toBe(true);
+  }
+  for (const binding of PI_RUNTIME_ARCHIVE.nativeBindings) {
+    expect(entries.has(`package/node_modules/${binding}`), binding).toBe(true);
+  }
+}
+
 afterEach(() => {
   for (const temporaryPath of temporaryPaths.splice(0)) {
     fs.rmSync(temporaryPath, { recursive: true, force: true });
   }
 });
 
+registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => {
+  it("matches the frozen bytes, digests, package contract, and archive inventory", () => {
+    const tarball = path.resolve(registryTarball!);
+    expect(fs.statSync(tarball).isFile()).toBe(true);
+    expect(fs.statSync(tarball).size).toBe(PI_RUNTIME_CANDIDATE.tarball.bytes);
+    expect(digest("sha256", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha256);
+    expect(digest("sha512", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha512);
+
+    const manifest = readTarJson(tarball, "package/package.json") as { name?: unknown; version?: unknown };
+    const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {
+      package?: unknown;
+      pi?: { testedVersions?: unknown };
+      capabilities?: unknown;
+    };
+    expect(manifest).toMatchObject({
+      name: PI_RUNTIME_CANDIDATE.package.name,
+      version: PI_RUNTIME_CANDIDATE.package.version,
+    });
+    expect(contract.package).toEqual(PI_RUNTIME_CANDIDATE.package);
+    expect(contract.pi?.testedVersions).toEqual(PI_RUNTIME_CANDIDATE.pi.testedVersions);
+    expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    expectArchiveInventory(tarball);
+  });
+});
+
 crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
-  it("verifies the explicit JorgeX Pi checkout, bundled closure, and packed tarball", () => {
+  it("verifies the explicit JorgeX Pi checkout contract and bundled closure", () => {
     const root = path.resolve(piDirectory!);
     expect(fs.statSync(root).isDirectory()).toBe(true);
-
-    const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-    expect(commit).toBe(PI_RUNTIME_CANDIDATE.provenance.commit);
 
     const manifest = readJson(path.join(root, "package.json")) as { name?: string; version?: string };
     const contract = readJson(path.join(root, "contract", "jorgex-pi.v1.json")) as {
@@ -93,27 +132,10 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
 
     const tarball = packTarball(root);
-
-    expect(fs.statSync(tarball).size).toBe(PI_RUNTIME_CANDIDATE.tarball.bytes);
-    expect(digest("sha256", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha256);
-    expect(digest("sha512", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha512);
-
-    const entries = new Set(listTarEntries(tarball));
-    expect(entries.size).toBe(PI_RUNTIME_ARCHIVE.entries);
-    const packedManifest = readTarJson(tarball, "package/package.json") as { bundledDependencies?: unknown };
-    expect(packedManifest.bundledDependencies).toEqual(PI_RUNTIME_ARCHIVE.bundledDependencies);
-    for (const dependency of PI_RUNTIME_ARCHIVE.bundledDependencies) {
-      expect(entries.has(`package/node_modules/${dependency}/package.json`), dependency).toBe(true);
-    }
-    for (const dependency of PI_RUNTIME_ARCHIVE.closurePackageManifests) {
-      expect(entries.has(`package/node_modules/${dependency}/package.json`), dependency).toBe(true);
-    }
-    for (const binding of PI_RUNTIME_ARCHIVE.nativeBindings) {
-      expect(entries.has(`package/node_modules/${binding}`), binding).toBe(true);
-    }
+    expectArchiveInventory(tarball);
   }, 60_000);
 
-  it("installs the packed candidate with the checkout-local Pi, normalizes its source, validates doctor, and removes only the managed package", async () => {
+  it("installs the packed checkout artifact with the checkout-local Pi, normalizes its source, validates doctor, and removes only the managed package", async () => {
     const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js");
     const root = path.resolve(piDirectory!);
     const piManifest = readJson(path.join(root, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")) as {
@@ -124,12 +146,20 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(fs.realpathSync(piExecutable)).toBe(path.join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"));
 
     const sourceTarball = packTarball(root);
+    const checkoutLifecycleFixture = {
+      source: PI_RUNTIME_CANDIDATE.package.source,
+      bytes: fs.statSync(sourceTarball).size,
+      sha256: digest("sha256", sourceTarball),
+      sha512: digest("sha512", sourceTarball),
+      package: PI_RUNTIME_CANDIDATE.package,
+      provenance: { commit: "checkout-lifecycle-fixture" },
+    };
     const target = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-cross-repo-install-"));
     temporaryPaths.push(target);
     const workspace = path.join(target, "workspace");
     const agentDir = path.join(target, "pi-agent");
     const settingsPath = path.join(agentDir, "settings.json");
-    const downloadedTarball = path.join(target, "downloads", "jorgex-pi-0.1.0.tgz");
+    const downloadedTarball = path.join(target, "downloads", "jorgex-pi-0.2.2.tgz");
     const packageRunner = path.join(agentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
     const packageRoot = path.dirname(path.dirname(packageRunner));
     const engramBin = path.join(target, "bin", process.platform === "win32" ? "engram.exe" : "engram");
@@ -191,10 +221,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       piExecutable,
       engramBin,
       candidate: {
-        source: PI_RUNTIME_CANDIDATE.package.source,
-        ...PI_RUNTIME_CANDIDATE.tarball,
-        package: PI_RUNTIME_CANDIDATE.package,
-        provenance: PI_RUNTIME_CANDIDATE.provenance,
+        ...checkoutLifecycleFixture,
       },
     }, {
       download(destination) {
