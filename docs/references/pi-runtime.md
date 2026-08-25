@@ -8,7 +8,7 @@ For a real install, Stack downloads `https://registry.npmjs.org/jorgex-pi/-/jorg
 
 Pi invokes its supported package manager internally. This is the only npm-side exception: Stack development, builds, tests and its own global tools continue to use pnpm.
 
-The install journal is written before Pi runs and promoted to `installed` only after the runner reports healthy. The receipt records the complete candidate evidence, its scope, and the verified Engram executable in `engram.binary`:
+The install journal is written before Pi runs and promoted to `installed` only after the runner reports healthy. Receipt schema v2 records the complete candidate evidence, its scope, and the verified Engram executable in `engram.binary`:
 
 - real scope: `~/.jorgex-stack/pi-receipt.json` and the resolved `PI_CODING_AGENT_DIR`;
 - test scope: `<target>/state/pi-receipt.json` and `<target>/pi-agent`.
@@ -52,6 +52,7 @@ With `--target-dir <target>`, child processes receive target-contained values fo
 | `manual-existing` | The exact package exists without a Stack receipt. Preserve it or remove it explicitly before asking Stack to own a reinstall. |
 | `duplicate-package` / `source-divergent` | Keep one canonical `npm:jorgex-pi@0.2.2` entry with `skills: []` and retry. |
 | `receipt-corrupt` / `receipt-untrusted` / `partial-state` | Do not delete the journal blindly. Inspect settings and receipt scope/candidate, then repair or restore deliberately. |
+| `receipt-upgrade-required` | The receipt uses the previous schema and is not adopted automatically. Use the previous Stack release to remove it, then reinstall deliberately with the current release. |
 | `runner-output` / `runner-unhealthy` | The installed package did not produce the expected single bounded JSON record. Reinstall only after checking package integrity and Engram. |
 | `verified-update-required` | Stack refuses a cross-version registry install without verified replacement and rollback tarballs. Upgrade support must ship with the new frozen candidate. |
 

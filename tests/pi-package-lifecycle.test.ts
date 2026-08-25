@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PI_RUNTIME_CANDIDATE, type PiRuntimeCandidate } from "./fixtures/pi-runtime.js";
 
 type PiPackageReceipt = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   state: "installing" | "installed";
   candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
   scope: { kind: "real" | "target-dir"; codingAgentDir: string };
@@ -46,6 +46,7 @@ type PiPackageLifecyclePlan = {
     | "source-divergent"
     | "duplicate-package"
     | "receipt-corrupt"
+    | "receipt-upgrade-required"
     | "partial-state"
     | "engram-missing";
   invocation?: {
@@ -105,7 +106,7 @@ function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPacka
 
 function installedReceipt(): PiPackageReceipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state: "installed",
     candidate: {
       package: PI_RUNTIME_CANDIDATE.package,
@@ -134,7 +135,7 @@ describe("Pi package-managed lifecycle", () => {
         },
       },
       receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         state: "installing",
         candidate: {
           package: PI_RUNTIME_CANDIDATE.package,
@@ -259,5 +260,34 @@ describe("Pi package-managed lifecycle", () => {
       receiptJson: JSON.stringify({ ...initial.receipt, state: "installed", engram }),
     }));
     expect(resumed).toMatchObject({ kind: "ready", ownership: { receipt: true } });
+  });
+
+  it.each([
+    ["exact filtered object", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }], { kind: "ready" }],
+    ["legacy string source", [PI_RUNTIME_CANDIDATE.package.source], { kind: "blocked", reason: "source-divergent" }],
+    ["non-empty packaged skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }],
+  ])("treats receipt-owned %s as the only ready registration", async (_name, packages, expected) => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const plan = planPiPackageLifecycle(healthyInput({
+      pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages }) },
+      receiptJson: JSON.stringify(installedReceipt()),
+    }));
+
+    expect(plan).toMatchObject(expected);
+  });
+
+  it("blocks a legacy v1 receipt with a stable upgrade diagnostic instead of adopting ownership", async () => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const legacyReceipt = { ...installedReceipt(), schemaVersion: 1 };
+    const plan = planPiPackageLifecycle(healthyInput({
+      pi: { ...healthyInput().pi, settingsJson: EXACT_SETTINGS },
+      receiptJson: JSON.stringify(legacyReceipt),
+    }));
+
+    expect(plan).toMatchObject({
+      kind: "blocked",
+      reason: "receipt-upgrade-required",
+      ownership: { receipt: true },
+    });
   });
 });

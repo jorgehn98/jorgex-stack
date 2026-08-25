@@ -40,7 +40,7 @@ function packTarball(root: string): string {
   execFileSync("pnpm", ["pack", "--pack-destination", packDir], {
     cwd: root,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "ignore", "pipe"],
   });
   const tarballs = fs.readdirSync(packDir).filter((entry) => entry.endsWith(".tgz"));
   expect(tarballs).toHaveLength(1);
@@ -206,7 +206,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
         },
         shell: false,
         timeout: 120_000,
-        maxBuffer: 65_537,
+        maxBuffer: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes + 1,
         stdio: ["ignore", "pipe", "pipe"],
       });
       return {
@@ -253,6 +253,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(result).toEqual(expect.objectContaining({
       kind: "installed",
       receipt: expect.objectContaining({
+        schemaVersion: 2,
         state: "installed",
         scope: { kind: "target-dir", codingAgentDir: agentDir },
         engram: { binary: engramBin },
@@ -269,7 +270,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       }),
     ]);
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({
-      packages: [foreignSource, PI_RUNTIME_CANDIDATE.package.source],
+      packages: [foreignSource, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
       foreignState,
     });
     expect(JSON.parse(fs.readFileSync(path.join(target, "backups", "settings.json"), "utf8"))).toEqual({

@@ -60,7 +60,7 @@ const environment: Environment = {
   ENGRAM_BIN: `${target}/bin/engram`,
 };
 const installedReceipt = JSON.stringify({
-  schemaVersion: 1,
+  schemaVersion: 2,
   state: "installed",
   candidate: {
     package: PI_RUNTIME_CANDIDATE.package,
@@ -75,7 +75,7 @@ function harness(events: string[]) {
   return {
     readSettings(path: string) {
       events.push(`settings:${path}`);
-      return JSON.stringify({ packages: ["npm:jorgex-pi@0.2.2"] });
+      return JSON.stringify({ packages: [{ source: "npm:jorgex-pi@0.2.2", skills: [] }] });
     },
     readReceipt(path: string) {
       events.push(`receipt:${path}`);
@@ -180,5 +180,36 @@ describe("Pi runtime wiring", () => {
     }, updateDeps)).toMatchObject({ kind: "updated" });
     expect(updateEvents).toContain(`atomic:${receiptPath}:installed`);
     expect(updateEvents.join("\n")).not.toContain('"version":"0.2.2"}');
+  });
+
+  it.each([
+    ["exact filtered object", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }], { kind: "synced" }, ["runner:sync --json"]],
+    ["legacy string source", [PI_RUNTIME_CANDIDATE.package.source], { kind: "blocked", reason: "source-divergent" }, []],
+    ["non-empty packaged skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }, []],
+  ])("runs receipt-owned sync only for the %s registration", async (_name, packages, expected, expectedEvents) => {
+    const { runPiRuntime } = await runtime();
+    const { planPiPackageLifecycle } = await import("../src/lib/pi-package-lifecycle.js");
+    const events: string[] = [];
+    const result = runPiRuntime({
+      operation: "sync",
+      targetDir: target,
+      detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+      engramBin: environment.ENGRAM_BIN,
+    }, {
+      readSettings: () => JSON.stringify({ packages }),
+      readReceipt: () => installedReceipt,
+      writeReceiptAtomic: () => events.push("receipt-write"),
+      prepare: (value) => planPiPackageLifecycle(value as never),
+      execute: (value) => {
+        const plan = (value as { plan: { kind: string; reason?: string } }).plan;
+        if (plan.kind !== "ready") return { kind: "blocked", reason: plan.reason };
+        events.push("runner:sync --json");
+        return { kind: "synced", actions: [] };
+      },
+      operate: () => ({ kind: "healthy" }),
+    });
+
+    expect(result).toMatchObject(expected);
+    expect(events).toEqual(expectedEvents);
   });
 });

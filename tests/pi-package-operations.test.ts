@@ -7,7 +7,7 @@ type Environment = Record<string, string> & {
 };
 type Invocation = { executable: string; args: string[]; environment: Environment };
 type Receipt = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   state: "installed" | "installing";
   candidate: unknown;
   scope: { kind: "target-dir"; codingAgentDir: string };
@@ -61,7 +61,7 @@ const environment: Environment = {
   ENGRAM_BIN: "/tmp/pi-target/bin/engram",
 };
 
-const receipt = (): Receipt => ({ schemaVersion: 1, state: "installed", candidate: {
+const receipt = (): Receipt => ({ schemaVersion: 2, state: "installed", candidate: {
   package: PI_RUNTIME_CANDIDATE.package,
   tarball: PI_RUNTIME_CANDIDATE.tarball,
   provenance: PI_RUNTIME_CANDIDATE.provenance,
@@ -220,6 +220,41 @@ describe("Pi package-managed operations", () => {
       kind: "blocked",
       reason: "verified-update-required",
       remedy: expect.stringMatching(/verified|tgz|tarball/i),
+    });
+    expect(events).toEqual([]);
+  });
+
+  it.each([
+    ["exact filtered object", [{ source, skills: [] }], { kind: "healthy" }, ["runner:doctor --json"]],
+    ["legacy string source", [source], { kind: "blocked", reason: "source-divergent" }, []],
+    ["non-empty packaged skills", [{ source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }, []],
+  ])("allows receipt-owned doctor only for the %s registration", async (_name, packages, expected, expectedEvents) => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+    const result = runPiPackageManagedOperation(input("doctor", {
+      settingsJson: JSON.stringify({ packages }),
+    }), deps(events, {
+      doctor: { exitCode: 0, stdout: runnerJson("doctor", { healthy: true }), stderr: "" },
+    }));
+
+    expect(result).toMatchObject(expected);
+    expect(events).toEqual(expectedEvents);
+  });
+
+  it("blocks a v1 receipt before running doctor and does not adopt it", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+    const legacyReceipt = { ...receipt(), schemaVersion: 1 };
+    const result = runPiPackageManagedOperation(input("doctor", {
+      receiptJson: JSON.stringify(legacyReceipt),
+    }), deps(events, {
+      doctor: { exitCode: 0, stdout: runnerJson("doctor", { healthy: true }), stderr: "" },
+    }));
+
+    expect(result).toEqual({
+      kind: "blocked",
+      reason: "receipt-upgrade-required",
+      remedy: expect.stringMatching(/previous|anterior|reinstall/i),
     });
     expect(events).toEqual([]);
   });

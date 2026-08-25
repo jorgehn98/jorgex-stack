@@ -11,7 +11,7 @@ type PiPackageEnvironment = {
 };
 
 type Receipt = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   state: "installing" | "installed";
   candidate: {
     package: typeof PI_RUNTIME_CANDIDATE.package;
@@ -56,7 +56,7 @@ type PiPackageExecutor = {
 };
 
 async function executor(): Promise<PiPackageExecutor> {
-  const mod = await import("../src/lib/pi-package-lifecycle.js") as Partial<PiPackageExecutor>;
+  const mod = await import("../src/lib/pi-package-lifecycle.js") as unknown as Partial<PiPackageExecutor>;
   expect(mod.executePiPackageLifecycle).toBeTypeOf("function");
   return mod as PiPackageExecutor;
 }
@@ -73,7 +73,7 @@ const packageRunner = `/tmp/target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CAND
 
 function receipt(state: Receipt["state"]): Receipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state,
     candidate: {
       package: PI_RUNTIME_CANDIDATE.package,
