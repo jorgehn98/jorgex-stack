@@ -184,7 +184,12 @@ interface VerifiedInstallDeps {
   writeReceiptAtomic(content: string): void;
 }
 
-function flatCandidateReceipt(candidate: FlatPiCandidate, scope: PiPackageReceipt["scope"], state: PiPackageReceipt["state"]): PiPackageReceipt {
+function flatCandidateReceipt(
+  candidate: FlatPiCandidate,
+  scope: PiPackageReceipt["scope"],
+  state: PiPackageReceipt["state"],
+  engramBin: string,
+): PiPackageReceipt {
   const match = /^npm:jorgex-pi@([^\s]+)$/.exec(candidate.source);
   const packageValue = candidate.package ?? {
     name: "jorgex-pi",
@@ -200,6 +205,7 @@ function flatCandidateReceipt(candidate: FlatPiCandidate, scope: PiPackageReceip
       provenance: candidate.provenance ?? { commit: PI_RUNTIME_CANDIDATE.provenance.commit },
     },
     scope,
+    engram: { binary: engramBin },
   };
 }
 
@@ -209,8 +215,11 @@ function normalizeInstalledSource(settingsJson: string, alias: string, canonical
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const packages = Reflect.get(parsed, "packages");
     if (!Array.isArray(packages)) return null;
-    if (packages.filter((entry) => entry === alias).length !== 1 || packages.includes(canonical)) return null;
-    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? canonical : entry));
+    const hasCanonical = packages.some((entry) => entry === canonical
+      || (entry !== null && typeof entry === "object" && !Array.isArray(entry)
+        && Reflect.get(entry, "source") === canonical));
+    if (packages.filter((entry) => entry === alias).length !== 1 || hasCanonical) return null;
+    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? { source: canonical, skills: [] } : entry));
     return JSON.stringify(parsed);
   } catch {
     return null;
@@ -263,7 +272,7 @@ export function installPiFromVerifiedTarball(
     kind: input.targetDir === undefined ? "real" as const : "target-dir" as const,
     codingAgentDir: path.resolve(paths.codingAgentDir),
   };
-  const installing = flatCandidateReceipt(input.candidate, scope, "installing");
+  const installing = flatCandidateReceipt(input.candidate, scope, "installing", input.engramBin);
   deps.writeReceiptAtomic(`${JSON.stringify(installing)}\n`);
   const alias = `npm:jorgex-pi@file:${artifact.path}`;
   const installed = deps.run({
@@ -283,7 +292,7 @@ export function installPiFromVerifiedTarball(
   if (doctor.exitCode !== 0 || !healthyDoctor(doctor.stdout, doctor.stderr, paths.packageRunner, input.candidate)) {
     return { kind: "blocked", reason: "runner-unhealthy" };
   }
-  const receipt = flatCandidateReceipt(input.candidate, scope, "installed");
+  const receipt = flatCandidateReceipt(input.candidate, scope, "installed", input.engramBin);
   deps.writeReceiptAtomic(`${JSON.stringify(receipt)}\n`);
   return { kind: "installed", receipt };
 }

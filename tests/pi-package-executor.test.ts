@@ -19,6 +19,7 @@ type Receipt = {
     provenance: typeof PI_RUNTIME_CANDIDATE.provenance;
   };
   scope: { kind: "target-dir"; codingAgentDir: string };
+  engram: { binary: string };
 };
 
 type Plan = {
@@ -80,6 +81,7 @@ function receipt(state: Receipt["state"]): Receipt {
       provenance: PI_RUNTIME_CANDIDATE.provenance,
     },
     scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR },
+    engram: { binary: environment.ENGRAM_BIN },
   };
 }
 

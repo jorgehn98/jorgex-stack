@@ -3,6 +3,7 @@ import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { readManifest } from "../src/lib/manifest.js";
 import { parseCliArgs } from "../src/cli.js";
+import { PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
 
 type Environment = Record<string, string> & {
   PI_CODING_AGENT_DIR: string;
@@ -61,7 +62,13 @@ const environment: Environment = {
 const installedReceipt = JSON.stringify({
   schemaVersion: 1,
   state: "installed",
-  candidate: { package: { name: "jorgex-pi", version: "0.1.0", source: "npm:jorgex-pi@0.1.0" } },
+  candidate: {
+    package: PI_RUNTIME_CANDIDATE.package,
+    tarball: PI_RUNTIME_CANDIDATE.tarball,
+    provenance: PI_RUNTIME_CANDIDATE.provenance,
+  },
+  scope: { kind: "target-dir", codingAgentDir },
+  engram: { binary: environment.ENGRAM_BIN },
 });
 
 function harness(events: string[]) {

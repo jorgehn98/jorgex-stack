@@ -228,6 +228,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       receipt: expect.objectContaining({
         state: "installed",
         scope: { kind: "target-dir", codingAgentDir: agentDir },
+        engram: { binary: engramBin },
       }),
     }));
     expect(invocations).toEqual([

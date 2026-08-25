@@ -46,6 +46,9 @@ export interface PiPackageReceipt {
     kind: "real" | "target-dir";
     codingAgentDir: string;
   };
+  engram: {
+    binary: string;
+  };
 }
 
 export interface PiPackageEnvironment {
@@ -155,6 +158,7 @@ function expectedReceipt(
   candidate: PiRuntimeCandidate,
   state: PiPackageReceipt["state"],
   scope: PiPackageReceipt["scope"],
+  engramBin: string,
 ): PiPackageReceipt {
   return {
     schemaVersion: 1,
@@ -165,6 +169,7 @@ function expectedReceipt(
       provenance: candidate.provenance,
     },
     scope,
+    engram: { binary: engramBin },
   };
 }
 
@@ -172,13 +177,14 @@ function parseReceipt(
   receiptJson: string,
   candidate: PiRuntimeCandidate,
   scope: PiPackageReceipt["scope"],
+  engramBin: string,
 ): PiPackageReceipt | null {
   try {
     const parsed: unknown = JSON.parse(receiptJson);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const state = Reflect.get(parsed, "state");
     if (state !== "installing" && state !== "installed") return null;
-    const expected = expectedReceipt(candidate, state, scope);
+    const expected = expectedReceipt(candidate, state, scope, engramBin);
     return sameRecord(parsed, expected) ? expected : null;
   } catch {
     return null;
@@ -220,7 +226,7 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
     receipt = parseReceipt(input.receiptJson, input.candidate, {
       kind: input.scope.kind,
       codingAgentDir: path.resolve(input.scope.codingAgentDir),
-    });
+    }, input.engramBin);
     if (receipt === null) return blocked(input, "receipt-corrupt");
     if (receipt.state === "installing") return blocked(input, "partial-state");
     if (exactSources.length !== 1) return blocked(input, "partial-state");
@@ -252,7 +258,7 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
     receipt: expectedReceipt(input.candidate, "installing", {
       kind: input.scope.kind,
       codingAgentDir: path.resolve(input.scope.codingAgentDir),
-    }),
+    }, input.engramBin),
     ownership: ownership(true),
   };
 }
@@ -454,10 +460,14 @@ function readReceiptCandidate(receiptJson: string): PiPackageReceipt | null {
     const tarball = Reflect.get(candidate, "tarball");
     const provenance = Reflect.get(candidate, "provenance");
     const scope = Reflect.get(parsed, "scope");
+    const engram = Reflect.get(parsed, "engram");
     if (packageValue === null || typeof packageValue !== "object"
       || tarball === null || typeof tarball !== "object"
       || provenance === null || typeof provenance !== "object"
-      || scope === null || typeof scope !== "object" || Array.isArray(scope)) {
+      || scope === null || typeof scope !== "object" || Array.isArray(scope)
+      || engram === null || typeof engram !== "object" || Array.isArray(engram)
+      || typeof Reflect.get(engram, "binary") !== "string"
+      || !path.isAbsolute(Reflect.get(engram, "binary") as string)) {
       return null;
     }
     const source = Reflect.get(packageValue, "source");
@@ -502,6 +512,9 @@ function validateOwnedOperationState(
   if (receipt.scope.kind !== (input.paths.targetDir ? "target-dir" : "real")
     || path.resolve(receipt.scope.codingAgentDir) !== path.resolve(input.paths.codingAgentDir)) {
     return { kind: "blocked", reason: "source-divergent" };
+  }
+  if (input.engramBin !== null && path.resolve(receipt.engram.binary) !== path.resolve(input.engramBin)) {
+    return { kind: "blocked", reason: "receipt-corrupt" };
   }
   const source = receipt.candidate.package.source;
   if (matchingSources.length !== 1 || matchingSources[0] !== source) {

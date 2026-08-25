@@ -10,7 +10,13 @@ const candidate = {
 
 type Environment = Record<string, string>;
 type Invocation = { executable: string; args: string[]; environment: Environment };
-type InstallResult = { kind: "installed"; receipt: { scope: { kind: "target-dir"; codingAgentDir: string } } } | { kind: "blocked"; reason: string };
+type InstallResult = {
+  kind: "installed";
+  receipt: {
+    scope: { kind: "target-dir"; codingAgentDir: string };
+    engram: { binary: string };
+  };
+} | { kind: "blocked"; reason: string };
 
 type PiTarballAcquisition = {
   installPiFromVerifiedTarball(
@@ -113,7 +119,10 @@ describe("Pi tarball acquisition and portable scope", () => {
 
     expect(result).toMatchObject({
       kind: "installed",
-      receipt: { scope: { kind: "target-dir", codingAgentDir: path.resolve(codingAgentDir) } },
+      receipt: {
+        scope: { kind: "target-dir", codingAgentDir: path.resolve(codingAgentDir) },
+        engram: { binary: targetEnvironment.ENGRAM_BIN },
+      },
     });
     expect(events).toEqual([
       `download:${path.join(target, "downloads", "jorgex-pi-0.1.0.tgz")}`,
@@ -121,7 +130,7 @@ describe("Pi tarball acquisition and portable scope", () => {
       `receipt:installing:target-dir:${path.resolve(codingAgentDir)}`,
       `/opt/pi/bin/pi:install npm:jorgex-pi@file:${tarball} --no-approve`,
       "read-settings",
-      `settings:${JSON.stringify({ packages: ["npm:foreign@1.0.0", candidate.source] })}`,
+      `settings:${JSON.stringify({ packages: ["npm:foreign@1.0.0", { source: candidate.source, skills: [] }] })}`,
       `${process.execPath}:${packageRunner} doctor --json`,
       `receipt:installed:target-dir:${path.resolve(codingAgentDir)}`,
     ]);

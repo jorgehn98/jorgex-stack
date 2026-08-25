@@ -11,6 +11,7 @@ type Receipt = {
   state: "installed" | "installing";
   candidate: unknown;
   scope: { kind: "target-dir"; codingAgentDir: string };
+  engram: { binary: string };
 };
 type Result =
   | { kind: "healthy" }
@@ -64,7 +65,7 @@ const receipt = (): Receipt => ({ schemaVersion: 1, state: "installed", candidat
   package: PI_RUNTIME_CANDIDATE.package,
   tarball: PI_RUNTIME_CANDIDATE.tarball,
   provenance: PI_RUNTIME_CANDIDATE.provenance,
-}, scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR } });
+}, scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR }, engram: { binary: environment.ENGRAM_BIN } });
 
 function runnerJson(command: "doctor" | "cleanup" | "status", result: object): string {
   return `${JSON.stringify({
@@ -88,7 +89,7 @@ function input(operation: "doctor" | "uninstall" | "update", overrides: Partial<
     detected: {
       executable: "/opt/pi/bin/pi",
       packageRunner: runner,
-      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [source] }),
+      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [{ source, skills: [] }] }),
     },
     engramBin: overrides.engramBin === undefined ? environment.ENGRAM_BIN : overrides.engramBin,
     receiptJson: overrides.receiptJson === undefined ? JSON.stringify(receipt()) : overrides.receiptJson,
