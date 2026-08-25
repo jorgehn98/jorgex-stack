@@ -31,11 +31,12 @@ jobs:
           curl --fail --show-error --silent --location --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 --output "$tarball" \
             https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.2.2.tgz
           test -s "$tarball"
-          echo "JORGEX_PI_TARBALL=$tarball" >> "$GITHUB_ENV"
 
       - run: pnpm typecheck
 
       - name: Verify the exact JorgeX Pi artifact contract
+        env:
+          JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.2.2.tgz
         run: pnpm exec vitest run tests/pi-cross-repo-contract.test.ts
 
       - run: pnpm test

@@ -37,7 +37,8 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(workflow).toContain("--connect-timeout 15");
     expect(workflow).toContain("--max-time 300");
     expect(workflow).toContain(tarballUrl);
-    expect(workflow).toContain("JORGEX_PI_TARBALL=$tarball");
+    expect(workflow).toContain("JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.2.2.tgz");
+    expect(workflow).not.toContain("GITHUB_ENV");
     expect(workflow).not.toMatch(/\bnpm\s+(?:install|publish)\b/);
     expect(workflow).not.toContain("NPM_TOKEN");
     expect(workflow).not.toMatch(/(?:contents|id-token):\s*write/);
@@ -45,8 +46,8 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expectInOrder(workflow, [
       "pnpm install --frozen-lockfile",
       tarballUrl,
-      "JORGEX_PI_TARBALL=$tarball",
       "pnpm typecheck",
+      "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.2.2.tgz",
       "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts",
       "pnpm test",
       "pnpm build",
