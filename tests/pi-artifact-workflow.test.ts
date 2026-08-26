@@ -8,7 +8,7 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "pi-artifact.yml");
 
 function readWorkflow(): string {
-  return fs.readFileSync(WORKFLOW_PATH, "utf8");
+  return fs.readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n/g, "\n");
 }
 
 function expectInOrder(haystack: string, needles: string[]): void {
@@ -37,7 +37,8 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(workflow).toContain("--connect-timeout 15");
     expect(workflow).toContain("--max-time 300");
     expect(workflow).toContain(tarballUrl);
-    expect(workflow).toContain("JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.2.2.tgz");
+    const artifactPath = "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-" + version + ".tgz";
+    expect(workflow).toContain(artifactPath);
     expect(workflow).not.toContain("GITHUB_ENV");
     expect(workflow).not.toMatch(/\bnpm\s+(?:install|publish)\b/);
     expect(workflow).not.toContain("NPM_TOKEN");
@@ -47,7 +48,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
       "pnpm install --frozen-lockfile",
       tarballUrl,
       "pnpm typecheck",
-      "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.2.2.tgz",
+      artifactPath,
       "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts",
       "pnpm test",
       "pnpm build",

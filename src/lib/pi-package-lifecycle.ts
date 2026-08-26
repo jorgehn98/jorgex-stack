@@ -30,7 +30,7 @@ export interface PiRuntimeCandidate {
       readonly schemaVersion: number;
       readonly maxStdoutBytes: number;
     };
-    readonly managedExternalWrites: readonly string[];
+    readonly managedExternalWrites: readonly unknown[];
   };
 }
 
@@ -112,6 +112,7 @@ export interface PiPackageLifecyclePlan {
 const REQUIRED_CAPABILITIES = new Set([
   "foundation-contract-v1",
   "runner-json-v1",
+  "managed-primary-model-v1",
 ]);
 
 function sameRecord(left: unknown, right: unknown): boolean {
@@ -257,7 +258,6 @@ function candidateIsValid(candidate: PiRuntimeCandidate, observed: CandidateTarb
     && candidate.contract.runner.schemaVersion === 1
     && candidate.contract.runner.bin === "jorgex-pi"
     && candidate.contract.runner.maxStdoutBytes === 65_536
-    && candidate.contract.managedExternalWrites.length === 0
     && [...REQUIRED_CAPABILITIES].every((capability) => candidate.contract.capabilities.includes(capability))
     && sameRecord(candidate.tarball, observed);
 }

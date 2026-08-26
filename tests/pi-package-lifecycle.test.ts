@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { PI_RUNTIME_CANDIDATE, type PiRuntimeCandidate } from "./fixtures/pi-runtime.js";
 
@@ -74,7 +75,8 @@ async function lifecycle(): Promise<PiPackageLifecycleModule> {
   return mod as PiPackageLifecycleModule;
 }
 
-const PACKAGE_ROOT = `/tmp/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`;
+const CODING_AGENT_DIR = path.resolve("/tmp/pi-agent");
+const PACKAGE_ROOT = path.join(CODING_AGENT_DIR, "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`);
 const EXACT_SETTINGS = JSON.stringify({
   packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
 });
@@ -93,10 +95,10 @@ function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPacka
     receiptJson: null,
     scope: {
       kind: "real",
-      codingAgentDir: "/tmp/pi-agent",
+      codingAgentDir: CODING_AGENT_DIR,
       receiptPath: "/home/test/.jorgex-stack/pi-receipt.json",
       environment: {
-        PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+        PI_CODING_AGENT_DIR: CODING_AGENT_DIR,
         ENGRAM_BIN: "/opt/engram/bin/engram",
       },
     },
@@ -113,7 +115,7 @@ function installedReceipt(): PiPackageReceipt {
       tarball: PI_RUNTIME_CANDIDATE.tarball,
       provenance: PI_RUNTIME_CANDIDATE.provenance,
     },
-    scope: { kind: "real", codingAgentDir: "/tmp/pi-agent" },
+    scope: { kind: "real", codingAgentDir: CODING_AGENT_DIR },
     engram: { binary: "/opt/engram/bin/engram" },
   };
 }
@@ -130,7 +132,7 @@ describe("Pi package-managed lifecycle", () => {
         executable: "/opt/pi/bin/pi",
         args: ["install", PI_RUNTIME_CANDIDATE.package.source, "--no-approve"],
         environment: {
-          PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+          PI_CODING_AGENT_DIR: CODING_AGENT_DIR,
           ENGRAM_BIN: "/opt/engram/bin/engram",
         },
       },
@@ -142,7 +144,7 @@ describe("Pi package-managed lifecycle", () => {
           tarball: PI_RUNTIME_CANDIDATE.tarball,
           provenance: PI_RUNTIME_CANDIDATE.provenance,
         },
-        scope: { kind: "real", codingAgentDir: "/tmp/pi-agent" },
+        scope: { kind: "real", codingAgentDir: CODING_AGENT_DIR },
         engram: { binary: "/opt/engram/bin/engram" },
       },
       ownership: {

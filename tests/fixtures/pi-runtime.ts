@@ -1,21 +1,21 @@
 /**
- * Candidate frozen from the jorgex-pi@0.2.2 npm provenance commit
- * 99631aa3712f51a625d196e949e48e27f55031a2.
+ * Candidate frozen from the jorgex-pi@0.3.0 npm provenance commit
+ * cc8c66f1254e3f7a7c7f4679a30e7a0c7627498c.
  * It is deliberately data-only: lifecycle tests must not consume a live checkout.
  */
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.2.2",
-    source: "npm:jorgex-pi@0.2.2",
+    version: "0.3.0",
+    source: "npm:jorgex-pi@0.3.0",
   },
   provenance: {
-    commit: "99631aa3712f51a625d196e949e48e27f55031a2",
+    commit: "cc8c66f1254e3f7a7c7f4679a30e7a0c7627498c",
   },
   tarball: {
-    bytes: 89_101_513,
-    sha256: "e1c6b63719995cf7ba2c96c3b753f19d8f2f0be74f2af9bc319576b7383913f4",
-    sha512: "7b81dc1eb6030d562c70857dcf739798df94c88bddd240b2752c558fc1d21403faa411aa88e182a01664a17e06e2caeef35f1507eff45c97f4acc521469c45a1",
+    bytes: 89_104_529,
+    sha256: "13919b9aaed407e4e08c774cd24a496d3befbd91de6aafd37725fd7263963a3b",
+    sha512: "85c9adf038e8a0e826009fc8cffe23006688c184a43602d81e29807516073e604b0e451bd8f6883f1d352fb858d232acd593d72af67689b8ef5f7467f17fc096",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -34,6 +34,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "engram-runtime-tools-v1",
       "runner-json-v1",
       "tui-branding-v1",
+      "managed-primary-model-v1",
     ],
     runner: {
       bin: "jorgex-pi",
@@ -41,7 +42,26 @@ export const PI_RUNTIME_CANDIDATE = {
       schemaVersion: 1,
       maxStdoutBytes: 65_536,
     },
-    managedExternalWrites: [] as string[],
+    managedExternalWrites: [
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "settings.json",
+        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair; preserve foreign halves; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "models.json",
+        semantics: "merge missing providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow=872000; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/sol-lifecycle.v1.json",
+        semantics: "record field, container, and file ownership; remove the receipt when empty",
+      },
+    ],
   },
 } as const;
 

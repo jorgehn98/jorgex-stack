@@ -7,13 +7,23 @@ import { detectCodex } from "../lib/detect.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertTomlSection } from "../lib/filemerge.js";
+import {
+  readTomlSection,
+  removeMarkdownSection,
+  removeTomlRootKeyIfExact,
+  removeTomlSection,
+  upsertTomlRootKeyIfMissing,
+  upsertTomlSection,
+} from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
+
+const PRIMARY_MODEL = '"gpt-5.6-sol"';
+const PRIMARY_CONTEXT_WINDOW = "872000";
 
 /**
  * Bloques largos como literal multiline (''' no interpreta escapes: los
@@ -225,6 +235,9 @@ export const codexAdapter: Adapter = {
       ].join("\n");
     }
 
+    content = upsertTomlRootKeyIfMissing(content, "model", PRIMARY_MODEL);
+    content = upsertTomlRootKeyIfMissing(content, "model_context_window", PRIMARY_CONTEXT_WINDOW);
+
     for (const [name, server] of Object.entries(canonical.servers)) {
       const section = `mcp_servers.${name}`;
       const existing = readTomlSection(content, section);
@@ -308,7 +321,8 @@ export const codexAdapter: Adapter = {
     const configFile = path.join(ctx.configDir, "config.toml");
     const config = readTextIfExists(configFile);
     if (config !== null) {
-      let content = config;
+      let content = removeTomlRootKeyIfExact(config, "model", PRIMARY_MODEL);
+      content = removeTomlRootKeyIfExact(content, "model_context_window", PRIMARY_CONTEXT_WINDOW);
       const mcpOwnership: McpOwnershipChange[] = [];
       for (const [name, server] of Object.entries(mcp.servers)) {
         const section = `mcp_servers.${name}`;

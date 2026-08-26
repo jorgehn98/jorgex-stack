@@ -30,6 +30,26 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], v
     && current.command.every((arg, index) => arg === expectedCommand[index]);
 }
 
+const PRIMARY_MODEL = "openai/gpt-5.6-sol";
+const PRIMARY_MODEL_ID = "gpt-5.6-sol";
+const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function ensureObject(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  if (parent[key] === undefined) parent[key] = {};
+  return objectValue(parent[key]);
+}
+
+function pruneEmpty(parent: Record<string, unknown>, key: string): void {
+  const value = objectValue(parent[key]);
+  if (value !== null && Object.keys(value).length === 0) delete parent[key];
+}
+
 export const opencodeAdapter: Adapter = {
   id: "opencode",
   name: "OpenCode",
@@ -196,6 +216,18 @@ export const opencodeAdapter: Adapter = {
     const mcpOwnership: McpOwnershipChange[] = [];
     const content = upsertJson(contentSource, (root) => {
       root["$schema"] ??= "https://opencode.ai/config.json";
+      root["model"] ??= PRIMARY_MODEL;
+
+      const provider = ensureObject(root, "provider");
+      const openai = provider === null ? null : ensureObject(provider, "openai");
+      const models = openai === null ? null : ensureObject(openai, "models");
+      const sol = models === null ? null : ensureObject(models, PRIMARY_MODEL_ID);
+      const limit = sol === null ? null : ensureObject(sol, "limit");
+      if (limit === null) {
+        ctx.warnings.push("OpenCode: provider.openai.models.gpt-5.6-sol.limit no es un objeto; se conserva sin sobrescribir.");
+      } else {
+        for (const [key, value] of Object.entries(PRIMARY_LIMITS)) limit[key] ??= value;
+      }
 
       // Permisos por defecto: solo en config fresca o vacía. Una config
       // existente no se auto-expande jamás.
@@ -296,6 +328,24 @@ export const opencodeAdapter: Adapter = {
     if (config !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
       const content = upsertJson(config, (root) => {
+        if (root["model"] === PRIMARY_MODEL) delete root["model"];
+
+        const provider = objectValue(root["provider"]);
+        const openai = provider === null ? null : objectValue(provider["openai"]);
+        const models = openai === null ? null : objectValue(openai["models"]);
+        const sol = models === null ? null : objectValue(models[PRIMARY_MODEL_ID]);
+        const limit = sol === null ? null : objectValue(sol["limit"]);
+        if (limit !== null) {
+          for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
+            if (limit[key] === value) delete limit[key];
+          }
+          pruneEmpty(sol!, "limit");
+          pruneEmpty(models!, PRIMARY_MODEL_ID);
+          pruneEmpty(openai!, "models");
+          pruneEmpty(provider!, "openai");
+          pruneEmpty(root, "provider");
+        }
+
         const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
         if (mcpBlock) {
           for (const [name, server] of Object.entries(mcp.servers)) {

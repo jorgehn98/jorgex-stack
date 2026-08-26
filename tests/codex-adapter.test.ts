@@ -1,8 +1,40 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, upsertTomlSection } from "../src/lib/filemerge.js";
-import type { CanonicalAgent } from "../src/lib/canonical.js";
+import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
+import { stackRoot } from "../src/lib/paths.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function codexContext(configDir: string) {
+  return {
+    stackDir: stackRoot(),
+    configDir,
+    engramBin: null,
+    models: DEFAULT_MODEL_MAP.codex,
+    warnings: [],
+  };
+}
+
+function tempConfigDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-codex-sol-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function writeActionContent(actions: ReturnType<typeof codexAdapter.planMainConfig>, target: string): string {
+  const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
+  if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
+  return action.content;
+}
 
 const MODELS: RuntimeModelMap = {
   strong: { model: "default", variant: "high" },
@@ -97,6 +129,50 @@ describe("codexAdapter.renderCommand", () => {
     expect(out.content).toContain("name: demo");
     expect(out.content).toContain('"Launch the hub"');
     expect(out.content).toContain("Input: the user's request in this conversation");
+  });
+});
+
+describe("codexAdapter primary Sol defaults", () => {
+  it("añade los defaults ausentes, es idempotente y limpia solo valores canónicos", () => {
+    const freshDir = tempConfigDir();
+    const freshFile = path.join(freshDir, "config.toml");
+    const fresh = writeActionContent(
+      codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), codexContext(freshDir)),
+      freshFile,
+    );
+    expect(fresh).toContain('model = "gpt-5.6-sol"');
+    expect(fresh).toContain("model_context_window = 872000");
+
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const ctx = codexContext(configDir);
+    const mcp = loadCanonicalMcp(stackRoot());
+
+    fs.writeFileSync(configFile, '# user config\ninstructions = \'\'\'\nmodel = "inside multiline"\n\'\'\'\ncustom_flag = true\n\n[foreign]\nvalue = "kept"\n');
+    const installed = writeActionContent(codexAdapter.planMainConfig(mcp, ctx), configFile);
+
+    expect(installed).toContain('model = "gpt-5.6-sol"');
+    expect(installed).toContain("model_context_window = 872000");
+    expect(installed).not.toContain("auto_compact");
+    expect(installed).toContain("custom_flag = true");
+    expect(installed).toContain('model = "inside multiline"');
+    expect(installed).toContain('[foreign]\nvalue = "kept"');
+
+    fs.writeFileSync(configFile, installed);
+    expect(writeActionContent(codexAdapter.planMainConfig(mcp, ctx), configFile)).toBe(installed);
+
+    const customized = installed.replace('model = "gpt-5.6-sol"', 'model = "user/model"');
+    fs.writeFileSync(configFile, customized);
+    const unmerged = writeActionContent(
+      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), ctx),
+      configFile,
+    );
+
+    expect(unmerged).toContain('model = "user/model"');
+    expect(unmerged).not.toContain("model_context_window = 872000");
+    expect(unmerged).toContain("custom_flag = true");
+    expect(unmerged).toContain('model = "inside multiline"');
+    expect(unmerged).toContain('[foreign]\nvalue = "kept"');
   });
 });
 

@@ -86,6 +86,47 @@ export function upsertJson(existing: string | null, mutate: (root: Record<string
   return JSON.stringify(root, null, 2) + "\n";
 }
 
+function tomlRootEnd(lines: string[]): number {
+  const mask = multilineStringMask(lines);
+  const index = lines.findIndex((line, lineIndex) => !mask[lineIndex] && headerName(line) !== null);
+  return index === -1 ? lines.length : index;
+}
+
+function rootKeyLineIndex(lines: string[], key: string): number {
+  const end = tomlRootEnd(lines);
+  const mask = multilineStringMask(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escaped}\\s*=`);
+  return lines.slice(0, end).findIndex((line, index) => !mask[index] && pattern.test(line));
+}
+
+/** Añade una clave escalar al root TOML solo cuando el usuario no la tiene. */
+export function upsertTomlRootKeyIfMissing(existing: string | null, key: string, value: string): string {
+  const normalized = (existing ?? "").replace(/\r\n/g, "\n");
+  const lines = normalized === "" ? [] : normalized.split("\n");
+  if (rootKeyLineIndex(lines, key) !== -1) return normalized;
+
+  const index = tomlRootEnd(lines);
+  lines.splice(index, 0, `${key} = ${value}`);
+  return lines.join("\n");
+}
+
+/** Retira una clave root solo si conserva exactamente el valor canónico. */
+export function removeTomlRootKeyIfExact(existing: string, key: string, value: string): string {
+  const normalized = existing.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const index = rootKeyLineIndex(lines, key);
+  if (index === -1) return normalized;
+
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = new RegExp(`^\\s*${escapedKey}\\s*=\\s*${escapedValue}\\s*(?:#.*)?$`);
+  if (!exact.test(lines[index]!)) return normalized;
+
+  lines.splice(index, 1);
+  return lines.join("\n");
+}
+
 /**
  * Normaliza el nombre de tabla de una línea-header TOML para comparar:
  * `[ mcp_servers."engram" ] # nota` → `mcp_servers.engram`. Devuelve null si

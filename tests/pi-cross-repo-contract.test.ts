@@ -159,7 +159,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     const workspace = path.join(target, "workspace");
     const agentDir = path.join(target, "pi-agent");
     const settingsPath = path.join(agentDir, "settings.json");
-    const downloadedTarball = path.join(target, "downloads", "jorgex-pi-0.2.2.tgz");
+    const downloadedTarball = path.join(target, "downloads", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`);
     const packageRunner = path.join(agentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
     const packageRoot = path.dirname(path.dirname(packageRunner));
     const engramBin = path.join(target, "bin", process.platform === "win32" ? "engram.exe" : "engram");
