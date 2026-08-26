@@ -37,7 +37,7 @@ Todo cambio con impacto cruzado exige revisar ambos repos, aunque finalmente sol
 - Si JorgeX Pi cambia versión, runner JSON, capacidades, assets, dependencias, ownership, instalación, actualización, doctor o cleanup, revisar `src/lib/pi-runtime.ts`, `tests/fixtures/pi-runtime.ts`, los tests Pi y `docs/references/pi-runtime.md` en Stack.
 - No duplicar la fuente: el contenido compartido nace en Stack y Pi registra el commit canónico en su contrato de paridad; la adaptación específica de Pi vive únicamente en el repo Pi.
 
-Orden de adopción gestionada: fusionar y publicar primero JorgeX Pi; esperar un mínimo de **24 horas en npm** salvo excepción explícita de Jorge documentada en el PR; después abrir un PR de Stack que descargue el artefacto publicado, verifique sus bytes y actualice conjuntamente versión, URL, tamaño, hashes, fixture, tests y rollback. Hasta que ese PR se fusione, Stack debe seguir instalando el candidato anterior. Una instalación directa de Pi queda fuera de esta ventana gestionada y puede solicitar una versión publicada explícita bajo responsabilidad del usuario.
+Orden de adopción gestionada: tras publicar JorgeX Pi, el desarrollo, la validación, el merge y la autopublicación del PR de Stack pueden continuar inmediatamente contra el artefacto exacto. La barrera de madurez de **24 horas en npm** afecta únicamente a la instalación o consumo real de esa nueva versión desde el canal npm; no bloquea PRs, merges ni releases. El PR descarga el artefacto publicado, verifica sus bytes y actualiza conjuntamente versión, URL, tamaño, hashes, fixture, tests y rollback. Una instalación directa anticipada queda fuera de la ventana gestionada y requiere una excepción explícita de Jorge.
 
 ## Inventario de skills y cadena de suministro
 

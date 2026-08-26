@@ -11,6 +11,7 @@ type Receipt = {
   state: "installed" | "installing";
   candidate: unknown;
   scope: { kind: "target-dir"; codingAgentDir: string };
+  engram: { binary: string };
 };
 type Result =
   | { kind: "healthy" }
@@ -48,7 +49,7 @@ async function operations(): Promise<PiPackageOperations> {
   return mod as PiPackageOperations;
 }
 
-const root = "/tmp/pi-target/pi-agent/packages/jorgex-pi-0.1.0";
+const root = `/tmp/pi-target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`;
 const runner = `${root}/bin/jorgex-pi.mjs`;
 const source = PI_RUNTIME_CANDIDATE.package.source;
 const environment: Environment = {
@@ -64,14 +65,14 @@ const receipt = (): Receipt => ({ schemaVersion: 1, state: "installed", candidat
   package: PI_RUNTIME_CANDIDATE.package,
   tarball: PI_RUNTIME_CANDIDATE.tarball,
   provenance: PI_RUNTIME_CANDIDATE.provenance,
-}, scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR } });
+}, scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR }, engram: { binary: environment.ENGRAM_BIN } });
 
 function runnerJson(command: "doctor" | "cleanup" | "status", result: object): string {
   return `${JSON.stringify({
     schemaVersion: 1,
     command,
     ok: true,
-    package: { name: "jorgex-pi", version: "0.1.0", root },
+    package: { name: "jorgex-pi", version: PI_RUNTIME_CANDIDATE.package.version, root },
     result,
   })}\n`;
 }
@@ -88,7 +89,7 @@ function input(operation: "doctor" | "uninstall" | "update", overrides: Partial<
     detected: {
       executable: "/opt/pi/bin/pi",
       packageRunner: runner,
-      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [source] }),
+      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [{ source, skills: [] }] }),
     },
     engramBin: overrides.engramBin === undefined ? environment.ENGRAM_BIN : overrides.engramBin,
     receiptJson: overrides.receiptJson === undefined ? JSON.stringify(receipt()) : overrides.receiptJson,
@@ -173,7 +174,7 @@ describe("Pi package-managed operations", () => {
     expect(events).toEqual([
       "runner:cleanup --json",
       "backup-settings",
-      "pi:remove npm:jorgex-pi@0.1.0 --no-approve",
+      `pi:remove ${source} --no-approve`,
       "verify-absent",
       "delete-receipt",
     ]);
@@ -193,7 +194,7 @@ describe("Pi package-managed operations", () => {
     expect(missingEngramEvents).toEqual([
       "runner:cleanup --json",
       "backup-settings",
-      "pi:remove npm:jorgex-pi@0.1.0 --no-approve",
+      `pi:remove ${source} --no-approve`,
       "verify-absent",
       "delete-receipt",
     ]);
@@ -207,7 +208,7 @@ describe("Pi package-managed operations", () => {
 
     const next = {
       ...PI_RUNTIME_CANDIDATE,
-      package: { ...PI_RUNTIME_CANDIDATE.package, version: "0.1.1", source: "npm:jorgex-pi@0.1.1" },
+      package: { ...PI_RUNTIME_CANDIDATE.package, version: "0.2.3", source: "npm:jorgex-pi@0.2.3" },
     } as unknown as typeof PI_RUNTIME_CANDIDATE;
     const events: string[] = [];
     const result = runPiPackageManagedOperation({
@@ -219,6 +220,41 @@ describe("Pi package-managed operations", () => {
       kind: "blocked",
       reason: "verified-update-required",
       remedy: expect.stringMatching(/verified|tgz|tarball/i),
+    });
+    expect(events).toEqual([]);
+  });
+
+  it.each([
+    ["exact filtered object", [{ source, skills: [] }], { kind: "healthy" }, ["runner:doctor --json"]],
+    ["legacy string source", [source], { kind: "blocked", reason: "source-divergent" }, []],
+    ["non-empty packaged skills", [{ source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }, []],
+  ])("allows receipt-owned doctor only for the %s registration", async (_name, packages, expected, expectedEvents) => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+    const result = runPiPackageManagedOperation(input("doctor", {
+      settingsJson: JSON.stringify({ packages }),
+    }), deps(events, {
+      doctor: { exitCode: 0, stdout: runnerJson("doctor", { healthy: true }), stderr: "" },
+    }));
+
+    expect(result).toMatchObject(expected);
+    expect(events).toEqual(expectedEvents);
+  });
+
+  it("blocks a receipt without an Engram binding before running doctor", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+    const { engram: _engram, ...legacyReceipt } = receipt();
+    const result = runPiPackageManagedOperation(input("doctor", {
+      receiptJson: JSON.stringify(legacyReceipt),
+    }), deps(events, {
+      doctor: { exitCode: 0, stdout: runnerJson("doctor", { healthy: true }), stderr: "" },
+    }));
+
+    expect(result).toEqual({
+      kind: "blocked",
+      reason: "receipt-upgrade-required",
+      remedy: expect.stringMatching(/previous|anterior|reinstall/i),
     });
     expect(events).toEqual([]);
   });

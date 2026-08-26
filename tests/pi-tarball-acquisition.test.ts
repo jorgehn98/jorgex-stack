@@ -2,15 +2,22 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const candidate = {
-  source: "npm:jorgex-pi@0.1.0",
-  bytes: 89066153,
-  sha256: "6243bf8e3a8dbe7be9103d7ca9b03e196c41ac9eef6578f47ea6d03655366feb",
-  sha512: "07590abec9e9594b001e28d75eb810259c4088f9f2f6d1d5b9fe456bb2d15a7259ff31ee225d5f1f59b27a1c337a1f1f8e3e57089656bf7bbad966e653110ddd",
+  source: "npm:jorgex-pi@0.2.2",
+  bytes: 89_101_513,
+  sha256: "e1c6b63719995cf7ba2c96c3b753f19d8f2f0be74f2af9bc319576b7383913f4",
+  sha512: "7b81dc1eb6030d562c70857dcf739798df94c88bddd240b2752c558fc1d21403faa411aa88e182a01664a17e06e2caeef35f1507eff45c97f4acc521469c45a1",
 } as const;
 
 type Environment = Record<string, string>;
 type Invocation = { executable: string; args: string[]; environment: Environment };
-type InstallResult = { kind: "installed"; receipt: { scope: { kind: "target-dir"; codingAgentDir: string } } } | { kind: "blocked"; reason: string };
+type InstallResult = {
+  kind: "installed";
+  receipt: {
+    schemaVersion: 1;
+    scope: { kind: "target-dir"; codingAgentDir: string };
+    engram: { binary: string };
+  };
+} | { kind: "blocked"; reason: string };
 
 type PiTarballAcquisition = {
   installPiFromVerifiedTarball(
@@ -39,7 +46,7 @@ async function acquisition(): Promise<PiTarballAcquisition> {
 
 const target = "/tmp/jorgex-pi-portable-target";
 const codingAgentDir = path.join(target, "pi-agent");
-const tarball = path.join(target, "downloads", "jorgex-pi-0.1.0.tgz");
+const tarball = path.join(target, "downloads", "jorgex-pi-0.2.2.tgz");
 const packageRunner = path.join(codingAgentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
 const targetEnvironment = {
   HOME: path.join(target, "home"),
@@ -62,7 +69,7 @@ function doctorJson(): string {
     schemaVersion: 1,
     command: "doctor",
     ok: true,
-    package: { name: "jorgex-pi", version: "0.1.0", root: path.dirname(path.dirname(packageRunner)) },
+    package: { name: "jorgex-pi", version: "0.2.2", root: path.dirname(path.dirname(packageRunner)) },
     result: { healthy: true, checks: [{ id: "package", status: "ok" }, { id: "engram", status: "ok" }] },
   })}\n`;
 }
@@ -113,15 +120,19 @@ describe("Pi tarball acquisition and portable scope", () => {
 
     expect(result).toMatchObject({
       kind: "installed",
-      receipt: { scope: { kind: "target-dir", codingAgentDir: path.resolve(codingAgentDir) } },
+      receipt: {
+        schemaVersion: 1,
+        scope: { kind: "target-dir", codingAgentDir: path.resolve(codingAgentDir) },
+        engram: { binary: targetEnvironment.ENGRAM_BIN },
+      },
     });
     expect(events).toEqual([
-      `download:${path.join(target, "downloads", "jorgex-pi-0.1.0.tgz")}`,
+      `download:${path.join(target, "downloads", "jorgex-pi-0.2.2.tgz")}`,
       "backup-settings",
       `receipt:installing:target-dir:${path.resolve(codingAgentDir)}`,
       `/opt/pi/bin/pi:install npm:jorgex-pi@file:${tarball} --no-approve`,
       "read-settings",
-      `settings:${JSON.stringify({ packages: ["npm:foreign@1.0.0", candidate.source] })}`,
+      `settings:${JSON.stringify({ packages: ["npm:foreign@1.0.0", { source: candidate.source, skills: [] }] })}`,
       `${process.execPath}:${packageRunner} doctor --json`,
       `receipt:installed:target-dir:${path.resolve(codingAgentDir)}`,
     ]);
@@ -148,7 +159,7 @@ describe("Pi tarball acquisition and portable scope", () => {
         candidate,
       }, deps(events, artifact));
       expect(result).toMatchObject({ kind: "blocked", reason: "tarball-integrity" });
-      expect(events).toEqual([`download:${path.join(target, "downloads", "jorgex-pi-0.1.0.tgz")}`]);
+      expect(events).toEqual([`download:${path.join(target, "downloads", "jorgex-pi-0.2.2.tgz")}`]);
     }
   });
 });

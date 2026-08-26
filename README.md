@@ -97,7 +97,7 @@ Programmatic mode does **not** provide:
 
 ### Pi runtime
 
-Pi is package-managed rather than file-managed. Stack supports the exact tested pair **Pi 0.84.2 + `jorgex-pi@0.1.0`** and keeps Pi out of the adapter/component manifest and model map.
+Pi is package-managed rather than file-managed. Stack supports the exact published package **`jorgex-pi@0.2.2`** and keeps Pi out of the adapter/component manifest and model map.
 
 ```bash
 pnpm dlx jorgex-stack install --agents pi
@@ -107,9 +107,11 @@ pnpm dlx jorgex-stack sync --agents pi
 pnpm dlx jorgex-stack uninstall --agents pi
 ```
 
-Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. A scope-bound receipt under `~/.jorgex-stack/pi-receipt.json` records ownership only after the package runner reports a healthy install. Manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state fails closed and is never adopted or removed silently.
+Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. The managed Pi package entry is the exact source object `{ "source": "npm:jorgex-pi@0.2.2", "skills": [] }`: Pi discovers the canonical shared skills from `~/.agents/skills`, so the package copy is disabled and does not create duplicate skill loading. A scope-bound receipt under `~/.jorgex-stack/pi-receipt.json` records ownership only after the package runner reports a healthy install and stores the verified Engram executable as `engram.binary`, using the schema v1 consumed by `jorgex-pi@0.2.2`. Receipts created before the Engram binding existed require deliberate removal with the previous Stack release followed by reinstall; they are never adopted automatically. Manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state fails closed and is never adopted or removed silently.
 
 Engram remains mandatory and user-owned. An existing binary is preserved. Interactive install may offer the existing native `brew`/`go`/release channel with a default-No confirmation; `--yes` and non-TTY installs fail with a remedy when Engram is absent. No Pi lifecycle operation updates or deletes the Engram database or memories. Under `--target-dir`, Stack accepts only `<target>/bin/engram`, isolates Pi/Home/XDG/AppData/temp/npm-cache paths inside the target, and never consults the host Engram or Pi configuration.
+
+The 24-hour npm maturity rule applies to the managed adoption boundary: development and PR validation may start against the exact published artifact, but merging the adoption PR, publishing that Stack adoption, and running the real managed installation wait until the package has been public for at least 24 hours unless Jorge explicitly documents an exception in the PR.
 
 `update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 

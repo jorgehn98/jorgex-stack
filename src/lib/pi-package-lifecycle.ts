@@ -46,6 +46,9 @@ export interface PiPackageReceipt {
     kind: "real" | "target-dir";
     codingAgentDir: string;
   };
+  engram: {
+    binary: string;
+  };
 }
 
 export interface PiPackageEnvironment {
@@ -84,6 +87,7 @@ export type PiPackageLifecycleReason =
   | "source-divergent"
   | "duplicate-package"
   | "receipt-corrupt"
+  | "receipt-upgrade-required"
   | "partial-state"
   | "engram-missing";
 
@@ -138,23 +142,38 @@ function isJorgeXPiSource(source: string): boolean {
   return source.includes("jorgex-pi");
 }
 
-function parsePackageSources(settingsJson: string): string[] | null {
+type PackageSource = { entry: unknown; source: string };
+
+function parsePackageSources(settingsJson: string): PackageSource[] | null {
   try {
     const parsed: unknown = JSON.parse(settingsJson);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const packages = Reflect.get(parsed, "packages");
     if (!Array.isArray(packages)) return null;
-    const sources = packages.map(packageSource);
-    return sources.every((source): source is string => source !== null) ? sources : null;
+    const sources = packages.map((entry) => ({ entry, source: packageSource(entry) }));
+    return sources.every((value): value is PackageSource => value.source !== null) ? sources : null;
   } catch {
     return null;
   }
+}
+
+function isExactManagedPackage(entry: unknown, source: string): boolean {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const keys = Object.keys(entry);
+  const skills = Reflect.get(entry, "skills");
+  return keys.length === 2
+    && keys.includes("source")
+    && keys.includes("skills")
+    && Reflect.get(entry, "source") === source
+    && Array.isArray(skills)
+    && skills.length === 0;
 }
 
 function expectedReceipt(
   candidate: PiRuntimeCandidate,
   state: PiPackageReceipt["state"],
   scope: PiPackageReceipt["scope"],
+  engramBin: string,
 ): PiPackageReceipt {
   return {
     schemaVersion: 1,
@@ -165,24 +184,70 @@ function expectedReceipt(
       provenance: candidate.provenance,
     },
     scope,
+    engram: { binary: engramBin },
   };
+}
+
+type ReceiptParseResult = PiPackageReceipt | "upgrade-required" | null;
+
+function parseReceiptShape(receiptJson: string): ReceiptParseResult {
+  try {
+    const parsed: unknown = JSON.parse(receiptJson);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const schemaVersion = Reflect.get(parsed, "schemaVersion");
+    if (schemaVersion !== 1) return null;
+    const state = Reflect.get(parsed, "state");
+    const candidate = Reflect.get(parsed, "candidate");
+    if ((state !== "installing" && state !== "installed")
+      || candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return null;
+    }
+    const packageValue = Reflect.get(candidate, "package");
+    const tarball = Reflect.get(candidate, "tarball");
+    const provenance = Reflect.get(candidate, "provenance");
+    const scope = Reflect.get(parsed, "scope");
+    const engram = Reflect.get(parsed, "engram");
+    if (packageValue === null || typeof packageValue !== "object"
+      || tarball === null || typeof tarball !== "object"
+      || provenance === null || typeof provenance !== "object"
+      || scope === null || typeof scope !== "object" || Array.isArray(scope)) {
+      return null;
+    }
+    const source = Reflect.get(packageValue, "source");
+    const name = Reflect.get(packageValue, "name");
+    const version = Reflect.get(packageValue, "version");
+    const scopeKind = Reflect.get(scope, "kind");
+    const codingAgentDir = Reflect.get(scope, "codingAgentDir");
+    if (name !== "jorgex-pi"
+      || typeof version !== "string"
+      || typeof source !== "string"
+      || source !== `npm:jorgex-pi@${version}`
+      || (scopeKind !== "real" && scopeKind !== "target-dir")
+      || typeof codingAgentDir !== "string") {
+      return null;
+    }
+    if (engram === undefined) return "upgrade-required";
+    if (engram === null || typeof engram !== "object" || Array.isArray(engram)
+      || typeof Reflect.get(engram, "binary") !== "string"
+      || !path.isAbsolute(Reflect.get(engram, "binary") as string)) {
+      return null;
+    }
+    return parsed as PiPackageReceipt;
+  } catch {
+    return null;
+  }
 }
 
 function parseReceipt(
   receiptJson: string,
   candidate: PiRuntimeCandidate,
   scope: PiPackageReceipt["scope"],
-): PiPackageReceipt | null {
-  try {
-    const parsed: unknown = JSON.parse(receiptJson);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const state = Reflect.get(parsed, "state");
-    if (state !== "installing" && state !== "installed") return null;
-    const expected = expectedReceipt(candidate, state, scope);
-    return sameRecord(parsed, expected) ? expected : null;
-  } catch {
-    return null;
-  }
+  engramBin: string,
+): ReceiptParseResult {
+  const parsed = parseReceiptShape(receiptJson);
+  if (parsed === null || parsed === "upgrade-required") return parsed;
+  const expected = expectedReceipt(candidate, parsed.state, scope, engramBin);
+  return sameRecord(parsed, expected) ? expected : null;
 }
 
 function candidateIsValid(candidate: PiRuntimeCandidate, observed: CandidateTarball): boolean {
@@ -208,22 +273,29 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
 
   const sources = parsePackageSources(input.pi.settingsJson);
   if (sources === null) return blocked(input, "settings-corrupt");
-  const matchingSources = sources.filter(isJorgeXPiSource);
-  const exactSources = matchingSources.filter((source) => source === input.candidate.package.source);
+  const matchingSources = sources.filter(({ source }) => isJorgeXPiSource(source));
+  const exactSources = matchingSources.filter(({ source }) => source === input.candidate.package.source);
   if (exactSources.length > 1) return blocked(input, "duplicate-package");
-  if (matchingSources.some((source) => source !== input.candidate.package.source)) {
+  if (matchingSources.some(({ source }) => source !== input.candidate.package.source)) {
     return blocked(input, "source-divergent");
   }
 
   let receipt: PiPackageReceipt | null = null;
   if (input.receiptJson !== null) {
-    receipt = parseReceipt(input.receiptJson, input.candidate, {
+    const parsedReceipt = parseReceipt(input.receiptJson, input.candidate, {
       kind: input.scope.kind,
       codingAgentDir: path.resolve(input.scope.codingAgentDir),
-    });
-    if (receipt === null) return blocked(input, "receipt-corrupt");
+    }, input.engramBin);
+    if (parsedReceipt === "upgrade-required") return blocked(input, "receipt-upgrade-required");
+    if (parsedReceipt === null) return blocked(input, "receipt-corrupt");
+    receipt = parsedReceipt;
     if (receipt.state === "installing") return blocked(input, "partial-state");
-    if (exactSources.length !== 1) return blocked(input, "partial-state");
+    const exactSource = exactSources[0];
+    if (exactSources.length !== 1
+      || exactSource === undefined
+      || !isExactManagedPackage(exactSource.entry, input.candidate.package.source)) {
+      return blocked(input, "source-divergent");
+    }
   }
 
   if (exactSources.length === 1 && receipt === null) {
@@ -252,7 +324,7 @@ export function planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackag
     receipt: expectedReceipt(input.candidate, "installing", {
       kind: input.scope.kind,
       codingAgentDir: path.resolve(input.scope.codingAgentDir),
-    }),
+    }, input.engramBin),
     ownership: ownership(true),
   };
 }
@@ -436,46 +508,12 @@ export type PiPackageManagedOperationResult =
   | { kind: "uninstalled" }
   | { kind: "blocked"; reason: string; remedy?: string };
 
-function readReceiptCandidate(receiptJson: string): PiPackageReceipt | null {
-  try {
-    const parsed: unknown = JSON.parse(receiptJson);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const schemaVersion = Reflect.get(parsed, "schemaVersion");
-    const state = Reflect.get(parsed, "state");
-    const candidate = Reflect.get(parsed, "candidate");
-    if (schemaVersion !== 1
-      || (state !== "installing" && state !== "installed")
-      || candidate === null
-      || typeof candidate !== "object"
-      || Array.isArray(candidate)) {
-      return null;
-    }
-    const packageValue = Reflect.get(candidate, "package");
-    const tarball = Reflect.get(candidate, "tarball");
-    const provenance = Reflect.get(candidate, "provenance");
-    const scope = Reflect.get(parsed, "scope");
-    if (packageValue === null || typeof packageValue !== "object"
-      || tarball === null || typeof tarball !== "object"
-      || provenance === null || typeof provenance !== "object"
-      || scope === null || typeof scope !== "object" || Array.isArray(scope)) {
-      return null;
-    }
-    const source = Reflect.get(packageValue, "source");
-    const name = Reflect.get(packageValue, "name");
-    const version = Reflect.get(packageValue, "version");
-    if (name !== "jorgex-pi"
-      || typeof version !== "string"
-      || typeof source !== "string"
-      || source !== `npm:jorgex-pi@${version}`) {
-      return null;
-    }
-    const scopeKind = Reflect.get(scope, "kind");
-    const codingAgentDir = Reflect.get(scope, "codingAgentDir");
-    if ((scopeKind !== "real" && scopeKind !== "target-dir") || typeof codingAgentDir !== "string") return null;
-    return parsed as PiPackageReceipt;
-  } catch {
-    return null;
-  }
+function receiptUpgradeRequired(): PiPackageManagedOperationResult {
+  return {
+    kind: "blocked",
+    reason: "receipt-upgrade-required",
+    remedy: "El receipt no enlaza Engram; usa la versión anterior de Stack para desinstalarlo y luego reinstala.",
+  };
 }
 
 function validateOwnedOperationState(
@@ -483,13 +521,15 @@ function validateOwnedOperationState(
 ): { receipt: PiPackageReceipt; source: string } | PiPackageManagedOperationResult {
   const sources = parsePackageSources(input.detected.settingsJson);
   if (sources === null) return { kind: "blocked", reason: "settings-corrupt" };
-  const matchingSources = sources.filter(isJorgeXPiSource);
+  const matchingSources = sources.filter(({ source }) => isJorgeXPiSource(source));
   if (matchingSources.length > 1) return { kind: "blocked", reason: "duplicate-package" };
   if (input.receiptJson === null) {
     return { kind: "blocked", reason: matchingSources.length === 1 ? "manual-existing" : "source-divergent" };
   }
-  const receipt = readReceiptCandidate(input.receiptJson);
-  if (receipt === null) return { kind: "blocked", reason: "receipt-corrupt" };
+  const parsedReceipt = parseReceiptShape(input.receiptJson);
+  if (parsedReceipt === "upgrade-required") return receiptUpgradeRequired();
+  if (parsedReceipt === null) return { kind: "blocked", reason: "receipt-corrupt" };
+  const receipt = parsedReceipt;
   if (receipt.state !== "installed") return { kind: "blocked", reason: "partial-state" };
   const accepted = input.registry.acceptedCandidates ?? [input.registry.candidate];
   if (!accepted.some((candidate) => sameRecord(receipt.candidate, {
@@ -503,8 +543,15 @@ function validateOwnedOperationState(
     || path.resolve(receipt.scope.codingAgentDir) !== path.resolve(input.paths.codingAgentDir)) {
     return { kind: "blocked", reason: "source-divergent" };
   }
+  if (input.engramBin !== null && path.resolve(receipt.engram.binary) !== path.resolve(input.engramBin)) {
+    return { kind: "blocked", reason: "receipt-corrupt" };
+  }
   const source = receipt.candidate.package.source;
-  if (matchingSources.length !== 1 || matchingSources[0] !== source) {
+  const matchingSource = matchingSources[0];
+  if (matchingSources.length !== 1
+    || matchingSource === undefined
+    || matchingSource.source !== source
+    || !isExactManagedPackage(matchingSource.entry, source)) {
     return { kind: "blocked", reason: "source-divergent" };
   }
   return { receipt, source };

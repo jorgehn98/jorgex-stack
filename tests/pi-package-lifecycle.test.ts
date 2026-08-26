@@ -6,6 +6,7 @@ type PiPackageReceipt = {
   state: "installing" | "installed";
   candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
   scope: { kind: "real" | "target-dir"; codingAgentDir: string };
+  engram: { binary: string };
 };
 
 type PiPackageEnvironment = {
@@ -45,6 +46,7 @@ type PiPackageLifecyclePlan = {
     | "source-divergent"
     | "duplicate-package"
     | "receipt-corrupt"
+    | "receipt-upgrade-required"
     | "partial-state"
     | "engram-missing";
   invocation?: {
@@ -72,8 +74,10 @@ async function lifecycle(): Promise<PiPackageLifecycleModule> {
   return mod as PiPackageLifecycleModule;
 }
 
-const PACKAGE_ROOT = "/tmp/pi-agent/packages/jorgex-pi-0.1.0";
-const EXACT_SETTINGS = JSON.stringify({ packages: [PI_RUNTIME_CANDIDATE.package.source] });
+const PACKAGE_ROOT = `/tmp/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`;
+const EXACT_SETTINGS = JSON.stringify({
+  packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
+});
 
 function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPackageLifecycleInput {
   return {
@@ -110,6 +114,7 @@ function installedReceipt(): PiPackageReceipt {
       provenance: PI_RUNTIME_CANDIDATE.provenance,
     },
     scope: { kind: "real", codingAgentDir: "/tmp/pi-agent" },
+    engram: { binary: "/opt/engram/bin/engram" },
   };
 }
 
@@ -123,7 +128,7 @@ describe("Pi package-managed lifecycle", () => {
       receiptPath: "/home/test/.jorgex-stack/pi-receipt.json",
       invocation: {
         executable: "/opt/pi/bin/pi",
-        args: ["install", "npm:jorgex-pi@0.1.0", "--no-approve"],
+        args: ["install", PI_RUNTIME_CANDIDATE.package.source, "--no-approve"],
         environment: {
           PI_CODING_AGENT_DIR: "/tmp/pi-agent",
           ENGRAM_BIN: "/opt/engram/bin/engram",
@@ -138,6 +143,7 @@ describe("Pi package-managed lifecycle", () => {
           provenance: PI_RUNTIME_CANDIDATE.provenance,
         },
         scope: { kind: "real", codingAgentDir: "/tmp/pi-agent" },
+        engram: { binary: "/opt/engram/bin/engram" },
       },
       ownership: {
         receipt: true,
@@ -165,7 +171,7 @@ describe("Pi package-managed lifecycle", () => {
       },
       {
         name: "a divergent source",
-        input: healthyInput({ pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages: ["npm:jorgex-pi@0.1.1"] }) } }),
+        input: healthyInput({ pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages: ["npm:jorgex-pi@0.2.3"] }) } }),
         expected: { kind: "blocked", reason: "source-divergent" },
       },
       {
@@ -237,5 +243,51 @@ describe("Pi package-managed lifecycle", () => {
     });
     expect(idempotent.invocation).toBeUndefined();
     expect(idempotent.receipt).toBeUndefined();
+  });
+
+  it("records the exact verified Engram binary and accepts that receipt idempotently with the filtered package entry", async () => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const engram = { binary: "/opt/engram/bin/engram" };
+    const filteredSettings = JSON.stringify({
+      packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
+    });
+    const initial = planPiPackageLifecycle(healthyInput());
+
+    expect(initial.receipt).toMatchObject({ engram });
+
+    const resumed = planPiPackageLifecycle(healthyInput({
+      pi: { ...healthyInput().pi, settingsJson: filteredSettings },
+      receiptJson: JSON.stringify({ ...initial.receipt, state: "installed", engram }),
+    }));
+    expect(resumed).toMatchObject({ kind: "ready", ownership: { receipt: true } });
+  });
+
+  it.each([
+    ["exact filtered object", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }], { kind: "ready" }],
+    ["legacy string source", [PI_RUNTIME_CANDIDATE.package.source], { kind: "blocked", reason: "source-divergent" }],
+    ["non-empty packaged skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }],
+  ])("treats receipt-owned %s as the only ready registration", async (_name, packages, expected) => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const plan = planPiPackageLifecycle(healthyInput({
+      pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages }) },
+      receiptJson: JSON.stringify(installedReceipt()),
+    }));
+
+    expect(plan).toMatchObject(expected);
+  });
+
+  it("blocks a legacy receipt without an Engram binding instead of adopting ownership", async () => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const { engram: _engram, ...legacyReceipt } = installedReceipt();
+    const plan = planPiPackageLifecycle(healthyInput({
+      pi: { ...healthyInput().pi, settingsJson: EXACT_SETTINGS },
+      receiptJson: JSON.stringify(legacyReceipt),
+    }));
+
+    expect(plan).toMatchObject({
+      kind: "blocked",
+      reason: "receipt-upgrade-required",
+      ownership: { receipt: true },
+    });
   });
 });
