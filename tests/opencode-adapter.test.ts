@@ -214,6 +214,21 @@ describe("opencodeAdapter primary Sol defaults", () => {
     ));
     expect(emptyTreeUnmerged.provider).toEqual(emptyTree.provider);
 
+    const removedLimitDir = tempConfigDir();
+    const removedLimitFile = path.join(removedLimitDir, "opencode.json");
+    const removedLimitActions = opencodeAdapter.planMainConfig(mcp, opencodeContext(removedLimitDir));
+    const removedLimitConfig = JSON.parse(writeActionContent(removedLimitActions, removedLimitFile));
+    delete removedLimitConfig.provider.openai.models["gpt-5.6-sol"].limit;
+    fs.writeFileSync(removedLimitFile, JSON.stringify(removedLimitConfig, null, 2));
+    const removedLimitUnmerged = JSON.parse(writeActionContent(
+      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+        ...opencodeContext(removedLimitDir),
+        ownedPrimaryModelFields: primaryOwnership(removedLimitActions, removedLimitFile),
+      }),
+      removedLimitFile,
+    ));
+    expect(removedLimitUnmerged.provider).toBeUndefined();
+
     const malformedDir = tempConfigDir();
     fs.writeFileSync(path.join(malformedDir, "opencode.json"), JSON.stringify({ model: false }));
     expect(() => opencodeAdapter.planMainConfig(mcp, opencodeContext(malformedDir)))

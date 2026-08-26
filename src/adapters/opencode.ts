@@ -383,12 +383,12 @@ export const opencodeAdapter: Adapter = {
             if (ctx.ownedPrimaryModelFields?.has(field) !== true) continue;
             if (limit[key] === value) delete limit[key];
           }
-          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_LIMIT_PREFIX) === true) pruneEmpty(sol!, "limit");
-          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_SOL_FIELD) === true) pruneEmpty(models!, PRIMARY_MODEL_ID);
-          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODELS_FIELD) === true) pruneEmpty(openai!, "models");
-          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_OPENAI_FIELD) === true) pruneEmpty(provider!, "openai");
-          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_PROVIDER_FIELD) === true) pruneEmpty(root, "provider");
         }
+        if (sol !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_LIMIT_PREFIX) === true) pruneEmpty(sol, "limit");
+        if (models !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_SOL_FIELD) === true) pruneEmpty(models, PRIMARY_MODEL_ID);
+        if (openai !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_MODELS_FIELD) === true) pruneEmpty(openai, "models");
+        if (provider !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_OPENAI_FIELD) === true) pruneEmpty(provider, "openai");
+        if (ctx.ownedPrimaryModelFields?.has(PRIMARY_PROVIDER_FIELD) === true) pruneEmpty(root, "provider");
         const managedFields = [
           PRIMARY_PROVIDER_FIELD,
           PRIMARY_OPENAI_FIELD,

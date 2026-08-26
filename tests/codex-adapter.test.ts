@@ -253,4 +253,32 @@ describe("upsertTomlSection", () => {
     expect(upsertTomlRootKeyIfMissing(withoutModel, "model", '"gpt-5.6-sol"'))
       .toBe('model = "gpt-5.6-sol"\r\n[foreign]\r\nvalue = true\r\n');
   });
+
+  it("preserva CRLF al retirar una sección MCP desde el adapter", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const mcp = loadCanonicalMcp(stackRoot());
+    const required = Object.entries(mcp.servers).find(([, server]) => !server.optional)?.[0];
+    expect(required).toBeDefined();
+    const content = [
+      'model = "gpt-5.6-sol"',
+      "model_context_window = 872000",
+      "",
+      `[mcp_servers.${required}]`,
+      'command = "managed"',
+      "",
+      "[foreign]",
+      'value = "kept"',
+      "",
+    ].join("\r\n");
+    fs.writeFileSync(configFile, content);
+
+    const unmerged = writeActionContent(codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+      ...codexContext(configDir),
+      ownedPrimaryModelFields: new Set(["model", "model_context_window"]),
+    }), configFile);
+
+    expect(unmerged).toContain('[foreign]\r\nvalue = "kept"\r\n');
+    expect(unmerged).not.toMatch(/(?<!\r)\n/);
+  });
 });

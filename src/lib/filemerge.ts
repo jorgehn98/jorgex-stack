@@ -211,15 +211,16 @@ export function upsertTomlSection(existing: string | null, section: string, body
 
 /** Inversa de upsertTomlSection: elimina la sección (y su separación) si existe. */
 export function removeTomlSection(existing: string, section: string): string {
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
   const lines = existing.split(/\r?\n/);
   const found = findTomlSection(lines, section);
   if (found === null) return existing;
   // Absorbe también las líneas en blanco previas al header eliminado.
   let realStart = found.start;
   while (realStart > 0 && lines[realStart - 1]!.trim() === "") realStart--;
-  const result = [...lines.slice(0, realStart), ...lines.slice(found.end)].join("\n");
+  const result = [...lines.slice(0, realStart), ...lines.slice(found.end)].join(eol);
   if (result.trim() === "") return "";
-  return result.endsWith("\n") ? result : result + "\n";
+  return result.endsWith(eol) ? result : result + eol;
 }
 
 /** Extrae el texto crudo de una sección TOML (sin header), o null si no existe. */
