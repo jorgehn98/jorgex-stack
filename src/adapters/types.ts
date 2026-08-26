@@ -63,7 +63,7 @@ export interface InstallContext {
   playwrightCliEnabled?: boolean;
   /** MCPs opcionales que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
-  /** Campos del default primary que una escritura previa del stack creó. */
+  /** Campos del primary model que una escritura previa del stack creó. */
   ownedPrimaryModelFields?: ReadonlySet<string>;
   /**
    * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,

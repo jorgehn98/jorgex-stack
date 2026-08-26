@@ -105,7 +105,7 @@ export function hasTomlRootKey(existing: string | null, key: string): boolean {
   return rootKeyLineIndex(existing.replace(/\r\n/g, "\n").split("\n"), key) !== -1;
 }
 
-/** Añade una clave escalar al root TOML solo cuando el usuario no la tiene. */
+/** Añade una clave escalar al root TOML solo cuando el usuario aún no la tiene. */
 export function upsertTomlRootKeyIfMissing(existing: string | null, key: string, value: string): string {
   if (hasTomlRootKey(existing, key)) return existing!;
   const normalized = (existing ?? "").replace(/\r\n/g, "\n");
@@ -116,7 +116,7 @@ export function upsertTomlRootKeyIfMissing(existing: string | null, key: string,
   return lines.join("\n");
 }
 
-/** Retira una clave root solo si conserva exactamente el valor canónico. */
+/** Retira una clave del root TOML solo si conserva exactamente el valor canónico. */
 export function removeTomlRootKeyIfExact(existing: string, key: string, value: string): string {
   const normalized = existing.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
