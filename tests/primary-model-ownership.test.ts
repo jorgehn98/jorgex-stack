@@ -20,19 +20,23 @@ describe("primary model ownership", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-primary-model-"));
     temporary.push(stateDir);
     const file = primaryModelOwnershipFile(stateDir);
+    const codexDir = path.join(stateDir, "codex");
+    const alternateCodexDir = path.join(stateDir, "codex-alternate");
+    const opencodeDir = path.join(stateDir, "opencode");
 
-    expect(loadPrimaryModelOwnership(file, "codex")).toEqual(new Set());
-    savePrimaryModelOwnership(file, "codex", "model", true);
-    savePrimaryModelOwnership(file, "codex", "model_context_window", true);
-    savePrimaryModelOwnership(file, "opencode", "model", true);
-    expect(loadPrimaryModelOwnership(file, "codex")).toEqual(new Set(["model", "model_context_window"]));
-    expect(loadPrimaryModelOwnership(file, "opencode")).toEqual(new Set(["model"]));
+    expect(loadPrimaryModelOwnership(file, "codex", codexDir)).toEqual(new Set());
+    savePrimaryModelOwnership(file, "codex", codexDir, "model", true);
+    savePrimaryModelOwnership(file, "codex", codexDir, "model_context_window", true);
+    savePrimaryModelOwnership(file, "opencode", opencodeDir, "model", true);
+    expect(loadPrimaryModelOwnership(file, "codex", codexDir)).toEqual(new Set(["model", "model_context_window"]));
+    expect(loadPrimaryModelOwnership(file, "codex", alternateCodexDir)).toEqual(new Set());
+    expect(loadPrimaryModelOwnership(file, "opencode", opencodeDir)).toEqual(new Set(["model"]));
 
-    savePrimaryModelOwnership(file, "codex", "model", false);
-    expect(loadPrimaryModelOwnership(file, "codex")).toEqual(new Set(["model_context_window"]));
+    savePrimaryModelOwnership(file, "codex", codexDir, "model", false);
+    expect(loadPrimaryModelOwnership(file, "codex", codexDir)).toEqual(new Set(["model_context_window"]));
 
     fs.writeFileSync(file, "not-json");
     expect(primaryModelOwnershipError(file)).toContain("ownership inválido");
-    expect(() => savePrimaryModelOwnership(file, "codex", "model", true)).toThrow("ownership inválido");
+    expect(() => savePrimaryModelOwnership(file, "codex", codexDir, "model", true)).toThrow("ownership inválido");
   });
 });

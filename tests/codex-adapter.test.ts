@@ -248,5 +248,9 @@ describe("upsertTomlSection", () => {
     const content = '"model" = "user/model"\r\n\r\n[foreign]\r\nvalue = true\r\n';
     expect(upsertTomlRootKeyIfMissing(content, "model", '"gpt-5.6-sol"')).toBe(content);
     expect(removeTomlRootKeyIfExact(content, "model", '"gpt-5.6-sol"')).toBe(content);
+
+    const withoutModel = '[foreign]\r\nvalue = true\r\n';
+    expect(upsertTomlRootKeyIfMissing(withoutModel, "model", '"gpt-5.6-sol"'))
+      .toBe('model = "gpt-5.6-sol"\r\n[foreign]\r\nvalue = true\r\n');
   });
 });

@@ -171,13 +171,13 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
           saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, change.server, change.owned);
         }
         for (const change of action.primaryModelOwnership ?? []) {
-          savePrimaryModelOwnership(primaryModelOwnershipFile(), id, change.field, change.owned);
+          savePrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir, change.field, change.owned);
         }
       }
     }
     if (usingRealConfig) {
       for (const field of ctx.ownedPrimaryModelFields ?? []) {
-        savePrimaryModelOwnership(primaryModelOwnershipFile(), id, field, false);
+        savePrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir, field, false);
       }
     }
     if (usingRealConfig) removeRuntimeManifest(id);

@@ -161,7 +161,7 @@ function ownedMcpServers(runtime: RuntimeId, useBrowserPreferences = true): Read
 }
 
 /** El estado de ownership solo avanza tras observar la entrada escrita o ausente. */
-function persistConfigurationOwnershipChanges(runtime: RuntimeId, plan: FileAction[]): void {
+function persistConfigurationOwnershipChanges(runtime: RuntimeId, configDir: string, plan: FileAction[]): void {
   const latest = new Map<string, boolean>();
   const primary = new Map<string, boolean>();
   for (const action of plan) {
@@ -172,7 +172,7 @@ function persistConfigurationOwnershipChanges(runtime: RuntimeId, plan: FileActi
   const file = devtoolsMcpPreferenceFile();
   for (const [server, owned] of latest) saveDevtoolsMcpOwnership(file, runtime, server, owned);
   const primaryFile = primaryModelOwnershipFile();
-  for (const [field, owned] of primary) savePrimaryModelOwnership(primaryFile, runtime, field, owned);
+  for (const [field, owned] of primary) savePrimaryModelOwnership(primaryFile, runtime, configDir, field, owned);
 }
 
 /** Contexto de instalación para un runtime, o null si no hay model-map. */
@@ -196,7 +196,7 @@ export function makeContext(
     playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference() === true,
     ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
     ownedPrimaryModelFields: useBrowserPreferences
-      ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id)
+      ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
       : new Set(),
   };
 }
@@ -345,7 +345,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       playwrightCliEnabled: projectPlaywrightPrompt || (useManifest && loadPlaywrightCliPreference() === true),
       ownedMcpServers: ownedMcpServers(id, useManifest),
       ownedPrimaryModelFields: useManifest
-        ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id)
+        ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir)
         : new Set(),
     };
 
@@ -399,7 +399,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
     if (changes.length === 0 && orphans.length === 0) {
       writeManifest();
-      if (useManifest) persistConfigurationOwnershipChanges(id, plan);
+      if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
@@ -426,7 +426,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
-    applyChanges(changes, useManifest ? (action) => persistConfigurationOwnershipChanges(id, [action]) : undefined);
+    applyChanges(changes, useManifest ? (action) => persistConfigurationOwnershipChanges(id, configDir, [action]) : undefined);
     const pruneRoot = useManifest ? HOME : path.dirname(configDir);
     for (const orphan of orphans) {
       fs.rmSync(orphan, { force: true });
@@ -442,7 +442,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       exitCode = 1;
     } else {
       writeManifest();
-      if (useManifest) persistConfigurationOwnershipChanges(id, plan);
+      if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;

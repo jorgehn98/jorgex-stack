@@ -107,6 +107,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const agentDir = path.join(root, "agent");
     const settingsFile = path.join(agentDir, "settings.json");
     const modelsFile = path.join(agentDir, "models.json");
+    const receiptFile = path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json");
     const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
     const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
     fs.mkdirSync(agentDir, { recursive: true });
@@ -142,6 +143,16 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 872000 } } } },
     });
+    expect(fs.existsSync(receiptFile)).toBe(true);
+
+    const canonicalCleanup = run("cleanup");
+    expect(canonicalCleanup).toMatchObject({ status: 0, stderr: "" });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
+    expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
+    expect(fs.existsSync(receiptFile)).toBe(false);
+
+    const resync = run("sync");
+    expect(resync).toMatchObject({ status: 0, stderr: "" });
 
     const settings = readJson(settingsFile) as Record<string, unknown>;
     settings.defaultModel = "user-model";
