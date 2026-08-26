@@ -86,7 +86,8 @@ function isReadinessTransitionSegment(tokens) {
 
   const action = tokens[index]?.toLowerCase();
   const args = tokens.slice(index + 1).map((token) => token.toLowerCase());
-  const hasTruthyBooleanFlag = (names, valueFlags = []) => {
+  const readBooleanFlag = (names, valueFlags = []) => {
+    let value;
     for (let offset = 0; offset < args.length; offset += 1) {
       const arg = args[offset];
       if (arg === "--") break;
@@ -95,21 +96,29 @@ function isReadinessTransitionSegment(tokens) {
         continue;
       }
       if (valueFlags.some((name) => arg.startsWith(`${name}=`))) continue;
-      if (names.some((name) => arg === name)) return true;
-      if (names.some((name) => arg.startsWith(`${name}=`) && ["true", "t", "1"].includes(arg.slice(name.length + 1)))) return true;
+      if (names.some((name) => arg === name)) {
+        value = true;
+        continue;
+      }
+      for (const name of names) {
+        if (!arg.startsWith(`${name}=`)) continue;
+        const flagValue = arg.slice(name.length + 1);
+        if (["true", "t", "1"].includes(flagValue)) value = true;
+        if (["false", "f", "0"].includes(flagValue)) value = false;
+      }
     }
-    return false;
+    return value;
   };
 
-  if (action === "ready") return !hasTruthyBooleanFlag(["--undo"], ["-R", "--repo"]);
-  if (action !== "create") return false;
+  if (action === "ready") return readBooleanFlag(["--undo"], ["-R", "--repo"]) !== true;
+  if (action !== "create" && action !== "new") return false;
 
   const createValueFlags = [
     "-R", "--repo", "-a", "--assignee", "-B", "--base", "-b", "--body",
     "-F", "--body-file", "-H", "--head", "-l", "--label", "-m", "--milestone",
     "-p", "--project", "--recover", "-r", "--reviewer", "-T", "--template", "-t", "--title",
   ];
-  const createsDraft = hasTruthyBooleanFlag(["--draft", "-d"], createValueFlags);
+  const createsDraft = readBooleanFlag(["--draft", "-d"], createValueFlags) === true;
   return !createsDraft;
 }
 
