@@ -87,6 +87,15 @@ const FOUR_R_LENS_CASES = [
   },
 ] as const;
 
+const XREVIEW_CONTEXT_AGENT_CASES = [
+  { relativePath: "agents/code-reviewer.md", scopeFragment: "**Get the diff.**" },
+  { relativePath: "agents/test-analyzer.md", scopeFragment: "**Get the diff.**" },
+  { relativePath: "agents/silent-failure-hunter.md", scopeFragment: "**Get the diff.**" },
+  { relativePath: "agents/type-design-analyzer.md", scopeFragment: "**Resolve scope.**" },
+  { relativePath: "agents/code-simplifier.md", scopeFragment: "**Resolve scope.**" },
+  { relativePath: "agents/security-auditor.md", scopeFragment: "**Get the diff.**" },
+] as const;
+
 const MULTI_PR_LIFECYCLE_CASES = [
   {
     relativePath: "skills/work-lifecycle/SKILL.md",
@@ -1123,6 +1132,42 @@ describe("contrato 4R", () => {
 
   it.each(FOUR_R_LENS_CASES)("$relativePath conserva las señales de su lente 4R", ({ relativePath, header, fragments }) => {
     expectFragments(readStackFile(relativePath), [header, ...fragments]);
+  });
+});
+
+describe("xreview: contexto del trabajo", () => {
+  it("obliga al orchestrator a pasar el work activo a cada reviewer", () => {
+    const content = readStackFile("skills/orchestrator/SKILL.md");
+
+    expectFragmentsInOrder(content, [
+      "Load and run the portable `xreview` skill",
+      "exact active `work/{name}`",
+      "every review subagent prompt",
+    ]);
+  });
+
+  it("propaga el contexto explícito sin inferir entre varios work", () => {
+    const content = readStackFile("skills/xreview/SKILL.md");
+
+    expectFragments(content, [
+      "exact active `work/{name}`",
+      "every review subagent",
+      "Do not infer",
+      "`work/*`",
+    ]);
+  });
+
+  it.each(XREVIEW_CONTEXT_AGENT_CASES)("$relativePath lee PRD y plan antes del diff cuando recibe contexto", ({ relativePath, scopeFragment }) => {
+    const content = readStackFile(relativePath);
+
+    expectFragmentsInOrder(content, [
+      "**First actions, in order**",
+      "exact work context",
+      "`PRD.md`",
+      "`plan.md`",
+      scopeFragment,
+    ]);
+    expect(content).toContain("Do not search other `work/*` folders");
   });
 });
 
