@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
-import { readTomlSection, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
+import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
 import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
@@ -247,5 +247,6 @@ describe("upsertTomlSection", () => {
   it("preserva CRLF byte a byte cuando la clave root ya existe", () => {
     const content = '"model" = "user/model"\r\n\r\n[foreign]\r\nvalue = true\r\n';
     expect(upsertTomlRootKeyIfMissing(content, "model", '"gpt-5.6-sol"')).toBe(content);
+    expect(removeTomlRootKeyIfExact(content, "model", '"gpt-5.6-sol"')).toBe(content);
   });
 });

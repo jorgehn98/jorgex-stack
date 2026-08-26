@@ -199,6 +199,21 @@ describe("opencodeAdapter primary Sol defaults", () => {
     ));
     expect(preserved).toMatchObject(preexisting);
 
+    const emptyTreeDir = tempConfigDir();
+    const emptyTreeFile = path.join(emptyTreeDir, "opencode.json");
+    const emptyTree = { provider: { openai: { models: {} } } };
+    fs.writeFileSync(emptyTreeFile, JSON.stringify(emptyTree, null, 2));
+    const emptyTreeActions = opencodeAdapter.planMainConfig(mcp, opencodeContext(emptyTreeDir));
+    fs.writeFileSync(emptyTreeFile, writeActionContent(emptyTreeActions, emptyTreeFile));
+    const emptyTreeUnmerged = JSON.parse(writeActionContent(
+      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+        ...opencodeContext(emptyTreeDir),
+        ownedPrimaryModelFields: primaryOwnership(emptyTreeActions, emptyTreeFile),
+      }),
+      emptyTreeFile,
+    ));
+    expect(emptyTreeUnmerged.provider).toEqual(emptyTree.provider);
+
     const malformedDir = tempConfigDir();
     fs.writeFileSync(path.join(malformedDir, "opencode.json"), JSON.stringify({ model: false }));
     expect(() => opencodeAdapter.planMainConfig(mcp, opencodeContext(malformedDir)))

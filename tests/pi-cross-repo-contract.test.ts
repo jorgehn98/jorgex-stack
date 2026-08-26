@@ -143,10 +143,20 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 872000 } } } },
     });
 
+    const settings = readJson(settingsFile) as Record<string, unknown>;
+    settings.defaultModel = "user-model";
+    fs.writeFileSync(settingsFile, JSON.stringify(settings));
+    const models = readJson(modelsFile) as Record<string, any>;
+    models.providers["openai-codex"].modelOverrides["gpt-5.6-sol"].contextWindow = 900000;
+    fs.writeFileSync(modelsFile, JSON.stringify(models));
+
     const cleanup = run("cleanup");
     expect(cleanup).toMatchObject({ status: 0, stderr: "" });
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
-    expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model" });
+    expect(readJson(modelsFile)).toEqual({
+      foreign: { keep: true },
+      providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
+    });
   }, 60_000);
 });
 

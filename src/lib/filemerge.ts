@@ -118,18 +118,19 @@ export function upsertTomlRootKeyIfMissing(existing: string | null, key: string,
 
 /** Retira una clave del root TOML solo si conserva exactamente el valor canónico. */
 export function removeTomlRootKeyIfExact(existing: string, key: string, value: string): string {
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
   const normalized = existing.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
   const index = rootKeyLineIndex(lines, key);
-  if (index === -1) return normalized;
+  if (index === -1) return existing;
 
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const exact = new RegExp(`^\\s*(?:${escapedKey}|"${escapedKey}"|'${escapedKey}')\\s*=\\s*${escapedValue}\\s*(?:#.*)?$`);
-  if (!exact.test(lines[index]!)) return normalized;
+  if (!exact.test(lines[index]!)) return existing;
 
   lines.splice(index, 1);
-  return lines.join("\n");
+  return lines.join(eol);
 }
 
 /**

@@ -282,7 +282,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     : [];
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
-    p.outro("Install cancelado: corrige las preferencias de navegador antes de reintentar.");
+    p.outro("Install cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
   const toolPlan = opts.playwrightToolConsent === undefined

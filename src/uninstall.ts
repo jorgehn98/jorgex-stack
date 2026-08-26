@@ -55,7 +55,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     : [];
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
-    p.outro("Uninstall cancelado: corrige las preferencias de navegador antes de reintentar.");
+    p.outro("Uninstall cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
   const stackDir = stackRoot();

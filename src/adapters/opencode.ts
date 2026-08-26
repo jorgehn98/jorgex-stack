@@ -34,6 +34,10 @@ const PRIMARY_MODEL = "openai/gpt-5.6-sol";
 const PRIMARY_MODEL_ID = "gpt-5.6-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
 const PRIMARY_MODEL_FIELD = "model";
+const PRIMARY_PROVIDER_FIELD = "provider";
+const PRIMARY_OPENAI_FIELD = "provider.openai";
+const PRIMARY_MODELS_FIELD = "provider.openai.models";
+const PRIMARY_SOL_FIELD = `provider.openai.models.${PRIMARY_MODEL_ID}`;
 const PRIMARY_LIMIT_PREFIX = `provider.openai.models.${PRIMARY_MODEL_ID}.limit`;
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -46,6 +50,19 @@ function ensureObject(parent: Record<string, unknown>, key: string, fieldPath: s
   if (parent[key] === undefined) parent[key] = {};
   const value = objectValue(parent[key]);
   if (value === null) throw new Error(`OpenCode: '${fieldPath}' debe ser un objeto; corrígelo antes de reintentar sync.`);
+  return value;
+}
+
+function ensureOwnedPrimaryObject(
+  parent: Record<string, unknown>,
+  key: string,
+  field: string,
+  owned: ReadonlySet<string> | undefined,
+  changes: PrimaryModelOwnershipChange[],
+): Record<string, unknown> {
+  const created = parent[key] === undefined;
+  const value = ensureObject(parent, key, field);
+  if (created && owned?.has(field) !== true) changes.push({ field, owned: true });
   return value;
 }
 
@@ -230,11 +247,11 @@ export const opencodeAdapter: Adapter = {
         throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar sync.");
       }
 
-      const provider = ensureObject(root, "provider", "provider");
-      const openai = ensureObject(provider, "openai", "provider.openai");
-      const models = ensureObject(openai, "models", "provider.openai.models");
-      const sol = ensureObject(models, PRIMARY_MODEL_ID, `provider.openai.models.${PRIMARY_MODEL_ID}`);
-      const limit = ensureObject(sol, "limit", PRIMARY_LIMIT_PREFIX);
+      const provider = ensureOwnedPrimaryObject(root, "provider", PRIMARY_PROVIDER_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const openai = ensureOwnedPrimaryObject(provider, "openai", PRIMARY_OPENAI_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const models = ensureOwnedPrimaryObject(openai, "models", PRIMARY_MODELS_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const sol = ensureOwnedPrimaryObject(models, PRIMARY_MODEL_ID, PRIMARY_SOL_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const limit = ensureOwnedPrimaryObject(sol, "limit", PRIMARY_LIMIT_PREFIX, ctx.ownedPrimaryModelFields, primaryModelOwnership);
       for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
         if (limit[key] !== undefined) continue;
         limit[key] = value;
@@ -366,17 +383,22 @@ export const opencodeAdapter: Adapter = {
             if (ctx.ownedPrimaryModelFields?.has(field) !== true) continue;
             if (limit[key] === value) delete limit[key];
           }
-          pruneEmpty(sol!, "limit");
-          pruneEmpty(models!, PRIMARY_MODEL_ID);
-          pruneEmpty(openai!, "models");
-          pruneEmpty(provider!, "openai");
-          pruneEmpty(root, "provider");
+          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_LIMIT_PREFIX) === true) pruneEmpty(sol!, "limit");
+          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_SOL_FIELD) === true) pruneEmpty(models!, PRIMARY_MODEL_ID);
+          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODELS_FIELD) === true) pruneEmpty(openai!, "models");
+          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_OPENAI_FIELD) === true) pruneEmpty(provider!, "openai");
+          if (ctx.ownedPrimaryModelFields?.has(PRIMARY_PROVIDER_FIELD) === true) pruneEmpty(root, "provider");
         }
-        for (const key of Object.keys(PRIMARY_LIMITS)) {
-          const field = `${PRIMARY_LIMIT_PREFIX}.${key}`;
-          if (ctx.ownedPrimaryModelFields?.has(field) === true) {
-            primaryModelOwnership.push({ field, owned: false });
-          }
+        const managedFields = [
+          PRIMARY_PROVIDER_FIELD,
+          PRIMARY_OPENAI_FIELD,
+          PRIMARY_MODELS_FIELD,
+          PRIMARY_SOL_FIELD,
+          PRIMARY_LIMIT_PREFIX,
+          ...Object.keys(PRIMARY_LIMITS).map((key) => `${PRIMARY_LIMIT_PREFIX}.${key}`),
+        ];
+        for (const field of managedFields) {
+          if (ctx.ownedPrimaryModelFields?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
         }
 
         const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
