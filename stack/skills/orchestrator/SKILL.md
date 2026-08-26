@@ -197,7 +197,7 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 When the plan is fully applied and VERIFY passes:
 
 1. Confirm the draft PR exists, the worktree is clean, and the draft head matches the local HEAD. Inspect the final diff against the PR's real base.
-2. Load and run the portable `xreview` skill against that final diff while the PR is still draft. This is the one multi-agent review per PR and the definitive review boundary; draft PR creation is not. Process the report by its three levels:
+2. Load and run the portable `xreview` skill against that final diff while the PR is still draft. Use the exact active `work/{name}` already established for this work and include it verbatim as the work context in every review subagent prompt; never infer it from the branch or scan other `work/*` folders. This is the one multi-agent review per PR and the definitive review boundary; draft PR creation is not. Process the report by its three levels:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
    - **Suggestions (nice to have)**: apply only if trivial and safe.

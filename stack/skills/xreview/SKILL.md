@@ -41,21 +41,29 @@ List only the changed file NAMES to decide routing — do NOT load the full diff
 
 Sanity check: if that list is far larger than the work being reviewed (hundreds of files, unrelated areas), BASE is almost certainly wrong — STOP, re-resolve it (step 1), and only continue when the diff matches the actual work. Reviewing against the wrong BASE makes every finding worthless.
 
-## 3. Comment pass FIRST (conditional)
+## 3. Preserve the work context
+
+When running inside the orchestrator's SHIP phase, the main agent already owns the exact active `work/{name}`. Preserve it as the review context and pass it verbatim to every review subagent. Do not infer a work name from the branch or search `work/*`; several pieces of work may be active at once.
+
+For a manual xreview without an explicit work context, continue without PRD/plan context and state that it was unavailable. Never choose a work folder silently.
+
+## 4. Comment pass FIRST (conditional)
 
 If the diff adds or changes comments/docstrings, run `comment-fixer` ALONE before the analysts — it edits comments in place (comments only, never code), so the analysts then review a diff already clean of comment noise instead of re-reporting it or mistaking its edits for contamination.
 
 - Pass it the same scope (BASE/HEAD or working diff) as everyone else.
+- When the orchestrator supplied one, pass it the same exact work context path as every other review subagent.
 - If it changed anything and the scope is a committed diff (branch/PR): comment-fixer itself never commits — YOU commit its fixes to the reviewed branch before launching the analysts, staging ONLY the files it touched (never `-a`/`-A`: don't sweep unrelated working-tree changes into the commit). If the commit can't be made (branch checked out elsewhere, hook rejection), leave the edits uncommitted and say so in the report.
 - For working-tree reviews: leave its edits uncommitted (they join the user's pending work) and say so in the report.
 - If the diff touches no comments, skip it and move on.
 
-## 4. Launch the remaining subagents in PARALLEL
+## 5. Launch the remaining subagents in PARALLEL
 
 All subagents are CONDITIONAL: launch one only when the changed files indicate it applies. Run them in PARALLEL via the delegation mechanism available in the current runtime. Each subagent fetches its OWN diff; all are read-only. Pass every one EXACTLY:
 
 - the review scope: BASE and HEAD branches (verbatim), or "working diff" for uncommitted work
 - the instruction: review only that scope — never assume `main`, use the scope given
+- when the orchestrator supplied one, the exact work context path verbatim — never a guessed or discovered alternative
 
 Subagents and their triggers:
 
@@ -70,7 +78,7 @@ If none of a subagent's triggers are present, skip it and note that it was skipp
 
 `/lean-audit` is a separate manual repo/path command, not post-PR automation. Do not route it from here.
 
-## 5. Synthesize
+## 6. Synthesize
 
 After the relevant subagents complete, synthesize their findings into a unified report. Use 4R internally (Reliability / Resilience / Readability / Risk) as a checklist while synthesizing; do not add a separate 4R section or taxonomy to the final report.
 

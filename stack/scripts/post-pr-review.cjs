@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Global PostToolUse guardrail for the PR draft → ready lifecycle.
+ * Global PostToolUse guardrail for PR readiness transitions.
  *
  * The historical filename is intentionally preserved so sync can migrate the
  * existing hook entry instead of leaving an orphan in user configuration.
@@ -77,7 +77,7 @@ function skipRepoOptions(tokens, start) {
   return index;
 }
 
-function isLifecycleSegment(tokens) {
+function isReadinessTransitionSegment(tokens) {
   if (!/(?:^|[\\/])gh(?:\.exe)?$/i.test(tokens[0] ?? "")) return false;
 
   let index = skipRepoOptions(tokens, 1);
@@ -85,21 +85,56 @@ function isLifecycleSegment(tokens) {
   index = skipRepoOptions(tokens, index + 1);
 
   const action = tokens[index]?.toLowerCase();
-  return action === "create" || action === "ready";
+  const args = tokens.slice(index + 1).map((token) => token.toLowerCase());
+  const readBooleanFlag = (names, valueFlags = []) => {
+    let value;
+    for (let offset = 0; offset < args.length; offset += 1) {
+      const arg = args[offset];
+      if (arg === "--") break;
+      if (valueFlags.includes(arg)) {
+        offset += 1;
+        continue;
+      }
+      if (valueFlags.some((name) => arg.startsWith(`${name}=`))) continue;
+      if (names.some((name) => arg === name)) {
+        value = true;
+        continue;
+      }
+      for (const name of names) {
+        if (!arg.startsWith(`${name}=`)) continue;
+        const flagValue = arg.slice(name.length + 1);
+        if (["true", "t", "1"].includes(flagValue)) value = true;
+        if (["false", "f", "0"].includes(flagValue)) value = false;
+      }
+    }
+    return value;
+  };
+
+  if (action === "ready") return readBooleanFlag(["--undo"], ["-R", "--repo"]) !== true;
+  if (action !== "create" && action !== "new") return false;
+
+  const createValueFlags = [
+    "-R", "--repo", "-a", "--assignee", "-B", "--base", "-b", "--body",
+    "-F", "--body-file", "-H", "--head", "-l", "--label", "-m", "--milestone",
+    "-p", "--project", "--recover", "-r", "--reviewer", "-T", "--template", "-t", "--title",
+  ];
+  const createsDraft = readBooleanFlag(["--draft", "-d"], createValueFlags) === true;
+  return !createsDraft;
 }
 
-function isPrLifecycleCommand(command) {
+function isPrReadinessCommand(command) {
   const segments = Array.isArray(command)
     ? [command.map(String)]
     : shellCommandSegments(String(command));
-  return segments.some(isLifecycleSegment);
+  return segments.some(isReadinessTransitionSegment);
 }
 
 const message = `<pr-lifecycle-state-required>
-A \`gh pr create\` or \`gh pr ready\` command was attempted. Do not infer success or PR state from the command text. Resolve the current PR and run \`gh pr view --json number,isDraft,headRefOid\` before the next action.
+A PR readiness transition was attempted through \`gh pr create\` without \`--draft\` or through \`gh pr ready\`. Do not infer success or PR state from the command text. Resolve the current PR and run \`gh pr view --json number,isDraft,headRefOid\` before the next action.
 
-- If the PR should still be under development, it must be draft. If it is ready, run \`gh pr ready --undo <number>\` before any change or push.
-- While draft, finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, final diff inspection, and the full review on the candidate SHA.
+- The review boundary is the final draft diff. If the full review was not already completed, ensure the PR is draft (run \`gh pr ready --undo <number>\` if necessary), finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, and final diff inspection.
+- Load and run the portable \`xreview\` skill against that exact final diff. When an orchestrator owns an active work context, it must pass the exact \`work/{name}\` to every reviewer.
+- After fixing findings, repeat xreview only when the fixes materially change the diff or introduce a distinct risk. For ordinary fixes, explicit evidence of the prior review plus deterministic verification is sufficient even though \`headRefOid\` changed.
 - If the PR is actually ready, do not push. If the project has PR checks configured, wait for the complete Quality Gates, run \`gh pr checks <number>\`, and verify the checked headRefOid is the candidate SHA.
 - If no PR checks are configured, confirm that from project configuration such as workflows, rulesets or integrations, and record it; their absence does not block the merge. An empty \`gh pr checks\` result immediately after ready is not evidence that no checks are configured.
 - Immediately before reporting or merging, compare \`gh pr view --json headRefOid\` with the recorded candidate SHA. Merge still requires explicit user approval.
@@ -120,7 +155,7 @@ process.stdin.on("end", () => {
   const toolName = String(data.tool_name || data.tool || "").toLowerCase();
   const shellTools = ["bash", "shell", "local_shell", "powershell"];
   const commandValue = data?.tool_input?.command ?? data?.args?.command ?? "";
-  if (!shellTools.includes(toolName) || !isPrLifecycleCommand(commandValue)) {
+  if (!shellTools.includes(toolName) || !isPrReadinessCommand(commandValue)) {
     process.exit(0);
   }
 
