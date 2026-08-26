@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Global PostToolUse guardrail for the PR draft → ready lifecycle.
+ * Global PostToolUse guardrail for PR readiness transitions.
  *
  * The historical filename is intentionally preserved so sync can migrate the
  * existing hook entry instead of leaving an orphan in user configuration.
@@ -77,7 +77,7 @@ function skipRepoOptions(tokens, start) {
   return index;
 }
 
-function isLifecycleSegment(tokens) {
+function isReadinessTransitionSegment(tokens) {
   if (!/(?:^|[\\/])gh(?:\.exe)?$/i.test(tokens[0] ?? "")) return false;
 
   let index = skipRepoOptions(tokens, 1);
@@ -85,21 +85,27 @@ function isLifecycleSegment(tokens) {
   index = skipRepoOptions(tokens, index + 1);
 
   const action = tokens[index]?.toLowerCase();
-  return action === "create" || action === "ready";
+  const args = tokens.slice(index + 1).map((token) => token.toLowerCase());
+  if (action === "ready") return !args.includes("--undo");
+  if (action !== "create") return false;
+
+  const createsDraft = args.some((arg) => arg === "--draft" || arg === "-d" || arg === "--draft=true");
+  return !createsDraft;
 }
 
-function isPrLifecycleCommand(command) {
+function isPrReadinessCommand(command) {
   const segments = Array.isArray(command)
     ? [command.map(String)]
     : shellCommandSegments(String(command));
-  return segments.some(isLifecycleSegment);
+  return segments.some(isReadinessTransitionSegment);
 }
 
 const message = `<pr-lifecycle-state-required>
-A \`gh pr create\` or \`gh pr ready\` command was attempted. Do not infer success or PR state from the command text. Resolve the current PR and run \`gh pr view --json number,isDraft,headRefOid\` before the next action.
+A PR readiness transition was attempted through \`gh pr create\` without \`--draft\` or through \`gh pr ready\`. Do not infer success or PR state from the command text. Resolve the current PR and run \`gh pr view --json number,isDraft,headRefOid\` before the next action.
 
-- If the PR should still be under development, it must be draft. If it is ready, run \`gh pr ready --undo <number>\` before any change or push.
-- While draft, finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, final diff inspection, and the full review on the candidate SHA.
+- The review boundary is the final draft SHA. If the full review was not already completed for the current \`headRefOid\`, ensure the PR is draft (run \`gh pr ready --undo <number>\` if necessary), finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, and final diff inspection.
+- Load and run the portable \`xreview\` skill against that exact final diff. When an orchestrator owns an active work context, it must pass the exact \`work/{name}\` to every reviewer.
+- Do not repeat xreview only when there is explicit evidence that it already completed for the same \`headRefOid\`; otherwise treat the current SHA as unreviewed.
 - If the PR is actually ready, do not push. If the project has PR checks configured, wait for the complete Quality Gates, run \`gh pr checks <number>\`, and verify the checked headRefOid is the candidate SHA.
 - If no PR checks are configured, confirm that from project configuration such as workflows, rulesets or integrations, and record it; their absence does not block the merge. An empty \`gh pr checks\` result immediately after ready is not evidence that no checks are configured.
 - Immediately before reporting or merging, compare \`gh pr view --json headRefOid\` with the recorded candidate SHA. Merge still requires explicit user approval.
@@ -120,7 +126,7 @@ process.stdin.on("end", () => {
   const toolName = String(data.tool_name || data.tool || "").toLowerCase();
   const shellTools = ["bash", "shell", "local_shell", "powershell"];
   const commandValue = data?.tool_input?.command ?? data?.args?.command ?? "";
-  if (!shellTools.includes(toolName) || !isPrLifecycleCommand(commandValue)) {
+  if (!shellTools.includes(toolName) || !isPrReadinessCommand(commandValue)) {
     process.exit(0);
   }
 

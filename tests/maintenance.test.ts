@@ -974,7 +974,7 @@ describe("PR draft lifecycle contract", () => {
     expect(planTemplate).toContain("Immediately before reporting or merging");
   });
 
-  it("routes the lifecycle hook for create and ready commands", () => {
+  it("routes the lifecycle hook so its script can filter readiness transitions", () => {
     const hooks = JSON.parse(readStackFile("hooks/hooks.json"));
     const lifecycleHook = hooks.hooks.PostToolUse.find(
       (entry: { hooks?: Array<{ command?: string }> }) =>

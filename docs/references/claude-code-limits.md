@@ -32,10 +32,16 @@ principal no se restringe— y el daño irreversible ya lo cubre GitHub.
 ## 2. El guardrail del lifecycle de PR se evalúa en cada comando Bash/PowerShell
 
 **Qué.** El matcher del hook en `stack/hooks/hooks.json` es `Bash|PowerShell`. El filtro
-real por `gh pr create` y `gh pr ready` lo hace el propio
+real por transiciones a ready —`gh pr create` sin `--draft` y `gh pr ready` sin
+`--undo`— lo hace el propio
 `stack/scripts/post-pr-review.cjs`, que sale en `exit 0` cuando el comando no aplica. El
 nombre histórico del script se conserva para que `sync` actualice la entrada existente sin
 dejar un hook huérfano en la configuración del usuario.
+
+Un `gh pr create --draft` normal no inyecta el guardrail: crear el draft no es la frontera
+de review. Cuando sí detecta una transición a ready, el prompt exige comprobar el estado
+real y ejecutar la skill `xreview` sobre el SHA final si todavía no se revisó ese
+`headRefOid`.
 
 **Por qué.** Claude Code no tiene filtro nativo por *contenido* del comando en el matcher
 (la extensión `x-command-includes` del formato canónico solo la aplica el puente de
@@ -44,7 +50,7 @@ OpenCode; en Claude Code y Codex se omite y filtra el script).
 **Coste.** Arrancar `node` una vez por comando shell (~ms), no bloqueante.
 
 **Por qué se deja así.** El campo `if:` (Claude Code v2.1.85+) afinaría el disparo, pero su
-matching también es posicional: perdería casos como `cd x && gh pr create --draft` o
+matching también es posicional: perdería casos como `cd x && gh pr create --title cambio` o
 `cd x && gh pr ready 123`, que el filtro del script sí captura. Afinarlo lo haría **menos**
 correcto, y rompería la abstracción canónica multi-runtime.
 
