@@ -36,6 +36,12 @@ function writeActionContent(actions: ReturnType<typeof opencodeAdapter.planMainC
   return action.content;
 }
 
+function primaryOwnership(actions: ReturnType<typeof opencodeAdapter.planMainConfig>, target: string): ReadonlySet<string> {
+  const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
+  if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
+  return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
+}
+
 const MODELS: RuntimeModelMap = {
   strong: { model: "provider/strong", variant: "high" },
   standard: { model: "provider/standard", variant: "medium" },
@@ -143,7 +149,8 @@ describe("opencodeAdapter primary Sol defaults", () => {
       foreign: { kept: true },
       provider: { custom: true, openai: { models: { "user-model": { limit: { context: 42 } } } } },
     }, null, 2));
-    const installed = writeActionContent(opencodeAdapter.planMainConfig(mcp, ctx), configFile);
+    const installActions = opencodeAdapter.planMainConfig(mcp, ctx);
+    const installed = writeActionContent(installActions, configFile);
     const parsed = JSON.parse(installed) as Record<string, any>;
 
     expect(parsed.model).toBe("openai/gpt-5.6-sol");
@@ -163,7 +170,10 @@ describe("opencodeAdapter primary Sol defaults", () => {
     parsed.provider.openai.models["gpt-5.6-sol"].limit.context = 900000;
     fs.writeFileSync(configFile, JSON.stringify(parsed, null, 2));
     const unmerged = JSON.parse(writeActionContent(
-      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), ctx),
+      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+        ...ctx,
+        ownedPrimaryModelFields: primaryOwnership(installActions, configFile),
+      }),
       configFile,
     )) as Record<string, any>;
 
@@ -172,5 +182,26 @@ describe("opencodeAdapter primary Sol defaults", () => {
     expect(unmerged.foreign).toEqual({ kept: true });
     expect(unmerged.provider.custom).toBe(true);
     expect(unmerged.provider.openai.models["user-model"].limit.context).toBe(42);
+
+    const preexistingDir = tempConfigDir();
+    const preexistingFile = path.join(preexistingDir, "opencode.json");
+    const preexisting = {
+      model: "openai/gpt-5.6-sol",
+      provider: { openai: { models: { "gpt-5.6-sol": { limit: { context: 872000, input: 744000, output: 128000 } } } } },
+    };
+    fs.writeFileSync(preexistingFile, JSON.stringify(preexisting, null, 2));
+    const preexistingActions = opencodeAdapter.planMainConfig(mcp, opencodeContext(preexistingDir));
+    expect(primaryOwnership(preexistingActions, preexistingFile)).toEqual(new Set());
+    fs.writeFileSync(preexistingFile, writeActionContent(preexistingActions, preexistingFile));
+    const preserved = JSON.parse(writeActionContent(
+      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), opencodeContext(preexistingDir)),
+      preexistingFile,
+    ));
+    expect(preserved).toMatchObject(preexisting);
+
+    const malformedDir = tempConfigDir();
+    fs.writeFileSync(path.join(malformedDir, "opencode.json"), JSON.stringify({ model: false }));
+    expect(() => opencodeAdapter.planMainConfig(mcp, opencodeContext(malformedDir)))
+      .toThrow("'model' debe ser un identificador provider/model no vacío");
   });
 });

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
-import { readTomlSection, upsertTomlSection } from "../src/lib/filemerge.js";
+import { readTomlSection, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
 import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
@@ -34,6 +34,12 @@ function writeActionContent(actions: ReturnType<typeof codexAdapter.planMainConf
   const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
   if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
   return action.content;
+}
+
+function primaryOwnership(actions: ReturnType<typeof codexAdapter.planMainConfig>, target: string): ReadonlySet<string> {
+  const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
+  if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
+  return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
 }
 
 const MODELS: RuntimeModelMap = {
@@ -149,7 +155,8 @@ describe("codexAdapter primary Sol defaults", () => {
     const mcp = loadCanonicalMcp(stackRoot());
 
     fs.writeFileSync(configFile, '# user config\ninstructions = \'\'\'\nmodel = "inside multiline"\n\'\'\'\ncustom_flag = true\n\n[foreign]\nvalue = "kept"\n');
-    const installed = writeActionContent(codexAdapter.planMainConfig(mcp, ctx), configFile);
+    const installActions = codexAdapter.planMainConfig(mcp, ctx);
+    const installed = writeActionContent(installActions, configFile);
 
     expect(installed).toContain('model = "gpt-5.6-sol"');
     expect(installed).toContain("model_context_window = 872000");
@@ -164,7 +171,10 @@ describe("codexAdapter primary Sol defaults", () => {
     const customized = installed.replace('model = "gpt-5.6-sol"', 'model = "user/model"');
     fs.writeFileSync(configFile, customized);
     const unmerged = writeActionContent(
-      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), ctx),
+      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+        ...ctx,
+        ownedPrimaryModelFields: primaryOwnership(installActions, configFile),
+      }),
       configFile,
     );
 
@@ -173,6 +183,19 @@ describe("codexAdapter primary Sol defaults", () => {
     expect(unmerged).toContain("custom_flag = true");
     expect(unmerged).toContain('model = "inside multiline"');
     expect(unmerged).toContain('[foreign]\nvalue = "kept"');
+
+    const quotedDir = tempConfigDir();
+    const quotedFile = path.join(quotedDir, "config.toml");
+    const quoted = '"model" = "gpt-5.6-sol"\n\'model_context_window\' = 872000\n';
+    fs.writeFileSync(quotedFile, quoted);
+    const quotedActions = codexAdapter.planMainConfig(mcp, codexContext(quotedDir));
+    expect(writeActionContent(quotedActions, quotedFile).match(/gpt-5\.6-sol/g)).toHaveLength(1);
+    expect(primaryOwnership(quotedActions, quotedFile)).toEqual(new Set());
+    fs.writeFileSync(quotedFile, writeActionContent(quotedActions, quotedFile));
+    expect(writeActionContent(
+      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), codexContext(quotedDir)),
+      quotedFile,
+    )).toContain(quoted.trim());
   });
 });
 
@@ -219,5 +242,10 @@ describe("upsertTomlSection", () => {
   it("readTomlSection extrae el cuerpo de una sección", () => {
     expect(readTomlSection(BASE, "mcp_servers.propio")).toContain('command = "mi-server"');
     expect(readTomlSection(BASE, "mcp_servers.inexistente")).toBeNull();
+  });
+
+  it("preserva CRLF byte a byte cuando la clave root ya existe", () => {
+    const content = '"model" = "user/model"\r\n\r\n[foreign]\r\nvalue = true\r\n';
+    expect(upsertTomlRootKeyIfMissing(content, "model", '"gpt-5.6-sol"')).toBe(content);
   });
 });

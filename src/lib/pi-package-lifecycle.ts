@@ -16,6 +16,13 @@ type CandidateProvenance = {
   readonly commit: string;
 };
 
+export interface ManagedExternalWrite {
+  readonly owner: "jorgex-pi";
+  readonly root: "PI_CODING_AGENT_DIR";
+  readonly relativePath: string;
+  readonly semantics: string;
+}
+
 export interface PiRuntimeCandidate {
   readonly package: CandidatePackage;
   readonly provenance: CandidateProvenance;
@@ -30,7 +37,7 @@ export interface PiRuntimeCandidate {
       readonly schemaVersion: number;
       readonly maxStdoutBytes: number;
     };
-    readonly managedExternalWrites: readonly unknown[];
+    readonly managedExternalWrites: readonly ManagedExternalWrite[];
   };
 }
 
@@ -114,9 +121,29 @@ const REQUIRED_CAPABILITIES = new Set([
   "runner-json-v1",
   "managed-primary-model-v1",
 ]);
+const ALLOWED_EXTERNAL_WRITES = new Set([
+  "settings.json",
+  "models.json",
+  "jorgex-pi/sol-lifecycle.v1.json",
+]);
 
 function sameRecord(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function managedExternalWritesAreSafe(writes: readonly ManagedExternalWrite[]): boolean {
+  if (writes.length !== ALLOWED_EXTERNAL_WRITES.size) return false;
+  const seen = new Set<string>();
+  for (const write of writes) {
+    if (write === null || typeof write !== "object" || Array.isArray(write)) return false;
+    if (Object.keys(write).sort().join(",") !== "owner,relativePath,root,semantics") return false;
+    if (write.owner !== "jorgex-pi" || write.root !== "PI_CODING_AGENT_DIR") return false;
+    if (typeof write.relativePath !== "string" || !ALLOWED_EXTERNAL_WRITES.has(write.relativePath)) return false;
+    if (/^(?:[A-Za-z]:|[\\/])/.test(write.relativePath) || write.relativePath.split(/[\\/]/).includes("..")) return false;
+    if (typeof write.semantics !== "string" || write.semantics.trim() === "" || seen.has(write.relativePath)) return false;
+    seen.add(write.relativePath);
+  }
+  return seen.size === ALLOWED_EXTERNAL_WRITES.size;
 }
 
 function ownership(receipt: boolean): PiPackageLifecyclePlan["ownership"] {
@@ -258,6 +285,7 @@ function candidateIsValid(candidate: PiRuntimeCandidate, observed: CandidateTarb
     && candidate.contract.runner.schemaVersion === 1
     && candidate.contract.runner.bin === "jorgex-pi"
     && candidate.contract.runner.maxStdoutBytes === 65_536
+    && managedExternalWritesAreSafe(candidate.contract.managedExternalWrites)
     && [...REQUIRED_CAPABILITIES].every((capability) => candidate.contract.capabilities.includes(capability))
     && sameRecord(candidate.tarball, observed);
 }

@@ -96,15 +96,20 @@ function rootKeyLineIndex(lines: string[], key: string): number {
   const end = tomlRootEnd(lines);
   const mask = multilineStringMask(lines);
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`^\\s*${escaped}\\s*=`);
+  const pattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
   return lines.slice(0, end).findIndex((line, index) => !mask[index] && pattern.test(line));
+}
+
+export function hasTomlRootKey(existing: string | null, key: string): boolean {
+  if (existing === null || existing === "") return false;
+  return rootKeyLineIndex(existing.replace(/\r\n/g, "\n").split("\n"), key) !== -1;
 }
 
 /** Añade una clave escalar al root TOML solo cuando el usuario no la tiene. */
 export function upsertTomlRootKeyIfMissing(existing: string | null, key: string, value: string): string {
+  if (hasTomlRootKey(existing, key)) return existing!;
   const normalized = (existing ?? "").replace(/\r\n/g, "\n");
   const lines = normalized === "" ? [] : normalized.split("\n");
-  if (rootKeyLineIndex(lines, key) !== -1) return normalized;
 
   const index = tomlRootEnd(lines);
   lines.splice(index, 0, `${key} = ${value}`);
@@ -120,7 +125,7 @@ export function removeTomlRootKeyIfExact(existing: string, key: string, value: s
 
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const exact = new RegExp(`^\\s*${escapedKey}\\s*=\\s*${escapedValue}\\s*(?:#.*)?$`);
+  const exact = new RegExp(`^\\s*(?:${escapedKey}|"${escapedKey}"|'${escapedKey}')\\s*=\\s*${escapedValue}\\s*(?:#.*)?$`);
   if (!exact.test(lines[index]!)) return normalized;
 
   lines.splice(index, 1);

@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
+import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
@@ -33,6 +33,8 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], v
 const PRIMARY_MODEL = "openai/gpt-5.6-sol";
 const PRIMARY_MODEL_ID = "gpt-5.6-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
+const PRIMARY_MODEL_FIELD = "model";
+const PRIMARY_LIMIT_PREFIX = `provider.openai.models.${PRIMARY_MODEL_ID}.limit`;
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -40,9 +42,11 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function ensureObject(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
+function ensureObject(parent: Record<string, unknown>, key: string, fieldPath: string): Record<string, unknown> {
   if (parent[key] === undefined) parent[key] = {};
-  return objectValue(parent[key]);
+  const value = objectValue(parent[key]);
+  if (value === null) throw new Error(`OpenCode: '${fieldPath}' debe ser un objeto; corrígelo antes de reintentar sync.`);
+  return value;
 }
 
 function pruneEmpty(parent: Record<string, unknown>, key: string): void {
@@ -214,19 +218,30 @@ export const opencodeAdapter: Adapter = {
     const isFreshConfig = contentSource === null;
 
     const mcpOwnership: McpOwnershipChange[] = [];
+    const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
     const content = upsertJson(contentSource, (root) => {
       root["$schema"] ??= "https://opencode.ai/config.json";
-      root["model"] ??= PRIMARY_MODEL;
+      if (root[PRIMARY_MODEL_FIELD] === undefined) {
+        root[PRIMARY_MODEL_FIELD] = PRIMARY_MODEL;
+        if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) !== true) {
+          primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: true });
+        }
+      } else if (typeof root[PRIMARY_MODEL_FIELD] !== "string" || root[PRIMARY_MODEL_FIELD].trim() === "") {
+        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar sync.");
+      }
 
-      const provider = ensureObject(root, "provider");
-      const openai = provider === null ? null : ensureObject(provider, "openai");
-      const models = openai === null ? null : ensureObject(openai, "models");
-      const sol = models === null ? null : ensureObject(models, PRIMARY_MODEL_ID);
-      const limit = sol === null ? null : ensureObject(sol, "limit");
-      if (limit === null) {
-        ctx.warnings.push("OpenCode: provider.openai.models.gpt-5.6-sol.limit no es un objeto; se conserva sin sobrescribir.");
-      } else {
-        for (const [key, value] of Object.entries(PRIMARY_LIMITS)) limit[key] ??= value;
+      const provider = ensureObject(root, "provider", "provider");
+      const openai = ensureObject(provider, "openai", "provider.openai");
+      const models = ensureObject(openai, "models", "provider.openai.models");
+      const sol = ensureObject(models, PRIMARY_MODEL_ID, `provider.openai.models.${PRIMARY_MODEL_ID}`);
+      const limit = ensureObject(sol, "limit", PRIMARY_LIMIT_PREFIX);
+      for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
+        if (limit[key] !== undefined) continue;
+        limit[key] = value;
+        const field = `${PRIMARY_LIMIT_PREFIX}.${key}`;
+        if (ctx.ownedPrimaryModelFields?.has(field) !== true) {
+          primaryModelOwnership.push({ field, owned: true });
+        }
       }
 
       // Permisos por defecto: solo en config fresca o vacía. Una config
@@ -308,7 +323,13 @@ export const opencodeAdapter: Adapter = {
       }
     });
 
-    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }];
+    return [{
+      kind: "write",
+      target: file,
+      content,
+      ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
+      ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
+    }];
   },
 
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
@@ -327,8 +348,12 @@ export const opencodeAdapter: Adapter = {
     const config = readTextIfExists(configFile);
     if (config !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
+      const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
       const content = upsertJson(config, (root) => {
-        if (root["model"] === PRIMARY_MODEL) delete root["model"];
+        if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) === true) {
+          if (root[PRIMARY_MODEL_FIELD] === PRIMARY_MODEL) delete root[PRIMARY_MODEL_FIELD];
+          primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: false });
+        }
 
         const provider = objectValue(root["provider"]);
         const openai = provider === null ? null : objectValue(provider["openai"]);
@@ -337,6 +362,8 @@ export const opencodeAdapter: Adapter = {
         const limit = sol === null ? null : objectValue(sol["limit"]);
         if (limit !== null) {
           for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
+            const field = `${PRIMARY_LIMIT_PREFIX}.${key}`;
+            if (ctx.ownedPrimaryModelFields?.has(field) !== true) continue;
             if (limit[key] === value) delete limit[key];
           }
           pruneEmpty(sol!, "limit");
@@ -344,6 +371,12 @@ export const opencodeAdapter: Adapter = {
           pruneEmpty(openai!, "models");
           pruneEmpty(provider!, "openai");
           pruneEmpty(root, "provider");
+        }
+        for (const key of Object.keys(PRIMARY_LIMITS)) {
+          const field = `${PRIMARY_LIMIT_PREFIX}.${key}`;
+          if (ctx.ownedPrimaryModelFields?.has(field) === true) {
+            primaryModelOwnership.push({ field, owned: false });
+          }
         }
 
         const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
@@ -371,7 +404,13 @@ export const opencodeAdapter: Adapter = {
           else root["plugin"] = kept;
         }
       });
-      actions.push({ kind: "write", target: configFile, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) });
+      actions.push({
+        kind: "write",
+        target: configFile,
+        content,
+        ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
+        ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
+      });
     }
 
     const hooksFile = path.join(ctx.configDir, "hooks.json");

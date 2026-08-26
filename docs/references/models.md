@@ -65,7 +65,7 @@ Edita el campo global del runtime después de instalarlo:
 - OpenCode: `model` o los límites del modelo en `opencode.json`.
 - Pi: los defaults en `settings.json` o el override en `models.json`.
 
-`sync` solo rellena campos ausentes y conserva sustituciones del usuario. `uninstall` de Stack elimina en Codex/OpenCode únicamente los valores que todavía coinciden con sus defaults canónicos; el cleanup de Pi usa su recibo de ownership.
+`sync` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
 
 ## Subagentes
 

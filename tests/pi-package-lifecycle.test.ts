@@ -201,6 +201,27 @@ describe("Pi package-managed lifecycle", () => {
         input: healthyInput({ observedTarball: { ...PI_RUNTIME_CANDIDATE.tarball, sha256: "0".repeat(64) } }),
         expected: { kind: "blocked", reason: "tarball-integrity" },
       },
+      {
+        name: "an external write outside the Pi-owned allowlist",
+        input: healthyInput({
+          candidate: {
+            ...PI_RUNTIME_CANDIDATE,
+            contract: {
+              ...PI_RUNTIME_CANDIDATE.contract,
+              managedExternalWrites: [
+                ...PI_RUNTIME_CANDIDATE.contract.managedExternalWrites.slice(0, 2),
+                {
+                  owner: "jorgex-pi",
+                  root: "PI_CODING_AGENT_DIR",
+                  relativePath: "../settings.json",
+                  semantics: "escape",
+                },
+              ],
+            },
+          } as unknown as PiRuntimeCandidate,
+        }),
+        expected: { kind: "blocked", reason: "tarball-integrity" },
+      },
     ] as const;
 
     for (const testCase of cases) {
