@@ -86,18 +86,30 @@ function isReadinessTransitionSegment(tokens) {
 
   const action = tokens[index]?.toLowerCase();
   const args = tokens.slice(index + 1).map((token) => token.toLowerCase());
-  const hasTruthyBooleanFlag = (...names) =>
-    args.some((arg) =>
-      names.some((name) =>
-        arg === name ||
-        (arg.startsWith(`${name}=`) && ["true", "t", "1"].includes(arg.slice(name.length + 1))),
-      ),
-    );
+  const hasTruthyBooleanFlag = (names, valueFlags = []) => {
+    for (let offset = 0; offset < args.length; offset += 1) {
+      const arg = args[offset];
+      if (arg === "--") break;
+      if (valueFlags.includes(arg)) {
+        offset += 1;
+        continue;
+      }
+      if (valueFlags.some((name) => arg.startsWith(`${name}=`))) continue;
+      if (names.some((name) => arg === name)) return true;
+      if (names.some((name) => arg.startsWith(`${name}=`) && ["true", "t", "1"].includes(arg.slice(name.length + 1)))) return true;
+    }
+    return false;
+  };
 
-  if (action === "ready") return !hasTruthyBooleanFlag("--undo");
+  if (action === "ready") return !hasTruthyBooleanFlag(["--undo"], ["-R", "--repo"]);
   if (action !== "create") return false;
 
-  const createsDraft = hasTruthyBooleanFlag("--draft", "-d");
+  const createValueFlags = [
+    "-R", "--repo", "-a", "--assignee", "-B", "--base", "-b", "--body",
+    "-F", "--body-file", "-H", "--head", "-l", "--label", "-m", "--milestone",
+    "-p", "--project", "--recover", "-r", "--reviewer", "-T", "--template", "-t", "--title",
+  ];
+  const createsDraft = hasTruthyBooleanFlag(["--draft", "-d"], createValueFlags);
   return !createsDraft;
 }
 
@@ -111,9 +123,9 @@ function isPrReadinessCommand(command) {
 const message = `<pr-lifecycle-state-required>
 A PR readiness transition was attempted through \`gh pr create\` without \`--draft\` or through \`gh pr ready\`. Do not infer success or PR state from the command text. Resolve the current PR and run \`gh pr view --json number,isDraft,headRefOid\` before the next action.
 
-- The review boundary is the final draft SHA. If the full review was not already completed for the current \`headRefOid\`, ensure the PR is draft (run \`gh pr ready --undo <number>\` if necessary), finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, and final diff inspection.
+- The review boundary is the final draft diff. If the full review was not already completed, ensure the PR is draft (run \`gh pr ready --undo <number>\` if necessary), finish code, the applicable version bump, local tests, \`pnpm qa:quality\` when defined, Vercel preview review when applicable, and final diff inspection.
 - Load and run the portable \`xreview\` skill against that exact final diff. When an orchestrator owns an active work context, it must pass the exact \`work/{name}\` to every reviewer.
-- Do not repeat xreview only when there is explicit evidence that it already completed for the same \`headRefOid\`; otherwise treat the current SHA as unreviewed.
+- After fixing findings, repeat xreview only when the fixes materially change the diff or introduce a distinct risk. For ordinary fixes, explicit evidence of the prior review plus deterministic verification is sufficient even though \`headRefOid\` changed.
 - If the PR is actually ready, do not push. If the project has PR checks configured, wait for the complete Quality Gates, run \`gh pr checks <number>\`, and verify the checked headRefOid is the candidate SHA.
 - If no PR checks are configured, confirm that from project configuration such as workflows, rulesets or integrations, and record it; their absence does not block the merge. An empty \`gh pr checks\` result immediately after ready is not evidence that no checks are configured.
 - Immediately before reporting or merging, compare \`gh pr view --json headRefOid\` with the recorded candidate SHA. Merge still requires explicit user approval.

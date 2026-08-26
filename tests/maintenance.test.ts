@@ -1158,6 +1158,16 @@ describe("xreview: contexto del trabajo", () => {
     ]);
   });
 
+  it("pasa el mismo contexto exacto al comment-fixer", () => {
+    const content = readStackFile("skills/xreview/SKILL.md");
+
+    expectFragmentsInOrder(content, [
+      "## 4. Comment pass FIRST",
+      "Pass it the same scope",
+      "same exact work context path",
+    ]);
+  });
+
   it.each(XREVIEW_CONTEXT_AGENT_CASES)("$relativePath lee PRD y plan antes del diff cuando recibe contexto", ({ relativePath, scopeFragment }) => {
     const content = readStackFile(relativePath);
 

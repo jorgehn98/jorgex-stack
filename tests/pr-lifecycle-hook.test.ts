@@ -33,6 +33,7 @@ describe("PR lifecycle hook", () => {
     ["Bash", "gh pr create --title test"],
     ["PowerShell", 'gh pr create --title "Why --draft matters"'],
     ["shell", ["gh", "pr", "create", "--title", "test"]],
+    ["local_shell", "gh pr ready 123"],
     ["shell", "gh pr create --draft && gh pr ready 123"],
     ["PowerShell", "gh.exe pr ready https://github.com/foo2/repo/pull/48"],
     ["shell", "gh --repo owner/repo pr ready 48"],
@@ -47,6 +48,8 @@ describe("PR lifecycle hook", () => {
     ["shell", ["gh", "pr", "--repo=owner/repo", "ready", "48"]],
     ["shell", "gh pr ready --undo=false 48"],
     ["shell", "gh pr create -d=false --title test"],
+    ["shell", 'gh pr create --title "--draft"'],
+    ["shell", 'gh pr create --body "--draft=1" --title test'],
   ])("guards a PR readiness transition for %s: %j", (toolName, command) => {
     const result = runHook(shellPayload(toolName as string, command as string | string[]));
 
@@ -57,7 +60,7 @@ describe("PR lifecycle hook", () => {
     expect(context).toContain("readiness transition was attempted");
     expect(context).toContain("gh pr view --json number,isDraft,headRefOid");
     expect(context).toContain("Load and run the portable `xreview` skill");
-    expect(context).toContain("current `headRefOid`");
+    expect(context).toContain("repeat xreview only when the fixes materially change the diff");
     expect(context).toContain("gh pr ready --undo <number>");
     expect(context).toContain("gh pr checks <number>");
     expect(context).toContain("If the project has PR checks configured");
@@ -90,6 +93,8 @@ describe("PR lifecycle hook", () => {
     "gh pr create --draft=t --title test",
     "gh pr create --draft=1 --title test",
     "gh pr create -d=true --title test",
+    "gh pr create -d=t --title test",
+    "gh pr create -d=1 --title test",
     "gh pr ready --undo 48",
     "gh pr ready --undo=true 48",
     "gh pr ready --undo=t 48",
