@@ -88,6 +88,7 @@ const FOUR_R_LENS_CASES = [
 ] as const;
 
 const XREVIEW_CONTEXT_AGENT_CASES = [
+  { relativePath: "agents/comment-fixer.md", scopeFragment: "**Get the diff.**" },
   { relativePath: "agents/code-reviewer.md", scopeFragment: "**Get the diff.**" },
   { relativePath: "agents/test-analyzer.md", scopeFragment: "**Get the diff.**" },
   { relativePath: "agents/silent-failure-hunter.md", scopeFragment: "**Get the diff.**" },

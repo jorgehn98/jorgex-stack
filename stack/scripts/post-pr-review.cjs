@@ -86,10 +86,18 @@ function isReadinessTransitionSegment(tokens) {
 
   const action = tokens[index]?.toLowerCase();
   const args = tokens.slice(index + 1).map((token) => token.toLowerCase());
-  if (action === "ready") return !args.includes("--undo");
+  const hasTruthyBooleanFlag = (...names) =>
+    args.some((arg) =>
+      names.some((name) =>
+        arg === name ||
+        (arg.startsWith(`${name}=`) && ["true", "t", "1"].includes(arg.slice(name.length + 1))),
+      ),
+    );
+
+  if (action === "ready") return !hasTruthyBooleanFlag("--undo");
   if (action !== "create") return false;
 
-  const createsDraft = args.some((arg) => arg === "--draft" || arg === "-d" || arg === "--draft=true");
+  const createsDraft = hasTruthyBooleanFlag("--draft", "-d");
   return !createsDraft;
 }
 

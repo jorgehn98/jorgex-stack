@@ -45,6 +45,8 @@ describe("PR lifecycle hook", () => {
     ["shell", "gh pr -R owner/repo ready 48"],
     ["shell", "gh pr --repo owner/repo create --title test"],
     ["shell", ["gh", "pr", "--repo=owner/repo", "ready", "48"]],
+    ["shell", "gh pr ready --undo=false 48"],
+    ["shell", "gh pr create -d=false --title test"],
   ])("guards a PR readiness transition for %s: %j", (toolName, command) => {
     const result = runHook(shellPayload(toolName as string, command as string | string[]));
 
@@ -85,7 +87,13 @@ describe("PR lifecycle hook", () => {
     "gh pr create --draft --title test",
     "gh pr create -d --title test",
     "gh pr create --draft=true --title test",
+    "gh pr create --draft=t --title test",
+    "gh pr create --draft=1 --title test",
+    "gh pr create -d=true --title test",
     "gh pr ready --undo 48",
+    "gh pr ready --undo=true 48",
+    "gh pr ready --undo=t 48",
+    "gh pr ready --undo=1 48",
     "gh -R owner/repo pr create --draft",
     "gh pr --repo owner/repo create --draft",
     'echo "x; gh pr ready 48"',
