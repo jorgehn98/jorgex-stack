@@ -71,12 +71,18 @@ const installedReceipt = JSON.stringify({
   scope: { kind: "target-dir", codingAgentDir },
   engram: { binary: environment.ENGRAM_BIN },
 });
+const MANAGED_PACKAGE_REGISTRATION = {
+  source: PI_RUNTIME_CANDIDATE.package.source,
+  skills: [],
+  prompts: [],
+} as const;
+const { prompts: _prompts, ...PARTIAL_MANAGED_PACKAGE_REGISTRATION } = MANAGED_PACKAGE_REGISTRATION;
 
 function harness(events: string[]) {
   return {
     readSettings(path: string) {
       events.push(`settings:${path}`);
-      return JSON.stringify({ packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }] });
+      return JSON.stringify({ packages: [MANAGED_PACKAGE_REGISTRATION] });
     },
     readReceipt(path: string) {
       events.push(`receipt:${path}`);
@@ -180,9 +186,10 @@ describe("Pi runtime wiring", () => {
   });
 
   it.each([
-    ["exact filtered object", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }], { kind: "synced" }, ["runner:sync --json"]],
+    ["exact managed object", [MANAGED_PACKAGE_REGISTRATION], { kind: "synced" }, ["runner:sync --json"]],
     ["legacy string source", [PI_RUNTIME_CANDIDATE.package.source], { kind: "blocked", reason: "source-divergent" }, []],
-    ["non-empty packaged skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }, []],
+    ["partial managed object", [PARTIAL_MANAGED_PACKAGE_REGISTRATION], { kind: "blocked", reason: "source-divergent" }, []],
+    ["non-empty packaged skills", [{ ...MANAGED_PACKAGE_REGISTRATION, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }, []],
   ])("runs receipt-owned sync only for the %s registration", async (_name, packages, expected, expectedEvents) => {
     const { runPiRuntime } = await runtime();
     const { planPiPackageLifecycle } = await import("../src/lib/pi-package-lifecycle.js");
