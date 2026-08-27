@@ -202,8 +202,7 @@ function isExactManagedPackage(entry: unknown, source: string): boolean {
 }
 
 /**
- * Applies Pi's package filters only to the one canonical registration after
- * its shared Stack resources have been projected. Foreign entries and keys
+ * Filters only the one canonical Pi registration. Foreign entries and keys
  * remain untouched; ambiguous or divergent registrations fail closed.
  */
 export function filterProjectedPiPackage(settingsJson: string, source: string): string | null {

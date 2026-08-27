@@ -259,7 +259,7 @@ function realPiProjectionScope(): PiProjectionScope {
   };
 }
 
-/** Lee sin mutar los archivos que Pi conserva frente a otros runtimes. */
+/** Lee sin mutar las rutas gestionadas por la proyección real de Pi. */
 export function readRealPiProjectionOwned(): string[] {
   const scope = projectionScope(realPiProjectionScope());
   return parseReceipt(readTextIfExists(scope.receiptFile), scope)?.owned ?? [];

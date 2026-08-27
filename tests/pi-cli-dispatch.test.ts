@@ -38,8 +38,8 @@ const mocks = vi.hoisted(() => {
     hasManagedPiRuntime: vi.fn().mockReturnValue(false),
     resolvePiEngramBin: vi.fn().mockReturnValue("/isolated/bin/engram"),
     resolvePiEngramRequirement: vi.fn(),
-    // Keep the legacy boundary stubbed so this RED reaches the assertions
-    // instead of attempting Pi package I/O before the CLI wiring is migrated.
+    // Keep the package-only boundary stubbed; dispatch assertions exercise the
+    // managed lifecycle instead.
     runPiRuntimeSystem: vi.fn().mockReturnValue({ kind: "healthy" }),
     runManagedPiSystem: vi.fn().mockResolvedValue({ kind: "healthy" }),
   };
