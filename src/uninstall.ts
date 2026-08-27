@@ -10,6 +10,7 @@ import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
+import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -92,6 +93,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   // OpenCode usa.
   const retained = new Set<string>();
   if (useBrowserPreferences) {
+    for (const target of readRealPiProjectionOwned()) retained.add(target);
     for (const keep of Object.values(ADAPTERS)) {
       if (opts.runtimes.includes(keep.id)) continue;
       const detection = keep.detect();

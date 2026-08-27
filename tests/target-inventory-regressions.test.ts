@@ -544,4 +544,103 @@ describe("target inventory regressions", () => {
       }
     });
   });
+
+  it.each([
+    "codex",
+    "opencode",
+  ] as const)("conserva la skill compartida de Pi al desinstalar solo %s", async (runtime) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-${runtime}-uninstall-`));
+    const homeDir = path.join(tmp, "home");
+    const configDirs = {
+      codex: path.join(homeDir, ".codex"),
+      opencode: path.join(homeDir, ".config", "opencode"),
+    };
+
+    await withTempHome(homeDir, async () => {
+      const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
+      mocks.modelMapOverride = {
+        codex: DEFAULT_MODEL_MAP.codex,
+        opencode: OPEN_CODE_TEST_MODELS,
+      };
+      mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+      mocks.runDetectedBin.mockReturnValue("1.2.3");
+
+      const { PI_RUNTIME_CANDIDATE } = await import("../src/lib/pi-runtime.js");
+      const { runPiProjectionLifecycleSystem } = await import("../src/lib/pi-projection-lifecycle.js");
+      const projection = runPiProjectionLifecycleSystem({
+        operation: "install",
+        packageSource: PI_RUNTIME_CANDIDATE.package.source,
+        engramBin: null,
+        playwrightCliEnabled: false,
+      });
+      expect(projection.kind).toBe("installed");
+
+      const sharedSkill = path.join(homeDir, ".agents", "skills", "tdd", "SKILL.md");
+      const receiptFile = path.join(homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+      expect(JSON.parse(fs.readFileSync(receiptFile, "utf8"))).toMatchObject({
+        schemaVersion: 1,
+        scope: {
+          kind: "real",
+          home: homeDir,
+          codingAgentDir: path.join(homeDir, ".pi", "agent"),
+          receiptFile,
+        },
+        owned: expect.arrayContaining([sharedSkill]),
+      });
+
+      const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+      writeRuntimeManifest(runtime, { configDir: configDirs[runtime], owned: [sharedSkill], updatedAt: "t" });
+
+      const install = await import("../src/install.js");
+      const codex = install.ADAPTERS.codex!;
+      const opencode = install.ADAPTERS.opencode!;
+      const claudeCode = install.ADAPTERS["claude-code"]!;
+      const originalCodexDetect = codex.detect;
+      const originalOpencodeDetect = opencode.detect;
+      const originalClaudeDetect = claudeCode.detect;
+
+      codex.detect = () => ({
+        id: "codex",
+        name: "Codex CLI",
+        installed: runtime === "codex",
+        binPath: null,
+        configDir: configDirs.codex,
+      });
+      opencode.detect = () => ({
+        id: "opencode",
+        name: "OpenCode",
+        installed: runtime === "opencode",
+        binPath: null,
+        configDir: configDirs.opencode,
+      });
+      claudeCode.detect = () => ({
+        id: "claude-code",
+        name: "Claude Code",
+        installed: false,
+        binPath: null,
+        configDir: path.join(homeDir, ".claude"),
+      });
+
+      try {
+        const { runUninstall } = await import("../src/uninstall.js");
+        await expect(
+          runUninstall({
+            runtimes: [runtime],
+            dryRun: false,
+            yes: true,
+            removeEngram: false,
+            removePlaywright: false,
+          }),
+        ).resolves.toBe(0);
+
+        expect(fs.existsSync(sharedSkill)).toBe(true);
+        expect(fs.existsSync(receiptFile)).toBe(true);
+        expect(readManifest().runtimes[runtime]).toBeUndefined();
+      } finally {
+        codex.detect = originalCodexDetect;
+        opencode.detect = originalOpencodeDetect;
+        claudeCode.detect = originalClaudeDetect;
+      }
+    });
+  });
 });

@@ -250,6 +250,21 @@ function parseReceipt(raw: string | null, scope: ProjectionScope): PiProjectionR
   }
 }
 
+function realPiProjectionScope(): PiProjectionScope {
+  return {
+    kind: "real",
+    home: HOME,
+    codingAgentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent"),
+    receiptFile: path.join(dataDir(), "pi-projection-receipt.json"),
+  };
+}
+
+/** Lee sin mutar los archivos que Pi conserva frente a otros runtimes. */
+export function readRealPiProjectionOwned(): string[] {
+  const scope = projectionScope(realPiProjectionScope());
+  return parseReceipt(readTextIfExists(scope.receiptFile), scope)?.owned ?? [];
+}
+
 function manifestOwned(manifest: PiProjectionManifest): Set<string> {
   return new Set([
     ...(manifest.runtimes.codex?.owned ?? []),
@@ -365,12 +380,7 @@ export function runPiProjectionLifecycleSystem(
 ): PiProjectionLifecycleResult {
   const targetRoot = input.targetDir === undefined ? null : path.resolve(input.targetDir);
   const scope: PiProjectionScope = targetRoot === null
-    ? {
-        kind: "real",
-        home: HOME,
-        codingAgentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent"),
-        receiptFile: path.join(dataDir(), "pi-projection-receipt.json"),
-      }
+    ? realPiProjectionScope()
     : {
         kind: "target-dir",
         home: path.join(targetRoot, "home"),
