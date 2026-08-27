@@ -45,7 +45,7 @@ describe("Pi managed shared projection", () => {
   it("makes a Pi-only plan provide the missing external skills, system prompt, and lean-audit template while preserving user content and staying idempotent", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-"));
     const home = path.join(root, "home");
-    const configDir = path.join(home, "pi-agent");
+    const configDir = path.join(root, "pi-agent");
     const userPrompt = "# Local Pi policy\n\nKeep this user-owned instruction.\n";
     const userCommand = path.join(configDir, "prompts", "custom.md");
 

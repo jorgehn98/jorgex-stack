@@ -13,7 +13,7 @@ export const piAdapter: SharedProjectionAdapter & {
 
   paths(configDir) {
     const piConfigDir = process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent");
-    const agentsHome = samePath(configDir, piConfigDir) ? HOME : path.dirname(configDir);
+    const agentsHome = samePath(configDir, piConfigDir) ? HOME : path.join(path.dirname(configDir), "home");
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
       agentsDir: path.join(configDir, "agents"),
