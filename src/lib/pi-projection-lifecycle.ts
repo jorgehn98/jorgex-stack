@@ -5,8 +5,12 @@ import type { FileAction, InstallContext, SharedProjectionAdapter } from "../ada
 import { planCommands } from "../components/commands.js";
 import { planSkills } from "../components/skills.js";
 import { planSystemPrompt } from "../components/system-prompt.js";
+import { createBackup } from "./backup.js";
 import { removeMarkdownSection } from "./filemerge.js";
-import type { RuntimeModelMap } from "./model-map.js";
+import { copyFile, readTextIfExists, writeText } from "./fsx.js";
+import { readManifest } from "./manifest.js";
+import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "./model-map.js";
+import { dataDir, HOME, stackRoot } from "./paths.js";
 import { filterProjectedPiPackage } from "./pi-package-lifecycle.js";
 
 export type PiProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
@@ -345,4 +349,53 @@ export function runPiProjectionLifecycle(
 
   if (input.operation === "install") return { kind: "installed", receipt };
   return { kind: "synced", changed: drifted.length > 0 || packageChanged || receiptChanged };
+}
+
+export interface PiProjectionLifecycleSystemInput {
+  operation: PiProjectionOperation;
+  targetDir?: string;
+  packageSource: string;
+  engramBin: string | null;
+  playwrightCliEnabled: boolean;
+}
+
+/** Ejecuta la proyección compartida contra el scope real o aislado de Pi. */
+export function runPiProjectionLifecycleSystem(
+  input: PiProjectionLifecycleSystemInput,
+): PiProjectionLifecycleResult {
+  const targetRoot = input.targetDir === undefined ? null : path.resolve(input.targetDir);
+  const scope: PiProjectionScope = targetRoot === null
+    ? {
+        kind: "real",
+        home: HOME,
+        codingAgentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent"),
+        receiptFile: path.join(dataDir(), "pi-projection-receipt.json"),
+      }
+    : {
+        kind: "target-dir",
+        home: path.join(targetRoot, "home"),
+        codingAgentDir: path.join(targetRoot, "pi-agent"),
+        receiptFile: path.join(targetRoot, "state", "pi-projection-receipt.json"),
+      };
+
+  return runPiProjectionLifecycle({
+    operation: input.operation,
+    scope,
+    packageSource: input.packageSource,
+    stackDir: stackRoot(),
+    engramBin: input.engramBin ?? "",
+    playwrightCliEnabled: input.playwrightCliEnabled,
+    models: DEFAULT_MODEL_MAP.codex,
+  }, {
+    readText: readTextIfExists,
+    backup: (paths) => createBackup(
+      paths,
+      `pi-projection-${input.operation}`,
+      targetRoot === null ? undefined : path.join(targetRoot, "backups"),
+    ),
+    writeText,
+    copyFile,
+    removeFile: (file) => fs.rmSync(file, { force: true }),
+    readManifest: targetRoot === null ? readManifest : () => ({ runtimes: {} }),
+  });
 }
