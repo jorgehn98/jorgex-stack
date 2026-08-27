@@ -867,6 +867,27 @@ describe("lean integration: prompt wiring", () => {
     expect(content).toContain("whether the smallest obvious change is enough");
   });
 
+  it("lean-code conserva los cuatro guardarraíles aprobados y el routing global", () => {
+    const leanCode = readStackFile("skills/lean-code/SKILL.md");
+
+    expectFragments(leanCode, [
+      "understand the touched flow and caller impact",
+      "symptom from root cause",
+      "shared seam",
+      "line-count-only code golf",
+      "clarity/correctness",
+    ]);
+    expect(leanCode).toContain(
+      "When accepting a deliberate limit, record its ceiling, revisit trigger and exactly one existing tracking home: the current task, an issue or the project's backlog. Do not create a parallel marker or ledger.",
+    );
+
+    const globalPrompt = readStackFile("system-prompt/AGENTS.md");
+    expect(globalPrompt).toContain(
+      "For code-bearing tasks that may add, remove or simplify code, load the `lean-code` skill before deciding scope or implementation.",
+    );
+    expect(globalPrompt).not.toContain("Use the smallest change that genuinely solves the problem.");
+  });
+
   it("type-design-analyzer limita el audit scope a contratos/tipos", () => {
     const content = fs.readFileSync(path.join(stackRoot(), "agents", "type-design-analyzer.md"), "utf8");
 

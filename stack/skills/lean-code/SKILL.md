@@ -7,6 +7,10 @@ description: Lean / anti-overengineering skill. Use when deciding whether code s
 
 Use the smallest change that genuinely solves the problem.
 
+## Understand first
+
+Before choosing a rung, read the affected code and understand the touched flow and caller impact. Trace the actual path through inputs, outputs, callers and shared seams; a small diff at the wrong seam is not lean.
+
 ## The ladder
 
 Work top-down. Stop as soon as a step solves it:
@@ -29,6 +33,12 @@ Work top-down. Stop as soon as a step solves it:
 ## Guardrails
 
 Lean code does **not** mean weaker code.
+
+For bug fixes, distinguish the reported symptom from root cause. Prefer one fix at the shared seam when appropriate instead of repeating caller-side patches or leaving sibling paths exposed.
+
+Reject line-count-only code golf: reduce complexity and change surface, not merely line count. Shorter code that weakens clarity/correctness, hides intent or is fragile is not lean.
+
+When accepting a deliberate limit, record its ceiling, revisit trigger and exactly one existing tracking home: the current task, an issue or the project's backlog. Do not create a parallel marker or ledger.
 
 Keep explicit code when the change touches:
 
