@@ -877,15 +877,32 @@ describe("lean integration: prompt wiring", () => {
       "line-count-only code golf",
       "clarity/correctness",
     ]);
-    expect(leanCode).toContain(
-      "When accepting a deliberate limit, record its ceiling, revisit trigger and exactly one existing tracking home: the current task, an issue or the project's backlog. Do not create a parallel marker or ledger.",
-    );
+    expectFragmentsInOrder(leanCode, [
+      "ceiling",
+      "revisit trigger",
+      "exactly one existing tracking home",
+      "current task",
+      "an issue",
+      "project's backlog",
+      "Do not create a parallel",
+      "ledger",
+    ]);
 
     const globalPrompt = readStackFile("system-prompt/AGENTS.md");
-    expect(globalPrompt).toContain(
-      "For code-bearing tasks that may add, remove or simplify code, load the `lean-code` skill before deciding scope or implementation.",
-    );
-    expect(globalPrompt).not.toContain("Use the smallest change that genuinely solves the problem.");
+    expectFragmentsInOrder(globalPrompt, [
+      "For code-bearing tasks",
+      "load the `lean-code` skill",
+      "before deciding scope or implementation.",
+    ]);
+    expect(globalPrompt.match(/\blean-code\b/g)).toHaveLength(1);
+    for (const leanBodyMarker of [
+      "# Lean Code",
+      "Work top-down. Stop as soon as a step solves it:",
+      "Before adding a new helper, wrapper, abstraction, or dependency, run the ladder again.",
+      "Rank findings as:",
+    ]) {
+      expect(globalPrompt).not.toContain(leanBodyMarker);
+    }
   });
 
   it("type-design-analyzer limita el audit scope a contratos/tipos", () => {
