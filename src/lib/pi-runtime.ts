@@ -240,7 +240,7 @@ function normalizeInstalledSource(settingsJson: string, alias: string, canonical
       || (entry !== null && typeof entry === "object" && !Array.isArray(entry)
         && Reflect.get(entry, "source") === canonical));
     if (packages.filter((entry) => entry === alias).length !== 1 || hasCanonical) return null;
-    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? { source: canonical, skills: [] } : entry));
+    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? canonical : entry));
     return JSON.stringify(parsed);
   } catch {
     return null;

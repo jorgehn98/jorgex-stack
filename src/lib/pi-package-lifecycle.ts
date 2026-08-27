@@ -189,12 +189,46 @@ function isExactManagedPackage(entry: unknown, source: string): boolean {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
   const keys = Object.keys(entry);
   const skills = Reflect.get(entry, "skills");
-  return keys.length === 2
+  const prompts = Reflect.get(entry, "prompts");
+  return keys.length === 3
     && keys.includes("source")
     && keys.includes("skills")
+    && keys.includes("prompts")
     && Reflect.get(entry, "source") === source
     && Array.isArray(skills)
-    && skills.length === 0;
+    && skills.length === 0
+    && Array.isArray(prompts)
+    && prompts.length === 0;
+}
+
+/**
+ * Applies Pi's package filters only to the one canonical registration after
+ * its shared Stack resources have been projected. Foreign entries and keys
+ * remain untouched; ambiguous or divergent registrations fail closed.
+ */
+export function filterProjectedPiPackage(settingsJson: string, source: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(settingsJson);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const packages = Reflect.get(parsed, "packages");
+    if (!Array.isArray(packages)) return null;
+    const matchingSources = packages.filter((entry) => {
+      const entrySource = packageSource(entry);
+      return entrySource !== null && isJorgeXPiSource(entrySource);
+    });
+    if (matchingSources.length !== 1) return null;
+    const managedEntry = matchingSources[0];
+    if (isExactManagedPackage(managedEntry, source)) return JSON.stringify(parsed);
+    if (managedEntry !== source) return null;
+    Reflect.set(parsed, "packages", packages.map((entry) => entry === source ? {
+      source,
+      skills: [],
+      prompts: [],
+    } : entry));
+    return JSON.stringify(parsed);
+  } catch {
+    return null;
+  }
 }
 
 function expectedReceipt(
@@ -361,7 +395,7 @@ export type PiPackageOperation = "install" | "sync" | "models";
 
 export type PiPackageExecutorResult =
   | { kind: "installed"; receipt: PiPackageReceipt }
-  | { kind: "synced"; actions: [] }
+  | { kind: "synced"; actions: unknown[] }
   | { kind: "models"; models: { mode: "inherit-session"; tiers: ["strong", "standard", "cheap"] } }
   | { kind: "manual-existing" }
   | { kind: "blocked"; reason: "pi-install-failed" | "runner-output" | "runner-unhealthy" };
@@ -478,10 +512,13 @@ export function executePiPackageLifecycle(
 
   if (input.operation === "sync") {
     const result = command.result;
-    if (result === null || typeof result !== "object" || Reflect.get(result, "changed") !== false) {
+    if (result === null
+      || typeof result !== "object"
+      || (Reflect.get(result, "changed") !== true && Reflect.get(result, "changed") !== false)
+      || !Array.isArray(Reflect.get(result, "actions"))) {
       return { kind: "blocked", reason: "runner-unhealthy" };
     }
-    return { kind: "synced", actions: [] };
+    return { kind: "synced", actions: Reflect.get(result, "actions") };
   }
 
   const models = command.result;
