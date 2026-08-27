@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
+import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
 import { DEVTOOLS_MCP_SERVER } from "../lib/canonical.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, stripLeadingHtmlComments, upsertMarkdownSection } from "../lib/filemerge.js";
@@ -13,7 +13,7 @@ const normalize = (s: string): string => s.replace(/\r\n/g, "\n");
  * como secciones marcadas en el archivo del runtime (CLAUDE.md / AGENTS.md).
  * Lo que el usuario tenga fuera de los marcadores se preserva.
  */
-export function planSystemPrompt(adapter: Adapter, ctx: InstallContext): FileAction[] {
+export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallContext): FileAction[] {
   const target = adapter.paths(ctx.configDir).systemPromptFile;
   const agentsMd = normalize(fs.readFileSync(path.join(ctx.stackDir, "system-prompt", "AGENTS.md"), "utf8"));
   const protocol = stripLeadingHtmlComments(
