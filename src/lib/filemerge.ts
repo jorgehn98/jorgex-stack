@@ -86,6 +86,54 @@ export function upsertJson(existing: string | null, mutate: (root: Record<string
   return JSON.stringify(root, null, 2) + "\n";
 }
 
+function tomlRootEnd(lines: string[]): number {
+  const mask = multilineStringMask(lines);
+  const index = lines.findIndex((line, lineIndex) => !mask[lineIndex] && headerName(line) !== null);
+  return index === -1 ? lines.length : index;
+}
+
+function rootKeyLineIndex(lines: string[], key: string): number {
+  const end = tomlRootEnd(lines);
+  const mask = multilineStringMask(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
+  return lines.slice(0, end).findIndex((line, index) => !mask[index] && pattern.test(line));
+}
+
+export function hasTomlRootKey(existing: string | null, key: string): boolean {
+  if (existing === null || existing === "") return false;
+  return rootKeyLineIndex(existing.replace(/\r\n/g, "\n").split("\n"), key) !== -1;
+}
+
+/** Añade una clave escalar al root TOML solo cuando el usuario aún no la tiene. */
+export function upsertTomlRootKeyIfMissing(existing: string | null, key: string, value: string): string {
+  if (hasTomlRootKey(existing, key)) return existing!;
+  const eol = existing?.includes("\r\n") ? "\r\n" : "\n";
+  const normalized = (existing ?? "").replace(/\r\n/g, "\n");
+  const lines = normalized === "" ? [] : normalized.split("\n");
+
+  const index = tomlRootEnd(lines);
+  lines.splice(index, 0, `${key} = ${value}`);
+  return lines.join(eol);
+}
+
+/** Retira una clave del root TOML solo si conserva exactamente el valor canónico. */
+export function removeTomlRootKeyIfExact(existing: string, key: string, value: string): string {
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+  const normalized = existing.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const index = rootKeyLineIndex(lines, key);
+  if (index === -1) return existing;
+
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = new RegExp(`^\\s*(?:${escapedKey}|"${escapedKey}"|'${escapedKey}')\\s*=\\s*${escapedValue}\\s*(?:#.*)?$`);
+  if (!exact.test(lines[index]!)) return existing;
+
+  lines.splice(index, 1);
+  return lines.join(eol);
+}
+
 /**
  * Normaliza el nombre de tabla de una línea-header TOML para comparar:
  * `[ mcp_servers."engram" ] # nota` → `mcp_servers.engram`. Devuelve null si
@@ -163,15 +211,16 @@ export function upsertTomlSection(existing: string | null, section: string, body
 
 /** Inversa de upsertTomlSection: elimina la sección (y su separación) si existe. */
 export function removeTomlSection(existing: string, section: string): string {
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
   const lines = existing.split(/\r?\n/);
   const found = findTomlSection(lines, section);
   if (found === null) return existing;
   // Absorbe también las líneas en blanco previas al header eliminado.
   let realStart = found.start;
   while (realStart > 0 && lines[realStart - 1]!.trim() === "") realStart--;
-  const result = [...lines.slice(0, realStart), ...lines.slice(found.end)].join("\n");
+  const result = [...lines.slice(0, realStart), ...lines.slice(found.end)].join(eol);
   if (result.trim() === "") return "";
-  return result.endsWith("\n") ? result : result + "\n";
+  return result.endsWith(eol) ? result : result + eol;
 }
 
 /** Extrae el texto crudo de una sección TOML (sin header), o null si no existe. */

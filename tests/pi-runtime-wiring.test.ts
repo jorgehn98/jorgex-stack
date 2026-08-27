@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
@@ -17,7 +18,7 @@ type PiRuntimeModule = {
     pi: {
       id: "pi";
       kind: "package-managed";
-      source: "npm:jorgex-pi@0.2.2";
+      source: "npm:jorgex-pi@0.3.0";
       tarball: { sha256: string; sha512: string; bytes: number };
       pi: { testedVersions: readonly string[] };
     };
@@ -47,17 +48,17 @@ async function runtime(): Promise<PiRuntimeModule> {
   return mod as PiRuntimeModule;
 }
 
-const target = "/tmp/jorgex-pi-target";
-const codingAgentDir = `${target}/pi-agent`;
-const receiptPath = `${target}/state/pi-receipt.json`;
-const runner = `${codingAgentDir}/npm/node_modules/jorgex-pi/bin/jorgex-pi.mjs`;
+const target = path.resolve("/tmp/jorgex-pi-target");
+const codingAgentDir = path.join(target, "pi-agent");
+const receiptPath = path.join(target, "state", "pi-receipt.json");
+const runner = path.join(codingAgentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
 const environment: Environment = {
-  HOME: `${target}/home`,
-  XDG_CONFIG_HOME: `${target}/config`,
-  XDG_CACHE_HOME: `${target}/cache`,
-  TMPDIR: `${target}/tmp`,
+  HOME: path.join(target, "home"),
+  XDG_CONFIG_HOME: path.join(target, "config"),
+  XDG_CACHE_HOME: path.join(target, "cache"),
+  TMPDIR: path.join(target, "tmp"),
   PI_CODING_AGENT_DIR: codingAgentDir,
-  ENGRAM_BIN: `${target}/bin/engram`,
+  ENGRAM_BIN: path.join(target, "bin", "engram"),
 };
 const installedReceipt = JSON.stringify({
   schemaVersion: 1,
@@ -75,7 +76,7 @@ function harness(events: string[]) {
   return {
     readSettings(path: string) {
       events.push(`settings:${path}`);
-      return JSON.stringify({ packages: [{ source: "npm:jorgex-pi@0.2.2", skills: [] }] });
+      return JSON.stringify({ packages: [{ source: "npm:jorgex-pi@0.3.0", skills: [] }] });
     },
     readReceipt(path: string) {
       events.push(`receipt:${path}`);
@@ -93,7 +94,7 @@ function harness(events: string[]) {
       const operation = (input as { operation: Operation }).operation;
       if (operation === "sync") return { kind: "synced" };
       if (operation === "models") return { kind: "models" };
-      return { kind: "installed", receipt: { state: "installed", version: "0.2.2" } };
+      return { kind: "installed", receipt: { state: "installed", version: "0.3.0" } };
     },
     operate(input: unknown): RuntimeResult {
       events.push(`operate:${JSON.stringify(input)}`);
@@ -108,18 +109,18 @@ describe("Pi runtime wiring", () => {
     expect(PI_RUNTIME_REGISTRY.pi).toMatchObject({
       id: "pi",
       kind: "package-managed",
-      source: "npm:jorgex-pi@0.2.2",
+      source: "npm:jorgex-pi@0.3.0",
       tarball: {
-        bytes: 89_101_513,
-        sha256: "e1c6b63719995cf7ba2c96c3b753f19d8f2f0be74f2af9bc319576b7383913f4",
-        sha512: "7b81dc1eb6030d562c70857dcf739798df94c88bddd240b2752c558fc1d21403faa411aa88e182a01664a17e06e2caeef35f1507eff45c97f4acc521469c45a1",
+        bytes: 89_104_529,
+        sha256: "13919b9aaed407e4e08c774cd24a496d3befbd91de6aafd37725fd7263963a3b",
+        sha512: "85c9adf038e8a0e826009fc8cffe23006688c184a43602d81e29807516073e604b0e451bd8f6883f1d352fb858d232acd593d72af67689b8ef5f7467f17fc096",
       },
       pi: { testedVersions: ["0.84.2"] },
     });
     expect(parseCliArgs(["install", "--agents", "pi,codex"]).flags.agents).toEqual(["pi", "codex"]);
     expect(ADAPTERS).not.toHaveProperty("pi");
     expect(DEFAULT_MODEL_MAP).not.toHaveProperty("pi");
-    expect(readManifest(`${target}/sentinel-manifest.json`).runtimes).not.toHaveProperty("pi");
+    expect(readManifest(path.join(target, "sentinel-manifest.json")).runtimes).not.toHaveProperty("pi");
   });
 
   it("builds only target-dir paths and environment, journals atomically, and routes install/sync/models/doctor/uninstall through the injected package lifecycle", async () => {
@@ -141,14 +142,14 @@ describe("Pi runtime wiring", () => {
     }
 
     const trace = events.join("\n");
-    expect(trace).toContain(`settings:${codingAgentDir}/settings.json`);
+    expect(trace).toContain(`settings:${path.join(codingAgentDir, "settings.json")}`);
     expect(trace).toContain(`receipt:${receiptPath}`);
     expect(trace).toContain(`atomic:${receiptPath}:installed`);
-    expect(trace).toContain(runner);
-    expect(trace).toContain("npm:jorgex-pi@0.2.2");
+    expect(trace).toContain(JSON.stringify(runner).slice(1, -1));
+    expect(trace).toContain("npm:jorgex-pi@0.3.0");
     expect(trace).toContain("--no-approve");
-    expect(trace).toContain(`"PI_CODING_AGENT_DIR":"${codingAgentDir}"`);
-    expect(trace).toContain(`"ENGRAM_BIN":"${environment.ENGRAM_BIN}"`);
+    expect(trace).toContain(JSON.stringify({ PI_CODING_AGENT_DIR: codingAgentDir }).slice(1, -1));
+    expect(trace).toContain(JSON.stringify({ ENGRAM_BIN: environment.ENGRAM_BIN }).slice(1, -1));
     expect(trace).not.toContain("PI_PACKAGE_DIR");
     expect(trace).not.toContain(process.env.HOME ?? "__none__");
     expect(trace).not.toContain("NPM_TOKEN");
@@ -179,7 +180,7 @@ describe("Pi runtime wiring", () => {
       engramBin: environment.ENGRAM_BIN,
     }, updateDeps)).toMatchObject({ kind: "updated" });
     expect(updateEvents).toContain(`atomic:${receiptPath}:installed`);
-    expect(updateEvents.join("\n")).not.toContain('"version":"0.2.2"}');
+    expect(updateEvents.join("\n")).not.toContain('"version":"0.3.0"}');
   });
 
   it.each([

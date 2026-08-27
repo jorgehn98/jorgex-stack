@@ -2,10 +2,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const candidate = {
-  source: "npm:jorgex-pi@0.2.2",
-  bytes: 89_101_513,
-  sha256: "e1c6b63719995cf7ba2c96c3b753f19d8f2f0be74f2af9bc319576b7383913f4",
-  sha512: "7b81dc1eb6030d562c70857dcf739798df94c88bddd240b2752c558fc1d21403faa411aa88e182a01664a17e06e2caeef35f1507eff45c97f4acc521469c45a1",
+  source: "npm:jorgex-pi@0.3.0",
+  bytes: 89_104_529,
+  sha256: "13919b9aaed407e4e08c774cd24a496d3befbd91de6aafd37725fd7263963a3b",
+  sha512: "85c9adf038e8a0e826009fc8cffe23006688c184a43602d81e29807516073e604b0e451bd8f6883f1d352fb858d232acd593d72af67689b8ef5f7467f17fc096",
 } as const;
 
 type Environment = Record<string, string>;
@@ -44,9 +44,9 @@ async function acquisition(): Promise<PiTarballAcquisition> {
   return mod as PiTarballAcquisition;
 }
 
-const target = "/tmp/jorgex-pi-portable-target";
+const target = path.resolve("/tmp/jorgex-pi-portable-target");
 const codingAgentDir = path.join(target, "pi-agent");
-const tarball = path.join(target, "downloads", "jorgex-pi-0.2.2.tgz");
+const tarball = path.join(target, "downloads", "jorgex-pi-0.3.0.tgz");
 const packageRunner = path.join(codingAgentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
 const targetEnvironment = {
   HOME: path.join(target, "home"),
@@ -69,7 +69,7 @@ function doctorJson(): string {
     schemaVersion: 1,
     command: "doctor",
     ok: true,
-    package: { name: "jorgex-pi", version: "0.2.2", root: path.dirname(path.dirname(packageRunner)) },
+    package: { name: "jorgex-pi", version: "0.3.0", root: path.dirname(path.dirname(packageRunner)) },
     result: { healthy: true, checks: [{ id: "package", status: "ok" }, { id: "engram", status: "ok" }] },
   })}\n`;
 }
@@ -127,7 +127,7 @@ describe("Pi tarball acquisition and portable scope", () => {
       },
     });
     expect(events).toEqual([
-      `download:${path.join(target, "downloads", "jorgex-pi-0.2.2.tgz")}`,
+      `download:${path.join(target, "downloads", "jorgex-pi-0.3.0.tgz")}`,
       "backup-settings",
       `receipt:installing:target-dir:${path.resolve(codingAgentDir)}`,
       `/opt/pi/bin/pi:install npm:jorgex-pi@file:${tarball} --no-approve`,
@@ -159,7 +159,7 @@ describe("Pi tarball acquisition and portable scope", () => {
         candidate,
       }, deps(events, artifact));
       expect(result).toMatchObject({ kind: "blocked", reason: "tarball-integrity" });
-      expect(events).toEqual([`download:${path.join(target, "downloads", "jorgex-pi-0.2.2.tgz")}`]);
+      expect(events).toEqual([`download:${path.join(target, "downloads", "jorgex-pi-0.3.0.tgz")}`]);
     }
   });
 });

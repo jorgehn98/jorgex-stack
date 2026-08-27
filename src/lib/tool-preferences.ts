@@ -6,6 +6,7 @@ import { dataDir } from "./paths.js";
 
 const PLAYWRIGHT_CLI_PREFERENCE_VERSION = 1;
 const DEVTOOLS_MCP_PREFERENCE_VERSION = 1;
+const PRIMARY_MODEL_OWNERSHIP_VERSION = 1;
 
 interface PlaywrightCliPreference {
   version: typeof PLAYWRIGHT_CLI_PREFERENCE_VERSION;
@@ -16,6 +17,11 @@ interface DevtoolsMcpPreference {
   version: typeof DEVTOOLS_MCP_PREFERENCE_VERSION;
   enabled: Partial<Record<RuntimeId, boolean>>;
   owned: Partial<Record<RuntimeId, Record<string, true>>>;
+}
+
+interface PrimaryModelOwnership {
+  version: typeof PRIMARY_MODEL_OWNERSHIP_VERSION;
+  owned: Partial<Record<RuntimeId, Record<string, Record<string, true>>>>;
 }
 
 function readPreference(file: string): { raw: string | null; errorCode: string | null } {
@@ -69,6 +75,10 @@ export function savePlaywrightCliPreference(file: string, enabled: boolean): voi
 
 export function devtoolsMcpPreferenceFile(stateDir = dataDir()): string {
   return path.join(stateDir, "devtools-mcp.json");
+}
+
+export function primaryModelOwnershipFile(stateDir = dataDir()): string {
+  return path.join(stateDir, "primary-model.json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -161,6 +171,79 @@ export function saveDevtoolsMcpOwnership(file: string, runtime: RuntimeId, serve
     if (state.owned[runtime] !== undefined && Object.keys(state.owned[runtime]).length === 0) delete state.owned[runtime];
   }
   saveDevtoolsMcpState(file, state);
+}
+
+function parsePrimaryModelOwnership(raw: string): PrimaryModelOwnership | null {
+  try {
+    const value = JSON.parse(raw) as Partial<PrimaryModelOwnership>;
+    if (!isRecord(value) || value.version !== PRIMARY_MODEL_OWNERSHIP_VERSION || !isRecord(value.owned)) return null;
+    const owned: PrimaryModelOwnership["owned"] = {};
+    for (const [runtime, configs] of Object.entries(value.owned)) {
+      if (!isRuntimeId(runtime) || !isRecord(configs)) return null;
+      const markedConfigs: Record<string, Record<string, true>> = {};
+      for (const [configDir, fields] of Object.entries(configs)) {
+        if (configDir === "" || !isRecord(fields)) return null;
+        const markedFields: Record<string, true> = {};
+        for (const [field, state] of Object.entries(fields)) {
+          if (field === "" || state !== true) return null;
+          markedFields[field] = true;
+        }
+        if (Object.keys(markedFields).length > 0) markedConfigs[configDir] = markedFields;
+      }
+      if (Object.keys(markedConfigs).length > 0) owned[runtime] = markedConfigs;
+    }
+    return { version: PRIMARY_MODEL_OWNERSHIP_VERSION, owned };
+  } catch {
+    return null;
+  }
+}
+
+function loadPrimaryModelOwnershipState(file: string): PrimaryModelOwnership {
+  const empty: PrimaryModelOwnership = { version: PRIMARY_MODEL_OWNERSHIP_VERSION, owned: {} };
+  const { raw } = readPreference(file);
+  return raw === null ? empty : (parsePrimaryModelOwnership(raw) ?? empty);
+}
+
+export function primaryModelOwnershipError(file = primaryModelOwnershipFile()): string | null {
+  const { raw, errorCode } = readPreference(file);
+  if (errorCode !== null) {
+    return `Primary model: no se pudo leer el ownership en ${file} (${errorCode}). Corrige o borra ese archivo antes de reintentar.`;
+  }
+  if (raw === null || parsePrimaryModelOwnership(raw) !== null) return null;
+  return `Primary model: ownership inválido en ${file}. Corrige o borra ese archivo antes de reintentar.`;
+}
+
+function primaryModelConfigKey(configDir: string): string {
+  const resolved = path.resolve(configDir);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+export function loadPrimaryModelOwnership(file: string, runtime: RuntimeId, configDir: string): ReadonlySet<string> {
+  const key = primaryModelConfigKey(configDir);
+  return new Set(Object.keys(loadPrimaryModelOwnershipState(file).owned[runtime]?.[key] ?? {}));
+}
+
+export function savePrimaryModelOwnership(
+  file: string,
+  runtime: RuntimeId,
+  configDir: string,
+  field: string,
+  owned: boolean,
+): void {
+  const error = primaryModelOwnershipError(file);
+  if (error !== null) throw new Error(error);
+  const state = loadPrimaryModelOwnershipState(file);
+  const key = primaryModelConfigKey(configDir);
+  if (owned) {
+    ((state.owned[runtime] ??= {})[key] ??= {})[field] = true;
+  } else {
+    delete state.owned[runtime]?.[key]?.[field];
+    if (state.owned[runtime]?.[key] !== undefined && Object.keys(state.owned[runtime]![key]!).length === 0) {
+      delete state.owned[runtime]![key];
+    }
+    if (state.owned[runtime] !== undefined && Object.keys(state.owned[runtime]).length === 0) delete state.owned[runtime];
+  }
+  writeText(file, JSON.stringify(state) + "\n");
 }
 
 /** Estados inválidos bloquean mutaciones para no reconciliarlos destructivamente. */

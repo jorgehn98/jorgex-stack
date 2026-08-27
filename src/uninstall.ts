@@ -14,8 +14,11 @@ import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
   playwrightCliPreferenceFile,
+  primaryModelOwnershipError,
+  primaryModelOwnershipFile,
   saveDevtoolsMcpOwnership,
   savePlaywrightCliPreference,
+  savePrimaryModelOwnership,
 } from "./lib/tool-preferences.js";
 
 export interface UninstallOptions {
@@ -47,10 +50,12 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
 export async function runUninstall(opts: UninstallOptions): Promise<number> {
   p.intro(`jorgex-stack ${opts.dryRun ? "uninstall (dry-run)" : "uninstall"}`);
   const useBrowserPreferences = opts.targetDir === undefined;
-  const preferenceErrors = useBrowserPreferences ? browserPreferenceErrors() : [];
+  const preferenceErrors = useBrowserPreferences
+    ? [...browserPreferenceErrors(), primaryModelOwnershipError()].filter((error): error is string => error !== null)
+    : [];
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
-    p.outro("Uninstall cancelado: corrige las preferencias de navegador antes de reintentar.");
+    p.outro("Uninstall cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
   const stackDir = stackRoot();
@@ -165,6 +170,14 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
         for (const change of action.mcpOwnership ?? []) {
           saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), id, change.server, change.owned);
         }
+        for (const change of action.primaryModelOwnership ?? []) {
+          savePrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir, change.field, change.owned);
+        }
+      }
+    }
+    if (usingRealConfig) {
+      for (const field of ctx.ownedPrimaryModelFields ?? []) {
+        savePrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir, field, false);
       }
     }
     if (usingRealConfig) removeRuntimeManifest(id);

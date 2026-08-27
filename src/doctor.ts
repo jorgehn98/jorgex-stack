@@ -15,7 +15,7 @@ import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliStatus,
 } from "./lib/external-tools.js";
-import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
+import { browserPreferenceErrors, loadPlaywrightCliPreference, primaryModelOwnershipError } from "./lib/tool-preferences.js";
 
 export function engramVersion(bin: string): string | null {
   const out = runDetectedBin(bin, ["--version"], 5_000);
@@ -93,6 +93,11 @@ export async function runDoctor(): Promise<number> {
   if (!fs.existsSync(modelMapFile())) p.log.info("model-map: aún no creado (se crea en el primer install o con 'models').");
 
   const preferenceErrors = browserPreferenceErrors();
+  const primaryOwnershipError = primaryModelOwnershipError();
+  if (primaryOwnershipError !== null) {
+    p.log.error(primaryOwnershipError);
+    problems++;
+  }
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
     problems += preferenceErrors.length;

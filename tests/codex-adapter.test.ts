@@ -1,8 +1,46 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
-import { readTomlSection, upsertTomlSection } from "../src/lib/filemerge.js";
-import type { CanonicalAgent } from "../src/lib/canonical.js";
+import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
+import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
+import { stackRoot } from "../src/lib/paths.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function codexContext(configDir: string) {
+  return {
+    stackDir: stackRoot(),
+    configDir,
+    engramBin: null,
+    models: DEFAULT_MODEL_MAP.codex,
+    warnings: [],
+  };
+}
+
+function tempConfigDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-codex-sol-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function writeActionContent(actions: ReturnType<typeof codexAdapter.planMainConfig>, target: string): string {
+  const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
+  if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
+  return action.content;
+}
+
+function primaryOwnership(actions: ReturnType<typeof codexAdapter.planMainConfig>, target: string): ReadonlySet<string> {
+  const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
+  if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
+  return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
+}
 
 const MODELS: RuntimeModelMap = {
   strong: { model: "default", variant: "high" },
@@ -100,6 +138,67 @@ describe("codexAdapter.renderCommand", () => {
   });
 });
 
+describe("codexAdapter primary Sol defaults", () => {
+  it("añade los defaults ausentes, es idempotente y limpia solo valores canónicos", () => {
+    const freshDir = tempConfigDir();
+    const freshFile = path.join(freshDir, "config.toml");
+    const fresh = writeActionContent(
+      codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), codexContext(freshDir)),
+      freshFile,
+    );
+    expect(fresh).toContain('model = "gpt-5.6-sol"');
+    expect(fresh).toContain("model_context_window = 872000");
+
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const ctx = codexContext(configDir);
+    const mcp = loadCanonicalMcp(stackRoot());
+
+    fs.writeFileSync(configFile, '# user config\ninstructions = \'\'\'\nmodel = "inside multiline"\n\'\'\'\ncustom_flag = true\n\n[foreign]\nvalue = "kept"\n');
+    const installActions = codexAdapter.planMainConfig(mcp, ctx);
+    const installed = writeActionContent(installActions, configFile);
+
+    expect(installed).toContain('model = "gpt-5.6-sol"');
+    expect(installed).toContain("model_context_window = 872000");
+    expect(installed).not.toContain("auto_compact");
+    expect(installed).toContain("custom_flag = true");
+    expect(installed).toContain('model = "inside multiline"');
+    expect(installed).toContain('[foreign]\nvalue = "kept"');
+
+    fs.writeFileSync(configFile, installed);
+    expect(writeActionContent(codexAdapter.planMainConfig(mcp, ctx), configFile)).toBe(installed);
+
+    const customized = installed.replace('model = "gpt-5.6-sol"', 'model = "user/model"');
+    fs.writeFileSync(configFile, customized);
+    const unmerged = writeActionContent(
+      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+        ...ctx,
+        ownedPrimaryModelFields: primaryOwnership(installActions, configFile),
+      }),
+      configFile,
+    );
+
+    expect(unmerged).toContain('model = "user/model"');
+    expect(unmerged).not.toContain("model_context_window = 872000");
+    expect(unmerged).toContain("custom_flag = true");
+    expect(unmerged).toContain('model = "inside multiline"');
+    expect(unmerged).toContain('[foreign]\nvalue = "kept"');
+
+    const quotedDir = tempConfigDir();
+    const quotedFile = path.join(quotedDir, "config.toml");
+    const quoted = '"model" = "gpt-5.6-sol"\n\'model_context_window\' = 872000\n';
+    fs.writeFileSync(quotedFile, quoted);
+    const quotedActions = codexAdapter.planMainConfig(mcp, codexContext(quotedDir));
+    expect(writeActionContent(quotedActions, quotedFile).match(/gpt-5\.6-sol/g)).toHaveLength(1);
+    expect(primaryOwnership(quotedActions, quotedFile)).toEqual(new Set());
+    fs.writeFileSync(quotedFile, writeActionContent(quotedActions, quotedFile));
+    expect(writeActionContent(
+      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), codexContext(quotedDir)),
+      quotedFile,
+    )).toContain(quoted.trim());
+  });
+});
+
 describe("upsertTomlSection", () => {
   const BASE = `# config del usuario\nmodel = "gpt-5.4"\n\n[mcp_servers.propio]\ncommand = "mi-server"\n\n[otra_seccion]\nkey = "value"\n`;
 
@@ -143,5 +242,43 @@ describe("upsertTomlSection", () => {
   it("readTomlSection extrae el cuerpo de una sección", () => {
     expect(readTomlSection(BASE, "mcp_servers.propio")).toContain('command = "mi-server"');
     expect(readTomlSection(BASE, "mcp_servers.inexistente")).toBeNull();
+  });
+
+  it("preserva CRLF byte a byte cuando la clave root ya existe", () => {
+    const content = '"model" = "user/model"\r\n\r\n[foreign]\r\nvalue = true\r\n';
+    expect(upsertTomlRootKeyIfMissing(content, "model", '"gpt-5.6-sol"')).toBe(content);
+    expect(removeTomlRootKeyIfExact(content, "model", '"gpt-5.6-sol"')).toBe(content);
+
+    const withoutModel = '[foreign]\r\nvalue = true\r\n';
+    expect(upsertTomlRootKeyIfMissing(withoutModel, "model", '"gpt-5.6-sol"'))
+      .toBe('model = "gpt-5.6-sol"\r\n[foreign]\r\nvalue = true\r\n');
+  });
+
+  it("preserva CRLF al retirar una sección MCP desde el adapter", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const mcp = loadCanonicalMcp(stackRoot());
+    const required = Object.entries(mcp.servers).find(([, server]) => !server.optional)?.[0];
+    expect(required).toBeDefined();
+    const content = [
+      'model = "gpt-5.6-sol"',
+      "model_context_window = 872000",
+      "",
+      `[mcp_servers.${required}]`,
+      'command = "managed"',
+      "",
+      "[foreign]",
+      'value = "kept"',
+      "",
+    ].join("\r\n");
+    fs.writeFileSync(configFile, content);
+
+    const unmerged = writeActionContent(codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+      ...codexContext(configDir),
+      ownedPrimaryModelFields: new Set(["model", "model_context_window"]),
+    }), configFile);
+
+    expect(unmerged).toContain('[foreign]\r\nvalue = "kept"\r\n');
+    expect(unmerged).not.toMatch(/(?<!\r)\n/);
   });
 });

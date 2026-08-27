@@ -1,19 +1,32 @@
 import path from "node:path";
 import fs from "node:fs";
-import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
+import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertTomlSection } from "../lib/filemerge.js";
+import {
+  readTomlSection,
+  hasTomlRootKey,
+  removeMarkdownSection,
+  removeTomlRootKeyIfExact,
+  removeTomlSection,
+  upsertTomlRootKeyIfMissing,
+  upsertTomlSection,
+} from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
+
+const PRIMARY_MODEL = '"gpt-5.6-sol"';
+const PRIMARY_CONTEXT_WINDOW = "872000";
+const PRIMARY_MODEL_FIELD = "model";
+const PRIMARY_CONTEXT_FIELD = "model_context_window";
 
 /**
  * Bloques largos como literal multiline (''' no interpreta escapes: los
@@ -176,6 +189,7 @@ export const codexAdapter: Adapter = {
     const contentSource = original === null || original.trim() === "" ? null : original;
     let content = contentSource;
     const mcpOwnership: McpOwnershipChange[] = [];
+    const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
 
     // Permisos por defecto: solo en config fresca o vacía. Una config
     // existente no se auto-expande jamás.
@@ -223,6 +237,19 @@ export const codexAdapter: Adapter = {
         '"**/*.key" = "deny"',
         "",
       ].join("\n");
+    }
+
+    if (!hasTomlRootKey(content, PRIMARY_MODEL_FIELD)) {
+      content = upsertTomlRootKeyIfMissing(content, PRIMARY_MODEL_FIELD, PRIMARY_MODEL);
+      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) !== true) {
+        primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: true });
+      }
+    }
+    if (!hasTomlRootKey(content, PRIMARY_CONTEXT_FIELD)) {
+      content = upsertTomlRootKeyIfMissing(content, PRIMARY_CONTEXT_FIELD, PRIMARY_CONTEXT_WINDOW);
+      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_CONTEXT_FIELD) !== true) {
+        primaryModelOwnership.push({ field: PRIMARY_CONTEXT_FIELD, owned: true });
+      }
     }
 
     for (const [name, server] of Object.entries(canonical.servers)) {
@@ -290,7 +317,13 @@ export const codexAdapter: Adapter = {
 
     if (content === null) return [];
     if (!content.endsWith("\n")) content += "\n";
-    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }];
+    return [{
+      kind: "write",
+      target: file,
+      content,
+      ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
+      ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
+    }];
   },
 
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
@@ -309,6 +342,15 @@ export const codexAdapter: Adapter = {
     const config = readTextIfExists(configFile);
     if (config !== null) {
       let content = config;
+      const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
+      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) === true) {
+        content = removeTomlRootKeyIfExact(content, PRIMARY_MODEL_FIELD, PRIMARY_MODEL);
+        primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: false });
+      }
+      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_CONTEXT_FIELD) === true) {
+        content = removeTomlRootKeyIfExact(content, PRIMARY_CONTEXT_FIELD, PRIMARY_CONTEXT_WINDOW);
+        primaryModelOwnership.push({ field: PRIMARY_CONTEXT_FIELD, owned: false });
+      }
       const mcpOwnership: McpOwnershipChange[] = [];
       for (const [name, server] of Object.entries(mcp.servers)) {
         const section = `mcp_servers.${name}`;
@@ -323,7 +365,13 @@ export const codexAdapter: Adapter = {
           mcpOwnership.push({ server: name, owned: false });
         }
       }
-      actions.push({ kind: "write", target: configFile, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) });
+      actions.push({
+        kind: "write",
+        target: configFile,
+        content,
+        ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
+        ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
+      });
     }
 
     const hooksFile = path.join(ctx.configDir, "hooks.json");

@@ -1,32 +1,75 @@
 # Modelos por runtime
 
-JorgeX Stack separa el modelo del orquestador de los modelos de sus subagentes:
+JorgeX Stack separa dos políticas:
 
-- El **orquestador** usa el modelo y el nivel de razonamiento elegidos por el usuario en la sesión.
-- Los **subagentes** reciben su selección desde `~/.jorgex-stack/model-map.json`.
-- `jorgex-stack models` permite cambiar la selección por tier o individualmente por subagente.
+- El **agente principal** de Codex, OpenCode y Pi usa `gpt-5.6-sol` mediante la autenticación de la suscripción.
+- Los **subagentes** conservan su selección independiente por tier o por agente en `~/.jorgex-stack/model-map.json`.
 
-## Política por runtime
+`jorgex-stack models` solo cambia la segunda política. Los wrappers primary siguen sin fijar modelo ni esfuerzo: heredan el default global del runtime.
 
-### OpenCode: sin defaults de proveedor
-
-El stack no presupone OpenAI, MiniMax ni ningún otro proveedor para OpenCode. Una instalación puede tener Grok, GLM, modelos locales o cualquier combinación compatible; un default universal podría ser inválido.
-
-En la primera instalación interactiva de OpenCode:
-
-1. El stack ejecuta `opencode models`.
-2. Muestra los identificadores `provider/model` descubiertos.
-3. Exige elegir modelos **por tier** (`strong`, `standard`, `cheap`) o **por subagente**.
-4. Permite seleccionar una variant cuando el modelo la soporte.
-5. Guarda la elección y genera los agentes.
-
-El agente primary `orchestrator` queda fuera del model-map: omite `model` y `variant`, y hereda la selección activa de OpenCode.
-
-`opencode models` confirma que OpenCode conoce un identificador, no que el backend conectado vaya a aceptarlo. Por eso la elección pertenece al usuario y el stack no convierte su propio catálogo en un default.
+## Defaults del agente principal
 
 ### Codex
 
-Codex conserva defaults curados para sus subagentes:
+En `~/.codex/config.toml`, Stack añade solo cuando faltan:
+
+```toml
+model = "gpt-5.6-sol"
+model_context_window = 872000
+```
+
+Son 872K tokens de ventana configurada para entrada; con el umbral nativo de compactación del 95 %, Codex compacta alrededor de 828,4K. Stack no fija `model_auto_compact_token_limit`: así conserva el comportamiento nativo y futuras correcciones del runtime.
+
+La cifra no equivale al contexto de la API. Este flujo usa la autenticación de Codex/ChatGPT y reserva por separado la salida máxima del modelo.
+
+### OpenCode
+
+En `~/.config/opencode/opencode.json`, Stack solicita al proveedor OAuth de OpenAI:
+
+```json
+{
+  "model": "openai/gpt-5.6-sol",
+  "provider": {
+    "openai": {
+      "models": {
+        "gpt-5.6-sol": {
+          "limit": {
+            "context": 872000,
+            "input": 744000,
+            "output": 128000
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Estos límites son metadatos locales solicitados. No demuestran por sí solos que el backend OAuth acepte toda la ventana; hay que confirmarlo con una prueba real de contexto largo. No se anuncia aquí el límite de 1,05M de la API.
+
+### Pi
+
+`jorgex-pi@0.3.0` —no los adapters de Stack— gestiona:
+
+- `defaultProvider = "openai-codex"`;
+- `defaultModel = "gpt-5.6-sol"`;
+- `providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow = 872000`.
+
+Pi registra ownership por campo y su cleanup solo retira valores canónicos que siga poseyendo. Igual que en OpenCode, 872K es metadata local solicitada hasta confirmar la aceptación del backend OAuth.
+
+## Sustituir el default principal
+
+Edita el campo global del runtime después de instalarlo:
+
+- Codex: `model` o `model_context_window` en `config.toml`.
+- OpenCode: `model` o los límites del modelo en `opencode.json`.
+- Pi: los defaults en `settings.json` o el override en `models.json`.
+
+`sync` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
+
+## Subagentes
+
+### Codex
 
 | Tier | Modelo | Reasoning effort |
 |---|---|---|
@@ -34,56 +77,18 @@ Codex conserva defaults curados para sus subagentes:
 | `standard` | `gpt-5.6-terra` | `xhigh` |
 | `cheap` | `gpt-5.6-luna` | `medium` |
 
-El tier canónico de cada agente vive en `stack/agents/*.md`. El model-map traduce ese tier al modelo elegido para cada runtime.
+### OpenCode
+
+Los subagentes siguen siendo provider-agnostic. La primera instalación interactiva ejecuta `opencode models` y exige elegir por tier o por agente. `install --yes`, `sync` y procesos sin TTY fallan si todavía no existe esa selección; nunca inventan modelos de subagente.
 
 ### Claude Code
 
-Claude Code conserva sus alias autoactualizables (`fable`, `sonnet`, `haiku`) y también permite cambiarlos con el picker.
+Claude Code conserva sus alias `fable`, `sonnet` y `haiku`, modificables mediante el picker.
 
-## Orquestador de Codex
-
-El stack no escribe `model` ni `model_reasoning_effort` en el orquestador.
-
-### Aplicación de Codex
-
-1. Elige el modelo y el nivel de razonamiento en el compositor de la aplicación.
-2. Activa el orquestador con `/orchestrator` o `$orchestrator`.
-
-La skill cambia las instrucciones de la tarea; no cambia el modelo activo. Los subagentes sí usan las asignaciones del model-map.
-
-### Codex CLI
-
-El perfil instala las instrucciones del orquestador, pero no fija modelo ni esfuerzo:
-
-```powershell
-codex --profile orchestrator -m gpt-5.6-sol -c model_reasoning_effort='"xhigh"'
-```
-
-También puedes seleccionar modelo con `/model` y activar la skill dentro de esa sesión.
-
-## Cambiar modelos
+## Cambiar subagentes
 
 ```powershell
 pnpm dlx jorgex-stack models --agents opencode
 ```
 
-El picker de OpenCode ofrece:
-
-- **Por tier**: una elección para `strong`, otra para `standard` y otra para `cheap`.
-- **Por subagente**: elección independiente de modelo y variant para cada subagente.
-
-Al terminar ofrece aplicar la selección mediante `sync`.
-
-## Flujos no interactivos
-
-`install --yes`, `sync` y procesos sin TTY nunca inventan proveedores OpenCode. Si el model-map todavía no contiene una selección OpenCode, terminan con error e indican que se ejecute primero el picker interactivo.
-
-Para automatización, prepara `~/.jorgex-stack/model-map.json` antes del install. Después, los comandos no interactivos reutilizan esa selección.
-
-## Model-maps existentes
-
-Actualizar el paquete no sobrescribe selecciones existentes. `install` y `sync` reutilizan el mapa actual sin abrir el picker; solo una primera instalación interactiva de OpenCode exige configurarlo.
-
-Los overrides por nombre de agente tienen precedencia sobre su tier.
-
-OpenCode documenta la selección `provider/model` y los proveedores configurados en [Models](https://opencode.ai/docs/models/), y la herencia de modelo de los agentes en [Agents](https://opencode.ai/docs/agents/).
+Los overrides por nombre de agente tienen precedencia sobre su tier. Actualizar Stack no sobrescribe model-maps existentes.

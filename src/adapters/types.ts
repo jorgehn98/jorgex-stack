@@ -27,9 +27,20 @@ export interface McpOwnershipChange {
   owned: boolean;
 }
 
+export interface PrimaryModelOwnershipChange {
+  field: string;
+  owned: boolean;
+}
+
 /** Acción de instalación planificada. El pipeline la compara con el disco antes de aplicar. */
 export type FileAction =
-  | { kind: "write"; target: string; content: string; mcpOwnership?: McpOwnershipChange[] }
+  | {
+      kind: "write";
+      target: string;
+      content: string;
+      mcpOwnership?: McpOwnershipChange[];
+      primaryModelOwnership?: PrimaryModelOwnershipChange[];
+    }
   | { kind: "copy"; target: string; source: string };
 
 export interface InstallContext {
@@ -52,6 +63,8 @@ export interface InstallContext {
   playwrightCliEnabled?: boolean;
   /** MCPs opcionales que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
+  /** Campos del primary model que una escritura previa del stack creó. */
+  ownedPrimaryModelFields?: ReadonlySet<string>;
   /**
    * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,
    * plugin engram.ts, entrada en configs). Es el default — desregistrar

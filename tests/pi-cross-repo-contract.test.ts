@@ -86,6 +86,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       pi?: { testedVersions?: unknown };
       capabilities?: unknown;
     };
+    const assets = readTarJson(tarball, "package/contract/assets.v1.json") as { managedExternalWrites?: unknown };
     expect(manifest).toMatchObject({
       name: PI_RUNTIME_CANDIDATE.package.name,
       version: PI_RUNTIME_CANDIDATE.package.version,
@@ -93,7 +94,80 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expect(contract.package).toEqual(PI_RUNTIME_CANDIDATE.package);
     expect(contract.pi?.testedVersions).toEqual(PI_RUNTIME_CANDIDATE.pi.testedVersions);
     expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
     expectArchiveInventory(tarball);
+  }, 60_000);
+
+  it("executes Sol sync and ownership-safe cleanup from the exact published tarball", () => {
+    const tarball = path.resolve(registryTarball!);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-registry-lifecycle-"));
+    temporaryPaths.push(root);
+    execFileSync("tar", ["-xzf", tarball, "-C", root], { stdio: ["ignore", "ignore", "pipe"] });
+
+    const agentDir = path.join(root, "agent");
+    const settingsFile = path.join(agentDir, "settings.json");
+    const modelsFile = path.join(agentDir, "models.json");
+    const receiptFile = path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json");
+    const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
+    const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(settingsFile, JSON.stringify({ foreign: { keep: true } }));
+    fs.writeFileSync(modelsFile, JSON.stringify({ foreign: { keep: true } }));
+    fs.writeFileSync(engramBin, "placeholder");
+
+    const environment = {
+      PI_CODING_AGENT_DIR: agentDir,
+      ENGRAM_BIN: engramBin,
+      HOME: root,
+      XDG_CONFIG_HOME: path.join(root, "config"),
+      XDG_CACHE_HOME: path.join(root, "cache"),
+      TEMP: path.join(root, "tmp"),
+      TMP: path.join(root, "tmp"),
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+    };
+    fs.mkdirSync(environment.TEMP, { recursive: true });
+    const run = (command: "sync" | "cleanup") => spawnSync(process.execPath, [runner, command, "--json"], {
+      encoding: "utf8",
+      env: environment,
+    });
+
+    const sync = run("sync");
+    expect(sync).toMatchObject({ status: 0, stderr: "" });
+    expect(readJson(settingsFile)).toMatchObject({
+      foreign: { keep: true },
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.6-sol",
+    });
+    expect(readJson(modelsFile)).toMatchObject({
+      foreign: { keep: true },
+      providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 872000 } } } },
+    });
+    expect(fs.existsSync(receiptFile)).toBe(true);
+
+    const canonicalCleanup = run("cleanup");
+    expect(canonicalCleanup).toMatchObject({ status: 0, stderr: "" });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
+    expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
+    expect(fs.existsSync(receiptFile)).toBe(false);
+
+    const resync = run("sync");
+    expect(resync).toMatchObject({ status: 0, stderr: "" });
+
+    const settings = readJson(settingsFile) as Record<string, unknown>;
+    settings.defaultModel = "user-model";
+    fs.writeFileSync(settingsFile, JSON.stringify(settings));
+    const models = readJson(modelsFile) as Record<string, any>;
+    models.providers["openai-codex"].modelOverrides["gpt-5.6-sol"].contextWindow = 900000;
+    fs.writeFileSync(modelsFile, JSON.stringify(models));
+
+    const cleanup = run("cleanup");
+    expect(cleanup).toMatchObject({ status: 0, stderr: "" });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model" });
+    expect(readJson(modelsFile)).toEqual({
+      foreign: { keep: true },
+      providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
+    });
   }, 60_000);
 });
 
@@ -159,7 +233,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     const workspace = path.join(target, "workspace");
     const agentDir = path.join(target, "pi-agent");
     const settingsPath = path.join(agentDir, "settings.json");
-    const downloadedTarball = path.join(target, "downloads", "jorgex-pi-0.2.2.tgz");
+    const downloadedTarball = path.join(target, "downloads", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`);
     const packageRunner = path.join(agentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
     const packageRoot = path.dirname(path.dirname(packageRunner));
     const engramBin = path.join(target, "bin", process.platform === "win32" ? "engram.exe" : "engram");
