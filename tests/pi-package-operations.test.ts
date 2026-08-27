@@ -201,6 +201,17 @@ describe("Pi package-managed operations", () => {
     ]);
   });
 
+  it("treats a receiptless retry after removal as idempotent without touching cleanup state", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+
+    expect(runPiPackageManagedOperation(input("uninstall", {
+      receiptJson: null,
+      settingsJson: JSON.stringify({ packages: [] }),
+    }), deps(events, {}))).toEqual({ kind: "uninstalled" });
+    expect(events).toEqual(["verify-absent"]);
+  });
+
   it("keeps same-candidate update idempotent and blocks cross-version mutation until a verified tgz rollback path exists", async () => {
     const { runPiPackageManagedOperation } = await operations();
     const sameEvents: string[] = [];

@@ -589,7 +589,12 @@ function validateOwnedOperationState(
   const matchingSources = sources.filter(({ source }) => isJorgeXPiSource(source));
   if (matchingSources.length > 1) return { kind: "blocked", reason: "duplicate-package" };
   if (input.receiptJson === null) {
-    return { kind: "blocked", reason: matchingSources.length === 1 ? "manual-existing" : "source-divergent" };
+    const matchingSource = matchingSources[0];
+    return matchingSource !== undefined
+      && matchingSource.source === input.registry.candidate.package.source
+      && isExactManagedPackage(matchingSource.entry, matchingSource.source)
+      ? { kind: "blocked", reason: "manual-existing" }
+      : { kind: "blocked", reason: "source-divergent" };
   }
   const parsedReceipt = parseReceiptShape(input.receiptJson);
   if (parsedReceipt === "upgrade-required") return receiptUpgradeRequired();
@@ -665,6 +670,15 @@ export function runPiPackageManagedOperation(
       reason: "engram-missing",
       remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
     };
+  }
+  if (input.operation === "uninstall" && input.receiptJson === null) {
+    const sources = parsePackageSources(input.detected.settingsJson);
+    if (sources === null) return { kind: "blocked", reason: "settings-corrupt" };
+    if (!sources.some(({ source }) => isJorgeXPiSource(source))) {
+      return deps.isPackageAbsent()
+        ? { kind: "uninstalled" }
+        : { kind: "blocked", reason: "absence-unverified" };
+    }
   }
   const owned = validateOwnedOperationState(input);
   if (operationWasBlocked(owned)) return owned;
