@@ -18,7 +18,7 @@ type PiRuntimeModule = {
     pi: {
       id: "pi";
       kind: "package-managed";
-      source: "npm:jorgex-pi@0.3.0";
+      source: typeof PI_RUNTIME_CANDIDATE.package.source;
       tarball: { sha256: string; sha512: string; bytes: number };
       pi: { testedVersions: readonly string[] };
     };
@@ -76,7 +76,7 @@ function harness(events: string[]) {
   return {
     readSettings(path: string) {
       events.push(`settings:${path}`);
-      return JSON.stringify({ packages: [{ source: "npm:jorgex-pi@0.3.0", skills: [] }] });
+      return JSON.stringify({ packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }] });
     },
     readReceipt(path: string) {
       events.push(`receipt:${path}`);
@@ -94,7 +94,7 @@ function harness(events: string[]) {
       const operation = (input as { operation: Operation }).operation;
       if (operation === "sync") return { kind: "synced" };
       if (operation === "models") return { kind: "models" };
-      return { kind: "installed", receipt: { state: "installed", version: "0.3.0" } };
+      return { kind: "installed", receipt: { state: "installed", version: PI_RUNTIME_CANDIDATE.package.version } };
     },
     operate(input: unknown): RuntimeResult {
       events.push(`operate:${JSON.stringify(input)}`);
@@ -109,13 +109,9 @@ describe("Pi runtime wiring", () => {
     expect(PI_RUNTIME_REGISTRY.pi).toMatchObject({
       id: "pi",
       kind: "package-managed",
-      source: "npm:jorgex-pi@0.3.0",
-      tarball: {
-        bytes: 89_104_529,
-        sha256: "13919b9aaed407e4e08c774cd24a496d3befbd91de6aafd37725fd7263963a3b",
-        sha512: "85c9adf038e8a0e826009fc8cffe23006688c184a43602d81e29807516073e604b0e451bd8f6883f1d352fb858d232acd593d72af67689b8ef5f7467f17fc096",
-      },
-      pi: { testedVersions: ["0.84.2"] },
+      source: PI_RUNTIME_CANDIDATE.package.source,
+      tarball: PI_RUNTIME_CANDIDATE.tarball,
+      pi: PI_RUNTIME_CANDIDATE.pi,
     });
     expect(parseCliArgs(["install", "--agents", "pi,codex"]).flags.agents).toEqual(["pi", "codex"]);
     expect(ADAPTERS).not.toHaveProperty("pi");
@@ -146,7 +142,7 @@ describe("Pi runtime wiring", () => {
     expect(trace).toContain(`receipt:${receiptPath}`);
     expect(trace).toContain(`atomic:${receiptPath}:installed`);
     expect(trace).toContain(JSON.stringify(runner).slice(1, -1));
-    expect(trace).toContain("npm:jorgex-pi@0.3.0");
+    expect(trace).toContain(PI_RUNTIME_CANDIDATE.package.source);
     expect(trace).toContain("--no-approve");
     expect(trace).toContain(JSON.stringify({ PI_CODING_AGENT_DIR: codingAgentDir }).slice(1, -1));
     expect(trace).toContain(JSON.stringify({ ENGRAM_BIN: environment.ENGRAM_BIN }).slice(1, -1));
@@ -180,7 +176,7 @@ describe("Pi runtime wiring", () => {
       engramBin: environment.ENGRAM_BIN,
     }, updateDeps)).toMatchObject({ kind: "updated" });
     expect(updateEvents).toContain(`atomic:${receiptPath}:installed`);
-    expect(updateEvents.join("\n")).not.toContain('"version":"0.3.0"}');
+    expect(updateEvents.join("\n")).not.toContain(JSON.stringify({ version: PI_RUNTIME_CANDIDATE.package.version }).slice(1));
   });
 
   it.each([
