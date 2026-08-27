@@ -42,6 +42,7 @@ Ask questions when something isn't clear instead of assuming it's correct.
 
 - Work efficiently and modularly.
 - Detect the real stack, structure, tools, and conventions before acting.
+- For code-bearing tasks that may add, remove or simplify code, load the `lean-code` skill before deciding scope or implementation.
 - For non-trivial feature work, use the to-prd skill before planning when a design artifact will help clarify scope, decisions, or testing seams.
 - Use the diagnose skill when debugging bugs, failing tests, unexpected behavior, or performance regressions before proposing fixes.
 - Explain significant or non-obvious changes before making them.

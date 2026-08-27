@@ -867,6 +867,44 @@ describe("lean integration: prompt wiring", () => {
     expect(content).toContain("whether the smallest obvious change is enough");
   });
 
+  it("lean-code conserva los cuatro guardarraíles aprobados y el routing global", () => {
+    const leanCode = readStackFile("skills/lean-code/SKILL.md");
+
+    expectFragments(leanCode, [
+      "understand the touched flow and caller impact",
+      "symptom from root cause",
+      "shared seam",
+      "line-count-only code golf",
+      "clarity/correctness",
+    ]);
+    expectFragmentsInOrder(leanCode, [
+      "ceiling",
+      "revisit trigger",
+      "exactly one existing tracking home",
+      "current task",
+      "an issue",
+      "project's backlog",
+      "Do not create a parallel",
+      "ledger",
+    ]);
+
+    const globalPrompt = readStackFile("system-prompt/AGENTS.md");
+    expectFragmentsInOrder(globalPrompt, [
+      "For code-bearing tasks",
+      "load the `lean-code` skill",
+      "before deciding scope or implementation.",
+    ]);
+    expect(globalPrompt.match(/\blean-code\b/g)).toHaveLength(1);
+    for (const leanBodyMarker of [
+      "# Lean Code",
+      "Work top-down. Stop as soon as a step solves it:",
+      "Before adding a new helper, wrapper, abstraction, or dependency, run the ladder again.",
+      "Rank findings as:",
+    ]) {
+      expect(globalPrompt).not.toContain(leanBodyMarker);
+    }
+  });
+
   it("type-design-analyzer limita el audit scope a contratos/tipos", () => {
     const content = fs.readFileSync(path.join(stackRoot(), "agents", "type-design-analyzer.md"), "utf8");
 
