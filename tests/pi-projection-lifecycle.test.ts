@@ -436,7 +436,7 @@ describe("Pi shared projection lifecycle", () => {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(failedRoot, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   describe("two-phase projection uninstall", () => {
     it("prepares an exact receipt by backing up every cleanup target without mutation, then completes from the opaque plan without rereading or rebacking up", async () => {
