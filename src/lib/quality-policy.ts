@@ -1,4 +1,4 @@
-const QUALITY_PROFILES = ["routine", "elevated", "high", "release"] as const;
+export const QUALITY_PROFILES = ["routine", "elevated", "high", "release"] as const;
 
 export type QualityProfile = (typeof QUALITY_PROFILES)[number];
 export type QualityControlRequirement = "required" | "optional";

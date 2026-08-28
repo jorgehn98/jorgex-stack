@@ -10,7 +10,7 @@ import {
   QUALITY_RECEIPT_VERSION,
   serializeQualityReceipt,
   validateQualityReceipt,
-  type QualityReceiptProvenance,
+  type QualityReceiptInput,
   type QualityReceiptResult,
 } from "../src/lib/quality-receipt.js";
 
@@ -45,20 +45,21 @@ type JsonSchemaObject = {
   items?: JsonSchemaObject;
 };
 
-type ReceiptInput = Parameters<typeof createQualityReceipt>[0];
-type Receipt = ReturnType<typeof createQualityReceipt>;
+type ReceiptInput = QualityReceiptInput;
+type LocalReceiptInput = Extract<ReceiptInput, { authority: "local" }>;
 type EnforcedReceiptInput = Extract<ReceiptInput, { authority: "enforced" }>;
+type ReceiptInputOverrides =
+  | (Partial<Omit<LocalReceiptInput, "authority">> & { authority?: "local" })
+  | (Partial<Omit<EnforcedReceiptInput, "authority" | "provenance">> &
+      Pick<EnforcedReceiptInput, "authority" | "provenance">);
+type Receipt = ReturnType<typeof createQualityReceipt>;
 type PassReceiptResult = Extract<QualityReceiptResult, { status: "pass" }>;
-type EnforcedHasRequiredProvenance = [EnforcedReceiptInput] extends [never]
-  ? false
-  : EnforcedReceiptInput extends { provenance: QualityReceiptProvenance } ? true : false;
 type PassHasRequiredEvidence = [PassReceiptResult] extends [never]
   ? false
   : PassReceiptResult extends { evidence: string } ? true : false;
 
-function input(overrides: Partial<ReceiptInput> = {}): ReceiptInput {
-  return {
-    authority: "local",
+function input(overrides: ReceiptInputOverrides = {}): ReceiptInput {
+  const base: Omit<LocalReceiptInput, "authority" | "provenance"> = {
     commands: [{
       commandId: "typecheck",
       executable: "pnpm",
@@ -81,11 +82,15 @@ function input(overrides: Partial<ReceiptInput> = {}): ReceiptInput {
       status: "pass",
       evidence: "exit=0",
     }],
-    ...overrides,
   };
+
+  if (overrides.authority === "enforced") {
+    return { ...base, ...overrides, authority: "enforced" };
+  }
+  return { ...base, ...overrides, authority: "local" };
 }
 
-function receipt(overrides: Partial<ReceiptInput> = {}): Receipt {
+function receipt(overrides: ReceiptInputOverrides = {}): Receipt {
   return createQualityReceipt(input(overrides));
 }
 
@@ -283,6 +288,43 @@ describe("jorgex.quality.receipt contract", () => {
     expect(command.excerpt).toContain("[REDACTED]");
   });
 
+  it("redacta exactamente los valores de claves JSON sensibles comunes", () => {
+    const rawOutput = [
+      "{",
+      '  "token": "JSON_TOKEN_SENTINEL",',
+      '  "password": "JSON_PASSWORD_SENTINEL",',
+      '  "apiKey": "JSON_API_KEY_SENTINEL",',
+      '  "access_token": "JSON_ACCESS_TOKEN_SENTINEL"',
+      "}",
+    ].join("\n");
+    const expectedExcerpt = [
+      "{",
+      '  "token": "[REDACTED]",',
+      '  "password": "[REDACTED]",',
+      '  "apiKey": "[REDACTED]",',
+      '  "access_token": "[REDACTED]"',
+      "}",
+    ].join("\n");
+    const value = receipt({
+      commands: [{
+        commandId: "common-json-secrets-check",
+        executable: "pnpm",
+        argv: ["run", "check"],
+        exitCode: 0,
+        durationMs: 456,
+        output: { stdout: rawOutput, stderr: "" },
+      }],
+    });
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    expect(command.excerpt).toBe(expectedExcerpt);
+    expect(serializeQualityReceipt(value)).not.toContain("JSON_TOKEN_SENTINEL");
+    expect(serializeQualityReceipt(value)).not.toContain("JSON_PASSWORD_SENTINEL");
+    expect(serializeQualityReceipt(value)).not.toContain("JSON_API_KEY_SENTINEL");
+    expect(serializeQualityReceipt(value)).not.toContain("JSON_ACCESS_TOKEN_SENTINEL");
+  });
+
   it.each(["argv", "excerpt"] as const)("rechaza al validar y serializar un receipt mutado con secreto en %s", (field) => {
     const value = receipt();
     const command = value.commands[0];
@@ -386,8 +428,24 @@ describe("jorgex.quality.receipt contract", () => {
     >();
   });
 
+  it("no permite un QualityReceiptInput enforced sin provenance", () => {
+    // @ts-expect-error Enforced quality receipts require provenance.
+    const invalidEnforced: QualityReceiptInput = {
+      authority: "enforced",
+      commands: [],
+      identity: {
+        baseSha: BASE_SHA,
+        headSha: HEAD_SHA,
+        policyDigest: POLICY_DIGEST,
+        profile: "routine",
+      },
+      results: [],
+    };
+
+    void invalidEnforced;
+  });
+
   it("modela autoridad y resultados como uniones discriminadas", () => {
-    expectTypeOf<EnforcedHasRequiredProvenance>().toEqualTypeOf<true>();
     expectTypeOf<PassHasRequiredEvidence>().toEqualTypeOf<true>();
   });
 

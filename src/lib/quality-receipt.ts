@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { QualityProfile } from "./quality-policy.js";
+import { QUALITY_PROFILES, type QualityProfile } from "./quality-policy.js";
 
 export const QUALITY_RECEIPT_NAMESPACE = "jorgex.quality.receipt" as const;
 export const QUALITY_RECEIPT_VERSION = 1 as const;
@@ -9,7 +9,6 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const MAX_EXCERPT_LENGTH = 512;
 const REDACTED = "[REDACTED]";
 
-const QUALITY_PROFILES = ["routine", "elevated", "high", "release"] as const;
 const QUALITY_RESULT_STATUSES = [
   "pass",
   "fail",
@@ -21,7 +20,7 @@ const SENSITIVE_ASSIGNMENT_PATTERN = /^(?:-{0,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(
 const SENSITIVE_OUTPUT_PATTERN = /((?:authorization\s*:\s*bearer\s+|bearer\s+))[^\s,;]+/gi;
 const SENSITIVE_KEY_VALUE_PATTERN = /((?:^|(?<=[^\w.-]))(?:-{0,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi;
 const SENSITIVE_SEPARATE_FLAG_PATTERN = /((?:^|(?<=[^\w.-]))-{1,2}(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))[ \t]+)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi;
-const SENSITIVE_STRUCTURED_VALUE_PATTERN = /((?:"|')?(?:_?auth(?:orization)?(?:[-_.]?token)?|aws[-_]?secret[-_]?access[-_]?key|private[-_]?key)(?:"|')?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi;
+const SENSITIVE_STRUCTURED_VALUE_PATTERN = /((?:"|')?(?:token|password|api[-_]?key|access[-_]?token|_?auth(?:orization)?(?:[-_.]?token)?|aws[-_]?secret[-_]?access[-_]?key|private[-_]?key)(?:"|')?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi;
 
 export type QualityReceiptAuthority = "local" | "enforced";
 export type QualityReceiptResultStatus = "pass" | "fail" | "incomplete" | "not-applicable";
@@ -77,11 +76,7 @@ export interface QualityReceiptEnforcedInput extends QualityReceiptInputBase {
 
 export type QualityReceiptInput =
   | QualityReceiptLocalInput
-  | QualityReceiptEnforcedInput
-  | (QualityReceiptInputBase & {
-    authority: QualityReceiptAuthority;
-    provenance?: QualityReceiptProvenance;
-  });
+  | QualityReceiptEnforcedInput;
 
 export interface QualityReceiptPassResult {
   controlId: string;
