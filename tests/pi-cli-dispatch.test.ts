@@ -124,6 +124,13 @@ async function runCli(args: string[], homeDir: string): Promise<typeof process.e
   return observedExitCode;
 }
 
+function writeCorruptBrowserPreference(homeDir: string): string {
+  const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+  fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+  fs.writeFileSync(preferenceFile, "{not-json\n");
+  return preferenceFile;
+}
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -253,5 +260,69 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(mocks.runInstall.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("does not run the Pi lifecycle when Pi-only Playwright setup fails", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-failure-"));
+    mocks.runInstall.mockResolvedValueOnce(1);
+
+    const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home);
+
+    expect(exitCode).toBe(1);
+    expect(mocks.runInstall).toHaveBeenCalledOnce();
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Pi-only target-dir Playwright install out of the global installer and real browser preferences", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
+    const targetDir = path.join(home, "target");
+    writeCorruptBrowserPreference(home);
+
+    const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--target-dir", targetDir, "--yes"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      targetDir,
+    }));
+  });
+
+  it.each(["install", "sync", "update", "uninstall"] as const)(
+    "blocks Pi-only real %s before the managed lifecycle when browser preferences are corrupt",
+    async (command) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-corrupt-preference-${command}-`));
+      writeCorruptBrowserPreference(home);
+
+      const exitCode = await runCli([command, "--agents", "pi", "--yes"], home);
+
+      expect({
+        exitCode,
+        managedLifecycleCalls: mocks.runManagedPiSystem.mock.calls.length,
+      }).toEqual({
+        exitCode: 1,
+        managedLifecycleCalls: 0,
+      });
+    },
+  );
+
+  it("reports corrupt real browser preferences through Pi-only doctor", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-corrupt-preference-"));
+    const preferenceFile = writeCorruptBrowserPreference(home);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["doctor", "--agents", "pi"], home);
+
+      expect({
+        exitCode,
+        reportsPreference: error.mock.calls.some(([message]) => String(message).includes(preferenceFile)),
+      }).toEqual({
+        exitCode: 1,
+        reportsPreference: true,
+      });
+    } finally {
+      error.mockRestore();
+    }
   });
 });

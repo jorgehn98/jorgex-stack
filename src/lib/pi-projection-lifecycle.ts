@@ -9,7 +9,7 @@ import { createBackup } from "./backup.js";
 import { removeMarkdownSection } from "./filemerge.js";
 import { copyFile, readTextIfExists, writeText } from "./fsx.js";
 import { readManifest } from "./manifest.js";
-import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "./model-map.js";
+import { DEFAULT_MODEL_MAP } from "./model-map.js";
 import { dataDir, HOME, stackRoot } from "./paths.js";
 import { filterProjectedPiPackage } from "./pi-package-lifecycle.js";
 
@@ -35,7 +35,6 @@ export interface PiProjectionLifecycleInput {
   stackDir: string;
   engramBin: string;
   playwrightCliEnabled: boolean;
-  models: RuntimeModelMap;
 }
 
 export interface PiProjectionManifest {
@@ -60,7 +59,10 @@ export type PiProjectionLifecycleResult =
   | { kind: "healthy" }
   | { kind: "drift"; paths: string[] }
   | { kind: "uninstalled" }
-  | { kind: "blocked"; reason: "projection-cleanup-failed" };
+  | {
+    kind: "blocked";
+    reason: "projection-backup-failed" | "projection-cleanup-failed" | "source-divergent";
+  };
 
 type ProjectionScope = PiProjectionScope & {
   settingsFile: string;
@@ -102,7 +104,7 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
     stackDir: input.stackDir,
     configDir: scope.codingAgentDir,
     engramBin: input.engramBin,
-    models: input.models,
+    models: DEFAULT_MODEL_MAP.codex,
     warnings: [],
     playwrightCliEnabled: input.playwrightCliEnabled,
   };
@@ -160,63 +162,12 @@ function receiptContent(receipt: PiProjectionReceipt): string {
   return `${JSON.stringify(receipt, null, 2)}\n`;
 }
 
-function filterPackageSettings(settingsJson: string, source: string): string | null {
-  const direct = filterProjectedPiPackage(settingsJson, source);
-  if (direct !== null) return direct;
-
-  try {
-    const settings: unknown = JSON.parse(settingsJson);
-    if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return null;
-    const packages = Reflect.get(settings, "packages");
-    if (!Array.isArray(packages)) return null;
-    const normalized = packages.map((entry) => (
-      entry !== null
-      && typeof entry === "object"
-      && !Array.isArray(entry)
-      && Reflect.get(entry, "source") === source
-    ) ? source : entry);
-    return filterProjectedPiPackage(JSON.stringify({ ...settings, packages: normalized }), source);
-  } catch {
-    return null;
-  }
+function hasExactKeys(record: object, expected: readonly string[]): boolean {
+  const keys = Object.keys(record);
+  return keys.length === expected.length && expected.every((key) => keys.includes(key));
 }
 
-function reconcilePackageFilter(
-  input: PiProjectionLifecycleInput,
-  scope: ProjectionScope,
-  deps: PiProjectionLifecycleDeps,
-): boolean {
-  const current = deps.readText(scope.settingsFile);
-  if (current === null) return false;
-  const filtered = filterPackageSettings(current, input.packageSource);
-  if (filtered === null || filtered === current) return false;
-  deps.writeText(scope.settingsFile, filtered);
-  return true;
-}
-
-function packageFilterHasDrift(
-  input: PiProjectionLifecycleInput,
-  scope: ProjectionScope,
-  deps: PiProjectionLifecycleDeps,
-): boolean {
-  const current = deps.readText(scope.settingsFile);
-  if (current === null) return true;
-  const filtered = filterPackageSettings(current, input.packageSource);
-  return filtered === null || filtered !== current;
-}
-
-function packageFilterWillChange(
-  input: PiProjectionLifecycleInput,
-  scope: ProjectionScope,
-  deps: PiProjectionLifecycleDeps,
-): boolean {
-  const current = deps.readText(scope.settingsFile);
-  if (current === null) return false;
-  const filtered = filterPackageSettings(current, input.packageSource);
-  return filtered !== null && filtered !== current;
-}
-
-function parseReceipt(raw: string | null, scope: ProjectionScope): PiProjectionReceipt | null {
+function parseReceipt(raw: string | null, expected: PiProjectionReceipt): PiProjectionReceipt | null {
   if (raw === null) return null;
   try {
     const receipt: unknown = JSON.parse(raw);
@@ -224,30 +175,41 @@ function parseReceipt(raw: string | null, scope: ProjectionScope): PiProjectionR
     const version = Reflect.get(receipt, "schemaVersion");
     const receivedScope = Reflect.get(receipt, "scope");
     const owned = Reflect.get(receipt, "owned");
-    if (version !== 1 || receivedScope === null || typeof receivedScope !== "object" || Array.isArray(receivedScope)) {
+    if (version !== expected.schemaVersion
+      || !hasExactKeys(receipt, ["schemaVersion", "scope", "owned"])
+      || receivedScope === null
+      || typeof receivedScope !== "object"
+      || Array.isArray(receivedScope)
+      || !hasExactKeys(receivedScope, ["kind", "home", "codingAgentDir", "receiptFile"])) {
       return null;
     }
-    if (Reflect.get(receivedScope, "kind") !== scope.kind
-      || Reflect.get(receivedScope, "home") !== scope.home
-      || Reflect.get(receivedScope, "codingAgentDir") !== scope.codingAgentDir
-      || Reflect.get(receivedScope, "receiptFile") !== scope.receiptFile
+    if (Reflect.get(receivedScope, "kind") !== expected.scope.kind
+      || Reflect.get(receivedScope, "home") !== expected.scope.home
+      || Reflect.get(receivedScope, "codingAgentDir") !== expected.scope.codingAgentDir
+      || Reflect.get(receivedScope, "receiptFile") !== expected.scope.receiptFile
       || !Array.isArray(owned)
-      || !owned.every((file): file is string => typeof file === "string" && isManagedPath(scope, file))) {
+      || owned.length !== expected.owned.length) {
       return null;
     }
-    return {
-      schemaVersion: 1,
-      scope: {
-        kind: scope.kind,
-        home: scope.home,
-        codingAgentDir: scope.codingAgentDir,
-        receiptFile: scope.receiptFile,
-      },
-      owned: owned.map((file) => path.resolve(file)),
-    };
+    const expectedOwned = new Set(expected.owned);
+    if (expectedOwned.size !== expected.owned.length
+      || new Set(owned).size !== owned.length
+      || !owned.every((file): file is string => typeof file === "string" && expectedOwned.has(file))) {
+      return null;
+    }
+    return expected;
   } catch {
     return null;
   }
+}
+
+function expectedProjectionReceipt(
+  input: PiProjectionLifecycleInput,
+  scope: ProjectionScope,
+): PiProjectionReceipt {
+  const plan = projectionPlan(input, scope);
+  assertPlanContained(plan, scope);
+  return receiptFor(plan, scope);
 }
 
 function realPiProjectionScope(): PiProjectionScope {
@@ -259,10 +221,32 @@ function realPiProjectionScope(): PiProjectionScope {
   };
 }
 
-/** Lee sin mutar las rutas gestionadas por la proyección real de Pi. */
-export function readRealPiProjectionOwned(): string[] {
+export type RealPiProjectionOwnership =
+  | { kind: "absent" }
+  | { kind: "valid"; owned: string[] }
+  | { kind: "corrupt"; file: string };
+
+/** Lee sin mutar el receipt de la proyección real de Pi. */
+export function readRealPiProjectionOwned(): RealPiProjectionOwnership {
   const scope = projectionScope(realPiProjectionScope());
-  return parseReceipt(readTextIfExists(scope.receiptFile), scope)?.owned ?? [];
+  const expected = expectedProjectionReceipt({
+    operation: "doctor",
+    scope,
+    packageSource: "",
+    stackDir: stackRoot(),
+    engramBin: "",
+    playwrightCliEnabled: false,
+  }, scope);
+  const receiptContent = readTextIfExists(scope.receiptFile);
+  if (receiptContent === null) {
+    return fs.existsSync(scope.receiptFile)
+      ? { kind: "corrupt", file: scope.receiptFile }
+      : { kind: "absent" };
+  }
+  const receipt = parseReceipt(receiptContent, expected);
+  return receipt === null
+    ? { kind: "corrupt", file: scope.receiptFile }
+    : { kind: "valid", owned: receipt.owned };
 }
 
 function manifestOwned(manifest: PiProjectionManifest): Set<string> {
@@ -289,9 +273,15 @@ function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths.map((file) => path.resolve(file)))];
 }
 
-function backupExisting(paths: string[], deps: PiProjectionLifecycleDeps): void {
+function backupExisting(paths: string[], deps: PiProjectionLifecycleDeps): boolean {
   const existing = uniquePaths(paths.filter((file) => deps.readText(file) !== null));
-  if (existing.length > 0) deps.backup(existing);
+  if (existing.length === 0) return true;
+  try {
+    deps.backup(existing);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function runPiProjectionLifecycle(
@@ -301,32 +291,39 @@ export function runPiProjectionLifecycle(
   const scope = projectionScope(input.scope);
 
   if (input.operation === "uninstall") {
+    const expectedReceipt = expectedProjectionReceipt(input, scope);
     const prompt = path.join(scope.codingAgentDir, "AGENTS.md");
     const existingPrompt = deps.readText(prompt);
     const promptWillChange = existingPrompt !== null
       && withoutManagedPromptSections(existingPrompt) !== existingPrompt;
     const receiptContent = deps.readText(scope.receiptFile);
-    const receipt = parseReceipt(receiptContent, scope);
+    const receipt = parseReceipt(receiptContent, expectedReceipt);
     if (receipt === null && receiptContent !== null) {
-      if (promptWillChange) backupExisting([prompt], deps);
-      removeManagedPromptSections(scope, deps);
       return { kind: "blocked", reason: "projection-cleanup-failed" };
     }
     if (receipt === null) {
-      if (promptWillChange) backupExisting([prompt], deps);
-      removeManagedPromptSections(scope, deps);
+      if (promptWillChange && !backupExisting([prompt], deps)) {
+        return { kind: "blocked", reason: "projection-backup-failed" };
+      }
+      try {
+        removeManagedPromptSections(scope, deps);
+      } catch {
+        return { kind: "blocked", reason: "projection-cleanup-failed" };
+      }
       return { kind: "uninstalled" };
     }
 
     const retained = manifestOwned(deps.readManifest());
     const removed = receipt.owned.filter((owned) => !retained.has(owned));
-    backupExisting([
+    if (!backupExisting([
       ...(promptWillChange ? [prompt] : []),
       ...receipt.owned,
       scope.receiptFile,
-    ], deps);
-    removeManagedPromptSections(scope, deps);
+    ], deps)) {
+      return { kind: "blocked", reason: "projection-backup-failed" };
+    }
     try {
+      removeManagedPromptSections(scope, deps);
       for (const owned of removed) deps.removeFile(owned);
       deps.removeFile(scope.receiptFile);
     } catch {
@@ -343,27 +340,40 @@ export function runPiProjectionLifecycle(
 
   if (input.operation === "doctor") {
     const paths = drifted.map((action) => path.resolve(action.target));
-    if (packageFilterHasDrift(input, scope, deps)) paths.push(scope.settingsFile);
+    const currentSettings = deps.readText(scope.settingsFile);
+    if (currentSettings === null
+      || filterProjectedPiPackage(currentSettings, input.packageSource) !== currentSettings) {
+      paths.push(scope.settingsFile);
+    }
     if (deps.readText(scope.receiptFile) !== expectedReceipt) paths.push(scope.receiptFile);
     const unique = uniquePaths(paths);
     return unique.length === 0 ? { kind: "healthy" } : { kind: "drift", paths: unique };
   }
 
-  const packageWillChange = packageFilterWillChange(input, scope, deps);
+  const currentSettings = deps.readText(scope.settingsFile);
+  const filteredSettings = currentSettings === null
+    ? null
+    : filterProjectedPiPackage(currentSettings, input.packageSource);
+  if (currentSettings !== null && filteredSettings === null) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  const packageWillChange = filteredSettings !== null && filteredSettings !== currentSettings;
   const receiptChanged = deps.readText(scope.receiptFile) !== expectedReceipt;
   if (drifted.length > 0 || packageWillChange || receiptChanged) {
-    backupExisting([
+    if (!backupExisting([
       ...drifted.map((action) => action.target),
       ...(packageWillChange ? [scope.settingsFile] : []),
       ...(receiptChanged ? [scope.receiptFile] : []),
-    ], deps);
+    ], deps)) {
+      return { kind: "blocked", reason: "projection-backup-failed" };
+    }
   }
   applyActions(drifted, deps);
-  const packageChanged = reconcilePackageFilter(input, scope, deps);
+  if (packageWillChange && filteredSettings !== null) deps.writeText(scope.settingsFile, filteredSettings);
   if (receiptChanged) deps.writeText(scope.receiptFile, expectedReceipt);
 
   if (input.operation === "install") return { kind: "installed", receipt };
-  return { kind: "synced", changed: drifted.length > 0 || packageChanged || receiptChanged };
+  return { kind: "synced", changed: drifted.length > 0 || packageWillChange || receiptChanged };
 }
 
 export interface PiProjectionLifecycleSystemInput {
@@ -395,7 +405,6 @@ export function runPiProjectionLifecycleSystem(
     stackDir: stackRoot(),
     engramBin: input.engramBin ?? "",
     playwrightCliEnabled: input.playwrightCliEnabled,
-    models: DEFAULT_MODEL_MAP.codex,
   }, {
     readText: readTextIfExists,
     backup: (paths) => createBackup(

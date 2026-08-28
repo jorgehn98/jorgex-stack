@@ -6,21 +6,24 @@ type ProjectionOperation = Exclude<Operation, "models" | "update">;
 type PackageResult =
   | { kind: "installed" }
   | { kind: "synced" }
-  | { kind: "models" }
+  | { kind: "models"; models: { mode: "inherit-session"; tiers: ["strong", "standard", "cheap"] } }
   | { kind: "healthy" }
   | { kind: "uninstalled" }
   | { kind: "updated" }
+  | { kind: "manual-existing" }
   | { kind: "blocked"; reason: string };
 
 type ProjectionResult =
   | { kind: "installed" }
   | { kind: "synced"; changed: boolean }
   | { kind: "healthy" }
-  | { kind: "drift"; paths: string[] }
+  | { kind: "drift"; paths: string[]; remedy: string }
   | { kind: "uninstalled" }
-  | { kind: "blocked"; reason: string };
+  | { kind: "blocked"; reason: "projection-backup-failed" | "projection-cleanup-failed" };
 
-type ManagedResult = PackageResult | { kind: "blocked"; reason: "projection-drift" };
+type ManagedResult = Exclude<PackageResult, { kind: "manual-existing" }>
+  | { kind: "blocked"; reason: "manual-existing" }
+  | { kind: "blocked"; reason: "projection-drift"; paths: string[]; remedy: string };
 
 type PiManagedRuntime = {
   runManagedPiOperation(
@@ -41,7 +44,7 @@ async function managedRuntime(): Promise<PiManagedRuntime> {
 const successfulResults: Record<Operation, PackageResult> = {
   install: { kind: "installed" },
   sync: { kind: "synced" },
-  models: { kind: "models" },
+  models: { kind: "models", models: { mode: "inherit-session", tiers: ["strong", "standard", "cheap"] } },
   doctor: { kind: "healthy" },
   uninstall: { kind: "uninstalled" },
   update: { kind: "updated" },
@@ -83,9 +86,11 @@ describe("Pi managed package and projection coordination", () => {
       : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
   });
 
-  it("blocks doctor on projection drift without invoking a writer", async () => {
+  it("blocks doctor on projection drift while preserving diagnostic paths and remedy", async () => {
     const { runManagedPiOperation } = await managedRuntime();
     const trace: string[] = [];
+    const paths = ["C:/target/home/.agents/skills/tdd/SKILL.md"];
+    const remedy = "Ejecuta sync para reparar la proyección de Pi.";
 
     const result = await runManagedPiOperation("doctor", {
       async runPackage(operation) {
@@ -94,12 +99,31 @@ describe("Pi managed package and projection coordination", () => {
       },
       async runProjection(operation) {
         trace.push(`projection:${operation}`);
-        return { kind: "drift", paths: ["C:/target/home/.agents/skills/tdd/SKILL.md"] };
+        return { kind: "drift", paths, remedy };
       },
     });
 
-    expect(result).toEqual({ kind: "blocked", reason: "projection-drift" });
+    expect(result).toEqual({ kind: "blocked", reason: "projection-drift", paths, remedy });
     expect(trace).toEqual(["package:doctor", "projection:doctor"]);
+  });
+
+  it.each(["install", "sync", "models", "doctor", "uninstall", "update"] as const)("blocks %s on a manually managed Pi package without projecting", async (operation) => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+
+    const result = await runManagedPiOperation(operation, {
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        return { kind: "manual-existing" };
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return projectionSuccess(next);
+      },
+    });
+
+    expect(result).toEqual({ kind: "blocked", reason: "manual-existing" });
+    expect(trace).toEqual([`package:${operation}`]);
   });
 
   it.each([
@@ -201,12 +225,11 @@ describe("Pi managed package and projection coordination", () => {
   });
 
   it.each([
-    ["install", "install"],
-    ["sync", "sync"],
-    ["update", "sync"],
-    ["doctor", "doctor"],
-    ["uninstall", "uninstall"],
-  ] as const)("propagates a blocked projection from %s", async (operation, projectionOperation) => {
+    ["install", "install", "projection-backup-failed"],
+    ["sync", "sync", "projection-backup-failed"],
+    ["update", "sync", "projection-backup-failed"],
+    ["uninstall", "uninstall", "projection-cleanup-failed"],
+  ] as const)("propagates a %s blocked projection from %s", async (operation, projectionOperation, reason) => {
     const { runManagedPiOperation } = await managedRuntime();
     const trace: string[] = [];
 
@@ -217,11 +240,11 @@ describe("Pi managed package and projection coordination", () => {
       },
       async runProjection(next) {
         trace.push(`projection:${next}`);
-        return { kind: "blocked", reason: "projection-cleanup-failed" };
+        return { kind: "blocked", reason };
       },
     });
 
-    expect(result).toEqual({ kind: "blocked", reason: "projection-cleanup-failed" });
+    expect(result).toEqual({ kind: "blocked", reason });
     expect(trace).toEqual([`package:${operation}`, `projection:${projectionOperation}`]);
   });
 });

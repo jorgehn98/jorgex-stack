@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { describe, expect, it, vi } from "vitest";
 import { stackRoot } from "../src/lib/paths.js";
 
 type ProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
@@ -33,7 +32,10 @@ type ProjectionResult =
   | { kind: "healthy" }
   | { kind: "drift"; paths: string[] }
   | { kind: "uninstalled" }
-  | { kind: "blocked"; reason: "projection-cleanup-failed" };
+  | {
+    kind: "blocked";
+    reason: "projection-backup-failed" | "projection-cleanup-failed" | "source-divergent";
+  };
 
 type ProjectionDeps = {
   readText(file: string): string | null;
@@ -53,10 +55,19 @@ type PiProjectionLifecycle = {
       stackDir: string;
       engramBin: string;
       playwrightCliEnabled: boolean;
-      models: typeof DEFAULT_MODEL_MAP.codex;
     },
     deps: ProjectionDeps,
   ): ProjectionResult;
+};
+
+type PiProjectionLifecycleSystem = {
+  runPiProjectionLifecycleSystem(input: {
+    operation: ProjectionOperation;
+    targetDir?: string;
+    packageSource: string;
+    engramBin: string | null;
+    playwrightCliEnabled: boolean;
+  }): ProjectionResult;
 };
 
 async function lifecycle(): Promise<PiProjectionLifecycle> {
@@ -89,6 +100,7 @@ function temporaryDeps(
   events: string[],
   manifest: StackManifest,
   failedDeletes = new Set<string>(),
+  backupError: Error | null = null,
 ): ProjectionDeps {
   const assertTarget = (file: string): void => {
     if (!isInside(root, file)) throw new Error(`test dependency escaped temporary root: ${file}`);
@@ -100,6 +112,7 @@ function temporaryDeps(
       return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
     },
     backup(paths) {
+      if (backupError !== null) throw backupError;
       const resolved = paths.map((file) => {
         assertTarget(file);
         return path.resolve(file);
@@ -156,7 +169,7 @@ function seedTarget(root: string, source: string, scope: ProjectionScope = {
     foreign: { preserved: true },
     packages: [
       { source: "npm:foreign-package@1.0.0", skills: ["foreign-skill"] },
-      { source, skills: ["agent-delegation", "tdd"] },
+      source,
     ],
   }, null, 2) + "\n");
 
@@ -204,7 +217,6 @@ describe("Pi shared projection lifecycle", () => {
         stackDir: stackRoot(),
         engramBin: path.join(root, "bin", "engram"),
         playwrightCliEnabled: false,
-        models: DEFAULT_MODEL_MAP.codex,
       };
       const strictReceiptBefore = fs.readFileSync(target.strictReceipt, "utf8");
 
@@ -383,7 +395,6 @@ describe("Pi shared projection lifecycle", () => {
         stackDir: stackRoot(),
         engramBin: path.join(root, "bin", "engram"),
         playwrightCliEnabled: false,
-        models: DEFAULT_MODEL_MAP.codex,
       }, deps);
 
       expect(result).toMatchObject({
@@ -405,6 +416,224 @@ describe("Pi shared projection lifecycle", () => {
         scope,
       });
     } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  describe("package projection ownership", () => {
+    it.each([
+      ["non-empty skills and prompts", {
+        source: "npm:jorgex-pi@0.4.0",
+        skills: ["user-skill"],
+        prompts: ["user-prompt"],
+      }],
+      ["an extra field", {
+        source: "npm:jorgex-pi@0.4.0",
+        skills: [],
+        prompts: [],
+        userOwned: true,
+      }],
+    ] as const)("rejects a source-divergent entry with %s without rewriting it", async (_case, divergentEntry) => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-source-divergent-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps)).toMatchObject({ kind: "installed" });
+        const divergentSettings = JSON.stringify({
+          foreign: { preserved: true },
+          packages: [
+            { source: "npm:foreign-package@1.0.0", skills: ["foreign-skill"] },
+            divergentEntry,
+          ],
+        }, null, 2) + "\n";
+        fs.writeFileSync(target.settings, divergentSettings);
+
+        events.length = 0;
+        expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({
+          kind: "blocked",
+          reason: "source-divergent",
+        });
+        expect(events).toEqual([]);
+        expect(fs.readFileSync(target.settings, "utf8")).toBe(divergentSettings);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("projection receipt validation", () => {
+    it.each(["an extra owned path", "a duplicate owned path"] as const)("rejects %s without mutating the prompt or owned files", async (tampering) => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-receipt-tamper-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps)).toMatchObject({ kind: "installed" });
+
+        const prompt = path.join(target.agentDir, "AGENTS.md");
+        const promptBefore = fs.readFileSync(prompt, "utf8");
+        const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
+        const firstOwned = receipt.owned[0];
+        if (firstOwned === undefined) throw new Error("fixture did not create projection-owned paths");
+        const foreignPath = path.join(target.home, ".foreign", "preserve-me.md");
+        fs.mkdirSync(path.dirname(foreignPath), { recursive: true });
+        fs.writeFileSync(foreignPath, "# Foreign file\n");
+        const tamperedReceipt = {
+          ...receipt,
+          owned: tampering === "an extra owned path"
+            ? [...receipt.owned, foreignPath]
+            : [...receipt.owned, firstOwned],
+        };
+        const receiptBefore = JSON.stringify(tamperedReceipt, null, 2) + "\n";
+        fs.writeFileSync(target.projectionReceipt, receiptBefore);
+
+        events.length = 0;
+        expect(runPiProjectionLifecycle({ ...input, operation: "uninstall" }, deps)).toEqual({
+          kind: "blocked",
+          reason: "projection-cleanup-failed",
+        });
+        expect(events).toEqual([]);
+        expect(fs.readFileSync(prompt, "utf8")).toBe(promptBefore);
+        expect(fs.readFileSync(target.projectionReceipt, "utf8")).toBe(receiptBefore);
+        expect(fs.readFileSync(foreignPath, "utf8")).toBe("# Foreign file\n");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("does not mutate the prompt when the projection receipt is corrupt", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-receipt-corrupt-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps)).toMatchObject({ kind: "installed" });
+
+        const prompt = path.join(target.agentDir, "AGENTS.md");
+        const promptBefore = fs.readFileSync(prompt, "utf8");
+        const receiptBefore = "{ this is not valid JSON\n";
+        fs.writeFileSync(target.projectionReceipt, receiptBefore);
+
+        events.length = 0;
+        expect(runPiProjectionLifecycle({ ...input, operation: "uninstall" }, deps)).toEqual({
+          kind: "blocked",
+          reason: "projection-cleanup-failed",
+        });
+        expect(events).toEqual([]);
+        expect(fs.readFileSync(prompt, "utf8")).toBe(promptBefore);
+        expect(fs.readFileSync(target.projectionReceipt, "utf8")).toBe(receiptBefore);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("reports a backup failure without mutating a drifted projection", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-backup-failure-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const input = {
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+      };
+      expect(runPiProjectionLifecycle({ ...input, operation: "install" }, temporaryDeps(root, events, { runtimes: {} }))).toMatchObject({ kind: "installed" });
+
+      const driftedPrompt = path.join(target.agentDir, "prompts", "lean-audit.md");
+      fs.writeFileSync(driftedPrompt, "# Drifted managed prompt\n");
+      events.length = 0;
+      const failingDeps = temporaryDeps(root, events, { runtimes: {} }, new Set(), new Error("simulated backup failure"));
+      let result: ProjectionResult | undefined;
+
+      expect(() => {
+        result = runPiProjectionLifecycle({ ...input, operation: "sync" }, failingDeps);
+      }).not.toThrow();
+      expect(result).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
+      expect(events).toEqual([]);
+      expect(fs.readFileSync(driftedPrompt, "utf8")).toBe("# Drifted managed prompt\n");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the system target-dir wrapper inside its four isolated roots", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-system-target-"));
+    const targetRoot = path.join(root, "target");
+    const fakeRealHome = path.join(root, "fake-real-home");
+    const source = "npm:jorgex-pi@0.4.0";
+    const sourceRoot = stackRoot();
+    const previousPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+    try {
+      delete process.env.PI_CODING_AGENT_DIR;
+      vi.resetModules();
+      vi.doMock("../src/lib/paths.js", async () => {
+        const actual = await vi.importActual<typeof import("../src/lib/paths.js")>("../src/lib/paths.js");
+        return {
+          ...actual,
+          HOME: fakeRealHome,
+          dataDir: () => path.join(fakeRealHome, ".jorgex-stack"),
+          stackRoot: () => sourceRoot,
+        };
+      });
+      const mod = await import("../src/lib/pi-projection-lifecycle.js") as Partial<PiProjectionLifecycleSystem>;
+      expect(mod.runPiProjectionLifecycleSystem).toBeTypeOf("function");
+      const runPiProjectionLifecycleSystem = mod.runPiProjectionLifecycleSystem!;
+      seedTarget(targetRoot, source);
+
+      expect(runPiProjectionLifecycleSystem({
+        operation: "install",
+        targetDir: targetRoot,
+        packageSource: source,
+        engramBin: null,
+        playwrightCliEnabled: false,
+      })).toMatchObject({ kind: "installed" });
+
+      expect(fs.existsSync(fakeRealHome)).toBe(false);
+      expect(fs.readdirSync(targetRoot).sort()).toEqual(["backups", "home", "pi-agent", "state"]);
+    } finally {
+      if (previousPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousPiCodingAgentDir;
+      vi.doUnmock("../src/lib/paths.js");
+      vi.resetModules();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

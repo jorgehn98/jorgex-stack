@@ -16,7 +16,7 @@ import {
   loadInstallModePreference,
   parseInstallModePreferenceFlags,
 } from "./lib/install-mode.js";
-import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference } from "./lib/tool-preferences.js";
+import { browserPreferenceErrors, devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference } from "./lib/tool-preferences.js";
 import {
   detectPiRuntime,
   hasManagedPiRuntime,
@@ -320,6 +320,13 @@ async function resolveRuntimes(flags: Flags, includeAvailablePi = false): Promis
 }
 
 async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, yes = false): Promise<number> {
+  if (targetDir === undefined && operation !== "models") {
+    const preferenceErrors = browserPreferenceErrors();
+    if (preferenceErrors.length > 0) {
+      for (const error of preferenceErrors) console.error(error);
+      return 1;
+    }
+  }
   const detected = detectPiRuntime();
   if (!detected.installed || detected.executable === null) {
     console.error("Pi no detectado. Instala el runtime Pi antes de gestionar jorgex-pi.");
@@ -359,6 +366,10 @@ async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, 
     engramBin,
   });
   if (result.kind === "blocked") {
+    if (result.reason === "projection-drift" && "paths" in result) {
+      console.error(`Pi: ${result.reason}: ${result.paths.join(", ")}. ${result.remedy}`);
+      return 1;
+    }
     console.error(`Pi: ${result.reason ?? "operación bloqueada"}${result.remedy ? `. ${result.remedy}` : ""}`);
     return 1;
   }

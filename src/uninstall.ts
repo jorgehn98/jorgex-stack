@@ -59,6 +59,12 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.outro("Uninstall cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
+  const piProjection = useBrowserPreferences ? readRealPiProjectionOwned() : { kind: "absent" as const };
+  if (piProjection.kind === "corrupt") {
+    p.log.error(`Pi: receipt de proyección inválido en ${piProjection.file}. Corrige o borra ese archivo antes de reintentar.`);
+    p.outro("Uninstall cancelado: corrige el receipt de proyección de Pi antes de reintentar.");
+    return 1;
+  }
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
@@ -93,7 +99,9 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   // OpenCode usa.
   const retained = new Set<string>();
   if (useBrowserPreferences) {
-    for (const target of readRealPiProjectionOwned()) retained.add(target);
+    if (piProjection.kind === "valid") {
+      for (const target of piProjection.owned) retained.add(target);
+    }
     for (const keep of Object.values(ADAPTERS)) {
       if (opts.runtimes.includes(keep.id)) continue;
       const detection = keep.detect();
