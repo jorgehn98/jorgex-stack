@@ -223,7 +223,7 @@ function appendOutput(
 
   captured[stream].push(chunk);
   captured.bytes += chunk.length;
-  return false;
+  return captured.bytes >= maxOutputBytes;
 }
 
 function decodeOutput(chunks: Buffer[], maxOutputBytes: number | undefined): string {
@@ -323,16 +323,34 @@ export async function runQualityCommand(
     let spawnError: NodeJS.ErrnoException | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let terminationDeadline: NodeJS.Timeout | undefined;
+    let child: ChildProcess | undefined;
+    let cleanedUp = false;
+    let onStdoutData = (_chunk: Buffer): void => {};
+    let onStderrData = (_chunk: Buffer): void => {};
+    let onError = (_error: NodeJS.ErrnoException): void => {};
+    let onClose = (_exitCode: number | null): void => {};
+
+    const cleanupChild = (): void => {
+      if (cleanedUp || child === undefined) return;
+      cleanedUp = true;
+      child.removeListener("close", onClose);
+      child.removeListener("error", onError);
+      child.stdout?.removeListener("data", onStdoutData);
+      child.stderr?.removeListener("data", onStderrData);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+    };
 
     const settle = (result: QualityCommandResult): void => {
       if (settled) return;
       settled = true;
       if (timeout !== undefined) clearTimeout(timeout);
       if (terminationDeadline !== undefined) clearTimeout(terminationDeadline);
+      cleanupChild();
       resolve(result);
     };
 
-    let child: ChildProcess;
     try {
       child = spawn(planned.command, planned.args, {
         detached: true,
@@ -356,6 +374,7 @@ export async function runQualityCommand(
       }
       if (settled) return;
       terminationDeadline = setTimeout(() => {
+        cleanupChild();
         settle(resultFromCaptured(input, "error", null, startedAt, captured, maxOutputBytes, "termination-timeout"));
       }, TERMINATION_GRACE_MS);
     };
@@ -366,17 +385,15 @@ export async function runQualityCommand(
       }
     };
 
-    child.stdout?.on("data", (chunk: Buffer) => onOutput("stdout", chunk));
-    child.stderr?.on("data", (chunk: Buffer) => onOutput("stderr", chunk));
-
-    child.once("error", (error: NodeJS.ErrnoException) => {
+    onStdoutData = (chunk: Buffer): void => onOutput("stdout", chunk);
+    onStderrData = (chunk: Buffer): void => onOutput("stderr", chunk);
+    onError = (error: NodeJS.ErrnoException): void => {
       spawnError = error;
       if (error.code === "ENOENT" || error.code === "EACCES") {
         settle(resultFromCaptured(input, "unavailable", null, startedAt, captured, maxOutputBytes, "spawn-error"));
       }
-    });
-
-    child.once("close", (exitCode) => {
+    };
+    onClose = (exitCode: number | null): void => {
       if (terminationReason === "timeout") {
         settle(resultFromCaptured(input, "timeout", exitCode, startedAt, captured, maxOutputBytes));
         return;
@@ -398,7 +415,13 @@ export async function runQualityCommand(
         captured,
         maxOutputBytes,
       ));
-    });
+    };
+
+    child.stdout?.on("data", onStdoutData);
+    child.stderr?.on("data", onStderrData);
+
+    child.once("error", onError);
+    child.once("close", onClose);
 
     timeout = setTimeout(() => stopFor("timeout"), timeoutMs);
   });

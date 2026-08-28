@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalJson,
@@ -12,8 +13,7 @@ import type { QualityControlDefinition } from "../src/lib/quality-policy.js";
 import {
   runQualityCommand,
   runQualityPlan,
-  type QualityCommandInput,
-  type QualityCommandResult,
+  type QualityCommandDeps,
   type QualityPlanCommandInput,
   type QualityPlanInput,
 } from "../src/lib/quality-runner.js";
@@ -178,6 +178,27 @@ describe("quality command runner", () => {
     expect(result.output.stderr).toBe("");
   });
 
+  it("stops a live command when output reaches exactly maxOutputBytes", async () => {
+    const output = "0123456789abcdef".repeat(4);
+    const maxOutputBytes = Buffer.byteLength(output, "utf8");
+
+    const result = await runQualityCommand({
+      commandId: "output-limit-exact",
+      executable: process.execPath,
+      argv: [
+        "-e",
+        `process.stdout.write(${JSON.stringify(output)}); setTimeout(() => {}, 60_000)`,
+      ],
+      maxOutputBytes,
+      timeoutMs: 500,
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toBe("output-limit");
+    expect(result.output.stdout).toBe(output);
+    expect(result.output.stderr).toBe("");
+  }, 2_000);
+
   it("reports an explicit missing executable as unavailable without PATH autodetection", async () => {
     const missingExecutable = path.join(tempDir(), "missing executable");
 
@@ -238,31 +259,23 @@ describe("quality command runner", () => {
   });
 
   it("settles with an observable error when termination never closes the child", async () => {
-    type TerminationDependencies = {
-      terminate: (child: unknown) => void;
-    };
-    type RunQualityCommandWithDependencies = (
-      input: QualityCommandInput,
-      dependencies: TerminationDependencies,
-    ) => Promise<QualityCommandResult>;
-
-    const runWithDependencies = runQualityCommand as unknown as RunQualityCommandWithDependencies;
+    let launchedChild: ChildProcess | undefined;
     let terminationAttempts = 0;
     const startedAt = Date.now();
+    const dependencies: QualityCommandDeps = {
+      terminate: (child) => {
+        launchedChild = child;
+        terminationAttempts += 1;
+      },
+    };
 
     try {
-      const result = await runWithDependencies({
+      const result = await runQualityCommand({
         commandId: "termination-deadline",
         executable: process.execPath,
-        argv: ["-e", "setTimeout(() => process.exit(0), 300)"],
+        argv: ["-e", "setTimeout(() => {}, 60_000)"],
         timeoutMs: 25,
-      }, {
-        // The child exits by itself later; this seam models a kill that neither
-        // terminates the process nor causes the runner's close event.
-        terminate: () => {
-          terminationAttempts += 1;
-        },
-      });
+      }, dependencies);
 
       expect({
         status: result.status,
@@ -274,9 +287,23 @@ describe("quality command runner", () => {
         terminationAttempts: 1,
       });
       expect(Date.now() - startedAt).toBeLessThan(1_000);
+
+      expect(launchedChild).toBeDefined();
+      if (launchedChild === undefined) throw new Error("termination dependency did not capture child");
+      expect(launchedChild.stdout?.destroyed).toBe(true);
+      expect(launchedChild.stderr?.destroyed).toBe(true);
+      expect(launchedChild.listenerCount("close")).toBe(0);
+      expect(launchedChild.listenerCount("error")).toBe(0);
+      expect(launchedChild.stdout?.listenerCount("data") ?? 0).toBe(0);
+      expect(launchedChild.stderr?.listenerCount("data") ?? 0).toBe(0);
     } finally {
-      // Let the deliberately delayed child exit before the test process moves on.
-      await wait(350);
+      const child = launchedChild;
+      if (child !== undefined && child.exitCode === null) {
+        await new Promise<void>((resolve) => {
+          child.once("close", () => resolve());
+          child.kill();
+        });
+      }
     }
   }, 2_000);
 });
