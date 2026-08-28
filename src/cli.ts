@@ -366,11 +366,8 @@ async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, 
     engramBin,
   });
   if (result.kind === "blocked") {
-    if (result.reason === "projection-drift" && "paths" in result) {
-      console.error(`Pi: ${result.reason}: ${result.paths.join(", ")}. ${result.remedy}`);
-      return 1;
-    }
-    console.error(`Pi: ${result.reason ?? "operación bloqueada"}${result.remedy ? `. ${result.remedy}` : ""}`);
+    const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
+    console.error(`Pi: ${result.reason ?? "operación bloqueada"}${paths}${result.remedy ? `. ${result.remedy}` : ""}`);
     return 1;
   }
   if (result.kind === "models" && result.models !== undefined) console.log(JSON.stringify(result.models));

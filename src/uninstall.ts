@@ -68,6 +68,11 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.outro("Uninstall cancelado: restaura o repara el receipt de proyección de Pi antes de reintentar.");
     return 1;
   }
+  if (piProjection.kind === "unreadable") {
+    p.log.error(`Pi: receipt de proyección ilegible en ${piProjection.file} (${piProjection.code}). Revisa los permisos o el estado de E/S antes de reintentar.`);
+    p.outro("Uninstall cancelado: revisa los permisos o el estado de E/S del receipt de proyección de Pi antes de reintentar.");
+    return 1;
+  }
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);

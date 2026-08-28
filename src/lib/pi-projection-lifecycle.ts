@@ -247,7 +247,8 @@ function realPiProjectionScope(): PiProjectionScope {
 export type RealPiProjectionOwnership =
   | { kind: "absent" }
   | { kind: "valid"; owned: string[] }
-  | { kind: "corrupt"; file: string };
+  | { kind: "corrupt"; file: string }
+  | { kind: "unreadable"; file: string; code: string };
 
 function readTextOnlyIfMissing(file: string): string | null {
   try {
@@ -272,8 +273,11 @@ export function readRealPiProjectionOwned(): RealPiProjectionOwnership {
   let receiptContent: string | null;
   try {
     receiptContent = readTextOnlyIfMissing(scope.receiptFile);
-  } catch {
-    return { kind: "corrupt", file: scope.receiptFile };
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    return { kind: "unreadable", file: scope.receiptFile, code };
   }
   if (receiptContent === null) {
     return { kind: "absent" };

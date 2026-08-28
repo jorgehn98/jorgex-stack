@@ -325,4 +325,26 @@ describe("CLI Pi package-runtime dispatch", () => {
       error.mockRestore();
     }
   });
+
+  it("reports every blocked Pi operation with its reason, paths, and remedy", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-blocked-paths-"));
+    const receipt = path.join(home, ".jorgex-stack", "pi-projection-receipt.json");
+    const remedy = "Revisa los permisos del receipt antes de reintentar.";
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.runManagedPiSystem.mockResolvedValueOnce({
+      kind: "blocked",
+      reason: "projection-receipt-unreadable",
+      paths: [receipt],
+      remedy,
+    });
+
+    try {
+      const exitCode = await runCli(["sync", "--agents", "pi", "--yes"], home);
+
+      expect(exitCode).toBe(1);
+      expect(error).toHaveBeenCalledWith(`Pi: projection-receipt-unreadable: ${receipt}. ${remedy}`);
+    } finally {
+      error.mockRestore();
+    }
+  });
 });
