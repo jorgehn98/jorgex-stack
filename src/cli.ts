@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import { pathToFileURL } from "node:url";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentConcurrency } from "./adapters/types.js";
-import { ADAPTERS, runInstall } from "./install.js";
+import { ADAPTERS, resolvePlaywrightToolPlan, runInstall } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
@@ -16,15 +16,15 @@ import {
   loadInstallModePreference,
   parseInstallModePreferenceFlags,
 } from "./lib/install-mode.js";
-import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference } from "./lib/tool-preferences.js";
+import { browserPreferenceErrors, devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference } from "./lib/tool-preferences.js";
 import {
   detectPiRuntime,
   hasManagedPiRuntime,
   resolvePiEngramBin,
   resolvePiEngramRequirement,
-  runPiRuntimeSystem,
   type PiRuntimeOperation,
 } from "./lib/pi-runtime.js";
+import { runManagedPiSystem } from "./lib/pi-managed-runtime.js";
 
 const VERSION = readPackageVersion();
 
@@ -320,6 +320,13 @@ async function resolveRuntimes(flags: Flags, includeAvailablePi = false): Promis
 }
 
 async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, yes = false): Promise<number> {
+  if (targetDir === undefined && operation !== "models") {
+    const preferenceErrors = browserPreferenceErrors();
+    if (preferenceErrors.length > 0) {
+      for (const error of preferenceErrors) console.error(error);
+      return 1;
+    }
+  }
   const detected = detectPiRuntime();
   if (!detected.installed || detected.executable === null) {
     console.error("Pi no detectado. Instala el runtime Pi antes de gestionar jorgex-pi.");
@@ -352,14 +359,15 @@ async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, 
     }
     engramBin = requirement.bin;
   }
-  const result = await runPiRuntimeSystem({
+  const result = await runManagedPiSystem({
     operation,
     targetDir,
     detected: { executable: detected.executable, version: detected.version },
     engramBin,
   });
   if (result.kind === "blocked") {
-    console.error(`Pi: ${result.reason ?? "operación bloqueada"}${result.remedy ? `. ${result.remedy}` : ""}`);
+    const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
+    console.error(`Pi: ${result.reason ?? "operación bloqueada"}${paths}${result.remedy ? `. ${result.remedy}` : ""}`);
     return 1;
   }
   if (result.kind === "models" && result.models !== undefined) console.log(JSON.stringify(result.models));
@@ -468,7 +476,26 @@ async function main(): Promise<void> {
           devtoolsMcpSelection,
         });
       }
-      if (runtimes.includes("pi")) {
+      let piCanRun = true;
+      if (command === "install" && fileRuntimes.length === 0 && runtimes.includes("pi")) {
+        const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
+        if (playwrightToolConsent === null) return;
+        if (resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0) {
+          if (flags.dryRun) {
+            p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
+          } else {
+            exitCode = await runInstall({
+              runtimes: [],
+              targetDir: flags.targetDir,
+              dryRun: false,
+              yes: flags.yes,
+              playwrightToolConsent,
+            });
+            piCanRun = exitCode === 0;
+          }
+        }
+      }
+      if (runtimes.includes("pi") && piCanRun) {
         if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
         else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes));
       }

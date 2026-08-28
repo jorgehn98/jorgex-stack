@@ -38,7 +38,10 @@ const mocks = vi.hoisted(() => {
     hasManagedPiRuntime: vi.fn().mockReturnValue(false),
     resolvePiEngramBin: vi.fn().mockReturnValue("/isolated/bin/engram"),
     resolvePiEngramRequirement: vi.fn(),
+    // Keep the package-only boundary stubbed; dispatch assertions exercise the
+    // managed lifecycle instead.
     runPiRuntimeSystem: vi.fn().mockReturnValue({ kind: "healthy" }),
+    runManagedPiSystem: vi.fn().mockResolvedValue({ kind: "healthy" }),
   };
 });
 
@@ -87,6 +90,10 @@ vi.mock("../src/lib/pi-runtime.js", () => ({
   runPiRuntimeSystem: mocks.runPiRuntimeSystem,
 }));
 
+vi.mock("../src/lib/pi-managed-runtime.js", () => ({
+  runManagedPiSystem: mocks.runManagedPiSystem,
+}));
+
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
 
@@ -117,6 +124,13 @@ async function runCli(args: string[], homeDir: string): Promise<typeof process.e
   return observedExitCode;
 }
 
+function writeCorruptBrowserPreference(homeDir: string): string {
+  const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+  fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+  fs.writeFileSync(preferenceFile, "{not-json\n");
+  return preferenceFile;
+}
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -130,7 +144,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(exitCode).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ runtimes: ["codex"] }));
     expect(mocks.runInstall).not.toHaveBeenCalledWith(expect.objectContaining({ runtimes: expect.arrayContaining(["pi"]) }));
-    expect(mocks.runPiRuntimeSystem).toHaveBeenCalledWith({
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
       operation: "install",
       targetDir: undefined,
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
@@ -148,7 +162,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(mocks.runInstall).not.toHaveBeenCalled();
     expect(mocks.runModelsPicker).not.toHaveBeenCalled();
     expect(mocks.resolvePiEngramBin).toHaveBeenCalledWith(targetDir);
-    expect(mocks.runPiRuntimeSystem).toHaveBeenCalledWith({
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
       operation: "models",
       targetDir,
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
@@ -164,7 +178,7 @@ describe("CLI Pi package-runtime dispatch", () => {
 
     expect(exitCode).toBe(0);
     expect(mocks.runDoctor).not.toHaveBeenCalled();
-    expect(mocks.runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor", targetDir }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor", targetDir }));
   });
 
   it("keeps Pi-only update and update --check out of the global Stack updater", async () => {
@@ -172,7 +186,7 @@ describe("CLI Pi package-runtime dispatch", () => {
 
     expect(await runCli(["update", "--agents", "pi", "--yes"], home)).toBe(0);
     expect(mocks.runInteractiveUpdate).not.toHaveBeenCalled();
-    expect(mocks.runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "update" }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "update" }));
 
     vi.clearAllMocks();
     mocks.detectPiRuntime.mockReturnValue({
@@ -184,11 +198,11 @@ describe("CLI Pi package-runtime dispatch", () => {
       codingAgentDir: "/isolated/pi-agent",
     });
     mocks.resolvePiEngramBin.mockReturnValue("/isolated/bin/engram");
-    mocks.runPiRuntimeSystem.mockResolvedValue({ kind: "healthy" });
+    mocks.runManagedPiSystem.mockResolvedValue({ kind: "healthy" });
 
     expect(await runCli(["update", "--check", "--agents", "pi"], home)).toBe(0);
     expect(mocks.runUpdateCheck).not.toHaveBeenCalled();
-    expect(mocks.runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
   });
 
   it("does not select Pi implicitly from the CLI alone when Stack owns no Pi package state", async () => {
@@ -197,7 +211,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(await runCli(["doctor"], home)).toBe(0);
     expect(mocks.runDoctor).toHaveBeenCalledOnce();
     expect(mocks.hasManagedPiRuntime).toHaveBeenCalledWith(undefined);
-    expect(mocks.runPiRuntimeSystem).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
   });
 
   it("includes a detected Pi runtime in the explicit first Stack install even before a receipt exists", async () => {
@@ -208,7 +222,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     try {
       expect(await runCli(["install", "--mode", "human", "--yes"], home)).toBe(0);
       expect(mocks.hasManagedPiRuntime).not.toHaveBeenCalled();
-      expect(mocks.runPiRuntimeSystem).toHaveBeenCalledWith({
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
         operation: "install",
         targetDir: undefined,
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
@@ -217,6 +231,120 @@ describe("CLI Pi package-runtime dispatch", () => {
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
+    }
+  });
+
+  it("installs the opted-in Playwright tool before the Pi-only managed install without using the real home", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-"));
+
+    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(0);
+
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      runtimes: [],
+      targetDir: undefined,
+      playwrightToolConsent: {
+        command: "install",
+        interactive: false,
+        yes: true,
+        targetDir: false,
+        explicitToolSelection: true,
+        confirmed: false,
+      },
+    }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
+      operation: "install",
+      targetDir: undefined,
+      detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    });
+    expect(mocks.runInstall.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not run the Pi lifecycle when Pi-only Playwright setup fails", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-failure-"));
+    mocks.runInstall.mockResolvedValueOnce(1);
+
+    const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home);
+
+    expect(exitCode).toBe(1);
+    expect(mocks.runInstall).toHaveBeenCalledOnce();
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Pi-only target-dir Playwright install out of the global installer and real browser preferences", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
+    const targetDir = path.join(home, "target");
+    writeCorruptBrowserPreference(home);
+
+    const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--target-dir", targetDir, "--yes"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      targetDir,
+    }));
+  });
+
+  it.each(["install", "sync", "update", "uninstall"] as const)(
+    "blocks Pi-only real %s before the managed lifecycle when browser preferences are corrupt",
+    async (command) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-corrupt-preference-${command}-`));
+      writeCorruptBrowserPreference(home);
+
+      const exitCode = await runCli([command, "--agents", "pi", "--yes"], home);
+
+      expect({
+        exitCode,
+        managedLifecycleCalls: mocks.runManagedPiSystem.mock.calls.length,
+      }).toEqual({
+        exitCode: 1,
+        managedLifecycleCalls: 0,
+      });
+    },
+  );
+
+  it("reports corrupt real browser preferences through Pi-only doctor", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-corrupt-preference-"));
+    const preferenceFile = writeCorruptBrowserPreference(home);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(["doctor", "--agents", "pi"], home);
+
+      expect({
+        exitCode,
+        reportsPreference: error.mock.calls.some(([message]) => String(message).includes(preferenceFile)),
+      }).toEqual({
+        exitCode: 1,
+        reportsPreference: true,
+      });
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("reports every blocked Pi operation with its reason, paths, and remedy", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-blocked-paths-"));
+    const receipt = path.join(home, ".jorgex-stack", "pi-projection-receipt.json");
+    const remedy = "Revisa los permisos del receipt antes de reintentar.";
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.runManagedPiSystem.mockResolvedValueOnce({
+      kind: "blocked",
+      reason: "projection-receipt-unreadable",
+      paths: [receipt],
+      remedy,
+    });
+
+    try {
+      const exitCode = await runCli(["sync", "--agents", "pi", "--yes"], home);
+
+      expect(exitCode).toBe(1);
+      expect(error).toHaveBeenCalledWith(`Pi: projection-receipt-unreadable: ${receipt}. ${remedy}`);
+    } finally {
+      error.mockRestore();
     }
   });
 });

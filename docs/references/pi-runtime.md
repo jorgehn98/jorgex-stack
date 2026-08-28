@@ -1,70 +1,74 @@
 # Pi runtime
 
-JorgeX Stack integrates Pi as a package-managed runtime. The supported candidate is fixed to the published package `jorgex-pi@0.3.0`; it is not translated through the file adapters, shared component manifest, or model map.
+JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto `jorgex-pi@0.4.0`, que contiene la snapshot canónica v2, y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
 
-## Install and integrity
+## Paquete e integridad
 
-For a real install, Stack downloads `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.3.0.tgz` into its managed cache. Before Pi sees the file, Stack verifies all three frozen properties: byte length, SHA-256 and SHA-512, then creates an automatic backup of Pi's `settings.json`. A mismatch blocks the operation before the backup or any Pi mutation. The verified local file is passed to Pi as an argv-only `npm:jorgex-pi@file:<absolute-tarball>` source with `--no-approve`; after installation, Stack normalizes the single settings entry to the exact package object `{ "source": "npm:jorgex-pi@0.3.0", "skills": [] }` and validates the package-local `doctor --json` runner. The empty `skills` list disables the package's bundled skill resources because the canonical shared skills are already discovered from `~/.agents/skills`.
+Para una instalación real, Stack descarga el tarball congelado de `jorgex-pi@0.4.0`, verifica tamaño, SHA-256 y SHA-512, crea un backup de `~/.pi/agent/settings.json` y solo después pasa el archivo local al gestor de paquetes de Pi. La entrada gestionada queda normalizada al objeto exacto:
 
-Pi invokes its supported package manager internally. This is the only npm-side exception: Stack development, builds, tests and its own global tools continue to use pnpm.
+```json
+{ "source": "npm:jorgex-pi@0.4.0", "skills": [], "prompts": [] }
+```
 
-The install journal is written before Pi runs and promoted to `installed` only after the runner reports healthy. The schema v1 receipt consumed by `jorgex-pi@0.3.0` records the complete candidate evidence, its scope, and the verified Engram executable in `engram.binary`:
+Los filtros `skills: []` y `prompts: []` se aplican únicamente después de que la proyección compartida haya terminado. Así el paquete no carga una segunda copia de los recursos comunes.
 
-- real scope: `~/.jorgex-stack/pi-receipt.json` and the resolved `PI_CODING_AGENT_DIR`;
-- test scope: `<target>/state/pi-receipt.json` and `<target>/pi-agent`.
+El gestor de paquetes interno de Pi es la única excepción npm del lifecycle: el Stack usa pnpm para desarrollo, dependencias y herramientas globales, y nunca lanza npm directamente. El paquete registra un receipt separado en `~/.jorgex-stack/pi-receipt.json` únicamente después de que su runner confirme una instalación sana. Ese receipt es el hand-off del binario Engram verificado; no transfiere su propiedad a Pi ni a Stack.
 
-A receipt copied between scopes, an unrecognised historical candidate, duplicate/source-divergent settings, corrupt JSON, or an interrupted `installing` journal blocks mutation. A matching package installed manually is reported as manual state and is not silently adopted.
+## Proyección compartida de Stack
 
-## Primary model owned by Pi
+La proyección se ejecuta después de la instalación del paquete y se registra en `~/.jorgex-stack/pi-projection-receipt.json`:
 
-`jorgex-pi@0.3.0` owns the Pi-native model projection; Stack only invokes the package lifecycle. On compatible missing fields, Pi requests:
+| Recurso | Destino | Propiedad |
+| --- | --- | --- |
+| System prompt | `~/.pi/agent/AGENTS.md` | Stack, en secciones marcadas `jorgex:system-prompt` y `jorgex:engram-protocol` |
+| Skills compartidas | `~/.agents/skills` | Stack; se conservan si también las usa otro runtime |
+| Prompt | `~/.pi/agent/prompts/lean-audit.md` | Stack |
 
-- provider `openai-codex` and model `gpt-5.6-sol` in `settings.json`;
-- `contextWindow: 872000` for that model in `models.json`.
+La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. Chrome DevTools MCP y Context7 siguen fuera de este scope.
 
-Pi records field, container and file ownership in `PI_CODING_AGENT_DIR/jorgex-pi/sol-lifecycle.v1.json`. Sync preserves foreign halves and user replacements. Cleanup removes only exact canonical values still recorded as package-owned, prunes only containers it created when they become empty, and leaves unrelated settings intact.
+## Lifecycle y seguridad
 
-The 872K figure is local requested metadata for the subscription/OAuth route. It does not prove that the backend accepts the full window and must not be conflated with the API's context limit. Validate it with a real long-context smoke test before relying on the entire range.
+- `install` verifica el tarball, hace backup y ejecuta primero el paquete y después la proyección.
+- `sync` repara drift del paquete o de la proyección sin duplicar recursos; dos pasadas consecutivas son idempotentes.
+- `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara.
+- `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime.
+- Si un receipt es ilegible, de otro scope, parcial o de historial desconocido, la operación destructiva falla cerrada; no se adopta ni se elimina estado manual silenciosamente.
+- El binario y la base de datos/memorias de Engram son siempre del usuario. La instalación interactiva puede ofrecer el canal nativo con confirmación explícita; la base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario.
+
+Las operaciones con `--target-dir` aíslan home, `PI_CODING_AGENT_DIR`, estado, backups y receipt dentro del target, sin consultar la configuración real de Pi o Engram.
 
 ## Engram
 
-Engram is required for the managed Pi package and remains outside Stack ownership. Existing binaries, `~/.engram`, databases and memories are preserved.
+Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. Una instalación interactiva puede ofrecer el canal nativo con confirmación explícita por defecto negativa; `--yes` y los procesos sin TTY fallan con un remedio si falta Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
 
-- Interactive install with no detected Engram offers the native update/install channels and defaults to No.
-- `--yes` or a non-TTY install does not download Engram implicitly; it fails with a remedy.
-- `--target-dir` checks only `<target>/bin/engram`. It never falls back to the host.
-- Sync, models, doctor, update and uninstall never install, update or delete Engram. Uninstall remains available if the binary has already disappeared.
+## Comandos
 
-## Commands
-
-| Stack command | Pi behavior |
+| Comando Stack | Comportamiento Pi |
 | --- | --- |
-| `install --agents pi` | Verify tgz, install local alias, normalize source, run doctor, commit receipt. |
-| `sync --agents pi` | Run the package JSON `sync`; it must report `changed:false`. |
-| `models --agents pi` | Return Pi's `inherit-session` routing policy; no Stack model-map entry is written. |
-| `doctor --agents pi` | Validate exact receipt/source/scope and the package-local JSON doctor. |
-| `update --check --agents pi` | Read-only Pi doctor; skips the global Stack updater. |
-| `update --agents pi` | Run only the managed Pi update lifecycle. The frozen same-version candidate is a no-op; a future cross-version candidate stays blocked until both replacement and rollback tgz files have verified evidence. |
-| `uninstall --agents pi` | Run package cleanup, back up Pi settings, remove the exact owned source, verify package absence, then delete the receipt. |
+| `install --agents pi` | Verifica el tarball, instala y normaliza el paquete, proyecta recursos y escribe ambos receipts. |
+| `sync --agents pi` | Reconcilia paquete y proyección; no instala recursos globales ni duplica skills/prompts. |
+| `models --agents pi` | Devuelve routing heredado de la sesión; no escribe model map de Stack. |
+| `doctor --agents pi` | Comprueba package/projection receipts, scope, entradas y drift. |
+| `update --check --agents pi` | Ejecuta la comprobación Pi en modo lectura; no entra en el updater global. |
+| `uninstall --agents pi` | Hace backup, limpia solo ownership verificable y conserva Engram y estado ajeno. |
 
-`--dry-run` does not run Pi or write a receipt.
+`--dry-run` no ejecuta Pi ni escribe receipts.
 
-## Target isolation
+## Modelo principal
 
-With `--target-dir <target>`, child processes receive target-contained values for `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, XDG config/data/cache, `TEMP`, `TMP`, `TMPDIR`, npm cache and `PI_CODING_AGENT_DIR`. `ENGRAM_BIN` must also point inside the target. The environment excludes provider tokens, npm credentials and `PI_PACKAGE_DIR`; lifecycle scripts and update notifications are disabled.
+`jorgex-pi@0.4.0` gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contextWindow: 872000` para ese modelo. Pi registra ownership por campo y elimina únicamente valores canónicos que aún posea. 872K es metadata local solicitada, no una garantía del límite de contexto aceptado por el backend OAuth.
 
 ## Troubleshooting
 
-| Result | Meaning / remedy |
+| Resultado | Remedio |
 | --- | --- |
-| `tarball-integrity` | Downloaded bytes do not match the frozen candidate. Do not bypass it; retry from a trusted network/registry. |
-| `unsupported-pi-version` | Install the Pi version supported by the frozen `jorgex-pi@0.3.0` candidate. |
-| `engram-required` / `engram-missing-target` | Install/configure Engram explicitly; target tests need `<target>/bin/engram`. |
-| `manual-existing` | The exact package exists without a Stack receipt. Preserve it or remove it explicitly before asking Stack to own a reinstall. |
-| `duplicate-package` / `source-divergent` | Keep one canonical `npm:jorgex-pi@0.3.0` entry with `skills: []` and retry. |
-| `receipt-corrupt` / `receipt-untrusted` / `partial-state` | Do not delete the journal blindly. Inspect settings and receipt scope/candidate, then repair or restore deliberately. |
-| `receipt-upgrade-required` | The receipt predates the Engram binding and is not adopted automatically. Use the previous Stack release to remove it, then reinstall deliberately with the current release. |
-| `runner-output` / `runner-unhealthy` | The installed package did not produce the expected single bounded JSON record. Reinstall only after checking package integrity and Engram. |
-| `verified-update-required` | Stack refuses a cross-version registry install without verified replacement and rollback tarballs. Upgrade support must ship with the new frozen candidate. |
+| `tarball-integrity` | No omitas la verificación; reintenta desde un registro/red de confianza. |
+| `unsupported-pi-version` | Usa la versión de Pi declarada por el candidato congelado. |
+| `engram-required` / `engram-missing-target` | Configura Engram explícitamente; en target añade el binario dentro de `<target>/bin/engram`. |
+| `manual-existing` | El paquete existe sin package receipt; consérvalo o retíralo explícitamente antes de pedir ownership gestionado. |
+| `duplicate-package` / `source-divergent` | Conserva una única entrada exacta con `skills: []` y `prompts: []`, y vuelve a ejecutar `sync`. |
+| `receipt-corrupt` / `receipt-untrusted` / `partial-state` | No borres el receipt a ciegas; inspecciona settings, proyección y scope, y repara deliberadamente. |
+| `projection-cleanup-failed` | Corrige el estado o restaura el backup y reintenta `uninstall`; no fuerces la eliminación. |
+| `runner-output` / `runner-unhealthy` | Comprueba integridad, Engram y receipts antes de reinstalar. |
 
-The authoritative verification keeps two seams separate. With `JORGEX_PI_TARBALL` it checks the exact published `jorgex-pi@0.3.0` artifact against the frozen byte length, SHA-256, SHA-512 and bundled/native inventory. With `JORGEX_PI_DIR` it packs the explicit checkout as a lifecycle fixture, installs it with checkout-local Pi `0.84.2`, validates doctor, and removes only the managed package while preserving foreign settings; checkout bytes are never used as registry-integrity evidence.
+La evidencia autoritativa del paquete es el candidato congelado en `src/lib/pi-runtime.ts`; la de la proyección es `src/lib/pi-projection-lifecycle.ts` junto con `src/adapters/pi.ts` y los componentes compartidos que proyecta.

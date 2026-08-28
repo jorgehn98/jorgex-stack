@@ -52,6 +52,7 @@ async function operations(): Promise<PiPackageOperations> {
 const root = `/tmp/pi-target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`;
 const runner = `${root}/bin/jorgex-pi.mjs`;
 const source = PI_RUNTIME_CANDIDATE.package.source;
+const managedProjectedPackage = { source, skills: [], prompts: [] };
 const environment: Environment = {
   HOME: "/tmp/pi-target/home",
   XDG_CONFIG_HOME: "/tmp/pi-target/config",
@@ -89,7 +90,7 @@ function input(operation: "doctor" | "uninstall" | "update", overrides: Partial<
     detected: {
       executable: "/opt/pi/bin/pi",
       packageRunner: runner,
-      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [{ source, skills: [] }] }),
+      settingsJson: overrides.settingsJson ?? JSON.stringify({ packages: [managedProjectedPackage] }),
     },
     engramBin: overrides.engramBin === undefined ? environment.ENGRAM_BIN : overrides.engramBin,
     receiptJson: overrides.receiptJson === undefined ? JSON.stringify(receipt()) : overrides.receiptJson,
@@ -200,6 +201,17 @@ describe("Pi package-managed operations", () => {
     ]);
   });
 
+  it("treats a receiptless retry after removal as idempotent without touching cleanup state", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const events: string[] = [];
+
+    expect(runPiPackageManagedOperation(input("uninstall", {
+      receiptJson: null,
+      settingsJson: JSON.stringify({ packages: [] }),
+    }), deps(events, {}))).toEqual({ kind: "uninstalled" });
+    expect(events).toEqual(["verify-absent"]);
+  });
+
   it("keeps same-candidate update idempotent and blocks cross-version mutation until a verified tgz rollback path exists", async () => {
     const { runPiPackageManagedOperation } = await operations();
     const sameEvents: string[] = [];
@@ -225,9 +237,12 @@ describe("Pi package-managed operations", () => {
   });
 
   it.each([
-    ["exact filtered object", [{ source, skills: [] }], { kind: "healthy" }, ["runner:doctor --json"]],
-    ["legacy string source", [source], { kind: "blocked", reason: "source-divergent" }, []],
-    ["non-empty packaged skills", [{ source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }, []],
+    ["complete projected filters", [managedProjectedPackage], { kind: "healthy" }, ["runner:doctor --json"]],
+    ["canonical string after projection", [source], { kind: "blocked", reason: "source-divergent" }, []],
+    ["partial filters without prompts", [{ source, skills: [] }], { kind: "blocked", reason: "source-divergent" }, []],
+    ["partial filters without skills", [{ source, prompts: [] }], { kind: "blocked", reason: "source-divergent" }, []],
+    ["non-empty packaged skills", [{ source, skills: ["tdd"], prompts: [] }], { kind: "blocked", reason: "source-divergent" }, []],
+    ["duplicate projected filters", [managedProjectedPackage, managedProjectedPackage], { kind: "blocked", reason: "duplicate-package" }, []],
   ])("allows receipt-owned doctor only for the %s registration", async (_name, packages, expected, expectedEvents) => {
     const { runPiPackageManagedOperation } = await operations();
     const events: string[] = [];

@@ -49,13 +49,15 @@ Estos límites son metadatos locales solicitados. No demuestran por sí solos qu
 
 ### Pi
 
-`jorgex-pi@0.3.0` —no los adapters de Stack— gestiona:
+`jorgex-pi@0.4.0` —no los adapters de Stack— gestiona:
 
 - `defaultProvider = "openai-codex"`;
 - `defaultModel = "gpt-5.6-sol"`;
 - `providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow = 872000`.
 
 Pi registra ownership por campo y su cleanup solo retira valores canónicos que siga poseyendo. Igual que en OpenCode, 872K es metadata local solicitada hasta confirmar la aceptación del backend OAuth.
+
+La proyección compartida de Stack no cambia esta propiedad: solo instala los recursos comunes en `~/.pi/agent/AGENTS.md`, `~/.agents/skills` y `~/.pi/agent/prompts/lean-audit.md`. La selección de modelo sigue siendo propiedad del paquete Pi y de su recibo de ownership.
 
 ## Sustituir el default principal
 

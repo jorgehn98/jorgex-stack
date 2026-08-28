@@ -88,11 +88,23 @@ export interface AdapterPaths {
   profilesDir: string | null;
 }
 
-export interface Adapter {
+/**
+ * Contrato mínimo de los recursos que todos los runtimes pueden proyectar.
+ * Pi lo usa sin participar aún en el ciclo de vida completo de Adapter.
+ */
+export interface SharedProjectionAdapter {
+  id: SelectableRuntimeId;
+  paths(configDir: string): AdapterPaths;
+  /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
+  renderCommand(file: string, content: string): { file: string; content: string };
+  /** Decide si el system prompt debe incluir el protocolo Engram. */
+  injectEngramProtocol(ctx: InstallContext): boolean;
+}
+
+export interface Adapter extends SharedProjectionAdapter {
   id: RuntimeId;
   name: string;
   detect(): RuntimeDetection;
-  paths(configDir: string): AdapterPaths;
   /**
    * Convierte un agente canónico a uno o varios artefactos nativos del runtime.
    * El orchestrator (primary) es SIEMPRE un modo del agente principal que el
@@ -105,19 +117,10 @@ export interface Adapter {
     agent: CanonicalAgent,
     models: RuntimeModelMap,
   ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "profile" }[];
-  /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
-  renderCommand(file: string, content: string): { file: string; content: string };
   /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */
   planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[];
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];
-  /**
-   * ¿Debe inyectarse la sección engram-protocol en el system prompt?
-   * false cuando la integración oficial de Engram del runtime ya inyecta el
-   * protocolo (plugin de marketplace en Claude Code, engram-instructions.md
-   * en Codex, plugin engram.ts en OpenCode) — una sola fuente, sin duplicar.
-   */
-  injectEngramProtocol(ctx: InstallContext): boolean;
   /**
    * Inversa para uninstall: devuelve los archivos COMPARTIDOS con el usuario
    * (system prompt, configs, hooks) reescritos sin nuestras secciones/claves.

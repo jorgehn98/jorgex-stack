@@ -18,16 +18,16 @@ import {
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.3.0",
-    source: "npm:jorgex-pi@0.3.0",
+    version: "0.4.0",
+    source: "npm:jorgex-pi@0.4.0",
   },
   provenance: {
-    commit: "cc8c66f1254e3f7a7c7f4679a30e7a0c7627498c",
+    commit: "40abf9a0f7139e54da25344699c907cbdd859e27",
   },
   tarball: {
-    bytes: 89_104_529,
-    sha256: "13919b9aaed407e4e08c774cd24a496d3befbd91de6aafd37725fd7263963a3b",
-    sha512: "85c9adf038e8a0e826009fc8cffe23006688c184a43602d81e29807516073e604b0e451bd8f6883f1d352fb858d232acd593d72af67689b8ef5f7467f17fc096",
+    bytes: 89_116_913,
+    sha256: "6a984cf270dc204e1ccec15bcccd52b9a9eac168be68e404ca588bd54d924cd1",
+    sha512: "8ec9424cb5bb313b9a29b30d39f84ab32af3004039f077573d3344c2d9564556679a370919912e1fb969780d989d56e5ccea0d06bd5056c00b67b248a68de661",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -36,7 +36,7 @@ export const PI_RUNTIME_CANDIDATE = {
     schemaVersion: 1,
     capabilities: [
       "foundation-contract-v1",
-      "stack-snapshot-v1",
+      "stack-snapshot-v2",
       "runtime-agents-v1",
       "permission-gated-tools-v1",
       "structured-questions-v1",
@@ -240,7 +240,7 @@ function normalizeInstalledSource(settingsJson: string, alias: string, canonical
       || (entry !== null && typeof entry === "object" && !Array.isArray(entry)
         && Reflect.get(entry, "source") === canonical));
     if (packages.filter((entry) => entry === alias).length !== 1 || hasCanonical) return null;
-    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? { source: canonical, skills: [] } : entry));
+    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? canonical : entry));
     return JSON.stringify(parsed);
   } catch {
     return null;

@@ -65,21 +65,46 @@ type PiPackageLifecyclePlan = {
   };
 };
 
+type PiPackageSyncResult =
+  | { kind: "synced"; actions: unknown[] }
+  | { kind: "blocked"; reason: "runner-output" | "runner-unhealthy" };
+
 type PiPackageLifecycleModule = {
   planPiPackageLifecycle(input: PiPackageLifecycleInput): PiPackageLifecyclePlan;
+  executePiPackageLifecycle(
+    input: {
+      operation: "sync";
+      plan: { kind: "ready" };
+      candidate: PiRuntimeCandidate;
+      packageRunner: string;
+      environment: PiPackageEnvironment;
+    },
+    deps: {
+      writeReceipt(receipt: PiPackageReceipt): void;
+      run(invocation: { executable: string; args: string[]; environment: PiPackageEnvironment }): {
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+      };
+    },
+  ): PiPackageSyncResult;
 };
 
 async function lifecycle(): Promise<PiPackageLifecycleModule> {
   const mod = await import("../src/lib/pi-package-lifecycle.js") as Partial<PiPackageLifecycleModule>;
   expect(mod.planPiPackageLifecycle).toBeTypeOf("function");
+  expect(mod.executePiPackageLifecycle).toBeTypeOf("function");
   return mod as PiPackageLifecycleModule;
 }
 
 const CODING_AGENT_DIR = path.resolve("/tmp/pi-agent");
 const PACKAGE_ROOT = path.join(CODING_AGENT_DIR, "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`);
-const EXACT_SETTINGS = JSON.stringify({
-  packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
-});
+const MANAGED_PROJECTED_PACKAGE = {
+  source: PI_RUNTIME_CANDIDATE.package.source,
+  skills: [],
+  prompts: [],
+};
+const EXACT_SETTINGS = JSON.stringify({ packages: [MANAGED_PROJECTED_PACKAGE] });
 
 function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPackageLifecycleInput {
   return {
@@ -118,6 +143,20 @@ function installedReceipt(): PiPackageReceipt {
     scope: { kind: "real", codingAgentDir: CODING_AGENT_DIR },
     engram: { binary: "/opt/engram/bin/engram" },
   };
+}
+
+function syncRunnerJson(result: unknown): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    command: "sync",
+    ok: true,
+    package: {
+      name: PI_RUNTIME_CANDIDATE.package.name,
+      version: PI_RUNTIME_CANDIDATE.package.version,
+      root: PACKAGE_ROOT,
+    },
+    result,
+  })}\n`;
 }
 
 describe("Pi package-managed lifecycle", () => {
@@ -271,9 +310,7 @@ describe("Pi package-managed lifecycle", () => {
   it("records the exact verified Engram binary and accepts that receipt idempotently with the filtered package entry", async () => {
     const { planPiPackageLifecycle } = await lifecycle();
     const engram = { binary: "/opt/engram/bin/engram" };
-    const filteredSettings = JSON.stringify({
-      packages: [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
-    });
+    const filteredSettings = EXACT_SETTINGS;
     const initial = planPiPackageLifecycle(healthyInput());
 
     expect(initial.receipt).toMatchObject({ engram });
@@ -286,10 +323,13 @@ describe("Pi package-managed lifecycle", () => {
   });
 
   it.each([
-    ["exact filtered object", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }], { kind: "ready" }],
-    ["legacy string source", [PI_RUNTIME_CANDIDATE.package.source], { kind: "blocked", reason: "source-divergent" }],
-    ["non-empty packaged skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: ["tdd"] }], { kind: "blocked", reason: "source-divergent" }],
-  ])("treats receipt-owned %s as the only ready registration", async (_name, packages, expected) => {
+    ["complete projected filters", [MANAGED_PROJECTED_PACKAGE], { kind: "ready" }],
+    ["canonical string after projection", [PI_RUNTIME_CANDIDATE.package.source], { kind: "blocked", reason: "source-divergent" }],
+    ["partial filters without prompts", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }], { kind: "blocked", reason: "source-divergent" }],
+    ["partial filters without skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, prompts: [] }], { kind: "blocked", reason: "source-divergent" }],
+    ["non-empty packaged skills", [{ source: PI_RUNTIME_CANDIDATE.package.source, skills: ["tdd"], prompts: [] }], { kind: "blocked", reason: "source-divergent" }],
+    ["duplicate projected filters", [MANAGED_PROJECTED_PACKAGE, MANAGED_PROJECTED_PACKAGE], { kind: "blocked", reason: "duplicate-package" }],
+  ])("treats receipt-owned %s as the only ready registration for sync", async (_name, packages, expected) => {
     const { planPiPackageLifecycle } = await lifecycle();
     const plan = planPiPackageLifecycle(healthyInput({
       pi: { ...healthyInput().pi, settingsJson: JSON.stringify({ packages }) },
@@ -297,6 +337,31 @@ describe("Pi package-managed lifecycle", () => {
     }));
 
     expect(plan).toMatchObject(expected);
+  });
+
+  it.each([
+    ["changed output with an actions array", true, [{ kind: "write", target: "/tmp/pi-agent/AGENTS.md" }], "synced"],
+    ["unchanged output with a non-array action list", false, { kind: "write" }, "blocked"],
+  ])("validates sync runner JSON for %s", async (_name, changed, actions, expectedKind) => {
+    const { executePiPackageLifecycle } = await lifecycle();
+    const result = executePiPackageLifecycle({
+      operation: "sync",
+      plan: { kind: "ready" },
+      candidate: PI_RUNTIME_CANDIDATE,
+      packageRunner: `${PACKAGE_ROOT}/bin/jorgex-pi.mjs`,
+      environment: healthyInput().scope.environment,
+    }, {
+      writeReceipt: () => {
+        throw new Error("sync must not rewrite the receipt");
+      },
+      run: () => ({
+        exitCode: 0,
+        stdout: syncRunnerJson({ changed, actions }),
+        stderr: "",
+      }),
+    });
+
+    expect(result).toMatchObject({ kind: expectedKind });
   });
 
   it("blocks a legacy receipt without an Engram binding instead of adopting ownership", async () => {

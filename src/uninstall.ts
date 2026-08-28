@@ -10,6 +10,7 @@ import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
+import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -58,6 +59,20 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.outro("Uninstall cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
+  const removesSharedSkills = opts.runtimes.some((runtime) => runtime === "codex" || runtime === "opencode");
+  const piProjection = useBrowserPreferences && removesSharedSkills
+    ? readRealPiProjectionOwned()
+    : { kind: "absent" as const };
+  if (piProjection.kind === "corrupt") {
+    p.log.error(`Pi: receipt de proyección inválido en ${piProjection.file}. Restaura o repara ese receipt antes de reintentar.`);
+    p.outro("Uninstall cancelado: restaura o repara el receipt de proyección de Pi antes de reintentar.");
+    return 1;
+  }
+  if (piProjection.kind === "unreadable") {
+    p.log.error(`Pi: receipt de proyección ilegible en ${piProjection.file} (${piProjection.code}). Revisa los permisos o el estado de E/S antes de reintentar.`);
+    p.outro("Uninstall cancelado: revisa los permisos o el estado de E/S del receipt de proyección de Pi antes de reintentar.");
+    return 1;
+  }
   const stackDir = stackRoot();
   const mcp = loadCanonicalMcp(stackDir);
   const hooks = loadCanonicalHooks(stackDir);
@@ -92,6 +107,9 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
   // OpenCode usa.
   const retained = new Set<string>();
   if (useBrowserPreferences) {
+    if (piProjection.kind === "valid") {
+      for (const target of piProjection.owned) retained.add(target);
+    }
     for (const keep of Object.values(ADAPTERS)) {
       if (opts.runtimes.includes(keep.id)) continue;
       const detection = keep.detect();
