@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JorgeX quality receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "version", "authority", "identity", "commands", "results"],
+  "properties": {
+    "namespace": {
+      "type": "string",
+      "const": "jorgex.quality.receipt"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "authority": {
+      "type": "string",
+      "enum": ["local", "enforced"]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "baseSha", "headSha", "policyDigest"],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "enum": ["routine", "elevated", "high", "release"]
+        },
+        "baseSha": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40}$"
+        },
+        "headSha": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40}$"
+        },
+        "policyDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commandId",
+          "executable",
+          "argv",
+          "exitCode",
+          "durationMs",
+          "excerpt",
+          "outputDigest"
+        ],
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "executable": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "outputDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{64}$"
+          }
+        }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["controlId", "status"],
+        "properties": {
+          "controlId": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "incomplete", "not-applicable"]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "properties": {
+            "status": {
+              "const": "pass"
+            }
+          }
+        },
+        "then": {
+          "required": ["evidence"],
+          "properties": {
+            "evidence": {
+              "pattern": "\\S"
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "executionId", "evidenceLocator", "evidenceDigest"],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "executionId": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "evidenceLocator": {
+          "type": "string",
+          "pattern": "^https?://\\S+$"
+        },
+        "evidenceDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "authority": {
+        "const": "enforced"
+      }
+    }
+  },
+  "then": {
+    "required": ["provenance"]
+  }
+}

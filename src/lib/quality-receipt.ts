@@ -1,0 +1,425 @@
+import { createHash } from "node:crypto";
+
+export const QUALITY_RECEIPT_NAMESPACE = "jorgex.quality.receipt" as const;
+export const QUALITY_RECEIPT_VERSION = 1 as const;
+
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+const MAX_EXCERPT_LENGTH = 512;
+const REDACTED = "[REDACTED]";
+
+const QUALITY_PROFILES = new Set(["routine", "elevated", "high", "release"]);
+const QUALITY_RESULT_STATUSES = new Set(["pass", "fail", "incomplete", "not-applicable"]);
+const SENSITIVE_FLAG_PATTERN = /^(?:-{1,2})(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word)?|secret|token)$/i;
+const SENSITIVE_ASSIGNMENT_PATTERN = /^(?<name>[a-z][a-z0-9_.-]*(?:[-_]?(?:token|secret|password|passwd|api[-_]?key|credential)))[=:](?<value>.+)$/i;
+const SENSITIVE_OUTPUT_PATTERN = /((?:authorization\s*:\s*bearer\s+|bearer\s+)[^\s,;]+)/gi;
+const SENSITIVE_KEY_VALUE_PATTERN = /((?:password|passwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|credential)[\s]*[=:][\s]*)("[^"]*"|'[^']*'|[^\s,;]+)/gi;
+
+export type QualityReceiptAuthority = "local" | "enforced";
+export type QualityReceiptResultStatus = "pass" | "fail" | "incomplete" | "not-applicable";
+
+export interface QualityReceiptIdentity {
+  profile: string;
+  baseSha: string;
+  headSha: string;
+  policyDigest: string;
+}
+
+export interface QualityReceiptProvenance {
+  issuer: string;
+  executionId: string;
+  evidenceLocator: string;
+  evidenceDigest: string;
+}
+
+export interface QualityReceiptCommandOutput {
+  stdout: string;
+  stderr: string;
+}
+
+export interface QualityReceiptCommandInput {
+  commandId: string;
+  executable: string;
+  argv: readonly string[];
+  exitCode: number;
+  durationMs: number;
+  output: QualityReceiptCommandOutput;
+  environment?: Readonly<Record<string, string>>;
+}
+
+export interface QualityReceiptResult {
+  controlId: string;
+  status: QualityReceiptResultStatus;
+  evidence?: string;
+  reason?: string;
+}
+
+export interface QualityReceiptInput {
+  authority: QualityReceiptAuthority;
+  identity: QualityReceiptIdentity;
+  commands: readonly QualityReceiptCommandInput[];
+  results: readonly QualityReceiptResult[];
+  provenance?: QualityReceiptProvenance;
+}
+
+export interface QualityReceiptCommand {
+  commandId: string;
+  executable: string;
+  argv: string[];
+  exitCode: number;
+  durationMs: number;
+  excerpt: string;
+  outputDigest: string;
+}
+
+export interface QualityReceipt {
+  namespace: typeof QUALITY_RECEIPT_NAMESPACE;
+  version: typeof QUALITY_RECEIPT_VERSION;
+  authority: QualityReceiptAuthority;
+  identity: QualityReceiptIdentity;
+  commands: QualityReceiptCommand[];
+  results: QualityReceiptResult[];
+  provenance?: QualityReceiptProvenance;
+}
+
+type JsonObject = { [key: string]: unknown };
+
+function isRecord(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function assertExactKeys(value: JsonObject, allowed: readonly string[], label: string): void {
+  const allowedKeys = new Set(allowed);
+  const unexpected = Object.keys(value).find((key) => !allowedKeys.has(key));
+  if (unexpected !== undefined) {
+    throw new Error(`Unexpected ${label} field: ${unexpected}`);
+  }
+}
+
+function requireRecord(value: unknown, label: string): JsonObject {
+  if (!isRecord(value)) throw new Error(`Invalid ${label}`);
+  return value;
+}
+
+function requireText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`Invalid ${label}`);
+  }
+  return value;
+}
+
+function requireSha(value: unknown, label: string, pattern: RegExp): string {
+  const text = requireText(value, label);
+  if (!pattern.test(text)) throw new Error(`Invalid ${label}`);
+  return text;
+}
+
+function redactText(value: string): string {
+  return value
+    .replace(SENSITIVE_OUTPUT_PATTERN, (_match, prefix: string) => {
+      const normalizedPrefix = prefix.toLowerCase().startsWith("authorization")
+        ? prefix.slice(0, prefix.toLowerCase().indexOf("bearer") + "bearer".length)
+        : "Bearer ";
+      return `${normalizedPrefix}${REDACTED}`;
+    })
+    .replace(SENSITIVE_KEY_VALUE_PATTERN, `$1${REDACTED}`);
+}
+
+function redactAssignment(value: string): string {
+  const separator = value.indexOf("=") >= 0 ? "=" : ":";
+  const name = value.slice(0, value.indexOf(separator));
+  return `${name}${separator}${REDACTED}`;
+}
+
+function redactArgv(argv: readonly string[]): string[] {
+  let redactNext = false;
+
+  return argv.map((argument) => {
+    if (redactNext) {
+      redactNext = false;
+      return REDACTED;
+    }
+
+    if (SENSITIVE_FLAG_PATTERN.test(argument)) {
+      redactNext = true;
+      return argument;
+    }
+
+    if (SENSITIVE_ASSIGNMENT_PATTERN.test(argument)) {
+      return redactAssignment(argument);
+    }
+
+    return redactText(argument);
+  });
+}
+
+function excerptFor(output: QualityReceiptCommandOutput): string {
+  const stdout = redactText(output.stdout);
+  const stderr = redactText(output.stderr);
+  const combined = [stdout, stderr].filter((part) => part !== "").join("\n");
+  return combined.slice(0, MAX_EXCERPT_LENGTH);
+}
+
+function outputDigestFor(output: QualityReceiptCommandOutput): string {
+  const sanitized = {
+    stdout: redactText(output.stdout),
+    stderr: redactText(output.stderr),
+  };
+  return sha256(canonicalJson(sanitized));
+}
+
+function normalizeCommand(command: QualityReceiptCommandInput): QualityReceiptCommand {
+  return {
+    commandId: command.commandId,
+    executable: command.executable,
+    argv: redactArgv(command.argv),
+    exitCode: command.exitCode,
+    durationMs: command.durationMs,
+    excerpt: excerptFor(command.output),
+    outputDigest: outputDigestFor(command.output),
+  };
+}
+
+function normalizeResult(result: QualityReceiptResult): QualityReceiptResult {
+  return {
+    controlId: result.controlId,
+    status: result.status,
+    ...(result.evidence === undefined ? {} : { evidence: result.evidence }),
+    ...(result.reason === undefined ? {} : { reason: result.reason }),
+  };
+}
+
+function normalizeProvenance(provenance: QualityReceiptProvenance): QualityReceiptProvenance {
+  return {
+    issuer: provenance.issuer,
+    executionId: provenance.executionId,
+    evidenceLocator: provenance.evidenceLocator,
+    evidenceDigest: provenance.evidenceDigest,
+  };
+}
+
+function canonicalValue(value: unknown): string {
+  if (value === null) return "null";
+
+  switch (typeof value) {
+    case "string": {
+      const result = JSON.stringify(value);
+      if (result === undefined) throw new Error("Unable to canonicalize string");
+      return result;
+    }
+    case "boolean":
+      return value ? "true" : "false";
+    case "number": {
+      if (!Number.isFinite(value)) throw new Error("Cannot canonicalize non-finite number");
+      const result = JSON.stringify(value);
+      if (result === undefined) throw new Error("Unable to canonicalize number");
+      return result;
+    }
+    case "object": {
+      if (Array.isArray(value)) {
+        return `[${value.map((item) => canonicalValue(item)).join(",")}]`;
+      }
+
+      const object = value as Record<string, unknown>;
+      return `{${Object.keys(object).sort().map((key) => {
+        return `${JSON.stringify(key)}:${canonicalValue(object[key])}`;
+      }).join(",")}}`;
+    }
+    default:
+      throw new Error(`Cannot canonicalize ${typeof value}`);
+  }
+}
+
+export function canonicalJson(value: unknown): string {
+  return canonicalValue(value);
+}
+
+export function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function validateIdentity(value: unknown, expected?: QualityReceiptIdentity): QualityReceiptIdentity {
+  const identity = requireRecord(value, "identity");
+  assertExactKeys(identity, ["profile", "baseSha", "headSha", "policyDigest"], "identity");
+
+  const profile = requireText(identity.profile, "identity.profile");
+  if (!QUALITY_PROFILES.has(profile)) throw new Error(`Invalid identity.profile: ${profile}`);
+  const baseSha = requireSha(identity.baseSha, "identity.baseSha", COMMIT_SHA_PATTERN);
+  const headSha = requireSha(identity.headSha, "identity.headSha", COMMIT_SHA_PATTERN);
+  const policyDigest = requireSha(identity.policyDigest, "identity.policyDigest", SHA256_PATTERN);
+
+  const actual = { profile, baseSha, headSha, policyDigest };
+  if (expected !== undefined) {
+    for (const field of ["profile", "baseSha", "headSha", "policyDigest"] as const) {
+      if (actual[field] !== expected[field]) {
+        throw new Error(`Quality receipt identity mismatch: ${field}`);
+      }
+    }
+  }
+
+  return actual;
+}
+
+function validateProvenance(value: unknown): QualityReceiptProvenance {
+  const provenance = requireRecord(value, "provenance");
+  assertExactKeys(provenance, ["issuer", "executionId", "evidenceLocator", "evidenceDigest"], "provenance");
+
+  const issuer = requireText(provenance.issuer, "provenance.issuer");
+  const executionId = requireText(provenance.executionId, "provenance.executionId");
+  const evidenceLocator = requireText(provenance.evidenceLocator, "provenance.evidenceLocator");
+  try {
+    const parsed = new URL(evidenceLocator);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("unsupported locator protocol");
+    }
+  } catch {
+    throw new Error("Invalid provenance.evidenceLocator");
+  }
+  const evidenceDigest = requireSha(provenance.evidenceDigest, "provenance.evidenceDigest", SHA256_PATTERN);
+
+  return { issuer, executionId, evidenceLocator, evidenceDigest };
+}
+
+function validateCommand(value: unknown, index: number): QualityReceiptCommand {
+  const command = requireRecord(value, `commands[${index}]`);
+  assertExactKeys(
+    command,
+    ["commandId", "executable", "argv", "exitCode", "durationMs", "excerpt", "outputDigest"],
+    `commands[${index}]`,
+  );
+
+  const commandId = requireText(command.commandId, `commands[${index}].commandId`);
+  const executable = requireText(command.executable, `commands[${index}].executable`);
+  if (!Array.isArray(command.argv) || command.argv.some((argument) => typeof argument !== "string")) {
+    throw new Error(`Invalid commands[${index}].argv`);
+  }
+  if (typeof command.exitCode !== "number" || !Number.isInteger(command.exitCode)) {
+    throw new Error(`Invalid commands[${index}].exitCode`);
+  }
+  if (typeof command.durationMs !== "number" || !Number.isFinite(command.durationMs) || command.durationMs < 0) {
+    throw new Error(`Invalid commands[${index}].durationMs`);
+  }
+  const excerpt = typeof command.excerpt === "string" ? command.excerpt : "";
+  if (excerpt.length > MAX_EXCERPT_LENGTH) throw new Error(`Invalid commands[${index}].excerpt`);
+  const outputDigest = requireSha(command.outputDigest, `commands[${index}].outputDigest`, SHA256_PATTERN);
+
+  return {
+    commandId,
+    executable,
+    argv: [...command.argv],
+    exitCode: command.exitCode,
+    durationMs: command.durationMs,
+    excerpt,
+    outputDigest,
+  };
+}
+
+function validateResult(value: unknown, index: number): QualityReceiptResult {
+  const result = requireRecord(value, `results[${index}]`);
+  assertExactKeys(result, ["controlId", "status", "evidence", "reason"], `results[${index}]`);
+  const controlId = requireText(result.controlId, `results[${index}].controlId`);
+  if (typeof result.status !== "string" || !QUALITY_RESULT_STATUSES.has(result.status)) {
+    throw new Error(`Invalid results[${index}].status`);
+  }
+  let evidence: string | undefined;
+  if (hasOwn(result, "evidence")) {
+    if (typeof result.evidence !== "string") {
+      throw new Error(`Invalid results[${index}].evidence`);
+    }
+    evidence = result.evidence;
+  }
+
+  let reason: string | undefined;
+  if (hasOwn(result, "reason")) {
+    if (typeof result.reason !== "string") {
+      throw new Error(`Invalid results[${index}].reason`);
+    }
+    reason = result.reason;
+  }
+
+  if (result.status === "pass" && (evidence === undefined || evidence.trim() === "")) {
+    throw new Error(`Invalid results[${index}].evidence: pass requires evidence`);
+  }
+
+  return {
+    controlId,
+    status: result.status as QualityReceiptResultStatus,
+    ...(evidence === undefined ? {} : { evidence }),
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
+export function validateQualityReceipt(
+  value: unknown,
+  expectedIdentity?: QualityReceiptIdentity,
+): asserts value is QualityReceipt {
+  const receipt = requireRecord(value, "quality receipt");
+  if (receipt.namespace !== QUALITY_RECEIPT_NAMESPACE) {
+    throw new Error(`Invalid quality receipt namespace: ${String(receipt.namespace)}`);
+  }
+  if (receipt.version !== QUALITY_RECEIPT_VERSION) {
+    throw new Error(`Unsupported quality receipt version: ${String(receipt.version)}`);
+  }
+  assertExactKeys(receipt, ["namespace", "version", "authority", "identity", "commands", "results", "provenance"], "receipt");
+
+  if (receipt.authority !== "local" && receipt.authority !== "enforced") {
+    throw new Error(`Invalid quality receipt authority: ${String(receipt.authority)}`);
+  }
+
+  const identity = validateIdentity(receipt.identity, expectedIdentity);
+  if (!Array.isArray(receipt.commands)) throw new Error("Invalid quality receipt commands");
+  if (!Array.isArray(receipt.results)) throw new Error("Invalid quality receipt results");
+
+  for (let index = 0; index < receipt.commands.length; index += 1) {
+    validateCommand(receipt.commands[index], index);
+  }
+  for (let index = 0; index < receipt.results.length; index += 1) {
+    validateResult(receipt.results[index], index);
+  }
+
+  const hasProvenance = hasOwn(receipt, "provenance");
+  if (receipt.authority === "enforced" && (!hasProvenance || receipt.provenance === undefined)) {
+    throw new Error("Enforced quality receipts require provenance");
+  }
+  if (hasProvenance) {
+    if (receipt.provenance === undefined) throw new Error("Invalid quality receipt provenance");
+    validateProvenance(receipt.provenance);
+  }
+
+  // Keep the explicit identity read above as the single validation path for the
+  // expected SHA tuple; this also prevents accidental acceptance of Pi receipts.
+  void identity;
+}
+
+export function createQualityReceipt(input: QualityReceiptInput): QualityReceipt {
+  if (input.authority !== "local" && input.authority !== "enforced") {
+    throw new Error(`Invalid quality receipt authority: ${String(input.authority)}`);
+  }
+
+  const receipt: QualityReceipt = {
+    namespace: QUALITY_RECEIPT_NAMESPACE,
+    version: QUALITY_RECEIPT_VERSION,
+    authority: input.authority,
+    identity: {
+      profile: input.identity.profile,
+      baseSha: input.identity.baseSha,
+      headSha: input.identity.headSha,
+      policyDigest: input.identity.policyDigest,
+    },
+    commands: input.commands.map(normalizeCommand),
+    results: input.results.map(normalizeResult),
+    ...(input.provenance === undefined ? {} : { provenance: normalizeProvenance(input.provenance) }),
+  };
+
+  validateQualityReceipt(receipt);
+  return receipt;
+}
+
+export function serializeQualityReceipt(receipt: QualityReceipt): string {
+  validateQualityReceipt(receipt);
+  return canonicalJson(receipt);
+}
