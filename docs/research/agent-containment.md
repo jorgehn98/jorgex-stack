@@ -1,5 +1,7 @@
 # Contención: un agente que no puede escapar de sus límites
 
+> **Aviso:** Investigación abierta; este documento no constituye una política vinculante ni autoriza ninguna implementación.
+
 ## Tesis
 
 No se puede garantizar que el modelo no intente saltarse una instrucción. Sí se puede diseñar el sistema para que determinadas acciones no sean ejecutables aunque el modelo:

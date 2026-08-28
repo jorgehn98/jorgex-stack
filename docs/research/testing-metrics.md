@@ -1,5 +1,7 @@
 # Métricas y testing para agentes
 
+> **Aviso:** Investigación abierta; este documento no constituye una política vinculante ni autoriza ninguna implementación.
+
 ## Principio
 
 Las métricas son señales para decidir dónde mirar, no sustitutos del juicio técnico. Una métrica solo merece entrar en JorgeX Stack si produce una acción:
@@ -78,7 +80,7 @@ Ejemplos aproximados:
 | 10 | 0% | 110 | complejo y sin protección |
 | 10 | 80% | 10,80 | sigue quedando complejidad estructural |
 
-El umbral histórico más citado es 30, pero no debe tratarse como una ley natural. En SwarmForge el Cleaner usa una disciplina más estricta, CRAP <= 6, dentro de su propio flujo. La adaptación segura para JorgeX es usar CRAP para ordenar trabajo:
+El umbral histórico más citado es 30, pero no debe tratarse como una ley natural. En el workflow específico de SwarmForge, el prompt del rol Cleaner fijado al commit `7d903e0d67c35a82167eb14d1b8a1905249d1db4` usa una disciplina más estricta, CRAP <= 6; no es un criterio general. La adaptación segura para JorgeX es usar CRAP para ordenar trabajo:
 
 - informar primero de las funciones cambiadas con CRAP alto;
 - bloquear solo si el perfil de riesgo lo exige;
@@ -89,7 +91,7 @@ El umbral histórico más citado es 30, pero no debe tratarse como una ley natur
 Fuentes:
 
 - [Google Testing Blog: This Code is CRAP](https://testing.googleblog.com/2011/02/this-code-is-crap.html).
-- [Acceptance/SwarmForge engineering constitution](https://raw.githubusercontent.com/unclebob/swarm-forge/main/swarmforge/constitution/articles/engineering.prompt).
+- [SwarmForge Cleaner prompt (commit 7d903e0d67c35a82167eb14d1b8a1905249d1db4)](https://raw.githubusercontent.com/unclebob/swarm-forge/7d903e0d67c35a82167eb14d1b8a1905249d1db4/swarmforge/roles/cleaner.prompt): regla específica de ese workflow, no criterio general.
 - [CRAP formula and examples](https://github.com/breezy-bays-labs/crap-rs).
 
 Nota: crap-rs no es un repositorio de Uncle Bob. Es una referencia técnica adicional y ofrece un adaptador para TypeScript/JavaScript; debe evaluarse antes de usarlo y no se incorpora automáticamente.

@@ -1,5 +1,7 @@
 # Calidad agéntica: qué extraer de Uncle Bob
 
+> **Aviso:** Investigación abierta; este documento no constituye una política vinculante ni autoriza ninguna implementación.
+
 ## Alcance y fuentes
 
 La fuente más útil no es un skill genérico aislado, sino la combinación de la serie oficial Clean AI: Agentic Discipline y el código de SwarmForge.
