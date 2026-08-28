@@ -49,7 +49,7 @@ For development from a clone, run the same commands through `pnpm cli <command>`
 
 Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched.
 
-Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for the Sol primary default, field-level ownership and independent subagent routing. OpenCode remains provider-agnostic for subagents; its primary defaults to the OpenAI OAuth model `openai/gpt-5.6-sol` unless the user replaces it.
+Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for the Sol primary default, field-level ownership and independent subagent routing. The quality policy and `jorgex.quality.receipt` contract are documented in [docs/references/quality-receipt.md](docs/references/quality-receipt.md). OpenCode remains provider-agnostic for subagents; its primary defaults to the OpenAI OAuth model `openai/gpt-5.6-sol` unless the user replaces it.
 
 ### Modes: Human and Programmatic
 
