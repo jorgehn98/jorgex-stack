@@ -1,10 +1,111 @@
 # Contrato de calidad y `jorgex.quality.receipt`
 
-Esta es la referencia canónica del contrato de calidad agéntica del Stack. Describe la policy, sus estados, el receipt v1 y la frontera con Pi. No convierte una ejecución local en un gate de CI ni añade thresholds que la policy no declare.
+Esta es la referencia canónica del contrato de calidad agéntica del Stack. Describe la policy, el runner local, sus estados, el receipt v1 y la frontera con Pi. No convierte una ejecución local en un gate de CI ni añade thresholds que la policy no declare.
 
-La entrega documentada aquí expone el contrato JSON y la API TypeScript del receipt; no implica una CLI o un runner consumible. En PR01 no se ofrece ni se promete una CLI consumible, y no debe asumirse su disponibilidad antes de PR02.
+La CLI y el runner documentados aquí son locales y deliberadamente limitados: ejecutan un plan explícito, producen un receipt local y devuelven un código de proceso, pero no son un sandbox ni una autoridad de enforcement.
 
-## 1. Perfiles y selección de policy
+## 1. Runner local: `jorgex-stack quality`
+
+### Uso
+
+```text
+jorgex-stack quality <plan.json> [--receipt <path>]
+```
+
+El comando acepta exactamente un plan JSON posicional y, opcionalmente, `--receipt <path>` (también `--receipt=<path>`). No acepta los flags de instalación, `--target-dir`, `--dry-run` ni `--yes`. Sin `--receipt`, escribe el receipt JSON canónico en stdout y añade una línea final; con `--receipt`, crea o reemplaza el archivo indicado.
+
+El runner valida el plan completo antes de lanzar el primer proceso. Después ejecuta los comandos declarados en orden, de forma secuencial y sin fail-fast: un comando que falla no impide intentar los siguientes. Si el plan es ilegible, no es JSON válido o no cumple la forma mínima, la CLI informa el error por stderr, no produce un receipt y termina con código `1`.
+
+### Shape mínimo del plan
+
+El plan de entrada tiene cuatro campos de nivel superior:
+
+| Campo | Contrato mínimo |
+| --- | --- |
+| `identity` | Objeto con `baseSha` y `headSha`, ambos commits de 40 caracteres hexadecimales. |
+| `profile` | Uno de `routine`, `elevated`, `high` o `release`. Es obligatorio en el plan. |
+| `controls` | Array de controles con `id` no vacío y `requirement` igual a `required` u `optional`; los ids no se pueden repetir. `notApplicable`, si aparece, debe ser booleano. |
+| `commands` | Array de comandos. Cada comando referencia un `controlId` existente y distinto, tiene `commandId` y `executable` no vacíos, `argv` como array denso de strings y `timeoutMs` como entero seguro no negativo. `env` y `maxOutputBytes` son opcionales; sus valores deben ser, respectivamente, strings y un entero seguro no negativo. |
+
+Un control puede tener como máximo un comando en el plan. Un `required` sin comando no se considera superado: genera un resultado `incomplete`. Un plan sin ningún `required` también queda `incomplete` según la policy.
+
+Ejemplo mínimo, sin credenciales ni valores sensibles:
+
+```json
+{
+  "identity": {
+    "baseSha": "0123456789abcdef0123456789abcdef01234567",
+    "headSha": "fedcba9876543210fedcba9876543210fedcba98"
+  },
+  "profile": "routine",
+  "controls": [
+    { "id": "smoke", "requirement": "required" }
+  ],
+  "commands": [
+    {
+      "controlId": "smoke",
+      "commandId": "smoke-node",
+      "executable": "/usr/bin/node",
+      "argv": ["-e", "process.stdout.write('quality ok\\n')"],
+      "env": { "QUALITY_MODE": "check" },
+      "timeoutMs": 2000,
+      "maxOutputBytes": 65536
+    }
+  ]
+}
+```
+
+Los SHA del ejemplo son marcadores con forma válida: deben sustituirse por el rango real. La ruta de `executable` también debe adaptarse al sistema; para evitar depender de un PATH implícito, es preferible usar una ruta absoluta. Si se usa un ejecutable resoluble por PATH, ese PATH debe declararse en `env`.
+
+### `argv`, entorno y límites de ejecución
+
+- `executable` y `argv` se pasan como argumentos separados a `child_process.spawn` con `shell: false`; una cadena como `test && deploy` no se interpreta como una línea de shell. No se interpolan variables ni se hereda el entorno del proceso de la CLI: si `env` se omite, el proceso hijo recibe un objeto de entorno vacío; si se proporciona, recibe únicamente esa copia explícita.
+- En Windows, los shims `.cmd` y `.bat` requieren una ruta de compatibilidad por `cmd.exe`. El runner valida antes las partes contra metacaracteres de `cmd` y devuelve `error` con razón `unsafe-command` si encuentra alguno; no debe usarse esa excepción para construir comandos concatenados.
+- `timeoutMs` es obligatorio por comando y está expresado en milisegundos. Al vencer, el runner intenta terminar el árbol del proceso: `taskkill /t /f` en Windows y el grupo de procesos en POSIX, con fallback al hijo raíz.
+- `maxOutputBytes`, si se configura, limita conjuntamente los bytes capturados de stdout y stderr. Al alcanzar el límite, el runner conserva como máximo ese presupuesto, intenta terminar el árbol y devuelve `error` con razón `output-limit`. Si se omite, la captura no tiene ese límite y puede crecer con la salida del comando.
+
+El receipt no conserva el entorno ni stdout/stderr completos. Conserva el `argv` saneado, un excerpt de la salida y el digest descritos en la sección del receipt. La redacción cubre patrones conocidos, no todos los secretos posibles; no pongas credenciales en el plan, el entorno, los argumentos ni la salida.
+
+### Estados de comando y evaluación
+
+El estado interno de cada comando y su proyección al resultado de control son distintos:
+
+| Estado del comando | Cuándo aparece | Resultado del control / agregado |
+| --- | --- | --- |
+| `pass` | El proceso termina con código `0`. | `pass`, siempre que la policy aporte la evidencia requerida. |
+| `fail` | El proceso termina con un código distinto de `0`. | `fail`; no se convierte en `pass`. |
+| `timeout` | Se supera `timeoutMs`. | `incomplete`, con razón `timeout`. |
+| `unavailable` | El proceso no se puede iniciar, por ejemplo por ejecutable ausente o sin permisos (`ENOENT`/`EACCES`). | `incomplete`, con razón `spawn-error`. |
+| `error` | Se rechaza el comando por seguridad en un shim Windows o se alcanza `maxOutputBytes`. | `incomplete`, con razón `unsafe-command` u `output-limit`. |
+
+La policy agrega los controles con precedencia `fail > incomplete > pass`. El runner siempre crea un receipt `authority: "local"` cuando el plan es válido, incluso si la evaluación termina en `fail` o `incomplete`; la CLI lo emite/escribe y después devuelve código `1`. El agregado no se serializa como un campo `status` propio del receipt: el código de proceso es la señal de la CLI y los resultados detallados quedan en `results`.
+
+### Receipt y códigos de salida
+
+El runner produce un receipt `jorgex.quality.receipt` v1 con `authority: "local"`. Su `identity` combina el perfil y los dos SHA del plan con `policyDigest`, calculado sobre la policy efectiva (`profile` + `controls`) en JSON canónico. El runner no puede producir `authority: "enforced"` ni añade `provenance`; un `pass` local no es un Quality Gate remoto.
+
+La tabla de salida de la CLI es:
+
+| Código | Significado |
+| --- | --- |
+| `0` | La policy agregada es `pass` y el receipt se pudo serializar y emitir/escribir. |
+| `1` | La policy es `fail` o `incomplete`, o hubo un error de argumentos, lectura/parseo del plan, validación, serialización o escritura del receipt. No hay códigos distintos por timeout, unavailable o output-limit. |
+
+Cuando la policy es `fail` o `incomplete`, el receipt normalmente sí se escribe antes de devolver `1`. Los errores que ocurren antes de construirlo —por ejemplo JSON inválido o un plan con ids duplicados— pueden no dejar ningún receipt.
+
+`--receipt` usa escritura atómica: crea los directorios padre, escribe primero un temporal en el mismo directorio y lo mueve sobre el destino con `rename`. Si el movimiento falla, elimina el temporal y propaga el error. Esto protege frente a un archivo objetivo parcialmente escrito por esta operación; no es un mecanismo de locking entre escritores ni una garantía de durabilidad `fsync`. La salida por stdout no tiene esa garantía de reemplazo atómico.
+
+### Límites: qué no garantiza
+
+El runner es un orquestador local de procesos, no una frontera de seguridad:
+
+- **No es un sandbox:** los comandos corren con la cuenta y los permisos del usuario y pueden leer/escribir archivos, ejecutar otros programas o modificar el sistema al que esa cuenta tenga acceso.
+- **No controla egress:** no aplica una política universal de red, DNS o sockets. Un comando puede comunicarse con la red si el sistema lo permite.
+- **No protege secretos de forma universal:** el entorno explícito evita heredar accidentalmente variables ambientales, pero el comando recibe exactamente lo que el plan le declara y puede leer otros secretos accesibles por el sistema. La redacción del receipt es una minimización heurística de patrones conocidos, no un detector ni un borrado retroactivo.
+- **No contiene daemons ni procesos detached de forma universal:** `detached: true` se usa para facilitar la terminación del árbol en timeout/output-limit; no garantiza que un proceso que se desacople, se reparenta o se convierta en daemon termine, ni que no queden procesos en segundo plano.
+- **No impone `authority: "enforced"`:** ni el código `0` ni el receipt local prueban autenticidad, enforcement de CI, merge o release. La autoridad `enforced` requiere un verificador externo que autentique el emisor y compruebe la evidencia; la forma del receipt por sí sola no lo hace.
+
+## 2. Perfiles y selección de policy
 
 Los perfiles válidos son:
 
@@ -19,7 +120,7 @@ La policy recibe un perfil y una lista explícita de controles. Si no se proporc
 
 Los nombres de perfil son una clasificación y un punto de selección. Los controles reales, sus requisitos y sus excepciones deben estar declarados por la policy de esa ejecución.
 
-## 2. Controles, `required`/`optional` y estados
+## 3. Controles, `required`/`optional` y estados
 
 `required` y `optional` pertenecen a la definición de la policy, no al wire format de cada resultado:
 
@@ -54,7 +155,7 @@ fail > incomplete > pass
 
 Por tanto, un solo `fail` domina a cualquier `incomplete` o `pass`; sin `fail`, cualquier `incomplete` domina a `pass`. Una entrada no declarada o inválida no se convierte en fallo de control automáticamente, pero hace que la evaluación sea `incomplete`.
 
-## 3. Receipt `jorgex.quality.receipt` v1
+## 4. Receipt `jorgex.quality.receipt` v1
 
 El receipt es un registro de evidencia de una ejecución de quality policy. Su contrato canónico está en [`stack/contracts/quality-receipt.v1.schema.json`](../../stack/contracts/quality-receipt.v1.schema.json), JSON Schema draft 2020-12.
 
@@ -120,7 +221,7 @@ Para `enforced`, `provenance` es un objeto cerrado con:
 
 La validación no hace fetch del locator ni comprueba que su contenido siga disponible. El runtime también parsea la URL y rechaza protocolos distintos de HTTP(S) o espacios; `format: "uri"` es parte de la declaración de la schema y no sustituye esa verificación de runtime.
 
-## 4. Canonicalización, identidad y redacción
+## 5. Canonicalización, identidad y redacción
 
 La serialización del receipt usa JSON canónico: las claves de cada objeto se ordenan recursivamente, los arrays conservan su orden y no se añaden espacios ni una línea final. Así, `policyDigest` y los digests de output son reproducibles cuando se parte de la misma entrada.
 
@@ -142,7 +243,7 @@ El contrato v1 no prescribe almacenamiento, subida, TTL, borrado ni retención c
 
 Que `evidenceLocator` sea sintácticamente válido no prueba que siga accesible. Si la evidencia expira, no es localizable o ya no se puede comparar con `evidenceDigest`, el receipt puede seguir siendo JSON válido, pero la afirmación externa deja de estar verificable y el control dependiente debe quedar `incomplete` o ser rechazado por la policy de enforcement. No se debe presentar como pass por el mero hecho de que el receipt parsea.
 
-## 5. Frontera con Pi y paridad
+## 6. Frontera con Pi y paridad
 
 Pi **no es un adapter de Stack**. Claude Code, Codex CLI y OpenCode tienen adapters que proyectan componentes del Stack; Pi mantiene su package/projection lifecycle nativo. Pi no entra en el manifest de componentes ni en el model map del Stack.
 
@@ -169,7 +270,7 @@ Los receipts de instalación y lifecycle de Pi quedan separados del quality rece
 
 Los dos primeros no son resultados de calidad, no deben adoptar el namespace `jorgex.quality.receipt` y no deben usarse para decidir `pass`/`fail` de una policy. Del mismo modo, un quality receipt no concede ownership ni autoriza la limpieza del paquete, de la proyección o de Engram.
 
-## 6. Casos límite
+## 7. Casos límite
 
 | Caso | Tratamiento |
 | --- | --- |
