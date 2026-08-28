@@ -7,45 +7,19 @@ import {
   serializeQualityReceipt,
   sha256,
   validateQualityReceipt,
-  type QualityReceipt,
 } from "../src/lib/quality-receipt.js";
-import type { QualityControlDefinition, QualityProfile } from "../src/lib/quality-policy.js";
-import * as qualityRunner from "../src/lib/quality-runner.js";
-
-const { runQualityCommand } = qualityRunner;
+import type { QualityControlDefinition } from "../src/lib/quality-policy.js";
+import {
+  runQualityCommand,
+  runQualityPlan,
+  type QualityCommandInput,
+  type QualityCommandResult,
+  type QualityPlanCommandInput,
+  type QualityPlanInput,
+} from "../src/lib/quality-runner.js";
 
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
-
-type QualityPlanCommandInput = {
-  controlId: string;
-  commandId: string;
-  executable: string;
-  argv: readonly string[];
-  env?: Readonly<Record<string, string>>;
-  timeoutMs: number;
-  maxOutputBytes?: number;
-};
-
-type QualityPlanInput = {
-  identity: {
-    baseSha: string;
-    headSha: string;
-  };
-  profile: QualityProfile;
-  controls: readonly QualityControlDefinition[];
-  commands: readonly QualityPlanCommandInput[];
-};
-
-type QualityPlanResult = {
-  evaluation: {
-    profile: QualityProfile;
-    status: "pass" | "fail" | "incomplete";
-  };
-  receipt: QualityReceipt;
-};
-
-type QualityPlanRunner = (input: QualityPlanInput) => Promise<QualityPlanResult>;
 
 const tempDirs: string[] = [];
 
@@ -98,15 +72,6 @@ function qualityPlan(
     controls,
     commands,
   };
-}
-
-async function runQualityPlan(input: QualityPlanInput): Promise<QualityPlanResult> {
-  const candidate = (qualityRunner as unknown as { runQualityPlan?: unknown }).runQualityPlan;
-  expect(typeof candidate, "runQualityPlan API must be exported").toBe("function");
-  if (typeof candidate !== "function") {
-    throw new Error("runQualityPlan API is not available");
-  }
-  return (candidate as QualityPlanRunner)(input);
 }
 
 afterEach(() => {
@@ -252,6 +217,68 @@ describe("quality command runner", () => {
     await wait(550);
     expect(fs.existsSync(marker)).toBe(false);
   }, 3_000);
+
+  it("rejects a timeout above Node's timer maximum before spawning", async () => {
+    const marker = path.join(tempDir(), "overflow-timeout-marker.txt");
+    let rejected = false;
+
+    try {
+      await runQualityPlan(qualityPlan([{
+        ...markerCommand("typecheck", "overflow-timeout", marker),
+        timeoutMs: 2_147_483_648,
+      }]));
+    } catch {
+      rejected = true;
+    }
+
+    expect({ rejected, markerCreated: fs.existsSync(marker) }).toEqual({
+      rejected: true,
+      markerCreated: false,
+    });
+  });
+
+  it("settles with an observable error when termination never closes the child", async () => {
+    type TerminationDependencies = {
+      terminate: (child: unknown) => void;
+    };
+    type RunQualityCommandWithDependencies = (
+      input: QualityCommandInput,
+      dependencies: TerminationDependencies,
+    ) => Promise<QualityCommandResult>;
+
+    const runWithDependencies = runQualityCommand as unknown as RunQualityCommandWithDependencies;
+    let terminationAttempts = 0;
+    const startedAt = Date.now();
+
+    try {
+      const result = await runWithDependencies({
+        commandId: "termination-deadline",
+        executable: process.execPath,
+        argv: ["-e", "setTimeout(() => process.exit(0), 300)"],
+        timeoutMs: 25,
+      }, {
+        // The child exits by itself later; this seam models a kill that neither
+        // terminates the process nor causes the runner's close event.
+        terminate: () => {
+          terminationAttempts += 1;
+        },
+      });
+
+      expect({
+        status: result.status,
+        reason: result.reason,
+        terminationAttempts,
+      }).toEqual({
+        status: "error",
+        reason: "termination-timeout",
+        terminationAttempts: 1,
+      });
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      // Let the deliberately delayed child exit before the test process moves on.
+      await wait(350);
+    }
+  }, 2_000);
 });
 
 describe("quality plan tracer contract", () => {

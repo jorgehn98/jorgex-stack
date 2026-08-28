@@ -63,6 +63,14 @@ export interface ParsedCli {
   unknownCommand?: string;
 }
 
+const QUALITY_REJECTED_VALUE_FLAGS = new Set([
+  "--agents",
+  "-a",
+  "--target-dir",
+  "--mode",
+  "--subagent-concurrency",
+]);
+
 async function ensureOpenCodeModelsForInstall(
   command: "install" | "sync",
   flags: Flags,
@@ -109,6 +117,30 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
+    if (allowReceipt) {
+      if (arg === "--help" || arg === "-h") flags.help = true;
+      else if (arg === "--version" || arg === "-v") flags.version = true;
+      else if (arg === "--receipt") {
+        const [value, nextIndex] = readValue(i);
+        if (value === undefined || value === "") flags.unknownFlags.push(arg);
+        else flags.receipt = value;
+        i = nextIndex;
+      }
+      else if (arg.startsWith("--receipt=")) {
+        const value = arg.slice(10);
+        if (value === "") flags.unknownFlags.push(arg);
+        else flags.receipt = value;
+      }
+      else if (QUALITY_REJECTED_VALUE_FLAGS.has(arg)) {
+        flags.unknownFlags.push(arg);
+        const [, nextIndex] = readValue(i);
+        i = nextIndex;
+      }
+      else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
+      else flags.positional.push(arg);
+      continue;
+    }
+
     if (arg === "--agents" || arg === "-a") {
       const [value, nextIndex] = readValue(i);
       flags.agents = (value ?? "").split(",").filter(Boolean) as SelectableRuntimeId[];
@@ -121,12 +153,6 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
       i = nextIndex;
     }
     else if (arg.startsWith("--target-dir=")) flags.targetDir = arg.slice(13);
-    else if (allowReceipt && arg === "--receipt") {
-      const [value, nextIndex] = readValue(i);
-      flags.receipt = value;
-      i = nextIndex;
-    }
-    else if (allowReceipt && arg.startsWith("--receipt=")) flags.receipt = arg.slice(10);
     else if (arg === "--mode") {
       const [value, nextIndex] = readValue(i);
       flags.mode = value ?? "";

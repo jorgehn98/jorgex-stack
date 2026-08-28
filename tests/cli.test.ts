@@ -54,6 +54,52 @@ describe("CLI argument parsing", () => {
   });
 
   it.each([
+    [["quality", "plan.json", "--receipt"]],
+    [["quality", "plan.json", "--receipt="]],
+  ] as const)("rechaza %j como flag --receipt incompleto, no como receipt ausente", (argv) => {
+    const parsed = parseCliArgs([...argv]);
+
+    expect(parsed.action).toBe("unknown-flags");
+    expect(parsed.flags.positional).toEqual(["plan.json"]);
+    expect(parsed.flags.unknownFlags).toEqual([argv[2]]);
+    expect(parsed.flags.receipt).toBeUndefined();
+  });
+
+  it.each([
+    ["--agents"],
+    ["--agents", "opencode"],
+    ["--agents=opencode"],
+    ["-a"],
+    ["-a", "opencode"],
+    ["--target-dir"],
+    ["--target-dir", "tmp"],
+    ["--target-dir=tmp"],
+    ["--mode"],
+    ["--mode", "human"],
+    ["--mode=human"],
+    ["--subagent-concurrency"],
+    ["--subagent-concurrency", "serial"],
+    ["--subagent-concurrency=serial"],
+    ["--dry-run"],
+    ["--yes"],
+    ["-y"],
+    ["--list"],
+    ["--check"],
+    ["--remove-engram"],
+    ["--playwright"],
+    ["--remove-playwright"],
+    ["--devtools"],
+    ["--no-devtools"],
+  ] as const)("rechaza %j en quality como flag de otro comando sin convertir su operando en plan", (...args) => {
+    const [flag, operand] = args;
+    const parsed = parseCliArgs(["quality", "plan.json", flag, ...(operand === undefined ? [] : [operand])]);
+
+    expect(parsed.action).toBe("unknown-flags");
+    expect(parsed.flags.unknownFlags).toEqual([flag]);
+    expect(parsed.flags.positional).toEqual(["plan.json"]);
+  });
+
+  it.each([
     "install",
     "sync",
     "models",

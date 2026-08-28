@@ -23,7 +23,8 @@ export type QualityCommandStatus = "pass" | "fail" | "timeout" | "error" | "unav
 export type QualityCommandFailureReason =
   | "output-limit"
   | "unsafe-command"
-  | "spawn-error";
+  | "spawn-error"
+  | "termination-timeout";
 
 export interface QualityCommandInput {
   commandId: string;
@@ -48,19 +49,18 @@ export interface QualityCommandResult {
   reason?: QualityCommandFailureReason;
 }
 
+export interface QualityCommandDeps {
+  terminate(child: ChildProcess): void;
+}
+
 export interface QualityPlanIdentity {
   baseSha: string;
   headSha: string;
 }
 
-export interface QualityPlanCommandInput {
+export interface QualityPlanCommandInput extends Omit<QualityCommandInput, "commandId"> {
   controlId: string;
   commandId: string;
-  executable: string;
-  argv: readonly string[];
-  env?: Readonly<Record<string, string>>;
-  timeoutMs: number;
-  maxOutputBytes?: number;
 }
 
 export interface QualityPlanInput {
@@ -87,6 +87,18 @@ function normalizeLimit(value: number | undefined, name: string): number | undef
     throw new Error(`${name} must be a non-negative safe integer`);
   }
   return value;
+}
+
+const MAX_NODE_TIMEOUT_MS = 2_147_483_647;
+const TERMINATION_GRACE_MS = 250;
+const TASKKILL_TIMEOUT_MS = 2_000;
+
+function normalizeTimeout(value: number | undefined): number | undefined {
+  const timeoutMs = normalizeLimit(value, "timeoutMs");
+  if (timeoutMs !== undefined && timeoutMs > MAX_NODE_TIMEOUT_MS) {
+    throw new Error(`timeoutMs must not exceed ${MAX_NODE_TIMEOUT_MS}`);
+  }
+  return timeoutMs;
 }
 
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -160,12 +172,16 @@ function assertQualityPlanInput(value: unknown): asserts value is QualityPlanInp
   for (let index = 0; index < value.commands.length; index += 1) {
     const command = value.commands[index];
     if (!isRecord(command)) throw new Error(`Invalid quality plan commands[${index}]`);
+    const timeoutMs = command.timeoutMs;
     if (!hasText(command.controlId)
       || !hasText(command.commandId)
       || !hasText(command.executable)
       || !isDenseStringArray(command.argv)
-      || !isNonNegativeSafeInteger(command.timeoutMs)) {
+      || !isNonNegativeSafeInteger(timeoutMs)) {
       throw new Error(`Invalid quality plan commands[${index}]`);
+    }
+    if (timeoutMs > MAX_NODE_TIMEOUT_MS) {
+      throw new Error(`Invalid quality plan commands[${index}].timeoutMs: maximum is ${MAX_NODE_TIMEOUT_MS}`);
     }
     if (!controlIds.has(command.controlId)) {
       throw new Error(`Unknown quality plan command control id: ${command.controlId}`);
@@ -230,11 +246,19 @@ function killProcessTree(child: ChildProcess): void {
   if (process.platform === "win32") {
     const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
     const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
-    spawnSync(taskkill, ["/pid", String(pid), "/t", "/f"], {
+    const result = spawnSync(taskkill, ["/pid", String(pid), "/t", "/f"], {
       shell: false,
       stdio: "ignore",
+      timeout: TASKKILL_TIMEOUT_MS,
       windowsHide: true,
     });
+    if (result.error !== undefined || result.status !== 0) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The process may have exited between the timeout and the kill attempt.
+      }
+    }
     return;
   }
 
@@ -277,8 +301,11 @@ function resultFromCaptured(
  * for timeout/output-limit failures. This is local process orchestration, not
  * a sandbox or an enforcement boundary.
  */
-export async function runQualityCommand(input: QualityCommandInput): Promise<QualityCommandResult> {
-  const timeoutMs = normalizeLimit(input.timeoutMs, "timeoutMs");
+export async function runQualityCommand(
+  input: QualityCommandInput,
+  deps: QualityCommandDeps = { terminate: killProcessTree },
+): Promise<QualityCommandResult> {
+  const timeoutMs = normalizeTimeout(input.timeoutMs);
   const maxOutputBytes = normalizeLimit(input.maxOutputBytes, "maxOutputBytes");
   if (timeoutMs === undefined) throw new Error("timeoutMs is required");
 
@@ -295,11 +322,13 @@ export async function runQualityCommand(input: QualityCommandInput): Promise<Qua
     let terminationReason: "timeout" | "output-limit" | undefined;
     let spawnError: NodeJS.ErrnoException | undefined;
     let timeout: NodeJS.Timeout | undefined;
+    let terminationDeadline: NodeJS.Timeout | undefined;
 
     const settle = (result: QualityCommandResult): void => {
       if (settled) return;
       settled = true;
       if (timeout !== undefined) clearTimeout(timeout);
+      if (terminationDeadline !== undefined) clearTimeout(terminationDeadline);
       resolve(result);
     };
 
@@ -320,7 +349,15 @@ export async function runQualityCommand(input: QualityCommandInput): Promise<Qua
     const stopFor = (reason: "timeout" | "output-limit"): void => {
       if (settled || terminationReason !== undefined) return;
       terminationReason = reason;
-      killProcessTree(child);
+      try {
+        deps.terminate(child);
+      } catch {
+        // A failed termination is reported by the grace deadline below.
+      }
+      if (settled) return;
+      terminationDeadline = setTimeout(() => {
+        settle(resultFromCaptured(input, "error", null, startedAt, captured, maxOutputBytes, "termination-timeout"));
+      }, TERMINATION_GRACE_MS);
     };
 
     const onOutput = (stream: "stdout" | "stderr", chunk: Buffer): void => {
