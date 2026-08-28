@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCliArgs } from "../src/cli.js";
+import { parseCliArgs, type Flags } from "../src/cli.js";
 
 describe("CLI argument parsing", () => {
   it.each([
@@ -37,6 +37,36 @@ describe("CLI argument parsing", () => {
       targetDir: "tmp",
       yes: true,
     });
+  });
+
+  it.each([
+    [["quality", "plan with spaces.json", "--receipt", "receipt.json"], "plan with spaces.json", "receipt.json"],
+    [["quality", "--receipt", "receipt.json", "plan with spaces.json"], "plan with spaces.json", "receipt.json"],
+  ] as const)("reconoce quality con plan y receipt sin mezclar posicionales y flags: %j", (argv, plan, receipt) => {
+    const parsed = parseCliArgs([...argv]);
+    const flags = parsed.flags as Flags & { receipt?: string };
+
+    expect(parsed.action).toBe("run");
+    expect(parsed.command).toBe("quality");
+    expect(flags.positional).toEqual([plan]);
+    expect(flags.receipt).toBe(receipt);
+    expect(flags.unknownFlags).toEqual([]);
+  });
+
+  it.each([
+    "install",
+    "sync",
+    "models",
+    "update",
+    "doctor",
+    "restore",
+    "uninstall",
+  ] as const)("no acepta --receipt en el comando no-quality %s", (command) => {
+    const parsed = parseCliArgs([command, "--receipt", "receipt.json"]);
+
+    expect(parsed.action).toBe("unknown-flags");
+    expect(parsed.flags.unknownFlags).toEqual(["--receipt"]);
+    expect(parsed.flags.receipt).toBeUndefined();
   });
 
   it.each([
