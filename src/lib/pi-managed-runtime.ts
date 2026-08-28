@@ -1,4 +1,8 @@
-import { runPiProjectionLifecycleSystem } from "./pi-projection-lifecycle.js";
+import {
+  completePiProjectionUninstallSystem,
+  preparePiProjectionUninstallSystem,
+  runPiProjectionLifecycleSystem,
+} from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
 import { loadPlaywrightCliPreference } from "./tool-preferences.js";
 
@@ -27,10 +31,18 @@ export type PiManagedOperationResult = Exclude<PiManagedPackageResult, { kind: "
   | { kind: "blocked"; reason: "projection-drift"; paths: string[]; remedy: string };
 
 type PiManagedPackageOutcome = Exclude<PiManagedPackageResult, { kind: "manual-existing" }>;
+type PiManagedProjectionUninstallPreparation =
+  | { kind: "prepared"; token: unknown }
+  | Extract<PiManagedProjectionResult, { kind: "blocked" }>;
+type PiManagedProjectionUninstallCompletion =
+  | { kind: "uninstalled" }
+  | Extract<PiManagedProjectionResult, { kind: "blocked" }>;
 
 export interface PiManagedRuntimeDeps {
   runPackage(operation: PiManagedOperation): Promise<PiManagedPackageResult>;
   runProjection(operation: PiProjectionOperation): Promise<PiManagedProjectionResult>;
+  prepareProjectionUninstall(): Promise<PiManagedProjectionUninstallPreparation>;
+  completeProjectionUninstall(token: unknown): Promise<PiManagedProjectionUninstallCompletion>;
 }
 
 function projectionOperation(operation: Exclude<PiManagedOperation, "models">): PiProjectionOperation {
@@ -64,6 +76,16 @@ export async function runManagedPiOperation(
   operation: PiManagedOperation,
   deps: PiManagedRuntimeDeps,
 ): Promise<PiManagedOperationResult> {
+  if (operation === "uninstall") {
+    const preparation = await deps.prepareProjectionUninstall();
+    if (preparation.kind === "blocked") return preparation;
+
+    const packageResult = await deps.runPackage(operation);
+    if (packageResult.kind === "manual-existing") return manualExistingResult(packageResult);
+    if (packageResult.kind === "blocked") return packageResult;
+    return deps.completeProjectionUninstall(preparation.token);
+  }
+
   const packageResult = await deps.runPackage(operation);
   if (packageResult.kind === "manual-existing") return manualExistingResult(packageResult);
   if (operation === "models") return packageResult;
@@ -78,6 +100,7 @@ export async function runManagedPiOperation(
   }
 
   const recoveryProjection = await deps.runProjection("sync");
+  if (recoveryProjection.kind === "blocked") return recoveryProjection;
   if (recoveryProjection.kind !== "synced" || !recoveryProjection.changed) return packageResult;
 
   const retryResult = await deps.runPackage(operation);
@@ -102,6 +125,12 @@ function managedPackageResult(
 /** Coordina el paquete Pi con la proyección compartida de Stack. */
 export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManagedOperationResult> {
   const playwrightCliEnabled = input.targetDir === undefined && loadPlaywrightCliPreference() === true;
+  const projectionInput = {
+    targetDir: input.targetDir,
+    packageSource: PI_RUNTIME_CANDIDATE.package.source,
+    engramBin: input.engramBin,
+    playwrightCliEnabled,
+  };
   return runManagedPiOperation(input.operation, {
     async runPackage(operation) {
       return managedPackageResult(await runPiRuntimeSystem({ ...input, operation }));
@@ -109,10 +138,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManag
     runProjection(operation) {
       const result = runPiProjectionLifecycleSystem({
         operation,
-        targetDir: input.targetDir,
-        packageSource: PI_RUNTIME_CANDIDATE.package.source,
-        engramBin: input.engramBin,
-        playwrightCliEnabled,
+        ...projectionInput,
       });
       return Promise.resolve(result.kind === "drift"
         ? {
@@ -121,6 +147,13 @@ export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManag
             remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
           }
         : result);
+    },
+    prepareProjectionUninstall() {
+      const result = preparePiProjectionUninstallSystem({ operation: "uninstall", ...projectionInput });
+      return Promise.resolve(result.kind === "prepared" ? { kind: "prepared" as const, token: result.plan } : result);
+    },
+    completeProjectionUninstall(token) {
+      return Promise.resolve(completePiProjectionUninstallSystem(token, { operation: "uninstall", ...projectionInput }));
     },
   });
 }

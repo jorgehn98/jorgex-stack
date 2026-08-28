@@ -7,7 +7,7 @@ import { planSkills } from "../components/skills.js";
 import { planSystemPrompt } from "../components/system-prompt.js";
 import { createBackup } from "./backup.js";
 import { removeMarkdownSection } from "./filemerge.js";
-import { copyFile, readTextIfExists, writeText } from "./fsx.js";
+import { copyFile, writeText } from "./fsx.js";
 import { readManifest } from "./manifest.js";
 import { DEFAULT_MODEL_MAP } from "./model-map.js";
 import { dataDir, HOME, stackRoot } from "./paths.js";
@@ -53,20 +53,46 @@ export interface PiProjectionLifecycleDeps {
   readManifest(): PiProjectionManifest;
 }
 
+export type PiProjectionBlockedReason =
+  | "projection-backup-failed"
+  | "projection-cleanup-failed"
+  | "projection-receipt-invalid"
+  | "projection-receipt-unreadable"
+  | "projection-write-failed";
+
+export interface PiProjectionBlocked {
+  kind: "blocked";
+  reason: PiProjectionBlockedReason;
+  paths: string[];
+  remedy: string;
+}
+
 export type PiProjectionLifecycleResult =
   | { kind: "installed"; receipt: PiProjectionReceipt }
   | { kind: "synced"; changed: boolean }
   | { kind: "healthy" }
   | { kind: "drift"; paths: string[] }
   | { kind: "uninstalled" }
-  | {
-    kind: "blocked";
-    reason: "projection-backup-failed" | "projection-cleanup-failed" | "source-divergent";
-  };
+  | { kind: "blocked"; reason: "source-divergent" }
+  | PiProjectionBlocked;
+
+export type PiProjectionUninstallPrepareResult =
+  | { kind: "prepared"; plan: unknown }
+  | PiProjectionBlocked;
+
+export type PiProjectionUninstallCompleteResult = { kind: "uninstalled" } | PiProjectionBlocked;
 
 type ProjectionScope = PiProjectionScope & {
   settingsFile: string;
 };
+
+type PreparedPiProjectionUninstall = {
+  prompt: { file: string; content: string } | null;
+  ownedToRemove: string[];
+  receiptFile: string | null;
+};
+
+const preparedPiProjectionUninstalls = new WeakMap<object, PreparedPiProjectionUninstall>();
 
 function projectionScope(scope: PiProjectionScope): ProjectionScope {
   return {
@@ -191,10 +217,7 @@ function parseReceipt(raw: string | null, expected: PiProjectionReceipt): PiProj
       || owned.length !== expected.owned.length) {
       return null;
     }
-    const expectedOwned = new Set(expected.owned);
-    if (expectedOwned.size !== expected.owned.length
-      || new Set(owned).size !== owned.length
-      || !owned.every((file): file is string => typeof file === "string" && expectedOwned.has(file))) {
+    if (!owned.every((file, index): file is string => typeof file === "string" && file === expected.owned[index])) {
       return null;
     }
     return expected;
@@ -226,6 +249,15 @@ export type RealPiProjectionOwnership =
   | { kind: "valid"; owned: string[] }
   | { kind: "corrupt"; file: string };
 
+function readTextOnlyIfMissing(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (typeof error === "object" && error !== null && Reflect.get(error, "code") === "ENOENT") return null;
+    throw error;
+  }
+}
+
 /** Lee sin mutar el receipt de la proyección real de Pi. */
 export function readRealPiProjectionOwned(): RealPiProjectionOwnership {
   const scope = projectionScope(realPiProjectionScope());
@@ -237,11 +269,14 @@ export function readRealPiProjectionOwned(): RealPiProjectionOwnership {
     engramBin: "",
     playwrightCliEnabled: false,
   }, scope);
-  const receiptContent = readTextIfExists(scope.receiptFile);
+  let receiptContent: string | null;
+  try {
+    receiptContent = readTextOnlyIfMissing(scope.receiptFile);
+  } catch {
+    return { kind: "corrupt", file: scope.receiptFile };
+  }
   if (receiptContent === null) {
-    return fs.existsSync(scope.receiptFile)
-      ? { kind: "corrupt", file: scope.receiptFile }
-      : { kind: "absent" };
+    return { kind: "absent" };
   }
   const receipt = parseReceipt(receiptContent, expected);
   return receipt === null
@@ -261,27 +296,184 @@ function withoutManagedPromptSections(content: string): string {
     .reduce((current, section) => removeMarkdownSection(current, section), content);
 }
 
-function removeManagedPromptSections(scope: ProjectionScope, deps: PiProjectionLifecycleDeps): void {
-  const prompt = path.join(scope.codingAgentDir, "AGENTS.md");
-  const existing = deps.readText(prompt);
-  if (existing === null) return;
-  const content = withoutManagedPromptSections(existing);
-  if (content !== existing) deps.writeText(prompt, content);
-}
-
 function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths.map((file) => path.resolve(file)))];
 }
 
-function backupExisting(paths: string[], deps: PiProjectionLifecycleDeps): boolean {
-  const existing = uniquePaths(paths.filter((file) => deps.readText(file) !== null));
-  if (existing.length === 0) return true;
+function blocked(
+  reason: PiProjectionBlockedReason,
+  paths: string[],
+  remedy: string,
+): PiProjectionBlocked {
+  return { kind: "blocked", reason, paths: uniquePaths(paths), remedy };
+}
+
+function backupExisting(
+  paths: string[],
+  deps: PiProjectionLifecycleDeps,
+): { kind: "backed-up" } | { kind: "backup-failed"; paths: string[] } {
+  const candidates = uniquePaths(paths);
+  let existing: string[];
+  try {
+    existing = candidates.filter((file) => deps.readText(file) !== null);
+  } catch {
+    return { kind: "backup-failed", paths: candidates };
+  }
+  if (existing.length === 0) return { kind: "backed-up" };
   try {
     deps.backup(existing);
-    return true;
+    return { kind: "backed-up" };
   } catch {
-    return false;
+    return { kind: "backup-failed", paths: existing };
   }
+}
+
+function backupFailure(paths: string[]): PiProjectionBlocked {
+  return blocked(
+    "projection-backup-failed",
+    paths,
+    "Revisa permisos y espacio disponible para crear las copias de seguridad indicadas antes de reintentar.",
+  );
+}
+
+function cleanupFailure(paths: string[]): PiProjectionBlocked {
+  return blocked(
+    "projection-cleanup-failed",
+    paths,
+    "Revisa permisos, cierra procesos que usen estas rutas y vuelve a ejecutar la desinstalación.",
+  );
+}
+
+function receiptInvalid(receiptFile: string): PiProjectionBlocked {
+  return blocked(
+    "projection-receipt-invalid",
+    [receiptFile],
+    "Restaura un receipt de proyección íntegro o elimina manualmente solo los archivos gestionados tras verificar su propiedad.",
+  );
+}
+
+function receiptUnreadable(receiptFile: string): PiProjectionBlocked {
+  return blocked(
+    "projection-receipt-unreadable",
+    [receiptFile],
+    "Revisa los permisos o el estado de E/S del receipt de proyección y vuelve a intentarlo.",
+  );
+}
+
+function writeFailure(file: string): PiProjectionBlocked {
+  return blocked(
+    "projection-write-failed",
+    [file],
+    "Revisa los permisos de escritura de esta ruta y vuelve a ejecutar la desinstalación.",
+  );
+}
+
+function readProjectionReceipt(
+  receiptFile: string,
+  deps: PiProjectionLifecycleDeps,
+): { kind: "absent" } | { kind: "present"; content: string } | { kind: "unreadable" } {
+  try {
+    const content = deps.readText(receiptFile);
+    return content === null ? { kind: "absent" } : { kind: "present", content };
+  } catch (error) {
+    if (typeof error === "object" && error !== null && Reflect.get(error, "code") === "ENOENT") {
+      return { kind: "absent" };
+    }
+    return { kind: "unreadable" };
+  }
+}
+
+/** Prepara y respalda la limpieza de Pi sin modificar los archivos proyectados. */
+export function preparePiProjectionUninstall(
+  input: PiProjectionLifecycleInput,
+  deps: PiProjectionLifecycleDeps,
+): PiProjectionUninstallPrepareResult {
+  if (input.operation !== "uninstall") {
+    return cleanupFailure([]);
+  }
+
+  const scope = projectionScope(input.scope);
+  const expectedReceipt = expectedProjectionReceipt(input, scope);
+  const prompt = path.join(scope.codingAgentDir, "AGENTS.md");
+  let existingPrompt: string | null;
+  try {
+    existingPrompt = deps.readText(prompt);
+  } catch {
+    return cleanupFailure([prompt]);
+  }
+  const promptContent = existingPrompt === null ? null : withoutManagedPromptSections(existingPrompt);
+  const promptUpdate = promptContent === null || promptContent === existingPrompt
+    ? null
+    : { file: path.resolve(prompt), content: promptContent };
+
+  const receiptRead = readProjectionReceipt(scope.receiptFile, deps);
+  if (receiptRead.kind === "unreadable") return receiptUnreadable(scope.receiptFile);
+
+  let ownedToRemove: string[] = [];
+  let receiptFile: string | null = null;
+  let backupTargets = promptUpdate === null ? [] : [promptUpdate.file];
+  if (receiptRead.kind === "present") {
+    const receipt = parseReceipt(receiptRead.content, expectedReceipt);
+    if (receipt === null) return receiptInvalid(scope.receiptFile);
+
+    let retained: Set<string>;
+    try {
+      retained = manifestOwned(deps.readManifest());
+    } catch {
+      return cleanupFailure([scope.receiptFile]);
+    }
+    ownedToRemove = receipt.owned.filter((owned) => !retained.has(owned));
+    receiptFile = path.resolve(scope.receiptFile);
+    backupTargets = [...backupTargets, ...receipt.owned, receiptFile];
+  }
+
+  const backup = backupExisting(backupTargets, deps);
+  if (backup.kind === "backup-failed") return backupFailure(backup.paths);
+
+  const token = {};
+  preparedPiProjectionUninstalls.set(token, {
+    prompt: promptUpdate,
+    ownedToRemove,
+    receiptFile,
+  });
+  return { kind: "prepared", plan: token };
+}
+
+/** Completa una limpieza de Pi ya preparada sin volver a leer ni respaldar su estado. */
+export function completePiProjectionUninstall(
+  plan: unknown,
+  deps: PiProjectionLifecycleDeps,
+): PiProjectionUninstallCompleteResult {
+  if (typeof plan !== "object" || plan === null) {
+    return cleanupFailure([]);
+  }
+  const prepared = preparedPiProjectionUninstalls.get(plan);
+  if (prepared === undefined) {
+    return cleanupFailure([]);
+  }
+
+  if (prepared.prompt !== null) {
+    try {
+      deps.writeText(prepared.prompt.file, prepared.prompt.content);
+    } catch {
+      return writeFailure(prepared.prompt.file);
+    }
+  }
+  for (const owned of prepared.ownedToRemove) {
+    try {
+      deps.removeFile(owned);
+    } catch {
+      return cleanupFailure([owned]);
+    }
+  }
+  if (prepared.receiptFile !== null) {
+    try {
+      deps.removeFile(prepared.receiptFile);
+    } catch {
+      return cleanupFailure([prepared.receiptFile]);
+    }
+  }
+  return { kind: "uninstalled" };
 }
 
 export function runPiProjectionLifecycle(
@@ -291,45 +483,10 @@ export function runPiProjectionLifecycle(
   const scope = projectionScope(input.scope);
 
   if (input.operation === "uninstall") {
-    const expectedReceipt = expectedProjectionReceipt(input, scope);
-    const prompt = path.join(scope.codingAgentDir, "AGENTS.md");
-    const existingPrompt = deps.readText(prompt);
-    const promptWillChange = existingPrompt !== null
-      && withoutManagedPromptSections(existingPrompt) !== existingPrompt;
-    const receiptContent = deps.readText(scope.receiptFile);
-    const receipt = parseReceipt(receiptContent, expectedReceipt);
-    if (receipt === null && receiptContent !== null) {
-      return { kind: "blocked", reason: "projection-cleanup-failed" };
-    }
-    if (receipt === null) {
-      if (promptWillChange && !backupExisting([prompt], deps)) {
-        return { kind: "blocked", reason: "projection-backup-failed" };
-      }
-      try {
-        removeManagedPromptSections(scope, deps);
-      } catch {
-        return { kind: "blocked", reason: "projection-cleanup-failed" };
-      }
-      return { kind: "uninstalled" };
-    }
-
-    const retained = manifestOwned(deps.readManifest());
-    const removed = receipt.owned.filter((owned) => !retained.has(owned));
-    if (!backupExisting([
-      ...(promptWillChange ? [prompt] : []),
-      ...receipt.owned,
-      scope.receiptFile,
-    ], deps)) {
-      return { kind: "blocked", reason: "projection-backup-failed" };
-    }
-    try {
-      removeManagedPromptSections(scope, deps);
-      for (const owned of removed) deps.removeFile(owned);
-      deps.removeFile(scope.receiptFile);
-    } catch {
-      return { kind: "blocked", reason: "projection-cleanup-failed" };
-    }
-    return { kind: "uninstalled" };
+    const prepared = preparePiProjectionUninstall(input, deps);
+    return prepared.kind === "blocked"
+      ? prepared
+      : completePiProjectionUninstall(prepared.plan, deps);
   }
 
   const plan = projectionPlan(input, scope);
@@ -360,13 +517,12 @@ export function runPiProjectionLifecycle(
   const packageWillChange = filteredSettings !== null && filteredSettings !== currentSettings;
   const receiptChanged = deps.readText(scope.receiptFile) !== expectedReceipt;
   if (drifted.length > 0 || packageWillChange || receiptChanged) {
-    if (!backupExisting([
+    const backup = backupExisting([
       ...drifted.map((action) => action.target),
       ...(packageWillChange ? [scope.settingsFile] : []),
       ...(receiptChanged ? [scope.receiptFile] : []),
-    ], deps)) {
-      return { kind: "blocked", reason: "projection-backup-failed" };
-    }
+    ], deps);
+    if (backup.kind === "backup-failed") return backupFailure(backup.paths);
   }
   applyActions(drifted, deps);
   if (packageWillChange && filteredSettings !== null) deps.writeText(scope.settingsFile, filteredSettings);
@@ -384,10 +540,9 @@ export interface PiProjectionLifecycleSystemInput {
   playwrightCliEnabled: boolean;
 }
 
-/** Ejecuta la proyección compartida contra el scope real o aislado de Pi. */
-export function runPiProjectionLifecycleSystem(
+function systemProjectionLifecycle(
   input: PiProjectionLifecycleSystemInput,
-): PiProjectionLifecycleResult {
+): { input: PiProjectionLifecycleInput; deps: PiProjectionLifecycleDeps } {
   const targetRoot = input.targetDir === undefined ? null : path.resolve(input.targetDir);
   const scope: PiProjectionScope = targetRoot === null
     ? realPiProjectionScope()
@@ -398,23 +553,51 @@ export function runPiProjectionLifecycleSystem(
         receiptFile: path.join(targetRoot, "state", "pi-projection-receipt.json"),
       };
 
-  return runPiProjectionLifecycle({
-    operation: input.operation,
-    scope,
-    packageSource: input.packageSource,
-    stackDir: stackRoot(),
-    engramBin: input.engramBin ?? "",
-    playwrightCliEnabled: input.playwrightCliEnabled,
-  }, {
-    readText: readTextIfExists,
-    backup: (paths) => createBackup(
-      paths,
-      `pi-projection-${input.operation}`,
-      targetRoot === null ? undefined : path.join(targetRoot, "backups"),
-    ),
-    writeText,
-    copyFile,
-    removeFile: (file) => fs.rmSync(file, { force: true }),
-    readManifest: targetRoot === null ? readManifest : () => ({ runtimes: {} }),
-  });
+  return {
+    input: {
+      operation: input.operation,
+      scope,
+      packageSource: input.packageSource,
+      stackDir: stackRoot(),
+      engramBin: input.engramBin ?? "",
+      playwrightCliEnabled: input.playwrightCliEnabled,
+    },
+    deps: {
+      readText: readTextOnlyIfMissing,
+      backup: (paths) => createBackup(
+        paths,
+        `pi-projection-${input.operation}`,
+        targetRoot === null ? undefined : path.join(targetRoot, "backups"),
+      ),
+      writeText,
+      copyFile,
+      removeFile: (file) => fs.rmSync(file, { force: true }),
+      readManifest: targetRoot === null ? readManifest : () => ({ runtimes: {} }),
+    },
+  };
+}
+
+/** Prepara la limpieza compartida contra el scope real o aislado de Pi. */
+export function preparePiProjectionUninstallSystem(
+  input: PiProjectionLifecycleSystemInput,
+): PiProjectionUninstallPrepareResult {
+  const lifecycle = systemProjectionLifecycle(input);
+  return preparePiProjectionUninstall(lifecycle.input, lifecycle.deps);
+}
+
+/** Completa una limpieza compartida ya preparada contra el mismo scope de Pi. */
+export function completePiProjectionUninstallSystem(
+  plan: unknown,
+  input: PiProjectionLifecycleSystemInput,
+): PiProjectionUninstallCompleteResult {
+  const lifecycle = systemProjectionLifecycle(input);
+  return completePiProjectionUninstall(plan, lifecycle.deps);
+}
+
+/** Ejecuta la proyección compartida contra el scope real o aislado de Pi. */
+export function runPiProjectionLifecycleSystem(
+  input: PiProjectionLifecycleSystemInput,
+): PiProjectionLifecycleResult {
+  const lifecycle = systemProjectionLifecycle(input);
+  return runPiProjectionLifecycle(lifecycle.input, lifecycle.deps);
 }

@@ -59,10 +59,13 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.outro("Uninstall cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
-  const piProjection = useBrowserPreferences ? readRealPiProjectionOwned() : { kind: "absent" as const };
+  const removesSharedSkills = opts.runtimes.some((runtime) => runtime === "codex" || runtime === "opencode");
+  const piProjection = useBrowserPreferences && removesSharedSkills
+    ? readRealPiProjectionOwned()
+    : { kind: "absent" as const };
   if (piProjection.kind === "corrupt") {
-    p.log.error(`Pi: receipt de proyección inválido en ${piProjection.file}. Corrige o borra ese archivo antes de reintentar.`);
-    p.outro("Uninstall cancelado: corrige el receipt de proyección de Pi antes de reintentar.");
+    p.log.error(`Pi: receipt de proyección inválido en ${piProjection.file}. Restaura o repara ese receipt antes de reintentar.`);
+    p.outro("Uninstall cancelado: restaura o repara el receipt de proyección de Pi antes de reintentar.");
     return 1;
   }
   const stackDir = stackRoot();

@@ -46,18 +46,50 @@ type ProjectionDeps = {
   readManifest(): StackManifest;
 };
 
+type PiProjectionLifecycleInput = {
+  operation: ProjectionOperation;
+  scope: ProjectionScope;
+  packageSource: string;
+  stackDir: string;
+  engramBin: string;
+  playwrightCliEnabled: boolean;
+};
+
 type PiProjectionLifecycle = {
   runPiProjectionLifecycle(
-    input: {
-      operation: ProjectionOperation;
-      scope: ProjectionScope;
-      packageSource: string;
-      stackDir: string;
-      engramBin: string;
-      playwrightCliEnabled: boolean;
-    },
+    input: PiProjectionLifecycleInput,
     deps: ProjectionDeps,
   ): ProjectionResult;
+};
+
+type ProjectionBlockedReason =
+  | "projection-backup-failed"
+  | "projection-cleanup-failed"
+  | "projection-receipt-invalid"
+  | "projection-receipt-unreadable"
+  | "projection-write-failed";
+
+type ProjectionBlocked = {
+  kind: "blocked";
+  reason: ProjectionBlockedReason;
+  paths: string[];
+  remedy: string;
+};
+
+type PreparedProjectionUninstall = {
+  kind: "prepared";
+  plan: unknown;
+};
+
+type PiProjectionUninstallCore = {
+  preparePiProjectionUninstall(
+    input: PiProjectionLifecycleInput,
+    deps: ProjectionDeps,
+  ): PreparedProjectionUninstall | ProjectionBlocked;
+  completePiProjectionUninstall(
+    plan: unknown,
+    deps: ProjectionDeps,
+  ): { kind: "uninstalled" } | ProjectionBlocked;
 };
 
 type PiProjectionLifecycleSystem = {
@@ -74,6 +106,13 @@ async function lifecycle(): Promise<PiProjectionLifecycle> {
   const mod = await import("../src/lib/pi-projection-lifecycle.js") as Partial<PiProjectionLifecycle>;
   expect(mod.runPiProjectionLifecycle).toBeTypeOf("function");
   return mod as PiProjectionLifecycle;
+}
+
+async function uninstallCore(): Promise<PiProjectionUninstallCore> {
+  const mod = await import("../src/lib/pi-projection-lifecycle.js") as Partial<PiProjectionUninstallCore>;
+  expect(mod.preparePiProjectionUninstall).toBeTypeOf("function");
+  expect(mod.completePiProjectionUninstall).toBeTypeOf("function");
+  return mod as PiProjectionUninstallCore;
 }
 
 function isInside(root: string, file: string): boolean {
@@ -93,6 +132,30 @@ function expectBackupsBeforeMutation(events: string[], expected: string[]): void
     || event.startsWith("remove:"));
   expect(firstMutation).toBeGreaterThanOrEqual(0);
   expect(backupPaths(events.slice(0, firstMutation))).toEqual(expect.arrayContaining(expected.map((file) => path.resolve(file))));
+}
+
+function mutationEvents(events: string[]): string[] {
+  return events.filter((event) => event.startsWith("write:")
+    || event.startsWith("copy:")
+    || event.startsWith("remove:"));
+}
+
+function preparedPlan(result: PreparedProjectionUninstall | ProjectionBlocked): unknown {
+  expect(result.kind).toBe("prepared");
+  if (result.kind !== "prepared") throw new Error("expected a prepared Pi projection uninstall plan");
+  return result.plan;
+}
+
+function expectStructuredBlock(
+  result: PreparedProjectionUninstall | ProjectionBlocked | { kind: "uninstalled" },
+  reason: ProjectionBlockedReason,
+  paths: string[],
+): void {
+  expect(result.kind).toBe("blocked");
+  if (result.kind !== "blocked") return;
+  expect(result.reason).toBe(reason);
+  expect(result.paths).toEqual(paths.map((file) => path.resolve(file)));
+  expect(result.remedy.trim()).not.toBe("");
 }
 
 function temporaryDeps(
@@ -361,9 +424,11 @@ describe("Pi shared projection lifecycle", () => {
         new Set([path.resolve(failedLeanAudit)]),
       );
 
-      expect(runPiProjectionLifecycle({ ...failedInput, operation: "uninstall" }, failingDeps)).toEqual({
+      expect(runPiProjectionLifecycle({ ...failedInput, operation: "uninstall" }, failingDeps)).toMatchObject({
         kind: "blocked",
         reason: "projection-cleanup-failed",
+        paths: [path.resolve(failedLeanAudit)],
+        remedy: expect.stringMatching(/\S/),
       });
       expect(fs.readFileSync(failed.projectionReceipt, "utf8")).toBe(failedReceiptBefore);
       expect(fs.readFileSync(failed.strictReceipt, "utf8")).toBe("{\"strict\":\"package-receipt\"}\n");
@@ -371,6 +436,189 @@ describe("Pi shared projection lifecycle", () => {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(failedRoot, { recursive: true, force: true });
     }
+  });
+
+  describe("two-phase projection uninstall", () => {
+    it("prepares an exact receipt by backing up every cleanup target without mutation, then completes from the opaque plan without rereading or rebacking up", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const { preparePiProjectionUninstall, completePiProjectionUninstall } = await uninstallCore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-two-phase-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+        const prompt = path.join(target.agentDir, "AGENTS.md");
+        const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
+        events.length = 0;
+        const plan = preparedPlan(preparePiProjectionUninstall({ ...input, operation: "uninstall" }, deps));
+
+        expect(mutationEvents(events)).toEqual([]);
+        expect(backupPaths(events).sort()).toEqual([
+          prompt,
+          ...receipt.owned,
+          target.projectionReceipt,
+        ].map((file) => path.resolve(file)).sort());
+
+        const completionDeps: ProjectionDeps = {
+          ...deps,
+          readText: () => {
+            throw new Error("completion must not reread the prepared projection");
+          },
+          backup: () => {
+            throw new Error("completion must not back up the prepared projection again");
+          },
+          readManifest: () => {
+            throw new Error("completion must not reread projection ownership");
+          },
+        };
+        expect(completePiProjectionUninstall(plan, completionDeps)).toEqual({ kind: "uninstalled" });
+        expect(fs.readFileSync(prompt, "utf8")).not.toContain("<!-- jorgex:system-prompt -->");
+        expect(receipt.owned.every((file) => !fs.existsSync(file))).toBe(true);
+        expect(fs.existsSync(target.projectionReceipt)).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("blocks an unreadable projection receipt before backup or cleanup with its path and remedy", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const { preparePiProjectionUninstall } = await uninstallCore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-unreadable-receipt-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+        const prompt = path.join(target.agentDir, "AGENTS.md");
+        const promptBefore = fs.readFileSync(prompt, "utf8");
+        const receiptBefore = fs.readFileSync(target.projectionReceipt, "utf8");
+        events.length = 0;
+        const unreadableDeps: ProjectionDeps = {
+          ...deps,
+          readText(file) {
+            if (path.resolve(file) === path.resolve(target.projectionReceipt)) {
+              throw Object.assign(new Error("EACCES: projection receipt is unreadable"), { code: "EACCES" });
+            }
+            return deps.readText(file);
+          },
+        };
+
+        expectStructuredBlock(
+          preparePiProjectionUninstall({ ...input, operation: "uninstall" }, unreadableDeps),
+          "projection-receipt-unreadable",
+          [target.projectionReceipt],
+        );
+        expect(events).toEqual([]);
+        expect(fs.readFileSync(prompt, "utf8")).toBe(promptBefore);
+        expect(fs.readFileSync(target.projectionReceipt, "utf8")).toBe(receiptBefore);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a receipt that is not exact before backup or cleanup", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const { preparePiProjectionUninstall } = await uninstallCore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-invalid-receipt-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+        const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
+        const firstOwned = receipt.owned[0];
+        if (firstOwned === undefined) throw new Error("fixture did not create projection-owned paths");
+        fs.writeFileSync(target.projectionReceipt, `${JSON.stringify({
+          ...receipt,
+          owned: [...receipt.owned, firstOwned],
+        }, null, 2)}\n`);
+        events.length = 0;
+
+        expectStructuredBlock(
+          preparePiProjectionUninstall({ ...input, operation: "uninstall" }, deps),
+          "projection-receipt-invalid",
+          [target.projectionReceipt],
+        );
+        expect(events).toEqual([]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reports a prompt write failure from completion with an actionable path and remedy", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const { preparePiProjectionUninstall, completePiProjectionUninstall } = await uninstallCore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-write-failure-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const input = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+        };
+        expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+        const prompt = path.join(target.agentDir, "AGENTS.md");
+        const promptBefore = fs.readFileSync(prompt, "utf8");
+        events.length = 0;
+        const plan = preparedPlan(preparePiProjectionUninstall({ ...input, operation: "uninstall" }, deps));
+        const writeFailureDeps: ProjectionDeps = {
+          ...deps,
+          writeText(file, content) {
+            if (path.resolve(file) === path.resolve(prompt)) {
+              throw Object.assign(new Error("EACCES: prompt cannot be updated"), { code: "EACCES" });
+            }
+            deps.writeText(file, content);
+          },
+        };
+
+        expectStructuredBlock(
+          completePiProjectionUninstall(plan, writeFailureDeps),
+          "projection-write-failed",
+          [prompt],
+        );
+        expect(fs.readFileSync(prompt, "utf8")).toBe(promptBefore);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("accepts an explicit real scope without deriving paths from a target root", async () => {
@@ -510,9 +758,11 @@ describe("Pi shared projection lifecycle", () => {
         fs.writeFileSync(target.projectionReceipt, receiptBefore);
 
         events.length = 0;
-        expect(runPiProjectionLifecycle({ ...input, operation: "uninstall" }, deps)).toEqual({
+        expect(runPiProjectionLifecycle({ ...input, operation: "uninstall" }, deps)).toMatchObject({
           kind: "blocked",
-          reason: "projection-cleanup-failed",
+          reason: "projection-receipt-invalid",
+          paths: [path.resolve(target.projectionReceipt)],
+          remedy: expect.stringMatching(/\S/),
         });
         expect(events).toEqual([]);
         expect(fs.readFileSync(prompt, "utf8")).toBe(promptBefore);
@@ -547,9 +797,11 @@ describe("Pi shared projection lifecycle", () => {
         fs.writeFileSync(target.projectionReceipt, receiptBefore);
 
         events.length = 0;
-        expect(runPiProjectionLifecycle({ ...input, operation: "uninstall" }, deps)).toEqual({
+        expect(runPiProjectionLifecycle({ ...input, operation: "uninstall" }, deps)).toMatchObject({
           kind: "blocked",
-          reason: "projection-cleanup-failed",
+          reason: "projection-receipt-invalid",
+          paths: [path.resolve(target.projectionReceipt)],
+          remedy: expect.stringMatching(/\S/),
         });
         expect(events).toEqual([]);
         expect(fs.readFileSync(prompt, "utf8")).toBe(promptBefore);
@@ -581,12 +833,13 @@ describe("Pi shared projection lifecycle", () => {
       fs.writeFileSync(driftedPrompt, "# Drifted managed prompt\n");
       events.length = 0;
       const failingDeps = temporaryDeps(root, events, { runtimes: {} }, new Set(), new Error("simulated backup failure"));
-      let result: ProjectionResult | undefined;
-
-      expect(() => {
-        result = runPiProjectionLifecycle({ ...input, operation: "sync" }, failingDeps);
-      }).not.toThrow();
-      expect(result).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
+      const result = runPiProjectionLifecycle({ ...input, operation: "sync" }, failingDeps);
+      expect(result).toMatchObject({
+        kind: "blocked",
+        reason: "projection-backup-failed",
+        paths: [path.resolve(driftedPrompt)],
+        remedy: expect.stringMatching(/\S/),
+      });
       expect(events).toEqual([]);
       expect(fs.readFileSync(driftedPrompt, "utf8")).toBe("# Drifted managed prompt\n");
     } finally {
