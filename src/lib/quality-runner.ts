@@ -272,8 +272,10 @@ function resultFromCaptured(
 }
 
 /**
- * Runs one quality command with direct argv, a sanitized environment, bounded
- * capture, and tree termination for timeout/output-limit failures.
+ * Runs one quality command with direct argv and an explicit environment (empty
+ * when omitted), optionally bounded capture, and best-effort tree termination
+ * for timeout/output-limit failures. This is local process orchestration, not
+ * a sandbox or an enforcement boundary.
  */
 export async function runQualityCommand(input: QualityCommandInput): Promise<QualityCommandResult> {
   const timeoutMs = normalizeLimit(input.timeoutMs, "timeoutMs");
@@ -435,9 +437,10 @@ function receiptCommandFor(
 }
 
 /**
- * Executes an explicit quality plan in declaration order and returns only a
- * local, redacted receipt. This is lifecycle orchestration, not a sandbox or
- * an authority capable of producing an enforced receipt.
+ * Executes an explicit quality plan in declaration order and returns its
+ * policy evaluation plus a local, redacted receipt. This is lifecycle
+ * orchestration, not a sandbox or an authority capable of producing an
+ * enforced receipt.
  */
 export async function runQualityPlan(input: unknown): Promise<QualityPlanResult> {
   assertQualityPlanInput(input);
