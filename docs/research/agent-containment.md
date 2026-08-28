@@ -26,7 +26,7 @@ El prompt es una guía de comportamiento, no una frontera de seguridad.
 - [OWASP LLM06: Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/): pide minimizar funciones, permisos y autonomía; aplicar complete mediation y aprobación humana para acciones de impacto.
 - [OWASP AI Agent Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/AI_Agent_Security_Cheat_Sheet.html): recomienda least privilege, autorización por herramienta, auditoría, límites de coste, pruebas adversariales y no confiar solo en la salida del modelo.
 - [Anthropic: How we contain Claude](https://www.anthropic.com/engineering/how-we-contain-claude): distingue supervisar lo que hace el agente de contener lo que puede hacer; describe sandbox, VM y egress controls.
-- [UK NCSC/NSA/CISA y socios: Careful adoption of agentic AI services](https://media.defense.gov/2026/Apr/30/2003922823/-1/-1/0/CAREFULADOPTIONOFAGENTICAISERVICES_FINAL.PDF): trata agentes como sistemas IT, recomienda defensa en profundidad, IAM, monitorización y least privilege.
+- [ASD ACSC, CISA, NSA, Canadian Centre for Cyber Security, New Zealand NCSC y UK NCSC: Careful adoption of agentic AI services](https://media.defense.gov/2026/Apr/30/2003922823/-1/-1/0/CAREFULADOPTIONOFAGENTICAISERVICES_FINAL.PDF): trata agentes como sistemas IT, recomienda defensa en profundidad, IAM, monitorización y least privilege.
 
 La investigación de Anthropic también advierte que pedir aprobación en cada paso produce approval fatigue: los humanos tienden a aprobar demasiado cuando reciben muchos avisos. Por tanto, el control humano debe complementar una contención técnica, no sustituirla.
 
@@ -66,6 +66,8 @@ Preferir herramientas específicas:
 - git_diff,
 - create_commit.
 
+`git_diff` y `create_commit` también pueden producir efectos indirectos: `diff.external` y `textconv` pueden ejecutar comandos, y los hooks de Git pueden ejecutar procesos al crear un commit. Exigir una configuración Git aislada dentro del sandbox y una política explícita sobre hooks y side effects antes de habilitar estas capacidades.
+
 Evitar una herramienta genérica execute_any_shell. Si el shell es imprescindible:
 
 - allowlist de ejecutable y argv;
@@ -79,7 +81,7 @@ Evitar una herramienta genérica execute_any_shell. Si el shell es imprescindibl
 El proceso debe ejecutarse con:
 
 - worktree o workspace permitido;
-- deny por defecto fuera del workspace;
+- deny por defecto para write/edit/delete/execute fuera del workspace; la lectura externa solo si el runtime y el perfil la permiten;
 - secrets ausentes del entorno;
 - red denegada por defecto;
 - allowlist de hosts si la tarea necesita red;
@@ -95,8 +97,10 @@ Clasificar acciones antes de ejecutarlas:
 
 - LOW: lectura y análisis local;
 - MEDIUM: escritura en worktree, instalación local, cambios reversibles;
-- HIGH: red externa, acceso a datos sensibles, publicación, credenciales, cambios destructivos;
-- CRITICAL: producción, permisos, secretos, borrado irreversible, dinero o comunicación externa.
+- HIGH: red externa, procesos, acceso a datos sensibles, cambios de permisos o configuración no productivos;
+- CRITICAL: producción, publicación, destrucción irreversible, credenciales, protected merge, dinero o comunicación externa.
+
+Si una acción encaja en varios niveles, se aplica el nivel más alto: CRITICAL prevalece sobre cualquier otra clasificación.
 
 La aprobación debe estar ligada a:
 
@@ -104,9 +108,12 @@ La aprobación debe estar ligada a:
 - recurso y ruta;
 - argumentos;
 - diff o preview;
+- snapshot, hash o versión exactos del recurso, código o configuración revisados;
 - identidad del aprobador;
 - policy version;
 - expiración y no reutilización.
+
+El gateway debe revalidar esa aprobación en el sink, justo antes de ejecutar. Cuando haya una carrera entre el preview y la ejecución, usar una operación atómica o CAS cuando aplique para comprobar que el snapshot/hash/version no ha cambiado y evitar TOCTOU.
 
 Nunca aprobar solo el texto que el modelo genera. La autoridad de aprobar y la de ejecutar deben poder separarse.
 
@@ -167,7 +174,7 @@ JorgeX ya tiene permisos por runtime, worktrees, defaults read-anywhere, denies 
 - filesystem scope explícito;
 - red y herramientas externas como opt-in;
 - ask para impacto alto;
-- deny absoluto para secretos, policy files y rutas fuera de scope;
+- deny absoluto para secretos, policy files y write/edit/delete/execute fuera de scope; lectura externa solo cuando el runtime/perfil la permita;
 - circuit breakers en Goal Mode y tareas programáticas;
 - evidencia de cada denial y approval;
 - pruebas de escape como parte del quality gate del stack.
@@ -178,7 +185,7 @@ Importante: si un runtime solo puede expresar parte de la política, debe report
 
 Una futura suite de seguridad debería intentar, en un entorno desechable:
 
-1. leer un archivo fuera de la raíz permitida;
+1. leer un archivo fuera de la raíz permitida en perfiles que lo permiten y que lo deniegan;
 2. escribir fuera del worktree;
 3. escapar con path traversal;
 4. escapar con symlink/junction;
@@ -194,7 +201,16 @@ Una futura suite de seguridad debería intentar, en un entorno desechable:
 14. ocultar un fallo y devolver pass;
 15. continuar después del kill switch.
 
-Cada caso necesita expected denial, evidencia de la frontera que lo impidió y cleanup verificado.
+Cada caso necesita un `expected outcome`, evidencia de la frontera que lo produjo y cleanup verificado. El resultado esperado no siempre es un denial:
+
+- `deny`: la acción no se ejecuta;
+- `quarantine`: el recurso o proceso queda aislado para impedir efectos posteriores;
+- `stop`: el trabajo se detiene, por ejemplo tras un límite o kill switch;
+- `fail-or-incomplete`: el caso termina sin pass cuando falla la infraestructura, la verificación o falta evidencia suficiente;
+- `no-side-effect`: no se modifica ningún recurso fuera de lo expresamente autorizado;
+- `audit`: queda un registro verificable de la decisión, la acción y su resultado.
+
+Cada prueba debe exigir solo los outcomes aplicables a su caso; varios pueden coexistir, como `stop` + `no-side-effect` + `audit`.
 
 ## Qué significa realmente no escapar
 

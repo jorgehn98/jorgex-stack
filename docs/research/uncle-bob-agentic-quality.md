@@ -54,7 +54,6 @@ La especificación debe describir qué observa el usuario o el sistema, no presc
 | Architect | Dependencias hacia dentro, límites de módulos, property tests | analysts, type-design-analyzer, lean-code | Falta un gate pre/post para cambios arquitectónicos amplios |
 | Hardener | Mutation testing del lenguaje y de la especificación | no existe como fase explícita | Añadir una skill selectiva, preferentemente diferencial |
 | QA | Verificación independiente desde la interfaz de usuario | Playwright, verification y browser skill | Añadir procedimiento QA a la especificación; no crear un agente permanente por defecto |
-| Handoff | Commit y traspaso estructurado entre roles | topic_key, worktree, result contract | Añadir commit/evidence/verification como campos obligatorios de handoff |
 
 ## Prácticas que sí conviene adaptar
 
@@ -108,7 +107,7 @@ El Architect de SwarmForge busca propiedades como:
 
 En JorgeX son especialmente relevantes para filemerge, manifests, adapters, upserts, reparación de marcadores y operaciones install/sync/uninstall.
 
-### 5. Handoffs como evidencia, no como conversación
+### 5. Handoff como práctica operativa
 
 El patrón de handoff debe transferir:
 
@@ -152,7 +151,7 @@ Coverage sirve para encontrar código que no se ejecuta y para alimentar otras s
 
 La adaptación de mayor retorno es una quality ladder:
 
-1. siempre: testing decision, tests relevantes y verificación determinista;
+1. siempre: testing decision, tests relevantes o una justificación explícita de no añadirlos cuando el cambio es documental, trivial o ya está cubierto, y verificación determinista;
 2. riesgo medio: contrato de comportamiento y revisión de límites;
 3. riesgo alto: property tests, cobertura de cambios y análisis CRAP;
 4. riesgo muy alto o release: mutation diferencial, QA black-box y suite adversarial;

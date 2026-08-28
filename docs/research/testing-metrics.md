@@ -75,12 +75,12 @@ Ejemplos aproximados:
 
 | Complejidad | Coverage | CRAP | Lectura |
 |---:|---:|---:|---|
-| 5 | 0% | 30 | límite histórico habitual |
+| 5 | 0% | 30 | frontera; no supera el criterio histórico `> 30` |
 | 5 | 80% | 5,20 | la cobertura reduce el riesgo medido |
 | 10 | 0% | 110 | complejo y sin protección |
 | 10 | 80% | 10,80 | sigue quedando complejidad estructural |
 
-El umbral histórico más citado es 30, pero no debe tratarse como una ley natural. En el workflow específico de SwarmForge, el prompt del rol Cleaner fijado al commit `7d903e0d67c35a82167eb14d1b8a1905249d1db4` usa una disciplina más estricta, CRAP <= 6; no es un criterio general. La adaptación segura para JorgeX es usar CRAP para ordenar trabajo:
+30 es la frontera: el criterio histórico de alerta es CRAP > 30, pero no debe tratarse como una ley natural. En el workflow específico de SwarmForge, el prompt del rol Cleaner fijado al commit `7d903e0d67c35a82167eb14d1b8a1905249d1db4` usa una disciplina más estricta, CRAP <= 6; no es un criterio general. La adaptación segura para JorgeX es usar CRAP para ordenar trabajo:
 
 - informar primero de las funciones cambiadas con CRAP alto;
 - bloquear solo si el perfil de riesgo lo exige;
@@ -100,10 +100,18 @@ Nota: crap-rs no es un repositorio de Uncle Bob. Es una referencia técnica adic
 
 Mutation testing crea versiones deliberadamente defectuosas del código o de la especificación y ejecuta los tests:
 
-- killed: un test detecta la mutación;
-- survived: los tests pasan pese al defecto simulado;
-- no coverage: ningún test alcanza el punto;
-- equivalent/non-viable/error/timeout: la mutación no representa un fallo útil o la ejecución no es válida.
+| Resultado | Interpretación y tratamiento |
+|---|---|
+| `killed` | Un test detecta la mutación; evidencia de que la suite protege ese cambio. |
+| `survived` | Los tests pasan pese al defecto simulado; requiere triage y normalmente una protección o justificación. |
+| `no coverage` | Ningún test alcanza el punto mutado; es un hueco de cobertura, no un survivor. |
+| `timeout` | La ejecución excede el límite; puede revelar un bucle introducido, pero exige triage y no se cuenta como verde sin resolver. |
+| `memory error` | Error de infraestructura o de recursos; el resultado queda `incomplete`, nunca verde. |
+| `run error` | Error al ejecutar la mutación o la suite; el resultado queda `incomplete`, nunca verde. |
+| `non-viable` | La herramienta descarta la mutación por no ser ejecutable o útil; no demuestra que un test la mate. |
+| `equivalent` | Conclusión de análisis humano de que la mutación no cambia el comportamiento; no es un estado PIT ni debe atribuirse automáticamente a PIT. |
+
+Los errores de infraestructura (`memory error` y `run error`) hacen que el resultado sea incompleto/no verde. Un `timeout` puede ser una señal útil de un bucle, pero hasta completar el triage tampoco debe convertirse en pass ni clasificarse automáticamente como `survived`.
 
 El objetivo no es tener muchos mutants, sino encontrar supervivientes accionables. Un survivor puede indicar:
 
@@ -147,7 +155,7 @@ Propiedades candidatas en JorgeX:
 - unmerge conserva exactamente el contenido no gestionado;
 - parsear y serializar preserva el significado;
 - un manifest no puede escapar del HOME;
-- una ruta fuera del worktree siempre se rechaza;
+- la lectura externa puede permitirse según el runtime/perfil, pero write/edit/delete/execute fuera de las roots autorizadas se rechaza;
 - un upsert conserva comentarios y secciones ajenas;
 - un plan fallido no limpia huérfanos;
 - una mutación de una preferencia corrupta falla antes de escribir.
