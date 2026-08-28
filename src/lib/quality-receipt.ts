@@ -21,6 +21,7 @@ const SENSITIVE_ASSIGNMENT_PATTERN = /^(?:-{0,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(
 const SENSITIVE_OUTPUT_PATTERN = /((?:authorization\s*:\s*bearer\s+|bearer\s+))[^\s,;]+/gi;
 const SENSITIVE_KEY_VALUE_PATTERN = /((?:^|(?<=[^\w.-]))(?:-{0,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi;
 const SENSITIVE_SEPARATE_FLAG_PATTERN = /((?:^|(?<=[^\w.-]))-{1,2}(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))[ \t]+)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi;
+const SENSITIVE_STRUCTURED_VALUE_PATTERN = /((?:"|')?(?:_?auth(?:orization)?(?:[-_.]?token)?|aws[-_]?secret[-_]?access[-_]?key|private[-_]?key)(?:"|')?\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi;
 
 export type QualityReceiptAuthority = "local" | "enforced";
 export type QualityReceiptResultStatus = "pass" | "fail" | "incomplete" | "not-applicable";
@@ -58,20 +59,45 @@ export interface QualityReceiptCommandInput {
   environment?: Readonly<Record<string, string>>;
 }
 
-export interface QualityReceiptResult {
+interface QualityReceiptInputBase {
+  identity: QualityReceiptIdentity;
+  commands: readonly QualityReceiptCommandInput[];
+  results: readonly QualityReceiptResult[];
+}
+
+export interface QualityReceiptLocalInput extends QualityReceiptInputBase {
+  authority: "local";
+  provenance?: QualityReceiptProvenance;
+}
+
+export interface QualityReceiptEnforcedInput extends QualityReceiptInputBase {
+  authority: "enforced";
+  provenance: QualityReceiptProvenance;
+}
+
+export type QualityReceiptInput =
+  | QualityReceiptLocalInput
+  | QualityReceiptEnforcedInput
+  | (QualityReceiptInputBase & {
+    authority: QualityReceiptAuthority;
+    provenance?: QualityReceiptProvenance;
+  });
+
+export interface QualityReceiptPassResult {
   controlId: string;
-  status: QualityReceiptResultStatus;
+  status: "pass";
+  evidence: string;
+  reason?: string;
+}
+
+export interface QualityReceiptNonPassResult {
+  controlId: string;
+  status: Exclude<QualityReceiptResultStatus, "pass">;
   evidence?: string;
   reason?: string;
 }
 
-export interface QualityReceiptInput {
-  authority: QualityReceiptAuthority;
-  identity: QualityReceiptIdentity;
-  commands: readonly QualityReceiptCommandInput[];
-  results: readonly QualityReceiptResult[];
-  provenance?: QualityReceiptProvenance;
-}
+export type QualityReceiptResult = QualityReceiptPassResult | QualityReceiptNonPassResult;
 
 export interface QualityReceiptCommand {
   commandId: string;
@@ -83,15 +109,25 @@ export interface QualityReceiptCommand {
   outputDigest: string;
 }
 
-export interface QualityReceipt {
+interface QualityReceiptBase {
   namespace: typeof QUALITY_RECEIPT_NAMESPACE;
   version: typeof QUALITY_RECEIPT_VERSION;
-  authority: QualityReceiptAuthority;
   identity: QualityReceiptIdentity;
   commands: QualityReceiptCommand[];
   results: QualityReceiptResult[];
+}
+
+export interface QualityReceiptLocal extends QualityReceiptBase {
+  authority: "local";
   provenance?: QualityReceiptProvenance;
 }
+
+export interface QualityReceiptEnforced extends QualityReceiptBase {
+  authority: "enforced";
+  provenance: QualityReceiptProvenance;
+}
+
+export type QualityReceipt = QualityReceiptLocal | QualityReceiptEnforced;
 
 type UnknownRecord = { [key: string]: unknown };
 
@@ -101,6 +137,14 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isDenseStringArray(value: unknown): value is readonly string[] {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    if (!hasOwn(value, String(index)) || typeof value[index] !== "string") return false;
+  }
+  return true;
 }
 
 function assertExactKeys(value: UnknownRecord, allowed: readonly string[], label: string): void {
@@ -139,6 +183,10 @@ function requireSha(value: unknown, label: string, pattern: RegExp): string {
 
 function redactText(value: string): string {
   return value
+    .replace(SENSITIVE_STRUCTURED_VALUE_PATTERN, (_match, prefix: string, quotedValue: string) => {
+      const quote = quotedValue[0];
+      return `${prefix}${quote}${REDACTED}${quote}`;
+    })
     .replace(SENSITIVE_OUTPUT_PATTERN, (_match, prefix: string) => {
       const normalizedPrefix = prefix.toLowerCase().startsWith("authorization")
         ? prefix.slice(0, prefix.toLowerCase().indexOf("bearer") + "bearer".length)
@@ -156,6 +204,8 @@ function redactAssignment(value: string): string {
 }
 
 function redactArgv(argv: readonly string[]): string[] {
+  if (!isDenseStringArray(argv)) throw new Error("Invalid argv: sparse or non-string array");
+
   let redactNext = false;
 
   return argv.map((argument) => {
@@ -181,7 +231,7 @@ function excerptFor(output: QualityReceiptCommandOutput): string {
   const stdout = redactText(output.stdout);
   const stderr = redactText(output.stderr);
   const combined = [stdout, stderr].filter((part) => part !== "").join("\n");
-  return combined.slice(0, MAX_EXCERPT_LENGTH);
+  return Array.from(combined).slice(0, MAX_EXCERPT_LENGTH).join("");
 }
 
 function outputDigestFor(output: QualityReceiptCommandOutput): string {
@@ -205,6 +255,15 @@ function normalizeCommand(command: QualityReceiptCommandInput): QualityReceiptCo
 }
 
 function normalizeResult(result: QualityReceiptResult): QualityReceiptResult {
+  if (result.status === "pass") {
+    return {
+      controlId: result.controlId,
+      status: "pass",
+      evidence: result.evidence,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    };
+  }
+
   return {
     controlId: result.controlId,
     status: result.status,
@@ -327,7 +386,7 @@ function validateCommand(value: unknown, index: number): QualityReceiptCommand {
 
   const commandId = requireText(command.commandId, `commands[${index}].commandId`);
   const executable = requireText(command.executable, `commands[${index}].executable`);
-  if (!Array.isArray(command.argv) || command.argv.some((argument) => typeof argument !== "string")) {
+  if (!isDenseStringArray(command.argv)) {
     throw new Error(`Invalid commands[${index}].argv`);
   }
   if (typeof command.exitCode !== "number" || !Number.isInteger(command.exitCode)) {
@@ -340,13 +399,21 @@ function validateCommand(value: unknown, index: number): QualityReceiptCommand {
     throw new Error(`Invalid commands[${index}].excerpt`);
   }
   const excerpt = command.excerpt;
-  if (excerpt.length > MAX_EXCERPT_LENGTH) throw new Error(`Invalid commands[${index}].excerpt`);
+  if (Array.from(excerpt).length > MAX_EXCERPT_LENGTH) throw new Error(`Invalid commands[${index}].excerpt`);
+  if (redactText(excerpt) !== excerpt) {
+    throw new Error(`Invalid commands[${index}].excerpt: contains an unredacted secret`);
+  }
+  const argv = [...command.argv];
+  const sanitizedArgv = redactArgv(argv);
+  if (sanitizedArgv.some((argument, argumentIndex) => argument !== argv[argumentIndex])) {
+    throw new Error(`Invalid commands[${index}].argv: contains an unredacted secret`);
+  }
   const outputDigest = requireSha(command.outputDigest, `commands[${index}].outputDigest`, SHA256_PATTERN);
 
   return {
     commandId,
     executable,
-    argv: [...command.argv],
+    argv,
     exitCode: command.exitCode,
     durationMs: command.durationMs,
     excerpt,
@@ -358,7 +425,8 @@ function validateResult(value: unknown, index: number): QualityReceiptResult {
   const result = requireRecord(value, `results[${index}]`);
   assertExactKeys(result, ["controlId", "status", "evidence", "reason"], `results[${index}]`);
   const controlId = requireText(result.controlId, `results[${index}].controlId`);
-  if (typeof result.status !== "string" || !isQualityReceiptResultStatus(result.status)) {
+  const status = result.status;
+  if (typeof status !== "string" || !isQualityReceiptResultStatus(status)) {
     throw new Error(`Invalid results[${index}].status`);
   }
   let evidence: string | undefined;
@@ -377,13 +445,21 @@ function validateResult(value: unknown, index: number): QualityReceiptResult {
     reason = result.reason;
   }
 
-  if (result.status === "pass" && (evidence === undefined || evidence.trim() === "")) {
-    throw new Error(`Invalid results[${index}].evidence: pass requires evidence`);
+  if (status === "pass") {
+    if (evidence === undefined || evidence.trim() === "") {
+      throw new Error(`Invalid results[${index}].evidence: pass requires evidence`);
+    }
+    return {
+      controlId,
+      status,
+      evidence,
+      ...(reason === undefined ? {} : { reason }),
+    };
   }
 
   return {
     controlId,
-    status: result.status as QualityReceiptResultStatus,
+    status,
     ...(evidence === undefined ? {} : { evidence }),
     ...(reason === undefined ? {} : { reason }),
   };
@@ -432,14 +508,17 @@ export function validateQualityReceipt(
 }
 
 export function createQualityReceipt(input: QualityReceiptInput): QualityReceipt {
-  if (input.authority !== "local" && input.authority !== "enforced") {
-    throw new Error(`Invalid quality receipt authority: ${String(input.authority)}`);
+  const authority: unknown = input.authority;
+  if (authority !== "local" && authority !== "enforced") {
+    throw new Error(`Invalid quality receipt authority: ${String(authority)}`);
+  }
+  if (input.authority === "enforced" && input.provenance === undefined) {
+    throw new Error("Enforced quality receipts require provenance");
   }
 
-  const receipt: QualityReceipt = {
+  const base = {
     namespace: QUALITY_RECEIPT_NAMESPACE,
     version: QUALITY_RECEIPT_VERSION,
-    authority: input.authority,
     identity: {
       profile: input.identity.profile,
       baseSha: input.identity.baseSha,
@@ -448,8 +527,23 @@ export function createQualityReceipt(input: QualityReceiptInput): QualityReceipt
     },
     commands: input.commands.map(normalizeCommand),
     results: input.results.map(normalizeResult),
-    ...(input.provenance === undefined ? {} : { provenance: normalizeProvenance(input.provenance) }),
   };
+  let receipt: QualityReceipt;
+  if (input.authority === "enforced") {
+    const provenance = input.provenance;
+    if (provenance === undefined) throw new Error("Enforced quality receipts require provenance");
+    receipt = {
+      ...base,
+      authority: "enforced",
+      provenance: normalizeProvenance(provenance),
+    };
+  } else {
+    receipt = {
+      ...base,
+      authority: "local",
+      ...(input.provenance === undefined ? {} : { provenance: normalizeProvenance(input.provenance) }),
+    };
+  }
 
   validateQualityReceipt(receipt);
   return receipt;

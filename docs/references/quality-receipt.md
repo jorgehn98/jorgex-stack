@@ -2,6 +2,8 @@
 
 Esta es la referencia canónica del contrato de calidad agéntica del Stack. Describe la policy, sus estados, el receipt v1 y la frontera con Pi. No convierte una ejecución local en un gate de CI ni añade thresholds que la policy no declare.
 
+La entrega documentada aquí expone el contrato JSON y la API TypeScript del receipt; no implica una CLI o un runner consumible. En PR01 no se ofrece ni se promete una CLI consumible, y no debe asumirse su disponibilidad antes de PR02.
+
 ## 1. Perfiles y selección de policy
 
 Los perfiles válidos son:
@@ -75,7 +77,12 @@ namespace, version, authority, identity, commands, results
 | `headSha` | Commit evaluado; 40 caracteres hexadecimales. |
 | `policyDigest` | SHA-256 de la policy efectiva en JSON canónico; 64 caracteres hexadecimales. |
 
-El productor calcula el digest de la policy antes de crear el receipt. La serialización y el validador pueden recibir una identidad esperada; si cualquiera de los cuatro campos difiere, el receipt se rechaza para evitar mezclar evidencia de otro rango, perfil o policy.
+El productor calcula el digest de la policy antes de crear el receipt. La API final separa la serialización de la comprobación contra una identidad esperada:
+
+- `validateQualityReceipt(value, expectedIdentity?)` es la única función que acepta una identidad esperada. Si se proporciona y cualquiera de sus cuatro campos difiere, el receipt se rechaza para evitar mezclar evidencia de otro rango, perfil o policy.
+- `serializeQualityReceipt(receipt)` recibe solo el receipt. No acepta `expectedIdentity`; aunque revalida la forma del receipt antes de serializarlo, no lo vincula a una identidad esperada.
+
+`createQualityReceipt` construye y valida el receipt, pero la comprobación contra una identidad externa esperada corresponde a `validateQualityReceipt`.
 
 ### Comandos y resultados
 
@@ -84,7 +91,7 @@ Cada entrada de `commands` es cerrada y contiene `commandId`, `executable`, `arg
 - `commandId` y `executable` no pueden estar vacíos.
 - `argv` es una lista de strings ya saneada.
 - `exitCode` es entero; `durationMs` es un número finito no negativo.
-- `excerpt` tiene como máximo 512 caracteres.
+- `excerpt` tiene como máximo 512 puntos de código Unicode; no se mide en unidades UTF-16 ni se corta un par surrogate.
 - `outputDigest` es un SHA-256 del output saneado, no del excerpt truncado.
 
 Cada entrada de `results` es cerrada, exige `controlId` y `status`, y permite `evidence` y `reason`. Si `status` es `pass`, `evidence` es obligatoria y no puede ser solo espacios.
@@ -96,9 +103,11 @@ La schema no exige que `commands` o `results` tengan elementos: que una policy e
 | Authority | Semántica |
 | --- | --- |
 | `local` | Evidencia producida en el entorno local. Puede carecer de provenance y no garantiza enforcement de merge, release o CI. |
-| `enforced` | Declaración de que una autoridad externa respalda la evidencia. Exige provenance; no hace confiable al emisor por sí sola. |
+| `enforced` | Declaración no autenticada de que una autoridad externa respalda la evidencia. Exige provenance estructural; no autentica al emisor por sí sola. |
 
-Un receipt local puede ser útil para diagnóstico, revisión o preparación, pero un `pass` local no equivale a un Quality Gate remoto. La schema solo valida forma, identidad y presencia de provenance; la autoridad externa debe decidir cómo autentica al emisor, cómo obtiene la evidencia y qué operación bloquea.
+Un receipt local puede ser útil para diagnóstico, revisión o preparación, pero un `pass` local no equivale a un Quality Gate remoto. `authority: "enforced"` tampoco convierte por sí solo los campos de `provenance` en una atestación confiable: la schema y la API solo validan forma, identidad y presencia de provenance, no la autenticidad del issuer ni el contenido del locator.
+
+Un consumidor solo puede tratar `enforced` como enforcement real si un verificador externo autentica al emisor y comprueba la evidencia. Como mínimo debe usar una allowlist explícita de issuers y verificar de forma independiente la ejecución, el locator y el digest; la alternativa es una firma criptográfica verificable sobre el receipt o la evidencia. El verificador externo y la opción de firma quedan para PR04; hasta entonces, `enforced` es únicamente una declaración estructural y no debe bloquear merge, release o CI por sí sola.
 
 Para `enforced`, `provenance` es un objeto cerrado con:
 
@@ -106,20 +115,23 @@ Para `enforced`, `provenance` es un objeto cerrado con:
 | --- | --- |
 | `issuer` | Identificador no vacío de la autoridad que emitió la evidencia. |
 | `executionId` | Identificador no vacío de la ejecución externa. |
-| `evidenceLocator` | URL `http` o `https` de la evidencia externa. |
+| `evidenceLocator` | URL `http` o `https` de la evidencia externa. La schema declara además `format: "uri"` y el patrón `^https?://\\S+$`. |
 | `evidenceDigest` | SHA-256 de esa evidencia; 64 caracteres hexadecimales. |
 
-La validación no hace fetch del locator ni comprueba que su contenido siga disponible.
+La validación no hace fetch del locator ni comprueba que su contenido siga disponible. El runtime también parsea la URL y rechaza protocolos distintos de HTTP(S) o espacios; `format: "uri"` es parte de la declaración de la schema y no sustituye esa verificación de runtime.
 
 ## 4. Canonicalización, identidad y redacción
 
 La serialización del receipt usa JSON canónico: las claves de cada objeto se ordenan recursivamente, los arrays conservan su orden y no se añaden espacios ni una línea final. Así, `policyDigest` y los digests de output son reproducibles cuando se parte de la misma entrada.
 
+`serializeQualityReceipt` vuelve a ejecutar la validación del receipt. Por eso, tanto `validateQualityReceipt` como `serializeQualityReceipt` rechazan una mutación que viole el contrato, por ejemplo un secreto sin redactar en `argv` o `excerpt`, un `excerpt` ausente o no textual, o un `outputDigest` inválido. Esto es validación estructural y de redacción, no una prueba criptográfica de que ningún campo semánticamente válido haya sido mutado: para fijar una identidad concreta hay que llamar a `validateQualityReceipt` con `expectedIdentity`, y la autenticidad de `enforced` requiere el verificador externo indicado arriba.
+
 La normalización de comandos aplica estas reglas:
 
 - No conserva `environment`, `stdout` ni `stderr` completos en el receipt.
 - Redacta valores asociados a flags sensibles (`token`, `secret`, `password`, `api-key`, `authorization`, credenciales y equivalentes), asignaciones sensibles y tokens Bearer en el output.
-- Guarda solo un `excerpt` saneado de hasta 512 caracteres.
+- Redacta también valores de campos estructurados conocidos en texto tipo JSON, como `_authToken`, `AWS_SECRET_ACCESS_KEY` y `PRIVATE_KEY`, conservando la clave y sustituyendo el valor entre comillas por `[REDACTED]`. Es una lista de patrones conocidos, no un detector universal de secretos.
+- Guarda solo un `excerpt` saneado de hasta 512 puntos de código Unicode; usa puntos de código, no unidades UTF-16, y no corta un par surrogate.
 - Calcula `outputDigest` sobre `{ stdout, stderr }` después de redacción y antes del truncado del excerpt.
 
 La redacción es una defensa de minimización, no una frontera de seguridad ni una garantía de detección de todos los secretos. `evidence`, `reason`, `issuer`, `executionId` y `evidenceLocator` se copian como metadatos del contrato: el productor debe evitar secretos, PII innecesaria y credenciales también en esos campos. Los digests no sustituyen controles de acceso.
@@ -171,4 +183,4 @@ Los dos primeros no son resultados de calidad, no deben adoptar el namespace `jo
 
 ## Verificación de esta referencia
 
-La documentación se contrasta con `tests/quality-policy.test.ts`, `tests/quality-receipt.test.ts` y la schema canónica enlazada arriba. La decisión para esta tarea es **no añadir tests**: no se introduce comportamiento, solo se documenta el contrato que ya cubren esos seams.
+La documentación se contrasta con la implementación `src/lib/quality-receipt.ts`, `tests/quality-policy.test.ts`, `tests/quality-receipt.test.ts` y la schema canónica enlazada arriba. La decisión para esta tarea es **no añadir tests**: no se introduce comportamiento, solo se documenta el contrato que ya cubren esos seams.

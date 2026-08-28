@@ -141,6 +141,7 @@
         },
         "evidenceLocator": {
           "type": "string",
+          "format": "uri",
           "pattern": "^https?://\\S+$"
         },
         "evidenceDigest": {

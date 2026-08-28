@@ -129,4 +129,32 @@ describe("evaluateQualityPolicy", () => {
       [pass("typecheck"), pass("unknown-check")],
     ).status).toBe("incomplete");
   });
+
+  it.each([
+    {
+      name: "control duplicado",
+      controls: [required("typecheck"), optional("typecheck")],
+      results: [pass("typecheck")],
+    },
+    {
+      name: "control con id vacío",
+      controls: [required("typecheck"), { id: "", requirement: "required" as const }],
+      results: [pass("typecheck")],
+    },
+    {
+      name: "control con requisito desconocido",
+      controls: [
+        required("typecheck"),
+        { id: "coverage", requirement: "mandatory" as QualityControlDefinition["requirement"] },
+      ],
+      results: [pass("typecheck")],
+    },
+    {
+      name: "resultado duplicado",
+      controls: [required("typecheck")],
+      results: [pass("typecheck"), pass("typecheck")],
+    },
+  ])("falla cerrado ante $name y devuelve incomplete", ({ controls, results }) => {
+    expect(evaluate(controls, results).status).toBe("incomplete");
+  });
 });

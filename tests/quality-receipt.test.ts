@@ -10,6 +10,8 @@ import {
   QUALITY_RECEIPT_VERSION,
   serializeQualityReceipt,
   validateQualityReceipt,
+  type QualityReceiptProvenance,
+  type QualityReceiptResult,
 } from "../src/lib/quality-receipt.js";
 
 const BASE_SHA = "a".repeat(40);
@@ -36,6 +38,7 @@ type JsonSchemaObject = {
   type?: string;
   const?: unknown;
   enum?: unknown[];
+  format?: string;
   additionalProperties?: boolean;
   required?: string[];
   properties?: Record<string, JsonSchemaObject>;
@@ -44,6 +47,14 @@ type JsonSchemaObject = {
 
 type ReceiptInput = Parameters<typeof createQualityReceipt>[0];
 type Receipt = ReturnType<typeof createQualityReceipt>;
+type EnforcedReceiptInput = Extract<ReceiptInput, { authority: "enforced" }>;
+type PassReceiptResult = Extract<QualityReceiptResult, { status: "pass" }>;
+type EnforcedHasRequiredProvenance = [EnforcedReceiptInput] extends [never]
+  ? false
+  : EnforcedReceiptInput extends { provenance: QualityReceiptProvenance } ? true : false;
+type PassHasRequiredEvidence = [PassReceiptResult] extends [never]
+  ? false
+  : PassReceiptResult extends { evidence: string } ? true : false;
 
 function input(overrides: Partial<ReceiptInput> = {}): ReceiptInput {
   return {
@@ -238,6 +249,114 @@ describe("jorgex.quality.receipt contract", () => {
     expect(serializeQualityReceipt(value)).not.toContain(secret);
   });
 
+  it("redacta secretos JSON conocidos y valores multilínea", () => {
+    const jsonAuthToken = "JSON_AUTH_TOKEN_SENTINEL";
+    const awsSecret = "AWS_SECRET_ACCESS_KEY_SENTINEL";
+    const privateKeyBody = "PRIVATE_KEY_BODY_SENTINEL";
+    const rawOutput = [
+      "{",
+      `  "_authToken": "${jsonAuthToken}",`,
+      `  "AWS_SECRET_ACCESS_KEY": "${awsSecret}",`,
+      '  "PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----',
+      privateKeyBody,
+      '-----END PRIVATE KEY-----"',
+      "}",
+    ].join("\n");
+    const value = receipt({
+      commands: [{
+        commandId: "structured-secrets-check",
+        executable: "pnpm",
+        argv: ["run", "check"],
+        exitCode: 0,
+        durationMs: 456,
+        output: { stdout: rawOutput, stderr: "" },
+      }],
+    });
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    const serialized = serializeQualityReceipt(value);
+    for (const secret of [jsonAuthToken, awsSecret, privateKeyBody]) {
+      expect(command.excerpt).not.toContain(secret);
+      expect(serialized).not.toContain(secret);
+    }
+    expect(command.excerpt).toContain("[REDACTED]");
+  });
+
+  it.each(["argv", "excerpt"] as const)("rechaza al validar y serializar un receipt mutado con secreto en %s", (field) => {
+    const value = receipt();
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    const tamperedCommand = field === "argv"
+      ? {
+        ...command,
+        argv: [...command.argv, "--token", "ARGV_MUTATED_SECRET_SENTINEL"],
+      }
+      : {
+        ...command,
+        excerpt: "Authorization: Bearer EXCERPT_MUTATED_SECRET_SENTINEL",
+      };
+
+    const tampered = { ...value, commands: [tamperedCommand] };
+    expect(() => validateQualityReceipt(tampered)).toThrow();
+    expect(() => serializeQualityReceipt(tampered)).toThrow();
+  });
+
+  it("rechaza argv sparse", () => {
+    const command = input().commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+    const sparseArgv = [...command.argv];
+    delete sparseArgv[1];
+
+    expect(() => createQualityReceipt(input({
+      commands: [{ ...command, argv: sparseArgv }],
+    }))).toThrow(/argv|sparse/i);
+  });
+
+  it("limita excerpt a 512 code points sin cortar un surrogate", () => {
+    const output = `${"x".repeat(511)}😀tail`;
+    const value = receipt({
+      commands: [{
+        commandId: "unicode-check",
+        executable: "pnpm",
+        argv: ["run", "check"],
+        exitCode: 0,
+        durationMs: 456,
+        output: { stdout: output, stderr: "" },
+      }],
+    });
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    expect(command.excerpt).toBe(`${"x".repeat(511)}😀`);
+    expect(command.excerpt.endsWith("😀")).toBe(true);
+    expect(Array.from(command.excerpt)).toHaveLength(512);
+  });
+
+  it("calcula el digest del output saneado completo aunque el excerpt supere 512", () => {
+    const secret = "OUTPUT_DIGEST_SECRET_SENTINEL";
+    const stdout = `${"output-".repeat(100)}\napiKey=${secret}`;
+    const sanitizedStdout = `${"output-".repeat(100)}\napiKey=[REDACTED]`;
+    const value = receipt({
+      commands: [{
+        commandId: "digest-check",
+        executable: "pnpm",
+        argv: ["run", "check"],
+        exitCode: 0,
+        durationMs: 456,
+        output: { stdout, stderr: "" },
+      }],
+    });
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    expect(command.outputDigest).toBe(digest(canonicalJson({
+      stderr: "",
+      stdout: sanitizedStdout,
+    })));
+  });
+
   it("rechaza un excerpt ausente", () => {
     const value = receipt();
     const command = value.commands[0];
@@ -265,6 +384,11 @@ describe("jorgex.quality.receipt contract", () => {
     expectTypeOf<ReceiptInput["identity"]["profile"]>().toEqualTypeOf<
       "routine" | "elevated" | "high" | "release"
     >();
+  });
+
+  it("modela autoridad y resultados como uniones discriminadas", () => {
+    expectTypeOf<EnforcedHasRequiredProvenance>().toEqualTypeOf<true>();
+    expectTypeOf<PassHasRequiredEvidence>().toEqualTypeOf<true>();
   });
 
   it("permite un receipt local sin provenance, pero exige provenance externa para enforced", () => {
@@ -296,6 +420,31 @@ describe("jorgex.quality.receipt contract", () => {
     const value = { ...valid, provenance };
 
     expect(() => validateQualityReceipt(value)).toThrow(expected);
+  });
+
+  it("rechaza en runtime una URL inválida aunque parezca HTTP(S)", () => {
+    const valid = receipt({ authority: "enforced", provenance: ENFORCED_PROVENANCE });
+    const tampered = {
+      ...valid,
+      provenance: {
+        ...valid.provenance,
+        evidenceLocator: "https://[invalid",
+      },
+    };
+
+    expect(() => validateQualityReceipt(tampered)).toThrow(/evidenceLocator/i);
+  });
+
+  it("rechaza un resultado pass sin evidence", () => {
+    const value = receipt();
+    const result = value.results[0];
+    if (result === undefined) throw new Error("receipt fixture has no result");
+    const { evidence: _evidence, ...resultWithoutEvidence } = result;
+
+    expect(() => validateQualityReceipt({
+      ...value,
+      results: [resultWithoutEvidence],
+    })).toThrow(/evidence/i);
   });
 
   it.each([
@@ -399,6 +548,7 @@ describe("jorgex.quality.receipt contract", () => {
     requiredKeys(provenanceSchema, Object.keys(provenance), "provenance");
     expect(provenanceSchema.properties?.evidenceLocator).toMatchObject({
       type: "string",
+      format: "uri",
       pattern: "^https?://\\S+$",
     });
   });
