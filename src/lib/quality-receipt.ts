@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { QualityProfile } from "./quality-policy.js";
 
 export const QUALITY_RECEIPT_NAMESPACE = "jorgex.quality.receipt" as const;
 export const QUALITY_RECEIPT_VERSION = 1 as const;
@@ -8,18 +9,24 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const MAX_EXCERPT_LENGTH = 512;
 const REDACTED = "[REDACTED]";
 
-const QUALITY_PROFILES = new Set(["routine", "elevated", "high", "release"]);
-const QUALITY_RESULT_STATUSES = new Set(["pass", "fail", "incomplete", "not-applicable"]);
-const SENSITIVE_FLAG_PATTERN = /^(?:-{1,2})(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word)?|secret|token)$/i;
-const SENSITIVE_ASSIGNMENT_PATTERN = /^(?<name>[a-z][a-z0-9_.-]*(?:[-_]?(?:token|secret|password|passwd|api[-_]?key|credential)))[=:](?<value>.+)$/i;
-const SENSITIVE_OUTPUT_PATTERN = /((?:authorization\s*:\s*bearer\s+|bearer\s+)[^\s,;]+)/gi;
-const SENSITIVE_KEY_VALUE_PATTERN = /((?:password|passwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|credential)[\s]*[=:][\s]*)("[^"]*"|'[^']*'|[^\s,;]+)/gi;
+const QUALITY_PROFILES = ["routine", "elevated", "high", "release"] as const;
+const QUALITY_RESULT_STATUSES = [
+  "pass",
+  "fail",
+  "incomplete",
+  "not-applicable",
+] as const;
+const SENSITIVE_FLAG_PATTERN = /^(?:-{1,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))$/i;
+const SENSITIVE_ASSIGNMENT_PATTERN = /^(?:-{0,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))\s*[=:]\s*.+$/i;
+const SENSITIVE_OUTPUT_PATTERN = /((?:authorization\s*:\s*bearer\s+|bearer\s+))[^\s,;]+/gi;
+const SENSITIVE_KEY_VALUE_PATTERN = /((?:^|(?<=[^\w.-]))(?:-{0,2})(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi;
+const SENSITIVE_SEPARATE_FLAG_PATTERN = /((?:^|(?<=[^\w.-]))-{1,2}(?:(?:[a-z][a-z0-9_.-]*[-_]?)?(?:access[-_]?token|api[-_]?key|auth(?:orization)?|client[-_]?secret|credential|pass(?:word|wd)?|refresh[-_]?token|secret|token))[ \t]+)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi;
 
 export type QualityReceiptAuthority = "local" | "enforced";
 export type QualityReceiptResultStatus = "pass" | "fail" | "incomplete" | "not-applicable";
 
 export interface QualityReceiptIdentity {
-  profile: string;
+  profile: QualityProfile;
   baseSha: string;
   headSha: string;
   policyDigest: string;
@@ -44,6 +51,10 @@ export interface QualityReceiptCommandInput {
   exitCode: number;
   durationMs: number;
   output: QualityReceiptCommandOutput;
+  /**
+   * @deprecated Receipt v1 deliberately omits execution environments. Kept
+   * temporarily so callers can migrate without changing their command input.
+   */
   environment?: Readonly<Record<string, string>>;
 }
 
@@ -82,9 +93,9 @@ export interface QualityReceipt {
   provenance?: QualityReceiptProvenance;
 }
 
-type JsonObject = { [key: string]: unknown };
+type UnknownRecord = { [key: string]: unknown };
 
-function isRecord(value: unknown): value is JsonObject {
+function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -92,7 +103,7 @@ function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function assertExactKeys(value: JsonObject, allowed: readonly string[], label: string): void {
+function assertExactKeys(value: UnknownRecord, allowed: readonly string[], label: string): void {
   const allowedKeys = new Set(allowed);
   const unexpected = Object.keys(value).find((key) => !allowedKeys.has(key));
   if (unexpected !== undefined) {
@@ -100,7 +111,7 @@ function assertExactKeys(value: JsonObject, allowed: readonly string[], label: s
   }
 }
 
-function requireRecord(value: unknown, label: string): JsonObject {
+function requireRecord(value: unknown, label: string): UnknownRecord {
   if (!isRecord(value)) throw new Error(`Invalid ${label}`);
   return value;
 }
@@ -110,6 +121,14 @@ function requireText(value: unknown, label: string): string {
     throw new Error(`Invalid ${label}`);
   }
   return value;
+}
+
+function isQualityProfile(value: string): value is QualityProfile {
+  return (QUALITY_PROFILES as readonly string[]).includes(value);
+}
+
+function isQualityReceiptResultStatus(value: string): value is QualityReceiptResultStatus {
+  return (QUALITY_RESULT_STATUSES as readonly string[]).includes(value);
 }
 
 function requireSha(value: unknown, label: string, pattern: RegExp): string {
@@ -126,7 +145,8 @@ function redactText(value: string): string {
         : "Bearer ";
       return `${normalizedPrefix}${REDACTED}`;
     })
-    .replace(SENSITIVE_KEY_VALUE_PATTERN, `$1${REDACTED}`);
+    .replace(SENSITIVE_KEY_VALUE_PATTERN, `$1${REDACTED}`)
+    .replace(SENSITIVE_SEPARATE_FLAG_PATTERN, `$1${REDACTED}`);
 }
 
 function redactAssignment(value: string): string {
@@ -221,7 +241,17 @@ function canonicalValue(value: unknown): string {
     }
     case "object": {
       if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index += 1) {
+          if (!hasOwn(value, String(index))) {
+            throw new Error("Cannot canonicalize sparse array");
+          }
+        }
         return `[${value.map((item) => canonicalValue(item)).join(",")}]`;
+      }
+
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error("Cannot canonicalize non-plain object");
       }
 
       const object = value as Record<string, unknown>;
@@ -247,12 +277,12 @@ function validateIdentity(value: unknown, expected?: QualityReceiptIdentity): Qu
   assertExactKeys(identity, ["profile", "baseSha", "headSha", "policyDigest"], "identity");
 
   const profile = requireText(identity.profile, "identity.profile");
-  if (!QUALITY_PROFILES.has(profile)) throw new Error(`Invalid identity.profile: ${profile}`);
+  if (!isQualityProfile(profile)) throw new Error(`Invalid identity.profile: ${profile}`);
   const baseSha = requireSha(identity.baseSha, "identity.baseSha", COMMIT_SHA_PATTERN);
   const headSha = requireSha(identity.headSha, "identity.headSha", COMMIT_SHA_PATTERN);
   const policyDigest = requireSha(identity.policyDigest, "identity.policyDigest", SHA256_PATTERN);
 
-  const actual = { profile, baseSha, headSha, policyDigest };
+  const actual: QualityReceiptIdentity = { profile, baseSha, headSha, policyDigest };
   if (expected !== undefined) {
     for (const field of ["profile", "baseSha", "headSha", "policyDigest"] as const) {
       if (actual[field] !== expected[field]) {
@@ -271,6 +301,9 @@ function validateProvenance(value: unknown): QualityReceiptProvenance {
   const issuer = requireText(provenance.issuer, "provenance.issuer");
   const executionId = requireText(provenance.executionId, "provenance.executionId");
   const evidenceLocator = requireText(provenance.evidenceLocator, "provenance.evidenceLocator");
+  if (!/^https?:\/\/\S+$/.test(evidenceLocator)) {
+    throw new Error("Invalid provenance.evidenceLocator");
+  }
   try {
     const parsed = new URL(evidenceLocator);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -303,7 +336,10 @@ function validateCommand(value: unknown, index: number): QualityReceiptCommand {
   if (typeof command.durationMs !== "number" || !Number.isFinite(command.durationMs) || command.durationMs < 0) {
     throw new Error(`Invalid commands[${index}].durationMs`);
   }
-  const excerpt = typeof command.excerpt === "string" ? command.excerpt : "";
+  if (!hasOwn(command, "excerpt") || typeof command.excerpt !== "string") {
+    throw new Error(`Invalid commands[${index}].excerpt`);
+  }
+  const excerpt = command.excerpt;
   if (excerpt.length > MAX_EXCERPT_LENGTH) throw new Error(`Invalid commands[${index}].excerpt`);
   const outputDigest = requireSha(command.outputDigest, `commands[${index}].outputDigest`, SHA256_PATTERN);
 
@@ -322,7 +358,7 @@ function validateResult(value: unknown, index: number): QualityReceiptResult {
   const result = requireRecord(value, `results[${index}]`);
   assertExactKeys(result, ["controlId", "status", "evidence", "reason"], `results[${index}]`);
   const controlId = requireText(result.controlId, `results[${index}].controlId`);
-  if (typeof result.status !== "string" || !QUALITY_RESULT_STATUSES.has(result.status)) {
+  if (typeof result.status !== "string" || !isQualityReceiptResultStatus(result.status)) {
     throw new Error(`Invalid results[${index}].status`);
   }
   let evidence: string | undefined;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   canonicalJson,
   createQualityReceipt,
@@ -142,6 +142,14 @@ describe("jorgex.quality.receipt contract", () => {
     expect(serializeQualityReceipt(value)).not.toContain("\n");
   });
 
+  it("rechaza objetos no JSON en la canonicalización", () => {
+    expect(() => canonicalJson(new Date("2026-01-01T00:00:00.000Z"))).toThrow(/canonical|object/i);
+  });
+
+  it("rechaza arrays sparse en la canonicalización", () => {
+    expect(() => canonicalJson([1, , 3])).toThrow(/array|canonical|sparse/i);
+  });
+
   it("redacta argv, entorno y output sin conservar stdout/stderr completos", () => {
     const rawArgvValue = "ARGV_VALUE_SENTINEL";
     const rawEnvironmentValue = "ENV_VALUE_SENTINEL";
@@ -181,6 +189,84 @@ describe("jorgex.quality.receipt contract", () => {
     expect(command.outputDigest).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("redacta authorization inline en argv", () => {
+    const secret = "AUTHORIZATION_VALUE_SENTINEL";
+    const rawLines = [
+      `--authorization=${secret}`,
+      `--auth=${secret}`,
+      `authorization=${secret}`,
+    ];
+    const value = receipt({
+      commands: [{
+        commandId: "authorization-check",
+        executable: "pnpm",
+        argv: ["run", ...rawLines],
+        exitCode: 0,
+        durationMs: 456,
+        output: { stdout: rawLines.join("\n"), stderr: "" },
+      }],
+    });
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    const expectedLines = rawLines.map((line) => line.replace(secret, "[REDACTED]"));
+    expect(command.argv).toEqual(["run", ...expectedLines]);
+  });
+
+  it("redacta authorization inline en output", () => {
+    const secret = "AUTHORIZATION_OUTPUT_VALUE_SENTINEL";
+    const rawLines = [
+      `--authorization=${secret}`,
+      `--auth=${secret}`,
+      `authorization=${secret}`,
+    ];
+    const value = receipt({
+      commands: [{
+        commandId: "authorization-output-check",
+        executable: "pnpm",
+        argv: ["run", "check"],
+        exitCode: 0,
+        durationMs: 456,
+        output: { stdout: rawLines.join("\n"), stderr: "" },
+      }],
+    });
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    const expectedLines = rawLines.map((line) => line.replace(secret, "[REDACTED]"));
+    expect(command.excerpt).toBe(expectedLines.join("\n"));
+    expect(serializeQualityReceipt(value)).not.toContain(secret);
+  });
+
+  it("rechaza un excerpt ausente", () => {
+    const value = receipt();
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+    const { excerpt: _excerpt, ...commandWithoutExcerpt } = command;
+
+    expect(() => validateQualityReceipt({
+      ...value,
+      commands: [commandWithoutExcerpt],
+    })).toThrow(/excerpt/i);
+  });
+
+  it("rechaza un excerpt que no sea string", () => {
+    const value = receipt();
+    const command = value.commands[0];
+    if (command === undefined) throw new Error("receipt fixture has no command");
+
+    expect(() => validateQualityReceipt({
+      ...value,
+      commands: [{ ...command, excerpt: 123 }],
+    })).toThrow(/excerpt/i);
+  });
+
+  it("expone profile como una unión pública de cuatro valores", () => {
+    expectTypeOf<ReceiptInput["identity"]["profile"]>().toEqualTypeOf<
+      "routine" | "elevated" | "high" | "release"
+    >();
+  });
+
   it("permite un receipt local sin provenance, pero exige provenance externa para enforced", () => {
     const local = receipt();
     expect(local.authority).toBe("local");
@@ -199,6 +285,11 @@ describe("jorgex.quality.receipt contract", () => {
     ["sin issuer", { ...ENFORCED_PROVENANCE, issuer: undefined }, /issuer/i],
     ["sin executionId", { ...ENFORCED_PROVENANCE, executionId: undefined }, /executionId/i],
     ["sin locator", { ...ENFORCED_PROVENANCE, evidenceLocator: undefined }, /locator/i],
+    [
+      "locator con espacios",
+      { ...ENFORCED_PROVENANCE, evidenceLocator: "https://ci.example.invalid/runs/42/quality run" },
+      /locator/i,
+    ],
     ["sin evidence digest", { ...ENFORCED_PROVENANCE, evidenceDigest: undefined }, /digest/i],
   ])("rechaza enforced %s", (_caseName, provenance, expected) => {
     const valid = receipt({ authority: "enforced", provenance: ENFORCED_PROVENANCE });
@@ -306,5 +397,9 @@ describe("jorgex.quality.receipt contract", () => {
 
     const provenanceSchema = closedObjectSchema(root.properties?.provenance, Object.keys(provenance), "provenance");
     requiredKeys(provenanceSchema, Object.keys(provenance), "provenance");
+    expect(provenanceSchema.properties?.evidenceLocator).toMatchObject({
+      type: "string",
+      pattern: "^https?://\\S+$",
+    });
   });
 });
