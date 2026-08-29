@@ -306,6 +306,47 @@ describe("quality command runner", () => {
       }
     }
   }, 2_000);
+
+  it("does not classify a termination-time child error as unavailable", async () => {
+    let launchedChild: ChildProcess | undefined;
+    const dependencies: QualityCommandDeps = {
+      terminate: (child) => {
+        launchedChild = child;
+        child.emit("error", Object.assign(new Error("termination race"), { code: "EACCES" }));
+      },
+    };
+
+    try {
+      const result = await runQualityCommand({
+        commandId: "termination-error-race",
+        executable: process.execPath,
+        argv: ["-e", "setTimeout(() => {}, 60_000)"],
+        timeoutMs: 25,
+      }, dependencies);
+
+      expect(result.status).not.toBe("unavailable");
+      expect(result).toMatchObject({
+        status: "error",
+        reason: "termination-timeout",
+      });
+      expect(launchedChild).toBeDefined();
+      if (launchedChild === undefined) throw new Error("termination dependency did not capture child");
+      expect(launchedChild.stdout?.destroyed).toBe(true);
+      expect(launchedChild.stderr?.destroyed).toBe(true);
+      expect(launchedChild.listenerCount("close")).toBe(0);
+      expect(launchedChild.listenerCount("error")).toBe(0);
+      expect(launchedChild.stdout?.listenerCount("data") ?? 0).toBe(0);
+      expect(launchedChild.stderr?.listenerCount("data") ?? 0).toBe(0);
+    } finally {
+      const child = launchedChild;
+      if (child !== undefined && child.exitCode === null) {
+        await new Promise<void>((resolve) => {
+          child.once("close", () => resolve());
+          child.kill();
+        });
+      }
+    }
+  }, 2_000);
 });
 
 describe("quality plan tracer contract", () => {

@@ -389,7 +389,7 @@ export async function runQualityCommand(
     onStderrData = (chunk: Buffer): void => onOutput("stderr", chunk);
     onError = (error: NodeJS.ErrnoException): void => {
       spawnError = error;
-      if (error.code === "ENOENT" || error.code === "EACCES") {
+      if (terminationReason === undefined && (error.code === "ENOENT" || error.code === "EACCES")) {
         settle(resultFromCaptured(input, "unavailable", null, startedAt, captured, maxOutputBytes, "spawn-error"));
       }
     };
