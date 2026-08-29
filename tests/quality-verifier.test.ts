@@ -6,7 +6,17 @@ import {
   sha256,
   type QualityReceipt,
 } from "../src/lib/quality-receipt.js";
-import type { ExternalQualityVerifierResult as PublicExternalQualityVerifierResult } from "../src/lib/quality-verifier.js";
+import {
+  verifyExternalQualityReceipt,
+  type AttestationVerification,
+  type ExternalAttestation,
+  type ExternalEvidence,
+  type ExternalEvidenceResolution,
+  type ExternalQualityVerifierDeps,
+  type ExternalQualityVerifierInput,
+  type ExternalQualityVerifierResult,
+  type ProtectedReference,
+} from "../src/lib/quality-verifier.js";
 
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
@@ -20,11 +30,6 @@ const EVIDENCE_BYTES = new TextEncoder().encode("external-quality-evidence-v1");
 const EVIDENCE_DIGEST = sha256Bytes(EVIDENCE_BYTES);
 const TRUSTED_ISSUER = "ci.example.invalid";
 const TRUSTED_EXECUTION_ID = "quality-run-42";
-type ProtectedReference = {
-  ref: string;
-  sha: string;
-};
-
 const PROTECTED_REF: ProtectedReference = {
   ref: "refs/heads/main",
   sha: BASE_SHA,
@@ -37,75 +42,7 @@ const PRODUCER_WORKTREE = process.platform === "win32"
   ? "C:\\ci\\quality\\run-42"
   : "/ci/quality/run-42";
 
-type ExternalDecision = "pass" | "fail" | "incomplete";
-
-type ExternalAttestation = {
-  issuer: string;
-  executionId: string;
-  identity: QualityReceipt["identity"];
-  policyDigest: string;
-  protectedRef: ProtectedReference;
-  producer: {
-    processId: string;
-    worktree: string;
-  };
-  decision: ExternalDecision;
-  subjectDigest: string;
-  evidenceDigest: string;
-  expiresAt: string;
-  proof: string;
-};
-
 type AttestationClaims = Omit<ExternalAttestation, "proof">;
-
-type ExternalEvidence = {
-  locator: string;
-  bytes: Uint8Array;
-  attestation: ExternalAttestation;
-};
-
-type ExternalEvidenceResolution =
-  | { status: "available"; evidence: ExternalEvidence }
-  | { status: "expired" | "unavailable"; retryable: boolean };
-
-type AttestationVerification = {
-  authenticated: boolean;
-};
-
-type ExternalQualityVerifierInput = {
-  receipt: QualityReceipt;
-  expected: {
-    identity: QualityReceipt["identity"];
-    policy: Record<string, unknown>;
-    protectedRef: ProtectedReference;
-    evidenceLocator: string;
-    issuer: string;
-    executionId: string;
-    subjectDigest: string;
-    verifier: {
-      processId: string;
-      worktree: string;
-    };
-  };
-};
-
-type ExternalQualityVerifierDeps = {
-  resolveEvidence(locator: string): Promise<ExternalEvidenceResolution>;
-  authenticateAttestation(attestation: ExternalAttestation): Promise<AttestationVerification>;
-  now(): string;
-};
-
-type ExternalQualityVerifierResult = {
-  status: "pass" | "fail" | "incomplete";
-  rerunRequired: boolean;
-};
-
-type VerifierModule = {
-  verifyExternalQualityReceipt(
-    input: ExternalQualityVerifierInput,
-    deps: ExternalQualityVerifierDeps,
-  ): Promise<ExternalQualityVerifierResult>;
-};
 
 type Fixture = {
   input: ExternalQualityVerifierInput;
@@ -327,16 +264,10 @@ function uppercaseHexFixture(fixture: Fixture): void {
   });
 }
 
-async function loadVerifier(): Promise<VerifierModule["verifyExternalQualityReceipt"]> {
-  const module = await import("../src/lib/quality-verifier.js") as unknown as VerifierModule;
-  return module.verifyExternalQualityReceipt;
-}
-
 async function verify(
   fixture: Fixture,
   resolution?: ExternalEvidenceResolution,
 ): Promise<ExternalQualityVerifierResult> {
-  const verifyExternalQualityReceipt = await loadVerifier();
   const deps = resolution === undefined
     ? fixture.deps
     : { ...fixture.deps, resolveEvidence: async () => resolution };
@@ -345,11 +276,21 @@ async function verify(
 
 describe("verifyExternalQualityReceipt", () => {
   it("expone la unión pública con rerunRequired literal solo para pass/fail", () => {
-    expectTypeOf<PublicExternalQualityVerifierResult>().toEqualTypeOf<
+    expectTypeOf<ExternalQualityVerifierResult>().toEqualTypeOf<
       | { status: "pass"; rerunRequired: false }
       | { status: "fail"; rerunRequired: false }
       | { status: "incomplete"; rerunRequired: boolean }
     >();
+  });
+
+  it("expone el helper público para reproducir el subjectDigest", async () => {
+    const verifierModule = await import("../src/lib/quality-verifier.js") as unknown as {
+      subjectDigestFor?: (receipt: QualityReceipt) => string;
+    };
+    const receipt = enforcedReceipt();
+
+    expect(verifierModule.subjectDigestFor).toEqual(expect.any(Function));
+    expect(verifierModule.subjectDigestFor?.(receipt)).toBe(subjectDigestFor(receipt));
   });
 
   it("control de setup: construye un receipt enforced y sus digests canónicos", () => {
@@ -705,6 +646,88 @@ describe("verifyExternalQualityReceipt", () => {
     expect(fixture.nowCalls).toEqual([]);
   });
 
+  it("rechaza una propiedad top-level desconocida heredada", async () => {
+    const key = "__unexpectedQualityPolicyField";
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    Object.defineProperty(Object.prototype, key, {
+      configurable: true,
+      value: true,
+    });
+
+    try {
+      const fixture = makeFixture();
+      const policy = Object.create({ [key]: true }) as Record<string, unknown>;
+      Object.assign(policy, POLICY);
+      fixture.input.expected.policy = policy;
+
+      expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+      expect(fixture.resolveCalls).toEqual([]);
+      expect(fixture.attestationCalls).toEqual([]);
+      expect(fixture.nowCalls).toEqual([]);
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(Object.prototype, key);
+      else Object.defineProperty(Object.prototype, key, previous);
+    }
+  });
+
+  it("rechaza una propiedad de control desconocida heredada", async () => {
+    const key = "__unexpectedQualityControlField";
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    Object.defineProperty(Object.prototype, key, {
+      configurable: true,
+      value: true,
+    });
+
+    try {
+      const fixture = makeFixture();
+      const control = Object.create({ [key]: true }) as Record<string, unknown>;
+      Object.assign(control, POLICY.controls[0]);
+      fixture.input.expected.policy = {
+        ...POLICY,
+        controls: [control],
+      };
+
+      expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+      expect(fixture.resolveCalls).toEqual([]);
+      expect(fixture.attestationCalls).toEqual([]);
+      expect(fixture.nowCalls).toEqual([]);
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(Object.prototype, key);
+      else Object.defineProperty(Object.prototype, key, previous);
+    }
+  });
+
+  it("rechaza profile y controls heredados en la expected policy", async () => {
+    const previousProfile = Object.getOwnPropertyDescriptor(Object.prototype, "profile");
+    const previousControls = Object.getOwnPropertyDescriptor(Object.prototype, "controls");
+    Object.defineProperty(Object.prototype, "profile", {
+      configurable: true,
+      value: POLICY.profile,
+    });
+    Object.defineProperty(Object.prototype, "controls", {
+      configurable: true,
+      value: POLICY.controls,
+    });
+
+    try {
+      const fixture = makeFixture();
+      fixture.input.expected.policy = Object.create({
+        profile: POLICY.profile,
+        controls: POLICY.controls,
+      }) as Record<string, unknown>;
+
+      expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+      expect(fixture.resolveCalls).toEqual([]);
+      expect(fixture.attestationCalls).toEqual([]);
+      expect(fixture.nowCalls).toEqual([]);
+    } finally {
+      if (previousProfile === undefined) Reflect.deleteProperty(Object.prototype, "profile");
+      else Object.defineProperty(Object.prototype, "profile", previousProfile);
+      if (previousControls === undefined) Reflect.deleteProperty(Object.prototype, "controls");
+      else Object.defineProperty(Object.prototype, "controls", previousControls);
+    }
+  });
+
   it.each([
     {
       name: "auth callback que lanza",
@@ -729,6 +752,49 @@ describe("verifyExternalQualityReceipt", () => {
     expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
   });
 
+  it("usa una snapshot separada de la attestation que puede mutar mientras se autentica", async () => {
+    const fixture = makeFixture();
+    const originalAttestation = fixture.evidence.attestation;
+    fixture.deps.authenticateAttestation = async (attestation) => {
+      const authenticated = attestation.proof === sha256(canonicalJson(attestationClaims(attestation)));
+      originalAttestation.decision = "fail";
+      return { authenticated };
+    };
+
+    expect(await verify(fixture)).toEqual({ status: "pass", rerunRequired: false });
+  });
+
+  it("falla cerrado si deps está ausente", async () => {
+    const fixture = makeFixture();
+
+    expect(await verifyExternalQualityReceipt(
+      fixture.input,
+      undefined as unknown as ExternalQualityVerifierDeps,
+    )).toEqual({ status: "fail", rerunRequired: false });
+    expect(fixture.resolveCalls).toEqual([]);
+    expect(fixture.attestationCalls).toEqual([]);
+    expect(fixture.nowCalls).toEqual([]);
+  });
+
+  it.each(["resolveEvidence", "authenticateAttestation", "now"] as const)(
+    "falla cerrado si deps.%s no es invocable",
+    async (member) => {
+      const fixture = makeFixture();
+      const deps = {
+        ...fixture.deps,
+        [member]: null,
+      } as unknown as ExternalQualityVerifierDeps;
+
+      expect(await verifyExternalQualityReceipt(fixture.input, deps)).toEqual({
+        status: "fail",
+        rerunRequired: false,
+      });
+      expect(fixture.resolveCalls).toEqual([]);
+      expect(fixture.attestationCalls).toEqual([]);
+      expect(fixture.nowCalls).toEqual([]);
+    },
+  );
+
   it("devuelve incomplete y rerunRequired al lanzar el resolver", async () => {
     const fixture = makeFixture();
     fixture.deps.resolveEvidence = async () => {
@@ -746,6 +812,48 @@ describe("verifyExternalQualityReceipt", () => {
     } as unknown as ExternalEvidenceResolution;
 
     expect(await verify(fixture, malformed)).toEqual({ status: "fail", rerunRequired: false });
+  });
+
+  it.each([
+    {
+      name: "respuesta del authenticator con getter que lanza",
+      setup: (fixture: Fixture) => {
+        fixture.deps.authenticateAttestation = async () => ({
+          get authenticated(): never {
+            throw new Error("malformed authentication result");
+          },
+        } as unknown as AttestationVerification);
+      },
+    },
+    {
+      name: "respuesta del resolver con Proxy que lanza",
+      setup: (fixture: Fixture) => {
+        fixture.deps.resolveEvidence = async () => new Proxy({}, {
+          ownKeys: () => {
+            throw new Error("malformed resolution");
+          },
+        }) as ExternalEvidenceResolution;
+      },
+    },
+    {
+      name: "deps con Proxy que lanza al leer una dependencia",
+      setup: (fixture: Fixture) => {
+        const deps = new Proxy(fixture.deps, {
+          get: () => {
+            throw new Error("malformed deps");
+          },
+        });
+        fixture.deps = deps;
+      },
+    },
+  ])("falla cerrado y no rechaza la Promise ante $name", async ({ setup }) => {
+    const fixture = makeFixture();
+    setup(fixture);
+
+    await expect(verifyExternalQualityReceipt(fixture.input, fixture.deps)).resolves.toEqual({
+      status: "fail",
+      rerunRequired: false,
+    });
   });
 
   it("devuelve fail ante un now inválido", async () => {

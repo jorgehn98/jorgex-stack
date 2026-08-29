@@ -359,6 +359,8 @@ La documentación se contrasta con `src/lib/quality-receipt.ts`, `src/lib/qualit
 
 La implementación canónica de este contrato es `src/lib/quality-verifier.ts`. El verificador externo comprueba un candidato frente a una ref protegida; no convierte un recibo textual en autoridad.
 
+El subpath publicado `jorgex-stack/quality-verifier` expone `verifyExternalQualityReceipt` y `subjectDigestFor`. Para calcular `expected.subjectDigest`, el caller debe usar `subjectDigestFor`: calcula el digest del sujeto sobre la proyección JSON canónica de `namespace`, `version`, `authority`, `identity`, `commands` y `results`, sin `provenance`; no se debe reimplementar esa proyección.
+
 ### Flujo esperado
 
 1. El caller se ejecuta fuera de `candidate`, importa una versión fijada de `jorgex-stack/quality-verifier` y carga la policy y la ref esperadas desde una referencia protegida. El subpath describe cómo importar el módulo; no es una claim de la attestation.
@@ -366,6 +368,7 @@ La implementación canónica de este contrato es `src/lib/quality-verifier.ts`. 
 3. El resolver se invoca como `resolveEvidence(expected.evidenceLocator)`: recibe solo `evidenceLocator`. Una resolución `available` devuelve `evidence.locator`, `evidence.bytes` y `evidence.attestation`; también puede devolver `status: "expired"` o `status: "unavailable"`, siempre con `retryable`.
 4. La attestation tiene exactamente estas claims: `issuer`, `executionId`, `identity`, `policyDigest`, `protectedRef`, `producer`, `decision`, `subjectDigest`, `evidenceDigest`, `expiresAt` y `proof`. No contiene `import subpath`.
 5. El callback `authenticateAttestation` recibe la attestation completa. Solo se confía en ella para continuar cuando devuelve un objeto con `authenticated: true`; un callback que lanza, una respuesta inválida o `authenticated: false` produce `fail`.
+   El callback recibe una snapshot detached e inmutable de la attestation; el verificador continúa usando esa misma snapshot después de autenticarla.
 6. Con autenticación válida, el verificador valida el receipt frente a `expected.identity`, exige `authority: "enforced"` y `provenance`, comprueba locator, issuer y execution id, recalcula el digest de la policy y el `subjectDigest`, compara los digests de los bytes y valida las claims enlazadas a `expected` y al receipt.
 7. La comprobación del producer exige que `attestation.producer.processId` sea distinto de `expected.verifier.processId` y que `samePath(attestation.producer.worktree, expected.verifier.worktree)` sea falso. Coincidencia de PID o de worktree produce `fail`.
 

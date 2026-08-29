@@ -29,8 +29,8 @@
   ],
   "exports": {
     "./quality-verifier": {
-      "import": "./dist/quality-verifier.js",
-      "types": "./dist/quality-verifier.d.ts"
+      "types": "./dist/quality-verifier.d.ts",
+      "import": "./dist/quality-verifier.js"
     }
   },
   "engines": {

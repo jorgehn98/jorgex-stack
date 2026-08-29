@@ -109,20 +109,33 @@ type PreparedVerification = {
 
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+const STANDARD_OBJECT_PROTOTYPE_KEYS = new Set(Reflect.ownKeys(Object.prototype));
 
 function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function hasSafePrototype(value: object): boolean {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === null
+    || (prototype === Object.prototype
+      && Reflect.ownKeys(prototype).every((key) => STANDARD_OBJECT_PROTOTYPE_KEYS.has(key)));
+}
+
 function hasOnlyKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  const allowed = new Set(keys);
-  return Object.keys(value).every((key) => allowed.has(key));
+  const allowed = new Set<PropertyKey>(keys);
+  return Reflect.ownKeys(value).every((key) => allowed.has(key));
 }
 
 function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  if (Object.keys(value).length !== keys.length) return false;
-  const allowed = new Set(keys);
-  return Object.keys(value).every((key) => allowed.has(key));
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== keys.length) return false;
+  const allowed = new Set<PropertyKey>(keys);
+  return ownKeys.every((key) => allowed.has(key));
 }
 
 function hasText(value: unknown): value is string {
@@ -183,7 +196,7 @@ function sha256Bytes(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function subjectDigestFor(receipt: QualityReceipt): string {
+export function subjectDigestFor(receipt: QualityReceipt): string {
   return sha256(canonicalJson({
     namespace: receipt.namespace,
     version: receipt.version,
@@ -198,18 +211,27 @@ function isQualityPolicy(value: unknown): value is Record<string, unknown> & {
   controls: QualityControlDefinition[];
   profile?: QualityProfile;
 } {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["profile", "controls"]) || !Array.isArray(value.controls)) return false;
+  if (!isRecord(value)
+    || !hasSafePrototype(value)
+    || !hasOnlyKeys(value, ["profile", "controls"])
+    || !hasOwn(value, "controls")
+    || !Array.isArray(value.controls)) return false;
 
-  if (Object.prototype.hasOwnProperty.call(value, "profile") && !isQualityProfile(value.profile)) return false;
+  if (!hasOwn(value, "profile") && "profile" in value) return false;
+  if (hasOwn(value, "profile") && !isQualityProfile(value.profile)) return false;
 
   const ids = new Set<string>();
   for (const control of value.controls) {
     if (!isRecord(control)
+      || !hasSafePrototype(control)
       || !hasOnlyKeys(control, ["id", "requirement", "notApplicable"])
+      || !hasOwn(control, "id")
+      || !hasOwn(control, "requirement")
+      || (!hasOwn(control, "notApplicable") && "notApplicable" in control)
       || !hasText(control.id)
       || (control.requirement !== "required" && control.requirement !== "optional")
       || ids.has(control.id)
-      || (Object.prototype.hasOwnProperty.call(control, "notApplicable")
+      || (hasOwn(control, "notApplicable")
         && typeof control.notApplicable !== "boolean")) {
       return false;
     }
@@ -348,6 +370,7 @@ function prepareVerification(input: ExternalQualityVerifierInput): PreparedVerif
 
 function verifyEvidenceBinding(
   evidence: ExternalEvidence,
+  attestation: ExternalAttestation,
   prepared: PreparedVerification,
 ): boolean {
   const { receipt, expected } = prepared;
@@ -355,7 +378,6 @@ function verifyEvidenceBinding(
   if (provenance === undefined) return false;
 
   const evidenceDigest = sha256Bytes(evidence.bytes);
-  const attestation = evidence.attestation;
 
   return evidence.locator === expected.evidenceLocator
     && evidence.locator === provenance.evidenceLocator
@@ -380,25 +402,48 @@ async function verifyAttestation(
   evidence: ExternalEvidence,
   prepared: PreparedVerification,
   deps: ExternalQualityVerifierDeps,
-): Promise<boolean> {
-  let verification: unknown;
+): Promise<ExternalDecision | null> {
   try {
-    verification = await deps.authenticateAttestation(evidence.attestation);
-  } catch {
-    return false;
-  }
+    const attestation = snapshotAttestation(evidence.attestation);
+    let verification: unknown;
+    try {
+      verification = await deps.authenticateAttestation(attestation);
+    } catch {
+      return null;
+    }
 
-  if (!isAttestationVerification(verification) || !verification.authenticated) return false;
+    if (!isAttestationVerification(verification) || !verification.authenticated) return null;
 
-  try {
-    if (!verifyEvidenceBinding(evidence, prepared)) return false;
+    if (!verifyEvidenceBinding(evidence, attestation, prepared)) return null;
 
     const nowMs = Date.parse(deps.now());
-    const expiresAtMs = Date.parse(evidence.attestation.expiresAt);
-    return Number.isFinite(nowMs) && Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+    const expiresAtMs = Date.parse(attestation.expiresAt);
+    if (!Number.isFinite(nowMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return null;
+
+    return attestation.decision;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function snapshotAttestation(attestation: ExternalAttestation): ExternalAttestation {
+  const identity = Object.freeze({ ...attestation.identity });
+  const protectedRef = Object.freeze({ ...attestation.protectedRef });
+  const producer = Object.freeze({ ...attestation.producer });
+
+  return Object.freeze({
+    issuer: attestation.issuer,
+    executionId: attestation.executionId,
+    identity,
+    policyDigest: attestation.policyDigest,
+    protectedRef,
+    producer,
+    decision: attestation.decision,
+    subjectDigest: attestation.subjectDigest,
+    evidenceDigest: attestation.evidenceDigest,
+    expiresAt: attestation.expiresAt,
+    proof: attestation.proof,
+  });
 }
 
 function failureResult(): ExternalQualityVerifierResult {
@@ -417,41 +462,45 @@ export async function verifyExternalQualityReceipt(
   input: ExternalQualityVerifierInput,
   deps: ExternalQualityVerifierDeps,
 ): Promise<ExternalQualityVerifierResult> {
-  const prepared = prepareVerification(input);
-  if (prepared === null) return failureResult();
+  try {
+    const prepared = prepareVerification(input);
+    if (prepared === null) return failureResult();
 
-  if (prepared.policyStatus === "fail") return failureResult();
-  if (prepared.policyStatus === "incomplete") {
-    return { status: "incomplete", rerunRequired: false };
-  }
+    if (prepared.policyStatus === "fail") return failureResult();
+    if (prepared.policyStatus === "incomplete") {
+      return { status: "incomplete", rerunRequired: false };
+    }
 
-  if (typeof deps?.resolveEvidence !== "function"
-    || typeof deps.authenticateAttestation !== "function"
-    || typeof deps.now !== "function") {
+    if (typeof deps?.resolveEvidence !== "function"
+      || typeof deps.authenticateAttestation !== "function"
+      || typeof deps.now !== "function") {
+      return failureResult();
+    }
+
+    let resolution: ExternalEvidenceResolution;
+    try {
+      resolution = await deps.resolveEvidence(prepared.expected.evidenceLocator);
+    } catch {
+      return { status: "incomplete", rerunRequired: true };
+    }
+
+    if (isRetryableResolution(resolution)) {
+      return { status: "incomplete", rerunRequired: resolution.retryable };
+    }
+    if (!isAvailableResolution(resolution)) return failureResult();
+
+    const { evidence } = resolution;
+    const decision = await verifyAttestation(evidence, prepared, deps);
+    if (decision === null) return failureResult();
+    if (decision === "incomplete") {
+      return { status: "incomplete", rerunRequired: false };
+    }
+
+    return {
+      status: decision,
+      rerunRequired: false,
+    };
+  } catch {
     return failureResult();
   }
-
-  let resolution: ExternalEvidenceResolution;
-  try {
-    resolution = await deps.resolveEvidence(prepared.expected.evidenceLocator);
-  } catch {
-    return { status: "incomplete", rerunRequired: true };
-  }
-
-  if (isRetryableResolution(resolution)) {
-    return { status: "incomplete", rerunRequired: resolution.retryable };
-  }
-  if (!isAvailableResolution(resolution)) return failureResult();
-
-  const { evidence } = resolution;
-  if (!(await verifyAttestation(evidence, prepared, deps))) return failureResult();
-
-  if (evidence.attestation.decision === "incomplete") {
-    return { status: "incomplete", rerunRequired: false };
-  }
-
-  return {
-    status: evidence.attestation.decision,
-    rerunRequired: false,
-  };
 }
