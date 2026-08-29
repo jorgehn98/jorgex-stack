@@ -71,13 +71,27 @@ export type ExternalQualityVerifierInput = {
 };
 
 export type ExternalQualityVerifierDeps = {
+  /**
+   * Resolves evidence under the caller's own network and resource-safety policy.
+   * This verifier does not fetch, cap, or sandbox the returned bytes; the
+   * implementation must enforce size, timeout, redirect, host, DNS, and SSRF limits.
+   */
   resolveEvidence(locator: string): Promise<ExternalEvidenceResolution>;
+  /**
+   * Must authenticate the proof and issuer and bind that authentication to all
+   * attestation claims. A true flag based only on shape or the issuer string is
+   * not sufficient because this result is the verifier's authentication gate.
+   */
   authenticateAttestation(
     attestation: ExternalAttestation,
   ): Promise<AttestationVerification>;
   now(): string;
 };
 
+/**
+ * Consumers must treat `incomplete` as a non-pass. `rerunRequired` is only a
+ * retry hint for evidence-resolution failure, not a general approval signal.
+ */
 export type ExternalQualityVerifierResult = {
   status: ExternalDecision;
   rerunRequired: boolean;
@@ -372,6 +386,14 @@ async function verifyAttestation(
   }
 }
 
+/**
+ * Verifies an externally enforced receipt against caller-supplied expectations.
+ * A `pass` requires authenticated evidence, all receipt, evidence-binding,
+ * protected-reference, identity, policy, digest, and producer-boundary checks,
+ * a valid expiry, and an attestation decision of `pass`.
+ * This module does not track execution IDs or provide replay protection; callers
+ * must enforce any one-time-use requirement outside this function.
+ */
 export async function verifyExternalQualityReceipt(
   input: ExternalQualityVerifierInput,
   deps: ExternalQualityVerifierDeps,
