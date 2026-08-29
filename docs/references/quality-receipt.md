@@ -24,7 +24,7 @@ La reproducción del oráculo de acceptance se hace desde la raíz del worktree 
 pnpm exec vitest run tests/quality-cli-acceptance.test.ts
 ```
 
-La suite no prueba imports ni un `dist` posiblemente obsoleto: su `beforeAll` resuelve Corepack y ejecuta el `pnpm build` real, con el worktree como `cwd`, antes de cualquier caso. Después cada caso inicia Node contra `dist/cli.js`; para depurar por separado se puede ejecutar primero `pnpm build` y repetir el comando de Vitest. No se debe sustituir este flujo por un stub del CLI.
+La suite no prueba imports ni un `dist` posiblemente obsoleto: su `beforeAll` resuelve Corepack y ejecuta el `pnpm build` real, con el worktree como `cwd`, antes de cualquier caso, con un timeout de build de 30 s. Después cada caso inicia Node contra `dist/cli.js`; para depurar por separado se puede ejecutar primero `pnpm build` y repetir el comando de Vitest. No se debe sustituir este flujo por un stub del CLI.
 
 Cada caso crea un root con `fs.mkdtempSync` bajo `os.tmpdir()` y lo elimina en `afterEach`. El layout relevante es:
 
@@ -46,6 +46,8 @@ Cada caso crea un root con `fs.mkdtempSync` bajo `os.tmpdir()` y lo elimina en `
   tmp/
   tmpdir/
 ```
+
+El harness externo espera como máximo 5 s por proceso de la CLI; si vence, intenta terminar su árbol (`kill-tree`) de forma best-effort.
 
 El proceso real de la CLI se lanza con `cwd=<temp-root>/cwd with spaces`, `shell: false`, stdout/stderr capturados y este entorno explícitamente aislado:
 
@@ -71,9 +73,9 @@ El caso de aislamiento toma snapshots recursivos pre/post de `cwd`, `input`, `ou
 #### Oráculo de los ocho casos
 
 1. **Pass y entorno:** el CLI compilado real devuelve `0`, emite un receipt local por stdout, usa el `cwd` temporal, recibe la variable explícita y no hereda una variable ambiental del padre; no crea receipt en disco ni altera el snapshot.
-2. **Receipt atómico:** `--receipt` reemplaza un receipt sentinel, deja un JSON válido, no escribe stdout y no deja temporales junto al destino.
+2. **Receipt y reemplazo final:** `--receipt` reemplaza el receipt sentinel por un JSON válido, no escribe stdout y no deja temporales junto al destino. Este caso demuestra el reemplazo final, la validez del JSON, la sustitución del sentinel y la ausencia de temporales; no demuestra atomicidad ante un crash o interrupción ni observación concurrente.
 3. **Fallo nonzero:** un proceso que termina con código `7` conserva `exitCode: 7`, proyecta el control a `fail` con `nonzero-exit` y la CLI devuelve `1`.
-4. **Timeout de árbol:** un root que deja un grandchild termina como `incomplete` con razón `timeout`, conserva su excerpt y no permite que el grandchild escriba `grandchild-marker.txt` tras la espera acotada.
+4. **Timeout de árbol:** con `timeoutMs: 250` en el comando interno y un grandchild que intentaría escribir tras `1000 ms`, un root que deja un grandchild termina como `incomplete` con razón `timeout`, conserva su excerpt y no permite que el grandchild escriba `grandchild-marker.txt` tras la espera acotada.
 5. **Ejecutable ausente:** un ejecutable inexistente produce `unavailable`/`incomplete`, `spawn-error`, `exitCode: -1` y salida de CLI `1`.
 6. **Límite de salida:** al alcanzar exactamente `maxOutputBytes`, el excerpt conserva exactamente esos bytes y el control queda `incomplete` con razón `output-limit`.
 7. **Redacción y entorno:** argv y output no exponen los sentinels secretos; token, authorization, password y el campo JSON conocido se redactan, el entorno ambiental no se hereda y el receipt no contiene `environment`, `stdout` ni `stderr` completos.

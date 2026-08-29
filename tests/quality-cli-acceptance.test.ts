@@ -2,12 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
 const CLI_TIMEOUT_MS = 5_000;
+const BUILD_TIMEOUT_MS = 30_000;
+const TREE_KILL_TIMEOUT_MS = 1_000;
+const CLI_KILL_GRACE_MS = 250;
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
@@ -37,6 +40,8 @@ function resolveBuildInvocation(): ProcessInvocation {
         args: ["/d", "/s", "/c", `"${corepackShim}" pnpm build`],
       };
     }
+  } else {
+    return { command: "pnpm", args: ["build"] };
   }
 
   throw new Error(`No se pudo resolver Corepack desde ${process.execPath}`);
@@ -50,6 +55,7 @@ function buildDist(): void {
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    timeout: BUILD_TIMEOUT_MS,
   });
   if (result.status === 0) return;
 
@@ -229,6 +235,46 @@ function qualityPlan(command: PlanCommand): QualityPlan {
   };
 }
 
+function killProcessTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+
+  if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
+    const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
+    let killed = false;
+    try {
+      const result = spawnSync(taskkill, ["/pid", String(pid), "/t", "/f"], {
+        shell: false,
+        stdio: "ignore",
+        timeout: TREE_KILL_TIMEOUT_MS,
+        windowsHide: true,
+      });
+      killed = result.error === undefined && result.status === 0;
+    } catch {
+      // Fall back to the direct child when taskkill is unavailable.
+    }
+    if (!killed) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The process may have exited between the timeout and the kill attempt.
+      }
+    }
+    return;
+  }
+
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The process may have exited between the timeout and the kill attempt.
+    }
+  }
+}
+
 function runQuality(
   layout: TestLayout,
   args: string[],
@@ -240,31 +286,68 @@ function runQuality(
   return new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, "quality", ...args], {
       cwd: layout.cwd,
+      detached: true,
       env: environment,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      timeout: CLI_TIMEOUT_MS,
-      killSignal: "SIGKILL",
     });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let killGrace: NodeJS.Timeout | undefined;
+
+    const onStdoutData = (chunk: string): void => { stdout += chunk; };
+    const onStderrData = (chunk: string): void => { stderr += chunk; };
+    const onLateError = (): void => {};
+    const cleanup = (): void => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (killGrace !== undefined) clearTimeout(killGrace);
+      child.stdout?.removeListener("data", onStdoutData);
+      child.stderr?.removeListener("data", onStderrData);
+      child.removeListener("error", onError);
+      child.removeListener("close", onClose);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      // A killed child can report an asynchronous error after cleanup.
+      child.on("error", onLateError);
+      child.unref();
+    };
+    const settle = (result: CliResult): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const onError = (error: Error): void => {
+      if (settled || timedOut) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onClose = (status: number | null, signal: NodeJS.Signals | null): void => {
+      settle({ status, signal, stdout, stderr });
+    };
+    const onTimeout = (): void => {
+      if (settled) return;
+      timedOut = true;
+      killProcessTree(child);
+      killGrace = setTimeout(() => {
+        if (settled) return;
+        killProcessTree(child);
+        settle({ status: null, signal: "SIGKILL", stdout, stderr });
+      }, CLI_KILL_GRACE_MS);
+    };
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
-    child.once("error", (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    });
-    child.once("close", (status, signal) => {
-      if (settled) return;
-      settled = true;
-      resolve({ status, signal, stdout, stderr });
-    });
+    child.stdout?.on("data", onStdoutData);
+    child.stderr?.on("data", onStderrData);
+    child.once("error", onError);
+    child.once("close", onClose);
+    timeout = setTimeout(onTimeout, CLI_TIMEOUT_MS);
   });
 }
 
@@ -388,37 +471,32 @@ describe("quality CLI acceptance black-box", () => {
       env: { QUALITY_ACCEPTANCE_EXPLICIT: explicitValue },
     })));
     const before = managedSnapshot(layout);
-    const previousAmbientValue = process.env[ambientKey];
-    process.env[ambientKey] = ambientValue;
+    const result = await runQuality(layout, [layout.planPath], {
+      ...isolatedEnvironment(layout),
+      [ambientKey]: ambientValue,
+    });
 
-    try {
-      const result = await runQuality(layout, [layout.planPath]);
+    expect(result.status).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(fs.existsSync(layout.receiptPath)).toBe(false);
+    expect(managedSnapshot(layout)).toEqual(before);
 
-      expect(result.status).toBe(0);
-      expect(result.signal).toBeNull();
-      expect(result.stderr).toBe("");
-      expect(fs.existsSync(layout.receiptPath)).toBe(false);
-      expect(managedSnapshot(layout)).toEqual(before);
-
-      const receipt = parseReceipt(result.stdout);
-      const command = onlyCommand(receipt);
-      const observed = JSON.stringify({
-        explicit: explicitValue,
-        ambient: null,
-        cwd: layout.cwd,
-      });
-      expect(command).toMatchObject({
-        commandId: "pass-stdout",
-        executable: process.execPath,
-        exitCode: 0,
-      });
-      expect(command.excerpt).toContain(`quality pass\n${observed}`);
-      expect(command.argv[0]).toBe("-e");
-      expect(command.argv[1]).toBe(script);
-    } finally {
-      if (previousAmbientValue === undefined) delete process.env[ambientKey];
-      else process.env[ambientKey] = previousAmbientValue;
-    }
+    const receipt = parseReceipt(result.stdout);
+    const command = onlyCommand(receipt);
+    const observed = JSON.stringify({
+      explicit: explicitValue,
+      ambient: null,
+      cwd: layout.cwd,
+    });
+    expect(command).toMatchObject({
+      commandId: "pass-stdout",
+      executable: process.execPath,
+      exitCode: 0,
+    });
+    expect(command.excerpt).toContain(`quality pass\n${observed}`);
+    expect(command.argv[0]).toBe("-e");
+    expect(command.argv[1]).toBe(script);
   });
 
   it("reemplaza un receipt sentinel con --receipt sin dejar temporales", async () => {
@@ -471,7 +549,8 @@ describe("quality CLI acceptance black-box", () => {
 
   it("marca timeout y no deja el marcador del grandchild tras una espera acotada", async () => {
     const layout = createLayout();
-    const grandchildDelayMs = 800;
+    const internalTimeoutMs = 250;
+    const grandchildDelayMs = 1_000;
     const grandchildScript = [
       `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'grandchild-marker'), Number(process.argv[2]))`,
     ].join(";");
@@ -484,7 +563,7 @@ describe("quality CLI acceptance black-box", () => {
     writePlan(layout, qualityPlan(nodeCommand("timeout", {
       commandId: "timeout-tree",
       argv: ["-e", rootScript, "--", grandchildScript, layout.markerPath, String(grandchildDelayMs)],
-      timeoutMs: 100,
+      timeoutMs: internalTimeoutMs,
     })));
 
     const result = await runQuality(layout, [layout.planPath, "--receipt", layout.receiptPath]);
@@ -500,7 +579,7 @@ describe("quality CLI acceptance black-box", () => {
       status: "incomplete",
       reason: "timeout",
     });
-    expect(await appearedWithin(layout.markerPath, 1_200)).toBe(false);
+    expect(await appearedWithin(layout.markerPath, 1_500)).toBe(false);
   }, 6_000);
 
   it("informa un ejecutable ausente como unavailable/incomplete", async () => {
@@ -581,33 +660,28 @@ describe("quality CLI acceptance black-box", () => {
       argv: ["-e", script, "--", "--token", argvSecret],
       env: { QUALITY_ACCEPTANCE_OUTPUT: outputSecret },
     })));
-    const previousAmbientValue = process.env[ambientKey];
-    process.env[ambientKey] = ambientValue;
+    const result = await runQuality(layout, [layout.planPath], {
+      ...isolatedEnvironment(layout),
+      [ambientKey]: ambientValue,
+    });
 
-    try {
-      const result = await runQuality(layout, [layout.planPath]);
+    expect(result.status).toBe(0);
+    expect(result.signal).toBeNull();
+    const receipt = parseReceipt(result.stdout);
+    const command = onlyCommand(receipt);
+    const serialized = JSON.stringify(receipt);
 
-      expect(result.status).toBe(0);
-      expect(result.signal).toBeNull();
-      const receipt = parseReceipt(result.stdout);
-      const command = onlyCommand(receipt);
-      const serialized = JSON.stringify(receipt);
-
-      expect(serialized).not.toContain(argvSecret);
-      expect(serialized).not.toContain(outputSecret);
-      expect(serialized).not.toContain(ambientValue);
-      expect(command.argv.slice(-2)).toEqual(["--token", "[REDACTED]"]);
-      expect(command.excerpt).toContain("Authorization: [REDACTED]");
-      expect(command.excerpt).toContain("password=[REDACTED]");
-      expect(command.excerpt).toContain('"token":"[REDACTED]"');
-      expect(command.excerpt).toContain('"ambient":null');
-      expect(command).not.toHaveProperty("environment");
-      expect(command).not.toHaveProperty("stdout");
-      expect(command).not.toHaveProperty("stderr");
-    } finally {
-      if (previousAmbientValue === undefined) delete process.env[ambientKey];
-      else process.env[ambientKey] = previousAmbientValue;
-    }
+    expect(serialized).not.toContain(argvSecret);
+    expect(serialized).not.toContain(outputSecret);
+    expect(serialized).not.toContain(ambientValue);
+    expect(command.argv.slice(-2)).toEqual(["--token", "[REDACTED]"]);
+    expect(command.excerpt).toContain("Authorization: [REDACTED]");
+    expect(command.excerpt).toContain("password=[REDACTED]");
+    expect(command.excerpt).toContain('"token":"[REDACTED]"');
+    expect(command.excerpt).toContain('"ambient":null');
+    expect(command).not.toHaveProperty("environment");
+    expect(command).not.toHaveProperty("stdout");
+    expect(command).not.toHaveProperty("stderr");
   });
 
   it("rechaza --target-dir antes de spawn y conserva solo los roots/sentinels gestionados", async () => {
