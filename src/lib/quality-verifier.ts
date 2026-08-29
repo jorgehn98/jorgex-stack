@@ -92,10 +92,10 @@ export type ExternalQualityVerifierDeps = {
  * Consumers must treat `incomplete` as a non-pass. `rerunRequired` is only a
  * retry hint for evidence-resolution failure, not a general approval signal.
  */
-export type ExternalQualityVerifierResult = {
-  status: ExternalDecision;
-  rerunRequired: boolean;
-};
+export type ExternalQualityVerifierResult =
+  | { status: "pass"; rerunRequired: false }
+  | { status: "fail"; rerunRequired: false }
+  | { status: "incomplete"; rerunRequired: boolean };
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -110,13 +110,13 @@ type PreparedVerification = {
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 
-const FAILURE: ExternalQualityVerifierResult = {
-  status: "fail",
-  rerunRequired: false,
-};
-
 function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: UnknownRecord, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
@@ -133,6 +133,12 @@ function isSha(value: unknown, pattern: RegExp): value is string {
   return typeof value === "string" && pattern.test(value);
 }
 
+function hexEqual(left: unknown, right: unknown): boolean {
+  return typeof left === "string"
+    && typeof right === "string"
+    && left.toLowerCase() === right.toLowerCase();
+}
+
 function isQualityProfile(value: unknown): value is QualityProfile {
   return typeof value === "string" && (QUALITY_PROFILES as readonly string[]).includes(value);
 }
@@ -143,6 +149,20 @@ function isQualityReceiptIdentity(value: unknown): value is QualityReceiptIdenti
     && isSha(value.baseSha, COMMIT_SHA_PATTERN)
     && isSha(value.headSha, COMMIT_SHA_PATTERN)
     && isSha(value.policyDigest, SHA256_PATTERN);
+}
+
+function sameQualityReceiptIdentity(
+  left: QualityReceiptIdentity,
+  right: QualityReceiptIdentity,
+): boolean {
+  return left.profile === right.profile
+    && hexEqual(left.baseSha, right.baseSha)
+    && hexEqual(left.headSha, right.headSha)
+    && hexEqual(left.policyDigest, right.policyDigest);
+}
+
+function sameProtectedReference(left: ProtectedReference, right: ProtectedReference): boolean {
+  return left.ref === right.ref && hexEqual(left.sha, right.sha);
 }
 
 function isProtectedReference(value: unknown): value is ProtectedReference {
@@ -157,14 +177,6 @@ function isVerifierBoundary(value: unknown): value is { processId: string; workt
     && hasExactKeys(value, ["processId", "worktree"])
     && hasText(value.processId)
     && hasText(value.worktree);
-}
-
-function canonicalEqual(left: unknown, right: unknown): boolean {
-  try {
-    return canonicalJson(left) === canonicalJson(right);
-  } catch {
-    return false;
-  }
 }
 
 function sha256Bytes(bytes: Uint8Array): string {
@@ -186,17 +198,19 @@ function isQualityPolicy(value: unknown): value is Record<string, unknown> & {
   controls: QualityControlDefinition[];
   profile?: QualityProfile;
 } {
-  if (!isRecord(value) || !Array.isArray(value.controls)) return false;
+  if (!isRecord(value) || !hasOnlyKeys(value, ["profile", "controls"]) || !Array.isArray(value.controls)) return false;
 
-  if (value.profile !== undefined && !isQualityProfile(value.profile)) return false;
+  if (Object.prototype.hasOwnProperty.call(value, "profile") && !isQualityProfile(value.profile)) return false;
 
   const ids = new Set<string>();
   for (const control of value.controls) {
     if (!isRecord(control)
+      || !hasOnlyKeys(control, ["id", "requirement", "notApplicable"])
       || !hasText(control.id)
       || (control.requirement !== "required" && control.requirement !== "optional")
       || ids.has(control.id)
-      || (control.notApplicable !== undefined && typeof control.notApplicable !== "boolean")) {
+      || (Object.prototype.hasOwnProperty.call(control, "notApplicable")
+        && typeof control.notApplicable !== "boolean")) {
       return false;
     }
     ids.add(control.id);
@@ -280,7 +294,8 @@ function prepareVerification(input: ExternalQualityVerifierInput): PreparedVerif
       return null;
     }
 
-    validateQualityReceipt(receipt, expected.identity);
+    validateQualityReceipt(receipt);
+    if (!sameQualityReceiptIdentity(receipt.identity, expected.identity)) return null;
     if (receipt.authority !== "enforced" || receipt.provenance === undefined) return null;
 
     if (receipt.provenance.issuer !== expected.issuer
@@ -289,11 +304,11 @@ function prepareVerification(input: ExternalQualityVerifierInput): PreparedVerif
       return null;
     }
 
-    if (expected.protectedRef.sha !== receipt.identity.baseSha) return null;
+    if (!hexEqual(expected.protectedRef.sha, receipt.identity.baseSha)) return null;
 
     const policyDigest = sha256(canonicalJson(expected.policy));
-    if (policyDigest !== expected.identity.policyDigest
-      || policyDigest !== receipt.identity.policyDigest) {
+    if (!hexEqual(policyDigest, expected.identity.policyDigest)
+      || !hexEqual(policyDigest, receipt.identity.policyDigest)) {
       return null;
     }
 
@@ -317,7 +332,7 @@ function prepareVerification(input: ExternalQualityVerifierInput): PreparedVerif
     }
 
     const subjectDigest = subjectDigestFor(receipt);
-    if (subjectDigest !== expected.subjectDigest) return null;
+    if (!hexEqual(subjectDigest, expected.subjectDigest)) return null;
 
     return {
       receipt,
@@ -344,15 +359,15 @@ function verifyEvidenceBinding(
 
   return evidence.locator === expected.evidenceLocator
     && evidence.locator === provenance.evidenceLocator
-    && evidenceDigest === provenance.evidenceDigest
-    && evidenceDigest === attestation.evidenceDigest
-    && attestation.subjectDigest === prepared.subjectDigest
-    && canonicalEqual(attestation.identity, receipt.identity)
-    && canonicalEqual(attestation.identity, expected.identity)
-    && attestation.policyDigest === prepared.policyDigest
-    && attestation.policyDigest === receipt.identity.policyDigest
-    && canonicalEqual(attestation.protectedRef, expected.protectedRef)
-    && attestation.protectedRef.sha === receipt.identity.baseSha
+    && hexEqual(evidenceDigest, provenance.evidenceDigest)
+    && hexEqual(evidenceDigest, attestation.evidenceDigest)
+    && hexEqual(attestation.subjectDigest, prepared.subjectDigest)
+    && sameQualityReceiptIdentity(attestation.identity, receipt.identity)
+    && sameQualityReceiptIdentity(attestation.identity, expected.identity)
+    && hexEqual(attestation.policyDigest, prepared.policyDigest)
+    && hexEqual(attestation.policyDigest, receipt.identity.policyDigest)
+    && sameProtectedReference(attestation.protectedRef, expected.protectedRef)
+    && hexEqual(attestation.protectedRef.sha, receipt.identity.baseSha)
     && attestation.issuer === expected.issuer
     && attestation.issuer === provenance.issuer
     && attestation.executionId === expected.executionId
@@ -386,6 +401,10 @@ async function verifyAttestation(
   }
 }
 
+function failureResult(): ExternalQualityVerifierResult {
+  return { status: "fail", rerunRequired: false };
+}
+
 /**
  * Verifies an externally enforced receipt against caller-supplied expectations.
  * A `pass` requires authenticated evidence, all receipt, evidence-binding,
@@ -399,9 +418,9 @@ export async function verifyExternalQualityReceipt(
   deps: ExternalQualityVerifierDeps,
 ): Promise<ExternalQualityVerifierResult> {
   const prepared = prepareVerification(input);
-  if (prepared === null) return FAILURE;
+  if (prepared === null) return failureResult();
 
-  if (prepared.policyStatus === "fail") return FAILURE;
+  if (prepared.policyStatus === "fail") return failureResult();
   if (prepared.policyStatus === "incomplete") {
     return { status: "incomplete", rerunRequired: false };
   }
@@ -409,7 +428,7 @@ export async function verifyExternalQualityReceipt(
   if (typeof deps?.resolveEvidence !== "function"
     || typeof deps.authenticateAttestation !== "function"
     || typeof deps.now !== "function") {
-    return FAILURE;
+    return failureResult();
   }
 
   let resolution: ExternalEvidenceResolution;
@@ -422,10 +441,14 @@ export async function verifyExternalQualityReceipt(
   if (isRetryableResolution(resolution)) {
     return { status: "incomplete", rerunRequired: resolution.retryable };
   }
-  if (!isAvailableResolution(resolution)) return FAILURE;
+  if (!isAvailableResolution(resolution)) return failureResult();
 
   const { evidence } = resolution;
-  if (!(await verifyAttestation(evidence, prepared, deps))) return FAILURE;
+  if (!(await verifyAttestation(evidence, prepared, deps))) return failureResult();
+
+  if (evidence.attestation.decision === "incomplete") {
+    return { status: "incomplete", rerunRequired: false };
+  }
 
   return {
     status: evidence.attestation.decision,

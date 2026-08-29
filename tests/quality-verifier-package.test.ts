@@ -2,10 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { Options } from "tsup";
+import tsupConfig from "../tsup.config.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_PATH = path.join(ROOT, "package.json");
-const TSUP_CONFIG_PATH = path.join(ROOT, "tsup.config.ts");
+
+const EXPECTED_ENTRIES = {
+  cli: "src/cli.ts",
+  "quality-verifier": "src/lib/quality-verifier.ts",
+};
 
 type PackageJson = {
   name?: string;
@@ -17,6 +23,13 @@ type PackageJson = {
 
 function readPackageJson(): PackageJson {
   return JSON.parse(fs.readFileSync(PACKAGE_PATH, "utf8")) as PackageJson;
+}
+
+function readTsupConfig(): Options {
+  if (typeof tsupConfig === "function") throw new Error("Expected static tsup config");
+  const config = Array.isArray(tsupConfig) ? tsupConfig[0] : tsupConfig;
+  if (config === undefined) throw new Error("Missing tsup config");
+  return config;
 }
 
 describe("T37 setup control", () => {
@@ -53,17 +66,9 @@ describe("T37 package contract", () => {
 });
 
 describe("T37 tsup contract", () => {
-  it("incluye cli y quality-verifier como entradas", () => {
-    const config = fs.readFileSync(TSUP_CONFIG_PATH, "utf8");
-
-    expect(config).toMatch(
-      /entry:\s*\[[\s\S]*["']src\/cli\.ts["'][\s\S]*["']src\/lib\/quality-verifier\.ts["'][\s\S]*\]/,
-    );
-  });
-
-  it("habilita la generación de declaraciones", () => {
-    const config = fs.readFileSync(TSUP_CONFIG_PATH, "utf8");
-
-    expect(config).toMatch(/\bdts:\s*(?:true|\{)/);
+  it("declara semánticamente los aliases de entry y habilita dts", () => {
+    const config = readTsupConfig();
+    expect(config.entry).toEqual(EXPECTED_ENTRIES);
+    expect(config.dts).toBeTruthy();
   });
 });

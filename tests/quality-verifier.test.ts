@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   canonicalJson,
   createQualityReceipt,
   sha256,
   type QualityReceipt,
 } from "../src/lib/quality-receipt.js";
+import type { ExternalQualityVerifierResult as PublicExternalQualityVerifierResult } from "../src/lib/quality-verifier.js";
 
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
@@ -112,6 +113,7 @@ type Fixture = {
   deps: ExternalQualityVerifierDeps;
   resolveCalls: string[];
   attestationCalls: ExternalAttestation[];
+  nowCalls: string[];
 };
 
 function sha256Bytes(bytes: Uint8Array): string {
@@ -216,6 +218,7 @@ function makeFixture(): Fixture {
   };
   const resolveCalls: string[] = [];
   const attestationCalls: Fixture["attestationCalls"] = [];
+  const nowCalls: string[] = [];
   const evidenceByLocator = new Map([[EVIDENCE_LOCATOR, evidence]]);
 
   return {
@@ -238,6 +241,7 @@ function makeFixture(): Fixture {
     evidence,
     resolveCalls,
     attestationCalls,
+    nowCalls,
     deps: {
       resolveEvidence: async (locator) => {
         resolveCalls.push(locator);
@@ -252,9 +256,75 @@ function makeFixture(): Fixture {
           authenticated: attestation.proof === sha256(canonicalJson(attestationClaims(attestation))),
         };
       },
-      now: () => NOW,
+      now: () => {
+        nowCalls.push(NOW);
+        return NOW;
+      },
     },
   };
+}
+
+function rebindPolicy(fixture: Fixture, policy: Record<string, unknown>): void {
+  const policyDigest = sha256(canonicalJson(policy));
+  const identity = {
+    ...fixture.input.receipt.identity,
+    policyDigest,
+  };
+  const receipt = {
+    ...fixture.input.receipt,
+    identity,
+  };
+  const subjectDigest = subjectDigestFor(receipt);
+
+  fixture.input.receipt = receipt;
+  fixture.input.expected = {
+    ...fixture.input.expected,
+    identity: { ...identity },
+    policy,
+    subjectDigest,
+  };
+  resignAttestation(fixture, (claims) => {
+    claims.identity = { ...identity };
+    claims.policyDigest = policyDigest;
+    claims.subjectDigest = subjectDigest;
+  });
+}
+
+function uppercaseHexFixture(fixture: Fixture): void {
+  const provenance = fixture.input.receipt.provenance;
+  if (provenance === undefined) throw new Error("missing provenance");
+
+  const identity = {
+    ...fixture.input.receipt.identity,
+    baseSha: fixture.input.receipt.identity.baseSha.toUpperCase(),
+    headSha: fixture.input.receipt.identity.headSha.toUpperCase(),
+    policyDigest: fixture.input.receipt.identity.policyDigest.toUpperCase(),
+  };
+  const evidenceDigest = provenance.evidenceDigest.toUpperCase();
+  const receipt = {
+    ...fixture.input.receipt,
+    identity,
+    provenance: { ...provenance, evidenceDigest },
+  };
+  const subjectDigest = subjectDigestFor(receipt);
+
+  fixture.input.receipt = receipt;
+  fixture.input.expected = {
+    ...fixture.input.expected,
+    identity: { ...identity },
+    protectedRef: {
+      ...fixture.input.expected.protectedRef,
+      sha: identity.baseSha,
+    },
+    subjectDigest: subjectDigest.toUpperCase(),
+  };
+  resignAttestation(fixture, (claims) => {
+    claims.identity = { ...identity };
+    claims.policyDigest = identity.policyDigest;
+    claims.protectedRef = { ...claims.protectedRef, sha: identity.baseSha };
+    claims.subjectDigest = subjectDigest.toUpperCase();
+    claims.evidenceDigest = evidenceDigest;
+  });
 }
 
 async function loadVerifier(): Promise<VerifierModule["verifyExternalQualityReceipt"]> {
@@ -274,6 +344,14 @@ async function verify(
 }
 
 describe("verifyExternalQualityReceipt", () => {
+  it("expone la unión pública con rerunRequired literal solo para pass/fail", () => {
+    expectTypeOf<PublicExternalQualityVerifierResult>().toEqualTypeOf<
+      | { status: "pass"; rerunRequired: false }
+      | { status: "fail"; rerunRequired: false }
+      | { status: "incomplete"; rerunRequired: boolean }
+    >();
+  });
+
   it("control de setup: construye un receipt enforced y sus digests canónicos", () => {
     const receipt = enforcedReceipt();
 
@@ -595,6 +673,97 @@ describe("verifyExternalQualityReceipt", () => {
     expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
   });
 
+  it("acepta SHA y digests hex en mayúsculas con proof re-firmado y subjectDigest exacto del receipt", async () => {
+    const fixture = makeFixture();
+    uppercaseHexFixture(fixture);
+
+    expect(fixture.input.expected.subjectDigest.toLowerCase()).toBe(
+      subjectDigestFor(fixture.input.receipt),
+    );
+    expect(await verify(fixture)).toEqual({ status: "pass", rerunRequired: false });
+  });
+
+  it.each([
+    {
+      name: "campo top-level desconocido",
+      policy: { ...POLICY, unexpected: true },
+    },
+    {
+      name: "campo desconocido en un control",
+      policy: {
+        ...POLICY,
+        controls: [{ ...POLICY.controls[0], unexpected: true }],
+      },
+    },
+  ])("falla la expected policy con $name antes de ejecutar deps", async ({ policy }) => {
+    const fixture = makeFixture();
+    rebindPolicy(fixture, policy);
+
+    expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+    expect(fixture.resolveCalls).toEqual([]);
+    expect(fixture.attestationCalls).toEqual([]);
+    expect(fixture.nowCalls).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "auth callback que lanza",
+      setup: (fixture: Fixture) => {
+        fixture.deps.authenticateAttestation = async () => {
+          throw new Error("authentication unavailable");
+        };
+      },
+    },
+    {
+      name: "auth callback con shape inválido",
+      setup: (fixture: Fixture) => {
+        fixture.deps.authenticateAttestation = async () => ({
+          authenticated: "yes",
+        } as unknown as AttestationVerification);
+      },
+    },
+  ])("devuelve fail si $name", async ({ setup }) => {
+    const fixture = makeFixture();
+    setup(fixture);
+
+    expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+  });
+
+  it("devuelve incomplete y rerunRequired al lanzar el resolver", async () => {
+    const fixture = makeFixture();
+    fixture.deps.resolveEvidence = async () => {
+      throw new Error("resolver unavailable");
+    };
+
+    expect(await verify(fixture)).toEqual({ status: "incomplete", rerunRequired: true });
+  });
+
+  it("devuelve fail ante una resolución malformada", async () => {
+    const fixture = makeFixture();
+    const malformed = {
+      status: "available",
+      evidence: {},
+    } as unknown as ExternalEvidenceResolution;
+
+    expect(await verify(fixture, malformed)).toEqual({ status: "fail", rerunRequired: false });
+  });
+
+  it("devuelve fail ante un now inválido", async () => {
+    const fixture = makeFixture();
+    fixture.deps.now = () => "not-a-date";
+
+    expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+  });
+
+  it("devuelve fail ante un expiresAt inválido autenticado", async () => {
+    const fixture = makeFixture();
+    resignAttestation(fixture, (claims) => {
+      claims.expiresAt = "not-a-date";
+    });
+
+    expect(await verify(fixture)).toEqual({ status: "fail", rerunRequired: false });
+  });
+
   it.each([
     { status: "expired" as const, retryable: true },
     { status: "expired" as const, retryable: false },
@@ -631,5 +800,20 @@ describe("verifyExternalQualityReceipt", () => {
     };
 
     expect(await verify(fixture)).toEqual({ status, rerunRequired: false });
+  });
+
+  it("no comparte ni permite mutar el resultado failure entre calls", async () => {
+    const fixture = makeFixture();
+    fixture.input.receipt = {
+      ...fixture.input.receipt,
+      authority: "invalid",
+    } as unknown as QualityReceipt;
+
+    const first = await verify(fixture);
+    const second = await verify(fixture);
+    (first as { rerunRequired: boolean }).rerunRequired = true;
+
+    expect(second).toEqual({ status: "fail", rerunRequired: false });
+    expect(first).not.toBe(second);
   });
 });

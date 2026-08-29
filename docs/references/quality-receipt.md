@@ -277,7 +277,7 @@ La schema no exige que `commands` o `results` tengan elementos: que una policy e
 
 Un receipt local puede ser útil para diagnóstico, revisión o preparación, pero un `pass` local no equivale a un Quality Gate remoto. `authority: "enforced"` tampoco convierte por sí solo los campos de `provenance` en una atestación confiable: la schema y la API solo validan forma, identidad y presencia de provenance, no la autenticidad del issuer ni el contenido del locator.
 
-Un consumidor solo puede tratar `enforced` como enforcement real si un verificador externo autentica al emisor y comprueba la evidencia. Como mínimo debe usar una allowlist explícita de issuers y verificar de forma independiente la ejecución, el locator y el digest; la alternativa es una firma criptográfica verificable sobre el receipt o la evidencia. El verificador externo y la opción de firma quedan para PR04; hasta entonces, `enforced` es únicamente una declaración estructural y no debe bloquear merge, release o CI por sí sola.
+Un consumidor solo puede tratar `enforced` como enforcement real si un verificador externo autentica al emisor y comprueba la evidencia. Stack publica el núcleo adapter-independent como `jorgex-stack/quality-verifier`, pero no incluye provider ni authenticator: el caller externo debe autenticar criptográficamente la attestation completa y aportar la policy/ref protegidas. Sin esa frontera, `enforced` sigue siendo únicamente una declaración estructural y no debe bloquear merge, release o CI por sí sola.
 
 Para `enforced`, `provenance` es un objeto cerrado con:
 
@@ -353,7 +353,7 @@ Los dos primeros no son resultados de calidad, no deben adoptar el namespace `jo
 
 ## Verificación de esta referencia
 
-La documentación se contrasta con la implementación `src/lib/quality-receipt.ts`, `tests/quality-policy.test.ts`, `tests/quality-receipt.test.ts` y la schema canónica enlazada arriba. La decisión para esta tarea es **no añadir tests**: no se introduce comportamiento, solo se documenta el contrato que ya cubren esos seams.
+La documentación se contrasta con `src/lib/quality-receipt.ts`, `src/lib/quality-verifier.ts`, la schema canónica y los tests `quality-policy`, `quality-receipt`, `quality-verifier` y `quality-verifier-package`. T17 no añade otra capa de tests documental: describe el comportamiento ya protegido por esos seams.
 
 ## Verifier externo
 
