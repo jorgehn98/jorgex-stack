@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentConcurrency } from "./adapters/types.js";
 import { ADAPTERS, resolvePlaywrightToolPlan, runInstall } from "./install.js";
@@ -25,10 +26,13 @@ import {
   type PiRuntimeOperation,
 } from "./lib/pi-runtime.js";
 import { runManagedPiSystem } from "./lib/pi-managed-runtime.js";
+import { writeText } from "./lib/fsx.js";
+import { runQualityPlan } from "./lib/quality-runner.js";
+import { serializeQualityReceipt } from "./lib/quality-receipt.js";
 
 const VERSION = readPackageVersion();
 
-const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall"] as const;
+const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall", "quality"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export interface Flags {
@@ -47,6 +51,7 @@ export interface Flags {
   removePlaywright: boolean;
   devtools: boolean;
   noDevtools: boolean;
+  receipt?: string;
   positional: string[];
   unknownFlags: string[];
 }
@@ -57,6 +62,14 @@ export interface ParsedCli {
   flags: Flags;
   unknownCommand?: string;
 }
+
+const QUALITY_REJECTED_VALUE_FLAGS = new Set([
+  "--agents",
+  "-a",
+  "--target-dir",
+  "--mode",
+  "--subagent-concurrency",
+]);
 
 async function ensureOpenCodeModelsForInstall(
   command: "install" | "sync",
@@ -77,7 +90,7 @@ async function ensureOpenCodeModelsForInstall(
   return false;
 }
 
-export function parseFlags(args: string[]): Flags {
+export function parseFlags(args: string[], allowReceipt = false): Flags {
   const flags: Flags = {
     agents: [],
     dryRun: false,
@@ -93,6 +106,7 @@ export function parseFlags(args: string[]): Flags {
     removePlaywright: false,
     devtools: false,
     noDevtools: false,
+    receipt: undefined,
     positional: [],
     unknownFlags: [],
   };
@@ -103,6 +117,30 @@ export function parseFlags(args: string[]): Flags {
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
+    if (allowReceipt) {
+      if (arg === "--help" || arg === "-h") flags.help = true;
+      else if (arg === "--version" || arg === "-v") flags.version = true;
+      else if (arg === "--receipt") {
+        const [value, nextIndex] = readValue(i);
+        if (value === undefined || value === "") flags.unknownFlags.push(arg);
+        else flags.receipt = value;
+        i = nextIndex;
+      }
+      else if (arg.startsWith("--receipt=")) {
+        const value = arg.slice(10);
+        if (value === "") flags.unknownFlags.push(arg);
+        else flags.receipt = value;
+      }
+      else if (QUALITY_REJECTED_VALUE_FLAGS.has(arg)) {
+        flags.unknownFlags.push(arg);
+        const [, nextIndex] = readValue(i);
+        i = nextIndex;
+      }
+      else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
+      else flags.positional.push(arg);
+      continue;
+    }
+
     if (arg === "--agents" || arg === "-a") {
       const [value, nextIndex] = readValue(i);
       flags.agents = (value ?? "").split(",").filter(Boolean) as SelectableRuntimeId[];
@@ -284,7 +322,7 @@ export function parseCliArgs(argv: string[]): ParsedCli {
   }
 
   const command: Command = isCommand ? ((first ?? "install") as Command) : "install";
-  const flags = parseFlags(isCommand ? rest : argv);
+  const flags = parseFlags(isCommand ? rest : argv, command === "quality");
 
   if (first === "--help" || first === "-h" || flags.help) return { action: "help", command, flags };
   if (first === "--version" || first === "-v" || flags.version) return { action: "version", command, flags };
@@ -388,8 +426,9 @@ Comandos:
   doctor      Estado: Engram, drift de config, hooks de Codex, key de context7
   restore     --list para ver backups · 'restore <id>' para restaurar
   uninstall   Retira SOLO lo gestionado por el stack (con backup).
-              Engram se CONSERVA por defecto (memorias, binario y registro);
-              desregistrarlo exige --remove-engram o el sí explícito
+               Engram se CONSERVA por defecto (memorias, binario y registro);
+               desregistrarlo exige --remove-engram o el sí explícito
+  quality     Ejecuta un plan JSON explícito y emite un receipt local
 
 Opciones:
   --agents, -a opencode,claude-code,codex,pi   Runtimes destino (default: detectados)
@@ -405,6 +444,7 @@ Opciones:
                         memorias y binario quedan intactos igualmente
   --remove-playwright   (uninstall) retira solo el paquete global de Playwright;
                         nunca perfiles, caché ni navegadores
+  --receipt <path>      (quality) escribe el receipt en ese path de forma atómica
 
 Ver PRD.md para el diseño completo.`);
 }
@@ -436,13 +476,57 @@ async function main(): Promise<void> {
 
   const { command, flags } = parsed;
 
-  if (flags.targetDir !== undefined && flags.agents.length !== 1) {
+  if (command !== "quality" && flags.targetDir !== undefined && flags.agents.length !== 1) {
     console.error("--target-dir requiere exactamente un runtime en --agents.");
     process.exitCode = 1;
     return;
   }
 
   switch (command) {
+    case "quality": {
+      if (
+        flags.targetDir !== undefined
+        || flags.agents.length > 0
+        || flags.dryRun
+        || flags.yes
+        || flags.mode !== undefined
+        || flags.subagentConcurrency !== undefined
+        || flags.list
+        || flags.check
+        || flags.removeEngram
+        || flags.playwright
+        || flags.removePlaywright
+        || flags.devtools
+        || flags.noDevtools
+      ) {
+        console.error("quality solo admite <plan.json> y, opcionalmente, --receipt <path>.");
+        process.exitCode = 1;
+        return;
+      }
+      if (flags.positional.length !== 1) {
+        console.error("Uso: jorgex-stack quality <plan.json> [--receipt <path>]");
+        process.exitCode = 1;
+        return;
+      }
+      if (flags.receipt !== undefined && flags.receipt.trim() === "") {
+        console.error("--receipt requiere un path no vacío.");
+        process.exitCode = 1;
+        return;
+      }
+
+      try {
+        const plan = JSON.parse(fs.readFileSync(flags.positional[0]!, "utf8")) as unknown;
+        const result = await runQualityPlan(plan);
+        const serialized = serializeQualityReceipt(result.receipt);
+        if (flags.receipt === undefined) process.stdout.write(`${serialized}\n`);
+        else writeText(flags.receipt, `${serialized}\n`);
+        process.exitCode = result.evaluation.status === "pass" ? 0 : 1;
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+      }
+      return;
+    }
     case "install":
     case "sync": {
       const runtimes = await resolveRuntimes(flags, command === "install");
