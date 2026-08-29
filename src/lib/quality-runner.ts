@@ -328,6 +328,7 @@ export async function runQualityCommand(
     let onStdoutData = (_chunk: Buffer): void => {};
     let onStderrData = (_chunk: Buffer): void => {};
     let onError = (_error: NodeJS.ErrnoException): void => {};
+    const onErrorSink = (): void => {};
     let onClose = (_exitCode: number | null): void => {};
 
     const cleanupChild = (): void => {
@@ -335,6 +336,7 @@ export async function runQualityCommand(
       cleanedUp = true;
       child.removeListener("close", onClose);
       child.removeListener("error", onError);
+      child.on("error", onErrorSink);
       child.stdout?.removeListener("data", onStdoutData);
       child.stderr?.removeListener("data", onStderrData);
       child.stdout?.destroy();
@@ -374,6 +376,11 @@ export async function runQualityCommand(
       }
       if (settled) return;
       terminationDeadline = setTimeout(() => {
+        try {
+          deps.terminate(child);
+        } catch {
+          // A failed termination is reported by the grace deadline below.
+        }
         cleanupChild();
         settle(resultFromCaptured(input, "error", null, startedAt, captured, maxOutputBytes, "termination-timeout"));
       }, TERMINATION_GRACE_MS);

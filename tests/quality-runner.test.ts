@@ -266,6 +266,9 @@ describe("quality command runner", () => {
       terminate: (child) => {
         launchedChild = child;
         terminationAttempts += 1;
+        if (terminationAttempts === 1) {
+          child.emit("error", Object.assign(new Error("initial termination race"), { code: "EACCES" }));
+        }
       },
     };
 
@@ -284,7 +287,7 @@ describe("quality command runner", () => {
       }).toEqual({
         status: "error",
         reason: "termination-timeout",
-        terminationAttempts: 1,
+        terminationAttempts: 2,
       });
       expect(Date.now() - startedAt).toBeLessThan(1_000);
 
@@ -293,9 +296,16 @@ describe("quality command runner", () => {
       expect(launchedChild.stdout?.destroyed).toBe(true);
       expect(launchedChild.stderr?.destroyed).toBe(true);
       expect(launchedChild.listenerCount("close")).toBe(0);
-      expect(launchedChild.listenerCount("error")).toBe(0);
+      expect(launchedChild.listenerCount("error")).toBe(1);
       expect(launchedChild.stdout?.listenerCount("data") ?? 0).toBe(0);
       expect(launchedChild.stderr?.listenerCount("data") ?? 0).toBe(0);
+
+      expect(() => {
+        launchedChild?.emit(
+          "error",
+          Object.assign(new Error("late termination race"), { code: "EACCES" }),
+        );
+      }).not.toThrow();
     } finally {
       const child = launchedChild;
       if (child !== undefined && child.exitCode === null) {
@@ -334,7 +344,7 @@ describe("quality command runner", () => {
       expect(launchedChild.stdout?.destroyed).toBe(true);
       expect(launchedChild.stderr?.destroyed).toBe(true);
       expect(launchedChild.listenerCount("close")).toBe(0);
-      expect(launchedChild.listenerCount("error")).toBe(0);
+      expect(launchedChild.listenerCount("error")).toBe(1);
       expect(launchedChild.stdout?.listenerCount("data") ?? 0).toBe(0);
       expect(launchedChild.stderr?.listenerCount("data") ?? 0).toBe(0);
     } finally {
