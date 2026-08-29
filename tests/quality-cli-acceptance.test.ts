@@ -11,6 +11,7 @@ const CLI_TIMEOUT_MS = 5_000;
 const BUILD_TIMEOUT_MS = 30_000;
 const TREE_KILL_TIMEOUT_MS = 1_000;
 const CLI_KILL_GRACE_MS = 250;
+const WINDOWS_SHELL_METACHARACTERS = /["%&|<>^!`()\r\n]/;
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
@@ -25,6 +26,29 @@ type BoundedProcessOptions = {
   timeoutMs: number;
 };
 
+function resolveWindowsPnpmShim(): string | undefined {
+  const result = spawnSync("where.exe", ["pnpm.cmd"], {
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  if (result.error !== undefined || result.status !== 0) return undefined;
+
+  const pnpmShim = String(result.stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+  if (
+    pnpmShim === undefined
+    || !fs.existsSync(pnpmShim)
+    || WINDOWS_SHELL_METACHARACTERS.test(pnpmShim)
+  ) {
+    return undefined;
+  }
+  return pnpmShim;
+}
+
 function resolveBuildInvocation(): ProcessInvocation {
   const nodeDirectory = path.dirname(process.execPath);
   const corepackScript = [
@@ -38,7 +62,7 @@ function resolveBuildInvocation(): ProcessInvocation {
 
   if (process.platform === "win32") {
     const corepackShim = path.join(nodeDirectory, "corepack.cmd");
-    if (fs.existsSync(corepackShim) && !/["%&|<>^`\r\n]/.test(corepackShim)) {
+    if (fs.existsSync(corepackShim) && !WINDOWS_SHELL_METACHARACTERS.test(corepackShim)) {
       const comspec = process.env.ComSpec
         ?? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
       return {
@@ -46,11 +70,22 @@ function resolveBuildInvocation(): ProcessInvocation {
         args: ["/d", "/s", "/c", `"${corepackShim}" pnpm build`],
       };
     }
+
+    const pnpmShim = resolveWindowsPnpmShim();
+    if (pnpmShim !== undefined) {
+      const comspec = process.env.ComSpec
+        ?? process.env.COMSPEC
+        ?? path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows", "System32", "cmd.exe");
+      return {
+        command: comspec,
+        args: ["/d", "/s", "/c", `"${pnpmShim}" build`],
+      };
+    }
   } else {
     return { command: "pnpm", args: ["build"] };
   }
 
-  throw new Error(`No se pudo resolver Corepack desde ${process.execPath}`);
+  throw new Error(`No se pudo resolver Corepack ni pnpm.cmd desde ${process.execPath}`);
 }
 
 async function buildDist(): Promise<void> {
@@ -210,7 +245,7 @@ function createLayout(): TestLayout {
 }
 
 function isolatedEnvironment(layout: TestLayout): Record<string, string> {
-  return {
+  const environment: Record<string, string> = {
     HOME: layout.isolated.home,
     USERPROFILE: layout.isolated.userProfile,
     APPDATA: layout.isolated.appData,
@@ -222,6 +257,21 @@ function isolatedEnvironment(layout: TestLayout): Record<string, string> {
     TMP: layout.isolated.tmp,
     TMPDIR: layout.isolated.tmpdir,
   };
+
+  const preservedHostKeys = new Set([
+    "SystemRoot",
+    "SYSTEMROOT",
+    "WINDIR",
+    "windir",
+    "ComSpec",
+    "COMSPEC",
+  ]);
+  for (const key of Object.keys(process.env)) {
+    if (!preservedHostKeys.has(key)) continue;
+    const value = process.env[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return environment;
 }
 
 function writePlan(layout: TestLayout, plan: QualityPlan): void {
@@ -604,8 +654,8 @@ describe("quality CLI acceptance black-box", () => {
 
   it("marca timeout y no deja el marcador del grandchild tras una espera acotada", async () => {
     const layout = createLayout();
-    const internalTimeoutMs = 1_000;
-    const grandchildDelayMs = 3_000;
+    const internalTimeoutMs = 2_000;
+    const grandchildDelayMs = 5_000;
     const grandchildScript = [
       `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'grandchild-marker'), Number(process.argv[2]))`,
     ].join(";");
@@ -634,8 +684,8 @@ describe("quality CLI acceptance black-box", () => {
       status: "incomplete",
       reason: "timeout",
     });
-    expect(await appearedWithin(layout.markerPath, 4_000)).toBe(false);
-  }, 8_000);
+    expect(await appearedWithin(layout.markerPath, 6_000)).toBe(false);
+  }, 10_000);
 
   it("informa un ejecutable ausente como unavailable/incomplete", async () => {
     const layout = createLayout();

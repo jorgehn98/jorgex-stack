@@ -64,6 +64,8 @@ El proceso real de la CLI se lanza con `cwd=<temp-root>/cwd with spaces`, `shell
 | `TMP` | `tmp/` |
 | `TMPDIR` | `tmpdir/` |
 
+En Windows también se conservan únicamente las variables de plataforma necesarias para ejecutar y terminar procesos (`SystemRoot`/`SYSTEMROOT`, `WINDIR`/`windir` y `ComSpec`/`COMSPEC`) cuando existen. No se copia el resto del entorno del usuario.
+
 El plan siempre vive en `input/plan with spaces.json`. El receipt solo se espera en `output/receipt with spaces.json` cuando se pasa `--receipt`; sin ese flag el resultado se lee de stdout. Así se prueban rutas con espacios sin tocar la configuración real del usuario ni depender del `cwd` del proceso que ejecuta Vitest.
 
 El caso de aislamiento toma snapshots recursivos pre/post de `cwd`, `input`, `output`, `markers`, `target-dir` y de los diez roots de entorno. El snapshot conserva entradas ordenadas, contenido de archivos, destinos de symlinks y el estado `missing`. El caso de rechazo añade sentinels `managed-sentinel-*` en esos roots y un receipt sentinel preexistente; el caso de timeout usa `grandchild-marker.txt` como marcador de proceso descendiente. Las aserciones exigen que los snapshots y sentinels observados queden exactamente como antes cuando no debe haber escritura; `afterEach` elimina todo el root temporal.
@@ -75,7 +77,7 @@ El caso de aislamiento toma snapshots recursivos pre/post de `cwd`, `input`, `ou
 1. **Pass y entorno:** el CLI compilado real devuelve `0`, emite un receipt local por stdout, usa el `cwd` temporal, recibe la variable explícita y no hereda una variable ambiental del padre; no crea receipt en disco ni altera el snapshot.
 2. **Receipt y reemplazo final:** `--receipt` reemplaza el receipt sentinel por un JSON válido, no escribe stdout y no deja temporales junto al destino. Este caso demuestra el reemplazo final, la validez del JSON, la sustitución del sentinel y la ausencia de temporales; no demuestra atomicidad ante un crash o interrupción ni observación concurrente.
 3. **Fallo nonzero:** un proceso que termina con código `7` conserva `exitCode: 7`, proyecta el control a `fail` con `nonzero-exit` y la CLI devuelve `1`.
-4. **Timeout de árbol:** con `timeoutMs: 250` en el comando interno y un grandchild que intentaría escribir tras `1000 ms`, un root que deja un grandchild termina como `incomplete` con razón `timeout`, conserva su excerpt y no permite que el grandchild escriba `grandchild-marker.txt` tras la espera acotada.
+4. **Timeout de árbol:** con `timeoutMs: 2000` en el comando interno y un grandchild que intentaría escribir tras `5000 ms`, un root que deja un grandchild termina como `incomplete` con razón `timeout`, conserva su excerpt y no permite que el grandchild escriba `grandchild-marker.txt` tras la espera acotada de 6000 ms.
 5. **Ejecutable ausente:** un ejecutable inexistente produce `unavailable`/`incomplete`, `spawn-error`, `exitCode: -1` y salida de CLI `1`.
 6. **Límite de salida:** al alcanzar exactamente `maxOutputBytes`, el excerpt conserva exactamente esos bytes y el control queda `incomplete` con razón `output-limit`.
 7. **Redacción y entorno:** argv y output no exponen los sentinels secretos; token, authorization, password y el campo JSON conocido se redactan, el entorno ambiental no se hereda y el receipt no contiene `environment`, `stdout` ni `stderr` completos.
