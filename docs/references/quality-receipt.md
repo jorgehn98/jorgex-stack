@@ -16,6 +16,71 @@ El comando acepta exactamente un plan JSON posicional y, opcionalmente, `--recei
 
 El runner valida el plan completo antes de lanzar el primer proceso. Después ejecuta los comandos declarados en orden, de forma secuencial y sin fail-fast: un comando que falla no impide intentar los siguientes. Si el plan es ilegible, no es JSON válido o no cumple la forma mínima, la CLI informa el error por stderr, no produce un receipt y termina con código `1`.
 
+### Acceptance black-box
+
+La reproducción del oráculo de acceptance se hace desde la raíz del worktree con:
+
+```powershell
+pnpm exec vitest run tests/quality-cli-acceptance.test.ts
+```
+
+La suite no prueba imports ni un `dist` posiblemente obsoleto: su `beforeAll` resuelve Corepack y ejecuta el `pnpm build` real, con el worktree como `cwd`, antes de cualquier caso. Después cada caso inicia Node contra `dist/cli.js`; para depurar por separado se puede ejecutar primero `pnpm build` y repetir el comando de Vitest. No se debe sustituir este flujo por un stub del CLI.
+
+Cada caso crea un root con `fs.mkdtempSync` bajo `os.tmpdir()` y lo elimina en `afterEach`. El layout relevante es:
+
+```text
+<temp-root>/
+  cwd with spaces/
+  input/plan with spaces.json
+  output/receipt with spaces.json
+  markers/grandchild-marker.txt
+  target dir/
+  home/
+  user-profile/
+  app-data/
+  local-app-data/
+  codex-home/
+  opencode-config/
+  xdg-config/
+  temp/
+  tmp/
+  tmpdir/
+```
+
+El proceso real de la CLI se lanza con `cwd=<temp-root>/cwd with spaces`, `shell: false`, stdout/stderr capturados y este entorno explícitamente aislado:
+
+| Variable | Root temporal asignado |
+| --- | --- |
+| `HOME` | `home/` |
+| `USERPROFILE` | `user-profile/` |
+| `APPDATA` | `app-data/` |
+| `LOCALAPPDATA` | `local-app-data/` |
+| `CODEX_HOME` | `codex-home/` |
+| `OPENCODE_CONFIG_DIR` | `opencode-config/` |
+| `XDG_CONFIG_HOME` | `xdg-config/` |
+| `TEMP` | `temp/` |
+| `TMP` | `tmp/` |
+| `TMPDIR` | `tmpdir/` |
+
+El plan siempre vive en `input/plan with spaces.json`. El receipt solo se espera en `output/receipt with spaces.json` cuando se pasa `--receipt`; sin ese flag el resultado se lee de stdout. Así se prueban rutas con espacios sin tocar la configuración real del usuario ni depender del `cwd` del proceso que ejecuta Vitest.
+
+El caso de aislamiento toma snapshots recursivos pre/post de `cwd`, `input`, `output`, `markers`, `target-dir` y de los diez roots de entorno. El snapshot conserva entradas ordenadas, contenido de archivos, destinos de symlinks y el estado `missing`. El caso de rechazo añade sentinels `managed-sentinel-*` en esos roots y un receipt sentinel preexistente; el caso de timeout usa `grandchild-marker.txt` como marcador de proceso descendiente. Las aserciones exigen que los snapshots y sentinels observados queden exactamente como antes cuando no debe haber escritura; `afterEach` elimina todo el root temporal.
+
+`quality` no gestiona runtimes ni sus configuraciones, por lo que rechaza `--target-dir`; el aislamiento de este comando no se obtiene con ese flag. La prueba de rechazo sí inicia el proceso real de la CLI, pero verifica que el comando declarado por el plan no llegue a hacer `spawn` ni escritura: el plan intentaría crear el marcador, mientras que stdout queda vacío, stderr menciona `--target-dir`, el exit code es `1`, el receipt sentinel no cambia y el snapshot post coincide con el pre. El `--target-dir` real pertenece a `install`/`sync`; aquí los roots temporales son la frontera observable.
+
+#### Oráculo de los ocho casos
+
+1. **Pass y entorno:** el CLI compilado real devuelve `0`, emite un receipt local por stdout, usa el `cwd` temporal, recibe la variable explícita y no hereda una variable ambiental del padre; no crea receipt en disco ni altera el snapshot.
+2. **Receipt atómico:** `--receipt` reemplaza un receipt sentinel, deja un JSON válido, no escribe stdout y no deja temporales junto al destino.
+3. **Fallo nonzero:** un proceso que termina con código `7` conserva `exitCode: 7`, proyecta el control a `fail` con `nonzero-exit` y la CLI devuelve `1`.
+4. **Timeout de árbol:** un root que deja un grandchild termina como `incomplete` con razón `timeout`, conserva su excerpt y no permite que el grandchild escriba `grandchild-marker.txt` tras la espera acotada.
+5. **Ejecutable ausente:** un ejecutable inexistente produce `unavailable`/`incomplete`, `spawn-error`, `exitCode: -1` y salida de CLI `1`.
+6. **Límite de salida:** al alcanzar exactamente `maxOutputBytes`, el excerpt conserva exactamente esos bytes y el control queda `incomplete` con razón `output-limit`.
+7. **Redacción y entorno:** argv y output no exponen los sentinels secretos; token, authorization, password y el campo JSON conocido se redactan, el entorno ambiental no se hereda y el receipt no contiene `environment`, `stdout` ni `stderr` completos.
+8. **Rechazo de `--target-dir`:** el flag se rechaza antes de ejecutar el comando del plan; no hay escritura ni reemplazo del receipt, los sentinels y el snapshot gestionado permanecen intactos.
+
+Este oráculo observa únicamente los paths temporales, los sentinels y la evidencia emitida por la CLI. No demuestra un sandbox del sistema operativo, no valida un guardian o hook, y no establece un bloqueo universal de egress/red. Tampoco prueba ausencia de escrituras fuera de los roots observados ni convierte un pass local en enforcement externo; esas garantías requieren controles distintos.
+
 ### Shape mínimo del plan
 
 El plan de entrada tiene cuatro campos de nivel superior:
