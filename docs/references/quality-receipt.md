@@ -47,7 +47,7 @@ Cada caso crea un root con `fs.mkdtempSync` bajo `os.tmpdir()` y lo elimina en `
   tmpdir/
 ```
 
-El harness externo espera como máximo 5 s por proceso de la CLI; si vence, intenta terminar su árbol (`kill-tree`) de forma best-effort.
+El harness externo espera como máximo 10 s por proceso de la CLI; si vence, intenta terminar su árbol (`kill-tree`) de forma best-effort. Este margen cubre el timeout interno y los dos intentos acotados de terminación del árbol en Windows.
 
 El proceso real de la CLI se lanza con `cwd=<temp-root>/cwd with spaces`, `shell: false`, stdout/stderr capturados y este entorno explícitamente aislado:
 

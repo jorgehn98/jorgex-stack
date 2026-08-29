@@ -7,7 +7,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
-const CLI_TIMEOUT_MS = 5_000;
+const CLI_TIMEOUT_MS = 10_000;
 const BUILD_TIMEOUT_MS = 30_000;
 const TREE_KILL_TIMEOUT_MS = 1_000;
 const CLI_KILL_GRACE_MS = 250;
@@ -685,7 +685,7 @@ describe("quality CLI acceptance black-box", () => {
       reason: "timeout",
     });
     expect(await appearedWithin(layout.markerPath, 6_000)).toBe(false);
-  }, 10_000);
+  }, 16_000);
 
   it("informa un ejecutable ausente como unavailable/incomplete", async () => {
     const layout = createLayout();
