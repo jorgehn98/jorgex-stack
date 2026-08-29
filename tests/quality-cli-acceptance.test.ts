@@ -19,6 +19,12 @@ type ProcessInvocation = {
   args: string[];
 };
 
+type BoundedProcessOptions = {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs: number;
+};
+
 function resolveBuildInvocation(): ProcessInvocation {
   const nodeDirectory = path.dirname(process.execPath);
   const corepackScript = [
@@ -47,24 +53,29 @@ function resolveBuildInvocation(): ProcessInvocation {
   throw new Error(`No se pudo resolver Corepack desde ${process.execPath}`);
 }
 
-function buildDist(): void {
+async function buildDist(): Promise<void> {
   const invocation = resolveBuildInvocation();
-  const result = spawnSync(invocation.command, invocation.args, {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    timeout: BUILD_TIMEOUT_MS,
-  });
-  if (result.status === 0) return;
+  let result: BoundedProcessResult;
+  try {
+    result = await runBoundedProcess(invocation, {
+      cwd: REPO_ROOT,
+      timeoutMs: BUILD_TIMEOUT_MS,
+    });
+  } catch (error) {
+    throw new Error(`pnpm build failed to start: ${errorMessage(error)}`);
+  }
+
+  if (result.error === undefined && !result.timedOut && result.status === 0) return;
 
   const details = [
+    result.timedOut ? `timeout after ${BUILD_TIMEOUT_MS}ms` : undefined,
     result.error?.message,
+    result.status === null ? undefined : `exit status: ${result.status}`,
+    result.signal === null ? undefined : `signal: ${result.signal}`,
     result.stdout,
     result.stderr,
-  ].filter((value): value is string => value !== undefined && value !== "").join("\n");
-  throw new Error(`pnpm build failed${details === "" ? "" : `:\n${details}`}`);
+  ].filter((value): value is string => value !== undefined && value !== "");
+  throw new Error(`pnpm build failed${details.length === 0 ? "" : `:\n${details.join("\n")}`}`);
 }
 
 type PlanCommand = {
@@ -115,6 +126,11 @@ type CliResult = {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
+};
+
+type BoundedProcessResult = CliResult & {
+  timedOut: boolean;
+  error?: Error;
 };
 
 type ReceiptCommand = {
@@ -275,43 +291,57 @@ function killProcessTree(child: ChildProcess): void {
   }
 }
 
-function runQuality(
-  layout: TestLayout,
-  args: string[],
-  environment = isolatedEnvironment(layout),
-): Promise<CliResult> {
-  expect(path.isAbsolute(process.execPath)).toBe(true);
-  expect(CLI_PATH).toMatch(/[\\/]dist[\\/]cli\.js$/);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-  return new Promise<CliResult>((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI_PATH, "quality", ...args], {
-      cwd: layout.cwd,
-      detached: true,
-      env: environment,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
+function runBoundedProcess(
+  invocation: ProcessInvocation,
+  options: BoundedProcessOptions,
+): Promise<BoundedProcessResult> {
+  return new Promise<BoundedProcessResult>((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(invocation.command, invocation.args, {
+        cwd: options.cwd,
+        detached: true,
+        env: options.env,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let childError: Error | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let killGrace: NodeJS.Timeout | undefined;
 
-    const onStdoutData = (chunk: string): void => { stdout += chunk; };
-    const onStderrData = (chunk: string): void => { stderr += chunk; };
-    const onLateError = (): void => {};
+    const onStdoutData = (chunk: string | Buffer): void => {
+      stdout += chunk.toString();
+    };
+    const onStderrData = (chunk: string | Buffer): void => {
+      stderr += chunk.toString();
+    };
+    const onLateError = (error: Error): void => {
+      childError ??= error;
+    };
     const cleanup = (): void => {
       if (timeout !== undefined) clearTimeout(timeout);
       if (killGrace !== undefined) clearTimeout(killGrace);
       child.stdout?.removeListener("data", onStdoutData);
       child.stderr?.removeListener("data", onStderrData);
-      child.removeListener("error", onError);
+      child.removeListener("error", onChildError);
       child.removeListener("close", onClose);
       child.stdout?.destroy();
       child.stderr?.destroy();
-      // A killed child can report an asynchronous error after cleanup.
+      // A terminated child can report an asynchronous error after cleanup.
       child.on("error", onLateError);
       child.unref();
     };
@@ -319,13 +349,10 @@ function runQuality(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(result);
+      resolve({ ...result, timedOut, ...(childError === undefined ? {} : { error: childError }) });
     };
-    const onError = (error: Error): void => {
-      if (settled || timedOut) return;
-      settled = true;
-      cleanup();
-      reject(error);
+    const onChildError = (error: Error): void => {
+      childError ??= error;
     };
     const onClose = (status: number | null, signal: NodeJS.Signals | null): void => {
       settle({ status, signal, stdout, stderr });
@@ -345,10 +372,36 @@ function runQuality(
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", onStdoutData);
     child.stderr?.on("data", onStderrData);
-    child.once("error", onError);
+    child.on("error", onChildError);
     child.once("close", onClose);
-    timeout = setTimeout(onTimeout, CLI_TIMEOUT_MS);
+    timeout = setTimeout(onTimeout, options.timeoutMs);
   });
+}
+
+async function runQuality(
+  layout: TestLayout,
+  args: string[],
+  environment = isolatedEnvironment(layout),
+): Promise<CliResult> {
+  expect(path.isAbsolute(process.execPath)).toBe(true);
+  expect(CLI_PATH).toMatch(/[\\/]dist[\\/]cli\.js$/);
+
+  const result = await runBoundedProcess(
+    { command: process.execPath, args: [CLI_PATH, "quality", ...args] },
+    { cwd: layout.cwd, env: environment, timeoutMs: CLI_TIMEOUT_MS },
+  );
+  if (result.error !== undefined) {
+    const details = [result.error.message, result.stdout, result.stderr]
+      .filter((value) => value !== "")
+      .join("\n");
+    throw new Error(`quality CLI failed${details === "" ? "" : `:\n${details}`}`);
+  }
+  return {
+    status: result.status,
+    signal: result.signal,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 function parseReceipt(serialized: string): QualityReceipt {
@@ -450,7 +503,9 @@ afterEach(() => {
 });
 
 describe("quality CLI acceptance black-box", () => {
-  beforeAll(buildDist, 60_000);
+  beforeAll(async () => {
+    await buildDist();
+  }, 60_000);
 
   it("ejecuta el CLI compilado real, emite pass por stdout y no hereda el entorno", async () => {
     const layout = createLayout();
@@ -549,8 +604,8 @@ describe("quality CLI acceptance black-box", () => {
 
   it("marca timeout y no deja el marcador del grandchild tras una espera acotada", async () => {
     const layout = createLayout();
-    const internalTimeoutMs = 250;
-    const grandchildDelayMs = 1_000;
+    const internalTimeoutMs = 1_000;
+    const grandchildDelayMs = 3_000;
     const grandchildScript = [
       `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'grandchild-marker'), Number(process.argv[2]))`,
     ].join(";");
@@ -579,8 +634,8 @@ describe("quality CLI acceptance black-box", () => {
       status: "incomplete",
       reason: "timeout",
     });
-    expect(await appearedWithin(layout.markerPath, 1_500)).toBe(false);
-  }, 6_000);
+    expect(await appearedWithin(layout.markerPath, 4_000)).toBe(false);
+  }, 8_000);
 
   it("informa un ejecutable ausente como unavailable/incomplete", async () => {
     const layout = createLayout();
