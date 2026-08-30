@@ -157,12 +157,37 @@ La tabla de salida de la CLI es:
 
 | Código | Significado |
 | --- | --- |
-| `0` | La policy agregada es `pass` y el receipt se pudo serializar y emitir/escribir. |
-| `1` | La policy es `fail` o `incomplete`, o hubo un error de argumentos, lectura/parseo del plan, validación, serialización o escritura del receipt. No hay códigos distintos por timeout, unavailable o output-limit. |
+| `0` | La evaluación local —policy agregada y cierre local del perfil— es `pass` y el receipt se pudo serializar y emitir/escribir. |
+| `1` | La evaluación local es `fail` o `incomplete`, o hubo un error de argumentos, lectura/parseo del plan, validación, serialización o escritura del receipt. No hay códigos distintos por timeout, unavailable o output-limit. |
 
 Cuando la policy es `fail` o `incomplete`, el receipt normalmente sí se escribe antes de devolver `1`. Los errores que ocurren antes de construirlo —por ejemplo JSON inválido o un plan con ids duplicados— pueden no dejar ningún receipt.
 
 `--receipt` usa escritura atómica: crea los directorios padre, escribe primero un temporal en el mismo directorio y lo mueve sobre el destino con `rename`. Si el movimiento falla, elimina el temporal y propaga el error. Esto protege frente a un archivo objetivo parcialmente escrito por esta operación; no es un mecanismo de locking entre escritores ni una garantía de durabilidad `fsync`. La salida por stdout no tiene esa garantía de reemplazo atómico.
+
+### Diagnóstico local de capabilities y cierre estricto
+
+Los adapters de Claude Code, Codex CLI y OpenCode exponen un informe diagnóstico local en el namespace `jorgex.quality.capabilities`, versión `1`. Su contrato canónico es [`stack/contracts/quality-capabilities.v1.schema.json`](../../stack/contracts/quality-capabilities.v1.schema.json). El informe contiene exactamente estas capabilities:
+
+| Capability | Interpretación local |
+| --- | --- |
+| `policy-guidance` | `prompt-only` cuando existe una sección del system prompt con marcadores gestionados; reconoce una guía declarada, pero no prueba quién la escribió ni que el runtime la haga cumplir. |
+| `tool-approval` | `manual` cuando se reconocen las declaraciones canónicas de aprobación; indica que queda una decisión humana configurada, no que la activación real del runtime esté certificada. |
+| `external-verification` | `unavailable` en todo informe local; la verificación externa solo existe en la ruta del verificador externo. |
+
+El envelope fija `runtime` a `claude-code`, `codex`, `opencode`, `pi` o `unknown`; un runtime desconocido produce las tres entradas como `unavailable`. Estos informes no incluyen configuración cruda ni secretos.
+
+Los estados comunes son `enforced`, `prompt-only`, `manual` y `unavailable`, pero un informe local solo puede emitir `prompt-only`, `manual` o `unavailable`: nunca emite `enforced`. Una configuración ausente, ilegible, personalizada o no reconocida queda `unavailable`; las declaraciones duplicadas, malformadas o sin evidencia revisada también fallan cerrado. La salida es **diagnóstico de capabilities configuradas, no certificación de lo que el runtime realmente ejecuta** y no es otro `jorgex.quality.receipt`.
+
+Cuando aparece `evidence`, sus campos `source` y `version` identifican el origen y la versión del contrato de declaración/configuración revisado. `evidence.version` **no** es una versión nativa del runtime ni una afirmación de compatibilidad nativa.
+
+El runner evalúa primero la policy y aplica después el cierre local del perfil:
+
+| Perfil | Resultado local |
+| --- | --- |
+| `routine` / `elevated` | Se conserva el estado calculado por la policy. |
+| `high` / `release` | Un `pass` local se proyecta a `incomplete`; `fail` e `incomplete` se conservan. |
+
+Por tanto, un runner local no puede cerrar un perfil estricto (`high` o `release`) con `pass`, aunque todos sus comandos terminen correctamente. La única ruta de cierre estricto es una evidencia externa válida autenticada por `verifyExternalQualityReceipt`; el provider, el workflow y el authenticator se integran fuera de este módulo. Esta documentación no afirma ni instala un guardian, hook, workflow, bloqueo de CI, merge o release.
 
 ### Límites: qué no garantiza
 
@@ -182,8 +207,8 @@ Los perfiles válidos son:
 | --- | --- | --- |
 | `routine` | Cambio ordinario; es el valor por defecto. | No activa una lista universal de checks. |
 | `elevated` | Cambio con riesgo o coordinación adicional. | No define por sí solo qué controles son obligatorios. |
-| `high` | Cambio de alto impacto o sensibilidad. | No sustituye una policy explícita. |
-| `release` | Candidato de release o publicación. | No prueba que exista un gate externo. |
+| `high` | Cambio de alto impacto o sensibilidad. | No sustituye una policy explícita; un `pass` local queda en `incomplete`. |
+| `release` | Candidato de release o publicación. | No prueba que exista un gate externo; un `pass` local queda en `incomplete`. |
 
 La policy recibe un perfil y una lista explícita de controles. Si no se proporciona perfil, se usa `routine`. Un perfil desconocido es un error; no se degrada silenciosamente a `routine`. El perfil efectivo forma parte de `identity` y la policy efectiva queda vinculada mediante `policyDigest`.
 
@@ -328,6 +353,8 @@ La proyección Pi se registra en `contract/parity.v2.json`. Su `source.commit` i
 `source.commit` es provenance de la proyección y no sustituye `identity.baseSha`, `identity.headSha` o `identity.policyDigest` de un quality receipt. Durante una review paralela puede apuntar al candidate revisado; antes de publicar o cerrar la integración debe regenerarse con el commit de Stack realmente mergeado.
 
 Pi no duplica la fuente ni inventa otro wire format de calidad. Su contrato de paridad demuestra qué snapshot de Stack se proyectó; la schema de Stack sigue siendo la autoridad canónica.
+
+La misma separación aplica al diagnóstico de capabilities. Stack mantiene [`stack/contracts/quality-capabilities.v1.schema.json`](../../stack/contracts/quality-capabilities.v1.schema.json); Pi proyecta esa schema a su contrato generado y emite el informe desde su bootstrap nativo, usando el estado observado de su propia instalación. Pi no es otro adapter de Stack ni reutiliza el normalizador genérico para aceptar declaraciones arbitrarias. La proyección de la schema, su bootstrap y su lifecycle son propios de Pi y no cambian el runner local ni la ruta del verificador externo; un informe Pi sigue siendo local y no produce por sí mismo un cierre estricto.
 
 ### Receipts que no deben mezclarse
 
