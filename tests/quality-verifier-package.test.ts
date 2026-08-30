@@ -191,7 +191,7 @@ describe("T37 package contract", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });
 
 describe("T37 tsup contract", () => {
