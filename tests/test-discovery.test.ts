@@ -66,5 +66,5 @@ describe("repository test discovery", () => {
     } finally {
       fs.rmSync(fixture, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });

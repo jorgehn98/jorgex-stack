@@ -98,6 +98,7 @@ La configuración local debe conservar estas propiedades:
 
 - La prueba de descubrimiento crea tests canónicos y copias en `worktrees/` y `.pnpm-store/`; la comprobación CLI queda verde y solo devuelve los archivos bajo `tests/`.
 - Los dos focos de integración que agotaban el timeout global de 5 s tienen un presupuesto local de 15 s, sin convertir ese presupuesto en un timeout global.
+- La prueba de descubrimiento tiene su propio presupuesto de test de 15 s y limita a 10 s el proceso CLI hijo; esos límites solo cubren esa comprobación de inventario.
 - La causa corregida era doble: el descubrimiento desde una raíz con copias inflaba el trabajo paralelo, y dos setups de integración legítimamente lentos superaban el presupuesto por defecto. No se corrige reduciendo workers, añadiendo retries, silenciando la salida ni aceptando un verde espurio.
 
 Las ejecuciones focales no sustituyen una ejecución completa del checkout cuando el cambio la requiera. No debe inferirse de este aislamiento que la suite global esté verde ni que exista una mejora de latencia o de coste de CI.
@@ -106,5 +107,5 @@ Las ejecuciones focales no sustituyen una ejecución completa del checkout cuand
 
 - `test.dir` aplica cuando Vitest se lanza con la configuración de este checkout; invocar otro root o una configuración externa puede cambiar el alcance y debe inspeccionarse de nuevo.
 - Los conteos observados en la raíz del repositorio incluyen worktrees/store presentes en esa máquina y no son el tamaño objetivo de la suite canónica.
-- Un timeout local de 15 s protege únicamente los dos casos identificados; no justifica ampliar timeouts globales ni copiar el valor a otros tests sin diagnóstico comparable.
+- Los 15 s de los dos focos de integración y los 15 s propios del test de descubrimiento no justifican ampliar timeouts globales ni copiar esos valores a otros tests sin diagnóstico comparable; el proceso CLI de discovery mantiene su límite separado de 10 s.
 - Acotar el descubrimiento no demuestra ausencia de flakiness, ahorro de facturación ni corrección de CI remoto. La cadencia y los gates de GitHub pertenecen a la documentación específica de CI, no a esta receta local.
