@@ -105,8 +105,8 @@ function declarationFor(
 }
 
 /**
- * Detects a healthy managed markdown section without interpreting its content.
- * A marker is evidence that the stack wrote the section, not proof of runtime
+ * Detects a well-formed managed markdown marker pair without interpreting its
+ * content. The markers do not establish who wrote the section or prove runtime
  * enforcement.
  */
 export function hasManagedMarkdownSection(content: string | null, name: string): boolean {
