@@ -53,7 +53,27 @@
               }
             }
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"id": {"const": "external-verification"}},
+              "required": ["id"]
+            },
+            "then": {
+              "properties": {"state": {"const": "unavailable"}}
+            }
+          },
+          {
+            "if": {
+              "properties": {"state": {"enum": ["prompt-only", "manual"]}},
+              "required": ["state"]
+            },
+            "then": {
+              "required": ["evidence"]
+            }
+          }
+        ]
       },
       "allOf": [
         {

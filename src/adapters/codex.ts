@@ -75,17 +75,41 @@ function hasEngramProtocol(configDir: string): boolean {
   return config !== null && /engram-instructions\.md/.test(config);
 }
 
+const CODEX_SCALAR = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|true|false)`;
+const CODEX_ARRAY = String.raw`\[(?:\s*${CODEX_SCALAR}(?:\s*,\s*${CODEX_SCALAR})*\s*)?\]`;
+const CODEX_INLINE_TABLE = String.raw`\{(?:\s*(?:[A-Za-z0-9_-]+|"[^"\r\n]+")\s*=\s*${CODEX_SCALAR}(?:\s*,\s*(?:[A-Za-z0-9_-]+|"[^"\r\n]+")\s*=\s*${CODEX_SCALAR})*\s*)?\}`;
+const CODEX_ASSIGNMENT = new RegExp(
+  String.raw`^\s*(?:[A-Za-z0-9_-]+|"[^"\r\n]+")\s*=\s*(?:${CODEX_SCALAR}|${CODEX_ARRAY}|${CODEX_INLINE_TABLE})\s*(?:#.*)?$`,
+);
+const CODEX_HEADER = /^\s*\[[^\]\r\n]+\]\s*(?:#.*)?$/;
+const CODEX_APPROVAL_KEY = /^(?:approval_policy|"approval_policy")\s*=/;
+const CODEX_MANUAL_APPROVAL = /^(?:approval_policy|"approval_policy")\s*=\s*"on-request"\s*(?:#.*)?$/;
+
+/** Recognizes only the single-line subset emitted by the canonical config. */
 function hasCodexManualApproval(configDir: string): boolean {
   const config = readTextIfExists(path.join(configDir, "config.toml"));
-  if (config === null) return false;
+  if (config === null || /'''|"""/.test(config)) return false;
 
-  const rootLines: string[] = [];
+  let inSection = false;
+  let approvalDeclarations = 0;
+  let manualApprovals = 0;
   for (const line of config.replace(/\r\n/g, "\n").split("\n")) {
-    if (/^\s*\[/.test(line)) break;
-    rootLines.push(line);
+    const trimmed = line.trim();
+    if (/^(?:#.*)?$/.test(trimmed)) continue;
+    if (CODEX_HEADER.test(trimmed)) {
+      inSection = true;
+      continue;
+    }
+    if (!CODEX_ASSIGNMENT.test(line)) return false;
+
+    if (CODEX_APPROVAL_KEY.test(trimmed)) {
+      if (inSection) return false;
+      approvalDeclarations++;
+      if (CODEX_MANUAL_APPROVAL.test(trimmed)) manualApprovals++;
+    }
   }
-  const root = rootLines.join("\n");
-  return /^\s*(?:approval_policy|"approval_policy"|'approval_policy')\s*=\s*["']on-request["']\s*(?:#.*)?$/m.test(root);
+
+  return approvalDeclarations === 1 && manualApprovals === 1;
 }
 
 /**

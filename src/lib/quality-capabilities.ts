@@ -42,6 +42,7 @@ export interface LocalQualityCapabilityReport {
 }
 
 const UNAVAILABLE_REASON = "No reviewed local declaration is available";
+const EXTERNAL_VERIFICATION_REASON = "External verification is available only through the external verifier";
 
 function hasText(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
@@ -68,6 +69,10 @@ function declarationFor(
 ): LocalQualityCapability {
   if (runtime === "unknown") {
     return unavailableCapability(id, "Runtime is unknown; local capability cannot be established");
+  }
+
+  if (id === "external-verification") {
+    return unavailableCapability(id, EXTERNAL_VERIFICATION_REASON);
   }
 
   const matches = declarations.filter((declaration) => declaration?.id === id);
