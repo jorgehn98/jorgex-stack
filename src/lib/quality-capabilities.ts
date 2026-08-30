@@ -1,4 +1,5 @@
 import type { QualityPolicyStatus, QualityProfile } from "./quality-policy.js";
+import { hasHealthyManagedMarkdownMarkers } from "./filemerge.js";
 
 export const QUALITY_CAPABILITY_NAMESPACE = "jorgex.quality.capabilities" as const;
 export const QUALITY_CAPABILITY_VERSION = 1 as const;
@@ -110,13 +111,7 @@ function declarationFor(
  * enforcement.
  */
 export function hasManagedMarkdownSection(content: string | null, name: string): boolean {
-  if (content === null) return false;
-  const open = `<!-- jorgex:${name} -->`;
-  const close = `<!-- /jorgex:${name} -->`;
-  const lines = content.split(/\r?\n/).map((line) => line.trim());
-  return lines.filter((line) => line === open).length === 1
-    && lines.filter((line) => line === close).length === 1
-    && lines.indexOf(open) < lines.indexOf(close);
+  return content !== null && hasHealthyManagedMarkdownMarkers(content, name);
 }
 
 /**

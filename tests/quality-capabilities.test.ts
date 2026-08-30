@@ -371,6 +371,118 @@ it("does not treat approval_policy inside Codex TOML multiline data as manual ap
   expect(directorySnapshot(configDir)).toBe(before);
 });
 
+describe("permission declaration provenance", () => {
+  it.each([
+    ["Claude Code", ADAPTER_FIXTURES.find(({ id }) => id === "claude-code")!, (config: Record<string, unknown>) => {
+      const permissions = config.permissions as Record<string, unknown>;
+      permissions.allow = [...(permissions.allow as string[]), "Bash"];
+    }],
+    ["Claude Code", ADAPTER_FIXTURES.find(({ id }) => id === "claude-code")!, (config: Record<string, unknown>) => {
+      const permissions = config.permissions as Record<string, unknown>;
+      permissions.unrecognized = true;
+    }],
+  ] as const)("reports $0 unavailable when canonical Claude permissions are customized", (_name, fixture, mutate) => {
+    const configDir = temporaryConfigDir();
+    writeCanonicalConfig(fixture, configDir);
+    const configFile = path.join(configDir, fixture.configFile);
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as Record<string, unknown>;
+    mutate(config);
+    fs.writeFileSync(configFile, JSON.stringify(config), "utf8");
+
+    expect(statesFor(fixture.adapter.reportCapabilities(configDir))).toEqual(ALL_UNAVAILABLE);
+  });
+
+  it("reports OpenCode unavailable when canonical bash permissions gain an allow override", () => {
+    const fixture = ADAPTER_FIXTURES.find(({ id }) => id === "opencode")!;
+    const configDir = temporaryConfigDir();
+    writeCanonicalConfig(fixture, configDir);
+    const configFile = path.join(configDir, fixture.configFile);
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as Record<string, unknown>;
+    const permission = config.permission as Record<string, unknown>;
+    const bash = permission.bash as Record<string, unknown>;
+    bash["git push*"] = "allow";
+    fs.writeFileSync(configFile, JSON.stringify(config), "utf8");
+
+    expect(statesFor(fixture.adapter.reportCapabilities(configDir))).toEqual(ALL_UNAVAILABLE);
+  });
+
+  it.each(ADAPTER_FIXTURES)("keeps canonical approval diagnosis with unrelated $id metadata", (fixture) => {
+    const configDir = temporaryConfigDir();
+    writeCanonicalConfig(fixture, configDir);
+    const configFile = path.join(configDir, fixture.configFile);
+
+    if (fixture.id === "codex") {
+      const config = fs.readFileSync(configFile, "utf8");
+      fs.writeFileSync(configFile, `unrelated_metadata = "kept"\n${config}`, "utf8");
+    } else {
+      const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as Record<string, unknown>;
+      config.unrelated_metadata = { owner: "user" };
+      fs.writeFileSync(configFile, JSON.stringify(config), "utf8");
+    }
+
+    expect(statesFor(fixture.adapter.reportCapabilities(configDir))).toEqual([
+      "unavailable",
+      "manual",
+      "unavailable",
+    ]);
+  });
+});
+
+describe("Codex approval declaration parser boundary", () => {
+  it.each([
+    ['profile="unsafe"'],
+    ['invalid_metadata=null'],
+  ] as const)("rejects canonical Codex config with root %s", (rootDeclaration) => {
+    const fixture = ADAPTER_FIXTURES.find(({ id }) => id === "codex")!;
+    const configDir = temporaryConfigDir();
+    writeCanonicalConfig(fixture, configDir);
+    const configFile = path.join(configDir, fixture.configFile);
+    const canonical = fs.readFileSync(configFile, "utf8");
+    fs.writeFileSync(configFile, `${rootDeclaration}\n${canonical}`, "utf8");
+
+    expect(statesFor(codexAdapter.reportCapabilities(configDir))).toEqual(ALL_UNAVAILABLE);
+  });
+
+  it.each([
+    [
+      "duplicate tables",
+      'approval_policy = "on-request"\n[permissions.jorgex-read-anywhere]\nvalue = "one"\n[permissions.jorgex-read-anywhere]\nother = "two"\n',
+    ],
+    [
+      "duplicate keys",
+      'approval_policy = "on-request"\nmetadata = "one"\nmetadata = "two"\n',
+    ],
+    [
+      "invalid string escapes",
+      'approval_policy = "on-request"\nmetadata = "bad\\q"\n',
+    ],
+    [
+      "conflicting root default_permissions",
+      'approval_policy = "on-request"\ndefault_permissions = "other-profile"\n',
+    ],
+    [
+      "conflicting profile override",
+      'approval_policy = "on-request"\n[permissions.jorgex-read-anywhere]\nextends = ":workspace"\n[permissions.jorgex-read-anywhere.filesystem]\n":root" = "write"\n',
+    ],
+  ] as const)("reports $0 as unavailable", (_name, config) => {
+    const configDir = temporaryConfigDir();
+    fs.writeFileSync(path.join(configDir, "config.toml"), config, "utf8");
+
+    expect(statesFor(codexAdapter.reportCapabilities(configDir))).toEqual(ALL_UNAVAILABLE);
+  });
+});
+
+describe.each(ADAPTER_FIXTURES)("$id managed prompt marker boundary", (fixture) => {
+  it("reports a valid marker pair as unavailable when it also contains an inline duplicate marker", () => {
+    const configDir = temporaryConfigDir();
+    writeManagedPrompt(fixture.adapter, configDir);
+    const promptFile = path.join(configDir, fixture.promptFile);
+    fs.appendFileSync(promptFile, "\ninline duplicate: <!-- jorgex:system-prompt -->\n", "utf8");
+
+    expect(statesFor(fixture.adapter.reportCapabilities(configDir))).toEqual(ALL_UNAVAILABLE);
+  });
+});
+
 describe("local strict quality status", () => {
   it.each([
     ["routine", "pass", "pass"],

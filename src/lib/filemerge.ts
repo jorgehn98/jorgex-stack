@@ -8,6 +8,18 @@ function markers(name: string): { open: string; close: string } {
   return { open: `<!-- jorgex:${name} -->`, close: `<!-- /jorgex:${name} -->` };
 }
 
+/** Pure health check shared by marker writers and capability diagnostics. */
+export function hasHealthyManagedMarkdownMarkers(existing: string, name: string): boolean {
+  const { open, close } = markers(name);
+  const count = (marker: string): number => existing.split(marker).length - 1;
+  const onOwnLine = (marker: string): boolean => existing.split("\n").some((line) => line.trim() === marker);
+  return count(open) === 1
+    && count(close) === 1
+    && existing.indexOf(close) > existing.indexOf(open)
+    && onOwnLine(open)
+    && onOwnLine(close);
+}
+
 /**
  * Repara marcadores rotos (editados a mano): pares incompletos, en orden
  * inverso, duplicados o incrustados en una línea con más contenido. En esos
@@ -22,10 +34,7 @@ function repairOrphanMarkers(existing: string, name: string): string {
   const opens = count(open);
   const closes = count(close);
   if (opens === 0 && closes === 0) return existing;
-  const onOwnLine = (marker: string): boolean => existing.split("\n").some((line) => line.trim() === marker);
-  const healthy =
-    opens === 1 && closes === 1 && existing.indexOf(close) > existing.indexOf(open) && onOwnLine(open) && onOwnLine(close);
-  if (healthy) return existing;
+  if (hasHealthyManagedMarkdownMarkers(existing, name)) return existing;
   return existing
     .split("\n")
     .map((line) => (line.trim() === open || line.trim() === close ? null : line.split(open).join("").split(close).join("")))

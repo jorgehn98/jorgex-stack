@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
@@ -12,6 +13,7 @@ import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
+import { stackRoot } from "../lib/paths.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
@@ -79,14 +81,8 @@ function hasOpenCodeManualApproval(configDir: string): boolean {
   try {
     const root = JSON.parse(content) as unknown;
     const permission = objectValue(objectValue(root)?.permission);
-    const bash = permission === null ? null : objectValue(permission.bash);
-    return permission?.edit === "ask"
-      && permission.webfetch === "ask"
-      && permission.websearch === "ask"
-      && bash?.["*"] === "ask"
-      && bash["git diff*"] === "ask"
-      && bash["git log*"] === "allow"
-      && bash["git status*"] === "allow";
+    const expected = loadCanonicalDefaults(stackRoot())["opencode"]?.["permission"];
+    return permission !== null && expected !== undefined && isDeepStrictEqual(permission, expected);
   } catch {
     return false;
   }
@@ -116,11 +112,6 @@ export const opencodeAdapter: Adapter = {
             evidence: { source: "jorgex-stack-opencode-approval-policy", version: "1" },
           }]
         : []),
-      {
-        id: "external-verification",
-        state: "unavailable",
-        reason: "External verification is available only through the external verifier",
-      },
     ]);
   },
 

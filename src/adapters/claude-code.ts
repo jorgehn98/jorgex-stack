@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
@@ -10,6 +11,7 @@ import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
+import { stackRoot } from "../lib/paths.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -34,18 +36,6 @@ const ENGRAM_AGENT_TOOLS = [
   ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
 
-const CLAUDE_APPROVAL_ENTRIES = [
-  "Bash",
-  "Edit",
-  "Write",
-  "WebFetch",
-  "WebSearch",
-  "Bash(rm:*)",
-  "Bash(rmdir:*)",
-  "Bash(del:*)",
-  "Bash(git push --force:*)",
-] as const;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -57,9 +47,8 @@ function hasClaudeManualApproval(configDir: string): boolean {
   try {
     const root = JSON.parse(content) as unknown;
     const permissions = isRecord(root) ? root.permissions : undefined;
-    const ask = isRecord(permissions) ? permissions.ask : undefined;
-    if (!Array.isArray(ask) || ask.length !== CLAUDE_APPROVAL_ENTRIES.length) return false;
-    return CLAUDE_APPROVAL_ENTRIES.every((entry) => ask.includes(entry));
+    const expected = loadCanonicalDefaults(stackRoot())["claude-code"]?.["permissions"];
+    return isRecord(permissions) && expected !== undefined && isDeepStrictEqual(permissions, expected);
   } catch {
     return false;
   }
@@ -136,11 +125,6 @@ export const claudeCodeAdapter: Adapter = {
             evidence: { source: "jorgex-stack-claude-approval-policy", version: "1" },
           }]
         : []),
-      {
-        id: "external-verification",
-        state: "unavailable",
-        reason: "External verification is available only through the external verifier",
-      },
     ]);
   },
 
