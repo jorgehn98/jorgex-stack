@@ -145,6 +145,12 @@ export async function runDoctor(): Promise<number> {
       p.log.warn(`${adapter.name}: no instalado en esta máquina.`);
       continue;
     }
+    const capabilityReport = adapter.reportCapabilities(detection.configDir);
+    const capabilitySummary = capabilityReport.capabilities
+      .map((capability) => `${capability.id}=${capability.state}`)
+      .join(", ");
+    p.log.info(`${adapter.name}: capabilities diagnostic (${capabilitySummary}); no certifica enforcement local.`);
+
     const ctx = makeContext(adapter, detection.configDir, modePreference);
     if (!ctx) continue;
 

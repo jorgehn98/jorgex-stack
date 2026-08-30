@@ -9,6 +9,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
+import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -32,6 +33,37 @@ const ENGRAM_AGENT_TOOLS = [
   "Skill",
   ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
+
+const CLAUDE_APPROVAL_ENTRIES = [
+  "Bash",
+  "Edit",
+  "Write",
+  "WebFetch",
+  "WebSearch",
+  "Bash(rm:*)",
+  "Bash(rmdir:*)",
+  "Bash(del:*)",
+  "Bash(git push --force:*)",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasClaudeManualApproval(configDir: string): boolean {
+  const content = readTextIfExists(path.join(configDir, "settings.json"));
+  if (content === null) return false;
+
+  try {
+    const root = JSON.parse(content) as unknown;
+    const permissions = isRecord(root) ? root.permissions : undefined;
+    const ask = isRecord(permissions) ? permissions.ask : undefined;
+    if (!Array.isArray(ask) || ask.length !== CLAUDE_APPROVAL_ENTRIES.length) return false;
+    return CLAUDE_APPROVAL_ENTRIES.every((entry) => ask.includes(entry));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * readonly → allowlist explícita; sin restricción → se omite `tools` y el
@@ -84,6 +116,33 @@ export const claudeCodeAdapter: Adapter = {
   id: "claude-code",
   name: "Claude Code",
   detect: detectClaudeCode,
+
+  reportCapabilities(configDir) {
+    const prompt = readTextIfExists(path.join(configDir, "CLAUDE.md"));
+    return createLocalCapabilityReport("claude-code", [
+      ...(hasManagedMarkdownSection(prompt, "system-prompt")
+        ? [{
+            id: "policy-guidance",
+            state: "prompt-only",
+            reason: "The managed policy prompt is advisory and cannot enforce the policy",
+            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
+          }]
+        : []),
+      ...(hasClaudeManualApproval(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "manual",
+            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
+            evidence: { source: "jorgex-stack-claude-approval-policy", version: "1" },
+          }]
+        : []),
+      {
+        id: "external-verification",
+        state: "unavailable",
+        reason: "External verification is available only through the external verifier",
+      },
+    ]);
+  },
 
   injectEngramProtocol(ctx) {
     // El plugin oficial ya inyecta el protocolo (hooks + skill memory).

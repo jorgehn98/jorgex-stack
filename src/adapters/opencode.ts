@@ -11,6 +11,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
+import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
@@ -71,10 +72,57 @@ function pruneEmpty(parent: Record<string, unknown>, key: string): void {
   if (value !== null && Object.keys(value).length === 0) delete parent[key];
 }
 
+function hasOpenCodeManualApproval(configDir: string): boolean {
+  const content = readTextIfExists(path.join(configDir, "opencode.json"));
+  if (content === null) return false;
+
+  try {
+    const root = JSON.parse(content) as unknown;
+    const permission = objectValue(objectValue(root)?.permission);
+    const bash = permission === null ? null : objectValue(permission.bash);
+    return permission?.edit === "ask"
+      && permission.webfetch === "ask"
+      && permission.websearch === "ask"
+      && bash?.["*"] === "ask"
+      && bash["git diff*"] === "ask"
+      && bash["git log*"] === "allow"
+      && bash["git status*"] === "allow";
+  } catch {
+    return false;
+  }
+}
+
 export const opencodeAdapter: Adapter = {
   id: "opencode",
   name: "OpenCode",
   detect: detectOpenCode,
+
+  reportCapabilities(configDir) {
+    const prompt = readTextIfExists(path.join(configDir, "AGENTS.md"));
+    return createLocalCapabilityReport("opencode", [
+      ...(hasManagedMarkdownSection(prompt, "system-prompt")
+        ? [{
+            id: "policy-guidance",
+            state: "prompt-only",
+            reason: "The managed policy prompt is advisory and cannot enforce the policy",
+            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
+          }]
+        : []),
+      ...(hasOpenCodeManualApproval(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "manual",
+            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
+            evidence: { source: "jorgex-stack-opencode-approval-policy", version: "1" },
+          }]
+        : []),
+      {
+        id: "external-verification",
+        state: "unavailable",
+        reason: "External verification is available only through the external verifier",
+      },
+    ]);
+  },
 
   injectEngramProtocol() {
     // El plugin engram.ts (que este mismo install despliega) inyecta el

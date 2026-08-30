@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jorgex.dev/contracts/quality-capabilities.v1.schema.json",
+  "title": "JorgeX local quality capabilities v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "version", "runtime", "capabilities"],
+  "properties": {
+    "namespace": {
+      "type": "string",
+      "const": "jorgex.quality.capabilities"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["claude-code", "codex", "opencode", "pi", "unknown"]
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "state", "reason"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": ["policy-guidance", "tool-approval", "external-verification"]
+          },
+          "state": {
+            "$ref": "#/$defs/localCapabilityState"
+          },
+          "reason": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "version"],
+            "properties": {
+              "source": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": {"id": {"const": "policy-guidance"}},
+            "required": ["id"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {"id": {"const": "tool-approval"}},
+            "required": ["id"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {"id": {"const": "external-verification"}},
+            "required": ["id"]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "capabilityState": {
+      "type": "string",
+      "enum": ["enforced", "prompt-only", "manual", "unavailable"]
+    },
+    "localCapabilityState": {
+      "type": "string",
+      "enum": ["prompt-only", "manual", "unavailable"]
+    },
+    "strictProfile": {
+      "type": "string",
+      "enum": ["high", "release"]
+    }
+  }
+}

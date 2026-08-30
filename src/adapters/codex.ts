@@ -17,6 +17,7 @@ import {
   upsertTomlSection,
 } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
+import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
@@ -74,6 +75,19 @@ function hasEngramProtocol(configDir: string): boolean {
   return config !== null && /engram-instructions\.md/.test(config);
 }
 
+function hasCodexManualApproval(configDir: string): boolean {
+  const config = readTextIfExists(path.join(configDir, "config.toml"));
+  if (config === null) return false;
+
+  const rootLines: string[] = [];
+  for (const line of config.replace(/\r\n/g, "\n").split("\n")) {
+    if (/^\s*\[/.test(line)) break;
+    rootLines.push(line);
+  }
+  const root = rootLines.join("\n");
+  return /^\s*(?:approval_policy|"approval_policy"|'approval_policy')\s*=\s*["']on-request["']\s*(?:#.*)?$/m.test(root);
+}
+
 /**
  * Upsert "tonto" de un header TOML literal: necesario cuando el último
  * segmento del path contiene caracteres que `upsertTomlSection` normaliza
@@ -84,6 +98,33 @@ export const codexAdapter: Adapter = {
   id: "codex",
   name: "Codex CLI",
   detect: detectCodex,
+
+  reportCapabilities(configDir) {
+    const prompt = readTextIfExists(path.join(configDir, "AGENTS.md"));
+    return createLocalCapabilityReport("codex", [
+      ...(hasManagedMarkdownSection(prompt, "system-prompt")
+        ? [{
+            id: "policy-guidance",
+            state: "prompt-only",
+            reason: "The managed policy prompt is advisory and cannot enforce the policy",
+            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
+          }]
+        : []),
+      ...(hasCodexManualApproval(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "manual",
+            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
+            evidence: { source: "jorgex-stack-codex-approval-policy", version: "1" },
+          }]
+        : []),
+      {
+        id: "external-verification",
+        state: "unavailable",
+        reason: "External verification is available only through the external verifier",
+      },
+    ]);
+  },
 
   injectEngramProtocol(ctx) {
     return !hasEngramProtocol(ctx.configDir);
