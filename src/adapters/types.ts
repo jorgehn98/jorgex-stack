@@ -7,6 +7,7 @@
 import type { RuntimeDetection } from "../lib/detect.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
+import type { LocalQualityCapabilityReport } from "../lib/quality-capabilities.js";
 
 export type RuntimeId = "claude-code" | "codex" | "opencode";
 export type SelectableRuntimeId = RuntimeId | "pi";
@@ -105,6 +106,8 @@ export interface Adapter extends SharedProjectionAdapter {
   id: RuntimeId;
   name: string;
   detect(): RuntimeDetection;
+  /** Diagnóstico local de capabilities; nunca certifica enforcement del runtime. */
+  reportCapabilities(configDir: string): LocalQualityCapabilityReport;
   /**
    * Convierte un agente canónico a uno o varios artefactos nativos del runtime.
    * El orchestrator (primary) es SIEMPRE un modo del agente principal que el

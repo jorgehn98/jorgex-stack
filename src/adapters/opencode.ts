@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
@@ -11,6 +12,8 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
+import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
+import { stackRoot } from "../lib/paths.js";
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
@@ -71,10 +74,46 @@ function pruneEmpty(parent: Record<string, unknown>, key: string): void {
   if (value !== null && Object.keys(value).length === 0) delete parent[key];
 }
 
+function hasOpenCodeManualApproval(configDir: string): boolean {
+  const content = readTextIfExists(path.join(configDir, "opencode.json"));
+  if (content === null) return false;
+
+  try {
+    const root = JSON.parse(content) as unknown;
+    const permission = objectValue(objectValue(root)?.permission);
+    const expected = loadCanonicalDefaults(stackRoot())["opencode"]?.["permission"];
+    return permission !== null && expected !== undefined && isDeepStrictEqual(permission, expected);
+  } catch {
+    return false;
+  }
+}
+
 export const opencodeAdapter: Adapter = {
   id: "opencode",
   name: "OpenCode",
   detect: detectOpenCode,
+
+  reportCapabilities(configDir) {
+    const prompt = readTextIfExists(path.join(configDir, "AGENTS.md"));
+    return createLocalCapabilityReport("opencode", [
+      ...(hasManagedMarkdownSection(prompt, "system-prompt")
+        ? [{
+            id: "policy-guidance",
+            state: "prompt-only",
+            reason: "The managed policy prompt is advisory and cannot enforce the policy",
+            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
+          }]
+        : []),
+      ...(hasOpenCodeManualApproval(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "manual",
+            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
+            evidence: { source: "jorgex-stack-opencode-approval-policy", version: "1" },
+          }]
+        : []),
+    ]);
+  },
 
   injectEngramProtocol() {
     // El plugin engram.ts (que este mismo install despliega) inyecta el

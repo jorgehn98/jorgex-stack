@@ -9,7 +9,7 @@ import {
   sha256,
   validateQualityReceipt,
 } from "../src/lib/quality-receipt.js";
-import type { QualityControlDefinition } from "../src/lib/quality-policy.js";
+import type { QualityControlDefinition, QualityProfile } from "../src/lib/quality-policy.js";
 import {
   runQualityCommand,
   runQualityPlan,
@@ -65,10 +65,11 @@ function markerCommand(
 function qualityPlan(
   commands: readonly QualityPlanCommandInput[],
   controls: readonly QualityControlDefinition[] = [requiredControl()],
+  profile: QualityProfile = "routine",
 ): QualityPlanInput {
   return {
     identity: { baseSha: BASE_SHA, headSha: HEAD_SHA },
-    profile: "routine",
+    profile,
     controls,
     commands,
   };
@@ -504,4 +505,18 @@ describe("quality plan tracer contract", () => {
       expect.objectContaining({ controlId: "typecheck", status: "incomplete" }),
     ]);
   }, 5_000);
+
+  it.each(["high", "release"] as const)(
+    "does not close the strict local profile %s from a passing local plan",
+    async (profile) => {
+      const result = await runQualityPlan(qualityPlan(
+        [planCommand("typecheck")],
+        [requiredControl()],
+        profile,
+      ));
+
+      expect(result.evaluation).toEqual({ profile, status: "incomplete" });
+      expect(result.receipt.authority).toBe("local");
+    },
+  );
 });

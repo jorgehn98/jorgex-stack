@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
@@ -9,6 +10,8 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
+import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
+import { stackRoot } from "../lib/paths.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -32,6 +35,24 @@ const ENGRAM_AGENT_TOOLS = [
   "Skill",
   ...memoryTools(["mem_context", "mem_search", "mem_get_observation", "mem_timeline", "mem_current_project"]),
 ];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasClaudeManualApproval(configDir: string): boolean {
+  const content = readTextIfExists(path.join(configDir, "settings.json"));
+  if (content === null) return false;
+
+  try {
+    const root = JSON.parse(content) as unknown;
+    const permissions = isRecord(root) ? root.permissions : undefined;
+    const expected = loadCanonicalDefaults(stackRoot())["claude-code"]?.["permissions"];
+    return isRecord(permissions) && expected !== undefined && isDeepStrictEqual(permissions, expected);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * readonly → allowlist explícita; sin restricción → se omite `tools` y el
@@ -84,6 +105,28 @@ export const claudeCodeAdapter: Adapter = {
   id: "claude-code",
   name: "Claude Code",
   detect: detectClaudeCode,
+
+  reportCapabilities(configDir) {
+    const prompt = readTextIfExists(path.join(configDir, "CLAUDE.md"));
+    return createLocalCapabilityReport("claude-code", [
+      ...(hasManagedMarkdownSection(prompt, "system-prompt")
+        ? [{
+            id: "policy-guidance",
+            state: "prompt-only",
+            reason: "The managed policy prompt is advisory and cannot enforce the policy",
+            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
+          }]
+        : []),
+      ...(hasClaudeManualApproval(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "manual",
+            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
+            evidence: { source: "jorgex-stack-claude-approval-policy", version: "1" },
+          }]
+        : []),
+    ]);
+  },
 
   injectEngramProtocol(ctx) {
     // El plugin oficial ya inyecta el protocolo (hooks + skill memory).

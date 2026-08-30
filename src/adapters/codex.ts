@@ -5,7 +5,7 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
-import { HOME, samePath } from "../lib/paths.js";
+import { HOME, samePath, stackRoot } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import {
   readTomlSection,
@@ -17,6 +17,7 @@ import {
   upsertTomlSection,
 } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
+import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
@@ -74,6 +75,170 @@ function hasEngramProtocol(configDir: string): boolean {
   return config !== null && /engram-instructions\.md/.test(config);
 }
 
+const CODEX_JSON_STRING = String.raw`"(?:\\.|[^"\\\r\n])*"`;
+const CODEX_JSON_VALUE = String.raw`(?:${CODEX_JSON_STRING}|-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|true|false)`;
+const CODEX_JSON_STRING_ARRAY = String.raw`\[(?:\s*${CODEX_JSON_STRING}(?:\s*,\s*${CODEX_JSON_STRING})*\s*)?\]`;
+const CODEX_KEY = String.raw`(?:[A-Za-z0-9_-]+|${CODEX_JSON_STRING})`;
+const CODEX_ASSIGNMENT = new RegExp(String.raw`^\s*(${CODEX_KEY})\s*=\s*(${CODEX_JSON_STRING_ARRAY}|${CODEX_JSON_VALUE})\s*(?:#.*)?$`);
+const CODEX_HEADER = new RegExp(String.raw`^\[\s*(${CODEX_KEY}(?:\s*\.\s*${CODEX_KEY})*)\s*\]\s*(?:#.*)?$`);
+
+const CODEX_PERMISSION_HEADERS = {
+  base: "permissions.jorgex-read-anywhere",
+  filesystem: "permissions.jorgex-read-anywhere.filesystem",
+  workspaceRoots: 'permissions.jorgex-read-anywhere.filesystem.":workspace_roots"',
+} as const;
+
+/** Single source for the profile emitted below and checked by the diagnostic. */
+const CODEX_PERMISSION_PROFILE = {
+  base: [["extends", ":workspace"]],
+  filesystem: [
+    [":root", "read"],
+    ["*.env", "deny"],
+    ["*.env.*", "deny"],
+    ["~/.ssh/**", "deny"],
+    ["~/.aws/credentials", "deny"],
+    ["~/.npmrc", "deny"],
+    ["~/.git-credentials", "deny"],
+    ["**/id_rsa", "deny"],
+    ["**/id_ed25519", "deny"],
+    ["**/*.pem", "deny"],
+    ["**/*.key", "deny"],
+  ],
+  workspaceRoots: [
+    [".", "write"],
+    ["*.env", "deny"],
+    ["*.env.*", "deny"],
+    [".ssh/**", "deny"],
+    [".aws/credentials", "deny"],
+    [".npmrc", "deny"],
+    [".git-credentials", "deny"],
+    ["**/id_rsa", "deny"],
+    ["**/id_ed25519", "deny"],
+    ["**/*.pem", "deny"],
+    ["**/*.key", "deny"],
+  ],
+} as const;
+
+const CODEX_PERMISSION_SECTIONS = [
+  { header: CODEX_PERMISSION_HEADERS.base, entries: CODEX_PERMISSION_PROFILE.base, quoteKeys: false },
+  { header: CODEX_PERMISSION_HEADERS.filesystem, entries: CODEX_PERMISSION_PROFILE.filesystem, quoteKeys: true },
+  { header: CODEX_PERMISSION_HEADERS.workspaceRoots, entries: CODEX_PERMISSION_PROFILE.workspaceRoots, quoteKeys: true },
+] as const;
+
+function renderCodexPermissionEntries(
+  entries: readonly (readonly [string, string])[],
+  quoteKeys: boolean,
+): string {
+  return entries.map(([key, value]) => `${quoteKeys ? JSON.stringify(key) : key} = ${JSON.stringify(value)}`).join("\n");
+}
+
+function parseCodexKey(raw: string): string | null {
+  if (!raw.startsWith('"')) return raw;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCodexValue(raw: string): unknown {
+  try {
+    const value: unknown = JSON.parse(raw);
+    return Array.isArray(value) && value.every((item) => typeof item === "string") || !Array.isArray(value) && (value === null || typeof value !== "object")
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCodexHeader(line: string): string | null {
+  const match = CODEX_HEADER.exec(line.trim());
+  if (match === null) return null;
+  for (const quoted of match[1]!.match(/"(?:\\.|[^"\\\r\n])*"/g) ?? []) {
+    if (parseCodexKey(quoted) === null) return null;
+  }
+  return match[1]!.replace(/\s*\.\s*/g, ".");
+}
+
+type CodexScan = {
+  root: Map<string, unknown>;
+  sections: Map<string, Map<string, unknown>>;
+};
+
+function scanCodexToml(config: string): CodexScan | null {
+  if (config.includes("'''") || config.includes('"""')) return null;
+  const root = new Map<string, unknown>();
+  const sections = new Map<string, Map<string, unknown>>();
+  const headers = new Set<string>();
+  const keys = new Set<string>();
+  let section: string | null = null;
+
+  for (const line of config.replace(/\r\n/g, "\n").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("[")) {
+      const header = parseCodexHeader(trimmed);
+      if (header === null || headers.has(header)) return null;
+      headers.add(header);
+      if (header.startsWith(`${CODEX_PERMISSION_HEADERS.base}.`) && !CODEX_PERMISSION_SECTIONS.some((entry) => entry.header === header)) {
+        return null;
+      }
+      section = header;
+      if (CODEX_PERMISSION_SECTIONS.some((entry) => entry.header === header)) sections.set(header, new Map());
+      continue;
+    }
+
+    const relevant = section === null || CODEX_PERMISSION_SECTIONS.some((entry) => entry.header === section);
+    const match = CODEX_ASSIGNMENT.exec(trimmed);
+    if (!relevant && match === null) continue;
+    if (match === null) return null;
+    const key = parseCodexKey(match[1]!);
+    const value = parseCodexValue(match[2]!);
+    if (key === null || value === undefined) return null;
+    if (section === null && (key === "profile" || key === "sandbox_mode")) return null;
+    const scope = section ?? "<root>";
+    const declaration = `${scope}\u0000${key}`;
+    if (keys.has(declaration)) return null;
+    keys.add(declaration);
+    if (section === null) root.set(key, value);
+    else if (sections.has(section)) sections.get(section)!.set(key, value);
+  }
+  return { root, sections };
+}
+
+function hasCanonicalCodexPermissionProfile(scan: CodexScan): boolean {
+  for (const { header, entries } of CODEX_PERMISSION_SECTIONS) {
+    const actual = scan.sections.get(header);
+    if (actual === undefined || actual.size !== entries.length) return false;
+    for (const [key, expected] of entries) {
+      if (actual.get(key) !== expected) return false;
+    }
+  }
+  return true;
+}
+
+/** Recognizes only the conservative single-line subset emitted by the canonical config. */
+function hasCodexManualApproval(configDir: string): boolean {
+  const config = readTextIfExists(path.join(configDir, "config.toml"));
+  if (config === null) return false;
+  const scan = scanCodexToml(config);
+  if (scan === null) return false;
+  try {
+    const defaults = loadCanonicalDefaults(stackRoot())["codex"];
+    const expectedApproval = defaults?.["approval_policy"];
+    const expectedPermissions = defaults?.["default_permissions"];
+    return typeof expectedApproval === "string"
+      && typeof expectedPermissions === "string"
+      && scan.root.get("approval_policy") === expectedApproval
+      && scan.root.get("default_permissions") === expectedPermissions
+      && hasCanonicalCodexPermissionProfile(scan);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Upsert "tonto" de un header TOML literal: necesario cuando el último
  * segmento del path contiene caracteres que `upsertTomlSection` normaliza
@@ -84,6 +249,33 @@ export const codexAdapter: Adapter = {
   id: "codex",
   name: "Codex CLI",
   detect: detectCodex,
+
+  reportCapabilities(configDir) {
+    const prompt = readTextIfExists(path.join(configDir, "AGENTS.md"));
+    return createLocalCapabilityReport("codex", [
+      ...(hasManagedMarkdownSection(prompt, "system-prompt")
+        ? [{
+            id: "policy-guidance",
+            state: "prompt-only",
+            reason: "The managed policy prompt is advisory and cannot enforce the policy",
+            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
+          }]
+        : []),
+      ...(hasCodexManualApproval(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "manual",
+            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
+            evidence: { source: "jorgex-stack-codex-approval-policy", version: "1" },
+          }]
+        : []),
+      {
+        id: "external-verification",
+        state: "unavailable",
+        reason: "External verification is available only through the external verifier",
+      },
+    ]);
+  },
 
   injectEngramProtocol(ctx) {
     return !hasEngramProtocol(ctx.configDir);
@@ -204,37 +396,19 @@ export const codexAdapter: Adapter = {
         "Codex: fresh config enables read-anywhere via the jorgex-read-anywhere permission profile; broad local reads can expose secrets not covered by deny rules.",
       );
 
-      content = upsertTomlSection(content, "permissions.jorgex-read-anywhere", 'extends = ":workspace"');
       content = upsertTomlSection(
         content,
-        "permissions.jorgex-read-anywhere.filesystem",
-        [
-          '":root" = "read"',
-          '"*.env" = "deny"',
-          '"*.env.*" = "deny"',
-          '"~/.ssh/**" = "deny"',
-          '"~/.aws/credentials" = "deny"',
-          '"~/.npmrc" = "deny"',
-          '"~/.git-credentials" = "deny"',
-          '"**/id_rsa" = "deny"',
-          '"**/id_ed25519" = "deny"',
-          '"**/*.pem" = "deny"',
-          '"**/*.key" = "deny"',
-        ].join("\n"),
+        CODEX_PERMISSION_HEADERS.base,
+        renderCodexPermissionEntries(CODEX_PERMISSION_PROFILE.base, false),
+      );
+      content = upsertTomlSection(
+        content,
+        CODEX_PERMISSION_HEADERS.filesystem,
+        renderCodexPermissionEntries(CODEX_PERMISSION_PROFILE.filesystem, true),
       );
       content += [
-        '\n[permissions.jorgex-read-anywhere.filesystem.":workspace_roots"]',
-        '"." = "write"',
-        '"*.env" = "deny"',
-        '"*.env.*" = "deny"',
-        '".ssh/**" = "deny"',
-        '".aws/credentials" = "deny"',
-        '".npmrc" = "deny"',
-        '".git-credentials" = "deny"',
-        '"**/id_rsa" = "deny"',
-        '"**/id_ed25519" = "deny"',
-        '"**/*.pem" = "deny"',
-        '"**/*.key" = "deny"',
+        `\n[${CODEX_PERMISSION_HEADERS.workspaceRoots}]`,
+        renderCodexPermissionEntries(CODEX_PERMISSION_PROFILE.workspaceRoots, true),
         "",
       ].join("\n");
     }

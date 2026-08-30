@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { QualityProfile } from "../src/lib/quality-policy.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
@@ -125,7 +126,7 @@ type PlanCommand = {
 
 type QualityPlan = {
   identity: { baseSha: string; headSha: string };
-  profile: "routine";
+  profile: QualityProfile;
   controls: Array<{ id: string; requirement: "required" }>;
   commands: PlanCommand[];
 };
@@ -292,10 +293,10 @@ function nodeCommand(
   };
 }
 
-function qualityPlan(command: PlanCommand): QualityPlan {
+function qualityPlan(command: PlanCommand, profile: QualityProfile = "routine"): QualityPlan {
   return {
     identity: { baseSha: BASE_SHA, headSha: HEAD_SHA },
-    profile: "routine",
+    profile,
     controls: [{ id: command.controlId, requirement: "required" }],
     commands: [command],
   };
@@ -454,7 +455,7 @@ async function runQuality(
   };
 }
 
-function parseReceipt(serialized: string): QualityReceipt {
+function parseReceipt(serialized: string, expectedProfile: QualityProfile = "routine"): QualityReceipt {
   expect(serialized).not.toBe("");
   expect(serialized.endsWith("\n")).toBe(true);
 
@@ -466,7 +467,7 @@ function parseReceipt(serialized: string): QualityReceipt {
   });
   expect(receipt.identity.baseSha).toBe(BASE_SHA);
   expect(receipt.identity.headSha).toBe(HEAD_SHA);
-  expect(receipt.identity.profile).toBe("routine");
+  expect(receipt.identity.profile).toBe(expectedProfile);
   expect(receipt.identity.policyDigest).toMatch(/^[0-9a-f]{64}$/);
   expect(receipt.commands).toHaveLength(1);
   expect(receipt.results).toHaveLength(1);
@@ -603,6 +604,28 @@ describe("quality CLI acceptance black-box", () => {
     expect(command.argv[0]).toBe("-e");
     expect(command.argv[1]).toBe(script);
   });
+
+  it.each(["high", "release"] as const)(
+    "mantiene un receipt local pero devuelve no-pass para el perfil estricto %s",
+    async (profile) => {
+      const layout = createLayout();
+      writePlan(layout, qualityPlan(nodeCommand("strict-pass"), profile));
+
+      const result = await runQuality(layout, [layout.planPath, "--receipt", layout.receiptPath]);
+
+      expect(result.status).toBe(1);
+      expect(result.signal).toBeNull();
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+
+      const receipt = parseReceipt(fs.readFileSync(layout.receiptPath, "utf8"), profile);
+      expect(receipt.authority).toBe("local");
+      expect(onlyResult(receipt)).toMatchObject({
+        controlId: "strict-pass",
+        status: "pass",
+      });
+    },
+  );
 
   it("reemplaza un receipt sentinel con --receipt sin dejar temporales", async () => {
     const layout = createLayout();
