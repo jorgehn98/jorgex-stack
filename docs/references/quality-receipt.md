@@ -277,7 +277,7 @@ La schema no exige que `commands` o `results` tengan elementos: que una policy e
 
 Un receipt local puede ser útil para diagnóstico, revisión o preparación, pero un `pass` local no equivale a un Quality Gate remoto. `authority: "enforced"` tampoco convierte por sí solo los campos de `provenance` en una atestación confiable: la schema y la API solo validan forma, identidad y presencia de provenance, no la autenticidad del issuer ni el contenido del locator.
 
-Un consumidor solo puede tratar `enforced` como enforcement real si un verificador externo autentica al emisor y comprueba la evidencia. Como mínimo debe usar una allowlist explícita de issuers y verificar de forma independiente la ejecución, el locator y el digest; la alternativa es una firma criptográfica verificable sobre el receipt o la evidencia. El verificador externo y la opción de firma quedan para PR04; hasta entonces, `enforced` es únicamente una declaración estructural y no debe bloquear merge, release o CI por sí sola.
+Un consumidor solo puede tratar `enforced` como enforcement real si un verificador externo autentica al emisor y comprueba la evidencia. Stack publica el núcleo adapter-independent como `jorgex-stack/quality-verifier`, pero no incluye provider ni authenticator: el caller externo debe autenticar criptográficamente la attestation completa y aportar la policy/ref protegidas. Sin esa frontera, `enforced` sigue siendo únicamente una declaración estructural y no debe bloquear merge, release o CI por sí sola.
 
 Para `enforced`, `provenance` es un objeto cerrado con:
 
@@ -353,4 +353,42 @@ Los dos primeros no son resultados de calidad, no deben adoptar el namespace `jo
 
 ## Verificación de esta referencia
 
-La documentación se contrasta con la implementación `src/lib/quality-receipt.ts`, `tests/quality-policy.test.ts`, `tests/quality-receipt.test.ts` y la schema canónica enlazada arriba. La decisión para esta tarea es **no añadir tests**: no se introduce comportamiento, solo se documenta el contrato que ya cubren esos seams.
+La documentación se contrasta con `src/lib/quality-receipt.ts`, `src/lib/quality-verifier.ts`, la schema canónica y los tests `quality-policy`, `quality-receipt`, `quality-verifier` y `quality-verifier-package`. T17 no añade otra capa de tests documental: describe el comportamiento ya protegido por esos seams.
+
+## Verifier externo
+
+La implementación canónica de este contrato es `src/lib/quality-verifier.ts`. El verificador externo comprueba un candidato frente a una ref protegida; no convierte un recibo textual en autoridad.
+
+El subpath publicado `jorgex-stack/quality-verifier` expone `verifyExternalQualityReceipt` y `subjectDigestFor`. Para calcular `expected.subjectDigest`, el caller debe usar `subjectDigestFor`: calcula el digest del sujeto sobre la proyección JSON canónica de `namespace`, `version`, `authority`, `identity`, `commands` y `results`, sin `provenance`; no se debe reimplementar esa proyección.
+
+### Flujo esperado
+
+1. El caller se ejecuta fuera de `candidate`, importa una versión fijada de `jorgex-stack/quality-verifier` y carga la policy y la ref esperadas desde una referencia protegida. El subpath describe cómo importar el módulo; no es una claim de la attestation.
+2. La entrada contiene `expected.identity`, `expected.policy`, `expected.protectedRef`, `expected.evidenceLocator`, `expected.issuer`, `expected.executionId`, `expected.subjectDigest` y `expected.verifier`. El caller proporciona esas expectativas; no se extraen de la attestation.
+3. El resolver se invoca como `resolveEvidence(expected.evidenceLocator)`: recibe solo `evidenceLocator`. Una resolución `available` devuelve `evidence.locator`, `evidence.bytes` y `evidence.attestation`; también puede devolver `status: "expired"` o `status: "unavailable"`, siempre con `retryable`.
+4. La attestation tiene exactamente estas claims: `issuer`, `executionId`, `identity`, `policyDigest`, `protectedRef`, `producer`, `decision`, `subjectDigest`, `evidenceDigest`, `expiresAt` y `proof`. No contiene `import subpath`.
+5. El callback `authenticateAttestation` recibe la attestation completa. Solo se confía en ella para continuar cuando devuelve un objeto con `authenticated: true`; un callback que lanza, una respuesta inválida o `authenticated: false` produce `fail`.
+   El callback recibe una snapshot detached e inmutable de la attestation; el verificador continúa usando esa misma snapshot después de autenticarla.
+6. Con autenticación válida, el verificador valida el receipt frente a `expected.identity`, exige `authority: "enforced"` y `provenance`, comprueba locator, issuer y execution id, recalcula el digest de la policy y el `subjectDigest`, compara los digests de los bytes y valida las claims enlazadas a `expected` y al receipt.
+7. La comprobación del producer exige que `attestation.producer.processId` sea distinto de `expected.verifier.processId` y que `samePath(attestation.producer.worktree, expected.verifier.worktree)` sea falso. Coincidencia de PID o de worktree produce `fail`.
+
+### Decisiones y rerun
+
+- **`fail`, `rerunRequired: false`**: cualquier entrada inválida, receipt no verificable, policy `fail`, resolución no válida, autenticación fallida, binding inconsistente, PID/worktree coincidente o attestation disponible expirada o con una fecha no válida.
+- **`incomplete`, `rerunRequired: false`**: la policy evaluada queda `incomplete`.
+- **`incomplete`, `rerunRequired: retryable`**: la resolución devuelve `status: "expired"` o `status: "unavailable"`; `rerunRequired` copia únicamente su campo `retryable`.
+- **`incomplete`, `rerunRequired: true`**: `resolveEvidence` lanza una excepción.
+- **Resultado disponible y válido**: devuelve `status: evidence.attestation.decision` y `rerunRequired: false`. `decision` puede ser `pass`, `fail` o `incomplete`.
+
+La fecha actual y `expiresAt` deben ser fechas parseables y `expiresAt` debe ser posterior a `now()`. Si la attestation está disponible pero expirada o alguna de esas fechas no es válida, el resultado es `fail`, no `incomplete`.
+
+### Límites explícitos
+
+- Este módulo no incluye provider, workflow, authenticator ni `fetch`; esas piezas deben inyectarse desde fuera y su contrato debe dejar claro cómo se autentica el callback.
+- La autoridad es el callback externo autenticado y la validación completa de sus claims. Un `issuer` string, un `proof` o un `receipt` por sí solos no son autoridad.
+- El caller debe ejecutarse fuera de `candidate` y cargar la ref protegida antes de importar o ejecutar el verifier.
+- `samePath` se usa para comparar los worktrees del producer y del verifier; si devuelve `true`, la verificación falla. Es una comparación de paths resueltos, no una garantía universal frente a symlinks, junctions o aliases del filesystem.
+- No hay resolver HTTP incluido. Un adapter futuro deberá limitar tamaño, timeout, redirects, hosts y resoluciones DNS para bloquear SSRF antes de entregar bytes al verifier.
+- La retención pertenece al provider/CI. Cuando el locator o artifact ya no se puede resolver, el resultado queda `incomplete`; el contrato no promete recuperar ni verificar evidencia después de su expiración.
+
+Los receipts de **Pi install**, **Pi projection** y **Pi lifecycle** son contratos separados. Este verifier no los fusiona ni los sustituye, ni los valida como `jorgex.quality.receipt`.
