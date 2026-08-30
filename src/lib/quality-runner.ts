@@ -8,6 +8,7 @@ import {
   type QualityPolicyEvaluation,
   type QualityProfile,
 } from "./quality-policy.js";
+import { localQualityStatus } from "./quality-capabilities.js";
 import {
   canonicalJson,
   createQualityReceipt,
@@ -531,11 +532,15 @@ export async function runQualityPlan(input: unknown): Promise<QualityPlanResult>
 
   results.push(...missingRequiredResults(input.controls, input.commands));
 
-  const evaluation = evaluateQualityPolicy({
+  const policyEvaluation = evaluateQualityPolicy({
     profile: input.profile,
     controls: input.controls,
     results,
   });
+  const evaluation: QualityPolicyEvaluation = {
+    ...policyEvaluation,
+    status: localQualityStatus(input.profile, policyEvaluation.status),
+  };
   const receipt = createQualityReceipt({
     authority: "local",
     identity,

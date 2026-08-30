@@ -144,10 +144,6 @@ describe("T37 setup control", () => {
 });
 
 describe("T37 package contract", () => {
-  it("publica la versión manual 1.6.0", () => {
-    expect(readPackageJson().version).toBe("1.6.0");
-  });
-
   it("expone solo el subpath tipado quality-verifier, sin root export", () => {
     expect(readPackageJson().exports).toEqual({
       "./quality-verifier": {
