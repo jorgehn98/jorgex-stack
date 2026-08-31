@@ -174,6 +174,8 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
     { name: "comentario inline con triplecomilla doble", rootLines: ['root_value = 0 # comentario """'] },
     { name: "string básica con # y triplecomilla simple", rootLines: ['root_value = "texto # \'\'\'"'] },
     { name: "string literal con # y triplecomilla doble", rootLines: [`root_value = 'texto # """'`] },
+    { name: "multilínea literal same-line con # y triples", rootLines: [`inline_value = ''' # texto dentro ''' # comentario con ''' y """`, "root_value = 0"] },
+    { name: "multilínea basic same-line con # y triples", rootLines: [`inline_value = """ # texto dentro """ # comentario con ''' y """`, "root_value = 0"] },
   ])("trata $name como texto TOML, no como string multilínea", ({ rootLines }) => {
     const existing = [
       ...rootLines,
