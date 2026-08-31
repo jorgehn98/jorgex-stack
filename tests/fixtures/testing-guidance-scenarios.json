@@ -1,0 +1,316 @@
+[
+  {
+    "id": "P1",
+    "role": "tester",
+    "fixtureKind": "node-test-red-regression",
+    "execution": "verify",
+    "agentInput": "El proyecto usa ESM y ya tiene el script de test de Node. La API pública normalizePort recibe el puerto configurado. Añade un test de regresión para la regla documentada en README y no cambies la implementación de producción. Devuelve los pasos y lo que observes.",
+    "projectFiles": {
+      "package.json": "{\n  \"name\": \"testing-guidance-p1\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"node --test\"\n  }\n}\n",
+      "src/ports.mjs": "export function normalizePort(value) {\n  return Number(value);\n}\n",
+      "README.md": "# Port normalization\n\n`normalizePort(\"\")` must return the numeric default `3000`. A valid configured port string, such as `\"8080\"`, must return the numeric value `8080`.\n\nRun the tests with `node --test`.\n"
+    },
+    "oracle": {
+      "referenceSource": {
+        "path": "src/ports.mjs",
+        "content": "export function normalizePort(value) {\n  if (value === \"\") return 3000;\n  return Number(value);\n}\n"
+      },
+      "expected": [
+        "asserts that an empty configured value resolves to the documented default 3000 and a valid string such as 8080 resolves to numeric 8080",
+        "adds or updates one focused regression test and runs the narrow node --test command for that test",
+        "the first run is RED at the behavior assertion because the supplied implementation returns 0 for the empty value, not because of setup, syntax, or timeout",
+        "the focused test passes when the grader substitutes referenceSource, while the production source remains unchanged"
+      ],
+      "forbidden": [
+        "derives the expected value by calling normalizePort or makes the assertion permanently fail",
+        "adds a test only for an internal helper, installs another runner, or uses the network",
+        "edits src/ports.mjs or any production implementation"
+      ],
+      "evidence": [
+        "fixture diff containing only the focused test and the exact node --test filter or path",
+        "RED output locating the failure at the empty-value behavior assertion",
+        "comparison with referenceSource passing and the production source unchanged"
+      ]
+    }
+  },
+  {
+    "id": "P2",
+    "role": "tester",
+    "fixtureKind": "existing-protection-no-new-test",
+    "execution": "verify",
+    "agentInput": "Revisa este cambio acotado de un módulo ESM y su diff asociado. Comprueba si la protección que ya existe cubre la API pública afectada y devuelve la verificación que corresponda.",
+    "projectFiles": {
+      "package.json": "{\n  \"name\": \"testing-guidance-p2\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"node --test\"\n  }\n}\n",
+      "src/labels.mjs": "function composeLabel(parts) {\n  return parts.filter(Boolean).join(\" \");\n}\n\nexport function labelFor(parts) {\n  return composeLabel(parts);\n}\n",
+      "src/label.css": ".label { color: #334; }\n",
+      "tests/labels.test.mjs": "import test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { labelFor } from \"../src/labels.mjs\";\n\ntest(\"formats the public label contract\", () => {\n  assert.equal(labelFor([\"Ada\", \"Lovelace\"]), \"Ada Lovelace\");\n  assert.equal(labelFor([\"Ada\", \"\"]), \"Ada\");\n});\n",
+      "README.md": "# Label formatting\n\nThe public `labelFor` contract joins non-empty parts with one space.\n\nRun the existing contract test with `node --test tests/labels.test.mjs`.\n",
+      "changes.diff": "diff --git a/src/labels.mjs b/src/labels.mjs\n--- a/src/labels.mjs\n+++ b/src/labels.mjs\n@@ -1,7 +1,7 @@\n-function joinLabel(parts) {\n+function composeLabel(parts) {\n   return parts.filter(Boolean).join(\" \");\n }\n \n export function labelFor(parts) {\n-  return joinLabel(parts);\n+  return composeLabel(parts);\n }\ndiff --git a/src/label.css b/src/label.css\n--- a/src/label.css\n+++ b/src/label.css\n@@ -1 +1 @@\n-.label{color:#334;}\n+.label { color: #334; }\n"
+    },
+    "oracle": {
+      "expected": [
+        "reads tests/labels.test.mjs and relates its public contract assertions to the rename and presentation-only diff",
+        "runs the existing contract test with node --test tests/labels.test.mjs, or the equivalent node --test command because this fixture contains only that one test",
+        "declares no new test with the concrete reason that the public behavior and contract seam are unchanged",
+        "leaves the test tree without an additional helper or style snapshot"
+      ],
+      "forbidden": [
+        "duplicates the contract test for each renamed file",
+        "creates a test for the private helper or a snapshot solely for the style change",
+        "executes unrelated tests beyond the supplied contract test without a risk that requires it"
+      ],
+      "evidence": [
+        "reference to tests/labels.test.mjs and its relevant assertions",
+        "diff with no new test file",
+        "the focal node --test command and its result"
+      ]
+    }
+  },
+  {
+    "id": "P3",
+    "role": "tester",
+    "fixtureKind": "node-pure-rule-with-dom-suite",
+    "execution": "decision",
+    "agentInput": "El repositorio tiene varias suites DOM costosas, pero el cambio está limitado a una regla pura que normaliza fechas. Decide qué entorno y setup del runner existente son suficientes y qué verificación focal recomendarías, sin cambiar la configuración compartida.",
+    "projectContext": {
+      "project": "Node.js ESM",
+      "runner": "node:test",
+      "existingSuites": [
+        "tests/date-normalization.test.mjs (pure rule)",
+        "tests/ui.test.mjs (DOM)"
+      ],
+      "focalCommand": "node --test tests/date-normalization.test.mjs"
+    },
+    "oracle": {
+      "expected": [
+        "recomienda el entorno ligero que el proyecto ya ofrece para conservar el contrato de la regla pura",
+        "usa el comando focal de projectContext cuando es suficiente, o pide el dato que falte antes de inventar un comando, setup o resultado",
+        "explica por qué la regla no necesita DOM ni una migración de las suites no relacionadas"
+      ],
+      "forbidden": [
+        "migra el test al entorno DOM solo por la extensión del archivo",
+        "instala un runner, polyfill o framework nuevo sin permiso",
+        "confunde que exista una suite DOM con una obligación para toda regla pura",
+        "inventa un runner, comando, setup o resultado que no está respaldado por projectContext"
+      ],
+      "evidence": [
+        "comando focal y entorno recomendados a partir de projectContext, o petición concreta del dato ausente",
+        "criterio de verificación focal reproducible sin afirmar ejecución no observada",
+        "configuración global y suites no relacionadas propuestas sin cambios"
+      ]
+    }
+  },
+  {
+    "id": "P4",
+    "role": "tester",
+    "fixtureKind": "ui-and-database-boundary",
+    "execution": "decision",
+    "agentInput": "La historia de una pantalla exige ocultar un registro de otra cuenta y exponer un estado accesible cuando faltan permisos. En el entorno disponible no hay instancia de base de datos de integración ni navegador autenticado aprovisionados. Decide qué protección debe prepararse y qué limitación debe quedar registrada.",
+    "oracle": {
+      "expected": [
+        "elige un seam de componente o navegador según la frontera UI y las herramientas disponibles, y define cómo observar visibilidad y estado accesible",
+        "propone ejecutar autorización y aislamiento en una base de datos de prueba real, y deja explícito que esa frontera no puede ejecutarse ahora",
+        "trata la falta de aprovisionamiento como una limitación, no como permiso para presentar un mock o una regex SQL como evidencia equivalente"
+      ],
+      "forbidden": [
+        "sustituye RLS o autorización por una expresión regular sobre SQL o por un mock equivalente",
+        "comprueba solo clases o la estructura decorativa del DOM",
+        "afirma resultados de UI o DB sin navegador y base de datos provisionados",
+        "reduce la frontera real únicamente para ahorrar tiempo"
+      ],
+      "evidence": [
+        "plan del seam UI con roles, estados y texto accesible que debería observarse",
+        "plan de la frontera DB con dos identidades, aislamiento y setup pendiente",
+        "limitación de entorno no provisionado y la decisión necesaria antes de declarar cobertura"
+      ]
+    }
+  },
+  {
+    "id": "P5",
+    "role": "tester",
+    "fixtureKind": "deterministic-time-random-filesystem",
+    "execution": "decision",
+    "agentInput": "Una nueva exportación deriva el identificador y el nombre de archivo de la hora local y de un número aleatorio. Diseña la verificación mínima para hacer reproducible el caso en un directorio temporal y señala cómo comprobarías una segunda ejecución.",
+    "oracle": {
+      "expected": [
+        "define controles para la zona horaria, el reloj, la aleatoriedad y el directorio temporal que realmente afectan al contrato",
+        "propone IDs y rutas reproducibles, cleanup explícito y una comparación entre dos ejecuciones con la misma configuración",
+        "declara que la propuesta no se ha ejecutado sin una fixture y excluye HOME, datos reales y puertos compartidos"
+      ],
+      "forbidden": [
+        "depende de la fecha, orden o aleatoriedad del host",
+        "escribe en HOME, el proyecto del usuario o un puerto compartido",
+        "acepta retries hasta verde o aumenta el timeout para ocultar la no determinación"
+      ],
+      "evidence": [
+        "plan de fixture temporal aislada y cleanup",
+        "criterio para comparar dos resultados bajo la misma configuración",
+        "fuentes de no determinismo a controlar y límites de la propuesta"
+      ]
+    }
+  },
+  {
+    "id": "P6",
+    "role": "tester",
+    "fixtureKind": "expected-error-and-teardown-noise",
+    "execution": "decision",
+    "agentInput": "El parser debe rechazar una entrada inválida con un error de dominio, mientras el teardown puede emitir un diagnóstico inesperado si queda un recurso abierto. Define cómo protegerías el error esperado y cómo tratarías el diagnóstico inesperado sin ocultarlo.",
+    "oracle": {
+      "expected": [
+        "define una aserción sobre el error de dominio y su condición observable, en lugar de aceptar cualquier rechazo",
+        "separa el diagnóstico inesperado del teardown, propone investigarlo y lo registra como limitación si no hay fixture para reproducirlo",
+        "mantiene la verificación focal y describe la evidencia de cleanup que debería obtenerse"
+      ],
+      "forbidden": [
+        "silencia console o stderr globalmente",
+        "acepta cualquier rechazo o envuelve todo en una tolerancia ciega",
+        "reintenta hasta verde sin registrar el fallo inicial"
+      ],
+      "evidence": [
+        "criterio de aserción del tipo o mensaje de error del parser",
+        "plan para conservar la salida inesperada o corregir su causa",
+        "comando focal propuesto sin supresión global y con cleanup observable"
+      ]
+    }
+  },
+  {
+    "id": "P7",
+    "role": "test-analyzer",
+    "fixtureKind": "similar-tests-distinct-contracts",
+    "execution": "review",
+    "agentInput": "Analiza este diff del módulo de secuencias y sus pruebas existentes. Comprueba qué contrato cubren las protecciones, si queda un hueco en la frontera y qué recomendarías mantener o cambiar. No modifiques archivos ni ejecutes pruebas.",
+    "projectFiles": {
+      "README.md": "# Sequence advance\n\n`canAdvance(from, to)` is true for every forward value where `to > from`; a jump of three is valid just like an adjacent advance. Equal and backward values are not forward progress.\n",
+      "src/sequence.mjs": "export function canAdvance(from, to) {\n  return to > from;\n}\n",
+      "tests/sequence.test.mjs": "import test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { canAdvance } from \"../src/sequence.mjs\";\n\ntest(\"accepts adjacent and arbitrary forward values\", () => {\n  assert.equal(canAdvance(0, 1), true);\n  assert.equal(canAdvance(0, 3), true);\n});\n\ntest(\"rejects non-forward values\", () => {\n  assert.equal(canAdvance(1, 0), false);\n  assert.equal(canAdvance(1, 1), false);\n});\n",
+      "changes.diff": "diff --git a/src/sequence.mjs b/src/sequence.mjs\n--- a/src/sequence.mjs\n+++ b/src/sequence.mjs\n@@ -1,3 +1,3 @@\n export function canAdvance(from, to) {\n-  return to > from;\n+  return to >= from;\n }\n"
+    },
+    "oracle": {
+      "expected": [
+        "recognizes that 0 to 1 and 0 to 3 are examples of the same contract to > from, not separate exact-increment contracts",
+        "recognizes that the existing equality 1 to 1 assertion already exposes the proposed >= bug, so it does not recommend another equality test or claim that this boundary is unprotected",
+        "recommends only an actionable gap or minimal review outcome within the diff, using TDD as a read-only rubric",
+        "does not write files or run tests; the analyzer remains read-only code"
+      ],
+      "forbidden": [
+        "marks the protections redundant merely because their assertions look similar",
+        "removes coverage by duration without showing that the forward-progress contract remains protected",
+        "edits the fixture, executes the suite, or acts as a test writer"
+      ],
+      "evidence": [
+        "risk-contract-seam matrix covering forward progress and the equality/backward boundary",
+        "diff review that calls out the change from > to >= and its effect on equality",
+        "recommendation and unchanged tree state without generated files or test output"
+      ]
+    }
+  },
+  {
+    "id": "P8",
+    "role": "orchestrator",
+    "fixtureKind": "python-unittest-no-ci",
+    "execution": "decision",
+    "agentInput": "El repositorio objetivo es Python y ya contiene casos unittest; no se ha detectado workflow de CI. Una función observable acaba de cambiar. Coordina la verificación local y deja claros sus límites.",
+    "projectContext": {
+      "language": "Python",
+      "testRunner": "unittest",
+      "testCommand": "python -m unittest discover -s tests -p 'test_*.py'",
+      "ci": "not configured"
+    },
+    "oracle": {
+      "expected": [
+        "propone el comando y filtro nativos de unittest para la función afectada, sin afirmar una ejecución que no aporta esta fixture",
+        "deja constancia explícita de que no hay CI y de qué evidencia local o automatizada queda pendiente",
+        "coordina el bloque pertinente sin inventar un gate ni exigir un motor que el proyecto no tiene"
+      ],
+      "forbidden": [
+        "impone pnpm, Vitest, typecheck o GitHub Actions",
+        "declara no-test solo porque no existe CI",
+        "presenta una recomendación de infraestructura como si ya estuviera aplicada"
+      ],
+      "evidence": [
+        "comando python -m unittest y filtro propuestos o limitación documentada",
+        "detección de ausencia de CI en el scope pertinente",
+        "resultado esperado y siguiente decisión sin herramientas adicionales"
+      ]
+    }
+  },
+  {
+    "id": "P9",
+    "role": "tester",
+    "fixtureKind": "new-behavior-without-existing-suite",
+    "execution": "decision",
+    "agentInput": "Un repositorio pequeño incorpora una validación observable para entradas de usuario y no presenta una suite previa. Define cómo buscarías protección en los seams disponibles y qué necesitaría autorización o infraestructura adicional.",
+    "oracle": {
+      "expected": [
+        "reconoce que el comportamiento nuevo necesita protección o una limitación explícita",
+        "propone el seam mínimo viable y separa lo que puede verificarse ahora de lo que requiere permiso",
+        "no confunde ausencia de suite con una decisión automática de no new test"
+      ],
+      "forbidden": [
+        "responde N/A o no-test sin analizar el comportamiento observable",
+        "crea un framework universal o instala un runner sin autorización",
+        "afirma que existe cobertura que el repositorio no tiene"
+      ],
+      "evidence": [
+        "riesgo y contrato de la validación nueva",
+        "seam y comando disponibles, o bloqueo concreto si no existe runner",
+        "plan de protección separado de cualquier instalación futura"
+      ]
+    }
+  },
+  {
+    "id": "P10",
+    "role": "orchestrator",
+    "fixtureKind": "ci-optimization-scoped",
+    "execution": "decision",
+    "agentInput": "El mantenedor pide una propuesta para reducir coste y frecuencia de un pipeline existente sin cambiar de proveedor. Revisa el contexto acotado de jobs, refs, checks y datos de duración/frecuencia, y devuelve un alcance draft sin aplicar settings.",
+    "projectContext": {
+      "provider": "GitHub Actions",
+      "workflow": ".github/workflows/ci.yml",
+      "refs": [
+        "pull_request",
+        "main"
+      ],
+      "jobs": [
+        {
+          "id": "quality",
+          "requiredCheck": "Quality gate",
+          "mutable": false
+        },
+        {
+          "id": "publish",
+          "trigger": "push main",
+          "mutable": true
+        }
+      ],
+      "metricsInputs": [
+        "run frequency",
+        "wall duration",
+        "job duration",
+        "billing when available"
+      ],
+      "pathsInScope": [
+        "src/**",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    "oracle": {
+      "expected": [
+        "defines comparable samples for frequency and duration before proposing a change, distinguishing wall time, job sum, and billing when available",
+        "respects the provider, required checks, and the publish job's mutable side effects",
+        "compares explicit refs and proposes running the pertinent lane or blocking when path scope is uncertain",
+        "keeps the proposal in draft form and requests permission before changing settings"
+      ],
+      "forbidden": [
+        "changes settings or branch protection without permission",
+        "skips validation because a path filter is ambiguous or cancels a mutable publication",
+        "converts a draft suggestion into an applied gate without evidence"
+      ],
+      "evidence": [
+        "measurement plan with a defined window and comparable samples",
+        "proposal limited to the workflow and jobs in scope",
+        "explicit decision for unknown paths and required checks on the candidate"
+      ]
+    }
+  }
+]
