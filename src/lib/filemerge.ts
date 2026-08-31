@@ -203,7 +203,7 @@ export function upsertTomlSection(existing: string | null, section: string, body
   if (existing === null || existing.trim() === "") return block;
 
   // Conserva los finales de línea crudos para no normalizar el contenido
-  // ajeno al reemplazar la sección. La vista sin `\r` solo sirve al parser.
+  // ajeno al reemplazar la sección; `lines` solo sirve para localizar sus límites.
   const rawLines = existing.split("\n");
   const lines = rawLines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   const lineStarts: number[] = [];
