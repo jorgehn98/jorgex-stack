@@ -105,6 +105,41 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
     expect(updated).not.toContain("viejo");
     expect(updated.split("mcp_servers").length).toBe(2); // una sola tabla
   });
+
+  it("es idempotente al añadir una sección ausente a un documento TOML CRLF", () => {
+    const existing = [
+      "# config del usuario",
+      "root_value = 0",
+      "",
+      "[mcp_servers.own]",
+      "key_0 = false",
+      "",
+      "",
+      "[foreign.settings]",
+      'note = ""',
+      "details = '''",
+      "[foreign.fake]",
+      "",
+      "'''",
+      "",
+    ].join("\r\n");
+    const foreign = [
+      "[foreign.settings]",
+      'note = ""',
+      "details = '''",
+      "[foreign.fake]",
+      "",
+      "'''",
+      "",
+    ].join("\r\n");
+
+    const once = upsertTomlSection(existing, "mcp_servers.target", "key_0 = false");
+    expect(once).toContain("[mcp_servers.target]\nkey_0 = false\n");
+    expect(once).toContain(foreign);
+
+    const twice = upsertTomlSection(once, "mcp_servers.target", "key_0 = false");
+    expect(twice).toBe(once);
+  });
 });
 
 describe("upsertJson", () => {
