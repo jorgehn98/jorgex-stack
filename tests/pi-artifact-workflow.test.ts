@@ -367,9 +367,9 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("permissions:\n  contents: read");
     expect(workflow).toContain("permissions:\n      contents: read");
-    expect(workflow).toContain("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
-    expect(workflow).toContain("pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1");
-    expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
+    expect(workflow).toContain("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd");
+    expect(workflow).toContain("pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320");
+    expect(workflow).toContain("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38");
     expect(workflow).toContain("curl --fail");
     expect(workflow).toContain("--connect-timeout 15");
     expect(workflow).toContain("--max-time 300");
@@ -390,6 +390,24 @@ describe("JorgeX Pi artifact pull-request gate", () => {
       "pnpm test",
       "pnpm build",
     ]);
+  });
+
+  it("desactiva la caché automática de setup-node y conserva la caché pnpm explícita", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+    const [job] = jobs;
+    const setupNodeSteps = (job?.steps ?? []).filter((step) => step.uses?.startsWith("actions/setup-node@") ?? false);
+
+    expect(setupNodeSteps, "El gate de Pi debe tener un único setup-node común.").toHaveLength(1);
+    const setupNode = setupNodeSteps[0];
+    expect(setupNode).toBeDefined();
+    if (setupNode === undefined) {
+      throw new Error("Falta el setup-node del gate de Pi.");
+    }
+
+    const inputs = extractWithBlock(setupNode);
+    expect(inputs).toContain("package-manager-cache: false");
+    expect(inputs.filter((line) => /^cache\s*:/.test(line))).toEqual(["cache: pnpm"]);
   });
 
   it("routes the real job conservatively across pull-request and manual events", () => {

@@ -994,7 +994,7 @@ describe("publish workflow contract", () => {
 
   it("activa pnpm en bump antes del script de release", () => {
     const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
-    const setupNodeIndex = bump.indexOf("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
+    const setupNodeIndex = bump.indexOf("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38");
     const enableIndex = bump.indexOf("corepack enable pnpm");
     const corepackIndex = bump.indexOf("corepack prepare pnpm@11.1.1 --activate");
     const releaseIndex = bump.indexOf("id: release");
@@ -1009,7 +1009,34 @@ describe("publish workflow contract", () => {
     expect(setupNodeIndex).toBeLessThan(corepackIndex);
     expect(corepackIndex).toBeLessThan(releaseIndex);
     expect(bump).toContain(`corepack prepare pnpm@${pnpmVersion} --activate`);
-    expect(bump).not.toContain("pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1");
+    expect(bump).not.toContain("pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320");
+  });
+
+  it("desactiva la caché automática en todos los setup-node y conserva solo pnpm en los gates actuales", () => {
+    const jobs = splitTopLevelJobs(readWorkflow());
+    const validate = jobs.get("validate") ?? "";
+    const bump = jobs.get("bump") ?? "";
+    const publish = jobs.get("publish") ?? "";
+    const preflightIndex = validate.indexOf("id: preflight");
+
+    expect(preflightIndex).toBeGreaterThan(-1);
+    const setupNodeSteps = [
+      extractWorkflowStepBlock(validate, "actions/setup-node@"),
+      extractWorkflowStepBlock(validate.slice(preflightIndex), "actions/setup-node@"),
+      extractWorkflowStepBlock(bump, "actions/setup-node@"),
+      extractWorkflowStepBlock(publish, "actions/setup-node@"),
+    ];
+    expect((readWorkflow().match(/actions\/setup-node@/g) ?? [])).toHaveLength(setupNodeSteps.length);
+
+    for (const step of setupNodeSteps) {
+      expect(step).toContain("package-manager-cache: false");
+    }
+
+    const [validateCommon, validateConditional, bumpSetup, publishSetup] = setupNodeSteps;
+    expect(validateCommon).not.toMatch(/^\s*cache\s*:/m);
+    expect(validateConditional).toContain("cache: pnpm");
+    expect(bumpSetup).not.toMatch(/^\s*cache\s*:/m);
+    expect(publishSetup).not.toMatch(/^\s*cache\s*:/m);
   });
 
   it("escribe tag_needed=false en todos los early exits relevantes", () => {
@@ -1028,11 +1055,20 @@ describe("publish workflow contract", () => {
     const publish = splitTopLevelJobs(workflow).get("publish") ?? "";
 
     expect(workflow).not.toContain("ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_sha || 'main' }}");
-    expect(workflow).toContain("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
-    expect(workflow).toContain("pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1");
-    expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
-    expect(workflow).toContain("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02");
-    expect(workflow).toContain("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093");
+    expect(workflow).toContain("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd");
+    expect(workflow).toContain("pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320");
+    expect(workflow).toContain("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38");
+    expect(workflow).toContain("actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f");
+    expect(workflow).toContain("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131");
+    for (const legacySha of [
+      "34e114876b0b11c390a56381ad16ebd13914f8d5",
+      "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "b906affcce14559ad1aafd4ab0e942779e9f58b1",
+    ]) {
+      expect(workflow).not.toMatch(new RegExp(`^[ \\t]*(?:-[ \\t]+)?uses:[ \\t]*\\S+@${legacySha}[ \\t]*$`, "m"));
+    }
     expect(validate).toContain("Validate pinned action SHAs");
     const pinValidationCode = extractWorkflowStepBlock(validate, "Validate pinned action SHAs")
       .split(/\r?\n/)
@@ -1054,8 +1090,8 @@ describe("publish workflow contract", () => {
     expect(bump).toContain("GITHUB_EVENT_BEFORE");
     expect(bump).toContain("La run está obsoleta: origin/main cambió tras el fetch.");
     expect(bump).toContain("ref: ${{ needs.validate.outputs.target_sha }}");
-    expect(publish).toContain("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
-    expect(publish).toContain("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093");
+    expect(publish).toContain("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd");
+    expect(publish).toContain("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131");
   });
 
   it("distingue merge-base status 1 de errores reales en validate y en el helper de recovery", () => {

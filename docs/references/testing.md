@@ -224,6 +224,18 @@ ref/head elegida, pero no sustituye el **Quality gate** de `pull_request` sobre
 la revisión de merge sintética. Tampoco marca una pull request como lista para
 revisión ni cambia por sí misma la protección de ramas.
 
+### Runtime y caché de Actions
+
+Las cinco actions actualizadas ejecutan su runtime interno sobre Node 24; esto
+no debe confundirse con `node-version: 24`, que selecciona el Node del proyecto
+para `pnpm` y los comandos de validación. En ambos workflows, cada
+`setup-node` fija `package-manager-cache: false`: solo se conservan las dos
+cachés de dependencias `cache: pnpm` declaradas explícitamente, sin caché
+automática antes del preflight ni en los jobs privilegiados `bump` y `publish`.
+Las lanes, triggers, cadencia, concurrencia/cancelación y timeouts existentes
+se mantienen sin cambios; esto no demuestra ahorro de tiempo o facturación,
+ni establece un SLO o una protección adicional.
+
 El routing draft/full puede evitar trabajo caro antes de que exista un
 candidato, pero este repositorio público no debe presentar esa forma como un
 ahorro facturado medido. Tampoco se deben descartar fallos o reruns para
