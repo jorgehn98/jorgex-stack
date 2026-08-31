@@ -165,7 +165,7 @@ function quoteRunLength(line: string, start: number, quote: '"' | "'"): number {
   return end - start;
 }
 
-/** Salta una string corta de una sola línea sin convertirla en estado persistente. */
+/** Omite una string de una línea sin validar su contenido ni arrastrar estado. */
 function skipShortString(line: string, start: number, quote: '"' | "'"): number {
   let index = start + 1;
   while (index < line.length) {
@@ -179,7 +179,7 @@ function skipShortString(line: string, start: number, quote: '"' | "'"): number 
   return line.length;
 }
 
-/** Consume una línea y devuelve el estado TOML al comenzar la siguiente. */
+/** Consume una línea y devuelve el delimitador multilínea abierto para la siguiente. */
 function scanTomlLine(line: string, initial: MultilineDelimiter | null): MultilineDelimiter | null {
   let inside = initial;
   let index = 0;
@@ -190,17 +190,20 @@ function scanTomlLine(line: string, initial: MultilineDelimiter | null): Multili
       if (line[index] === quote) {
         const run = quoteRunLength(line, index, quote);
         if (run >= 3) {
-          // En una run de 4/5, las primeras comillas son contenido y las
-          // últimas tres forman el cierre. Consumimos toda la run para no
-          // iniciar por accidente otra string con las comillas sobrantes.
+          // En una secuencia de 4/5, la primera o las dos primeras comillas
+          // son contenido y las últimas tres forman el cierre; la misma regla
+          // cubre cualquier secuencia de al menos tres. Consumimos toda la
+          // secuencia para no iniciar otra string con sobrantes; esto es una
+          // decisión léxica, no una validación de TOML.
           inside = null;
         }
         index += run;
         continue;
       }
       if (inside === '"""' && line[index] === "\\") {
-        // Saltar el carácter escapado conserva la paridad de backslashes sin
-        // tener que interpretar el valor de la string.
+        // En una string básica multilínea, tratar la barra invertida y, si
+        // existe, el carácter siguiente como pareja opaca conserva la paridad
+          // de barras invertidas sin interpretar ni validar la string.
         index += 2;
         continue;
       }
@@ -229,9 +232,11 @@ function scanTomlLine(line: string, initial: MultilineDelimiter | null): Multili
 
 /**
  * Marca qué líneas están DENTRO de un string multilínea (''' o """) del
- * usuario: ahí una línea `[x]` es texto, no un header de sección. Es un
- * detector léxico acotado, no un parser TOML: solo mantiene el delimitador
- * multilínea y salta strings cortas, escapes básicos y comentarios.
+ * usuario: ahí una línea `[x]` es texto, no un header de sección. La marca se
+ * calcula según el estado al comenzar cada línea. Es un detector léxico
+ * acotado, no un parser ni un validador TOML: solo mantiene el delimitador
+ * multilínea, omite strings de una línea y pares barra+carácter en strings
+ * básicas, y corta en comentarios fuera de una string.
  */
 function multilineStringMask(lines: string[]): boolean[] {
   const mask: boolean[] = [];
@@ -264,8 +269,8 @@ export function upsertTomlSection(existing: string | null, section: string, body
   const block = `${header}\n${body.trim()}\n`;
   if (existing === null || existing.trim() === "") return block;
 
-  // Conserva los finales de línea crudos para no normalizar el contenido
-  // ajeno al reemplazar la sección; `lines` solo sirve para localizar sus límites.
+  // No normaliza el contenido ajeno: `rawLines`/`lineStarts` calculan offsets
+  // sobre el texto crudo, mientras `lines` solo sirve para localizar límites.
   const rawLines = existing.split("\n");
   const lines = rawLines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   const lineStarts: number[] = [];
@@ -282,8 +287,9 @@ export function upsertTomlSection(existing: string | null, section: string, body
     return existing + sep + block;
   }
 
-  // Las líneas en blanco al final de la sección son separación con lo que
-  // sigue: quedan fuera del reemplazo para que re-aplicar sea byte-idéntico.
+  // Las líneas en blanco al final de la sección separan lo gestionado de lo
+  // que sigue: quedan fuera del reemplazo para que una segunda aplicación del
+  // mismo bloque sea byte-idéntica.
   let sectionEnd = found.end;
   while (sectionEnd > found.start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
   const startOffset = lineStarts[found.start]!;
