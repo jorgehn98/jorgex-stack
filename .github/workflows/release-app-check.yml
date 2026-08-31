@@ -1,0 +1,41 @@
+name: Check release App access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release-app-check:
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    environment: stack-release
+    permissions:
+      contents: read
+    steps:
+      - name: Mint release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: jorgex-stack
+          permission-contents: write
+
+      - name: Verify release App repository access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          expected_repo='jorgehn98/jorgex-stack'
+          response="$(gh api --paginate --slurp --method GET /installation/repositories)"
+          matching_repositories="$(jq --arg expected "$expected_repo" '[.[] | .repositories[]? | select(.full_name == $expected)] | length' <<<"$response")"
+          total_count="$(jq '[.[] | .total_count] | add // 0' <<<"$response")"
+
+          if [[ "$matching_repositories" -ne 1 || "$total_count" -ne 1 ]]; then
+            echo 'La instalación no expone exactamente el repositorio esperado.' >&2
+            exit 1
+          fi
+
+          echo 'Acceso del release App al repositorio confirmado.'

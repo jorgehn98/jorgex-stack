@@ -246,18 +246,31 @@ jobs:
     if: needs.validate.outputs.should_validate == 'true'
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    environment: stack-release
     permissions:
-      contents: write
+      contents: read
     outputs:
       publish: ${{ steps.release.outputs.publish }}
       version: ${{ steps.release.outputs.version }}
       publish_sha: ${{ steps.release.outputs.publish_sha }}
       tag_needed: ${{ steps.release.outputs.tag_needed }}
     steps:
+      - name: Mint release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: jorgex-stack
+          permission-contents: write
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ needs.validate.outputs.target_sha }}
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
