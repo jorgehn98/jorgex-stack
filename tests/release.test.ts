@@ -35,9 +35,17 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_METADATA = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8") as string) as { packageManager: string; version: string };
 const PACKAGE_VERSION = PACKAGE_METADATA;
 const WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "publish.yml");
+const RELEASE_APP_CHECK_WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "release-app-check.yml");
+const CREATE_GITHUB_APP_TOKEN_ACTION = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1";
 
 function readWorkflow(): string {
   return fs.readFileSync(WORKFLOW_PATH, "utf8");
+}
+
+function readReleaseAppCheckWorkflow(): string {
+  return fs.existsSync(RELEASE_APP_CHECK_WORKFLOW_PATH)
+    ? fs.readFileSync(RELEASE_APP_CHECK_WORKFLOW_PATH, "utf8")
+    : "";
 }
 
 type InlineReleaseClassifier = (changedPaths: readonly string[]) => {
@@ -339,6 +347,29 @@ function extractWorkflowStepBlock(job: string, marker: string): string {
   }
 
   return job.slice(stepStart, stepEnd < 0 ? job.length : stepEnd);
+}
+
+function extractRunScript(step: string, marker: string): string {
+  const stepBlock = extractWorkflowStepBlock(step, marker);
+  const lines = stepBlock.split(/\r?\n/);
+  const runIndex = lines.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
+  if (runIndex < 0) {
+    throw new Error(`El step ${marker} no contiene run: |.`);
+  }
+
+  const runIndent = (lines[runIndex] ?? "").search(/\S/);
+  const body: string[] = [];
+  for (const line of lines.slice(runIndex + 1)) {
+    if (line.trim() === "") {
+      body.push("");
+      continue;
+    }
+    const indent = line.search(/\S/);
+    if (indent >= 0 && indent <= runIndent) break;
+    body.push(line.slice(Math.min(line.length, runIndent + 2)));
+  }
+
+  return body.join("\n").replace(/\n+$/, "");
 }
 
 function expectInOrder(haystack: string, needles: string[]): void {
@@ -817,7 +848,7 @@ describe("release preflight contract", () => {
 
     expect(validate).toContain("permissions:\n      contents: read");
     expect(jobs.get("publish")).toContain("permissions:\n      contents: read");
-    expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
+    expect(jobs.get("bump")).toContain("permissions:\n      contents: read");
     expect(jobs.get("tag-release")).toContain("permissions:\n      contents: write");
     expect(extractWorkflowStepBlock(validate, "actions/checkout@")).toContain("persist-credentials: false");
     expect(extractWorkflowStepBlock(jobs.get("publish") ?? "", "actions/checkout@")).toContain("persist-credentials: false");
@@ -981,7 +1012,7 @@ describe("publish workflow contract", () => {
     expect(workflow).toMatch(/^permissions:\r?\n  contents: read$/m);
     expect(workflow).toContain('workflow_dispatch:');
     expect(jobs.get("validate")).toContain("permissions:\n      contents: read");
-    expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
+    expect(jobs.get("bump")).toContain("permissions:\n      contents: read");
     expect(jobs.get("bump")).toContain("corepack prepare pnpm@11.1.1 --activate");
     expect(jobs.get("bump")).toContain("tag_needed=${tagNeeded ? 'true' : 'false'}");
     expect(jobs.get("bump")).toContain("tag_needed: ${{ steps.release.outputs.tag_needed }}");
@@ -1211,5 +1242,252 @@ describe("publish workflow contract", () => {
 
     expect(bump).toContain("release_bump_commit");
     expect(bump).toContain("Sin cambios publicables.");
+  });
+});
+
+describe("release App authentication contract", () => {
+  it("usa un App token de escritura solo en bump, antes de checkout, y conserva un GITHUB_TOKEN de lectura", () => {
+    const workflow = readWorkflow();
+    const jobs = splitTopLevelJobs(workflow);
+    const bump = jobs.get("bump") ?? "";
+    const actionIndex = bump.indexOf(CREATE_GITHUB_APP_TOKEN_ACTION);
+    const checkoutIndex = bump.indexOf("actions/checkout@");
+    const appStep = actionIndex >= 0 ? extractWorkflowStepBlock(bump, CREATE_GITHUB_APP_TOKEN_ACTION) : "";
+    const checkoutStep = checkoutIndex >= 0 ? extractWorkflowStepBlock(bump, "actions/checkout@") : "";
+
+    expect(bump).toMatch(/^\s+environment:\s*stack-release\s*$/m);
+    expect(bump).toContain("permissions:\n      contents: read");
+    expect(bump).not.toContain("permissions:\n      contents: write");
+    expect(actionIndex).toBeGreaterThan(-1);
+    expect(actionIndex).toBeLessThan(checkoutIndex);
+    expect(appStep).toContain("id: app-token");
+    expect(appStep).toContain("client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}");
+    expect(appStep).toContain("private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}");
+    expect(appStep).toContain("owner: ${{ github.repository_owner }}");
+    expect(appStep).toContain("repositories: jorgex-stack");
+    expect(appStep).toContain("permission-contents: write");
+    expect(appStep).not.toContain("skip-token-revoke: true");
+    expect(appStep).not.toContain("continue-on-error");
+    expect(appStep).not.toMatch(/fallback|github\.token|needs\.[^\s]+\.outputs\.token/i);
+    expect(checkoutStep).toContain("token: ${{ steps.app-token.outputs.token }}");
+    expect(checkoutStep).toContain("persist-credentials: true");
+    expect(checkoutStep).not.toContain("token: ${{ github.token }}");
+  });
+});
+
+describe("release App smoke workflow contract", () => {
+  it("es manual-only, está limitado a main y no ejecuta código del repo", () => {
+    const workflow = readReleaseAppCheckWorkflow();
+    expect(workflow).not.toBe("");
+    expect(workflow).toMatch(/^on:\r?\n\s+workflow_dispatch:\s*$/m);
+    expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
+
+    const jobs = splitTopLevelJobs(workflow);
+    expect(jobs.size).toBe(1);
+    const smoke = jobs.values().next().value ?? "";
+    expect(smoke).toMatch(/^\s+if:\s*.*(?:github\.ref_name\s*==\s*['"]main['"]|github\.ref\s*==\s*['"]refs\/heads\/main['"])\s*$/m);
+    expect(smoke).toMatch(/^\s+environment:\s*stack-release\s*$/m);
+    expect(smoke).toMatch(/^\s+timeout-minutes:\s*5\s*$/m);
+    expect(smoke).toContain("permissions:\n      contents: read");
+
+    const appStep = extractWorkflowStepBlock(smoke, CREATE_GITHUB_APP_TOKEN_ACTION);
+    expect(appStep).toContain("id: app-token");
+    expect(appStep).toContain("client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}");
+    expect(appStep).toContain("private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}");
+    expect(appStep).toContain("owner: ${{ github.repository_owner }}");
+    expect(appStep).toContain("repositories: jorgex-stack");
+    expect(appStep).toContain("permission-contents: write");
+    expect(appStep).not.toContain("skip-token-revoke: true");
+    expect(appStep).not.toContain("continue-on-error");
+
+    expect(smoke).not.toMatch(/actions\/checkout@|actions\/setup-node@|pnpm\b|npm\b|\bgit\b|\b(?:test|build)\b/i);
+    const smokeScript = extractRunScript(smoke, "gh api");
+    expect(smokeScript).toContain("gh api");
+    expect(smokeScript).toMatch(/--method\s+GET/);
+    expect(smokeScript).toContain("/installation/repositories");
+    expect(smokeScript).toContain("jorgehn98/jorgex-stack");
+    expect(smokeScript).not.toMatch(/(?:echo|printf|cat|set\s+-x).*\b(?:GH_TOKEN|GITHUB_TOKEN|STACK_RELEASE_APP_PRIVATE_KEY)\b/i);
+    expect(smoke).toContain("GH_TOKEN: ${{ steps.app-token.outputs.token }}");
+  });
+
+});
+
+describe("release metadata-only bump guard", () => {
+  it("valida el diff real antes de commit y solo permite el patch de package.json", () => {
+    const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+    const releaseScript = extractRunScript(bump, "id: release");
+    const helperStart = releaseScript.indexOf("const assertMetadataOnlyBump =");
+    const helperEnd = releaseScript.indexOf("if (BRANCH_NAME !== 'main')", helperStart);
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    const guardSource = releaseScript.slice(helperStart, helperEnd).trim();
+
+    const packageWriteIndex = releaseScript.search(/fs\.writeFileSync\(\s*['"]package\.json['"]/);
+    const packageAddIndex = releaseScript.search(/execFileSync\(\s*['"]git['"]\s*,\s*\[\s*['"]add['"]\s*,\s*['"]package\.json['"]/);
+    const guardCallIndex = releaseScript.search(/assertMetadataOnlyBump\(\s*nextVersion\s*\)/);
+    const commitIndex = releaseScript.search(/execFileSync\(\s*['"]git['"]\s*,\s*\[\s*['"]commit['"]/);
+    expect(packageWriteIndex).toBeGreaterThan(-1);
+    expect(packageAddIndex).toBeGreaterThan(packageWriteIndex);
+    expect(guardCallIndex).toBeGreaterThan(packageAddIndex);
+    expect(commitIndex).toBeGreaterThan(guardCallIndex);
+
+    const autoBumpStart = releaseScript.indexOf("} else if (currentVersionExists && !releaseBumpCommit) {");
+    const manualBumpStart = releaseScript.indexOf("} else if (!currentVersionExists && !releaseBumpCommit) {");
+    expect(autoBumpStart).toBeGreaterThan(-1);
+    expect(manualBumpStart).toBeGreaterThan(autoBumpStart);
+    expect(releaseScript.slice(autoBumpStart, manualBumpStart)).toContain("[skip ci]");
+    expect(releaseScript.slice(manualBumpStart)).not.toContain("[skip ci]");
+    expect(releaseScript).not.toMatch(/['"]push['"][\s\S]{0,200}(?:['"]--force['"]|['"]-f['"])/);
+
+    const writePackage = (fixture: GitFixture, version: string, patch: Record<string, unknown> = {}): void => {
+      const packagePath = path.join(fixture.dir, "package.json");
+      const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8")) as Record<string, unknown>;
+      fs.writeFileSync(packagePath, `${JSON.stringify({ ...packageJson, ...patch, version }, null, 2)}\n`, "utf8");
+    };
+
+    const runGuard = (fixture: GitFixture, nextVersion: string): string[][] => {
+      const calls: string[][] = [];
+      const fixtureEnv = isolatedFixtureEnv(fixture.dir);
+      const resolveFixturePath = (file: unknown): unknown => (
+        typeof file === "string" && !path.isAbsolute(file) ? path.join(fixture.dir, file) : file
+      );
+      const fixtureFs = {
+        ...fs,
+        readFileSync: (...args: unknown[]) => {
+          const [file, ...rest] = args;
+          return fs.readFileSync(resolveFixturePath(file) as never, ...(rest as never[]));
+        },
+      };
+      const fixtureExecFileSync = (file: string, args: readonly string[], options: Record<string, unknown> = {}) => {
+        calls.push([file, ...args]);
+        return execFileSync(file, args, {
+          ...options,
+          cwd: typeof options.cwd === "string" ? options.cwd : fixture.dir,
+          env: { ...fixtureEnv, ...((options.env ?? {}) as NodeJS.ProcessEnv) },
+        } as never);
+      };
+      const fixtureProcess = { cwd: () => fixture.dir, env: fixtureEnv };
+      const guard = vm.runInNewContext(`${guardSource}\nassertMetadataOnlyBump`, {
+        execFileSync: fixtureExecFileSync,
+        fs: fixtureFs,
+        process: fixtureProcess,
+      }, { timeout: 2_000 }) as (version: string) => void;
+      guard(nextVersion);
+      return calls;
+    };
+
+    const scenarios: Array<{
+      name: string;
+      nextVersion: string;
+      setup: (fixture: GitFixture) => void;
+      shouldThrow: boolean;
+    }> = [
+      {
+        name: "package version staged only",
+        nextVersion: "1.0.1",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.1");
+          runGit(fixture.dir, ["add", "package.json"]);
+        },
+        shouldThrow: false,
+      },
+      {
+        name: "skips occupied patch versions",
+        nextVersion: "1.0.3",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.3");
+          runGit(fixture.dir, ["add", "package.json"]);
+        },
+        shouldThrow: false,
+      },
+      {
+        name: "tracked unrelated file",
+        nextVersion: "1.0.1",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.1");
+          runGit(fixture.dir, ["add", "package.json"]);
+          fs.writeFileSync(path.join(fixture.dir, "src", "base.ts"), "export const changed = true;\n", "utf8");
+        },
+        shouldThrow: true,
+      },
+      {
+        name: "untracked unrelated file",
+        nextVersion: "1.0.1",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.1");
+          runGit(fixture.dir, ["add", "package.json"]);
+          fs.writeFileSync(path.join(fixture.dir, "src", "untracked.ts"), "export const untracked = true;\n", "utf8");
+        },
+        shouldThrow: true,
+      },
+      {
+        name: "staged unrelated file",
+        nextVersion: "1.0.1",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.1");
+          fs.writeFileSync(path.join(fixture.dir, "src", "staged.ts"), "export const staged = true;\n", "utf8");
+          runGit(fixture.dir, ["add", "--all"]);
+        },
+        shouldThrow: true,
+      },
+      {
+        name: "unexpected version",
+        nextVersion: "1.0.1",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.2");
+          runGit(fixture.dir, ["add", "package.json"]);
+        },
+        shouldThrow: true,
+      },
+      {
+        name: "other package metadata",
+        nextVersion: "1.0.1",
+        setup: (fixture) => {
+          writePackage(fixture, "1.0.1", { private: false });
+          runGit(fixture.dir, ["add", "package.json"]);
+        },
+        shouldThrow: true,
+      },
+      {
+        name: "minor version jump",
+        nextVersion: "1.1.0",
+        setup: (fixture) => {
+          writePackage(fixture, "1.1.0");
+          runGit(fixture.dir, ["add", "package.json"]);
+        },
+        shouldThrow: true,
+      },
+      {
+        name: "major version jump",
+        nextVersion: "2.0.0",
+        setup: (fixture) => {
+          writePackage(fixture, "2.0.0");
+          runGit(fixture.dir, ["add", "package.json"]);
+        },
+        shouldThrow: true,
+      },
+    ];
+
+    const fixture = createGitFixture({ copyModule: false });
+    try {
+      for (const scenario of scenarios) {
+        runGit(fixture.dir, ["reset", "--hard", fixture.initialSha]);
+        runGit(fixture.dir, ["clean", "-fd"]);
+        scenario.setup(fixture);
+        let calls: string[][] = [];
+        const invoke = (): void => {
+          calls = runGuard(fixture, scenario.nextVersion);
+        };
+        if (scenario.shouldThrow) {
+          expect(invoke, scenario.name).toThrow();
+        } else {
+          expect(invoke, scenario.name).not.toThrow();
+          expect(calls.some(([command, ...args]) => command === "git" && args.includes("push"))).toBe(false);
+          expect(calls.some(([command]) => command === "pnpm" || command === "npm")).toBe(false);
+        }
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
   });
 });

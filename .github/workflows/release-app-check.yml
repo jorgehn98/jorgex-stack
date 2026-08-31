@@ -29,6 +29,10 @@ jobs:
         run: |
           set -euo pipefail
           expected_repo='jorgehn98/jorgex-stack'
+          if [[ "$GITHUB_REPOSITORY" != "$expected_repo" ]]; then
+            echo 'La ejecución no pertenece al repositorio esperado.' >&2
+            exit 1
+          fi
           response="$(gh api --paginate --slurp --method GET /installation/repositories)"
           matching_repositories="$(jq --arg expected "$expected_repo" '[.[] | .repositories[]? | select(.full_name == $expected)] | length' <<<"$response")"
           total_count="$(jq '[.[] | .total_count] | add // 0' <<<"$response")"
