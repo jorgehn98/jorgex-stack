@@ -132,10 +132,9 @@ function runGit(dir: string, args: string[]): string {
 
 function copyReleaseModule(dir: string): void {
   const source = path.join(ROOT, "src", "lib", "release.ts");
-  for (const target of [path.join(dir, "release.ts"), path.join(dir, "src", "lib", "release.ts")]) {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(source, target);
-  }
+  const target = path.join(dir, "src", "lib", "release.ts");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target);
 }
 
 function createGitFixture(options: { copyModule?: boolean } = {}): GitFixture {
@@ -223,10 +222,31 @@ function extractPreflightNodeScript(): string {
   return `${source}\n`;
 }
 
+function extractBumpClassifierNodeScript(before: string, head: string): string {
+  const bump = splitTopLevelJobs(readWorkflow()).get("bump") ?? "";
+  const helpersStart = bump.indexOf("const PUBLICABLE_EXACT =");
+  const helpersEnd = bump.indexOf("const bumpPatch = (version) =>", helpersStart);
+  const fragmentStart = bump.indexOf("const changedPaths =", helpersEnd);
+  const fragmentEnd = bump.indexOf("const recoveryRun =", fragmentStart);
+
+  if (helpersStart < 0 || helpersEnd < 0 || fragmentStart < 0 || fragmentEnd < 0) {
+    throw new Error("No se pudo extraer el clasificador de rutas del job bump.");
+  }
+
+  const helpers = bump.slice(helpersStart, helpersEnd);
+  const fragment = bump.slice(fragmentStart, fragmentEnd);
+  const source = `import fs from 'node:fs';\nimport { execFileSync } from 'node:child_process';\nconst before = ${JSON.stringify(before)};\nconst head = ${JSON.stringify(head)};\n${helpers}\n${fragment}\nfs.writeFileSync(process.env.GITHUB_OUTPUT, JSON.stringify({ changedPaths, publicPaths, ignoredPaths, testPaths, workPaths, workflowPaths }) + '\\n', 'utf8');\n`;
+
+  if (source.includes("execFileSync('pnpm'") || source.includes("npm publish") || source.includes("git push") || source.includes("git commit")) {
+    throw new Error("El fixture del parser bump no debe ejecutar registry, publicación ni mutaciones Git.");
+  }
+  return source;
+}
+
 function runPreflight(
   fixture: GitFixture,
   nodeSource: string,
-  options: { eventName?: string; before?: string; releaseSha?: string; head?: string } = {},
+  options: { eventName?: string; before?: string; releaseSha?: string; head?: string; targetSha?: string } = {},
 ): PreflightRunResult {
   const head = options.head ?? runGit(fixture.dir, ["rev-parse", "HEAD"]);
   const outputPath = path.join(fixture.dir, "github-output.txt");
@@ -239,7 +259,7 @@ function runPreflight(
     GITHUB_REF_NAME: "main",
     GITHUB_WORKSPACE: fixture.dir,
     GITHUB_ACTOR: "fixture-user",
-    TARGET_SHA: head,
+    TARGET_SHA: options.targetSha ?? head,
     RELEASE_SHA: options.releaseSha ?? "",
     EVENT_NAME: options.eventName ?? "push",
     BRANCH_NAME: "main",
@@ -274,7 +294,7 @@ function runPreflight(
 }
 
 function expectPreflightFlag(result: PreflightRunResult, expected: boolean, label: string): void {
-  expect(result.status, `${label}: status`).toBe(0);
+  expect(result.status, `${label}: status\nstdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
   expect(result.output.trim().split(/\r?\n/).filter(Boolean), `${label}: output`).toEqual([
     `should_validate=${expected ? "true" : "false"}`,
   ]);
@@ -655,7 +675,7 @@ describe("release preflight contract", () => {
 
     const expectFlag = (
       label: string,
-      setup: (fixture: GitFixture) => { head: string; before?: string; eventName?: string; releaseSha?: string },
+      setup: (fixture: GitFixture) => { head: string; before?: string; eventName?: string; releaseSha?: string; targetSha?: string },
       expected: boolean,
       fixtureOptions?: { copyModule?: boolean },
     ): void => {
@@ -671,7 +691,7 @@ describe("release preflight contract", () => {
 
     const expectFailure = (
       label: string,
-      setup: (fixture: GitFixture) => { head: string; before?: string; eventName?: string; releaseSha?: string },
+      setup: (fixture: GitFixture) => { head: string; before?: string; eventName?: string; releaseSha?: string; targetSha?: string },
       errorPattern: RegExp,
     ): void => {
       const fixture = createGitFixture();
@@ -718,6 +738,16 @@ describe("release preflight contract", () => {
       };
     }, /does-not-exist|bad revision|unknown revision/i);
 
+    expectFailure("malformed TARGET_SHA", (fixture) => ({
+      head: commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note"),
+      targetSha: "not-a-sha",
+    }), /TARGET_SHA|SHA.*40.*hex/i);
+
+    expectFailure("TARGET_SHA differs from real HEAD", (fixture) => ({
+      head: commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note"),
+      targetSha: "0".repeat(40),
+    }), /TARGET_SHA|checkout real|no coincide|mismatch/i);
+
     expectFlag("workflow dispatch recovery is always full", (fixture) => {
       const head = commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note");
       runGit(fixture.dir, ["update-ref", "refs/remotes/origin/main", head]);
@@ -755,9 +785,13 @@ describe("release preflight contract", () => {
     const bump = jobs.get("bump") ?? "";
     const preflightIndex = validate.indexOf("id: preflight");
     const resolveIndex = validate.indexOf("id: resolve");
+    const preflightNode = extractPreflightNodeScript();
 
     expect(preflightIndex).toBeGreaterThan(resolveIndex);
     expect(validate).toContain("should_validate: ${{ steps.preflight.outputs.should_validate }}");
+    expect(preflightNode).toMatch(/path\.join\(workspace,\s*['"]src['"],\s*['"]lib['"],\s*['"]release\.ts['"]\)/);
+    expect(preflightNode).toContain("releaseModule.classifyReleasePaths(changedPaths)");
+    expect(preflightNode).not.toMatch(/const\s+classifyReleasePaths\s*=/);
 
     const preflightGuard = /if:\s*(?:\$\{\{\s*)?steps\.preflight\.outputs\.should_validate\s*==\s*['"]true['"](?:\s*\}\})?/;
     for (const marker of [
@@ -777,8 +811,8 @@ describe("release preflight contract", () => {
     expect(bump).toMatch(/if:\s*(?:\$\{\{\s*)?needs\.validate\.outputs\.should_validate\s*==\s*['"]true['"](?:\s*\}\})?/);
 
     expect(workflow).toMatch(/^\s*cancel-in-progress:\s*false\s*$/m);
-    for (const name of ["validate", "bump", "publish", "tag-release"]) {
-      expect(jobs.get(name), `timeout ${name}`).toMatch(/^\s+timeout-minutes:\s*\d+\s*$/m);
+    for (const [name, minutes] of [["validate", 10], ["bump", 10], ["publish", 10], ["tag-release", 5]] as const) {
+      expect(jobs.get(name), `timeout ${name}`).toMatch(new RegExp(`^\\s+timeout-minutes:\\s*${minutes}\\s*$`, "m"));
     }
 
     expect(validate).toContain("permissions:\n      contents: read");
@@ -802,6 +836,30 @@ describe("release preflight contract", () => {
     expect(validate).toContain("id: resolve");
     expect(validate).toContain("git checkout --detach \"$checkout_sha\"");
   });
+});
+
+describe("bump path parser contract", () => {
+  it("clasifica una ruta Unicode quoted por Git como pública en el fragmento real", () => {
+    const fixture = createGitFixture();
+    try {
+      const head = commitFixture(fixture, {
+        "src/ñ.ts": "export const unicode = true;\n",
+      }, "feat: unicode path");
+      const nodeSource = extractBumpClassifierNodeScript(fixture.initialSha, head);
+      const result = runPreflight(fixture, nodeSource, { before: fixture.initialSha, head });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const classification = JSON.parse(result.output.trim()) as {
+        publicPaths: string[];
+        ignoredPaths: string[];
+      };
+      expect(classification.publicPaths).toEqual(["src/ñ.ts"]);
+      expect(classification.ignoredPaths).toEqual([]);
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe("version sync", () => {

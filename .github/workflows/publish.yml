@@ -163,10 +163,9 @@ jobs:
             const packageMetadata = releaseModule.readPackageMetadata();
             const releaseTag = `v${packageMetadata.version.trim()}`;
             const releaseTagSha = releaseModule.resolveGitTagSha(releaseTag);
-            let diffBase;
-            let reliableTag = false;
+            const hasReliableTag = releaseTagSha !== null;
 
-            if (releaseTagSha !== null) {
+            if (hasReliableTag) {
               try {
                 runGit(['merge-base', '--is-ancestor', releaseTagSha, realHead]);
               } catch (error) {
@@ -177,22 +176,14 @@ jobs:
                 const detail = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
                 throw new Error(`No se pudo comprobar la ascendencia del tag ${releaseTag}. ${detail}`.trim());
               }
-
-              diffBase = releaseModule.resolvePublishDiffBase(
-                packageMetadata.version,
-                process.env.EVENT_BEFORE ?? process.env.GITHUB_EVENT_BEFORE ?? '',
-                () => true,
-                realHead,
-              );
-              reliableTag = true;
-            } else {
-              diffBase = releaseModule.resolvePublishDiffBase(
-                packageMetadata.version,
-                process.env.EVENT_BEFORE ?? process.env.GITHUB_EVENT_BEFORE ?? '',
-                () => false,
-                realHead,
-              );
             }
+
+            const diffBase = releaseModule.resolvePublishDiffBase(
+              packageMetadata.version,
+              process.env.EVENT_BEFORE ?? process.env.GITHUB_EVENT_BEFORE ?? '',
+              () => hasReliableTag,
+              realHead,
+            );
 
             const diffOutput = execFileSync('git', ['diff', '--name-only', '-z', diffBase, realHead, '--'], {
               encoding: 'utf8',
@@ -208,7 +199,7 @@ jobs:
             // Use publicPaths.length rather than classification.publishable:
             // classification is false for a mixed workflow + public diff, but
             // that diff may still auto-bump and needs full validation first.
-            const shouldValidate = !reliableTag || releaseBumpCommit || classification.publicPaths.length > 0;
+            const shouldValidate = !hasReliableTag || releaseBumpCommit || classification.publicPaths.length > 0;
 
             writeDecision(
               shouldValidate,
@@ -504,8 +495,8 @@ jobs:
           const before = EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== ''
             ? resolveRecoveryDiffBase(head)
             : resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
-          const changedPaths = execFileSync('git', ['diff', '--name-only', before, head], { encoding: 'utf8' })
-            .split('\n')
+          const changedPaths = execFileSync('git', ['diff', '--name-only', '-z', before, head, '--'], { encoding: 'utf8' })
+            .split('\0')
             .map((line) => normalize(line))
             .filter(Boolean);
 
