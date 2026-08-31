@@ -1009,7 +1009,7 @@ describe("publish workflow contract", () => {
     expect(setupNodeIndex).toBeLessThan(corepackIndex);
     expect(corepackIndex).toBeLessThan(releaseIndex);
     expect(bump).toContain(`corepack prepare pnpm@${pnpmVersion} --activate`);
-    expect(bump).not.toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
+    expect(bump).not.toContain("pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1");
   });
 
   it("escribe tag_needed=false en todos los early exits relevantes", () => {
@@ -1029,7 +1029,7 @@ describe("publish workflow contract", () => {
 
     expect(workflow).not.toContain("ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_sha || 'main' }}");
     expect(workflow).toContain("actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5");
-    expect(workflow).toContain("pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa");
+    expect(workflow).toContain("pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1");
     expect(workflow).toContain("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020");
     expect(workflow).toContain("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02");
     expect(workflow).toContain("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093");
