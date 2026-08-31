@@ -177,14 +177,15 @@ concreta y observar el run, conserva la URL o el ID que devuelve el dispatch:
 
 ```text
 gh workflow run pi-artifact.yml --ref <branch-or-tag>
-# Usa la URL/ID devuelta por el comando anterior.
-gh run watch <run-id-or-url> --exit-status
-gh run view <run-id-or-url> --json event,headBranch,headSha,status,conclusion,jobs
+# De la URL .../actions/runs/<run-id>, extrae el ID numérico devuelto.
+gh run watch <run-id> --exit-status
+gh run view <run-id> --json event,headBranch,headSha,status,conclusion,jobs
 ```
 
 GitHub solo permite despachar manualmente un workflow cuyo archivo existe en
 la rama por defecto; `--ref` selecciona la ref sobre la que se ejecuta esa
-validación, no sustituye ese requisito. En la salida de `gh run view`, verifica
+validación, no sustituye ese requisito. `gh run view` y `gh run watch` reciben
+el ID numérico, no la URL completa. En la salida de `gh run view`, verifica
 `event=workflow_dispatch`, la ref reportada en `headBranch` y la SHA esperada
 en `headSha`; inspecciona también `jobs` para confirmar los pasos de la lane
 completa, no solo `status` o `conclusion`. El summary de la ejecución es la

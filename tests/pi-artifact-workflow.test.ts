@@ -37,9 +37,9 @@ type WorkflowJob = {
 };
 
 /**
- * This is intentionally only the line-oriented subset used by this workflow.
- * It is not a YAML parser: the test must inspect the real job and expressions,
- * without adding a parser dependency or pretending to emulate Actions.
+ * Extract only the line-oriented job and step fields used by this workflow.
+ * This is deliberately not a YAML parser or a GitHub Actions interpreter; it
+ * checks the workflow text without adding a parser dependency.
  */
 function readWorkflowShape(workflow: string): { jobs: WorkflowJob[] } {
   const lines = workflow.split("\n");
@@ -117,7 +117,11 @@ type EventFixture = {
   full: boolean;
 };
 
-/** Evaluate only the boolean/string expression grammar used by FULL. */
+/**
+ * Evaluate the restricted boolean/string subset used by the routing predicates.
+ * This is JavaScript-compatible evaluation of extracted text, not an Actions
+ * expression interpreter or a security boundary.
+ */
 function evaluateExpression(raw: string, fixture: EventFixture): unknown {
   let expression = expressionBody(raw)
     .replace(/github\.event\.pull_request\.draft/g, "draft")
