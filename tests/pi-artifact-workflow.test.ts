@@ -133,7 +133,7 @@ function extractWithBlock(step: WorkflowStep): string[] {
     if (indent <= withIndent) {
       break;
     }
-    block.push(line.trim());
+    block.push(line.slice(withIndent + 2).trimEnd());
   }
   return block;
 }
