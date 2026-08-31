@@ -110,6 +110,8 @@ Las ejecuciones focales no sustituyen una ejecución completa del checkout cuand
 - Los 15 s de los dos focos de integración y los 15 s propios del test de descubrimiento no justifican ampliar timeouts globales ni copiar esos valores a otros tests sin diagnóstico comparable; el proceso CLI de discovery mantiene su límite separado de 10 s.
 - Acotar el descubrimiento no demuestra ausencia de flakiness, ahorro de facturación ni corrección de CI remoto. La cadencia y los gates de GitHub pertenecen a la documentación específica de CI, no a esta receta local.
 
+El workflow de publicación y su preflight conservador están descritos en [README → Publishing](../../README.md#publishing). Las pruebas locales de `release` comprueban sus guardas y fixtures Git, pero no equivalen a una publicación real ni a un smoke de OIDC.
+
 ### Piloto property para mantenedores
 
 El piloto de property testing de Stack es opt-in y solo se ejecuta desde un

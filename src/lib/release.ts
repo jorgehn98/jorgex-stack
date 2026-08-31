@@ -196,13 +196,13 @@ export function classifyReleasePaths(paths: readonly string[]): ReleasePathDecis
       continue;
     }
 
-    if (isTestPath(normalized)) {
-      testPaths.push(normalized);
+    if (isWorkflowPath(normalized)) {
+      workflowPaths.push(normalized);
       continue;
     }
 
-    if (isWorkflowPath(normalized)) {
-      workflowPaths.push(normalized);
+    if (isTestPath(normalized)) {
+      testPaths.push(normalized);
       continue;
     }
 
