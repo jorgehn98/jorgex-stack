@@ -157,26 +157,89 @@ function headerName(line: string): string | null {
     .join(".");
 }
 
+type MultilineDelimiter = "'''" | '"""';
+
+function quoteRunLength(line: string, start: number, quote: '"' | "'"): number {
+  let end = start + 1;
+  while (end < line.length && line[end] === quote) end++;
+  return end - start;
+}
+
+/** Omite una string de una línea sin validar su contenido ni arrastrar estado. */
+function skipShortString(line: string, start: number, quote: '"' | "'"): number {
+  let index = start + 1;
+  while (index < line.length) {
+    if (line[index] === quote) return index + 1;
+    if (quote === '"' && line[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    index++;
+  }
+  return line.length;
+}
+
+/** Consume una línea y devuelve el delimitador multilínea abierto para la siguiente. */
+function scanTomlLine(line: string, initial: MultilineDelimiter | null): MultilineDelimiter | null {
+  let inside = initial;
+  let index = 0;
+
+  while (index < line.length) {
+    if (inside !== null) {
+      const quote = inside === '"""' ? '"' : "'";
+      if (line[index] === quote) {
+        const run = quoteRunLength(line, index, quote);
+        if (run >= 3) {
+          // Consume toda la secuencia: en un cierre válido de 4/5, las
+          // comillas extra son contenido, no el inicio de otra string.
+          inside = null;
+        }
+        index += run;
+        continue;
+      }
+      if (inside === '"""' && line[index] === "\\") {
+        // Trata la barra y el carácter siguiente como pareja opaca;
+        // no interpreta ni valida el escape.
+        index += 2;
+        continue;
+      }
+      index++;
+      continue;
+    }
+
+    const char = line[index];
+    if (char === "#") break;
+    if (char !== '"' && char !== "'") {
+      index++;
+      continue;
+    }
+
+    const run = quoteRunLength(line, index, char);
+    if (run >= 3) {
+      inside = char === '"' ? '"""' : "'''";
+      index += 3;
+    } else {
+      index = skipShortString(line, index, char);
+    }
+  }
+
+  return inside;
+}
+
 /**
  * Marca qué líneas están DENTRO de un string multilínea (''' o """) del
- * usuario: ahí una línea `[x]` es texto, no un header de sección.
+ * usuario: ahí una línea `[x]` es texto, no un header de sección. La marca se
+ * calcula según el estado al comenzar cada línea. Es un detector léxico
+ * acotado, no un parser ni un validador TOML: solo mantiene el delimitador
+ * multilínea, omite strings de una línea y pares barra+carácter en strings
+ * básicas, y corta en comentarios fuera de una string.
  */
 function multilineStringMask(lines: string[]): boolean[] {
   const mask: boolean[] = [];
-  let inside: string | null = null;
+  let inside: MultilineDelimiter | null = null;
   for (const line of lines) {
-    if (inside !== null) {
-      mask.push(true);
-      if (line.includes(inside)) inside = null;
-      continue;
-    }
-    mask.push(false);
-    for (const delim of ["'''", '"""']) {
-      if ((line.split(delim).length - 1) % 2 === 1) {
-        inside = delim;
-        break;
-      }
-    }
+    mask.push(inside !== null);
+    inside = scanTomlLine(line, inside);
   }
   return mask;
 }
@@ -202,7 +265,17 @@ export function upsertTomlSection(existing: string | null, section: string, body
   const block = `${header}\n${body.trim()}\n`;
   if (existing === null || existing.trim() === "") return block;
 
-  const lines = existing.split(/\r?\n/);
+  // No normaliza el contenido ajeno: `rawLines`/`lineStarts` calculan offsets
+  // sobre el texto crudo, mientras `lines` solo sirve para localizar límites.
+  const rawLines = existing.split("\n");
+  const lines = rawLines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const lineStarts: number[] = [];
+  let offset = 0;
+  for (let index = 0; index < rawLines.length; index++) {
+    lineStarts.push(offset);
+    offset += rawLines[index]!.length;
+    if (index < rawLines.length - 1) offset++;
+  }
   const found = findTomlSection(lines, section);
 
   if (found === null) {
@@ -210,12 +283,14 @@ export function upsertTomlSection(existing: string | null, section: string, body
     return existing + sep + block;
   }
 
-  // Las líneas en blanco al final de la sección son separación con lo que
-  // sigue: quedan fuera del reemplazo para que re-aplicar sea byte-idéntico.
+  // Las líneas en blanco al final de la sección separan lo gestionado de lo
+  // que sigue: quedan fuera del reemplazo para que una segunda aplicación del
+  // mismo bloque sea byte-idéntica.
   let sectionEnd = found.end;
   while (sectionEnd > found.start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
-  const result = [...lines.slice(0, found.start), block.trimEnd(), ...lines.slice(sectionEnd)].join("\n");
-  return result.endsWith("\n") ? result : result + "\n";
+  const startOffset = lineStarts[found.start]!;
+  const endOffset = lineStarts[sectionEnd] ?? existing.length;
+  return existing.slice(0, startOffset) + block.trimEnd() + "\n" + existing.slice(endOffset);
 }
 
 /** Inversa de upsertTomlSection: elimina la sección (y su separación) si existe. */
