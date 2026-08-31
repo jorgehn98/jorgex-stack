@@ -110,6 +110,34 @@ Las ejecuciones focales no sustituyen una ejecución completa del checkout cuand
 - Los 15 s de los dos focos de integración y los 15 s propios del test de descubrimiento no justifican ampliar timeouts globales ni copiar esos valores a otros tests sin diagnóstico comparable; el proceso CLI de discovery mantiene su límite separado de 10 s.
 - Acotar el descubrimiento no demuestra ausencia de flakiness, ahorro de facturación ni corrección de CI remoto. La cadencia y los gates de GitHub pertenecen a la documentación específica de CI, no a esta receta local.
 
+### Piloto property para mantenedores
+
+El piloto de property testing de Stack es opt-in y solo se ejecuta desde un
+checkout del repositorio; no forma parte del paquete instalado ni de la
+ejecución normal:
+
+- `fast-check@4.9.0` es una dependencia de desarrollo únicamente. El script
+  `pnpm test:property` ejecuta `vitest run --dir pilots/property`; `pnpm test`
+  y la CI por defecto no descubren ni ejecutan `pilots/property`. No es un
+  comando público de la CLI.
+- Se mantiene una propiedad por repositorio. En Stack, la propiedad cubre
+  `upsertTomlSection`: aplica el cuerpo solicitado, conserva las secciones
+  ajenas y deja el resultado estable al aplicarlo una segunda vez. El piloto
+  paralelo de Pi cubre el receipt de Engram con el caso positivo y sus
+  invalidadores contractuales; allí se ejecuta
+  `node --test --test-concurrency=1 pilots/property/*.test.mjs`.
+- La ejecución de Stack usa 100 casos y `seed: 20260831` mediante `fc.assert`.
+  Es un presupuesto reproducible del piloto, no un umbral de calidad ni un
+  gate de CI. Se conserva el shrink por defecto.
+- Para repetir un fallo, usa el `seed` y el `path` nativos que informa
+  `fc.assert`; si hace falta una edición local temporal, restáurala después.
+  No inventes flags de entorno o de CLI para el replay.
+
+El resultado del piloto informa sobre la propiedad solo cuando se ejecuta; no
+debe presentarse como enforcement de CI ni como garantía de seguridad del
+sistema operativo. Esta referencia no fija timings ni resultados concretos;
+se registran por separado cuando exista una medición.
+
 ## CI interno del artefacto Pi
 
 Esta sección describe únicamente el workflow propio de Stack en
