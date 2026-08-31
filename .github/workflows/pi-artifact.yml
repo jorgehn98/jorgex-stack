@@ -2,17 +2,58 @@ name: Validate JorgeX Pi artifact
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+  workflow_dispatch:
+
+concurrency:
+  group: pi-artifact-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   validate:
+    name: ${{ (github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true) && 'Quality gate' || 'Draft checks' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Record workflow identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          {
+            echo "### Workflow identity"
+            echo "- Event: ${EVENT_NAME:-n/a}"
+            echo "- Action: ${EVENT_ACTION:-n/a}"
+            echo "- Tested SHA: $checked_out_sha"
+            echo "- Expected checkout SHA: $EXPECTED_SHA"
+            echo "- Pull request head SHA: ${PR_HEAD_SHA:-n/a}"
+            echo "- Pull request base SHA: ${PR_BASE_SHA:-n/a}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$checked_out_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Checkout SHA mismatch: actual=$checked_out_sha expected=$EXPECTED_SHA" >&2
+            exit 1
+          fi
 
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
 
@@ -23,7 +64,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm typecheck
+
       - name: Download the exact JorgeX Pi artifact
+        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -32,13 +76,14 @@ jobs:
             https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.4.0.tgz
           test -s "$tarball"
 
-      - run: pnpm typecheck
-
       - name: Verify the exact JorgeX Pi artifact contract
+        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
         env:
           JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.4.0.tgz
         run: pnpm exec vitest run tests/pi-cross-repo-contract.test.ts
 
       - run: pnpm test
+        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
 
       - run: pnpm build
+        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
