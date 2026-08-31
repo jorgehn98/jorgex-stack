@@ -3,6 +3,8 @@ dist/
 work/
 worktrees/
 coverage/
+!pilots/coverage/
+!pilots/coverage/vitest.config.ts
 *.tsbuildinfo
 .env
 .env.local
