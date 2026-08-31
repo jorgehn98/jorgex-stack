@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
@@ -92,6 +94,204 @@ function readWorkflowShape(workflow: string): { jobs: WorkflowJob[] } {
   }
 
   return { jobs };
+}
+
+/**
+ * Isolate the small, fixed trigger block used by this workflow. This is
+ * intentionally line-oriented; it is not a general YAML parser.
+ */
+function readTriggerBlock(workflow: string): string {
+  const lines = workflow.split("\n");
+  const onIndex = lines.findIndex((line) => line === "on:");
+  if (onIndex < 0) {
+    throw new Error("El workflow no contiene on:.");
+  }
+
+  const triggerEnd = lines.findIndex((line, index) => index > onIndex && line.length > 0 && !/^\s/.test(line));
+  return lines.slice(onIndex + 1, triggerEnd < 0 ? lines.length : triggerEnd).join("\n").trim();
+}
+
+function extractWithBlock(step: WorkflowStep): string[] {
+  const lines = step.raw.split("\n");
+  const withIndex = lines.findIndex((line) => /^\s*with:\s*$/.test(line));
+  if (withIndex < 0) {
+    throw new Error(`El step ${step.name ?? "sin nombre"} no contiene with:.`);
+  }
+
+  const withLine = lines[withIndex] ?? "";
+  const withIndent = withLine.search(/\S/);
+  if (withIndent < 0) {
+    throw new Error(`No se pudo determinar la indentación de with en ${step.name ?? "sin nombre"}.`);
+  }
+
+  const block: string[] = [];
+  for (const line of lines.slice(withIndex + 1)) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const indent = line.search(/\S/);
+    if (indent <= withIndent) {
+      break;
+    }
+    block.push(line.trim());
+  }
+  return block;
+}
+
+function extractRunScript(step: WorkflowStep): string {
+  const lines = step.raw.split("\n");
+  const runIndex = lines.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
+  if (runIndex < 0) {
+    throw new Error(`El step ${step.name ?? "sin nombre"} no contiene run: |.`);
+  }
+
+  const runLine = lines[runIndex] ?? "";
+  const runIndent = runLine.search(/\S/);
+  if (runIndent < 0) {
+    throw new Error(`No se pudo determinar la indentación del run en ${step.name ?? "sin nombre"}.`);
+  }
+
+  const body: string[] = [];
+  for (const line of lines.slice(runIndex + 1)) {
+    if (line.trim() === "") {
+      body.push("");
+      continue;
+    }
+
+    const indent = line.search(/\S/);
+    if (indent <= runIndent) {
+      break;
+    }
+    body.push(line.slice(Math.min(line.length, runIndent + 2)));
+  }
+
+  const script = body.join("\n").replace(/\n+$/, "");
+  if (script.length === 0) {
+    throw new Error(`El run de ${step.name ?? "sin nombre"} está vacío.`);
+  }
+  return `${script}\n`;
+}
+
+type IdentityRunResult = {
+  status: number;
+  stdout: string;
+  stderr: string;
+  summary: string;
+};
+
+function isRunnableFile(candidate: string): boolean {
+  try {
+    if (!fs.statSync(candidate).isFile()) {
+      return false;
+    }
+    if (process.platform !== "win32") {
+      fs.accessSync(candidate, fs.constants.X_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveBashExecutable(): string {
+  const candidates: string[] = [];
+  const gitExecPath = spawnSync("git", ["--exec-path"], {
+    encoding: "utf8",
+    maxBuffer: 100_000,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 2_000,
+    windowsHide: true,
+  });
+  if (gitExecPath.status === 0 && typeof gitExecPath.stdout === "string") {
+    const execPath = gitExecPath.stdout.trim();
+    if (execPath.length > 0) {
+      const gitRoot = path.resolve(execPath, "..", "..", "..");
+      candidates.push(
+        path.join(gitRoot, "bin", "bash.exe"),
+        path.join(gitRoot, "usr", "bin", "bash.exe"),
+        path.join(gitRoot, "bin", "bash"),
+      );
+    }
+  }
+
+  const bashName = process.platform === "win32" ? "bash.exe" : "bash";
+  for (const entry of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (entry.length > 0) {
+      candidates.push(path.join(entry, bashName));
+    }
+  }
+
+  const executable = candidates.find(isRunnableFile);
+  if (executable === undefined) {
+    throw new Error("No se encontró Bash ejecutable (se probó Git --exec-path y PATH); no se puede verificar el script de identidad.");
+  }
+  return executable;
+}
+
+function runIdentityScript(script: string, expectedSha: string, actualSha: string): IdentityRunResult {
+  const bash = resolveBashExecutable();
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-identity-"));
+  const summaryPath = path.join(fixtureDir, "summary.md");
+
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of ["BASH_ENV", "ENV"]) {
+      delete env[key];
+    }
+    const configDir = path.join(fixtureDir, "config");
+    env.HOME = fixtureDir;
+    env.USERPROFILE = fixtureDir;
+    env.APPDATA = fixtureDir;
+    env.LOCALAPPDATA = fixtureDir;
+    env.XDG_CONFIG_HOME = configDir;
+    env.GIT_CONFIG_GLOBAL = path.join(fixtureDir, ".gitconfig");
+    env.GIT_CONFIG_NOSYSTEM = "1";
+    env.TMPDIR = fixtureDir;
+    env.TMP = fixtureDir;
+    env.TEMP = fixtureDir;
+    env.RUNNER_TEMP = fixtureDir;
+    env.PATH = fixtureDir;
+    env.GITHUB_STEP_SUMMARY = summaryPath;
+    env.EXPECTED_SHA = expectedSha;
+    env.EVENT_NAME = "workflow_dispatch";
+    env.EVENT_ACTION = "";
+    env.PR_HEAD_SHA = "";
+    env.PR_BASE_SHA = "";
+    env.STUB_GIT_SHA = actualSha;
+
+    const gitStub = [
+      "git() {",
+      '  if [[ "$1" == "rev-parse" && "$2" == "HEAD" ]]; then',
+      '    printf "%s\\n" "$STUB_GIT_SHA"',
+      "    return 0",
+      "  fi",
+      '  printf "Unexpected git invocation: %s\\n" "$*" >&2',
+      "  return 2",
+      "}",
+    ].join("\n");
+    const wrappedScript = `${gitStub}\n${script}`;
+    const result = spawnSync(bash, ["--noprofile", "--norc", "-c", wrappedScript], {
+      cwd: fixtureDir,
+      encoding: "utf8",
+      env,
+      maxBuffer: 1_000_000,
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    if (result.error !== undefined) {
+      throw new Error(`No se pudo ejecutar Bash para el script de identidad: ${result.error.message}`);
+    }
+    if (result.status === null) {
+      throw new Error(`Bash no terminó dentro del timeout de verificación (signal=${result.signal ?? "unknown"}).`);
+    }
+
+    const stdout = result.stdout;
+    const stderr = result.stderr;
+    const summary = fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, "utf8") : "";
+    return { status: result.status, stdout, stderr, summary };
+  } finally {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  }
 }
 
 const FULL_EXPRESSION =
@@ -246,34 +446,35 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
     const [job] = jobs;
+    const triggerBlock = readTriggerBlock(workflow);
 
-    const onIndex = workflow.indexOf("on:\n");
-    const jobsIndex = workflow.indexOf("\njobs:", onIndex);
-    expect(onIndex).toBeGreaterThan(-1);
-    const triggerBlock = workflow.slice(onIndex, jobsIndex < 0 ? workflow.length : jobsIndex);
-    expect(triggerBlock).toContain("pull_request:");
-    for (const event of ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"]) {
-      expect(triggerBlock, `Falta el evento pull_request.${event}.`).toContain(event);
-    }
-    expect(triggerBlock).toContain("workflow_dispatch:");
-    expect(triggerBlock).not.toMatch(/\binputs:/);
-    expect(triggerBlock).not.toMatch(/^    paths(?:-ignore)?:/m);
+    expect(triggerBlock).toBe([
+      "pull_request:",
+      "    types:",
+      "      - opened",
+      "      - synchronize",
+      "      - reopened",
+      "      - ready_for_review",
+      "      - converted_to_draft",
+      "  workflow_dispatch:",
+    ].join("\n"));
 
     expect(workflow).toMatch(/^concurrency:\n  group:[^\n]*(?:github\.event\.pull_request\.number|github\.ref)[^\n]*(?:github\.event\.pull_request\.number|github\.ref)/m);
     expect(workflow).toMatch(/^  cancel-in-progress:\s*true\s*$/m);
     expect(job).toBeDefined();
     expect(workflow).toMatch(/^    timeout-minutes:\s*10\s*$/m);
-    expect(workflow).toContain("ref: ${{ github.sha }}");
-    expect(workflow).toContain("persist-credentials: false");
-    expect(workflow).not.toMatch(/^\s+continue-on-error:\s*true\s*$/m);
+    const checkoutStep = (job?.steps ?? []).find((step) => step.uses?.startsWith("actions/checkout@") ?? false);
+    expect(checkoutStep, "Falta el step checkout del workflow.").toBeDefined();
+    if (checkoutStep === undefined) {
+      throw new Error("Falta el step checkout del workflow.");
+    }
+    expect(extractWithBlock(checkoutStep)).toEqual([
+      "ref: ${{ github.sha }}",
+      "persist-credentials: false",
+    ]);
+    expect(workflow).not.toMatch(/^\s+continue-on-error\s*:/m);
     expect(workflow).not.toContain("GITHUB_ENV");
 
-    expect(workflow).toContain("git rev-parse HEAD");
-    expect(workflow).toContain("github.sha");
-    expect(workflow).toContain("github.event.pull_request.head.sha");
-    expect(workflow).toContain("github.event.pull_request.base.sha");
-    expect(workflow).toContain("github.event_name");
-    expect(workflow).toContain("GITHUB_STEP_SUMMARY");
     const identityStep = (job?.steps ?? []).find((step) => step.raw.includes("git rev-parse HEAD"));
     expect(identityStep, "Falta el step de identidad del SHA probado.").toBeDefined();
     expect(identityStep?.raw).toContain("GITHUB_STEP_SUMMARY");
@@ -283,4 +484,43 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(identityStep?.raw).toContain("github.event.pull_request.base.sha");
     expect(workflow).not.toMatch(/\btoJSON\s*\(\s*github\s*\)|\bsecrets\./i);
   });
+
+  it("mantiene los comandos escalares completos y ejecuta la comparación SHA real", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+    const [job] = jobs;
+    const identityStep = (job?.steps ?? []).find((step) => step.raw.includes("git rev-parse HEAD"));
+    expect(identityStep, "Falta el step de identidad del SHA probado.").toBeDefined();
+
+    const gateCommands = [
+      "pnpm install --frozen-lockfile",
+      "pnpm typecheck",
+      "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts",
+      "pnpm test",
+      "pnpm build",
+    ];
+    const scalarRuns = (job?.steps ?? [])
+      .map((step) => step.run)
+      .filter((run): run is string => run !== undefined && run !== "|");
+    const gateRunPrefix = /^pnpm (?:install|typecheck|exec vitest run tests\/pi-cross-repo-contract\.test\.ts|test|build)\b/;
+    expect(scalarRuns.filter((run) => gateRunPrefix.test(run))).toEqual(gateCommands);
+
+    if (identityStep === undefined) {
+      throw new Error("Falta el step de identidad del SHA probado.");
+    }
+    const script = extractRunScript(identityStep);
+    const expectedSha = "a".repeat(40);
+    const actualSha = "b".repeat(40);
+    const matched = runIdentityScript(script, expectedSha, expectedSha);
+    expect(matched.status).toBe(0);
+    expect(matched.stderr).toBe("");
+    expect(matched.summary).toContain(`- Tested SHA: ${expectedSha}`);
+    expect(matched.summary).toContain(`- Expected checkout SHA: ${expectedSha}`);
+
+    const mismatched = runIdentityScript(script, expectedSha, actualSha);
+    expect(mismatched.status).not.toBe(0);
+    expect(mismatched.stderr).toContain(`Checkout SHA mismatch: actual=${actualSha} expected=${expectedSha}`);
+    expect(mismatched.summary).toContain(`- Tested SHA: ${actualSha}`);
+    expect(mismatched.summary).toContain(`- Expected checkout SHA: ${expectedSha}`);
+  }, 20_000);
 });
