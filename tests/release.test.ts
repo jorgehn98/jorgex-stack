@@ -49,8 +49,9 @@ type InlineReleaseClassifier = (changedPaths: readonly string[]) => {
 };
 
 /**
- * Extract only the inline path classifier from publish.yml. The fixture stops
- * before bumpPatch, so it cannot invoke release/version, git, or registry code.
+ * Extract only the inline path classifier from publish.yml for a test seam.
+ * This fixture is not a runtime or security boundary. It stops before
+ * bumpPatch, so it cannot invoke release/version, git, or registry code.
  */
 function extractInlineReleaseClassifier(): InlineReleaseClassifier {
   const workflow = readWorkflow();

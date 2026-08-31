@@ -205,6 +205,9 @@ jobs:
               message: commitMessage,
               actor: process.env.GITHUB_ACTOR ?? '',
             });
+            // Use publicPaths.length rather than classification.publishable:
+            // classification is false for a mixed workflow + public diff, but
+            // that diff may still auto-bump and needs full validation first.
             const shouldValidate = !reliableTag || releaseBumpCommit || classification.publicPaths.length > 0;
 
             writeDecision(
