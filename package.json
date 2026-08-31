@@ -42,6 +42,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:property": "vitest run --dir pilots/property",
     "cli": "node dist/cli.js",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
@@ -50,6 +51,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.2",
+    "fast-check": "4.9.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
