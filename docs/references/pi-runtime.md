@@ -1,18 +1,52 @@
 # Pi runtime
 
-JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto `jorgex-pi@0.4.0`, que contiene la snapshot canónica v2, y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
+JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
+
+Esta referencia documenta la adopción del artefacto publicado exacto `jorgex-pi@0.6.1`, cuya entrada gestionada es `npm:jorgex-pi@0.6.1`. La versión de Stack que adopte este candidato debe fijar esa identidad en `src/lib/pi-runtime.ts`; esta documentación no afirma que una instalación concreta del usuario ni que `main` ya lo hayan consumido.
 
 ## Paquete e integridad
 
-Para una instalación real, Stack descarga el tarball congelado de `jorgex-pi@0.4.0`, verifica tamaño, SHA-256 y SHA-512, crea un backup de `~/.pi/agent/settings.json` y solo después pasa el archivo local al gestor de paquetes de Pi. La entrada gestionada queda normalizada al objeto exacto:
+El artefacto de referencia es el [tarball `jorgex-pi@0.6.1` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.6.1.tgz), publicado el `2026-08-31T07:41:46.872Z`, con `89120966` bytes. `src/lib/pi-runtime.ts` es la fuente autoritativa del pin completo: URL, tamaño, SHA-256, SHA-512 y SRI. No se duplican todos esos hashes aquí para evitar dos fuentes que puedan divergir.
+
+La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al objeto exacto:
 
 ```json
-{ "source": "npm:jorgex-pi@0.4.0", "skills": [], "prompts": [] }
+{ "source": "npm:jorgex-pi@0.6.1", "skills": [], "prompts": [] }
 ```
 
 Los filtros `skills: []` y `prompts: []` se aplican únicamente después de que la proyección compartida haya terminado. Así el paquete no carga una segunda copia de los recursos comunes.
 
-El gestor de paquetes interno de Pi es la única excepción npm del lifecycle: el Stack usa pnpm para desarrollo, dependencias y herramientas globales, y nunca lanza npm directamente. El paquete registra un receipt separado en `~/.jorgex-stack/pi-receipt.json` únicamente después de que su runner confirme una instalación sana. Ese receipt es el hand-off del binario Engram verificado; no transfiere su propiedad a Pi ni a Stack.
+El gestor de paquetes interno de Pi es la única excepción npm del lifecycle: Stack usa pnpm para desarrollo, dependencias y herramientas globales, y nunca lanza npm directamente. El paquete registra un receipt separado en `~/.jorgex-stack/pi-receipt.json` únicamente después de que su runner confirme una instalación sana. Ese receipt es el hand-off del binario Engram verificado; no transfiere su propiedad a Pi ni a Stack.
+
+## Procedencia, attestation y paridad
+
+Estos identificadores describen objetos distintos y no deben intercambiarse:
+
+- **Release checkout y productor del tarball**: `fa3cc0dbf06398dc39f70fdf0ba99e4a10846203` (`v0.6.1`/`main` con el auto-bump de release). El checkout de release coincide byte a byte con el contrato raíz del tarball.
+- **Trigger SLSA y dependencias resueltas del workflow**: `864c322d4c3ed8814cdd27092926451258d7e55d`. Es el commit que dispara/resuelve ese workflow, no el productor del tarball.
+- **Fuente Stack de la paridad**: `ebc55667ba610925227fcb575ae1f84750a53510`. Es el `parity.source.commit` de la snapshot compartida proyectada por Pi, no el commit productor de Pi.
+- El metadata de registry no aporta `gitHead`; no se debe inventar uno.
+
+La attestation de npm vincula el SHA-512 exacto del tarball con el workflow, el repositorio y el trigger `864c322d...`. No lo vincula directamente al checkout `fa3cc0d...`; por tanto, esta referencia no afirma que exista una attestation firmada del commit `fa3cc0d...`.
+
+## Inventario y contrato 0.6.1
+
+La snapshot validada declara:
+
+| Campo | Valor |
+| --- | --- |
+| `testedVersions` | `[0.84.2]` |
+| `schemaVersion` | `1` |
+| Runner | `jorgex-pi`, comandos `status`, `doctor`, `models`, `sync` y `cleanup`, contrato `v1` |
+| `maxStdoutBytes` | `65536` |
+| Escrituras externas gestionadas | `settings.json`, `models.json`, `jorgex-pi/sol-lifecycle.v1.json` |
+| Paridad Stack | 15 agentes, 17 skills y 96 archivos de skill |
+| Proyección Pi | 14 agentes runtime, 16 skills activas y el orchestrator primary durmiente |
+| `parity.source.commit` | `ebc55667ba610925227fcb575ae1f84750a53510` |
+
+Las 14 capabilities del contrato son `foundation-contract-v1`, `stack-snapshot-v2`, `runtime-agents-v1`, `permission-gated-tools-v1`, `structured-questions-v1`, `web-access-v1`, `goal-continuation-v1`, `mcp-adapter-v1`, `engram-runtime-tools-v1`, `runner-json-v1`, `tui-branding-v1`, `managed-primary-model-v1`, `quality-receipt-contract-v1` y `quality-capabilities-contract-v1`.
+
+Respecto al pin anterior `0.4.0`, el tarball añade `4.053` bytes, tres entradas —dos schemas y el módulo nativo de calidad— y dos capabilities. No cambia el runner, la clausura de dependencias ni las tres escrituras externas gestionadas. Ese delta no amplía el trust del receipt ni crea una migración in-place.
 
 ## Proyección compartida de Stack
 
@@ -37,6 +71,30 @@ La proyección usa las mismas copias canónicas de `stack/` que los demás runti
 
 Las operaciones con `--target-dir` aíslan home, `PI_CODING_AGENT_DIR`, estado, backups y receipt dentro del target, sin consultar la configuración real de Pi o Engram.
 
+## Transición 0.4.0 → 0.6.1 y rollback
+
+La transición entre los pins `0.4.0` y `0.6.1` **no es in-place**. Cada release de Stack reconoce únicamente el receipt y el candidato que tiene fijados. Una versión que fija `0.6.1` rechaza un package receipt de `npm:jorgex-pi@0.4.0`; no reescribe el receipt, no cambia hashes y no borra el estado para forzar la confianza.
+
+El Stack publicado `jorgex-stack@1.7.1` es la versión exacta corroborada que reconoce el pin `npm:jorgex-pi@0.4.0`. Si el usuario ya actualizó el binario de Stack, debe invocar esa versión publicada exacta, no `latest`, para limpiar el estado antiguo. Los ejemplos siguientes son guía documental; no se ejecutan como parte de esta adopción:
+
+```bash
+# De un receipt Pi 0.4.0 a la versión que fija 0.6.1:
+pnpm dlx jorgex-stack@1.7.1 uninstall --agents pi
+pnpm dlx jorgex-stack@<version-de-stack-que-fija-0.6.1> install --agents pi
+```
+
+El rollback es simétrico y también exige la versión que conoce el receipt presente:
+
+```bash
+# De un receipt Pi 0.6.1 a la versión publicada que fija 0.4.0:
+pnpm dlx jorgex-stack@<version-de-stack-que-fija-0.6.1> uninstall --agents pi
+pnpm dlx jorgex-stack@1.7.1 install --agents pi
+```
+
+En ambos sentidos, una operación debe detenerse si el receipt no es reconocido o la limpieza no puede verificar ownership. No se editan manualmente receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime, y no se usa una versión aproximada para saltarse el control.
+
+La regla de madurez de 24 horas de npm afecta únicamente a la instalación o consumo gestionado real del paquete Pi nuevo. La validación, el merge y la publicación de Stack pueden avanzar contra el artefacto exacto ya verificado; una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
+
 ## Engram
 
 Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. Una instalación interactiva puede ofrecer el canal nativo con confirmación explícita por defecto negativa; `--yes` y los procesos sin TTY fallan con un remedio si falta Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
@@ -56,7 +114,7 @@ Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership.
 
 ## Modelo principal
 
-`jorgex-pi@0.4.0` gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contextWindow: 872000` para ese modelo. Pi registra ownership por campo y elimina únicamente valores canónicos que aún posea. 872K es metadata local solicitada, no una garantía del límite de contexto aceptado por el backend OAuth.
+`jorgex-pi@0.6.1` gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contextWindow: 872000` para ese modelo. Pi registra ownership por campo y elimina únicamente valores canónicos que aún posea. 872K es metadata local solicitada, no una garantía del límite de contexto aceptado por el backend OAuth.
 
 ## Troubleshooting
 
@@ -67,7 +125,7 @@ Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership.
 | `engram-required` / `engram-missing-target` | Configura Engram explícitamente; en target añade el binario dentro de `<target>/bin/engram`. |
 | `manual-existing` | El paquete existe sin package receipt; consérvalo o retíralo explícitamente antes de pedir ownership gestionado. |
 | `duplicate-package` / `source-divergent` | Conserva una única entrada exacta con `skills: []` y `prompts: []`, y vuelve a ejecutar `sync`. |
-| `receipt-corrupt` / `receipt-untrusted` / `partial-state` | No borres el receipt a ciegas; inspecciona settings, proyección y scope, y repara deliberadamente. |
+| `receipt-corrupt` / `receipt-untrusted` / `partial-state` | No borres el receipt a ciegas; inspecciona settings, proyección y scope, y usa el Stack publicado que reconoce ese pin para el rollback o la limpieza. |
 | `projection-cleanup-failed` | Corrige el estado o restaura el backup y reintenta `uninstall`; no fuerces la eliminación. |
 | `runner-output` / `runner-unhealthy` | Comprueba integridad, Engram y receipts antes de reinstalar. |
 

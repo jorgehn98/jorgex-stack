@@ -39,6 +39,8 @@ Todo cambio con impacto cruzado exige revisar ambos repos, aunque finalmente sol
 
 Regla de cierre: cualquier cambio de Stack debe comprobar la paridad con Pi como completion gate. Las proyecciones que son propiedad de Stack se actualizan en el mismo PR; los bytes y el paquete publicados de Pi se actualizan en un PR secuencial enlazado. Un merge intermedio no cierra `work/{nombre}/`: el PRD y `plan.md` permanecen vivos hasta el último checkpoint y el cierre final.
 
+La adopción documentada de Pi usa el pin exacto `npm:jorgex-pi@0.6.1`. La transición desde `0.4.0` no es in-place: cada release de Stack reconoce únicamente el receipt de su pin; `jorgex-stack@1.7.1` es la versión publicada corroborada que reconoce `npm:jorgex-pi@0.4.0`. El rollback debe usar la versión exacta que conoce el receipt presente, sin editar receipts ni hashes y sin borrar HOME, Engram o proyecciones ajenas. La procedencia y la guía operativa están en `docs/references/pi-runtime.md`.
+
 Orden de adopción gestionada: tras publicar JorgeX Pi, el desarrollo, la validación, el merge y la autopublicación del PR de Stack pueden continuar inmediatamente contra el artefacto exacto. La barrera de madurez de **24 horas en npm** afecta únicamente a la instalación o consumo real de esa nueva versión desde el canal npm; no bloquea PRs, merges ni releases. El PR descarga el artefacto publicado, verifica sus bytes y actualiza conjuntamente versión, URL, tamaño, hashes, fixture, tests y rollback. Una instalación directa anticipada queda fuera de la ventana gestionada y requiere una excepción explícita de Jorge.
 
 ## Inventario de skills y cadena de suministro
