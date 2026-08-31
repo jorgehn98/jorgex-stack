@@ -1,9 +1,78 @@
 /**
- * Candidate frozen from the jorgex-pi@0.4.0 npm provenance commit
- * 40abf9a0f7139e54da25344699c907cbdd859e27.
- * It is deliberately data-only: lifecycle tests must not consume a live checkout.
+ * Data-only candidate frozen from the exact published jorgex-pi@0.6.1
+ * registry artifact; lifecycle tests must not consume a live checkout.
+ * The provenance commit is the release checkout. The workflow trigger is
+ * attestation metadata, not this fixture's release-checkout provenance.
  */
 export const PI_RUNTIME_CANDIDATE = {
+  package: {
+    name: "jorgex-pi",
+    version: "0.6.1",
+    source: "npm:jorgex-pi@0.6.1",
+  },
+  provenance: {
+    commit: "fa3cc0dbf06398dc39f70fdf0ba99e4a10846203",
+  },
+  tarball: {
+    bytes: 89_120_966,
+    sha256: "9a4040ce34dba36aff56f618f957189749219f9560fb796e2b6864bdabf51b93",
+    sha512: "0b08a0ae2477c9dd0c2f62cbf15bc212d2ea9ef66c1a366e29c9f772ee73d073ab991d177583bbbaf3db8844053d7f34d8350a4acd9eb270c3887bd05cddd92f",
+  },
+  pi: {
+    testedVersions: ["0.84.2"],
+  },
+  contract: {
+    schemaVersion: 1,
+    capabilities: [
+      "foundation-contract-v1",
+      "stack-snapshot-v2",
+      "runtime-agents-v1",
+      "permission-gated-tools-v1",
+      "structured-questions-v1",
+      "web-access-v1",
+      "goal-continuation-v1",
+      "mcp-adapter-v1",
+      "engram-runtime-tools-v1",
+      "runner-json-v1",
+      "tui-branding-v1",
+      "managed-primary-model-v1",
+      "quality-receipt-contract-v1",
+      "quality-capabilities-contract-v1",
+    ],
+    runner: {
+      bin: "jorgex-pi",
+      commands: ["status", "doctor", "models", "sync", "cleanup"],
+      schemaVersion: 1,
+      maxStdoutBytes: 65_536,
+    },
+    managedExternalWrites: [
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "settings.json",
+        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair; preserve foreign halves; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "models.json",
+        semantics: "merge missing providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow=872000; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/sol-lifecycle.v1.json",
+        semantics: "record field, container, and file ownership; remove the receipt when empty",
+      },
+    ],
+  },
+} as const;
+
+/**
+ * Test-only context for the previously published Stack/Pi pin. It models the
+ * old Stack context for rollback tests and is not a production candidate.
+ */
+export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
   package: {
     name: "jorgex-pi",
     version: "0.4.0",
@@ -70,10 +139,15 @@ export const PI_RUNTIME_CANDIDATE = {
  * runtime receipt intentionally keeps only bytes and digests.
  */
 export const PI_RUNTIME_ARCHIVE = {
-  entries: 13_399,
+  entries: 13_402,
   brandingAssets: [
     "assets/brand/eye-logo.svg",
     "themes/JorgeX.json",
+  ],
+  qualityAssets: [
+    "contract/schemas/quality-capabilities.v1.schema.json",
+    "contract/schemas/quality-receipt.v1.schema.json",
+    "extensions/quality-capabilities.ts",
   ],
   bundledDependencies: [
     "@gotgenes/pi-permission-system",
