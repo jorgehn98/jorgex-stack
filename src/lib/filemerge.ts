@@ -226,8 +226,7 @@ export function upsertTomlSection(existing: string | null, section: string, body
   while (sectionEnd > found.start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
   const startOffset = lineStarts[found.start]!;
   const endOffset = lineStarts[sectionEnd] ?? existing.length;
-  const result = existing.slice(0, startOffset) + block.trimEnd() + "\n" + existing.slice(endOffset);
-  return result.endsWith("\n") ? result : result + "\n";
+  return existing.slice(0, startOffset) + block.trimEnd() + "\n" + existing.slice(endOffset);
 }
 
 /** Inversa de upsertTomlSection: elimina la sección (y su separación) si existe. */
