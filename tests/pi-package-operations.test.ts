@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
+import {
+  PI_RUNTIME_CANDIDATE,
+  PI_RUNTIME_PREVIOUS_CANDIDATE,
+} from "./fixtures/pi-runtime.js";
+
+type Candidate = typeof PI_RUNTIME_CANDIDATE | typeof PI_RUNTIME_PREVIOUS_CANDIDATE;
 
 type Environment = Record<string, string> & {
   PI_CODING_AGENT_DIR: string;
@@ -27,8 +32,8 @@ type PiPackageOperations = {
       registry: {
         id: "pi";
         kind: "package-managed";
-        candidate: typeof PI_RUNTIME_CANDIDATE;
-        acceptedCandidates?: readonly (typeof PI_RUNTIME_CANDIDATE)[];
+        candidate: Candidate;
+        acceptedCandidates?: readonly Candidate[];
       };
       detected: { executable: string; packageRunner: string; settingsJson: string };
       engramBin: string | null;
@@ -62,20 +67,48 @@ const environment: Environment = {
   ENGRAM_BIN: "/tmp/pi-target/bin/engram",
 };
 
-const receipt = (): Receipt => ({ schemaVersion: 1, state: "installed", candidate: {
-  package: PI_RUNTIME_CANDIDATE.package,
-  tarball: PI_RUNTIME_CANDIDATE.tarball,
-  provenance: PI_RUNTIME_CANDIDATE.provenance,
-}, scope: { kind: "target-dir", codingAgentDir: environment.PI_CODING_AGENT_DIR }, engram: { binary: environment.ENGRAM_BIN } });
+const previousSource = PI_RUNTIME_PREVIOUS_CANDIDATE.package.source;
+const previousRoot = `/tmp/pi-previous-target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_PREVIOUS_CANDIDATE.package.version}`;
+const previousRunner = `${previousRoot}/bin/jorgex-pi.mjs`;
+const previousManagedProjectedPackage = { source: previousSource, skills: [], prompts: [] };
+const previousEnvironment: Environment = {
+  HOME: "/tmp/pi-previous-target/home",
+  XDG_CONFIG_HOME: "/tmp/pi-previous-target/config",
+  XDG_CACHE_HOME: "/tmp/pi-previous-target/cache",
+  TMPDIR: "/tmp/pi-previous-target/tmp",
+  PI_CODING_AGENT_DIR: "/tmp/pi-previous-target/pi-agent",
+  ENGRAM_BIN: "/tmp/pi-previous-target/bin/engram",
+};
 
-function runnerJson(command: "doctor" | "cleanup" | "status", result: object): string {
+function receiptFor(candidate: Candidate, candidateEnvironment: Environment): Receipt {
+  return {
+    schemaVersion: 1,
+    state: "installed",
+    candidate: {
+      package: candidate.package,
+      tarball: candidate.tarball,
+      provenance: candidate.provenance,
+    },
+    scope: { kind: "target-dir", codingAgentDir: candidateEnvironment.PI_CODING_AGENT_DIR },
+    engram: { binary: candidateEnvironment.ENGRAM_BIN },
+  };
+}
+
+const receipt = (): Receipt => receiptFor(PI_RUNTIME_CANDIDATE, environment);
+const previousReceipt = (): Receipt => receiptFor(PI_RUNTIME_PREVIOUS_CANDIDATE, previousEnvironment);
+
+function runnerJsonFor(candidate: Candidate, candidateRoot: string, command: "doctor" | "cleanup" | "status", result: object): string {
   return `${JSON.stringify({
     schemaVersion: 1,
     command,
     ok: true,
-    package: { name: "jorgex-pi", version: PI_RUNTIME_CANDIDATE.package.version, root },
+    package: { name: "jorgex-pi", version: candidate.package.version, root: candidateRoot },
     result,
   })}\n`;
+}
+
+function runnerJson(command: "doctor" | "cleanup" | "status", result: object): string {
+  return runnerJsonFor(PI_RUNTIME_CANDIDATE, root, command, result);
 }
 
 function input(operation: "doctor" | "uninstall" | "update", overrides: Partial<{
@@ -98,14 +131,19 @@ function input(operation: "doctor" | "uninstall" | "update", overrides: Partial<
   };
 }
 
-function deps(events: string[], responses: Record<string, { exitCode: number; stdout: string; stderr: string }>, absent = true) {
+function deps(
+  events: string[],
+  responses: Record<string, { exitCode: number; stdout: string; stderr: string }>,
+  absent = true,
+  expected: { runner: string; environment: Environment } = { runner, environment },
+) {
   return {
     backupSettings() {
       events.push("backup-settings");
     },
     run(call: Invocation) {
-      events.push(`${call.executable === runner ? "runner" : "pi"}:${call.args.join(" ")}`);
-      expect(call.environment).toEqual(environment);
+      events.push(`${call.executable === expected.runner ? "runner" : "pi"}:${call.args.join(" ")}`);
+      expect(call.environment).toEqual(expected.environment);
       const command = call.args[0];
       return command === undefined
         ? { exitCode: 1, stdout: "", stderr: "" }
@@ -234,6 +272,66 @@ describe("Pi package-managed operations", () => {
       remedy: expect.stringMatching(/verified|tgz|tarball/i),
     });
     expect(events).toEqual([]);
+  });
+
+  it("rejects the previous pin in the new Stack context while keeping rollback on the previous Stack context explicit", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const previousPackageSettings = JSON.stringify({ packages: [previousManagedProjectedPackage] });
+    const previousReceiptInCurrentScope = JSON.stringify(receiptFor(PI_RUNTIME_PREVIOUS_CANDIDATE, environment));
+    const newContext = input("update", {
+      settingsJson: previousPackageSettings,
+      receiptJson: previousReceiptInCurrentScope,
+    });
+    const adoptionEvents: string[] = [];
+
+    expect(runPiPackageManagedOperation(newContext, deps(adoptionEvents, {}))).toEqual({
+      kind: "blocked",
+      reason: "receipt-untrusted",
+    });
+    expect(adoptionEvents).toEqual([]);
+    expect(newContext.receiptJson).toBe(previousReceiptInCurrentScope);
+    expect(newContext.detected.settingsJson).toBe(previousPackageSettings);
+
+    const rollbackReceipt = JSON.stringify(previousReceipt());
+    const rollbackEvents: string[] = [];
+    const rollback = runPiPackageManagedOperation({
+      operation: "uninstall",
+      interactive: false,
+      registry: {
+        id: "pi",
+        kind: "package-managed",
+        candidate: PI_RUNTIME_PREVIOUS_CANDIDATE,
+      },
+      detected: {
+        executable: "/opt/pi/bin/pi",
+        packageRunner: previousRunner,
+        settingsJson: previousPackageSettings,
+      },
+      engramBin: previousEnvironment.ENGRAM_BIN,
+      receiptJson: rollbackReceipt,
+      paths: {
+        targetDir: true,
+        codingAgentDir: previousEnvironment.PI_CODING_AGENT_DIR,
+        receiptPath: "/tmp/pi-previous-target/state/pi-receipt.json",
+        environment: previousEnvironment,
+      },
+    }, deps(rollbackEvents, {
+      cleanup: {
+        exitCode: 0,
+        stdout: runnerJsonFor(PI_RUNTIME_PREVIOUS_CANDIDATE, previousRoot, "cleanup", { changed: false, actions: [] }),
+        stderr: "",
+      },
+      remove: { exitCode: 0, stdout: "", stderr: "" },
+    }, true, { runner: previousRunner, environment: previousEnvironment }));
+
+    expect(rollback).toEqual({ kind: "uninstalled" });
+    expect(rollbackEvents).toEqual([
+      "runner:cleanup --json",
+      "backup-settings",
+      `pi:remove ${previousSource} --no-approve`,
+      "verify-absent",
+      "delete-receipt",
+    ]);
   });
 
   it.each([

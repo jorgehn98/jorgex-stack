@@ -53,6 +53,9 @@ function expectArchiveInventory(tarball: string): void {
   for (const asset of PI_RUNTIME_ARCHIVE.brandingAssets) {
     expect(entries.has(`package/${asset}`), asset).toBe(true);
   }
+  for (const asset of PI_RUNTIME_ARCHIVE.qualityAssets) {
+    expect(entries.has(`package/${asset}`), asset).toBe(true);
+  }
   const packedManifest = readTarJson(tarball, "package/package.json") as { bundledDependencies?: unknown };
   expect(packedManifest.bundledDependencies).toEqual(PI_RUNTIME_ARCHIVE.bundledDependencies);
   for (const dependency of PI_RUNTIME_ARCHIVE.bundledDependencies) {
