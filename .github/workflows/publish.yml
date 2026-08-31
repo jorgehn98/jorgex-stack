@@ -25,28 +25,44 @@ permissions:
 
 jobs:
   validate:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       target_sha: ${{ steps.resolve.outputs.target_sha }}
+      should_validate: ${{ steps.preflight.outputs.should_validate }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate pinned action SHAs
         shell: bash
         run: |
           set -euo pipefail
-          grep -Eo 'uses: actions/[^@]+@[0-9a-f]{40}' .github/workflows/publish.yml |
-          while IFS= read -r pin; do
-            action_ref="${pin#uses: }"
+          action_refs="$(
+            grep -E '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*' .github/workflows/publish.yml |
+              sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*([^[:space:]#]+).*$/\2/'
+          )"
+
+          if [[ -z "$action_refs" ]]; then
+            echo "::error::No se encontraron actions remotas para validar."
+            exit 1
+          fi
+
+          while IFS= read -r action_ref; do
+            if ! [[ "$action_ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$ ]]; then
+              echo "::error::Action remota sin pin SHA válido: $action_ref"
+              exit 1
+            fi
+
             repo="${action_ref%@*}"
             sha="${action_ref#*@}"
-            curl -fsS "https://api.github.com/repos/${repo}/commits/${sha}" > /dev/null
-          done
+            curl -fsS "https://api.github.com/repos/${repo}/commits/${sha}" --connect-timeout 10 --max-time 30 > /dev/null
+          done <<< "$action_refs"
 
       - name: Resolve validate checkout SHA
         id: resolve
@@ -90,22 +106,133 @@ jobs:
           echo "target_sha=$checkout_sha" >> "$GITHUB_OUTPUT"
           git checkout --detach "$checkout_sha"
 
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - id: preflight
+        name: Decide whether validation is needed
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+          import { pathToFileURL } from 'node:url';
+
+          const outputPath = (process.env.GITHUB_OUTPUT ?? '').trim();
+          const eventName = (process.env.EVENT_NAME ?? process.env.GITHUB_EVENT_NAME ?? '').trim();
+
+          if (outputPath === '') {
+            throw new Error('GITHUB_OUTPUT no está definido.');
+          }
+
+          const writeDecision = (shouldValidate, reason) => {
+            fs.appendFileSync(outputPath, `should_validate=${shouldValidate ? 'true' : 'false'}\n`, 'utf8');
+            console.log(`Preflight: ${reason}`);
+          };
+
+          // Dispatch siempre ejecuta la validación completa. Este guard debe
+          // ocurrir antes del import dinámico: un checkout histórico puede no
+          // contener todavía src/lib/release.ts.
+          if (eventName === 'workflow_dispatch') {
+            writeDecision(true, 'workflow_dispatch requiere validación completa.');
+          } else {
+            const targetSha = (process.env.TARGET_SHA ?? '').trim().toLowerCase();
+            if (!/^[0-9a-f]{40}$/.test(targetSha)) {
+              throw new Error('TARGET_SHA no es una SHA completa de 40 hex.');
+            }
+
+            const runGit = (args) => execFileSync('git', args, {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim();
+            const realHead = runGit(['rev-parse', '--verify', 'HEAD^{commit}']).toLowerCase();
+
+            if (realHead !== targetSha) {
+              throw new Error(`El checkout real (${realHead}) no coincide con TARGET_SHA (${targetSha}).`);
+            }
+
+            const workspace = (process.env.GITHUB_WORKSPACE ?? process.cwd()).trim() || process.cwd();
+            const releaseModule = await import(pathToFileURL(path.join(workspace, 'src', 'lib', 'release.ts')).href);
+            const packageMetadata = releaseModule.readPackageMetadata();
+            const releaseTag = `v${packageMetadata.version.trim()}`;
+            const releaseTagSha = releaseModule.resolveGitTagSha(releaseTag);
+            const hasReliableTag = releaseTagSha !== null;
+
+            if (hasReliableTag) {
+              try {
+                runGit(['merge-base', '--is-ancestor', releaseTagSha, realHead]);
+              } catch (error) {
+                if (typeof error?.status === 'number' && error.status === 1) {
+                  throw new Error(`El tag ${releaseTag} no es ancestro de ${realHead}.`);
+                }
+
+                const detail = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
+                throw new Error(`No se pudo comprobar la ascendencia del tag ${releaseTag}. ${detail}`.trim());
+              }
+            }
+
+            const diffBase = releaseModule.resolvePublishDiffBase(
+              packageMetadata.version,
+              process.env.EVENT_BEFORE ?? process.env.GITHUB_EVENT_BEFORE ?? '',
+              () => hasReliableTag,
+              realHead,
+            );
+
+            const diffOutput = execFileSync('git', ['diff', '--name-only', '-z', diffBase, realHead, '--'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            const changedPaths = diffOutput.split('\0').filter(Boolean);
+            const classification = releaseModule.classifyReleasePaths(changedPaths);
+            const commitMessage = runGit(['log', '-1', '--pretty=%B', realHead]);
+            const releaseBumpCommit = releaseModule.isReleaseBumpCommit({
+              message: commitMessage,
+              actor: process.env.GITHUB_ACTOR ?? '',
+            });
+            // Use publicPaths.length rather than classification.publishable:
+            // classification is false for a mixed workflow + public diff, but
+            // that diff may still auto-bump and needs full validation first.
+            const shouldValidate = !hasReliableTag || releaseBumpCommit || classification.publicPaths.length > 0;
+
+            writeDecision(
+              shouldValidate,
+              shouldValidate
+                ? 'hay cambios publicables, falta el tag acumulado o es un commit de bump.'
+                : 'el diff acumulado no contiene cambios publicables.',
+            );
+          }
+          NODE
+
+      - if: steps.preflight.outputs.should_validate == 'true'
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+
+      - if: steps.preflight.outputs.should_validate == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - if: steps.preflight.outputs.should_validate == 'true'
+        run: pnpm install --frozen-lockfile
 
-      - run: pnpm typecheck
+      - if: steps.preflight.outputs.should_validate == 'true'
+        run: pnpm typecheck
 
-      - run: pnpm test
+      - if: steps.preflight.outputs.should_validate == 'true'
+        run: pnpm test
 
-      - run: pnpm build
+      - if: steps.preflight.outputs.should_validate == 'true'
+        run: pnpm build
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - if: steps.preflight.outputs.should_validate == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: dist
           path: dist
@@ -113,6 +240,8 @@ jobs:
 
   bump:
     needs: validate
+    if: needs.validate.outputs.should_validate == 'true'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -366,8 +495,8 @@ jobs:
           const before = EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== ''
             ? resolveRecoveryDiffBase(head)
             : resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
-          const changedPaths = execFileSync('git', ['diff', '--name-only', before, head], { encoding: 'utf8' })
-            .split('\n')
+          const changedPaths = execFileSync('git', ['diff', '--name-only', '-z', before, head, '--'], { encoding: 'utf8' })
+            .split('\0')
             .map((line) => normalize(line))
             .filter(Boolean);
 
@@ -382,12 +511,12 @@ jobs:
               workPaths.push(rawPath);
               continue;
             }
-            if (isTestPath(rawPath)) {
-              testPaths.push(rawPath);
-              continue;
-            }
             if (isWorkflowPath(rawPath)) {
               workflowPaths.push(rawPath);
+              continue;
+            }
+            if (isTestPath(rawPath)) {
+              testPaths.push(rawPath);
               continue;
             }
             if (isPublicablePath(rawPath)) {
@@ -513,6 +642,7 @@ jobs:
   publish:
     needs: bump
     if: needs.bump.outputs.publish == 'true'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -522,6 +652,7 @@ jobs:
         with:
           ref: ${{ needs.bump.outputs.publish_sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -542,6 +673,7 @@ jobs:
   tag-release:
     needs: [bump, publish]
     if: always() && !cancelled() && needs.publish.result != 'failure' && needs.publish.result != 'cancelled' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.bump.outputs.tag_needed == 'true')) && (needs.publish.result == 'success' || needs.bump.outputs.tag_needed == 'true')
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
       contents: write
