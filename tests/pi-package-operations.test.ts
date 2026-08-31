@@ -256,14 +256,15 @@ describe("Pi package-managed operations", () => {
     expect(runPiPackageManagedOperation(input("update"), deps(sameEvents, {}))).toEqual({ kind: "healthy" });
     expect(sameEvents).toEqual([]);
 
-    const next = {
-      ...PI_RUNTIME_CANDIDATE,
-      package: { ...PI_RUNTIME_CANDIDATE.package, version: "0.2.3", source: "npm:jorgex-pi@0.2.3" },
-    } as unknown as typeof PI_RUNTIME_CANDIDATE;
     const events: string[] = [];
     const result = runPiPackageManagedOperation({
       ...input("update"),
-      registry: { id: "pi", kind: "package-managed", candidate: next, acceptedCandidates: [PI_RUNTIME_CANDIDATE, next] },
+      registry: {
+        id: "pi",
+        kind: "package-managed",
+        candidate: PI_RUNTIME_PREVIOUS_CANDIDATE,
+        acceptedCandidates: [PI_RUNTIME_CANDIDATE, PI_RUNTIME_PREVIOUS_CANDIDATE],
+      },
     }, deps(events, {}));
 
     expect(result).toEqual({
