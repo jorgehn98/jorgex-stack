@@ -4,15 +4,16 @@ import { upsertTomlSection } from "../../src/lib/filemerge.js";
 
 type Eol = "\n" | "\r\n";
 type HeaderStyle = "canonical" | "commented" | "spaced-quoted" | "literal-quoted";
+type TargetPlacement = "middle" | "eof";
 
 type PropertyCase = {
-  eol: Eol;
-  section: string;
   body: string;
   existing: string;
   targetPresent: boolean;
-  beforeLines: string[];
-  afterLines: string[];
+  targetPlacement: TargetPlacement;
+  finalNewline: boolean;
+  before: string;
+  after: string;
 };
 
 const TARGET = "mcp_servers.target";
@@ -20,7 +21,7 @@ const OWN_SECTION = "mcp_servers.own";
 const FOREIGN_SECTION = "foreign.settings";
 
 const printableTextArb = fc.string({ maxLength: 18 }).map((value) =>
-  value.replace(/[^\x20-\x7e]/g, " ").replace(/'''/g, "''"),
+  value.replace(/[^\x20-\x7e]/g, " ").replace(/'{3,}/g, "''"),
 );
 
 const commentTextArb = printableTextArb.map((value) => value.replace(/#/g, "").trim() || "comment");
@@ -103,9 +104,19 @@ function renderSection(section: string, style: HeaderStyle, body: string): strin
   return [renderHeader(section, style), ...body.split("\n")];
 }
 
+function renderRegion(lines: string[], eol: Eol, finalNewline: boolean): string {
+  const content = lines.join(eol);
+  return finalNewline ? `${content}${eol}` : content;
+}
+
 const propertyCaseArb = fc.record({
-  eol: fc.constantFrom<Eol>("\n", "\r\n"),
+  beforeEol: fc.constantFrom<Eol>("\n", "\r\n"),
+  targetEol: fc.constantFrom<Eol>("\n", "\r\n"),
+  afterEol: fc.constantFrom<Eol>("\n", "\r\n"),
   targetPresent: fc.boolean(),
+  targetPlacement: fc.constantFrom<TargetPlacement>("middle", "eof"),
+  afterBlankLine: fc.boolean(),
+  finalNewline: fc.boolean(),
   targetStyle: headerStyleArb,
   ownStyle: headerStyleArb,
   foreignStyle: headerStyleArb,
@@ -115,8 +126,13 @@ const propertyCaseArb = fc.record({
   ownBody: bodyArb,
   foreignBody: foreignBodyArb,
 }).map(({
-  eol,
+  beforeEol,
+  targetEol,
+  afterEol,
   targetPresent,
+  targetPlacement,
+  afterBlankLine,
+  finalNewline,
   targetStyle,
   ownStyle,
   foreignStyle,
@@ -133,48 +149,50 @@ const propertyCaseArb = fc.record({
     "",
   ];
   const afterLines = [
-    "",
+    ...(afterBlankLine ? [""] : []),
     ...renderSection(FOREIGN_SECTION, foreignStyle, foreignBody),
-    "",
   ];
   const targetLines = renderSection(TARGET, targetStyle, oldTargetBody);
-  const lines = targetPresent
-    ? [...beforeLines, ...targetLines, ...afterLines]
-    : [...beforeLines, ...afterLines];
+  const before = renderRegion(beforeLines, beforeEol, false);
+  const after = renderRegion(afterLines, afterEol, finalNewline);
+  const target = renderRegion(targetLines, targetEol, targetPlacement === "middle");
+  const existing = targetPresent
+    ? targetPlacement === "eof"
+      ? `${before}${target}${finalNewline ? targetEol : ""}`
+      : `${before}${target}${after}`
+    : `${before}${after}`;
 
   return {
-    eol,
-    section: TARGET,
     body: requestedBody,
-    existing: lines.join(eol),
+    existing,
     targetPresent,
-    beforeLines,
-    afterLines,
+    targetPlacement,
+    finalNewline,
+    before,
+    after: targetPresent && targetPlacement === "middle" ? after : "",
   } satisfies PropertyCase;
 });
 
-function normalizeEol(value: string): string {
-  return value.replace(/\r\n/g, "\n");
-}
-
 function expectedOnce(input: PropertyCase): string {
-  const blockLines = [`[${input.section}]`, ...input.body.trim().split("\n")];
+  const blockLines = [`[${TARGET}]`, ...input.body.trim().split("\n")];
+  const block = blockLines.join("\n");
   if (!input.targetPresent) {
-    const existing = normalizeEol(input.existing);
-    return `${existing}\n${blockLines.join("\n")}\n`;
+    return `${input.existing}${input.finalNewline ? "\n" : "\n\n"}${block}\n`;
   }
 
-  return [...input.beforeLines, ...blockLines, ...input.afterLines].join("\n");
+  return input.targetPlacement === "eof"
+    ? `${input.before}${block}\n`
+    : `${input.before}${block}\n${input.after}`;
 }
 
 describe("piloto property de upsertTomlSection", () => {
   it("aplica el cuerpo, conserva secciones ajenas y queda idempotente", () => {
     fc.assert(
       fc.property(propertyCaseArb, (input) => {
-        const once = upsertTomlSection(input.existing, input.section, input.body);
-        expect(normalizeEol(once)).toBe(expectedOnce(input));
+        const once = upsertTomlSection(input.existing, TARGET, input.body);
+        expect(once).toBe(expectedOnce(input));
 
-        const twice = upsertTomlSection(once, input.section, input.body);
+        const twice = upsertTomlSection(once, TARGET, input.body);
         expect(twice).toBe(once);
       }),
       { numRuns: 100, seed: 20260831 },

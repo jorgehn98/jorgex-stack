@@ -140,6 +140,15 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
     const twice = upsertTomlSection(once, "mcp_servers.target", "key_0 = false");
     expect(twice).toBe(once);
   });
+
+  it("preserva el EOF ajeno sin newline al reemplazar una sección", () => {
+    const existing = ["# usuario", "root = 0", "", "[mcp_servers.target]", "old = 1", "[foreign.settings]", "keep = 2"].join("\r\n");
+    const prefix = ["# usuario", "root = 0", "", ""].join("\r\n");
+    const expected = `${prefix}[mcp_servers.target]\nnew = 3\n[foreign.settings]\r\nkeep = 2`;
+    const once = upsertTomlSection(existing, "mcp_servers.target", "new = 3");
+    expect(once).toBe(expected);
+    expect(upsertTomlSection(once, "mcp_servers.target", "new = 3")).toBe(once);
+  });
 });
 
 describe("upsertJson", () => {
