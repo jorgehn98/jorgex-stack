@@ -51,6 +51,119 @@ Otra capa solo se justifica si protege un contrato distinto. Repetir la misma ex
 
 Los mocks siguen siendo útiles en fronteras externas, caras, destructivas o no deterministas. Deben representar el contrato mínimo relevante, no duplicar la lógica de producción.
 
+## Política portable instalada
+
+Esta es la orientación que Stack instala junto con `tdd`, `tester`, `test-analyzer` y
+`orchestrator` para usarla en proyectos consumidores. Es una política de decisión
+y de evidencia, no un gate, una garantía de ejecución ni una autoridad
+`enforced`. La fuente operativa sigue siendo el canon instalado: [TDD y sus
+ejemplos](../../stack/skills/tdd/SKILL.md), [tester](../../stack/agents/tester.md),
+[test-analyzer](../../stack/agents/test-analyzer.md) y
+[orchestrator](../../stack/skills/orchestrator/SKILL.md).
+
+### Decidir y ejecutar sin inventar contexto
+
+La decisión por cambio responde a las cinco preguntas de [Decisión obligatoria](#decisión-obligatoria): riesgo, protección existente, comportamiento nuevo, seam y acción. No exige un formulario ni un schema nuevo; basta con dejar la decisión en el plan o informe que el proyecto ya utilice.
+
+Antes de escribir, seleccionar o ejecutar un test:
+
+- Lee el contrato completo relevante: implementación, API pública, documentación,
+  configuración y tests existentes. Conserva un caso de control independiente si
+  el contrato tiene ejemplos normales y de frontera.
+- Detecta el runner, script/comando, setup y scope reales, incluidos los filtros
+  de ruta. Ejecuta el comando directo documentado por ese proyecto y el filtro más
+  estrecho que cubra el riesgo. No lo sustituyas por un wrapper del gestor de
+  paquetes si puede instalar o pedir interacción.
+- Reutiliza el tooling disponible. No auto-instales runner, framework, polyfill o
+  paquete, ni impongas Node, Vitest, pnpm, TypeScript u otro ecosistema. Si el
+  comando no puede ejecutarse sin instalar o preguntar, detén la comprobación y
+  reporta la limitación.
+
+### Seam, fidelidad y determinismo
+
+Elige el entorno mínimo que conserve el contrato. Una regla pura puede ejecutarse
+en el runtime ligero que ya tenga el proyecto; UI y accesibilidad, base de datos y
+RLS, filesystem, procesos, concurrencia o un protocolo de red deben conservar la
+frontera real cuando esa frontera sea el riesgo. Un mock o fake es válido para una
+frontera externa, cara, destructiva o no determinista, pero solo debe representar
+el contrato que se está comprobando. [mocking.md](../../stack/skills/tdd/mocking.md)
+detalla ese límite.
+
+Controla únicamente las fuentes de variación relevantes: reloj y zona horaria,
+random/IDs, ordenación, estado compartido, filesystem y red. Usa fixtures
+temporales aislados y limpia siempre, también al fallar; nunca dependas por
+accidente del HOME, datos del usuario o un servicio vivo. Si la red es parte del
+contrato, declara el alcance y la infraestructura real; si no lo es, usa una doble
+de frontera estrecha, no una suite falsa que replique la lógica de producción.
+
+Los errores esperados se capturan y afirman en el límite que los posee. El stderr,
+logs y fallos de teardown inesperados siguen siendo visibles: no suprimas la
+salida global para fabricar un verde. Conserva el primer fallo. Repeticiones
+acotadas sirven solo para diagnosticar una causa de flakiness y deben quedar
+explicadas; reintentar hasta verde o ampliar timeouts sin causa diagnosticada no
+es evidencia.
+
+Si falta la suite, el runner, la infraestructura de una frontera o el permiso para
+ejecutarla, nombra la protección ausente, propone el seam/setup que la cubriría y
+declara la limitación. La ausencia no convierte automáticamente el cambio en
+`no new test`, pero tampoco autoriza a instalar herramientas o a usar datos reales
+para rellenar el hueco.
+
+### Responsabilidades y evidencia
+
+- **TDD** mantiene la política de riesgo, seam, fidelidad y decisión `no new test`;
+  [tests.md](../../stack/skills/tdd/tests.md) resume ejemplos y anti-patrones.
+- **Tester** puede decidir, escribir/fijar o verificar en el proyecto consumidor;
+  debe informar comando, setup, scope, resultado y límites de la evidencia.
+- **Test-analyzer** es *read-only*: revisa únicamente el diff suministrado y los
+  tests o la infraestructura de tests que ese diff modifica. No escribe ni ejecuta
+  tests, no convierte el análisis en auditoría de toda la suite/CI y solo delega
+  gaps accionables.
+- **Orchestrator** coordina bloques coherentes y reutiliza evidencia válida; no
+  repite la rúbrica ni ejecuta la suite completa por defecto.
+
+Distingue tres clases de evidencia:
+
+1. **Entrega determinista**: render/install/sync, snapshot, paridad o idempotencia
+   comprueban que se entregan los artefactos esperados. No prueban por sí solos la
+   conducta de un runtime ni del agente.
+2. **Evaluación de conducta**: un escenario con contexto y fixture controlados
+   comprueba si una orientación produce una decisión útil, con un oráculo
+   independiente y un control cuando corresponda. Es evidencia de prompting y
+   calibración, no enforcement ni garantía universal.
+3. **Smoke nativo**: la CLI/runtime real confirma carga y activación. Si faltan
+   CLI, credenciales o permisos, ese runtime queda pendiente; no se declara
+   probado por haber renderizado su artefacto.
+
+Los outputs, timings, modelos, fixtures y resultados de una evaluación concreta
+son evidencia de esa ejecución, no defaults ni requisitos de esta política. La
+documentación de `install`/`sync` describe la entrega y el aislamiento; no muta el
+HOME, configuración, Engram o servicios del lector.
+
+### CI solo cuando sea el alcance
+
+La orientación de CI se activa únicamente si la tarea afecta workflows, gates,
+filtros de rutas, frecuencia o coste. Inspecciona el provider y su configuración
+real: triggers, jobs, comandos, checks requeridos, refs y semántica de publicación
+y recuperación. No inventes una receta universal ni un provider obligatorio.
+
+- Usa refs base/head (o equivalentes) explícitas para diff y decisiones de paths;
+  valida errores del comando y de la configuración compartida.
+- Si el path o la configuración no se pueden clasificar con confianza, ejecuta la
+  lane pertinente o falla cerrado. Nunca omitas de forma optimista.
+- Compara muestras equivalentes —misma clase de evento, ref, scope y lane— y
+  separa tiempo de pared, suma de jobs, cola y consumo/facturación. No conviertas
+  una medición local o un resultado de baseline en objetivo universal.
+- Una validación draft/candidato puede cancelar ejecuciones obsoletas solo cuando
+  la semántica del proyecto lo permita. Nunca canceles un publish/release mutable
+  ni dejes una publicación a medias; conserva gates y recovery. Cambiar settings o
+  fabricar checks requiere permiso explícito.
+
+Las secciones posteriores de esta referencia son deliberadamente **Stack-only**:
+`Aplicación local en este repositorio` describe sus comandos y límites, y `CI
+interno del artefacto Pi` describe sus workflows. No convierten `pnpm`, Vitest,
+GitHub Actions ni esos gates en requisitos de los proyectos consumidores.
+
 ## Aplicación local en este repositorio
 
 Esta sección describe únicamente la verificación interna del repositorio **JorgeX Stack**. No modifica la política portable anterior ni convierte Vitest, pnpm o estos comandos en requisitos para los proyectos consumidores.

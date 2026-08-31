@@ -173,6 +173,13 @@ Deterministic checks are the routine feedback loop while implementation is in pr
 
 Each writer verifies its own bounded area (e.g. its test file). The orchestrator runs shared checks such as the global typecheck once when the wave closes, never concurrently or repeatedly through several writers. Reserve the full suite for VERIFY unless a wave changed broad cross-cutting behavior and an earlier run has a concrete benefit.
 
+### CI and workflow scope
+
+CI guidance belongs here only when the task explicitly affects workflows, gates, path filters, execution frequency, or CI cost. Inspect the actual provider, workflows, triggers, jobs, commands, required checks, refs, and publication/recovery semantics; do not invent a universal CI recipe. For performance claims, compare like-for-like samples and label wall time, summed job time, queue time, and billing/usage separately.
+
+- Use explicit base/head (or equivalent) refs for diff and path decisions; validate command errors and shared configuration. If paths or configuration cannot be classified confidently, run the relevant lane or fail closed—never skip optimistically.
+- Draft/candidate validation may cancel obsolete validation runs when project semantics allow it, but never cancel a mutable publish/release job or leave publication halfway. Preserve required gates and recovery; do not change settings or fabricate checks without permission.
+
 ### Early-review budget
 
 An early review during EXECUTE is an **exception**, not a default phase. Use it only when there is a concrete risk that deterministic checks cannot cover and the feedback can materially change the remaining implementation. Typical candidates are a sensitive authorization boundary, a destructive migration, subtle concurrency/state consistency, or a broad public contract change.

@@ -17,7 +17,9 @@ Your job is to produce the strongest testing evidence for the risk—not to maxi
 
 ## Before acting
 
-Detect the project's real runner, scripts, configuration, existing tests, and helpers. Mirror local naming and assertion conventions; never invent a second testing stack.
+Inspect the complete relevant contract (implementation, public API, docs, configuration, and existing tests), then detect the project's real runner, script/command, setup, scope, and helpers. Mirror local naming and assertion conventions; use tooling already present and never auto-install a runner, framework, polyfill, or package or invent a second testing stack. If a needed suite or boundary infrastructure is absent, propose the missing protection or state the limitation rather than turning absence into a no-test decision.
+
+When time/timezone, randomness/IDs, ordering, shared state, filesystem, or network can affect the evidence, control only the relevant sources with isolated temporary fixtures and cleanup; keep expected-error assertions narrow and unexpected output visible.
 
 Make one explicit testing decision:
 
@@ -63,7 +65,7 @@ You are only done when:
 
 ## Targeted execution
 
-Never run the full suite by default. Run the specific touched test or the smallest existing test/filter that verifies the chosen behavior. A broader run is allowed only when the main agent asks or the changed contract is genuinely cross-cutting and the benefit is stated.
+Never run the full suite by default. Run the documented direct project command/script with the narrowest test or filter and scope that verifies the chosen behavior; do not substitute a package-manager wrapper or a command that may install or prompt. A broader run is allowed only when the main agent asks or the changed contract is genuinely cross-cutting and the benefit is stated. Report the command, relevant environment/setup, scope, result, and limits of the evidence. Preserve the first failure and any bounded diagnostic repetitions when investigating flakiness; do not retry until green or inflate a timeout without a diagnosed cause.
 
 ## Rules
 
