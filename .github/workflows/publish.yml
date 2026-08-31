@@ -246,18 +246,44 @@ jobs:
     if: needs.validate.outputs.should_validate == 'true'
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    environment: stack-release
     permissions:
-      contents: write
+      contents: read
     outputs:
       publish: ${{ steps.release.outputs.publish }}
       version: ${{ steps.release.outputs.version }}
       publish_sha: ${{ steps.release.outputs.publish_sha }}
       tag_needed: ${{ steps.release.outputs.tag_needed }}
     steps:
+      - name: Validate release App context
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" != "refs/heads/main" ]]; then
+            echo 'La ejecución no pertenece a main.' >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REPOSITORY:-}" != "jorgehn98/jorgex-stack" ]]; then
+            echo 'La ejecución no pertenece al repositorio esperado.' >&2
+            exit 1
+          fi
+
+      - name: Mint release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: jorgex-stack
+          permission-contents: write
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ needs.validate.outputs.target_sha }}
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
@@ -448,6 +474,58 @@ jobs:
 
             throw new Error(`No se pudo reconstruir la base de recovery para ${head}: falta un tag de release previo. No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. Haz publish/tag manuales con permisos elevados o recrea el tag previo.`);
           };
+          const assertMetadataOnlyBump = (nextVersion) => {
+            const baselineRaw = execFileSync('git', ['show', 'HEAD:package.json'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            const currentRaw = fs.readFileSync('package.json', 'utf8');
+            let baseline;
+            let current;
+
+            try {
+              baseline = JSON.parse(String(baselineRaw));
+              current = JSON.parse(String(currentRaw));
+            } catch (error) {
+              throw new Error(`No se pudo leer el package.json antes del bump: ${error?.message ?? String(error)}`);
+            }
+
+            if (baseline === null || typeof baseline !== 'object' || current === null || typeof current !== 'object') {
+              throw new Error('El package.json del bump debe contener un objeto JSON.');
+            }
+
+            const baselineVersion = typeof baseline.version === 'string' ? baseline.version.trim() : '';
+            const requestedVersion = typeof nextVersion === 'string' ? nextVersion.trim() : '';
+            const baselineMatch = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(baselineVersion);
+            const requestedMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(requestedVersion);
+
+            if (
+              baselineMatch === null
+              || requestedMatch === null
+              || requestedMatch[1] !== baselineMatch[1]
+              || requestedMatch[2] !== baselineMatch[2]
+              || Number(requestedMatch[3]) <= Number(baselineMatch[3])
+            ) {
+              throw new Error(`El bump debe conservar major/minor y avanzar patch desde ${baselineVersion}; se recibió ${requestedVersion || '<vacío>'}.`);
+            }
+
+            if (typeof current.version !== 'string' || current.version.trim() !== requestedVersion) {
+              throw new Error('El package.json no contiene la versión de bump solicitada.');
+            }
+
+            if (JSON.stringify({ ...baseline, version: requestedVersion }) !== JSON.stringify(current)) {
+              throw new Error('El bump solo puede modificar la versión de package.json.');
+            }
+
+            const statusOutput = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            const statusLines = String(statusOutput).split(/\r?\n/).filter((line) => line !== '');
+            if (statusLines.length !== 1 || statusLines[0] !== 'M  package.json') {
+              throw new Error('El bump debe dejar únicamente package.json modificado y staged.');
+            }
+          };
 
           if (BRANCH_NAME !== 'main') {
             throw new Error('El bump de release solo puede empujarse a main.');
@@ -605,12 +683,21 @@ jobs:
               nextVersion = bumpPatch(nextVersion);
             }
 
+            const cleanBefore = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim();
+            if (cleanBefore !== '') {
+              throw new Error('El checkout no está limpio antes del bump de release.');
+            }
+
             packageJson.version = nextVersion;
             fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
             execFileSync('git', ['config', 'user.name', 'github-actions[bot]'], { stdio: 'inherit' });
             execFileSync('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], { stdio: 'inherit' });
             execFileSync('git', ['add', 'package.json'], { stdio: 'inherit' });
-            execFileSync('git', ['commit', '-m', `chore(release): bump version to v${nextVersion}`], { stdio: 'inherit' });
+            assertMetadataOnlyBump(nextVersion);
+            execFileSync('git', ['commit', '-m', `chore(release): bump version to v${nextVersion} [skip ci]`], { stdio: 'inherit' });
             execFileSync('git', ['push', 'origin', `HEAD:${process.env.GITHUB_REF_NAME}`], { stdio: 'inherit' });
             publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
             releaseVersion = nextVersion;

@@ -110,7 +110,7 @@ Las ejecuciones focales no sustituyen una ejecución completa del checkout cuand
 - Los 15 s de los dos focos de integración y los 15 s propios del test de descubrimiento no justifican ampliar timeouts globales ni copiar esos valores a otros tests sin diagnóstico comparable; el proceso CLI de discovery mantiene su límite separado de 10 s.
 - Acotar el descubrimiento no demuestra ausencia de flakiness, ahorro de facturación ni corrección de CI remoto. La cadencia y los gates de GitHub pertenecen a la documentación específica de CI, no a esta receta local.
 
-El workflow de publicación y su preflight conservador están descritos en [README → Publishing](../../README.md#publishing). Las pruebas locales de `release` comprueban sus guardas y fixtures Git, pero no equivalen a una publicación real ni a un smoke de OIDC.
+El workflow de publicación y su preflight conservador están descritos en [README → Publishing](../../README.md#publishing). Las pruebas locales de `release` comprueban sus guardas y fixtures Git, pero no equivalen a una publicación real, a un smoke de OIDC ni al smoke manual de acceso del release App.
 
 ### Piloto property para mantenedores
 
@@ -286,3 +286,9 @@ candidato, pero este repositorio público no debe presentar esa forma como un
 ahorro facturado medido. Tampoco se deben descartar fallos o reruns para
 fabricar una señal verde: la conclusión solo es interpretable junto con la
 lane y la SHA.
+
+## App de releases y smoke manual de acceso
+
+La operación del App, el smoke manual y el guard metadata-only del bump están en [README → Publishing](../../README.md#publishing). `.github/workflows/release-app-check.yml` es manual/main-only y auth-only: comprueba el alcance del token con un `GET`, sin checkout, instalación, tests/build, push, tag ni npm.
+
+Ejecútalo solo después de incorporarlo en la rama por defecto; las pruebas locales de `release` no equivalen a autenticación App, trusted publishing OIDC ni publicación real. Tampoco es un smoke nativo de Pi ni configura branch protection; Stack y Pi mantienen publicación, snapshot/paridad y lifecycle separados.
