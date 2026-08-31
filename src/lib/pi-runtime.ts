@@ -18,16 +18,16 @@ import {
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.4.0",
-    source: "npm:jorgex-pi@0.4.0",
+    version: "0.6.1",
+    source: "npm:jorgex-pi@0.6.1",
   },
   provenance: {
-    commit: "40abf9a0f7139e54da25344699c907cbdd859e27",
+    commit: "fa3cc0dbf06398dc39f70fdf0ba99e4a10846203",
   },
   tarball: {
-    bytes: 89_116_913,
-    sha256: "6a984cf270dc204e1ccec15bcccd52b9a9eac168be68e404ca588bd54d924cd1",
-    sha512: "8ec9424cb5bb313b9a29b30d39f84ab32af3004039f077573d3344c2d9564556679a370919912e1fb969780d989d56e5ccea0d06bd5056c00b67b248a68de661",
+    bytes: 89_120_966,
+    sha256: "9a4040ce34dba36aff56f618f957189749219f9560fb796e2b6864bdabf51b93",
+    sha512: "0b08a0ae2477c9dd0c2f62cbf15bc212d2ea9ef66c1a366e29c9f772ee73d073ab991d177583bbbaf3db8844053d7f34d8350a4acd9eb270c3887bd05cddd92f",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -47,6 +47,8 @@ export const PI_RUNTIME_CANDIDATE = {
       "runner-json-v1",
       "tui-branding-v1",
       "managed-primary-model-v1",
+      "quality-receipt-contract-v1",
+      "quality-capabilities-contract-v1",
     ],
     runner: {
       bin: "jorgex-pi",

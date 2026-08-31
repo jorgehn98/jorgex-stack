@@ -4,7 +4,10 @@ import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { readManifest } from "../src/lib/manifest.js";
 import { parseCliArgs } from "../src/cli.js";
-import { PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
+import {
+  PI_RUNTIME_CANDIDATE,
+  PI_RUNTIME_PREVIOUS_CANDIDATE,
+} from "./fixtures/pi-runtime.js";
 
 type Environment = Record<string, string> & {
   PI_CODING_AGENT_DIR: string;
@@ -21,6 +24,7 @@ type PiRuntimeModule = {
       source: typeof PI_RUNTIME_CANDIDATE.package.source;
       tarball: { sha256: string; sha512: string; bytes: number };
       pi: { testedVersions: readonly string[] };
+      acceptedCandidates?: readonly unknown[];
     };
   };
   runPiRuntime(
@@ -119,6 +123,8 @@ describe("Pi runtime wiring", () => {
       tarball: PI_RUNTIME_CANDIDATE.tarball,
       pi: PI_RUNTIME_CANDIDATE.pi,
     });
+    expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).toEqual([PI_RUNTIME_CANDIDATE]);
+    expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).not.toContainEqual(PI_RUNTIME_PREVIOUS_CANDIDATE);
     expect(parseCliArgs(["install", "--agents", "pi,codex"]).flags.agents).toEqual(["pi", "codex"]);
     expect(ADAPTERS).not.toHaveProperty("pi");
     expect(DEFAULT_MODEL_MAP).not.toHaveProperty("pi");
