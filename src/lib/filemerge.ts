@@ -190,20 +190,16 @@ function scanTomlLine(line: string, initial: MultilineDelimiter | null): Multili
       if (line[index] === quote) {
         const run = quoteRunLength(line, index, quote);
         if (run >= 3) {
-          // En una secuencia de 4/5, la primera o las dos primeras comillas
-          // son contenido y las últimas tres forman el cierre; la misma regla
-          // cubre cualquier secuencia de al menos tres. Consumimos toda la
-          // secuencia para no iniciar otra string con sobrantes; esto es una
-          // decisión léxica, no una validación de TOML.
+          // Consume toda la secuencia: en un cierre válido de 4/5, las
+          // comillas extra son contenido, no el inicio de otra string.
           inside = null;
         }
         index += run;
         continue;
       }
       if (inside === '"""' && line[index] === "\\") {
-        // En una string básica multilínea, tratar la barra invertida y, si
-        // existe, el carácter siguiente como pareja opaca conserva la paridad
-          // de barras invertidas sin interpretar ni validar la string.
+        // Trata la barra y el carácter siguiente como pareja opaca;
+        // no interpreta ni valida el escape.
         index += 2;
         continue;
       }
