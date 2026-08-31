@@ -1,7 +1,8 @@
 /**
- * Candidate frozen from the exact jorgex-pi@0.6.1 registry artifact.
- * The provenance commit is the release checkout; the workflow trigger is not
- * the tarball producer and is intentionally not represented here.
+ * Data-only candidate frozen from the exact published jorgex-pi@0.6.1
+ * registry artifact; lifecycle tests must not consume a live checkout.
+ * The provenance commit is the release checkout. The workflow trigger is
+ * attestation metadata, not this fixture's release-checkout provenance.
  */
 export const PI_RUNTIME_CANDIDATE = {
   package: {
@@ -68,9 +69,8 @@ export const PI_RUNTIME_CANDIDATE = {
 } as const;
 
 /**
- * Test-only context for the previously published Stack/Pi pin. It is used to
- * prove rollback through the old Stack context and is never a production
- * accepted candidate.
+ * Test-only context for the previously published Stack/Pi pin. It models the
+ * old Stack context for rollback tests and is not a production candidate.
  */
 export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
   package: {
