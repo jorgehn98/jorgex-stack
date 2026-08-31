@@ -1060,6 +1060,15 @@ describe("publish workflow contract", () => {
     expect(workflow).toContain("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38");
     expect(workflow).toContain("actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f");
     expect(workflow).toContain("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131");
+    for (const legacySha of [
+      "34e114876b0b11c390a56381ad16ebd13914f8d5",
+      "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "b906affcce14559ad1aafd4ab0e942779e9f58b1",
+    ]) {
+      expect(workflow).not.toMatch(new RegExp(`^[ \\t]*(?:-[ \\t]+)?uses:[ \\t]*\\S+@${legacySha}[ \\t]*$`, "m"));
+    }
     expect(validate).toContain("Validate pinned action SHAs");
     const pinValidationCode = extractWorkflowStepBlock(validate, "Validate pinned action SHAs")
       .split(/\r?\n/)
