@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasTomlRootKey,
   readTomlSection,
   removeTomlSection,
   stripLeadingHtmlComments,
@@ -87,7 +88,7 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
   });
 
   it("no confunde una línea [x] dentro de un string multilínea con un header", () => {
-    const doc = "[profiles.mio]\ninstructions = '''\n[checklist]\n- item\n'''\n\n[otra]\nx = 1\n";
+    const doc = "[profiles.mio]\ninstructions = '''\n# \"\"\" y [checklist] siguen dentro del string\n[checklist]\n- item\n'''\n\n[otra]\nx = 1\n";
     // La sección del usuario llega hasta [otra]; [checklist] es texto.
     const removed = removeTomlSection(doc, "profiles.mio");
     expect(removed).not.toContain("[checklist]");
@@ -96,6 +97,40 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
     const upserted = upsertTomlSection(doc, "mcp_servers.engram", 'command = "engram"');
     expect(upserted).toContain("[checklist]");
     expect(upserted.indexOf("[mcp_servers.engram]")).toBeGreaterThan(upserted.indexOf("[otra]"));
+  });
+
+  it.each([
+    { name: "comentario completo con triplecomilla simple", rootLines: ["# comentario '''", "root_value = 0"] },
+    { name: "comentario completo con triplecomilla doble", rootLines: ['# comentario """', "root_value = 0"] },
+    { name: "comentario inline con triplecomilla simple", rootLines: ["root_value = 0 # comentario '''"] },
+    { name: "comentario inline con triplecomilla doble", rootLines: ['root_value = 0 # comentario """'] },
+    { name: "string básica con # y triplecomilla simple", rootLines: ['root_value = "texto # \'\'\'"'] },
+    { name: "string literal con # y triplecomilla doble", rootLines: [`root_value = 'texto # """'`] },
+  ])("trata $name como texto TOML, no como string multilínea", ({ rootLines }) => {
+    const existing = [
+      ...rootLines,
+      "",
+      "[mcp_servers.own]",
+      'owned = "keep"',
+      "",
+      "[foreign.settings]",
+      'foreign = "keep"',
+    ].join("\n");
+    const body = 'command = "new"';
+
+    expect(hasTomlRootKey(existing, "root_value")).toBe(true);
+
+    const once = upsertTomlSection(existing, "mcp_servers.target", body);
+    expect(readTomlSection(once, "mcp_servers.target")).toBe(body);
+    expect(once.match(/^\[mcp_servers\.target\]$/gm)).toHaveLength(1);
+
+    const twice = upsertTomlSection(once, "mcp_servers.target", body);
+    expect(twice).toBe(once);
+
+    const removed = removeTomlSection(once, "mcp_servers.target");
+    expect(removed).not.toContain("[mcp_servers.target]");
+    expect(removed).toContain("[foreign.settings]");
+    expect(removed).toContain('foreign = "keep"');
   });
 
   it("normaliza variantes válidas del mismo header ([ x ], dotted quoted)", () => {
