@@ -6,7 +6,7 @@ Esta referencia documenta la adopción del artefacto publicado exacto `jorgex-pi
 
 ## Paquete e integridad
 
-El artefacto de referencia es el [tarball `jorgex-pi@0.6.1` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.6.1.tgz), publicado el `2026-08-31T07:41:46.872Z`, con `89120966` bytes. `src/lib/pi-runtime.ts` es la fuente autoritativa del pin completo: URL, tamaño, SHA-256, SHA-512 y SRI. No se duplican todos esos hashes aquí para evitar dos fuentes que puedan divergir.
+El artefacto de referencia es el [tarball `jorgex-pi@0.6.1` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.6.1.tgz), publicado el `2026-08-31T07:41:46.872Z`, con `89120966` bytes. `src/lib/pi-runtime.ts` es la fuente autoritativa de los valores de integridad: tamaño, SHA-256 y SHA-512; la URL se deriva de la versión. No se duplican todos esos hashes aquí para evitar dos fuentes que puedan divergir.
 
 La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al objeto exacto:
 
