@@ -140,6 +140,51 @@ debe presentarse como enforcement de CI ni como garantía de seguridad del
 sistema operativo. Esta referencia no fija timings ni resultados concretos;
 se registran por separado cuando exista una medición.
 
+### Piloto coverage para mantenedores
+
+El piloto de coverage de Stack es opt-in y sirve para inspeccionar el mapeo de
+líneas de una selección explícita; no forma parte de `pnpm test`, de la CI por
+defecto ni del paquete publicado.
+
+Ejecútalo desde la raíz de un checkout de Stack:
+
+```text
+corepack pnpm install --frozen-lockfile
+corepack pnpm test:coverage
+```
+
+La configuración de `pilots/coverage/vitest.config.ts` limita el piloto a
+estas tres suites:
+
+- `tests/quality-policy.test.ts`
+- `tests/quality-receipt.test.ts`
+- `tests/quality-verifier.test.ts`
+
+y a estas tres fuentes:
+
+- `src/lib/quality-policy.ts`
+- `src/lib/quality-receipt.ts`
+- `src/lib/quality-verifier.ts`
+
+El provider es V8 mediante `@vitest/coverage-v8@4.1.8`, que debe mantenerse
+pareado exactamente con `vitest@4.1.8`; el piloto no es motivo para actualizar
+ninguna de las dos dependencias. Los informes se escriben en
+`coverage/quality/`: `coverage-final.json`, `lcov.info` y `lcov-report/`.
+Son artefactos locales ignorados por Git y no forman parte de la publicación.
+
+El line mapping indica qué líneas de las fuentes incluidas fueron ejecutadas
+por esas suites; no demuestra que el comportamiento esté completamente
+validado. Un informe solo es interpretable cuando contiene las fuentes
+esperadas del scope explícito: si falta una, el informe está incompleto y no
+debe interpretarse su porcentaje. Este piloto no cubre el runner, la CLI hija
+en `dist` ni el alcance global del repositorio; los archivos que no se importan
+desde el scope declarado siguen presentes y no quedan cubiertos por ello.
+
+El piloto no añade thresholds, cambios en la suite por defecto, CI, wrappers,
+tests ni código de producto. La decisión de testing para este wiring es no
+crear un test nuevo: se verifican los comandos y los informes reales cuando se
+ejecuta el piloto. No se fijan aquí números ni timings volátiles.
+
 ## CI interno del artefacto Pi
 
 Esta sección describe únicamente el workflow propio de Stack en
