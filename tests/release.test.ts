@@ -5,6 +5,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi, afterEach } from "vitest";
+import { resolveBashExecutable } from "./helpers/bash.js";
 import {
   buildReleasePlan,
   assertCurrentReleaseRun,
@@ -182,37 +183,7 @@ function commitFixture(fixture: GitFixture, files: Record<string, string>, messa
 
 function extractPreflightNodeScript(): string {
   const validate = splitTopLevelJobs(readWorkflow()).get("validate") ?? "";
-  const lines = validate.split(/\r?\n/);
-  const preflightIndex = lines.findIndex((line) => /^\s*-\s+id:\s+preflight\s*$/.test(line));
-  if (preflightIndex < 0) {
-    throw new Error("No se encontró el step id: preflight en publish.yml.");
-  }
-
-  const preflightIndent = (lines[preflightIndex] ?? "").search(/\S/);
-  const stepEnd = lines.findIndex((line, index) => {
-    if (index <= preflightIndex || line.trim() === "") return false;
-    const indent = line.search(/\S/);
-    return indent >= 0 && indent <= preflightIndent && /^\s*-\s+/.test(line);
-  });
-  const stepLines = lines.slice(preflightIndex, stepEnd < 0 ? lines.length : stepEnd);
-  const runIndex = stepLines.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
-  if (runIndex < 0) {
-    throw new Error("El step id: preflight no contiene run: |.");
-  }
-
-  const runIndent = (stepLines[runIndex] ?? "").search(/\S/);
-  const body: string[] = [];
-  for (const line of stepLines.slice(runIndex + 1)) {
-    if (line.trim() === "") {
-      body.push("");
-      continue;
-    }
-    const indent = line.search(/\S/);
-    if (indent >= 0 && indent <= runIndent) break;
-    body.push(line.slice(Math.min(line.length, runIndent + 2)));
-  }
-
-  const shellScript = body.join("\n").replace(/\n+$/, "");
+  const shellScript = extractRunScript(validate, "id: preflight") + "\n";
   const heredoc = /node\b[^\n]*<<\s*["']?NODE["']?\s*\n/.exec(shellScript);
   if (heredoc === null) {
     throw new Error("El preflight no contiene un heredoc Node delimitado por NODE.");
@@ -1252,14 +1223,26 @@ describe("release App authentication contract", () => {
     const bump = jobs.get("bump") ?? "";
     const actionIndex = bump.indexOf(CREATE_GITHUB_APP_TOKEN_ACTION);
     const checkoutIndex = bump.indexOf("actions/checkout@");
+    const contextIndex = bump.indexOf("name: Validate release App context");
     const appStep = actionIndex >= 0 ? extractWorkflowStepBlock(bump, CREATE_GITHUB_APP_TOKEN_ACTION) : "";
     const checkoutStep = checkoutIndex >= 0 ? extractWorkflowStepBlock(bump, "actions/checkout@") : "";
+    const contextStep = contextIndex >= 0 ? extractWorkflowStepBlock(bump, "name: Validate release App context") : "";
 
     expect(bump).toMatch(/^\s+environment:\s*stack-release\s*$/m);
     expect(bump).toContain("permissions:\n      contents: read");
     expect(bump).not.toContain("permissions:\n      contents: write");
     expect(actionIndex).toBeGreaterThan(-1);
+    expect(contextIndex).toBeGreaterThan(-1);
+    expect(contextIndex).toBeLessThan(actionIndex);
     expect(actionIndex).toBeLessThan(checkoutIndex);
+    expect(contextStep).toContain("GITHUB_REF");
+    expect(contextStep).toContain("refs/heads/main");
+    expect(contextStep).toContain("GITHUB_REPOSITORY");
+    expect(contextStep).toContain("jorgehn98/jorgex-stack");
+    expect(contextStep).toMatch(/exit\s+1/);
+    expect(contextStep).not.toMatch(/secrets\.|STACK_RELEASE_APP_|actions\/checkout@|GH_TOKEN/);
+    const firstStepIndex = bump.indexOf("      - ", bump.indexOf("steps:"));
+    expect(bump.lastIndexOf("      - ", contextIndex)).toBe(firstStepIndex);
     expect(appStep).toContain("id: app-token");
     expect(appStep).toContain("client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}");
     expect(appStep).toContain("private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}");
@@ -1272,6 +1255,12 @@ describe("release App authentication contract", () => {
     expect(checkoutStep).toContain("token: ${{ steps.app-token.outputs.token }}");
     expect(checkoutStep).toContain("persist-credentials: true");
     expect(checkoutStep).not.toContain("token: ${{ github.token }}");
+
+    for (const jobName of ["validate", "publish", "tag-release"]) {
+      const job = jobs.get(jobName) ?? "";
+      expect(job, `${jobName} no debe usar el App de release`).not.toMatch(/actions\/create-github-app-token@/);
+      expect(job, `${jobName} no debe recibir variables del App`).not.toMatch(/STACK_RELEASE_APP_CLIENT_ID|STACK_RELEASE_APP_PRIVATE_KEY|app-token\.outputs\.token/);
+    }
   });
 });
 
@@ -1279,16 +1268,35 @@ describe("release App smoke workflow contract", () => {
   it("es manual-only, está limitado a main y no ejecuta código del repo", () => {
     const workflow = readReleaseAppCheckWorkflow();
     expect(workflow).not.toBe("");
-    expect(workflow).toMatch(/^on:\r?\n\s+workflow_dispatch:\s*$/m);
-    expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
+    const normalizedWorkflow = workflow.replace(/\r\n/g, "\n");
+    const triggerStart = normalizedWorkflow.indexOf("on:\n");
+    const jobsStart = normalizedWorkflow.indexOf("\njobs:", triggerStart);
+    expect(triggerStart).toBeGreaterThan(-1);
+    expect(jobsStart).toBeGreaterThan(triggerStart);
+    expect(normalizedWorkflow.slice(triggerStart, jobsStart).trim()).toBe("on:\n  workflow_dispatch:");
 
     const jobs = splitTopLevelJobs(workflow);
     expect(jobs.size).toBe(1);
     const smoke = jobs.values().next().value ?? "";
-    expect(smoke).toMatch(/^\s+if:\s*.*(?:github\.ref_name\s*==\s*['"]main['"]|github\.ref\s*==\s*['"]refs\/heads\/main['"])\s*$/m);
+    const stepsIndex = smoke.indexOf("    steps:");
+    const jobHeader = smoke.slice(0, stepsIndex < 0 ? smoke.length : stepsIndex);
+    expect(jobHeader).not.toMatch(/^\s+if:/m);
     expect(smoke).toMatch(/^\s+environment:\s*stack-release\s*$/m);
     expect(smoke).toMatch(/^\s+timeout-minutes:\s*5\s*$/m);
     expect(smoke).toContain("permissions:\n      contents: read");
+
+    const contextIndex = smoke.indexOf("name: Validate release App context");
+    const appIndex = smoke.indexOf(CREATE_GITHUB_APP_TOKEN_ACTION);
+    const contextStep = contextIndex >= 0 ? extractWorkflowStepBlock(smoke, "name: Validate release App context") : "";
+    expect(contextIndex).toBeGreaterThan(-1);
+    expect(contextIndex).toBeLessThan(appIndex);
+    expect(contextStep).toContain("GITHUB_REF");
+    expect(contextStep).toContain("refs/heads/main");
+    expect(contextStep).toContain("GITHUB_REPOSITORY");
+    expect(contextStep).toContain("jorgehn98/jorgex-stack");
+    expect(contextStep).toMatch(/exit\s+1/);
+    expect(contextStep).not.toMatch(/secrets\.|STACK_RELEASE_APP_|actions\/checkout@|GH_TOKEN/);
+    expect(smoke.lastIndexOf("      - ", contextIndex)).toBe(smoke.indexOf("      - ", smoke.indexOf("steps:")));
 
     const appStep = extractWorkflowStepBlock(smoke, CREATE_GITHUB_APP_TOKEN_ACTION);
     expect(appStep).toContain("id: app-token");
@@ -1308,6 +1316,45 @@ describe("release App smoke workflow contract", () => {
     expect(smokeScript).toContain("jorgehn98/jorgex-stack");
     expect(smokeScript).not.toMatch(/(?:echo|printf|cat|set\s+-x).*\b(?:GH_TOKEN|GITHUB_TOKEN|STACK_RELEASE_APP_PRIVATE_KEY)\b/i);
     expect(smoke).toContain("GH_TOKEN: ${{ steps.app-token.outputs.token }}");
+  });
+
+  it("falla cerrado por branch y repository antes de mintear el token en bump y smoke", () => {
+    const publishJobs = splitTopLevelJobs(readWorkflow());
+    const smokeJobs = splitTopLevelJobs(readReleaseAppCheckWorkflow());
+    const contexts = [
+      { name: "bump", block: publishJobs.get("bump") ?? "" },
+      { name: "smoke", block: smokeJobs.values().next().value ?? "" },
+    ];
+    const bash = resolveBashExecutable();
+
+    const runContext = (script: string, ref: string, repository: string) => spawnSync(bash, ["--noprofile", "--norc", "-c", script], {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH ?? "",
+        BASH_ENV: "",
+        ENV: "",
+        GITHUB_REF: ref,
+        GITHUB_REPOSITORY: repository,
+      },
+      maxBuffer: 100_000,
+      timeout: 5_000,
+      windowsHide: true,
+    });
+
+    for (const context of contexts) {
+      expect(context.block, context.name + " debe validar el contexto antes del App").toContain("name: Validate release App context");
+      const script = extractRunScript(context.block, "name: Validate release App context");
+      for (const [ref, repository, expectedStatus] of [
+        ["refs/heads/main", "jorgehn98/jorgex-stack", 0],
+        ["refs/heads/feature", "jorgehn98/jorgex-stack", 1],
+        ["refs/heads/main", "jorgehn98/other-repository", 1],
+      ] as const) {
+        const result = runContext(script, ref, repository);
+        expect(result.error, context.name + " (" + ref + ", " + repository + ")").toBeUndefined();
+        expect(result.status, context.name + " (" + ref + ", " + repository + ") stdout=" + result.stdout + " stderr=" + result.stderr).toBe(expectedStatus);
+        expect([result.stdout, result.stderr].join("\n")).not.toMatch(/STACK_RELEASE_APP_PRIVATE_KEY|BEGIN .*PRIVATE KEY|GH_TOKEN/);
+      }
+    }
   });
 
 });
@@ -1352,7 +1399,6 @@ describe("release metadata-only bump guard", () => {
         typeof file === "string" && !path.isAbsolute(file) ? path.join(fixture.dir, file) : file
       );
       const fixtureFs = {
-        ...fs,
         readFileSync: (...args: unknown[]) => {
           const [file, ...rest] = args;
           return fs.readFileSync(resolveFixturePath(file) as never, ...(rest as never[]));
@@ -1366,11 +1412,9 @@ describe("release metadata-only bump guard", () => {
           env: { ...fixtureEnv, ...((options.env ?? {}) as NodeJS.ProcessEnv) },
         } as never);
       };
-      const fixtureProcess = { cwd: () => fixture.dir, env: fixtureEnv };
       const guard = vm.runInNewContext(`${guardSource}\nassertMetadataOnlyBump`, {
         execFileSync: fixtureExecFileSync,
         fs: fixtureFs,
-        process: fixtureProcess,
       }, { timeout: 2_000 }) as (version: string) => void;
       guard(nextVersion);
       return calls;
@@ -1392,7 +1436,7 @@ describe("release metadata-only bump guard", () => {
         shouldThrow: false,
       },
       {
-        name: "skips occupied patch versions",
+        name: "accepts forward patch jumps",
         nextVersion: "1.0.3",
         setup: (fixture) => {
           writePackage(fixture, "1.0.3");

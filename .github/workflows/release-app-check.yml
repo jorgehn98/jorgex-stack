@@ -5,13 +5,25 @@ on:
 
 jobs:
   release-app-check:
-    if: github.ref == 'refs/heads/main'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     environment: stack-release
     permissions:
       contents: read
     steps:
+      - name: Validate release App context
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" != "refs/heads/main" ]]; then
+            echo 'La ejecución no pertenece a main.' >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REPOSITORY:-}" != "jorgehn98/jorgex-stack" ]]; then
+            echo 'La ejecución no pertenece al repositorio esperado.' >&2
+            exit 1
+          fi
+
       - name: Mint release App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -29,10 +41,6 @@ jobs:
         run: |
           set -euo pipefail
           expected_repo='jorgehn98/jorgex-stack'
-          if [[ "$GITHUB_REPOSITORY" != "$expected_repo" ]]; then
-            echo 'La ejecución no pertenece al repositorio esperado.' >&2
-            exit 1
-          fi
           response="$(gh api --paginate --slurp --method GET /installation/repositories)"
           matching_repositories="$(jq --arg expected "$expected_repo" '[.[] | .repositories[]? | select(.full_name == $expected)] | length' <<<"$response")"
           total_count="$(jq '[.[] | .total_count] | add // 0' <<<"$response")"
