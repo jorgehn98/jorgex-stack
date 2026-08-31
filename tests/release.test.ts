@@ -1,3 +1,4 @@
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -72,6 +73,212 @@ function extractInlineReleaseClassifier(): InlineReleaseClassifier {
   return vm.runInNewContext(source, Object.create(null), { timeout: 100 }) as InlineReleaseClassifier;
 }
 
+type PreflightRunResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  output: string;
+};
+
+type GitFixture = {
+  dir: string;
+  initialSha: string;
+};
+
+function isolatedFixtureEnv(dir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: dir,
+    USERPROFILE: dir,
+    APPDATA: path.join(dir, "appdata"),
+    LOCALAPPDATA: path.join(dir, "localappdata"),
+    XDG_CONFIG_HOME: path.join(dir, "config"),
+    TMP: dir,
+    TEMP: dir,
+    TMPDIR: dir,
+    RUNNER_TEMP: dir,
+    GIT_CONFIG_GLOBAL: path.join(dir, ".gitconfig"),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    ...extra,
+  };
+
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG_COUNT",
+  ]) {
+    delete env[key];
+  }
+
+  return env;
+}
+
+function runGit(dir: string, args: string[]): string {
+  return execFileSync("git", args, {
+    cwd: dir,
+    encoding: "utf8",
+    env: isolatedFixtureEnv(dir),
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+    windowsHide: true,
+    maxBuffer: 1_000_000,
+  }).trim();
+}
+
+function copyReleaseModule(dir: string): void {
+  const source = path.join(ROOT, "src", "lib", "release.ts");
+  for (const target of [path.join(dir, "release.ts"), path.join(dir, "src", "lib", "release.ts")]) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  }
+}
+
+function createGitFixture(options: { copyModule?: boolean } = {}): GitFixture {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-release-preflight-"));
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    `${JSON.stringify({ name: "fixture-release", version: "1.0.0", private: true, type: "module" }, null, 2)}\n`,
+    "utf8",
+  );
+  fs.writeFileSync(path.join(dir, "src", "base.ts"), "export const fixture = true;\n", "utf8");
+  if (options.copyModule !== false) copyReleaseModule(dir);
+
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.name", "JorgeX preflight fixture"]);
+  runGit(dir, ["config", "user.email", "fixture@example.invalid"]);
+  runGit(dir, ["config", "core.quotePath", "true"]);
+  runGit(dir, ["add", "--all"]);
+  runGit(dir, ["commit", "-m", "fixture: initial"]);
+  const initialSha = runGit(dir, ["rev-parse", "HEAD"]);
+  runGit(dir, ["tag", "v1.0.0", initialSha]);
+
+  return { dir, initialSha };
+}
+
+function commitFixture(fixture: GitFixture, files: Record<string, string>, message: string): string {
+  for (const [relativePath, content] of Object.entries(files)) {
+    const target = path.join(fixture.dir, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, "utf8");
+  }
+
+  runGit(fixture.dir, ["add", "--all"]);
+  runGit(fixture.dir, ["commit", "-m", message]);
+  return runGit(fixture.dir, ["rev-parse", "HEAD"]);
+}
+
+function extractPreflightNodeScript(): string {
+  const validate = splitTopLevelJobs(readWorkflow()).get("validate") ?? "";
+  const lines = validate.split(/\r?\n/);
+  const preflightIndex = lines.findIndex((line) => /^\s*-\s+id:\s+preflight\s*$/.test(line));
+  if (preflightIndex < 0) {
+    throw new Error("No se encontró el step id: preflight en publish.yml.");
+  }
+
+  const preflightIndent = (lines[preflightIndex] ?? "").search(/\S/);
+  const stepEnd = lines.findIndex((line, index) => {
+    if (index <= preflightIndex || line.trim() === "") return false;
+    const indent = line.search(/\S/);
+    return indent >= 0 && indent <= preflightIndent && /^\s*-\s+/.test(line);
+  });
+  const stepLines = lines.slice(preflightIndex, stepEnd < 0 ? lines.length : stepEnd);
+  const runIndex = stepLines.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
+  if (runIndex < 0) {
+    throw new Error("El step id: preflight no contiene run: |.");
+  }
+
+  const runIndent = (stepLines[runIndex] ?? "").search(/\S/);
+  const body: string[] = [];
+  for (const line of stepLines.slice(runIndex + 1)) {
+    if (line.trim() === "") {
+      body.push("");
+      continue;
+    }
+    const indent = line.search(/\S/);
+    if (indent >= 0 && indent <= runIndent) break;
+    body.push(line.slice(Math.min(line.length, runIndent + 2)));
+  }
+
+  const shellScript = body.join("\n").replace(/\n+$/, "");
+  const heredoc = /node\b[^\n]*<<\s*["']?NODE["']?\s*\n/.exec(shellScript);
+  if (heredoc === null) {
+    throw new Error("El preflight no contiene un heredoc Node delimitado por NODE.");
+  }
+  const sourceStart = heredoc.index + heredoc[0].length;
+  const sourceEnd = shellScript.indexOf("\nNODE", sourceStart);
+  if (sourceEnd < 0) {
+    throw new Error("El heredoc Node del preflight no tiene cierre NODE.");
+  }
+
+  const source = shellScript.slice(sourceStart, sourceEnd).replace(/^\n+/, "");
+  if (source.includes("pnpm") || source.includes("npm publish") || source.includes("git push")) {
+    throw new Error("El fixture del preflight no debe ejecutar instalación, publicación ni push.");
+  }
+  return `${source}\n`;
+}
+
+function runPreflight(
+  fixture: GitFixture,
+  nodeSource: string,
+  options: { eventName?: string; before?: string; releaseSha?: string; head?: string } = {},
+): PreflightRunResult {
+  const head = options.head ?? runGit(fixture.dir, ["rev-parse", "HEAD"]);
+  const outputPath = path.join(fixture.dir, "github-output.txt");
+  const summaryPath = path.join(fixture.dir, "github-summary.md");
+  const env = isolatedFixtureEnv(fixture.dir, {
+    GITHUB_EVENT_NAME: options.eventName ?? "push",
+    GITHUB_EVENT_BEFORE: options.before ?? fixture.initialSha,
+    GITHUB_SHA: head,
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_REF_NAME: "main",
+    GITHUB_WORKSPACE: fixture.dir,
+    GITHUB_ACTOR: "fixture-user",
+    TARGET_SHA: head,
+    RELEASE_SHA: options.releaseSha ?? "",
+    EVENT_NAME: options.eventName ?? "push",
+    BRANCH_NAME: "main",
+    GITHUB_OUTPUT: outputPath,
+    GITHUB_STEP_SUMMARY: summaryPath,
+  });
+  const result = spawnSync(process.execPath, ["--input-type=module"], {
+    cwd: fixture.dir,
+    encoding: "utf8",
+    env,
+    input: nodeSource,
+    maxBuffer: 2_000_000,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+
+  const stdout = typeof result.stdout === "string" ? result.stdout : String(result.stdout ?? "");
+  const stderr = typeof result.stderr === "string" ? result.stderr : String(result.stderr ?? "");
+  if (result.error !== undefined) {
+    throw new Error(`No se pudo ejecutar Node para el preflight: ${result.error.message}`);
+  }
+  if (result.status === null) {
+    throw new Error(`Node no terminó dentro del timeout del preflight (signal=${result.signal ?? "unknown"}).`);
+  }
+
+  return {
+    status: result.status,
+    stdout,
+    stderr,
+    output: fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "",
+  };
+}
+
+function expectPreflightFlag(result: PreflightRunResult, expected: boolean, label: string): void {
+  expect(result.status, `${label}: status`).toBe(0);
+  expect(result.output.trim().split(/\r?\n/).filter(Boolean), `${label}: output`).toEqual([
+    `should_validate=${expected ? "true" : "false"}`,
+  ]);
+}
+
 function splitTopLevelJobs(workflow: string): Map<string, string> {
   const lines = workflow.split(/\r?\n/);
   const jobStarts: Array<{ name: string; line: number }> = [];
@@ -96,6 +303,21 @@ function splitTopLevelJobs(workflow: string): Map<string, string> {
   }
 
   return jobs;
+}
+
+function extractWorkflowStepBlock(job: string, marker: string): string {
+  const markerIndex = job.indexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error(`No se encontró el marcador de step ${marker}.`);
+  }
+
+  const stepStart = job.lastIndexOf("      - ", markerIndex);
+  const stepEnd = job.indexOf("\n      - ", markerIndex + marker.length);
+  if (stepStart < 0) {
+    throw new Error(`No se pudo determinar el inicio del step ${marker}.`);
+  }
+
+  return job.slice(stepStart, stepEnd < 0 ? job.length : stepEnd);
 }
 
 function expectInOrder(haystack: string, needles: string[]): void {
@@ -426,6 +648,161 @@ describe("release version planning", () => {
   });
 });
 
+describe("release preflight contract", () => {
+  it("decide conservadoramente sobre un fixture Git ejecutando el Node real del workflow", () => {
+    const nodeSource = extractPreflightNodeScript();
+
+    const expectFlag = (
+      label: string,
+      setup: (fixture: GitFixture) => { head: string; before?: string; eventName?: string; releaseSha?: string },
+      expected: boolean,
+      fixtureOptions?: { copyModule?: boolean },
+    ): void => {
+      const fixture = createGitFixture(fixtureOptions);
+      try {
+        const scenario = setup(fixture);
+        const result = runPreflight(fixture, nodeSource, scenario);
+        expectPreflightFlag(result, expected, label);
+      } finally {
+        fs.rmSync(fixture.dir, { recursive: true, force: true });
+      }
+    };
+
+    const expectFailure = (
+      label: string,
+      setup: (fixture: GitFixture) => { head: string; before?: string; eventName?: string; releaseSha?: string },
+      errorPattern: RegExp,
+    ): void => {
+      const fixture = createGitFixture();
+      try {
+        const scenario = setup(fixture);
+        const result = runPreflight(fixture, nodeSource, scenario);
+        expect(result.status, `${label}: status`).not.toBe(0);
+        expect(`${result.stdout}\n${result.stderr}`, `${label}: git error`).toMatch(errorPattern);
+        expect(result.output, `${label}: no false skip`).not.toContain("should_validate=false");
+      } finally {
+        fs.rmSync(fixture.dir, { recursive: true, force: true });
+      }
+    };
+
+    expectFlag("tag docs-only", (fixture) => ({
+      head: commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note"),
+    }), false);
+
+    expectFlag("public change before latest docs commit", (fixture) => {
+      const publicSha = commitFixture(fixture, { "src/public.ts": "export const publicChange = true;\n" }, "feat: public change");
+      const head = commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note");
+      return { head, before: publicSha };
+    }, true);
+
+    expectFlag("mixed workflow test filename and source", (fixture) => ({
+      head: commitFixture(fixture, {
+        ".github/workflows/foo.test.yml": "name: fixture\n",
+        "src/public.ts": "export const publicChange = true;\n",
+      }, "feat: mixed workflow change"),
+    }), true);
+
+    expectFlag("missing current tag falls back conservatively", (fixture) => {
+      runGit(fixture.dir, ["tag", "-d", "v1.0.0"]);
+      return {
+        head: commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note"),
+      };
+    }, true);
+
+    expectFailure("invalid diff ref", (fixture) => {
+      runGit(fixture.dir, ["tag", "-d", "v1.0.0"]);
+      return {
+        head: commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note"),
+        before: "refs/heads/does-not-exist",
+      };
+    }, /does-not-exist|bad revision|unknown revision/i);
+
+    expectFlag("workflow dispatch recovery is always full", (fixture) => {
+      const head = commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: note");
+      runGit(fixture.dir, ["update-ref", "refs/remotes/origin/main", head]);
+      return { head, eventName: "workflow_dispatch", releaseSha: head, before: "" };
+    }, true);
+
+    expectFlag("release bump commit is always full", (fixture) => ({
+      head: commitFixture(fixture, { "docs/note.md": "documentation\n" }, "chore(release): 1.0.0"),
+    }), true);
+
+    expectFlag("dispatch without release module is full", (fixture) => {
+      const head = commitFixture(fixture, { "docs/note.md": "documentation\n" }, "docs: historical checkout");
+      runGit(fixture.dir, ["update-ref", "refs/remotes/origin/main", head]);
+      return { head, eventName: "workflow_dispatch", before: "" };
+    }, true, { copyModule: false });
+
+    expectFailure("tag that is not an ancestor", (fixture) => {
+      runGit(fixture.dir, ["checkout", "--orphan", "unrelated"]);
+      runGit(fixture.dir, ["rm", "-r", "--cached", "."]);
+      runGit(fixture.dir, ["add", "--all"]);
+      runGit(fixture.dir, ["commit", "-m", "fixture: unrelated root"]);
+      const head = runGit(fixture.dir, ["rev-parse", "HEAD"]);
+      return { head, before: fixture.initialSha };
+    }, /ancestor|ancestro/i);
+
+    expectFlag("quoted Unicode public path remains public", (fixture) => ({
+      head: commitFixture(fixture, { "src/ñ.ts": "export const unicode = true;\n" }, "feat: unicode path"),
+    }), true);
+  }, 60_000);
+
+  it("gobierna pasos caros y bump con should_validate y conserva contratos de seguridad", () => {
+    const workflow = readWorkflow();
+    const jobs = splitTopLevelJobs(workflow);
+    const validate = jobs.get("validate") ?? "";
+    const bump = jobs.get("bump") ?? "";
+    const preflightIndex = validate.indexOf("id: preflight");
+    const resolveIndex = validate.indexOf("id: resolve");
+
+    expect(preflightIndex).toBeGreaterThan(resolveIndex);
+    expect(validate).toContain("should_validate: ${{ steps.preflight.outputs.should_validate }}");
+
+    const preflightGuard = /if:\s*(?:\$\{\{\s*)?steps\.preflight\.outputs\.should_validate\s*==\s*['"]true['"](?:\s*\}\})?/;
+    for (const marker of [
+      "pnpm/action-setup@",
+      "cache: pnpm",
+      "pnpm install --frozen-lockfile",
+      "pnpm typecheck",
+      "pnpm test",
+      "pnpm build",
+      "actions/upload-artifact@",
+    ]) {
+      const step = extractWorkflowStepBlock(validate, marker);
+      expect(step, `step ${marker}`).toMatch(preflightGuard);
+      expect(validate.indexOf(marker), `orden ${marker}`).toBeGreaterThan(preflightIndex);
+    }
+
+    expect(bump).toMatch(/if:\s*(?:\$\{\{\s*)?needs\.validate\.outputs\.should_validate\s*==\s*['"]true['"](?:\s*\}\})?/);
+
+    expect(workflow).toMatch(/^\s*cancel-in-progress:\s*false\s*$/m);
+    for (const name of ["validate", "bump", "publish", "tag-release"]) {
+      expect(jobs.get(name), `timeout ${name}`).toMatch(/^\s+timeout-minutes:\s*\d+\s*$/m);
+    }
+
+    expect(validate).toContain("permissions:\n      contents: read");
+    expect(jobs.get("publish")).toContain("permissions:\n      contents: read");
+    expect(jobs.get("bump")).toContain("permissions:\n      contents: write");
+    expect(jobs.get("tag-release")).toContain("permissions:\n      contents: write");
+    expect(extractWorkflowStepBlock(validate, "actions/checkout@")).toContain("persist-credentials: false");
+    expect(extractWorkflowStepBlock(jobs.get("publish") ?? "", "actions/checkout@")).toContain("persist-credentials: false");
+    expect(extractWorkflowStepBlock(bump, "actions/checkout@")).not.toContain("persist-credentials: false");
+    expect(extractWorkflowStepBlock(jobs.get("tag-release") ?? "", "actions/checkout@")).not.toContain("persist-credentials: false");
+
+    const pinValidation = extractWorkflowStepBlock(validate, "Validate pinned action SHAs");
+    const pinValidationCode = pinValidation
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(pinValidationCode).toMatch(/grep -E(?:o)?\s+['"][^'"]*uses:/);
+    expect(pinValidationCode).toContain(".github/workflows/publish.yml");
+    expect(pinValidationCode).not.toContain("-[[:space:]]+uses:");
+    expect(pinValidationCode).toContain("[0-9a-f]{40}");
+    expect(validate).toContain("id: resolve");
+    expect(validate).toContain("git checkout --detach \"$checkout_sha\"");
+  });
+});
+
 describe("version sync", () => {
   it("actualiza package.json sin depender de pnpm", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-release-"));
@@ -598,7 +975,13 @@ describe("publish workflow contract", () => {
     expect(workflow).toContain("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02");
     expect(workflow).toContain("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093");
     expect(validate).toContain("Validate pinned action SHAs");
-    expect(validate).toContain("grep -Eo 'uses: actions/[^@]+@[0-9a-f]{40}' .github/workflows/publish.yml");
+    const pinValidationCode = extractWorkflowStepBlock(validate, "Validate pinned action SHAs")
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(pinValidationCode).toMatch(/grep -E(?:o)?\s+['"][^'"]*uses:/);
+    expect(pinValidationCode).toContain(".github/workflows/publish.yml");
+    expect(pinValidationCode).not.toContain("-[[:space:]]+uses:");
     expect(validate).toContain("curl -fsS \"https://api.github.com/repos/${repo}/commits/${sha}\"");
     expect(validate).toContain("ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}");
     expect(validate).toContain("git checkout --detach \"$checkout_sha\"");
