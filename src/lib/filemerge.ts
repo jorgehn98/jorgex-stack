@@ -157,26 +157,88 @@ function headerName(line: string): string | null {
     .join(".");
 }
 
+type MultilineDelimiter = "'''" | '"""';
+
+function quoteRunLength(line: string, start: number, quote: '"' | "'"): number {
+  let end = start + 1;
+  while (end < line.length && line[end] === quote) end++;
+  return end - start;
+}
+
+/** Salta una string corta de una sola línea sin convertirla en estado persistente. */
+function skipShortString(line: string, start: number, quote: '"' | "'"): number {
+  let index = start + 1;
+  while (index < line.length) {
+    if (line[index] === quote) return index + 1;
+    if (quote === '"' && line[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    index++;
+  }
+  return line.length;
+}
+
+/** Consume una línea y devuelve el estado TOML al comenzar la siguiente. */
+function scanTomlLine(line: string, initial: MultilineDelimiter | null): MultilineDelimiter | null {
+  let inside = initial;
+  let index = 0;
+
+  while (index < line.length) {
+    if (inside !== null) {
+      const quote = inside === '"""' ? '"' : "'";
+      if (line[index] === quote) {
+        const run = quoteRunLength(line, index, quote);
+        if (run >= 3) {
+          // En una run de 4/5, las primeras comillas son contenido y las
+          // últimas tres forman el cierre. Consumimos toda la run para no
+          // iniciar por accidente otra string con las comillas sobrantes.
+          inside = null;
+        }
+        index += run;
+        continue;
+      }
+      if (inside === '"""' && line[index] === "\\") {
+        // Saltar el carácter escapado conserva la paridad de backslashes sin
+        // tener que interpretar el valor de la string.
+        index += 2;
+        continue;
+      }
+      index++;
+      continue;
+    }
+
+    const char = line[index];
+    if (char === "#") break;
+    if (char !== '"' && char !== "'") {
+      index++;
+      continue;
+    }
+
+    const run = quoteRunLength(line, index, char);
+    if (run >= 3) {
+      inside = char === '"' ? '"""' : "'''";
+      index += 3;
+    } else {
+      index = skipShortString(line, index, char);
+    }
+  }
+
+  return inside;
+}
+
 /**
  * Marca qué líneas están DENTRO de un string multilínea (''' o """) del
- * usuario: ahí una línea `[x]` es texto, no un header de sección.
+ * usuario: ahí una línea `[x]` es texto, no un header de sección. Es un
+ * detector léxico acotado, no un parser TOML: solo mantiene el delimitador
+ * multilínea y salta strings cortas, escapes básicos y comentarios.
  */
 function multilineStringMask(lines: string[]): boolean[] {
   const mask: boolean[] = [];
-  let inside: string | null = null;
+  let inside: MultilineDelimiter | null = null;
   for (const line of lines) {
-    if (inside !== null) {
-      mask.push(true);
-      if (line.includes(inside)) inside = null;
-      continue;
-    }
-    mask.push(false);
-    for (const delim of ["'''", '"""']) {
-      if ((line.split(delim).length - 1) % 2 === 1) {
-        inside = delim;
-        break;
-      }
-    }
+    mask.push(inside !== null);
+    inside = scanTomlLine(line, inside);
   }
   return mask;
 }

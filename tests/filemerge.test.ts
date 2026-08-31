@@ -99,6 +99,74 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
     expect(upserted.indexOf("[mcp_servers.engram]")).toBeGreaterThan(upserted.indexOf("[otra]"));
   });
 
+  it("reconoce el cierre tras un # dentro de una multilínea en la misma línea", () => {
+    const doc = [
+      "instructions = '''",
+      "[profiles.fake]",
+      "root_inside = 1",
+      "# el cierre está después del hash '''",
+      "root_after = 2",
+      "[foreign.settings]",
+      'keep = "yes"',
+    ].join("\n");
+
+    expect(hasTomlRootKey(doc, "root_inside")).toBe(false);
+    expect(hasTomlRootKey(doc, "root_after")).toBe(true);
+    expect(readTomlSection(doc, "profiles.fake")).toBeNull();
+    expect(readTomlSection(doc, "foreign.settings")).toContain('keep = "yes"');
+  });
+
+  it.each([
+    { name: "literal 3/3", quote: "'", opener: 3, closer: 3 },
+    { name: "literal 4/4", quote: "'", opener: 4, closer: 4 },
+    { name: "literal 5/5", quote: "'", opener: 5, closer: 5 },
+    { name: "basic 3/3", quote: '"', opener: 3, closer: 3 },
+    { name: "basic 4/4", quote: '"', opener: 4, closer: 4 },
+    { name: "basic 5/5", quote: '"', opener: 5, closer: 5 },
+  ])("consume el opener y las últimas tres comillas del cierre ($name)", ({ quote, opener, closer }) => {
+    const doc = [
+      `value = ${quote.repeat(opener)}`,
+      "[profiles.fake]",
+      "contenido",
+      `${quote.repeat(closer)} # comentario con ''' y \"\"\"`,
+      "root_after = 1",
+      "[foreign.settings]",
+      'keep = "yes"',
+    ].join("\n");
+
+    expect(hasTomlRootKey(doc, "root_after")).toBe(true);
+    expect(readTomlSection(doc, "profiles.fake")).toBeNull();
+    expect(readTomlSection(doc, "foreign.settings")).toContain('keep = "yes"');
+  });
+
+  it("no abre una literal multilínea por comillas triples dentro de una basic string corta", () => {
+    const doc = [
+      "[profiles.mio]",
+      String.raw`message = "texto \" ''' # sigue dentro de la string"`,
+      "[foreign.settings]",
+      'keep = "yes"',
+    ].join("\n");
+
+    expect(readTomlSection(doc, "foreign.settings")).toContain('keep = "yes"');
+  });
+
+  it("mantiene dentro de una basic multilínea un delimitador aparente escapado", () => {
+    const doc = [
+      'instructions = """',
+      String.raw`escaped = \"""`,
+      "[profiles.fake]",
+      "contenido",
+      '"""',
+      "root_after = 1",
+      "[foreign.settings]",
+      'keep = "yes"',
+    ].join("\n");
+
+    expect(hasTomlRootKey(doc, "root_after")).toBe(true);
+    expect(readTomlSection(doc, "profiles.fake")).toBeNull();
+    expect(readTomlSection(doc, "foreign.settings")).toContain('keep = "yes"');
+  });
+
   it.each([
     { name: "comentario completo con triplecomilla simple", rootLines: ["# comentario '''", "root_value = 0"] },
     { name: "comentario completo con triplecomilla doble", rootLines: ['# comentario """', "root_value = 0"] },
@@ -121,7 +189,7 @@ describe("secciones TOML: variantes de header y strings multilínea", () => {
     expect(hasTomlRootKey(existing, "root_value")).toBe(true);
 
     const once = upsertTomlSection(existing, "mcp_servers.target", body);
-    expect(readTomlSection(once, "mcp_servers.target")).toBe(body);
+    expect(readTomlSection(once, "mcp_servers.target")).toBe(`${body}\n`);
     expect(once.match(/^\[mcp_servers\.target\]$/gm)).toHaveLength(1);
 
     const twice = upsertTomlSection(once, "mcp_servers.target", body);
