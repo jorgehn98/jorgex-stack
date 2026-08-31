@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
@@ -36,6 +37,39 @@ const WORKFLOW_PATH = path.join(ROOT, ".github", "workflows", "publish.yml");
 
 function readWorkflow(): string {
   return fs.readFileSync(WORKFLOW_PATH, "utf8");
+}
+
+type InlineReleaseClassifier = (changedPaths: readonly string[]) => {
+  publicPaths: string[];
+  ignoredPaths: string[];
+  testPaths: string[];
+  workPaths: string[];
+  workflowPaths: string[];
+};
+
+/**
+ * Extract only the inline path classifier from publish.yml. The fixture stops
+ * before bumpPatch, so it cannot invoke release/version, git, or registry code.
+ */
+function extractInlineReleaseClassifier(): InlineReleaseClassifier {
+  const workflow = readWorkflow();
+  const helpersStart = workflow.indexOf("const PUBLICABLE_EXACT =");
+  const helpersEnd = workflow.indexOf("const bumpPatch = (version) =>", helpersStart);
+  const loopStart = workflow.indexOf("const publicPaths = [];", helpersEnd);
+  const loopEnd = workflow.indexOf("const recoveryRun =", loopStart);
+
+  if (helpersStart < 0 || helpersEnd < 0 || loopStart < 0 || loopEnd < 0) {
+    throw new Error("No se pudo extraer el clasificador inline de publish.yml.");
+  }
+
+  const helpers = workflow.slice(helpersStart, helpersEnd);
+  const loop = workflow.slice(loopStart, loopEnd);
+  if (helpers.includes("execFileSync") || loop.includes("execFileSync")) {
+    throw new Error("El fixture del clasificador no debe ejecutar git, bump ni registry.");
+  }
+
+  const source = `${helpers}\nconst classify = (changedPaths) => {\n${loop}\nreturn { publicPaths, ignoredPaths, testPaths, workPaths, workflowPaths };\n};\nclassify`;
+  return vm.runInNewContext(source, Object.create(null), { timeout: 100 }) as InlineReleaseClassifier;
 }
 
 function splitTopLevelJobs(workflow: string): Map<string, string> {
@@ -142,6 +176,42 @@ describe("release path classification", () => {
       recoveryRun: true,
       releaseBumpCommit: false,
     })).toBe(true);
+  });
+
+  it("prioriza workflows sobre sufijos test/spec y bloquea mezcla sin auto-bump en ambos clasificadores", () => {
+    const changedPaths = [
+      ".github/workflows/foo.test.yml",
+      ".github/workflows/foo.spec.yml",
+      "src/foo.ts",
+    ];
+    const expected = {
+      publicPaths: ["src/foo.ts"],
+      ignoredPaths: [],
+      testPaths: [],
+      workPaths: [],
+      workflowPaths: [
+        ".github/workflows/foo.test.yml",
+        ".github/workflows/foo.spec.yml",
+      ],
+    };
+    const classification = classifyReleasePaths(changedPaths);
+    const inlineClassification = extractInlineReleaseClassifier()(changedPaths);
+
+    expect.soft(inlineClassification).toEqual(expected);
+    expect.soft(classification).toMatchObject({ publishable: false, ...expected });
+    expect.soft(shouldBlockMixedWorkflowRelease(classification, {
+      currentVersionExists: false,
+      recoveryRun: false,
+      releaseBumpCommit: false,
+    })).toBe(true);
+
+    expect.soft(inlineClassification).toEqual({
+      publicPaths: classification.publicPaths,
+      ignoredPaths: classification.ignoredPaths,
+      testPaths: classification.testPaths,
+      workPaths: classification.workPaths,
+      workflowPaths: classification.workflowPaths,
+    });
   });
 
   it("no publica solo tests o worktrees", () => {

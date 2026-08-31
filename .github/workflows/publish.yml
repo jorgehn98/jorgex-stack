@@ -382,12 +382,12 @@ jobs:
               workPaths.push(rawPath);
               continue;
             }
-            if (isTestPath(rawPath)) {
-              testPaths.push(rawPath);
-              continue;
-            }
             if (isWorkflowPath(rawPath)) {
               workflowPaths.push(rawPath);
+              continue;
+            }
+            if (isTestPath(rawPath)) {
+              testPaths.push(rawPath);
               continue;
             }
             if (isPublicablePath(rawPath)) {
