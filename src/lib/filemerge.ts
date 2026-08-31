@@ -202,7 +202,17 @@ export function upsertTomlSection(existing: string | null, section: string, body
   const block = `${header}\n${body.trim()}\n`;
   if (existing === null || existing.trim() === "") return block;
 
-  const lines = existing.split(/\r?\n/);
+  // Conserva los finales de línea crudos para no normalizar el contenido
+  // ajeno al reemplazar la sección. La vista sin `\r` solo sirve al parser.
+  const rawLines = existing.split("\n");
+  const lines = rawLines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const lineStarts: number[] = [];
+  let offset = 0;
+  for (let index = 0; index < rawLines.length; index++) {
+    lineStarts.push(offset);
+    offset += rawLines[index]!.length;
+    if (index < rawLines.length - 1) offset++;
+  }
   const found = findTomlSection(lines, section);
 
   if (found === null) {
@@ -214,7 +224,9 @@ export function upsertTomlSection(existing: string | null, section: string, body
   // sigue: quedan fuera del reemplazo para que re-aplicar sea byte-idéntico.
   let sectionEnd = found.end;
   while (sectionEnd > found.start + 1 && lines[sectionEnd - 1]!.trim() === "") sectionEnd--;
-  const result = [...lines.slice(0, found.start), block.trimEnd(), ...lines.slice(sectionEnd)].join("\n");
+  const startOffset = lineStarts[found.start]!;
+  const endOffset = lineStarts[sectionEnd] ?? existing.length;
+  const result = existing.slice(0, startOffset) + block.trimEnd() + "\n" + existing.slice(endOffset);
   return result.endsWith("\n") ? result : result + "\n";
 }
 
