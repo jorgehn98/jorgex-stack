@@ -127,8 +127,8 @@ function operationalBody(agent: (typeof canonicalAgents)[number]): string {
   const body = agent.body.replace(/\r\n/g, "\n").trim();
   const resultContract = body.search(/\n## Result contract\b/);
   const withoutFooter = resultContract === -1 ? body : body.slice(0, resultContract);
-  // composeProgrammaticAgentBody only rewrites this documented handoff
-  // reference before appending the runtime addendum.
+  // composeProgrammaticAgentBody removes the legacy handoff footer and rewrites
+  // any remaining reference before appending the runtime addendum.
   const composed = withoutFooter.replace(/\bResult contract\b/g, "strict JSON handoff").trim();
   expect(composed.length, `${agent.name}: cuerpo operativo vacío`).toBeGreaterThan(0);
   return composed;
@@ -152,8 +152,8 @@ function deliveryArtifact(adapter: Adapter, ctx: InstallContext, fileActions: Fi
 function expectDeliveryAgentContract(adapter: Adapter, ctx: InstallContext, fileActions: FileAction[], name: string): string {
   const { agent, artifact, content } = deliveryArtifact(adapter, ctx, fileActions, name);
 
-  // The adapter preserves the complete canonical body; the programmatic plan
-  // may deliberately rewrite only its documented handoff footer.
+  // The adapter preserves the composed body; programmatic mode removes the
+  // legacy handoff footer before appending its runtime addendum.
   expect(artifact.content).toContain(agent.body.trim());
   expect(content).toContain(operationalBody(agent));
   expect(content).not.toContain("{{SCRIPTS_DIR}}");

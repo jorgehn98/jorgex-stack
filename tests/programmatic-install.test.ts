@@ -183,13 +183,13 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       expect(artifact.kind, `${name}: los roles de apoyo son agentes nativos`).toBe("agent");
       const target = path.join(paths.agentsDir, artifact.file);
       expect(fs.existsSync(target)).toBe(true);
-      // Compare the installed bytes with the authoritative action generated
-      // for the same runtime/mode context, not with a duplicated formatter.
+      // Compare the installed bytes with a fresh plan for the same
+      // runtime/mode context, avoiding a second formatter in the test.
       expect(readText(target)).toBe(plannedWrite(expectedPlan, target).content);
     }
 
     // Shared skills are copied byte-for-byte and never receive a mode overlay;
-    // check the policy and its two referenced guidance files explicitly.
+    // check the orchestrator, TDD, and both TDD reference files explicitly.
     for (const relative of ["orchestrator/SKILL.md", "tdd/SKILL.md", "tdd/tests.md", "tdd/mocking.md"]) {
       const source = path.join(stackRoot(), "skills", relative);
       const target = path.join(paths.skillsDir, relative);
