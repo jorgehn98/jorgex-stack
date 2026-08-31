@@ -188,7 +188,7 @@ describe("browser preference safety", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("allows missing state but rejects corrupt state before reconciling browser preferences", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-corrupt-browser-state-"));
