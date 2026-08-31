@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
-import type { Adapter, InstallContext, InstallMode, SubagentConcurrency } from "../src/adapters/types.js";
-import { runInstall } from "../src/install.js";
+import type { Adapter, FileAction, InstallContext, InstallMode, SubagentConcurrency } from "../src/adapters/types.js";
+import { buildPlan, runInstall } from "../src/install.js";
 import { loadCanonicalAgents } from "../src/lib/canonical.js";
 import * as backup from "../src/lib/backup.js";
 import * as modelMap from "../src/lib/model-map.js";
@@ -22,6 +22,7 @@ const RUNTIMES = [
 const canonicalAgents = loadCanonicalAgents(path.join(stackRoot(), "agents"));
 const primaryAgent = canonicalAgents.find((agent) => agent.mode === "primary")!;
 const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent")!;
+const deliveryAgentNames = ["tester", "test-analyzer"] as const;
 const finalSchemaPath = path.join(stackRoot(), "modes", "programmatic", "final-output.schema.json");
 const programmaticRequiredKeys = ["status", "decision", "confidence", "summary", "risks", "next_steps", "delegations"] as const;
 const programmaticRequiredKeysLine = "Required keys: `status`, `decision`, `confidence`, `summary`, `risks`, `next_steps`, `delegations`";
@@ -115,6 +116,13 @@ function readText(file: string): string {
   return fs.readFileSync(file, "utf8");
 }
 
+function plannedWrite(actions: FileAction[], target: string): Extract<FileAction, { kind: "write" }> {
+  const action = actions.find((entry): entry is Extract<FileAction, { kind: "write" }> => entry.kind === "write" && entry.target === target);
+  expect(action, `No se planificó ${target}`).toBeDefined();
+  if (action === undefined) throw new Error(`No se planificó ${target}`);
+  return action;
+}
+
 describe.each(RUNTIMES)("%s", (_name, adapter) => {
   let tempRoot = "";
 
@@ -151,12 +159,14 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     const primaryTargets = renderTargets(adapter, ctx, primaryAgent);
     const orchestratorSkill = orchestratorSkillTarget(adapter, ctx);
     const subagentTargets = renderTargets(adapter, ctx, sampleSubagent);
+    const deliveryTargets = deliveryAgentNames.flatMap((name) => renderTargets(adapter, ctx, canonicalAgents.find((agent) => agent.name === name)!));
 
     const snapshot = new Map<string, string>();
     snapshot.set(paths.systemPromptFile, readText(paths.systemPromptFile));
     for (const file of primaryTargets) snapshot.set(file, readText(file));
     snapshot.set(orchestratorSkill, readText(orchestratorSkill));
     for (const file of subagentTargets) snapshot.set(file, readText(file));
+    for (const file of deliveryTargets) snapshot.set(file, readText(file));
 
     expectProgrammaticSystemPrompt(snapshot.get(paths.systemPromptFile)!);
     for (const file of primaryTargets) {
@@ -165,6 +175,27 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     }
     expectHumanSafe(snapshot.get(orchestratorSkill)!);
     for (const file of subagentTargets) expectProgrammaticSubagent(snapshot.get(file)!);
+    const expectedPlan = buildPlan(adapter, ctx);
+    for (const name of deliveryAgentNames) {
+      const agent = canonicalAgents.find((candidate) => candidate.name === name);
+      expect(agent, `No existe el agente canónico ${name}`).not.toBeUndefined();
+      const artifact = adapter.renderAgent(agent!, ctx.models)[0]!;
+      expect(artifact.kind, `${name}: los roles de apoyo son agentes nativos`).toBe("agent");
+      const target = path.join(paths.agentsDir, artifact.file);
+      expect(fs.existsSync(target)).toBe(true);
+      // Compare the installed bytes with a fresh plan for the same
+      // runtime/mode context, avoiding a second formatter in the test.
+      expect(readText(target)).toBe(plannedWrite(expectedPlan, target).content);
+    }
+
+    // Shared skills are copied byte-for-byte and never receive a mode overlay;
+    // check the orchestrator, TDD, and both TDD reference files explicitly.
+    for (const relative of ["orchestrator/SKILL.md", "tdd/SKILL.md", "tdd/tests.md", "tdd/mocking.md"]) {
+      const source = path.join(stackRoot(), "skills", relative);
+      const target = path.join(paths.skillsDir, relative);
+      expect(readText(target)).toBe(readText(source));
+      expect(readText(target)).not.toContain("PROGRAMMATIC MODE");
+    }
 
     expect(fs.existsSync(finalSchemaPath)).toBe(true);
     const schema = JSON.parse(readText(finalSchemaPath)) as { required?: string[]; properties?: Record<string, unknown>; additionalProperties?: boolean };
@@ -191,6 +222,7 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
     for (const file of primaryTargets) expect(readText(file)).toBe(snapshot.get(file));
     expect(readText(orchestratorSkill)).toBe(snapshot.get(orchestratorSkill));
     for (const file of subagentTargets) expect(readText(file)).toBe(snapshot.get(file));
+    for (const file of deliveryTargets) expect(readText(file)).toBe(snapshot.get(file));
   });
 
   it("programmatic artifacts no arrastran el Result contract markdown y comparten el contrato JSON de siete claves", async () => {
