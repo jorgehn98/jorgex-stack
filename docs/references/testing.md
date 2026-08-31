@@ -71,13 +71,16 @@ Antes de escribir, seleccionar o ejecutar un test:
   configuración y tests existentes. Conserva un caso de control independiente si
   el contrato tiene ejemplos normales y de frontera.
 - Detecta el runner, script/comando, setup y scope reales, incluidos los filtros
-  de ruta. Ejecuta el comando directo documentado por ese proyecto y el filtro más
-  estrecho que cubra el riesgo. No lo sustituyas por un wrapper del gestor de
-  paquetes si puede instalar o pedir interacción.
-- Reutiliza el tooling disponible. No auto-instales runner, framework, polyfill o
-  paquete, ni impongas Node, Vitest, pnpm, TypeScript u otro ecosistema. Si el
-  comando no puede ejecutarse sin instalar o preguntar, detén la comprobación y
-  reporta la limitación.
+  de ruta. Ejecuta el comando o script documentado por ese proyecto y el filtro
+  más estrecho que cubra el riesgo. Los scripts documentados del gestor de
+  paquetes (`pnpm`, `npm`, etc.) son válidos; si una fixture o README documenta
+  un comando directo (por ejemplo, `node --test`), ese comando prevalece sobre
+  un wrapper alternativo.
+- Reutiliza el tooling disponible. No impongas Node, Vitest, pnpm, TypeScript u
+  otro ecosistema. Prohíbe únicamente invocar o resolver un comando que pueda
+  auto-instalar un runner/herramienta ausente o pedir interacción sin permiso.
+  Si para ejecutar el comando hace falta cualquiera de esas acciones, detén la
+  comprobación y reporta la limitación.
 
 ### Seam, fidelidad y determinismo
 
@@ -115,10 +118,11 @@ para rellenar el hueco.
   [tests.md](../../stack/skills/tdd/tests.md) resume ejemplos y anti-patrones.
 - **Tester** puede decidir, escribir/fijar o verificar en el proyecto consumidor;
   debe informar comando, setup, scope, resultado y límites de la evidencia.
-- **Test-analyzer** es *read-only*: revisa únicamente el diff suministrado y los
-  tests o la infraestructura de tests que ese diff modifica. No escribe ni ejecuta
-  tests, no convierte el análisis en auditoría de toda la suite/CI y solo delega
-  gaps accionables.
+- **Test-analyzer** es *read-only*: evalúa el comportamiento cambiado por el diff
+  y la evidencia relevante, incluidos tests existentes fuera del diff y la
+  infraestructura de tests relacionada cuando haga falta. No escribe ni ejecuta
+  tests, no convierte el análisis en una auditoría de suites o CI no relacionados
+  y solo delega gaps accionables.
 - **Orchestrator** coordina bloques coherentes y reutiliza evidencia válida; no
   repite la rúbrica ni ejecuta la suite completa por defecto.
 
@@ -158,11 +162,6 @@ y recuperación. No inventes una receta universal ni un provider obligatorio.
   la semántica del proyecto lo permita. Nunca canceles un publish/release mutable
   ni dejes una publicación a medias; conserva gates y recovery. Cambiar settings o
   fabricar checks requiere permiso explícito.
-
-Las secciones posteriores de esta referencia son deliberadamente **Stack-only**:
-`Aplicación local en este repositorio` describe sus comandos y límites, y `CI
-interno del artefacto Pi` describe sus workflows. No convierten `pnpm`, Vitest,
-GitHub Actions ni esos gates en requisitos de los proyectos consumidores.
 
 ## Aplicación local en este repositorio
 
