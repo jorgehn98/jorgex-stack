@@ -19,6 +19,8 @@ For every change, establish:
 
 One behavior should normally have one authoritative test. Test it again at another layer only when that layer protects a distinct contract.
 
+Before deciding, inspect the complete relevant contract (source, public API, docs, configuration, and existing tests) and the repository's actual runner, command, setup, and scope. Preserve a minimal independent control case when the contract includes both boundary and normal examples. Use tooling already present; never auto-install a runner, framework, polyfill, or package. If the suite or infrastructure needed for the risk is absent, name the missing protection and the limitation instead of treating absence as a no-test decision.
+
 See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for boundary-double guidance.
 
 ## When to use TDD
@@ -47,6 +49,8 @@ Use the cheapest seam that can fail for the real regression:
 
 “Integration-style” is not inherently stronger. A broad test full of mocks may be weaker than a focused rule test, while a regex over SQL text is weaker than executing the database behavior it claims to protect.
 
+Choose the minimum environment and setup that still preserves the contract. Keep pure rules on a lightweight existing runtime, but retain real UI/accessibility, database/RLS, filesystem, process, or concurrency boundaries when those are at risk. Control only relevant sources of nondeterminism—clock and timezone, randomness/IDs, ordering, shared state, filesystem, and network—with isolated temporary fixtures and cleanup rather than HOME or real project data.
+
 ## Anti-pattern: tautological tests
 
 Do not let an assertion recompute the expected value the way the code does (`expect(add(a, b)).toBe(a + b)`, a snapshot derived by hand the same way, or a constant asserted equal to itself). It passes by construction and can never disagree with the code. Expected values must come from an independent source of truth: a known-good literal, a worked example, or the spec.
@@ -64,6 +68,8 @@ REFACTOR → improve structure while behavior stays green
 ```
 
 Then repeat for the next distinct behavior. Do not create separate tests merely to split assertions that describe one coherent outcome.
+
+Capture an expected error narrowly and assert its relevant contract; unexpected stderr, logs, and teardown failures must remain visible. For flaky behavior, preserve the first failure and use only bounded diagnostic repetitions to identify a cause—retries until green or larger timeouts are not a fix without that cause.
 
 ## Workflow
 

@@ -1,5 +1,13 @@
 # Choosing Valuable Tests
 
+## Discover the real contract and command
+
+Before writing or selecting a test, read the complete relevant contract across the implementation, public API, documentation, configuration, and existing tests. Identify the runner, script or command, setup, and path/filter scope that the repository actually uses, then choose the narrowest command that exercises the contract. Preserve a minimal independent control case when the contract includes both boundary and normal examples. Follow the project's documented direct command rather than substituting a familiar package-manager wrapper; if the command would install or prompt, stop and report the constraint. Reuse the project's existing tooling and setup; do not auto-install a runner, framework, polyfill, or package, and do not assume a particular language ecosystem. If the suite or infrastructure required by the risk is unavailable, propose the missing protection or state the limitation instead of calling it a no-test decision.
+
+## Deterministic evidence
+
+Control the sources that can change the result—clock and timezone, random IDs, ordering, process/global state, filesystem, and network—only when relevant. Use isolated temporary fixtures and cleanup; never rely on HOME, user data, or a live service by accident. Assert expected errors at the narrow boundary that owns them, while leaving unexpected output and teardown failures visible. Keep the first failure and any bounded diagnostic repetitions when investigating flakiness; retries to obtain green or timeout inflation without a diagnosed cause are not evidence.
+
 ## One behavior, one authoritative seam
 
 Choose the seam from the regression you need to catch.
