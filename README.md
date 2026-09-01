@@ -109,11 +109,11 @@ Programmatic mode does **not** provide:
 Pi combines the frozen **snapshot v2** package with a Stack-owned shared projection. This section targets the exact published package **`jorgex-pi@0.8.0`** and keeps Pi out of the adapter/component manifest and model map. Stack 1.9.2 recognizes `npm:jorgex-pi@0.8.0`; this is the managed Stack release, not a claim that every end-user scope has already consumed it.
 
 ```bash
-pnpm dlx jorgex-stack install --agents pi
-pnpm dlx jorgex-stack doctor --agents pi
-pnpm dlx jorgex-stack models --agents pi
-pnpm dlx jorgex-stack sync --agents pi
-pnpm dlx jorgex-stack uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.2 install --agents pi
+pnpm dlx jorgex-stack@1.9.2 doctor --agents pi
+pnpm dlx jorgex-stack@1.9.2 models --agents pi
+pnpm dlx jorgex-stack@1.9.2 sync --agents pi
+pnpm dlx jorgex-stack@1.9.2 uninstall --agents pi
 ```
 
 Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. For `0.8.0`, the frozen tarball is `89128340` bytes; the URL is derived from the version and the authoritative size/SHA-256/SHA-512 pin remains in `src/lib/pi-runtime.ts` rather than being duplicated here. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. After the package is healthy, Stack projects the shared resources into Pi: marked `jorgex:system-prompt` and `jorgex:engram-protocol` sections in `~/.pi/agent/AGENTS.md`, canonical skills under `~/.agents/skills`, and `~/.pi/agent/prompts/lean-audit.md`. When the managed Playwright preference is active, the projection also adds or removes the marked `jorgex:browser` section dynamically. The Pi-only `install --agents pi --playwright` flow installs and persists that Playwright capability just like the other harnesses. Chrome DevTools MCP and Context7 remain outside the Pi scope. The managed Pi package entry is the exact object `{ "source": "npm:jorgex-pi@0.8.0", "skills": [], "prompts": [] }`; filters are applied only after this projection exists, so the package does not duplicate shared resources. Package ownership is recorded separately in `~/.jorgex-stack/pi-receipt.json`; projection ownership is recorded in `~/.jorgex-stack/pi-projection-receipt.json`. Both receipts are scope-bound and fail closed for manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state.

@@ -84,6 +84,18 @@ pnpm dlx jorgex-stack@1.9.2 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.2 install --agents pi
 ```
 
+Para una transición entre receipts existentes, cada paso usa la versión de Stack que reconoce el receipt presente. No se editan receipts ni se borra estado manualmente:
+
+```bash
+# Receipt Pi 0.7.0 → 0.8.0
+pnpm dlx jorgex-stack@1.9.0 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.2 install --agents pi
+
+# Rollback desde receipt Pi 0.8.0 → 0.7.0
+pnpm dlx jorgex-stack@1.9.2 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.0 install --agents pi
+```
+
 La publicación de Stack 1.9.2 fue aceptada por npm y su readback público confirmó metadata y tarball. La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni publicación. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
 
 ## Engram
