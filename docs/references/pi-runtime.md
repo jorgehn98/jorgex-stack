@@ -2,7 +2,7 @@
 
 JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
 
-Esta referencia documenta la adopción del artefacto publicado exacto `jorgex-pi@0.8.0`, cuya entrada gestionada es `npm:jorgex-pi@0.8.0`. La versión de Stack que adopte este candidato debe fijar esa identidad en `src/lib/pi-runtime.ts`; esta documentación no afirma que una instalación concreta del usuario ni que `main` ya lo hayan consumido.
+Esta referencia documenta la adopción del artefacto publicado exacto `jorgex-pi@0.8.0`, cuya entrada gestionada es `npm:jorgex-pi@0.8.0`. PR03 fija ese candidato en `src/lib/pi-runtime.ts` sin cambiar `package.json`; el Stack publicado `1.9.0` todavía reconoce `npm:jorgex-pi@0.7.0`. Esta documentación no afirma que una instalación concreta del usuario ni que `main` ya hayan consumido Pi 0.8.0.
 
 ## Paquete e integridad
 
@@ -39,14 +39,14 @@ La snapshot validada declara:
 | Runner | `jorgex-pi`, comandos `status`, `doctor`, `models`, `sync` y `cleanup`, contrato `v1` |
 | `maxStdoutBytes` | `65536` |
 | Escrituras externas gestionadas | `settings.json`, `models.json`, `jorgex-pi/sol-lifecycle.v1.json` |
-| Paridad Stack | 15 agentes, 18 skills y 97 archivos de skill |
-| Proyección Pi | 14 agentes runtime, 17 skills activas y el orchestrator primary durmiente |
+| Snapshot canónica | 15 agentes, 18 árboles de skill y 97 archivos de skill |
+| Allowlist activa | 14 agentes runtime, 17 skills activas y el orchestrator primary durmiente |
 | `parity.source.commit` | `11e7666ea4e40bde1de8bc434610747eb797ab9c` |
 | Inventario del artefacto | `13403` entradas |
 
 Las 14 capabilities del contrato son `foundation-contract-v1`, `stack-snapshot-v2`, `runtime-agents-v1`, `permission-gated-tools-v1`, `structured-questions-v1`, `web-access-v1`, `goal-continuation-v1`, `mcp-adapter-v1`, `engram-runtime-tools-v1`, `runner-json-v1`, `tui-branding-v1`, `managed-primary-model-v1`, `quality-receipt-contract-v1` y `quality-capabilities-contract-v1`.
 
-Respecto al pin anterior `0.7.0`, se mantienen las 14 capabilities y el mismo runtime, la clausura de dependencias empaquetadas y las tres escrituras externas gestionadas. `0.8.0` añade `work-audit` a la snapshot y a la allowlist activa, pasando de 17 a 18 skills y de 96 a 97 archivos; el inventario del artefacto pasa de `13402` a `13403` entradas. El delta documenta la capacidad empaquetada y no crea una migración in-place.
+Respecto al pin anterior `0.7.0`, se mantienen las 14 capabilities y el mismo runtime, la clausura de dependencias empaquetadas y las tres escrituras externas gestionadas. `0.8.0` añade `work-audit` a la snapshot, que pasa de **17 a 18 skills** y de 96 a 97 archivos, y a la allowlist activa, que pasa de **16 a 17 skills**; el inventario del artefacto pasa de `13402` a `13403` entradas. `playwright-cli` permanece en la snapshot, pero fuera de la allowlist activa por ser opt-in. El delta documenta la capacidad empaquetada y no crea una migración in-place.
 
 ## Proyección compartida de Stack
 
