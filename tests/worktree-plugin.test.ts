@@ -10,34 +10,47 @@ const toSlashes = (value: string) => value.replace(/\\/g, "/");
 
 const makePlugin = async (
   root: string,
-  config: Record<string, unknown> = {},
+  config: unknown = {},
   spawn = vi.fn(),
+  spawnResult = {
+    stdout: "setup ok",
+    stderr: "",
+    exited: Promise.resolve(0),
+  },
+  appLog = vi.fn(),
+  gitRoot: string | Error = root,
 ) => {
   vi.stubGlobal("Bun", {
     file: () => ({
-      text: async () =>
-        JSON.stringify({
+      text: async () => {
+        if (config === null) throw new Error("Config not found");
+        if (config instanceof Error) throw config;
+        if (typeof config === "string") return config;
+        if (Array.isArray(config)) return JSON.stringify(config);
+        return JSON.stringify({
           setupScript: "setup.ps1",
           pathContains: "worktrees\\",
-          ...config,
-        }),
+          ...(config as Record<string, unknown>),
+        });
+      },
     }),
-    spawn: spawn.mockReturnValue({
-      stdout: "setup ok",
-      stderr: "",
-      exited: Promise.resolve(0),
-    }),
+    spawn: spawn.mockReturnValue(spawnResult),
   });
 
   const dollar = (() => {
-    const r: any = { text: async () => `${root}\n` };
+    const r: any = {
+      text: async () => {
+        if (gitRoot instanceof Error) throw gitRoot;
+        return `${gitRoot}\n`;
+      },
+    };
     r.quiet = () => r;
     return r;
   }) as any;
   const $ = ((strings: TemplateStringsArray) => dollar(strings)) as any;
-  const client = { app: { log: vi.fn() } };
+  const client = { app: { log: appLog } };
   const plugin = await WorktreePlugin({ $, client, directory: root } as any);
-  return { plugin, spawn };
+  return { plugin, spawn, appLog };
 };
 
 beforeEach(() => {
@@ -50,10 +63,227 @@ afterEach(() => {
 });
 
 describe("WorktreePlugin", () => {
-  it("runs setup for a canonical worktree path resolved from command cwd", async () => {
+  it("does not run setup when project worktree config is absent", async () => {
     const srcDir = path.join(tmp, "src");
     fs.mkdirSync(srcDir);
-    const { plugin, spawn } = await makePlugin(tmp);
+    const { plugin, spawn } = await makePlugin(tmp, null);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output).toEqual({});
+  });
+
+  it("still warns for a non-canonical worktree path when config is absent", async () => {
+    const { plugin, spawn } = await makePlugin(tmp, null);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: `git worktree add "${path.join(tmp, "outside-name")}"`,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toContain("Worktree path is not canonical");
+    expect(output.output).toContain(`${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/outside-name`);
+  });
+
+  it("reports invalid worktree config without spawning setup", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, "{");
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toEqual(expect.stringMatching(/config/i));
+  });
+
+  it("reports invalid config and a non-canonical worktree path without spawning setup", async () => {
+    const { plugin, spawn } = await makePlugin(tmp, "{");
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: `git worktree add "${path.join(tmp, "outside-name")}"`,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toMatch(/config.*parsed.*JSON/i);
+    expect(output.output).toContain("Worktree path is not canonical");
+    expect(output.output).toContain("Use the project-local path instead");
+  });
+
+  it("reports unreadable worktree config separately from malformed JSON", async () => {
+    const configReadError = Object.assign(new Error("access denied"), {
+      code: "EACCES",
+    });
+    const { plugin, spawn } = await makePlugin(tmp, configReadError);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: tmp,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toMatch(/config.*could not be read/i);
+    expect(output.output).not.toMatch(/parsed.*JSON/i);
+  });
+
+  it("keeps a git root failure actionable when OpenCode logging rejects", async () => {
+    const appLog = vi.fn().mockRejectedValue(new Error("OpenCode log unavailable"));
+    const { plugin, spawn } = await makePlugin(
+      tmp,
+      {},
+      vi.fn(),
+      undefined,
+      appLog,
+      new Error("git is unavailable"),
+    );
+    const output: Record<string, string> = {};
+
+    await expect(
+      plugin["tool.execute.after"](
+        {
+          tool: "bash",
+          args: {
+            command: "git worktree add worktrees/canonical-name",
+          },
+        },
+        output,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(appLog).toHaveBeenCalledOnce();
+    expect(output.output).toMatch(/git rev-parse --show-toplevel/i);
+  });
+
+  it("reports a non-string setupScript without spawning setup", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, { setupScript: 42 });
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toEqual(expect.stringMatching(/setupScript.*string/i));
+  });
+
+  it.each([
+    ["an array config root", [], /config.*object/i],
+    ['a non-string "docsReminderScript"', { docsReminderScript: true }, /docsReminderScript.*string/i],
+    ['a non-string "pathContains"', { pathContains: 42 }, /pathContains.*string/i],
+    ['a non-string "reminderLines" entry', { reminderLines: [42] }, /reminderLines.*string/i],
+  ])("reports %s without spawning setup", async (_description, config, expectedError) => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, config);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toEqual(expect.stringMatching(expectedError));
+    expect(output.output).not.toContain("Worktree setup complete");
+  });
+
+  it("keeps an unsupported setup failure visible when OpenCode logging rejects", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const appLog = vi.fn().mockRejectedValue(new Error("OpenCode log unavailable"));
+    const { plugin, spawn } = await makePlugin(
+      tmp,
+      { setupScript: "setup.txt" },
+      vi.fn(),
+      undefined,
+      appLog,
+    );
+    const output: Record<string, string> = {};
+
+    await expect(
+      plugin["tool.execute.after"](
+        {
+          tool: "bash",
+          args: {
+            command: "git worktree add ../worktrees/canonical-name",
+            workdir: srcDir,
+          },
+        },
+        output,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(appLog).toHaveBeenCalledOnce();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toContain("Worktree setup failed for canonical-name.");
+    expect(output.output).toMatch(/unsupported.*extension/i);
+    expect(output.output).not.toContain("Worktree setup complete");
+  });
+
+  it("runs explicitly configured setup for a canonical worktree path resolved from command cwd", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees\\",
+    });
     const output: Record<string, string> = {};
 
     await plugin["tool.execute.after"](
@@ -77,6 +307,61 @@ describe("WorktreePlugin", () => {
     expect(payload.branchName).toBe("canonical-name");
     expect(spawn.mock.calls[0]![0]).toContain(expectedPath);
     expect(output.output).toContain("Worktree setup complete: canonical-name");
+  });
+
+  it("reports an explicitly configured setup failure without reporting success", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(
+      tmp,
+      { setupScript: "setup.ps1" },
+      vi.fn(),
+      {
+        stdout: "",
+        stderr: "setup exploded",
+        exited: Promise.resolve(1),
+      },
+    );
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(output.output).toContain("Worktree setup failed for canonical-name.");
+    expect(output.output).toContain("setup exploded");
+    expect(output.output).not.toContain("Worktree setup complete");
+  });
+
+  it("reports an unsupported explicit setup extension as a failure", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, { setupScript: "setup.txt" });
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toContain("Worktree setup failed for canonical-name.");
+    expect(output.output).toMatch(/unsupported.*extension/i);
+    expect(output.output).not.toContain("Worktree setup complete");
   });
 
   it("ignores legacy branchPrefix config and keeps branchName equal to worktreeName", async () => {
