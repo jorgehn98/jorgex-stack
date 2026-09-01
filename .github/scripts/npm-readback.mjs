@@ -50,8 +50,8 @@ function assertPublicMetadata(metadata, packageName, version) {
 }
 
 function retryDelay(retryCount, retryDelayMs) {
-  // La primera repetición confirma una propagación rápida; después el intervalo
-  // se duplica cada dos lecturas hasta el límite de producción.
+  // La primera repetición usa el intervalo base; después el intervalo se duplica
+  // cada dos lecturas hasta el límite configurado.
   return Math.min(retryDelayMs * (2 ** Math.floor(retryCount / 2)), MAX_RETRY_DELAY_MS);
 }
 
