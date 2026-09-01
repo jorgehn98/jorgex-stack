@@ -2,7 +2,7 @@
 
 JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
 
-Esta referencia documenta la adopción del artefacto publicado exacto `jorgex-pi@0.8.0`, cuya entrada gestionada es `npm:jorgex-pi@0.8.0`. PR03 fija ese candidato en `src/lib/pi-runtime.ts` sin cambiar `package.json`; el Stack publicado `1.9.0` todavía reconoce `npm:jorgex-pi@0.7.0`. Esta documentación no afirma que una instalación concreta del usuario ni que `main` ya hayan consumido Pi 0.8.0.
+Esta referencia documenta la adopción del artefacto publicado exacto `jorgex-pi@0.8.0`, cuya entrada gestionada es `npm:jorgex-pi@0.8.0`. Stack `1.9.2` reconoce ese pin exacto; esta documentación no afirma que una instalación concreta del usuario haya consumido Pi 0.8.0.
 
 ## Paquete e integridad
 
@@ -26,7 +26,7 @@ Estos identificadores describen objetos distintos y no deben intercambiarse:
 - **Fuente Stack de la paridad**: `11e7666ea4e40bde1de8bc434610747eb797ab9c`. Es el `parity.source.commit` de la snapshot compartida proyectada por Pi, no el commit productor de Pi.
 - El metadata de registry no aporta `gitHead`; no se debe inventar uno.
 
-La procedencia documentada se limita al checkout productor y al `parity.source.commit` confirmados por el candidato. La verificación de instalación vincula el tarball al tamaño y a los SHA-256/SHA-512 fijados en `src/lib/pi-runtime.ts`; no se inventa una identidad Git, una attestation o una firma adicional que no aporte el registry o el candidato.
+La procedencia documentada se limita al checkout productor y al `parity.source.commit` confirmados por el candidato. La verificación local vincula el tarball al tamaño y a los SHA-256/SHA-512 fijados en `src/lib/pi-runtime.ts`; son comprobaciones del mismo checkout, no raíces de confianza independientes. La attestation de provenance de npm es externa al runtime de Stack: `provenance.commit` es informativo salvo que se verifique expresamente esa attestation fuera de Stack.
 
 ## Inventario y contrato 0.8.0
 
@@ -60,7 +60,7 @@ La proyección se ejecuta después de la instalación del paquete y se registra 
 
 La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. Chrome DevTools MCP y Context7 siguen fuera de este scope.
 
-En el rollout de `work-audit`, el Stack publicado `1.9.0` sigue reconociendo y fijando Pi `0.7.0`. Este PR03 no cambia `package.json`; después del merge, el workflow publicará el primer patch libre de la línea `1.9.x`, esperado `1.9.1`, que deberá verificarse en T15 antes de tratarlo como el release que reconoce `npm:jorgex-pi@0.8.0`. Son canales secuenciales y con ownership separado; la adopción de este candidato no convierte la fallback del paquete en una segunda fuente de verdad.
+En el rollout de `work-audit`, Stack `1.9.2` reconoce y fija Pi `0.8.0`. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
 
 ## Lifecycle y seguridad
 
@@ -73,31 +73,30 @@ En el rollout de `work-audit`, el Stack publicado `1.9.0` sigue reconociendo y f
 
 Las operaciones con `--target-dir` aíslan home, `PI_CODING_AGENT_DIR`, estado, backups y receipt dentro del target, sin consultar la configuración real de Pi o Engram.
 
-## Transición 0.7.0 → 0.8.0 y rollback
+## Receipt exacto y rollback
 
-La transición entre los pins `0.7.0` y `0.8.0` **no es in-place**. Cada release de Stack reconoce únicamente el receipt y el candidato que tiene fijados. Una versión que fija `0.8.0` rechaza un package receipt de `npm:jorgex-pi@0.7.0`; no reescribe el receipt, no cambia hashes y no borra el estado para forzar la confianza.
+Stack `jorgex-stack@1.9.2` reconoce únicamente el receipt exacto `npm:jorgex-pi@0.8.0`. Si el receipt no es reconocido o la limpieza no puede verificar ownership, la operación se detiene; no se editan receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime, y no se usa una versión aproximada para saltarse el control.
 
-El Stack publicado `jorgex-stack@1.9.0` es la versión exacta corroborada que reconoce el pin `npm:jorgex-pi@0.7.0`. Este PR03 no cambia `package.json`; tras el merge, el workflow publicará el primer patch libre de `1.9.x`, esperado `1.9.1`. T15 debe verificar la versión finalmente publicada y su reconocimiento de `npm:jorgex-pi@0.8.0` antes de usarla en una instalación real. Si el usuario ya actualizó el binario de Stack, debe invocar la versión exacta que conoce el receipt, nunca `latest`. Los ejemplos siguientes son guía documental; no se ejecutan como parte de esta adopción:
+Para reinstalar el pin reconocido:
 
 ```bash
-# De un receipt Pi 0.7.0 a la versión que fije 0.8.0, después de T15:
-pnpm dlx jorgex-stack@1.9.0 uninstall --agents pi
-pnpm dlx jorgex-stack@<primer-patch-libre-1.9.x> install --agents pi
+pnpm dlx jorgex-stack@1.9.2 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.2 install --agents pi
 ```
 
-El rollback es simétrico y también exige la versión que conoce el receipt presente:
+Para una transición entre receipts existentes, cada paso usa la versión de Stack que reconoce el receipt presente. No se editan receipts ni se borra estado manualmente:
 
 ```bash
-# De un receipt Pi 0.8.0 a la versión publicada que reconoce 0.7.0:
-pnpm dlx jorgex-stack@<primer-patch-libre-1.9.x> uninstall --agents pi
+# Receipt Pi 0.7.0 → 0.8.0
+pnpm dlx jorgex-stack@1.9.0 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.2 install --agents pi
+
+# Rollback desde receipt Pi 0.8.0 → 0.7.0
+pnpm dlx jorgex-stack@1.9.2 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.0 install --agents pi
 ```
 
-En ambos sentidos, una operación debe detenerse si el receipt no es reconocido o la limpieza no puede verificar ownership. No se editan manualmente receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime, y no se usa una versión aproximada para saltarse el control.
-
-Los antecedentes `0.6.1`/`jorgex-stack@1.7.5` y `0.4.0`/`jorgex-stack@1.7.1` se conservan solo como contexto histórico de transiciones anteriores; no son rutas válidas para esta adopción.
-
-La regla de madurez de 24 horas de npm afecta únicamente a la instalación o consumo gestionado real del paquete Pi nuevo. La validación, el merge y la publicación de Stack pueden avanzar contra el artefacto exacto ya verificado; una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
+La publicación de Stack 1.9.2 fue aceptada por npm y su readback público confirmó metadata y tarball. La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni publicación. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
 
 ## Engram
 
