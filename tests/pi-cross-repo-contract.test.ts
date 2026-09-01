@@ -89,6 +89,12 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       pi?: { testedVersions?: unknown };
       capabilities?: unknown;
     };
+    const runner = readTarJson(tarball, "package/contract/runner.v1.json") as {
+      schemaVersion?: unknown;
+      bin?: unknown;
+      commands?: unknown;
+      stdout?: { maxBytes?: unknown };
+    };
     const assets = readTarJson(tarball, "package/contract/assets.v1.json") as { managedExternalWrites?: unknown };
     expect(manifest).toMatchObject({
       name: PI_RUNTIME_CANDIDATE.package.name,
@@ -97,6 +103,12 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expect(contract.package).toEqual(PI_RUNTIME_CANDIDATE.package);
     expect(contract.pi?.testedVersions).toEqual(PI_RUNTIME_CANDIDATE.pi.testedVersions);
     expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    expect(runner).toMatchObject({
+      schemaVersion: PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion,
+      bin: PI_RUNTIME_CANDIDATE.contract.runner.bin,
+      commands: PI_RUNTIME_CANDIDATE.contract.runner.commands,
+      stdout: { maxBytes: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes },
+    });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
     expectArchiveInventory(tarball);
   }, 60_000);
@@ -137,6 +149,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const sync = run("sync");
     expect(sync).toMatchObject({ status: 0, stderr: "" });
+    expect(() => JSON.parse(sync.stdout)).not.toThrow();
     expect(readJson(settingsFile)).toMatchObject({
       foreign: { keep: true },
       defaultProvider: "openai-codex",
@@ -150,12 +163,14 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const canonicalCleanup = run("cleanup");
     expect(canonicalCleanup).toMatchObject({ status: 0, stderr: "" });
+    expect(() => JSON.parse(canonicalCleanup.stdout)).not.toThrow();
     expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
     expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
     expect(fs.existsSync(receiptFile)).toBe(false);
 
     const resync = run("sync");
     expect(resync).toMatchObject({ status: 0, stderr: "" });
+    expect(() => JSON.parse(resync.stdout)).not.toThrow();
 
     const settings = readJson(settingsFile) as Record<string, unknown>;
     settings.defaultModel = "user-model";
@@ -166,6 +181,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const cleanup = run("cleanup");
     expect(cleanup).toMatchObject({ status: 0, stderr: "" });
+    expect(() => JSON.parse(cleanup.stdout)).not.toThrow();
     expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model" });
     expect(readJson(modelsFile)).toEqual({
       foreign: { keep: true },
