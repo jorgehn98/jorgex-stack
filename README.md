@@ -1,25 +1,34 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 15 agents, 17 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
+Portable multi-agent harness: one configuration source — 15 agents, 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
 ## Skills: release snapshot and supply chain
 
-The 1.2.0 minor release carries a fixed **17-skill snapshot**: **5 stack-owned** skills and **12 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
+The 1.9.0 minor release carries a fixed **18-skill snapshot**: **6 stack-owned** skills and **12 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
 
 | Set | Skills |
 | --- | --- |
-| Stack-owned (5) | `agent-delegation`, `lean-code`, `orchestrator`, `work-lifecycle`, `xreview` |
+| Stack-owned (6) | `agent-delegation`, `lean-code`, `orchestrator`, `work-audit`, `work-lifecycle`, `xreview` |
 | Vendored (12) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `playwright-cli`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
 
 The supply-chain contract is deliberately explicit:
 
-- **Snapshot:** the 17 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
+- **Snapshot:** the 18 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
 - **Per-skill pin:** `upstreams.json` records each vendored source/path and its accepted commit pin (plus package/binary pins where applicable). A pin identifies the last reviewed snapshot; it does not mean that later upstream changes were accepted.
 - **Manual review:** only a maintainer running from a git clone may inspect and propose vendored-skill updates. The flow downloads to a temporary directory, shows a mandatory diff, requests confirmation, and re-pins only after deliberate review. Local changes marked `modified: true` receive an additional warning/confirmation.
 
 For an installed package, skill checks are **discovery-only**: `update --check` reports that vendored skills are pinned to the stack version and does not query or execute their upstreams. The two Obsidian skills (`obsidian-cli` and `obsidian-markdown`) were retired because they are non-essential to the stack. Their cleanup is ownership-safe: only manifest-owned files may be removed and they are backed up first; paths outside the manifest are preserved. A modified manifest-owned copy is still removed after backup. No Obsidian vault or binary is touched.
+
+### Portable SDD audit
+
+`work-audit` adds two read-only workflow gates to the canonical orchestrator:
+
+- **PRE**, after `PRD.md`, `plan.md`, and task specs exist: checks clarifications, unique `SC-*` criteria, task coverage, ownership, dependencies, and testing decisions before plan approval.
+- **POST**, during VERIFY: checks implementation and evidence against the approved criteria and reports `converged` or actionable gaps.
+
+The skill never edits artifacts or creates tasks. During audit remediation, the orchestrator is the only writer of active work artifacts and returns every gap to its owner; delegated writers still own their bounded code, test, and documentation tasks. Details: [docs/references/sdd-workflow.md](docs/references/sdd-workflow.md).
 
 ## Usage
 

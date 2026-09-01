@@ -13,7 +13,7 @@ This skill takes the current conversation context and codebase understanding and
 
 Do not choose from a fixed test pyramid or a requirement to add tests. Prefer one authoritative test at the strongest seam closest to the risk; another layer is justified only for a distinct contract. Record existing coverage and valid no-new-test decisions for trivial, mechanical, generated, styling, or wiring changes.
 
-Check with the user that these seams match their expectations.
+If the orchestrator has not already confirmed a task-critical testing seam, surface it as a clarification for the orchestrator to resolve; do not interview the user from this skill.
 
 3. Write the PRD using the template below to `work/{name}/PRD.md`, where `{name}` is the work's canonical kebab-case name (see the `work-lifecycle` skill) — the human reviews it there. Exception: if the project manages its work through an issue tracker and the user wants the PRD there, publish it to the tracker instead and apply the `ready-for-agent` triage label — no need for additional triage.
 
@@ -38,6 +38,15 @@ A LONG, numbered list of user stories. Each user story should be in the format o
 </user-story-example>
 
 This list of user stories should be extremely extensive and cover all aspects of the feature.
+
+## Clarifications
+
+Record only ambiguities already identified while the orchestrator was clarifying the work:
+
+- resolved question → accepted answer / decision
+- unresolved task-critical ambiguity → `[NEEDS CLARIFICATION: specific question]`
+
+Do not interview the user from this skill and do not manufacture questions when the context is sufficient. A draft PRD may temporarily contain a marker, but the orchestrator's PRE work audit must resolve every marker before plan approval.
 
 ## Implementation Decisions
 

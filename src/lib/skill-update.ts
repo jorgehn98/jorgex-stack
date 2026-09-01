@@ -10,6 +10,7 @@ export const PROTECTED_SKILLS = new Set([
   "agent-delegation",
   "lean-code",
   "orchestrator",
+  "work-audit",
   "work-lifecycle",
   "xreview",
 ]);
@@ -165,7 +166,7 @@ export interface ReplaceSkillOpts {
  * y actualiza el pin `commit` en upstreams.json.
  *
  * Reglas:
- * - Skills protegidas (las cinco skills propias del stack) y kind=release
+ * - Skills protegidas (las seis skills propias del stack) y kind=release
  *   se rechazan sin tocar el disco.
  * - Se hace backup de la skill local antes de tocarla.
  * - La copia se hace en staging (dir hermano temporal) antes de renombrar,

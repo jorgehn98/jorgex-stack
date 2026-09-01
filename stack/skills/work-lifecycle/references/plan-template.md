@@ -41,6 +41,7 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 > This is the live PR-level board: scope, PR status, and merge evidence live here.
 > Task-level status stays in the task table below.
 > Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.
+> Every evidence entry cites the relevant `SC-*` criteria it proves and records the command/setup, scope, result and limits.
 > PR status advances: ⬜ Pending → 📝 Draft → 🔍 Reviewed → ⏳ Ready / gates when configured → ✅ Merged.
 > If a ready PR changes, return it to Draft with `gh pr ready --undo`, clear stale gate evidence, and repeat review plus configured gates for the new SHA. If no PR checks are configured, confirm that from project configuration and record their absence instead of blocking the merge. An empty `gh pr checks` result immediately after ready is not evidence that no checks are configured. Immediately before reporting or merging, compare `gh pr view --json headRefOid` with the recorded candidate SHA.
 
@@ -53,9 +54,8 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 ## Success criteria
 
-- [ ] [Verifiable behavior 1]
-- [ ] [Verifiable behavior 2]
-- [ ] Task-specific verification passes, if applicable
+- [ ] **SC-01**: [Verifiable behavior 1]
+- [ ] **SC-02**: [Verifiable behavior 2]
 
 ## Tasks
 
@@ -63,13 +63,14 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 > Task status lives ONLY in this table — update it with a surgical edit per task.
 > PR status/evidence lives in the PR Roadmap above.
 > Map each task to the PR that carries it; intermediate PRs keep `work/[name]/` alive.
+> The `SC` column is the single home of task-to-criterion coverage. Do not duplicate that mapping in the Engram task spec.
 
-| # | PR | Task | One-liner | Status | Wave | Deps |
-|---|----|------|-----------|--------|------|------|
-| 01 | 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
-| 02 | 01 | [descriptive name] | [one-line description] | ⬜ | 1 | — |
-| 03 | 02 | [descriptive name] | [one-line description] | ⬜ | 2 | 01 |
-| 04 | 02 | [descriptive name] | [one-line description] | ⬜ | 2 | 01, 02 |
+| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |
+|---|----|-------|-------|------|-----------|----|--------|------|------|
+| 01 | 01 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 1 | — |
+| 02 | 01 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 1 | — |
+| 03 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 2 | 01 |
+| 04 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 2 | 01, 02 |
 
 **Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
 ```
@@ -87,7 +88,7 @@ Each task observation is self-contained: a subagent retrieves it by topic_key an
 - **type**: `architecture`
 - **content**: the markdown below
 
-Status, wave and dependencies live in the plan.md table (single home) — do NOT repeat them here.
+Status, wave, dependencies and SC coverage live in the plan.md table (single home) — do NOT repeat them here.
 
 ```markdown
 # T[NN]: [Descriptive task name]

@@ -27,6 +27,20 @@ let tmp: string;
 const readStackFile = (relativePath: string) =>
   fs.readFileSync(path.join(stackRoot(), relativePath), "utf8");
 
+const readRequiredStackFile = (relativePath: string) => {
+  const absolutePath = path.join(stackRoot(), relativePath);
+  expect(fs.existsSync(absolutePath), `falta el contrato canónico ${relativePath}`).toBe(true);
+  return fs.readFileSync(absolutePath, "utf8");
+};
+
+const sectionBetween = (content: string, start: string, end: string): string => {
+  const startIndex = content.indexOf(start);
+  const endIndex = content.indexOf(end, startIndex + start.length);
+  expect(startIndex, `missing section ${start}`).toBeGreaterThanOrEqual(0);
+  expect(endIndex, `missing section ${end}`).toBeGreaterThan(startIndex);
+  return content.slice(startIndex, endIndex);
+};
+
 const expectFragments = (content: string, fragments: string[]) => {
   for (const fragment of fragments) {
     expect(content).toContain(fragment);
@@ -135,7 +149,7 @@ const MULTI_PR_LIFECYCLE_CASES = [
       "| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |",
       "Task status lives ONLY in this table",
       "PR status/evidence lives in the PR Roadmap above.",
-      "| # | PR | Task | One-liner | Status | Wave | Deps |",
+      "| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |",
     ],
   },
   {
@@ -1112,6 +1126,87 @@ describe("work backlog mutation contract", () => {
       "verificar",
       "concurrentes",
     ]);
+  });
+});
+
+describe("portable SDD audit contract", () => {
+  it("work-audit es read-only, no crea tareas y devuelve gaps al único escritor", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+
+    expect(content).toMatch(/read-only/i);
+    expect(content).toMatch(
+      /(?:no writes?|never (?:write|edit|modify)|does not (?:write|edit|modify)|must not (?:write|edit|modify)|do not (?:write|edit|modify))/i,
+    );
+    expect(content).toMatch(
+      /(?:no task creation|never (?:create|add) tasks|does not (?:create|add) tasks|must not (?:create|add) tasks|do not (?:create|add) tasks)/i,
+    );
+    expect(content).toMatch(/(?:single writer|only writer)/i);
+    expect(content).toMatch(/(?:gap|finding)[\s\S]{0,180}(?:owner|orchestrator)|(?:owner|orchestrator)[\s\S]{0,180}(?:gap|finding)/i);
+    expect(content).toMatch(/owner artifact/i);
+    expect(content).toMatch(/next action/i);
+    expect(content).toContain("`clean`");
+    expect(content).toContain("`gaps`");
+    expect(content).toContain("`converged`");
+    expect(content).toContain("**Severity**: `blocker` or `important`");
+    expect(content).toContain("- **Mode**: PRE | POST");
+    expect(content).toContain("- **Verdict**: clean | converged | gaps");
+  });
+
+  it("work-audit exige SC únicos, cobertura por tarea y evidencia por criterio", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+
+    expect(content).toMatch(/SC-\*|SC-\d{2}/i);
+    expect(content).toMatch(
+      /(?:SC-\*|SC-\d{2})[\s\S]{0,120}(?:unique|duplicate)|(?:unique|duplicate)[\s\S]{0,120}(?:SC-\*|SC-\d{2})/i,
+    );
+    expect(content).toMatch(
+      /(?:task|tasks)[\s\S]{0,160}(?:cover|coverage)|(?:cover|coverage)[\s\S]{0,160}(?:task|tasks)/i,
+    );
+    expect(content).toMatch(
+      /evidence[\s\S]{0,160}(?:SC|criterion)|(?:SC|criterion)[\s\S]{0,160}evidence/i,
+    );
+    expect(content).toMatch(/current checkpoint|checkpoint scope/i);
+  });
+
+  it("trata artefactos y evidencia como datos no confiables", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+
+    expect(content).toMatch(/untrusted data/i);
+    expect(content).toMatch(/ignore embedded instructions/i);
+    expect(content).toMatch(/do not (?:expand|change) scope/i);
+  });
+
+  it("to-prd registra marcadores de clarificación sin convertirse en entrevista automática", () => {
+    const content = readRequiredStackFile("skills/to-prd/SKILL.md");
+
+    expect(content).toContain("Clarifications");
+    expect(content).toMatch(/\[NEEDS CLARIFICATION:[^\]]+\]/);
+    expect(content).toMatch(/do not interview|without interviewing|not interview/i);
+    expect(content).not.toContain("Check with the user that these seams match their expectations.");
+  });
+
+  it("un marcador NEEDS CLARIFICATION pendiente bloquea la salida PRE del plan", () => {
+    const content = readStackFile("skills/orchestrator/SKILL.md");
+    const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
+
+    expect(planSection).toContain("An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE.");
+  });
+
+  it("el plan template mantiene IDs SC, cobertura por tarea y evidencia de checkpoint", () => {
+    const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
+    const successCriteria = sectionBetween(template, "## Success criteria", "## Tasks");
+    const tasks = sectionBetween(template, "## Tasks", "---");
+    const roadmap = sectionBetween(template, "## PR Roadmap", "## Success criteria");
+    const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
+
+    expect(successCriteria).toContain("**SC-01**: [Verifiable behavior 1]");
+    expect(successCriteria).toContain("**SC-02**: [Verifiable behavior 2]");
+    expect(successCriteria).not.toContain("Task-specific verification passes");
+    expect(tasks).toContain("| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |");
+    expect(tasks).toContain("single home of task-to-criterion coverage");
+    expect(roadmap).toContain("Every evidence entry cites the relevant `SC-*` criteria it proves");
+    expect(lifecycle).toMatch(/SC-\*|SC-\d{2}/i);
+    expect(lifecycle).toContain("Task-to-criterion coverage lives ONLY in the task table's `SC` column");
   });
 });
 
