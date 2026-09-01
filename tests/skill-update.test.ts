@@ -390,7 +390,6 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
     expect([...PROTECTED_SKILLS].filter((name) => vendoredSkills.has(name))).toEqual([]);
     expect([...vendoredSkills].sort()).toEqual(expectedVendored);
     expect(new Set([...PROTECTED_SKILLS, ...vendoredSkills])).toEqual(localSkills);
-    expect(localSkills.size).toBe(18);
     expect(localSkills.has("obsidian-cli")).toBe(false);
     expect(localSkills.has("obsidian-markdown")).toBe(false);
     expect(

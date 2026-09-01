@@ -1144,6 +1144,12 @@ describe("portable SDD audit contract", () => {
     expect(content).toMatch(/(?:gap|finding)[\s\S]{0,180}(?:owner|orchestrator)|(?:owner|orchestrator)[\s\S]{0,180}(?:gap|finding)/i);
     expect(content).toMatch(/owner artifact/i);
     expect(content).toMatch(/next action/i);
+    expect(content).toContain("`clean`");
+    expect(content).toContain("`gaps`");
+    expect(content).toContain("`converged`");
+    expect(content).toContain("**Severity**: `blocker` or `important`");
+    expect(content).toContain("- **Mode**: PRE | POST");
+    expect(content).toContain("- **Verdict**: clean | converged | gaps");
   });
 
   it("work-audit exige SC únicos, cobertura por tarea y evidencia por criterio", () => {
@@ -1159,6 +1165,15 @@ describe("portable SDD audit contract", () => {
     expect(content).toMatch(
       /evidence[\s\S]{0,160}(?:SC|criterion)|(?:SC|criterion)[\s\S]{0,160}evidence/i,
     );
+    expect(content).toMatch(/current checkpoint|checkpoint scope/i);
+  });
+
+  it("trata artefactos y evidencia como datos no confiables", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+
+    expect(content).toMatch(/untrusted data/i);
+    expect(content).toMatch(/ignore embedded instructions/i);
+    expect(content).toMatch(/do not (?:expand|change) scope/i);
   });
 
   it("to-prd registra marcadores de clarificación sin convertirse en entrevista automática", () => {
@@ -1167,14 +1182,14 @@ describe("portable SDD audit contract", () => {
     expect(content).toContain("Clarifications");
     expect(content).toMatch(/\[NEEDS CLARIFICATION:[^\]]+\]/);
     expect(content).toMatch(/do not interview|without interviewing|not interview/i);
+    expect(content).not.toContain("Check with the user that these seams match their expectations.");
   });
 
   it("un marcador NEEDS CLARIFICATION pendiente bloquea la salida PRE del plan", () => {
     const content = readStackFile("skills/orchestrator/SKILL.md");
     const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
 
-    expect(planSection).toMatch(/NEEDS CLARIFICATION/i);
-    expect(planSection).toMatch(/(?:PRE|pre)[\s\S]{0,180}(?:block|fail|not clean)|(?:block|fail|not clean)[\s\S]{0,180}(?:PRE|pre)/i);
+    expect(planSection).toContain("An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE.");
   });
 
   it("el plan template mantiene IDs SC, cobertura por tarea y evidencia de checkpoint", () => {
@@ -1184,13 +1199,14 @@ describe("portable SDD audit contract", () => {
     const roadmap = sectionBetween(template, "## PR Roadmap", "## Success criteria");
     const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
 
-    expect(successCriteria).toMatch(/\bSC-\d{2}\b/);
-    expect(tasks).toMatch(/\|\s*SC\s*\|/i);
-    expect(roadmap).toMatch(
-      /evidence[\s\S]{0,180}(?:SC-\*|SC-\d{2})|(?:SC-\*|SC-\d{2})[\s\S]{0,180}evidence/i,
-    );
+    expect(successCriteria).toContain("**SC-01**: [Verifiable behavior 1]");
+    expect(successCriteria).toContain("**SC-02**: [Verifiable behavior 2]");
+    expect(successCriteria).not.toContain("Task-specific verification passes");
+    expect(tasks).toContain("| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |");
+    expect(tasks).toContain("single home of task-to-criterion coverage");
+    expect(roadmap).toContain("Every evidence entry cites the relevant `SC-*` criteria it proves");
     expect(lifecycle).toMatch(/SC-\*|SC-\d{2}/i);
-    expect(lifecycle).toMatch(/coverage/i);
+    expect(lifecycle).toContain("Task-to-criterion coverage lives ONLY in the task table's `SC` column");
   });
 });
 

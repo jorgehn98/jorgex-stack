@@ -69,12 +69,22 @@ describe("orchestrator canonical source", () => {
     const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
     const verifySection = sectionBetween(content, "## 6. VERIFY", "## 7. SHIP");
 
-    expect(planSection.replace(/\r?\n/g, " ")).toMatch(
-      /(?:load|run|invoke)[^\n]*work-audit[^\n]*\bPRE\b|\bPRE\b[^\n]*(?:load|run|invoke)[^\n]*work-audit/i,
-    );
-    expect(verifySection.replace(/\r?\n/g, " ")).toMatch(
-      /(?:load|run|invoke)[^\n]*work-audit[^\n]*\bPOST\b|\bPOST\b[^\n]*(?:load|run|invoke)[^\n]*work-audit/i,
-    );
+    expect(planSection).toContain("Load and run the `work-audit` skill in **PRE** mode");
+    expect(verifySection).toContain("Load and run the `work-audit` skill in **POST** mode");
+    expect(planSection).toMatch(/exact active `work\/\{name\}` path/i);
+    expect(verifySection).toMatch(/exact active `work\/\{name\}` path[\s\S]*checkpoint scope/i);
+
+    const postIndex = verifySection.indexOf("Load and run the `work-audit` skill in **POST** mode");
+    const markIndex = verifySection.indexOf("mark the success criteria complete");
+    expect(postIndex).toBeGreaterThanOrEqual(0);
+    expect(markIndex).toBeGreaterThan(postIndex);
+  });
+
+  it("repite PRE cuando la revisión humana cambia artefactos aprobables", () => {
+    const content = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
+
+    expect(planSection).toMatch(/human review[\s\S]{0,220}(?:changes|modifies)[\s\S]{0,220}rerun PRE/i);
   });
 });
 
@@ -109,6 +119,6 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     const skillTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "work-audit", "SKILL.md");
 
     expect(actions.filter((action) => action.target === skillTarget)).toHaveLength(1);
-    expect(plannedContent(actions, skillTarget)).toContain("name: work-audit");
+    expect(plannedContent(actions, skillTarget)).toBe(fs.readFileSync(canonicalSkill, "utf8"));
   });
 });

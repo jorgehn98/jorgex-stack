@@ -28,7 +28,7 @@ For an installed package, skill checks are **discovery-only**: `update --check` 
 - **PRE**, after `PRD.md`, `plan.md`, and task specs exist: checks clarifications, unique `SC-*` criteria, task coverage, ownership, dependencies, and testing decisions before plan approval.
 - **POST**, during VERIFY: checks implementation and evidence against the approved criteria and reports `converged` or actionable gaps.
 
-The skill never edits artifacts or creates tasks. The orchestrator remains the single writer and returns every gap to its owner artifact. Details: [docs/references/sdd-workflow.md](docs/references/sdd-workflow.md).
+The skill never edits artifacts or creates tasks. During audit remediation, the orchestrator is the only writer of active work artifacts and returns every gap to its owner; delegated writers still own their bounded code, test, and documentation tasks. Details: [docs/references/sdd-workflow.md](docs/references/sdd-workflow.md).
 
 ## Usage
 

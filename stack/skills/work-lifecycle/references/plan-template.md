@@ -56,7 +56,6 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 - [ ] **SC-01**: [Verifiable behavior 1]
 - [ ] **SC-02**: [Verifiable behavior 2]
-- [ ] **SC-03**: Task-specific verification passes, if applicable
 
 ## Tasks
 
@@ -70,8 +69,8 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 |---|----|-------|-------|------|-----------|----|--------|------|------|
 | 01 | 01 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 1 | — |
 | 02 | 01 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 1 | — |
-| 03 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01, SC-03 | ⬜ | 2 | 01 |
-| 04 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-03 | ⬜ | 2 | 01, 02 |
+| 03 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 2 | 01 |
+| 04 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 2 | 01, 02 |
 
 **Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
 ```
