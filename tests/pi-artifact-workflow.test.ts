@@ -344,6 +344,35 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     ]);
   });
 
+  it("acota la descarga de Pi al artefacto fijo y verifica su tamaño antes del contrato", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+    const [job] = jobs;
+    const { name, version } = PI_RUNTIME_CANDIDATE.package;
+    const { bytes } = PI_RUNTIME_CANDIDATE.tarball;
+    const tarballUrl = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
+    const downloadStep = (job?.steps ?? []).find((step) => step.name === "Download the exact JorgeX Pi artifact");
+
+    expect(downloadStep, "Falta el paso de descarga del artefacto Pi.").toBeDefined();
+    if (downloadStep === undefined) {
+      throw new Error("Falta el paso de descarga del artefacto Pi.");
+    }
+
+    const script = extractRunScript(downloadStep);
+    const exactSizeCheck = `test "$(wc -c < "$tarball")" -eq ${bytes}`;
+
+    expect(script).toContain(tarballUrl);
+    expect(script).toContain("--retry 3");
+    expect(script).toContain("--connect-timeout 15");
+    expect(script).toContain("--max-time 300");
+    expect(script).toContain("--retry-max-time 300");
+    expect(script).toContain("--remove-on-error");
+    expect(script).toContain(`--max-filesize ${bytes}`);
+    expect(script).not.toMatch(/\s(?:--location(?:-trusted)?|-L)(?:\s|$)/);
+    expect(script).not.toContain("--retry-all-errors");
+    expectInOrder(workflow, [exactSizeCheck, "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts"]);
+  });
+
   it("desactiva la caché automática de setup-node y conserva la caché pnpm explícita", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);

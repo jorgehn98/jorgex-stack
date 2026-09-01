@@ -73,9 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           tarball="$RUNNER_TEMP/jorgex-pi-0.8.0.tgz"
-          curl --fail --show-error --silent --location --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 --output "$tarball" \
+          curl --fail --show-error --silent --retry 3 --retry-max-time 300 --connect-timeout 15 --max-time 300 --max-filesize 89128340 --remove-on-error --output "$tarball" \
             https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz
-          test -s "$tarball"
+          test "$(wc -c < "$tarball")" -eq 89128340
 
       - name: Verify the exact JorgeX Pi artifact contract
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
