@@ -33,6 +33,15 @@ jobs:
       target_sha: ${{ steps.resolve.outputs.target_sha }}
       should_validate: ${{ steps.preflight.outputs.should_validate }}
     steps:
+      - name: Reject GITHUB_RUN_ATTEMPT reruns before mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
+            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
+            exit 1
+          fi
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
@@ -259,6 +268,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
+            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
+            exit 1
+          fi
           if [[ "${GITHUB_REF:-}" != "refs/heads/main" ]]; then
             echo 'La ejecución no pertenece a main.' >&2
             exit 1
@@ -739,6 +752,15 @@ jobs:
       contents: read
       id-token: write # OIDC: emite la provenance de npm al publicar
     steps:
+      - name: Reject GITHUB_RUN_ATTEMPT reruns before mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
+            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
+            exit 1
+          fi
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ needs.bump.outputs.publish_sha }}
@@ -762,6 +784,28 @@ jobs:
           npm pack --dry-run --ignore-scripts
           npm publish --ignore-scripts --provenance
 
+  readback:
+    needs: [bump, publish]
+    if: always() && !cancelled() && needs.publish.result == 'success'
+    timeout-minutes: 7
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ needs.bump.outputs.publish_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Observe npm availability
+        run: node .github/scripts/npm-readback.mjs
+
   tag-release:
     needs: [bump, publish]
     if: always() && !cancelled() && needs.publish.result != 'failure' && needs.publish.result != 'cancelled' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.bump.outputs.tag_needed == 'true')) && (needs.publish.result == 'success' || needs.bump.outputs.tag_needed == 'true')
@@ -770,6 +814,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Reject GITHUB_RUN_ATTEMPT reruns before mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
+            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
+            exit 1
+          fi
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ needs.bump.outputs.publish_sha }}
