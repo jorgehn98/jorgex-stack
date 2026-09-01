@@ -16,6 +16,32 @@ interface ScriptResult {
   scriptPath: string;
 }
 
+const logToOpenCode = async (
+  client: unknown,
+  level: "warn" | "error",
+  message: string,
+  extra?: unknown,
+) => {
+  if (typeof client !== "object" || client === null) return;
+  const app = (client as { app?: unknown }).app;
+  if (typeof app !== "object" || app === null) return;
+  const log = (app as { log?: unknown }).log;
+  if (typeof log !== "function") return;
+
+  const safeExtra =
+    extra instanceof Error
+      ? { message: extra.message, stack: extra.stack }
+      : extra;
+
+  try {
+    await log.call(app, {
+      body: { service: "hooks", level, message, extra: safeExtra },
+    });
+  } catch {
+    // Logging must not break the OpenCode TUI hook.
+  }
+};
+
 const isAbsolutePath = (value: string) =>
   /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/");
 
@@ -142,15 +168,14 @@ const runScript = async (
   }
 
   if (!command) {
-    await client.app.log({
-      body: {
-        service: "hooks",
-        level: "warn",
-        message: "Unsupported worktree hook script extension",
-        extra: { script, scriptPath },
-      },
-    });
-    return { exitCode: 0, stdout: "", stderr: "", script, scriptPath };
+    const stderr = `Unsupported worktree hook script extension for ${scriptPath}.`;
+    await logToOpenCode(
+      client,
+      "warn",
+      "Unsupported worktree hook script extension",
+      { script, scriptPath },
+    );
+    return { exitCode: 1, stdout: "", stderr, script, scriptPath };
   }
 
   try {
@@ -173,35 +198,26 @@ const runScript = async (
     ]);
 
     if (exitCode !== 0) {
-      await client.app.log({
-        body: {
-          service: "hooks",
-          level: "error",
-          message: "Worktree hook script execution failed",
-          extra: {
-            script,
-            scriptPath,
-            exitCode,
-            stderr: stderr.trim(),
-            stdout: stdout.trim(),
-          },
+      await logToOpenCode(
+        client,
+        "error",
+        "Worktree hook script execution failed",
+        {
+          script,
+          scriptPath,
+          exitCode,
+          stderr: stderr.trim(),
+          stdout: stdout.trim(),
         },
-      });
+      );
     }
 
     return { exitCode, stdout, stderr, script, scriptPath };
   } catch (error) {
-    await client.app.log({
-      body: {
-        service: "hooks",
-        level: "error",
-        message: "Worktree hook script execution failed",
-        extra: {
-          script,
-          scriptPath,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      },
+    await logToOpenCode(client, "error", "Worktree hook script execution failed", {
+      script,
+      scriptPath,
+      error: error instanceof Error ? error.message : String(error),
     });
     return {
       exitCode: 1,
@@ -285,27 +301,71 @@ const getCommandCwd = (args: Record<string, unknown>, directory: string) => {
 const replaceToken = (value: string, token: string, replacement: string) =>
   value.split(token).join(replacement);
 
+const isMissingFileError = (error: unknown) => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return (
+    code === "ENOENT" ||
+    (error instanceof Error && /not found|no such file/i.test(error.message))
+  );
+};
+
 export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
   let config: WorktreePluginConfig = {
     pathContains: "worktrees/",
     reminderLines: [],
   };
+  let configError: string | undefined;
 
   try {
     const configPath = `${directory}/.opencode/worktree.json`;
-    const content = await (globalThis as any).Bun.file(configPath).text();
-    config = {
-      ...config,
-      ...JSON.parse(content),
-    };
-  } catch {
-    // Optional project config
+    const configFile = (globalThis as any).Bun.file(configPath);
+    if (
+      typeof configFile.exists === "function" &&
+      !(await configFile.exists())
+    ) {
+      // Optional project config.
+    } else {
+      const parsed = JSON.parse(await configFile.text()) as unknown;
+      if (!isPlainObject(parsed)) {
+        configError = "Worktree config must be a JSON object.";
+      } else if (
+        "setupScript" in parsed &&
+        typeof parsed.setupScript !== "string"
+      ) {
+        configError = 'Worktree config field "setupScript" must be a string.';
+      } else {
+        config = { ...config, ...(parsed as WorktreePluginConfig) };
+      }
+    }
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      configError = "Worktree config could not be parsed as JSON.";
+      await logToOpenCode(client, "warn", "Worktree config could not be parsed", error);
+    }
   }
 
   return {
     "tool.execute.after": async (input: any, output: any) => {
       try {
         const tool = (input.tool || "").toLowerCase();
+        const args = input.args || {};
+        const command = args.command || "";
+
+        if (configError) {
+          const targetsWorktree =
+            tool === "enterworktree" ||
+            (tool === "bash" &&
+              typeof command === "string" &&
+              command.toLowerCase().includes("git worktree add"));
+          if (targetsWorktree) {
+            appendToolOutput(output, [configError]);
+          }
+          return;
+        }
+
         const payload = {
           event: "tool.execute.after",
           directory,
@@ -336,8 +396,6 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
 
         if (tool !== "bash") return;
 
-        const args = input.args || {};
-        const command = args.command || "";
         const commandLower = command.toLowerCase();
         const pathContains = toSlashes(
           config.pathContains || "worktrees/",
@@ -429,15 +487,8 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
           appendToolOutput(output, [banner]);
         }
       } catch (error) {
-        await client.app.log({
-          body: {
-            service: "hooks",
-            level: "error",
-            message: "Worktree plugin execution failed",
-            extra: {
-              error: error instanceof Error ? error.message : String(error),
-            },
-          },
+        await logToOpenCode(client, "error", "Worktree plugin execution failed", {
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     },
