@@ -356,8 +356,18 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
     }
   } catch (error) {
     if (!isMissingFileError(error)) {
-      configError = "Worktree config could not be parsed as JSON.";
-      await logToOpenCode(client, "warn", "Worktree config could not be parsed", error);
+      const couldNotParse = error instanceof SyntaxError;
+      configError = couldNotParse
+        ? "Worktree config could not be parsed as JSON."
+        : "Worktree config could not be read.";
+      await logToOpenCode(
+        client,
+        "warn",
+        couldNotParse
+          ? "Worktree config could not be parsed"
+          : "Worktree config could not be read",
+        error,
+      );
     }
   }
 
@@ -368,18 +378,6 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
         const args = input.args || {};
         const command = args.command || "";
 
-        if (configError) {
-          const targetsWorktree =
-            tool === "enterworktree" ||
-            (tool === "bash" &&
-              typeof command === "string" &&
-              command.toLowerCase().includes("git worktree add"));
-          if (targetsWorktree) {
-            appendToolOutput(output, [configError]);
-          }
-          return;
-        }
-
         const payload = {
           event: "tool.execute.after",
           directory,
@@ -388,6 +386,11 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
         };
 
         if (tool === "enterworktree") {
+          if (configError) {
+            appendToolOutput(output, [configError]);
+            return;
+          }
+
           const docsReminderScript = resolveProjectPath(
             directory,
             config.docsReminderScript,
@@ -437,12 +440,24 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
           `worktrees/${worktreeName}`,
         );
 
-        if (!samePath(absoluteWorktreePath, expectedWorktreePath)) {
+        const isCanonicalPath = samePath(
+          absoluteWorktreePath,
+          expectedWorktreePath,
+        );
+        if (!isCanonicalPath) {
           appendToolOutput(output, [
             `Worktree path is not canonical: ${absoluteWorktreePath}`,
             `Use the project-local path instead: ${expectedWorktreePath}`,
             "Canonical rule: <project-root>/worktrees/<canonical-name> or <project-root>/worktrees/<canonical-name>-prNN.",
           ]);
+        }
+
+        if (configError) {
+          appendToolOutput(output, [configError]);
+          return;
+        }
+
+        if (!isCanonicalPath) {
           return;
         }
 
@@ -501,6 +516,14 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
           appendToolOutput(output, [banner]);
         }
       } catch (error) {
+        const details = truncateMessage(
+          error instanceof Error ? error.message : String(error),
+        );
+        appendToolOutput(output, [
+          "Worktree plugin could not process this worktree command.",
+          "Run `git rev-parse --show-toplevel` from the project root and retry.",
+          ...(details ? [`Details: ${details}`] : []),
+        ]);
         await logToOpenCode(client, "error", "Worktree plugin execution failed", {
           error: error instanceof Error ? error.message : String(error),
         });

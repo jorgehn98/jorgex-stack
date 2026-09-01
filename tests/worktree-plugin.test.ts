@@ -18,11 +18,13 @@ const makePlugin = async (
     exited: Promise.resolve(0),
   },
   appLog = vi.fn(),
+  gitRoot: string | Error = root,
 ) => {
   vi.stubGlobal("Bun", {
     file: () => ({
       text: async () => {
         if (config === null) throw new Error("Config not found");
+        if (config instanceof Error) throw config;
         if (typeof config === "string") return config;
         if (Array.isArray(config)) return JSON.stringify(config);
         return JSON.stringify({
@@ -36,7 +38,12 @@ const makePlugin = async (
   });
 
   const dollar = (() => {
-    const r: any = { text: async () => `${root}\n` };
+    const r: any = {
+      text: async () => {
+        if (gitRoot instanceof Error) throw gitRoot;
+        return `${gitRoot}\n`;
+      },
+    };
     r.quiet = () => r;
     return r;
   }) as any;
@@ -115,6 +122,78 @@ describe("WorktreePlugin", () => {
 
     expect(spawn).not.toHaveBeenCalled();
     expect(output.output).toEqual(expect.stringMatching(/config/i));
+  });
+
+  it("reports invalid config and a non-canonical worktree path without spawning setup", async () => {
+    const { plugin, spawn } = await makePlugin(tmp, "{");
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: `git worktree add "${path.join(tmp, "outside-name")}"`,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toMatch(/config.*parsed.*JSON/i);
+    expect(output.output).toContain("Worktree path is not canonical");
+    expect(output.output).toContain("Use the project-local path instead");
+  });
+
+  it("reports unreadable worktree config separately from malformed JSON", async () => {
+    const configReadError = Object.assign(new Error("access denied"), {
+      code: "EACCES",
+    });
+    const { plugin, spawn } = await makePlugin(tmp, configReadError);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: tmp,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toMatch(/config.*could not be read/i);
+    expect(output.output).not.toMatch(/parsed.*JSON/i);
+  });
+
+  it("keeps a git root failure actionable when OpenCode logging rejects", async () => {
+    const appLog = vi.fn().mockRejectedValue(new Error("OpenCode log unavailable"));
+    const { plugin, spawn } = await makePlugin(
+      tmp,
+      {},
+      vi.fn(),
+      undefined,
+      appLog,
+      new Error("git is unavailable"),
+    );
+    const output: Record<string, string> = {};
+
+    await expect(
+      plugin["tool.execute.after"](
+        {
+          tool: "bash",
+          args: {
+            command: "git worktree add worktrees/canonical-name",
+          },
+        },
+        output,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(appLog).toHaveBeenCalledOnce();
+    expect(output.output).toMatch(/git rev-parse --show-toplevel/i);
   });
 
   it("reports a non-string setupScript without spawning setup", async () => {
