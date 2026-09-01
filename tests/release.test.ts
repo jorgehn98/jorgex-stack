@@ -899,7 +899,37 @@ describe("publish workflow contract", () => {
   it("mantiene validate, bump, publish y tag-release como jobs separados", () => {
     const jobs = splitTopLevelJobs(readWorkflow());
 
-    expect([...jobs.keys()]).toEqual(["validate", "bump", "publish", "tag-release"]);
+    expect([...jobs.keys()]).toEqual(["validate", "bump", "publish", "readback", "tag-release"]);
+  });
+
+  it("mantiene el readback independiente del tag de una publicación aceptada", () => {
+    const jobs = splitTopLevelJobs(readWorkflow());
+    const readback = jobs.get("readback") ?? "";
+    const tagRelease = jobs.get("tag-release") ?? "";
+
+    expect(readback).toContain("needs: [bump, publish]");
+    expect(readback).toContain("needs.publish.result == 'success'");
+    expect(readback).toContain("ref: ${{ needs.bump.outputs.publish_sha }}");
+    expect(readback).toContain(".github/scripts/npm-readback.mjs");
+    expect(tagRelease).toContain("needs: [bump, publish]");
+    expect(tagRelease).not.toContain("readback");
+  });
+
+  it("rechaza un rerun antes de los jobs mutables y dirige a recovery manual", () => {
+    const jobs = splitTopLevelJobs(readWorkflow());
+    const validate = jobs.get("validate") ?? "";
+    const bump = jobs.get("bump") ?? "";
+    const publish = jobs.get("publish") ?? "";
+    const tagRelease = jobs.get("tag-release") ?? "";
+    const rerunGuard = extractWorkflowStepBlock(validate, "GITHUB_RUN_ATTEMPT");
+
+    expect(rerunGuard).toMatch(/GITHUB_RUN_ATTEMPT[^\n]*(?:-gt|>)\s*1/);
+    expect(rerunGuard).toContain("workflow_dispatch");
+    expect(rerunGuard).toContain("release_sha");
+    expect(bump).toContain("needs: validate");
+    expect(bump).toMatch(/needs\.validate\.outputs\.should_validate\s*==\s*['\"]true['\"]/);
+    expect(publish).toContain("needs: bump");
+    expect(tagRelease).toContain("needs: [bump, publish]");
   });
 
   it("workflow_dispatch sin release_sha resuelve una SHA objetivo una sola vez en validate y la reutiliza", () => {
@@ -1019,6 +1049,7 @@ describe("publish workflow contract", () => {
     const validate = jobs.get("validate") ?? "";
     const bump = jobs.get("bump") ?? "";
     const publish = jobs.get("publish") ?? "";
+    const readback = jobs.get("readback") ?? "";
     const preflightIndex = validate.indexOf("id: preflight");
 
     expect(preflightIndex).toBeGreaterThan(-1);
@@ -1027,6 +1058,7 @@ describe("publish workflow contract", () => {
       extractWorkflowStepBlock(validate.slice(preflightIndex), "actions/setup-node@"),
       extractWorkflowStepBlock(bump, "actions/setup-node@"),
       extractWorkflowStepBlock(publish, "actions/setup-node@"),
+      extractWorkflowStepBlock(readback, "actions/setup-node@"),
     ];
     expect((readWorkflow().match(/actions\/setup-node@/g) ?? [])).toHaveLength(setupNodeSteps.length);
 
@@ -1034,11 +1066,13 @@ describe("publish workflow contract", () => {
       expect(step).toContain("package-manager-cache: false");
     }
 
-    const [validateCommon, validateConditional, bumpSetup, publishSetup] = setupNodeSteps;
+    const [validateCommon, validateConditional, bumpSetup, publishSetup, readbackSetup] = setupNodeSteps;
     expect(validateCommon).not.toMatch(/^\s*cache\s*:/m);
     expect(validateConditional).toContain("cache: pnpm");
     expect(bumpSetup).not.toMatch(/^\s*cache\s*:/m);
     expect(publishSetup).not.toMatch(/^\s*cache\s*:/m);
+    expect(readbackSetup).toContain("node-version: 24");
+    expect(readbackSetup).not.toMatch(/^\s*cache\s*:/m);
   });
 
   it("escribe tag_needed=false en todos los early exits relevantes", () => {
