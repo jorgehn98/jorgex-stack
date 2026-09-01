@@ -49,7 +49,7 @@ Estos límites son metadatos locales solicitados. No demuestran por sí solos qu
 
 ### Pi
 
-`jorgex-pi@0.7.0` —no los adapters de Stack— gestiona la proyección primaria de este candidato exacto (`npm:jorgex-pi@0.7.0`):
+`jorgex-pi@0.8.0` —no los adapters de Stack— gestiona la proyección primaria de este candidato exacto (`npm:jorgex-pi@0.8.0`):
 
 - `defaultProvider = "openai-codex"`;
 - `defaultModel = "gpt-5.6-sol"`;
