@@ -119,8 +119,8 @@ Every piece of information about a piece of work has exactly ONE home — never 
 - Prefer targeted verification before broad suites.
 - Default order: specific test > partial suite > full suite.
 - Use the real test commands and test stack of the project.
-- En tareas de testing, inspecciona el contrato completo, runner/comando/scope y entorno reales; usa tooling existente y no auto-instales ni impongas Node, Vitest, pnpm u otro runner.
-- En tareas de CI, actúa solo si el alcance lo pide: mide muestras comparables, usa refs explícitas y ante scope incierto ejecuta la lane pertinente o falla cerrado; nunca canceles una publicación mutable.
+- For testing tasks, inspect the complete contract and the actual runner, command, scope, and environment; use existing tooling and neither auto-install nor impose Node, Vitest, pnpm, or another runner.
+- For CI tasks, act only when the scope requires it: measure comparable samples, use explicit refs, and when scope is uncertain run the relevant lane or fail closed; never cancel a mutable publication.
 
 ---
 
