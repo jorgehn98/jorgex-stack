@@ -39,6 +39,15 @@ A LONG, numbered list of user stories. Each user story should be in the format o
 
 This list of user stories should be extremely extensive and cover all aspects of the feature.
 
+## Clarifications
+
+Record only ambiguities already identified while the orchestrator was clarifying the work:
+
+- resolved question → accepted answer / decision
+- unresolved task-critical ambiguity → `[NEEDS CLARIFICATION: specific question]`
+
+Do not interview the user from this skill and do not manufacture questions when the context is sufficient. A draft PRD may temporarily contain a marker, but the orchestrator's PRE work audit must resolve every marker before plan approval.
+
 ## Implementation Decisions
 
 A list of implementation decisions that were made. This can include:

@@ -41,6 +41,14 @@ function plannedContent(plan: ReturnType<typeof buildPlan>, target: string): str
   return action.kind === "write" ? action.content : fs.readFileSync(action.source, "utf8");
 }
 
+function sectionBetween(content: string, start: string, end: string): string {
+  const startIndex = content.indexOf(start);
+  const endIndex = content.indexOf(end, startIndex + start.length);
+  expect(startIndex, `missing section ${start}`).toBeGreaterThanOrEqual(0);
+  expect(endIndex, `missing section ${end}`).toBeGreaterThan(startIndex);
+  return content.slice(startIndex, endIndex);
+}
+
 describe("orchestrator canonical source", () => {
   it("la skill posee el workflow completo y el agent canónico es solo un wrapper", () => {
     const skillFile = path.join(stackDir, "skills", "orchestrator", "SKILL.md");
@@ -54,6 +62,19 @@ describe("orchestrator canonical source", () => {
     expect(skill).toContain("INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → SHIP → CLOSE");
     expect(wrapper).toContain("Load and follow the `orchestrator` skill");
     expect(wrapper).not.toContain("## Phases");
+  });
+
+  it("carga work-audit en modo PRE durante PLAN y en modo POST durante VERIFY", () => {
+    const content = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
+    const verifySection = sectionBetween(content, "## 6. VERIFY", "## 7. SHIP");
+
+    expect(planSection.replace(/\r?\n/g, " ")).toMatch(
+      /(?:load|run|invoke)[^\n]*work-audit[^\n]*\bPRE\b|\bPRE\b[^\n]*(?:load|run|invoke)[^\n]*work-audit/i,
+    );
+    expect(verifySection.replace(/\r?\n/g, " ")).toMatch(
+      /(?:load|run|invoke)[^\n]*work-audit[^\n]*\bPOST\b|\bPOST\b[^\n]*(?:load|run|invoke)[^\n]*work-audit/i,
+    );
   });
 });
 
@@ -77,5 +98,17 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
 
     expect(actions.filter((action) => action.target === skillTarget)).toHaveLength(1);
     expect(plannedContent(actions, skillTarget)).toContain("## Phases");
+  });
+
+  it("planSkills proyecta work-audit exactamente una vez desde el canon", () => {
+    const canonicalSkill = path.join(stackDir, "skills", "work-audit", "SKILL.md");
+    expect(fs.existsSync(canonicalSkill), "falta el canon stack/skills/work-audit/SKILL.md").toBe(true);
+    if (!fs.existsSync(canonicalSkill)) return;
+
+    const { ctx, actions } = plan("human");
+    const skillTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "work-audit", "SKILL.md");
+
+    expect(actions.filter((action) => action.target === skillTarget)).toHaveLength(1);
+    expect(plannedContent(actions, skillTarget)).toContain("name: work-audit");
   });
 });

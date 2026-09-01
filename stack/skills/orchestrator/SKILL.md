@@ -84,6 +84,8 @@ If the work is large enough to benefit from explicit vertical slices, use the `t
 - For tasks that add or grow code, record the lean-code outcome in the task spec/acceptance criteria so implementer and simplifier apply the same ladder.
 - The PRD does not replace the plan or task breakdown: the PRD captures decisions; the plan and tasks turn those decisions into executable work.
 - Materialize the plan per the Work state rules: `work/{name}/plan.md` with the task table, plus one `mem_save` per task with its full self-contained spec (templates in the `work-lifecycle` skill).
+- Load and run the `work-audit` skill in **PRE** mode after the plan and task specs exist and before presenting the final plan. PRE is read-only: you remain the only writer. Route every finding to its owner artifact, correct it, and rerun PRE until it reports `clean`.
+- An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE. Return to SPEC and resolve the ambiguity with the user only when existing context cannot answer it; never approve or execute a plan while PRE is not clean.
 - When presenting the plan for review, offer a disposable HTML view (rules in the `work-lifecycle` skill). Requested changes go to plan.md; delete the HTML once the plan is approved, before EXECUTE.
 
 ## Work state
@@ -195,6 +197,7 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 - Validate against the plan's **Success criteria** in plan.md and tick the ones that pass. Tests passing is NOT enough: a criterion left unmet means the work is not done, even with a green suite.
 - Run the minimum verification that is sufficient.
 - Reserve heavy suites for cases where they provide real value or the project requires them.
+- Load and run the `work-audit` skill in **POST** mode after deterministic checks and before marking the success criteria complete. POST is read-only and must report `converged`; when it reports `gaps`, you remain the only writer: add normal plan tasks and Engram specs when needed, return to the phase that owns each gap, and rerun POST after the fixes.
 - Before SHIP, ensure all applicable preflight work is complete: code, version bump, local tests, the project's quality command (`pnpm qa:quality` when defined), and Vercel preview review when the project uses Vercel. React Doctor is manual/local, never assumed to be a GitHub Actions gate.
 - If something fails, go back to EXECUTE with fix tasks.
 - **Anti-thrashing**: max 3 attempts per failing task or criterion. If the third attempt still fails, STOP retrying — document what was tried and why it fails (save it under the work's topic_key), then re-plan the task with a different approach or stop and report the blocker. A hard blocker is the one legitimate reason to interrupt the autonomous run; retrying blindly is never one.

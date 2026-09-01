@@ -29,8 +29,9 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 
 1. Pick the canonical name and create `work/{name}/`. If the item came from the backlog, remove it from `work/backlog` in the same step.
 2. Produce the PRD with the `to-prd` skill → `work/{name}/PRD.md`. The human reviews it there.
-3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, success criteria, PR roadmap, and the task table — number, PR, title, one-line description, status, wave, deps.
+3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, `SC-*` success criteria, PR roadmap, and the task table — number, PR, agent, scope, title, one-line description, SC coverage, status, wave, deps.
 4. Save the full spec of each atomic task to memory: one `mem_save` per task with topic_key `work/{name}/task/{NN}` (content structure in `references/plan-template.md`).
+5. Run the `work-audit` skill in PRE mode. The audit is read-only; the orchestrator is the single writer and corrects each owner artifact until PRE reports `clean` before the final plan review.
 
 ## Executing
 
@@ -39,6 +40,7 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 - Delegation handoff: the subagent receives its **topic_key + task title**, never the task content inline. It retrieves the spec itself (`mem_search` → `mem_get_observation`).
 - The subagent saves its phase outcome under the topic_key the orchestrator gave it (`work/{name}/{phase}`) BEFORE its final report.
 - Task status lives ONLY in the task table: flip it (⬜ → ✅) with a surgical edit when the task closes. PR status/evidence lives ONLY in the PR roadmap table. Do not mirror task progress into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
+- Success criteria live ONLY in the plan's `SC-*` list. Task-to-criterion coverage lives ONLY in the task table's `SC` column. Verification/merge evidence lives ONLY in the PR roadmap or checkpoint that observed it; cite the relevant SC IDs there instead of copying the criteria into Engram.
 - For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree/branch is enough and the roadmap collapses to one checkpoint.
 
 ## Pull request lifecycle

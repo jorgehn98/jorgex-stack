@@ -358,6 +358,7 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
       "agent-delegation",
       "lean-code",
       "orchestrator",
+      "work-audit",
       "work-lifecycle",
       "xreview",
     ]);
@@ -389,7 +390,7 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
     expect([...PROTECTED_SKILLS].filter((name) => vendoredSkills.has(name))).toEqual([]);
     expect([...vendoredSkills].sort()).toEqual(expectedVendored);
     expect(new Set([...PROTECTED_SKILLS, ...vendoredSkills])).toEqual(localSkills);
-    expect(localSkills.size).toBe(17);
+    expect(localSkills.size).toBe(18);
     expect(localSkills.has("obsidian-cli")).toBe(false);
     expect(localSkills.has("obsidian-markdown")).toBe(false);
     expect(
@@ -422,6 +423,12 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
   it("replaceSkill lanza con work-lifecycle sin tocar el disco", () => {
     expect(() =>
       replaceSkill("work-lifecycle", "/cualquier/ruta", "abc"),
+    ).toThrow(/propia del stack/);
+  });
+
+  it("replaceSkill lanza con work-audit sin tocar el disco", () => {
+    expect(() =>
+      replaceSkill("work-audit", "/cualquier/ruta", "abc"),
     ).toThrow(/propia del stack/);
   });
 

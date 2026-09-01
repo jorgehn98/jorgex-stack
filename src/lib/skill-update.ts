@@ -10,6 +10,7 @@ export const PROTECTED_SKILLS = new Set([
   "agent-delegation",
   "lean-code",
   "orchestrator",
+  "work-audit",
   "work-lifecycle",
   "xreview",
 ]);
