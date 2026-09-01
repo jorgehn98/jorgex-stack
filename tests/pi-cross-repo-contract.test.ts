@@ -69,6 +69,44 @@ function expectArchiveInventory(tarball: string): void {
   }
 }
 
+function expectRunnerOutput(
+  output: { stdout: string; stderr: string },
+  command: "sync" | "cleanup",
+  packageRunner: string,
+): void {
+  expect(output.stderr).toBe("");
+  expect(output.stdout.endsWith("\n")).toBe(true);
+  expect(Buffer.byteLength(output.stdout)).toBeLessThanOrEqual(PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes);
+
+  const body = output.stdout.slice(0, -1);
+  expect(body).not.toBe("");
+  expect(body).not.toMatch(/[\r\n]/);
+
+  const parsed: unknown = JSON.parse(body);
+  expect(parsed).not.toBeNull();
+  expect(typeof parsed).toBe("object");
+  expect(Array.isArray(parsed)).toBe(false);
+  const record = parsed as {
+    schemaVersion?: unknown;
+    command?: unknown;
+    ok?: unknown;
+    package?: unknown;
+  };
+  expect(record.schemaVersion).toBe(PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion);
+  expect(record.command).toBe(command);
+  expect(record.ok).toBe(true);
+  expect(record.package).not.toBeNull();
+  expect(typeof record.package).toBe("object");
+  expect(Array.isArray(record.package)).toBe(false);
+  const packageInfo = record.package as { name?: unknown; version?: unknown; root?: unknown };
+  expect(packageInfo.name).toBe(PI_RUNTIME_CANDIDATE.package.name);
+  expect(packageInfo.version).toBe(PI_RUNTIME_CANDIDATE.package.version);
+  expect(typeof packageInfo.root).toBe("string");
+  const packageRoot = packageInfo.root as string;
+  expect(path.isAbsolute(packageRoot)).toBe(true);
+  expect(path.resolve(packageRoot, "bin", "jorgex-pi.mjs")).toBe(path.resolve(packageRunner));
+}
+
 afterEach(() => {
   for (const temporaryPath of temporaryPaths.splice(0)) {
     fs.rmSync(temporaryPath, { recursive: true, force: true });
@@ -148,8 +186,8 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     });
 
     const sync = run("sync");
-    expect(sync).toMatchObject({ status: 0, stderr: "" });
-    expect(() => JSON.parse(sync.stdout)).not.toThrow();
+    expect(sync.status).toBe(0);
+    expectRunnerOutput(sync, "sync", runner);
     expect(readJson(settingsFile)).toMatchObject({
       foreign: { keep: true },
       defaultProvider: "openai-codex",
@@ -162,15 +200,15 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expect(fs.existsSync(receiptFile)).toBe(true);
 
     const canonicalCleanup = run("cleanup");
-    expect(canonicalCleanup).toMatchObject({ status: 0, stderr: "" });
-    expect(() => JSON.parse(canonicalCleanup.stdout)).not.toThrow();
+    expect(canonicalCleanup.status).toBe(0);
+    expectRunnerOutput(canonicalCleanup, "cleanup", runner);
     expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
     expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
     expect(fs.existsSync(receiptFile)).toBe(false);
 
     const resync = run("sync");
-    expect(resync).toMatchObject({ status: 0, stderr: "" });
-    expect(() => JSON.parse(resync.stdout)).not.toThrow();
+    expect(resync.status).toBe(0);
+    expectRunnerOutput(resync, "sync", runner);
 
     const settings = readJson(settingsFile) as Record<string, unknown>;
     settings.defaultModel = "user-model";
@@ -180,8 +218,8 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     fs.writeFileSync(modelsFile, JSON.stringify(models));
 
     const cleanup = run("cleanup");
-    expect(cleanup).toMatchObject({ status: 0, stderr: "" });
-    expect(() => JSON.parse(cleanup.stdout)).not.toThrow();
+    expect(cleanup.status).toBe(0);
+    expectRunnerOutput(cleanup, "cleanup", runner);
     expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model" });
     expect(readJson(modelsFile)).toEqual({
       foreign: { keep: true },
