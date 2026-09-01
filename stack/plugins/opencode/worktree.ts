@@ -287,7 +287,6 @@ const replaceToken = (value: string, token: string, replacement: string) =>
 
 export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
   let config: WorktreePluginConfig = {
-    setupScript: "scripts/setup-worktree.ps1",
     pathContains: "worktrees/",
     reminderLines: [],
   };
