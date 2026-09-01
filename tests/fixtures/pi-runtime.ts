@@ -1,5 +1,5 @@
 /**
- * Data-only candidate frozen from the exact published jorgex-pi@0.6.1
+ * Data-only candidate frozen from the exact published jorgex-pi@0.7.0
  * registry artifact; lifecycle tests must not consume a live checkout.
  * The provenance commit is the release checkout. The workflow trigger is
  * attestation metadata, not this fixture's release-checkout provenance.
@@ -7,16 +7,16 @@
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.6.1",
-    source: "npm:jorgex-pi@0.6.1",
+    version: "0.7.0",
+    source: "npm:jorgex-pi@0.7.0",
   },
   provenance: {
-    commit: "fa3cc0dbf06398dc39f70fdf0ba99e4a10846203",
+    commit: "41b41b7a49617b59c7eb72bdedaa75455b362496",
   },
   tarball: {
-    bytes: 89_120_966,
-    sha256: "9a4040ce34dba36aff56f618f957189749219f9560fb796e2b6864bdabf51b93",
-    sha512: "0b08a0ae2477c9dd0c2f62cbf15bc212d2ea9ef66c1a366e29c9f772ee73d073ab991d177583bbbaf3db8844053d7f34d8350a4acd9eb270c3887bd05cddd92f",
+    bytes: 89_125_185,
+    sha256: "4db392a68187a05a530e6d5ac4c45f834aab5972201edc9ef86da547981109e5",
+    sha512: "fb5fdcf15463f3dab36be9b2e6cb55b7397831fe8a172972666a0d6d146ba5e26e70b74e2962dc2702b4ae6ee025094291597c910f967dd924c5a51bd0cc655b",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -75,16 +75,16 @@ export const PI_RUNTIME_CANDIDATE = {
 export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.4.0",
-    source: "npm:jorgex-pi@0.4.0",
+    version: "0.6.1",
+    source: "npm:jorgex-pi@0.6.1",
   },
   provenance: {
-    commit: "40abf9a0f7139e54da25344699c907cbdd859e27",
+    commit: "fa3cc0dbf06398dc39f70fdf0ba99e4a10846203",
   },
   tarball: {
-    bytes: 89_116_913,
-    sha256: "6a984cf270dc204e1ccec15bcccd52b9a9eac168be68e404ca588bd54d924cd1",
-    sha512: "8ec9424cb5bb313b9a29b30d39f84ab32af3004039f077573d3344c2d9564556679a370919912e1fb969780d989d56e5ccea0d06bd5056c00b67b248a68de661",
+    bytes: 89_120_966,
+    sha256: "9a4040ce34dba36aff56f618f957189749219f9560fb796e2b6864bdabf51b93",
+    sha512: "0b08a0ae2477c9dd0c2f62cbf15bc212d2ea9ef66c1a366e29c9f772ee73d073ab991d177583bbbaf3db8844053d7f34d8350a4acd9eb270c3887bd05cddd92f",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -104,6 +104,8 @@ export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
       "runner-json-v1",
       "tui-branding-v1",
       "managed-primary-model-v1",
+      "quality-receipt-contract-v1",
+      "quality-capabilities-contract-v1",
     ],
     runner: {
       bin: "jorgex-pi",
