@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
 
 const piDirectory = process.env.JORGEX_PI_DIR;
@@ -25,6 +25,14 @@ function listTarEntries(tarball: string): string[] {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trimEnd().split(/\r?\n/);
+}
+
+function expectExactArtifactIntegrity(tarball: string): void {
+  const stats = fs.statSync(tarball);
+  expect(stats.isFile()).toBe(true);
+  expect(stats.size).toBe(PI_RUNTIME_CANDIDATE.tarball.bytes);
+  expect(digest("sha256", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha256);
+  expect(digest("sha512", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha512);
 }
 
 function readTarJson(tarball: string, entry: string): unknown {
@@ -50,13 +58,18 @@ function packTarball(root: string): string {
 function expectArchiveInventory(tarball: string): void {
   const entries = new Set(listTarEntries(tarball));
   expect(entries.size).toBe(PI_RUNTIME_ARCHIVE.entries);
+  expect(entries.has(`package/${PI_RUNTIME_ARCHIVE.workAudit.asset}`)).toBe(true);
   for (const asset of PI_RUNTIME_ARCHIVE.brandingAssets) {
     expect(entries.has(`package/${asset}`), asset).toBe(true);
   }
   for (const asset of PI_RUNTIME_ARCHIVE.qualityAssets) {
     expect(entries.has(`package/${asset}`), asset).toBe(true);
   }
-  const packedManifest = readTarJson(tarball, "package/package.json") as { bundledDependencies?: unknown };
+  const packedManifest = readTarJson(tarball, "package/package.json") as {
+    bundledDependencies?: unknown;
+    pi?: { skills?: unknown };
+  };
+  expect(packedManifest.pi?.skills).toEqual(expect.arrayContaining([PI_RUNTIME_ARCHIVE.workAudit.manifestEntry]));
   expect(packedManifest.bundledDependencies).toEqual(PI_RUNTIME_ARCHIVE.bundledDependencies);
   for (const dependency of PI_RUNTIME_ARCHIVE.bundledDependencies) {
     expect(entries.has(`package/node_modules/${dependency}/package.json`), dependency).toBe(true);
@@ -114,12 +127,12 @@ afterEach(() => {
 });
 
 registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => {
+  beforeAll(() => {
+    expectExactArtifactIntegrity(path.resolve(registryTarball!));
+  });
+
   it("matches the frozen bytes, digests, package contract, and archive inventory", () => {
     const tarball = path.resolve(registryTarball!);
-    expect(fs.statSync(tarball).isFile()).toBe(true);
-    expect(fs.statSync(tarball).size).toBe(PI_RUNTIME_CANDIDATE.tarball.bytes);
-    expect(digest("sha256", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha256);
-    expect(digest("sha512", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha512);
 
     const manifest = readTarJson(tarball, "package/package.json") as { name?: unknown; version?: unknown };
     const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {

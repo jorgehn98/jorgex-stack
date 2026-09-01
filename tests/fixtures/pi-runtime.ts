@@ -142,6 +142,10 @@ export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
  */
 export const PI_RUNTIME_ARCHIVE = {
   entries: 13_403,
+  workAudit: {
+    asset: "skills/work-audit/SKILL.md",
+    manifestEntry: "./skills/work-audit",
+  },
   brandingAssets: [
     "assets/brand/eye-logo.svg",
     "themes/JorgeX.json",
