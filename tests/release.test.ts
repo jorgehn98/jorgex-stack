@@ -320,6 +320,16 @@ function extractWorkflowStepBlock(job: string, marker: string): string {
   return job.slice(stepStart, stepEnd < 0 ? job.length : stepEnd);
 }
 
+function extractFirstWorkflowStepBlock(job: string): string {
+  const stepStart = job.indexOf("      - ");
+  if (stepStart < 0) {
+    throw new Error("El job no contiene steps.");
+  }
+
+  const stepEnd = job.indexOf("\n      - ", stepStart + 1);
+  return job.slice(stepStart, stepEnd < 0 ? job.length : stepEnd);
+}
+
 function extractRunScript(step: string, marker: string): string {
   const stepBlock = extractWorkflowStepBlock(step, marker);
   const lines = stepBlock.split(/\r?\n/);
@@ -930,6 +940,20 @@ describe("publish workflow contract", () => {
     expect(bump).toMatch(/needs\.validate\.outputs\.should_validate\s*==\s*['\"]true['\"]/);
     expect(publish).toContain("needs: bump");
     expect(tagRelease).toContain("needs: [bump, publish]");
+  });
+
+  it("bloquea reruns antes de mutar en cada job y acepta una SHA pendiente o ya publicada para recovery", () => {
+    const jobs = splitTopLevelJobs(readWorkflow());
+
+    for (const jobName of ["validate", "bump", "publish", "tag-release"]) {
+      const firstStep = extractFirstWorkflowStepBlock(jobs.get(jobName) ?? "");
+      expect(firstStep, `${jobName} debe rechazar reruns antes de cualquier mutación.`)
+        .toMatch(/GITHUB_RUN_ATTEMPT[^\n]*(?:-gt|>)\s*1/);
+    }
+
+    const validateGuard = extractFirstWorkflowStepBlock(jobs.get("validate") ?? "");
+    expect(validateGuard).toContain("workflow_dispatch");
+    expect(validateGuard).toMatch(/release_sha=<SHA pendiente o ya publicada>/i);
   });
 
   it("workflow_dispatch sin release_sha resuelve una SHA objetivo una sola vez en validate y la reutiliza", () => {

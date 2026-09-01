@@ -28,7 +28,14 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<RegistryResponse>;
 
 type NpmReadbackResult =
   | { status: "public" }
-  | { status: "pending"; reason: "unconfirmed" };
+  | {
+    status: "pending";
+    reason: "unconfirmed";
+    attempts: number;
+    lastFailure:
+      | { category: "registry"; status: number }
+      | { category: "network" };
+  };
 
 type WaitForNpmAvailability = (options: {
   packageName: string;
@@ -42,6 +49,13 @@ type WaitForNpmAvailability = (options: {
 
 type NpmReadbackModule = {
   waitForNpmAvailability: WaitForNpmAvailability;
+  reportNpmReadbackResult: (options: {
+    packageName: string;
+    version: string;
+    result: NpmReadbackResult;
+    warn: (message: string) => void;
+    appendSummary: (message: string) => void;
+  }) => void;
 };
 
 const npmReadbackModuleUrl = new URL("../.github/scripts/npm-readback.mjs", import.meta.url).href;
@@ -76,6 +90,7 @@ afterEach(() => {
   expect(childProcess.execFileSync).not.toHaveBeenCalled();
   expect(childProcess.spawn).not.toHaveBeenCalled();
   expect(childProcess.spawnSync).not.toHaveBeenCalled();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -102,6 +117,29 @@ describe("waitForNpmAvailability", () => {
       expect.objectContaining({ redirect: "error" }),
     );
     expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("propaga al fetch una señal limitada por el tiempo restante del deadline", async () => {
+    const { waitForNpmAvailability } = await loadObserver();
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const fetch = vi.fn(async () => registryResponse(200, publicMetadata()));
+
+    await waitForNpmAvailability({
+      packageName,
+      version,
+      fetch,
+      sleep: async () => undefined,
+      now: () => 900,
+      deadlineAt: 1_000,
+      retryDelayMs: 100,
+    });
+
+    expect(timeout).toHaveBeenCalledWith(100);
+    expect(fetch).toHaveBeenCalledWith(
+      `https://registry.npmjs.org/${packageName}/${version}`,
+      expect.objectContaining({ signal }),
+    );
   });
 
   it.each([
@@ -232,11 +270,70 @@ describe("waitForNpmAvailability", () => {
       retryDelayMs: 100,
     });
 
-    expect(result).toEqual({ status: "pending", reason: "unconfirmed" });
+    expect(result).toMatchObject({
+      status: "pending",
+      reason: "unconfirmed",
+      attempts: 3,
+      lastFailure: { category: "registry", status: 404 },
+    });
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenNthCalledWith(1, 100);
     expect(sleep).toHaveBeenNthCalledWith(2, 100);
     expect(now).toBeLessThanOrEqual(250);
+  });
+
+  it("distingue un pending por propagación del registry de uno por fallo de red", async () => {
+    const { waitForNpmAvailability } = await loadObserver();
+
+    const runUntilPending = async (read: () => Promise<RegistryResponse>) => {
+      let now = 0;
+      return await waitForNpmAvailability({
+        packageName,
+        version,
+        fetch: vi.fn(read),
+        sleep: async (milliseconds: number) => {
+          now += milliseconds;
+        },
+        now: () => now,
+        deadlineAt: 250,
+        retryDelayMs: 100,
+      });
+    };
+
+    await expect(runUntilPending(async () => registryResponse(404, {}))).resolves.toMatchObject({
+      status: "pending",
+      attempts: 3,
+      lastFailure: { category: "registry", status: 404 },
+    });
+    await expect(runUntilPending(async () => {
+      throw new TypeError("network unreachable");
+    })).resolves.toMatchObject({
+      status: "pending",
+      attempts: 3,
+      lastFailure: { category: "network" },
+    });
+  });
+
+  it("reporta un pending con causa e intentos sin convertirlo en un fallo", async () => {
+    const { reportNpmReadbackResult } = await loadObserver();
+    const warn = vi.fn();
+    const appendSummary = vi.fn();
+
+    expect(() => reportNpmReadbackResult({
+      packageName,
+      version,
+      result: {
+        status: "pending",
+        reason: "unconfirmed",
+        attempts: 3,
+        lastFailure: { category: "registry", status: 404 },
+      },
+      warn,
+      appendSummary,
+    })).not.toThrow();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/::warning::.*3.*HTTP 404/is));
+    expect(appendSummary).toHaveBeenCalledWith(expect.stringMatching(/3.*HTTP 404/is));
   });
 });

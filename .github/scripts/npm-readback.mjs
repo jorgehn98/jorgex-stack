@@ -80,20 +80,31 @@ export async function waitForNpmAvailability({
 
   const url = registryMetadataUrl(packageName, version);
   let retryCount = 0;
+  let attempts = 0;
+  let lastFailure;
+
+  const pending = () => ({
+    status: "pending",
+    reason: "unconfirmed",
+    attempts,
+    lastFailure,
+  });
 
   while (now() < deadlineAt) {
     const remainingMs = deadlineAt - now();
     let response;
 
     try {
+      attempts += 1;
       response = await fetch(url, {
         redirect: "error",
         signal: AbortSignal.timeout(Math.min(DEFAULT_REQUEST_TIMEOUT_MS, remainingMs)),
       });
     } catch {
+      lastFailure = { category: "network" };
       const delayMs = retryDelay(retryCount, retryDelayMs);
       retryCount += 1;
-      if (delayMs > deadlineAt - now()) return { status: "pending", reason: "unconfirmed" };
+      if (delayMs > deadlineAt - now()) return pending();
       await sleep(delayMs);
       continue;
     }
@@ -108,13 +119,14 @@ export async function waitForNpmAvailability({
       throw new Error(`El registry de npm respondió HTTP ${response.status}.`);
     }
 
+    lastFailure = { category: "registry", status: response.status };
     const delayMs = retryDelay(retryCount, retryDelayMs);
     retryCount += 1;
-    if (delayMs > deadlineAt - now()) return { status: "pending", reason: "unconfirmed" };
+    if (delayMs > deadlineAt - now()) return pending();
     await sleep(delayMs);
   }
 
-  return { status: "pending", reason: "unconfirmed" };
+  return pending();
 }
 
 function sleep(milliseconds) {
@@ -137,6 +149,18 @@ function readPackageMetadata() {
 function appendSummary(message) {
   const summaryPath = (process.env.GITHUB_STEP_SUMMARY ?? "").trim();
   if (summaryPath !== "") fs.appendFileSync(summaryPath, `${message}\n`, "utf8");
+}
+
+export function reportNpmReadbackResult({ packageName, version, result, warn, appendSummary }) {
+  if (result.status !== "pending") return;
+
+  const lastFailure = result.lastFailure?.category === "registry"
+    ? `última lectura HTTP ${result.lastFailure.status}`
+    : "última lectura de red o timeout";
+  const warning = `npm readback sin confirmar para ${packageName}@${version} antes del deadline tras ${result.attempts} intentos; ${lastFailure}. La publicación aceptada y su tag no cambian.`;
+
+  warn(`::warning::${warning}`);
+  appendSummary(`### npm readback\n\n> ${warning}`);
 }
 
 async function main() {
@@ -166,9 +190,13 @@ async function main() {
     return;
   }
 
-  const warning = `npm readback sin confirmar para ${packageName}@${version} antes del deadline; la publicación aceptada y su tag no cambian.`;
-  console.warn(`::warning::${warning}`);
-  appendSummary(`### npm readback\n\n> ${warning}`);
+  reportNpmReadbackResult({
+    packageName,
+    version,
+    result,
+    warn: console.warn,
+    appendSummary,
+  });
 }
 
 if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
