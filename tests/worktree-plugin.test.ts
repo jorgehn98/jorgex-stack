@@ -10,23 +10,25 @@ const toSlashes = (value: string) => value.replace(/\\/g, "/");
 
 const makePlugin = async (
   root: string,
-  config: Record<string, unknown> | string | null = {},
+  config: unknown = {},
   spawn = vi.fn(),
   spawnResult = {
     stdout: "setup ok",
     stderr: "",
     exited: Promise.resolve(0),
   },
+  appLog = vi.fn(),
 ) => {
   vi.stubGlobal("Bun", {
     file: () => ({
       text: async () => {
         if (config === null) throw new Error("Config not found");
         if (typeof config === "string") return config;
+        if (Array.isArray(config)) return JSON.stringify(config);
         return JSON.stringify({
           setupScript: "setup.ps1",
           pathContains: "worktrees\\",
-          ...config,
+          ...(config as Record<string, unknown>),
         });
       },
     }),
@@ -39,9 +41,9 @@ const makePlugin = async (
     return r;
   }) as any;
   const $ = ((strings: TemplateStringsArray) => dollar(strings)) as any;
-  const client = { app: { log: vi.fn() } };
+  const client = { app: { log: appLog } };
   const plugin = await WorktreePlugin({ $, client, directory: root } as any);
-  return { plugin, spawn };
+  return { plugin, spawn, appLog };
 };
 
 beforeEach(() => {
@@ -134,6 +136,66 @@ describe("WorktreePlugin", () => {
 
     expect(spawn).not.toHaveBeenCalled();
     expect(output.output).toEqual(expect.stringMatching(/setupScript.*string/i));
+  });
+
+  it.each([
+    ["an array config root", [], /config.*object/i],
+    ['a non-string "docsReminderScript"', { docsReminderScript: true }, /docsReminderScript.*string/i],
+    ['a non-string "pathContains"', { pathContains: 42 }, /pathContains.*string/i],
+    ['a non-string "reminderLines" entry', { reminderLines: [42] }, /reminderLines.*string/i],
+  ])("reports %s without spawning setup", async (_description, config, expectedError) => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn } = await makePlugin(tmp, config);
+    const output: Record<string, string> = {};
+
+    await plugin["tool.execute.after"](
+      {
+        tool: "bash",
+        args: {
+          command: "git worktree add ../worktrees/canonical-name",
+          workdir: srcDir,
+        },
+      },
+      output,
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toEqual(expect.stringMatching(expectedError));
+    expect(output.output).not.toContain("Worktree setup complete");
+  });
+
+  it("keeps an unsupported setup failure visible when OpenCode logging rejects", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const appLog = vi.fn().mockRejectedValue(new Error("OpenCode log unavailable"));
+    const { plugin, spawn } = await makePlugin(
+      tmp,
+      { setupScript: "setup.txt" },
+      vi.fn(),
+      undefined,
+      appLog,
+    );
+    const output: Record<string, string> = {};
+
+    await expect(
+      plugin["tool.execute.after"](
+        {
+          tool: "bash",
+          args: {
+            command: "git worktree add ../worktrees/canonical-name",
+            workdir: srcDir,
+          },
+        },
+        output,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(appLog).toHaveBeenCalledOnce();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(output.output).toContain("Worktree setup failed for canonical-name.");
+    expect(output.output).toMatch(/unsupported.*extension/i);
+    expect(output.output).not.toContain("Worktree setup complete");
   });
 
   it("runs explicitly configured setup for a canonical worktree path resolved from command cwd", async () => {

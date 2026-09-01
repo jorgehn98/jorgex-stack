@@ -69,6 +69,22 @@ const resolveProjectPath = (directory: string, target?: string) => {
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const validateConfig = (config: Record<string, unknown>) => {
+  for (const field of ["setupScript", "docsReminderScript", "pathContains"]) {
+    if (field in config && typeof config[field] !== "string") {
+      return `Worktree config field "${field}" must be a string.`;
+    }
+  }
+
+  if (
+    "reminderLines" in config &&
+    (!Array.isArray(config.reminderLines) ||
+      !config.reminderLines.every((line) => typeof line === "string"))
+  ) {
+    return 'Worktree config field "reminderLines" must be an array of strings.';
+  }
+};
+
 const getPayloadWorktreePath = (payload: unknown) => {
   if (!isPlainObject(payload)) return undefined;
 
@@ -331,13 +347,11 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
       const parsed = JSON.parse(await configFile.text()) as unknown;
       if (!isPlainObject(parsed)) {
         configError = "Worktree config must be a JSON object.";
-      } else if (
-        "setupScript" in parsed &&
-        typeof parsed.setupScript !== "string"
-      ) {
-        configError = 'Worktree config field "setupScript" must be a string.';
       } else {
-        config = { ...config, ...(parsed as WorktreePluginConfig) };
+        configError = validateConfig(parsed);
+        if (!configError) {
+          config = { ...config, ...(parsed as WorktreePluginConfig) };
+        }
       }
     }
   } catch (error) {
