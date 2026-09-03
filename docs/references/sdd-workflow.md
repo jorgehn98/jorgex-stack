@@ -70,6 +70,6 @@ Este límite es procedimental. No convierte al orchestrator en un proceso con sa
 
 ## Relación con Pi
 
-Stack es la fuente canónica y el canal gestionado principal. Stack 1.9.2 proyecta inmediatamente la skill compartida al Pi gestionado mediante el lifecycle existente y reconoce el pin exacto `npm:jorgex-pi@0.8.0`; esto es una proyección propiedad de Stack, no una mutación del paquete Pi 0.8.0.
+Stack es la fuente canónica y el canal gestionado principal. La versión publicada `1.9.3` mantiene el pin saliente exacto `npm:jorgex-pi@0.8.0`; este checkout prepara el candidato de producción `npm:jorgex-pi@0.8.3`, con release commit `0a35c283fe30a9fed87da3cedc00bab97163e68b`, `89129618` bytes y paridad `fac3ba828c20134858e2a9aa1e68b920270f7b5a`. La nueva release de Stack no está publicada aún, por lo que el readback post-merge es requisito antes de afirmar una versión adoptante. En ambos casos, la proyección es propiedad de Stack, no una mutación del paquete Pi.
 
-La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.0 está publicado y activa `work-audit` para el canal directo. Stack 1.9.2 adopta el tarball exacto con tamaño y hashes verificados y reconoce `npm:jorgex-pi@0.8.0`.
+La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.0 está publicado y activa `work-audit` para el canal directo; esa introducción histórica se conserva. El candidato Pi 0.8.3 actualiza el artefacto directo y mantiene la paridad `fac3ba828c20134858e2a9aa1e68b920270f7b5a`. El Stack publicado 1.9.3 reconoce todavía `npm:jorgex-pi@0.8.0`; la adopción Stack de 0.8.3 queda pendiente del readback público de la nueva release.
