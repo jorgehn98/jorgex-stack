@@ -26,6 +26,10 @@ PRE comprueba:
 
 El resultado es `clean` o `gaps`. Un plan con gaps no puede aprobarse. La skill no corrige nada: el orchestrator modifica el artefacto propietario y repite PRE.
 
+### Aclaración selectiva
+
+PRE solo bloquea por una ambigüedad semántica material: debe haber interpretaciones plausibles que difieran materialmente en el comportamiento observable, el alcance, los criterios de éxito o la decisión de testing. Una preferencia de implementación o un default de bajo impacto no necesita convertirse en `[NEEDS CLARIFICATION: ...]` ni en un gap.
+
 ## POST: convergencia durante VERIFY
 
 El orchestrator ejecuta POST después de las comprobaciones deterministas y antes de marcar los criterios como completos.
@@ -39,6 +43,10 @@ POST comprueba:
 - requisitos, edge cases, docs o contratos cross-repo asignados al checkpoint actual y todavía pendientes; los checkpoints futuros quedan fuera de scope.
 
 El resultado es `converged` o `gaps`. `Converged` no sustituye tests, revisión humana, Quality Gates configurados ni validación manual cuando aplique. Con gaps, el orchestrator crea tareas normales y vuelve a EXECUTE; POST se repite después.
+
+### Change-first para cambios intencionales
+
+Si durante EXECUTE o VERIFY aparece un cambio material e intencional del contrato aprobado —no un bugfix que restaura ese contrato— el flujo vuelve a SPEC antes de seguir implementando. El orchestrator actualiza primero el PRD y después propaga el cambio al plan, las specs de tareas, los criterios `SC-*` y las testing decisions. Debe repetir PRE hasta obtener `clean` y obtener aprobación humana del delta antes de reanudar EXECUTE y repetir VERIFY. POST no puede legitimar retroactivamente un cambio de scope.
 
 ## Trazabilidad sin duplicación
 
