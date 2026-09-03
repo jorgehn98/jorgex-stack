@@ -71,6 +71,7 @@ describe("orchestrator canonical source", () => {
 
     expect(planSection).toContain("Load and run the `work-audit` skill in **PRE** mode");
     expect(verifySection).toContain("Load and run the `work-audit` skill in **POST** mode");
+    expect(verifySection).toContain("change-first");
     expect(planSection).toMatch(/exact active `work\/\{name\}` path/i);
     expect(verifySection).toMatch(/exact active `work\/\{name\}` path[\s\S]*checkpoint scope/i);
 
@@ -85,6 +86,18 @@ describe("orchestrator canonical source", () => {
     const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
 
     expect(planSection).toMatch(/human review[\s\S]{0,220}(?:changes|modifies)[\s\S]{0,220}rerun PRE/i);
+  });
+
+  it("ordena change-first antes de EXECUTE para cambios intencionales materiales de contrato", () => {
+    const content = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
+
+    expect(planSection).toMatch(/change-first[\s\S]{0,120}intentional material contract changes?/i);
+    expect(planSection).toMatch(/discovered in EXECUTE or VERIFY[\s\S]{0,160}return to SPEC before further implementation/i);
+    expect(planSection).toMatch(/not bugfixes[\s\S]{0,120}restore the approved contract/i);
+    expect(planSection).toMatch(
+      /Update the PRD first[\s\S]{0,220}plan[\s\S]{0,220}task specs[\s\S]{0,220}SC-\*[\s\S]{0,220}testing decisions?[\s\S]{0,220}PRE[\s\S]{0,220}clean[\s\S]{0,220}human approval[\s\S]{0,220}delta[\s\S]{0,220}resume EXECUTE[\s\S]{0,220}repeat VERIFY/i,
+    );
   });
 });
 

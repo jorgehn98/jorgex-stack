@@ -28,6 +28,7 @@ Run after the plan and task specs exist, before presenting the final plan for ap
 Check:
 
 1. No unresolved `[NEEDS CLARIFICATION: ...]` marker remains.
+   - Report a latent material semantic ambiguity as a gap only when plausible interpretations differ materially in observable behavior, scope, success criteria or testing. Only low-impact implementation preferences, defaults, wording and paths are excluded from gaps or clarification; material alternatives still block.
 2. Success criteria use unique IDs such as `SC-01`; report duplicate or malformed `SC-*` IDs.
 3. Every SC is verifiable and has task coverage in the plan table.
 4. Every task references known SCs and has one agent, one bounded scope, affected files, dependencies and a wave consistent with those dependencies.
@@ -49,13 +50,14 @@ Check:
 1. Every planned task for the checkpoint has the expected status and bounded outcome.
 2. Every in-scope SC has concrete evidence in its canonical checkpoint: command/setup, scope, result and relevant limits.
 3. The implementation diff and observed behavior stay within the approved PRD, plan and task scopes.
+   - POST cannot legitimize scope changes retroactively. For intentional material contract changes, send scope drift to SPEC through change-first. Defects or bugfixes restoring the approved contract return to EXECUTE.
 4. Tests, typecheck/build, manual checks and external gates are not over-claimed; missing or incomplete execution remains explicit.
 5. No accepted requirement, edge case, testing decision, documentation change or cross-repo contract assigned to the current checkpoint is left without implementation or evidence. Future checkpoints remain out of scope.
 
 POST verdicts:
 
 - `converged` — the available evidence satisfies the approved contract. This does not replace tests, human review, configured Quality Gates or manual validation when applicable.
-- `gaps` — return actionable findings to the orchestrator; implementation must return to EXECUTE and POST must run again.
+- `gaps` — return actionable findings to the orchestrator and route each to its owning phase; never send every gap unconditionally to EXECUTE. Rerun POST after the fix.
 
 ## Read-only boundary
 

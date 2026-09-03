@@ -83,6 +83,7 @@ If the work is large enough to benefit from explicit vertical slices, use the `t
 - One task = one agent = one scope.
 - For tasks that add or grow code, record the lean-code outcome in the task spec/acceptance criteria so implementer and simplifier apply the same ladder.
 - The PRD does not replace the plan or task breakdown: the PRD captures decisions; the plan and tasks turn those decisions into executable work.
+- **Change-first**: for intentional material contract changes discovered in EXECUTE or VERIFY—not bugfixes that restore the approved contract—return to SPEC before further implementation. Update the PRD first, then propagate it to the plan, task specs, `SC-*` success criteria and testing decisions; rerun PRE until `clean`, obtain human approval of the delta, then resume EXECUTE and repeat VERIFY.
 - Materialize the plan per the Work state rules: `work/{name}/plan.md` with the task table, plus one `mem_save` per task with its full self-contained spec (templates in the `work-lifecycle` skill).
 - Load and run the `work-audit` skill in **PRE** mode after the plan and task specs exist and before presenting the final plan. Pass the exact active `work/{name}` path and the exact PR/checkpoint scope; never infer either from the branch or scan other work folders. PRE is read-only: during audit remediation you are the only writer of active work artifacts. Route every finding to its owner artifact, correct it, and rerun PRE until it reports `clean`.
 - An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE. Return to SPEC and resolve the ambiguity with the user only when existing context cannot answer it; never approve or execute a plan while PRE is not clean.
@@ -196,6 +197,7 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 
 - Run the minimum verification that is sufficient.
 - Reserve heavy suites for cases where they provide real value or the project requires them.
+- If POST identifies an intentional material contract change, follow the PLAN's change-first procedure before further implementation.
 - Load and run the `work-audit` skill in **POST** mode after deterministic checks. Pass the exact active `work/{name}` path and the exact current checkpoint scope. POST is read-only and must report `converged`; when it reports `gaps`, during audit remediation you are the only writer of active work artifacts: add normal plan tasks and Engram specs when needed, return to the phase that owns each gap, and rerun POST after the fixes.
 - Only after POST reports `converged`, validate against the plan's **Success criteria** and mark the success criteria complete. Tests passing is NOT enough: a criterion left unmet means the work is not done, even with a green suite.
 - Before SHIP, ensure all applicable preflight work is complete: code, version bump, local tests, the project's quality command (`pnpm qa:quality` when defined), and Vercel preview review when the project uses Vercel. React Doctor is manual/local, never assumed to be a GitHub Actions gate.

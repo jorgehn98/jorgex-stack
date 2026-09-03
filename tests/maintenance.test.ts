@@ -1192,6 +1192,64 @@ describe("portable SDD audit contract", () => {
     expect(planSection).toContain("An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE.");
   });
 
+  it("PRE identifica la ambigüedad semántica material como un gap", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const preSection = sectionBetween(content, "### PRE", "### POST");
+
+    expect(preSection).toMatch(/material[\s\S]{0,120}semantic[\s\S]{0,120}(?:ambiguity|ambiguous)[\s\S]{0,120}gaps?/i);
+    expect(preSection).toMatch(
+      /plausible interpretations[\s\S]{0,120}differ materially[\s\S]{0,120}observable behavior[\s\S]{0,120}scope[\s\S]{0,120}success criteria[\s\S]{0,120}testing/i,
+    );
+  });
+
+  it("PRE excluye preferencias de implementación de bajo impacto de los gaps", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const preSection = sectionBetween(content, "### PRE", "### POST");
+
+    expect(preSection).toMatch(
+      /(?:low-impact|low impact)[\s\S]{0,120}implementation preference[\s\S]{0,120}(?:not|exclude)[\s\S]{0,120}(?:gaps?|clarification)/i,
+    );
+    expect(preSection).toMatch(/only[\s\S]{0,120}low-impact/i);
+    expectFragments(preSection, ["preferences", "defaults", "wording", "paths"]);
+  });
+
+  it("POST no legitima retroactivamente cambios de scope", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const postSection = sectionBetween(content, "### POST", "## Read-only boundary");
+
+    expect(postSection).toMatch(
+      /(?:cannot|must not|do not)[\s\S]{0,120}(?:legitimi[sz]e|ratify)[\s\S]{0,120}(?:scope|change)[\s\S]{0,120}retroactive/i,
+    );
+    expect(postSection).toMatch(
+      /(?:send|return)[\s\S]{0,120}(?:retroactive )?scope drift[\s\S]{0,120}\bSPEC\b[\s\S]{0,120}change-first/i,
+    );
+  });
+
+  it("POST envía cambios intencionales materiales de contrato a SPEC mediante change-first", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const postSection = sectionBetween(content, "### POST", "## Read-only boundary");
+
+    expect(postSection).toMatch(
+      /intentional material contract changes?[\s\S]{0,160}\bSPEC\b[\s\S]{0,160}change-first/i,
+    );
+  });
+
+  it("POST devuelve defectos que restauran el contrato aprobado a EXECUTE", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const postSection = sectionBetween(content, "### POST", "## Read-only boundary");
+
+    expect(postSection).toMatch(
+      /(?:defects?|bugfixes?)[\s\S]{0,160}(?:restore|restoring)[\s\S]{0,160}(?:approved )?contract[\s\S]{0,160}EXECUTE/i,
+    );
+  });
+
+  it("POST dirige los gaps a su fase propietaria", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const postSection = sectionBetween(content, "### POST", "## Read-only boundary");
+
+    expect(postSection).toMatch(/`gaps`[\s\S]{0,220}(?:owner|owning) phase/i);
+  });
+
   it("el plan template mantiene IDs SC, cobertura por tarea y evidencia de checkpoint", () => {
     const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
     const successCriteria = sectionBetween(template, "## Success criteria", "## Tasks");
