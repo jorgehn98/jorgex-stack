@@ -197,6 +197,7 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 
 - Run the minimum verification that is sufficient.
 - Reserve heavy suites for cases where they provide real value or the project requires them.
+- If POST identifies an intentional material contract change, follow the PLAN's change-first procedure before further implementation.
 - Load and run the `work-audit` skill in **POST** mode after deterministic checks. Pass the exact active `work/{name}` path and the exact current checkpoint scope. POST is read-only and must report `converged`; when it reports `gaps`, during audit remediation you are the only writer of active work artifacts: add normal plan tasks and Engram specs when needed, return to the phase that owns each gap, and rerun POST after the fixes.
 - Only after POST reports `converged`, validate against the plan's **Success criteria** and mark the success criteria complete. Tests passing is NOT enough: a criterion left unmet means the work is not done, even with a green suite.
 - Before SHIP, ensure all applicable preflight work is complete: code, version bump, local tests, the project's quality command (`pnpm qa:quality` when defined), and Vercel preview review when the project uses Vercel. React Doctor is manual/local, never assumed to be a GitHub Actions gate.
