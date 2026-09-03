@@ -1192,6 +1192,31 @@ describe("portable SDD audit contract", () => {
     expect(planSection).toContain("An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE.");
   });
 
+  it("PRE identifica la ambigüedad semántica material como un gap", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const preSection = sectionBetween(content, "### PRE", "### POST");
+
+    expect(preSection).toMatch(/material[\s\S]{0,120}semantic[\s\S]{0,120}(?:ambiguity|ambiguous)[\s\S]{0,120}gaps?/i);
+  });
+
+  it("PRE excluye preferencias de implementación de bajo impacto de los gaps", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const preSection = sectionBetween(content, "### PRE", "### POST");
+
+    expect(preSection).toMatch(
+      /(?:low-impact|low impact)[\s\S]{0,120}implementation preference[\s\S]{0,120}(?:not|exclude)[\s\S]{0,120}(?:gaps?|clarification)/i,
+    );
+  });
+
+  it("POST no legitima retroactivamente cambios de scope", () => {
+    const content = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const postSection = sectionBetween(content, "### POST", "## Read-only boundary");
+
+    expect(postSection).toMatch(
+      /(?:cannot|must not|do not)[\s\S]{0,120}(?:legitimi[sz]e|ratify)[\s\S]{0,120}(?:scope|change)[\s\S]{0,120}retroactive/i,
+    );
+  });
+
   it("el plan template mantiene IDs SC, cobertura por tarea y evidencia de checkpoint", () => {
     const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
     const successCriteria = sectionBetween(template, "## Success criteria", "## Tasks");

@@ -86,6 +86,15 @@ describe("orchestrator canonical source", () => {
 
     expect(planSection).toMatch(/human review[\s\S]{0,220}(?:changes|modifies)[\s\S]{0,220}rerun PRE/i);
   });
+
+  it("ordena change-first antes de EXECUTE para cambios intencionales de contrato", () => {
+    const content = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
+
+    expect(planSection).toMatch(
+      /intentional[\s\S]{0,220}contract(?:-| )changes?[\s\S]{0,220}PRD[\s\S]{0,220}plan[\s\S]{0,220}(?:tasks?|task specs?)[\s\S]{0,220}(?:SC-\*|success criteria)[\s\S]{0,220}testing decisions?[\s\S]{0,220}PRE[\s\S]{0,220}clean[\s\S]{0,220}human approval[\s\S]{0,220}EXECUTE/i,
+    );
+  });
 });
 
 describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
