@@ -1,5 +1,5 @@
 /**
- * Data-only candidate frozen from the exact published jorgex-pi@0.8.0
+ * Data-only candidate frozen from the exact published jorgex-pi@0.8.3
  * registry artifact; lifecycle tests must not consume a live checkout.
  * The provenance commit is the release checkout. The workflow trigger is
  * attestation metadata, not this fixture's release-checkout provenance.
@@ -7,16 +7,16 @@
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.8.0",
-    source: "npm:jorgex-pi@0.8.0",
+    version: "0.8.3",
+    source: "npm:jorgex-pi@0.8.3",
   },
   provenance: {
-    commit: "9f999747df3e335947a61d38e581555367973b09",
+    commit: "0a35c283fe30a9fed87da3cedc00bab97163e68b",
   },
   tarball: {
-    bytes: 89_128_340,
-    sha256: "b001f9dea23669b7211af228df6ea6442bcd90a9a928aa1a47c3e7132966f989",
-    sha512: "a591bf223e2d48ddecc89341253dc0ac41a6f843796c04ca62f47dc7587b3ec9afafdffba63e52fe99f833aec5ac0b34926eaf3c26f2755003bbf8e6891f6bd9",
+    bytes: 89_129_618,
+    sha256: "4dfe5aed6ad3043b285d4d171656934708df159846634712a88f947ca8334ef4",
+    sha512: "36f958cb2edcb2ce22e28c59f32ddcb976b889a37cba3637e89478261ddc05d3a9cf1001d29a6aca30a92d935cb07b50243c4d3eca783ed8e580bf15bb3d07aa",
   },
   pi: {
     testedVersions: ["0.84.2"],
@@ -70,21 +70,21 @@ export const PI_RUNTIME_CANDIDATE = {
 
 /**
  * Test-only context for the previously published Stack/Pi pin. It models the
- * old Stack context for rollback tests and is not a production candidate.
+ * outgoing Stack context for rollback tests and is not a production candidate.
  */
 export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.7.0",
-    source: "npm:jorgex-pi@0.7.0",
+    version: "0.8.0",
+    source: "npm:jorgex-pi@0.8.0",
   },
   provenance: {
-    commit: "41b41b7a49617b59c7eb72bdedaa75455b362496",
+    commit: "9f999747df3e335947a61d38e581555367973b09",
   },
   tarball: {
-    bytes: 89_125_185,
-    sha256: "4db392a68187a05a530e6d5ac4c45f834aab5972201edc9ef86da547981109e5",
-    sha512: "fb5fdcf15463f3dab36be9b2e6cb55b7397831fe8a172972666a0d6d146ba5e26e70b74e2962dc2702b4ae6ee025094291597c910f967dd924c5a51bd0cc655b",
+    bytes: 89_128_340,
+    sha256: "b001f9dea23669b7211af228df6ea6442bcd90a9a928aa1a47c3e7132966f989",
+    sha512: "a591bf223e2d48ddecc89341253dc0ac41a6f843796c04ca62f47dc7587b3ec9afafdffba63e52fe99f833aec5ac0b34926eaf3c26f2755003bbf8e6891f6bd9",
   },
   pi: {
     testedVersions: ["0.84.2"],
