@@ -28,7 +28,7 @@ El resultado es `clean` o `gaps`. Un plan con gaps no puede aprobarse. La skill 
 
 ### Aclaración selectiva
 
-PRE solo bloquea por una ambigüedad semántica material: debe haber interpretaciones plausibles que difieran materialmente en el comportamiento observable, el alcance, los criterios de éxito o la decisión de testing. Una preferencia de implementación o un default de bajo impacto no necesita convertirse en `[NEEDS CLARIFICATION: ...]` ni en un gap.
+PRE solo bloquea por una ambigüedad semántica material: debe haber interpretaciones plausibles que difieran materialmente en el comportamiento observable, el alcance, los criterios de éxito o la decisión de testing. Preferencias de implementación, defaults, redacción y rutas solo quedan excluidos cuando son de bajo impacto; las alternativas con consecuencias materiales siguen bloqueando.
 
 ## POST: convergencia durante VERIFY
 
@@ -42,7 +42,7 @@ POST comprueba:
 - comandos, setup, alcance, resultados y límites de la verificación;
 - requisitos, edge cases, docs o contratos cross-repo asignados al checkpoint actual y todavía pendientes; los checkpoints futuros quedan fuera de scope.
 
-El resultado es `converged` o `gaps`. `Converged` no sustituye tests, revisión humana, Quality Gates configurados ni validación manual cuando aplique. Con gaps, el orchestrator crea tareas normales y vuelve a EXECUTE; POST se repite después.
+El resultado es `converged` o `gaps`. `Converged` no sustituye tests, revisión humana, Quality Gates configurados ni validación manual cuando aplique. Con gaps, el orchestrator enruta cada hallazgo a su fase propietaria y repite POST tras resolverlo: un cambio material intencional del contrato va a SPEC mediante change-first; un defecto o bugfix que restaura el contrato aprobado vuelve a EXECUTE.
 
 ### Change-first para cambios intencionales
 
