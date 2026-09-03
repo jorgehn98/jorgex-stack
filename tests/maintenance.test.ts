@@ -1211,10 +1211,16 @@ describe("portable SDD audit contract", () => {
   it("POST no legitima retroactivamente cambios de scope", () => {
     const content = readRequiredStackFile("skills/work-audit/SKILL.md");
     const postSection = sectionBetween(content, "### POST", "## Read-only boundary");
+    const changeFirstDestination =
+      /(?:send|return)[\s\S]{0,120}(?:retroactive )?scope drift[\s\S]{0,120}\bSPEC\b[\s\S]{0,120}change-first/i;
 
     expect(postSection).toMatch(
       /(?:cannot|must not|do not)[\s\S]{0,120}(?:legitimi[sz]e|ratify)[\s\S]{0,120}(?:scope|change)[\s\S]{0,120}retroactive/i,
     );
+    expect(postSection).toMatch(changeFirstDestination);
+
+    const wrongDestination = postSection.replace(/\bSPEC\b/, "EXECUTE");
+    expect(wrongDestination).not.toMatch(changeFirstDestination);
   });
 
   it("el plan template mantiene IDs SC, cobertura por tarea y evidencia de checkpoint", () => {
