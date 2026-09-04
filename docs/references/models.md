@@ -49,7 +49,7 @@ Estos límites son metadatos locales solicitados. No demuestran por sí solos qu
 
 ### Pi
 
-`jorgex-pi@0.8.0` —no los adapters de Stack— gestiona la proyección primaria de este candidato exacto (`npm:jorgex-pi@0.8.0`):
+`jorgex-pi@0.8.3` —no los adapters de Stack— gestiona la proyección primaria del candidato de producción (`npm:jorgex-pi@0.8.3`). El Stack publicado `1.9.3` todavía reconoce el pin saliente Pi 0.8.0; la nueva release de Stack requiere readback público post-merge antes de documentar una versión o comandos de transición:
 
 - `defaultProvider = "openai-codex"`;
 - `defaultModel = "gpt-5.6-sol"`;
