@@ -43,7 +43,7 @@ JorgeX Stack ya tiene varias piezas que cubren una parte importante de estas ide
 - Work lifecycle memory-first con tareas, handoffs y checkpoints.
 - TDD basado en riesgo; una decisión de testing por cambio.
 - Agents especializados para implementación, testing, análisis, revisión y seguridad.
-- Success criteria y evidencia en Goal Mode.
+- Success criteria y evidencia en el lifecycle normal de trabajo.
 - Review final sobre el SHA candidato, no reviewers por reflejo.
 - Permisos por runtime y defaults read-anywhere con denies sensibles.
 - Playwright y Chrome DevTools como capacidades opt-in.

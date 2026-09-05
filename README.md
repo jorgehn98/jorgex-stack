@@ -185,35 +185,13 @@ Usage:
 
 GitHub authentication: requests use `GH_TOKEN`/`GITHUB_TOKEN` from the environment or, if unavailable, the token from your `gh` CLI session (`gh auth token` — local read only, never logged or persisted). Without a token, GitHub limits parallel requests and some upstreams may appear as "offline".
 
-### OpenCode Goal Mode
+### OpenCode Goal Mode retirado
 
-The normal work-lifecycle already supports multi-PR plans: `work/{name}/PRD.md` and `plan.md` stay alive across intermediate merges, `work/{name}/pr/{NN}` stores each checkpoint, and `work/{name}/done` is reserved for the final close. Goal Mode is separate: an OpenCode plugin for long-running goals, multiple sessions, multiple slices, multiple worktrees, and, when needed, multiple PRs. It is not meant for short tasks. If the change fits without extended autonomy, do not use `/goal`.
+Goal Mode de OpenCode se ha retirado. Stack ya no instala su plugin ni el comando `/goal`; la continuidad de trabajo usa el lifecycle normal: `work/{name}/PRD.md` y `plan.md` permanecen durante los merges intermedios, `work/{name}/pr/{NN}` conserva cada checkpoint y `work/{name}/done` queda reservado para el cierre final.
 
-It only exists in OpenCode. Claude Code and Codex do not receive it.
+La retirada no migra el historial. `sync` sólo puede retirar archivos gestionados cuando dispone de un manifest válido y un inventario completo, con backup previo; conserva los datos existentes en `~/.jorgex-stack/goals` y los plugins ajenos. Si falta el manifest, está corrupto o el inventario es incompleto, no se borra el legacy. `--target-dir` no implica limpiar ese estado.
 
-Available commands:
-
-- `/goal <goal>` — creates a persistent goal.
-- `/goal status` — shows status and next action.
-- `/goal plan` — shows the goal's master plan / PRD.
-- `/goal history` — lists events and transitions.
-- `/goal pause` — pauses the goal.
-- `/goal resume` — resumes the goal.
-- `/goal merged [commit]` — signals that the pending external PR has been merged.
-- `/goal cancel` — cancels the goal.
-
-What does not exist:
-
-- `/goal quick`
-- `/goal work`
-
-Operational state:
-
-- Separate SQLite database by default at `~/.jorgex-stack/goals/goals.sqlite`.
-- Optional override with `JORGEX_GOAL_DB`, but always inside `~/.jorgex-stack/goals/`.
-- Engram is not the goal's operational store: it remains memory/protocol, not the state database.
-- Goal Mode does not perform automatic merges; when it must wait for an external merge, the state becomes `waiting_for_merge`.
-- The integration uses experimental OpenCode hooks (`experimental.chat.system.transform` and `experimental.session.compacting`), so that surface may change.
+La continuidad entre checkpoints sigue requiriendo trabajo aprobado, capacidades disponibles y merge humano explícito. PiGoal conserva su propio lifecycle. No se afirma disponibilidad de una alternativa GoalV2 de OpenCode.
 
 ## Status
 
@@ -253,7 +231,7 @@ La integración de este App pertenece al release del repositorio Stack. No conce
 
 ## Development
 
-Requirements: Node >= 22.5 and pnpm (never npm). Goal Mode uses `node:sqlite` in tests/Node CLI and OpenCode uses `bun:sqlite` at runtime.
+Requirements: Node >= 22.5 and pnpm (never npm).
 
 ```
 pnpm install
