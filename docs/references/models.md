@@ -73,11 +73,30 @@ Edita el campo global del runtime después de instalarlo:
 
 ### Codex
 
+En un mapa nuevo o cuando falta el mapa del runtime se siembran los defaults
+de los tres tiers y los tres overrides aprobados. En un mapa guardado, los tiers
+existentes y sus overrides permanecen intactos; los tiers que falten siguen
+heredando estos defaults, sin convertirlos en elecciones guardadas. El wrapper
+primary heredado permanece intacto.
+
 | Tier | Modelo | Reasoning effort |
 |---|---|---|
-| `strong` | `gpt-5.6-terra` | `xhigh` |
-| `standard` | `gpt-5.6-terra` | `xhigh` |
+| `strong` | `gpt-6-astra` | `max` |
+| `standard` | `gpt-5.6-sol` | `medium` |
 | `cheap` | `gpt-5.6-luna` | `medium` |
+
+El tier `standard` incluye, entre otros, `backend-analyst` y
+`frontend-analyst`. `code-reviewer` y `security-auditor` reciben Astra/max por
+herencia del tier `strong`, no mediante dos overrides nominales. Los tres
+overrides nominales son `gpt-5.6-luna/max` para `implementer` y `tester`, y
+`gpt-5.6-sol/medium` para `silent-failure-hunter`.
+
+El picker de Codex pregunta primero el modelo y después el effort. El `max`
+nuevo solo se ofrece para Astra y la familia 5.6; los modelos legacy,
+`default` o `custom` no reciben ese effort nuevo sin soporte verificado. Un
+variant existente que no esté listado se conserva solo si se mantiene el mismo
+modelo; al cambiar de modelo no se arrastra. La lista y los variants de
+OpenCode no cambian.
 
 ### OpenCode
 
@@ -90,7 +109,14 @@ Claude Code conserva sus alias `fable`, `sonnet` y `haiku`, modificables mediant
 ## Cambiar subagentes
 
 ```powershell
-pnpm dlx jorgex-stack models --agents opencode
+pnpm dlx jorgex-stack models --agents codex
 ```
 
 Los overrides por nombre de agente tienen precedencia sobre su tier. Actualizar Stack no sobrescribe model-maps existentes.
+
+El picker permite elegir voluntariamente **por tier** o **por subagente**, uno a
+uno. La segunda opción guarda solo las diferencias como overrides por nombre
+de agente; así se puede asignar, por ejemplo, Astra/max únicamente a roles
+concretos. No cambia el modelo primary ni convierte una elección existente en
+un override gestionado por Stack; `sync` tampoco sobrescribe elecciones
+guardadas.
