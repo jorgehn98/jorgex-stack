@@ -6,7 +6,7 @@ import { listFilesRecursive } from "../lib/fsx.js";
 
 /**
  * Plugins TS por runtime (stack/plugins/<runtime>/). Se copian recursivamente
- * los .ts para incluir submódulos como goal/*; el package.json vendorizado es
+ * los .ts para incluir submódulos; el package.json vendorizado es
  * metadata del sub-proyecto original, el runtime no lo necesita. Placeholders
  * resueltos al instalar:
  * - "{{ENGRAM_BIN}}" → binario detectado (D7), por si engram no está en PATH.
