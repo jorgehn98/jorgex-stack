@@ -90,11 +90,13 @@ afterEach(() => {
 });
 
 describe("Codex model picker", () => {
-  it("offers Astra and max as selectable Codex values", async () => {
+  it.each(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"])("offers max for %s through the model picker", async (model) => {
     await withTempHome(async (homeDir) => {
+      const choice = model === "gpt-5.6" ? "__custom__" : model;
+      mocks.text.mockResolvedValue(` ${model} `);
       mocks.select.mockImplementation(async (question: { message: string }) => {
         if (question.message.includes("¿cómo asignar")) return "tier";
-        if (question.message.endsWith("— modelo")) return "gpt-6-astra";
+        if (question.message.endsWith("— modelo")) return choice;
         if (question.message.includes("reasoning effort")) return "max";
         throw new Error(`Unexpected picker prompt: ${question.message}`);
       });
@@ -111,15 +113,16 @@ describe("Codex model picker", () => {
         prompts,
         (question) => question.message.includes("tier strong") && question.message.endsWith("— modelo"),
       );
-      expect(effortPrompt.options.map((option) => option.value)).toContain("max");
-      expect(modelPrompt.options.map((option) => option.value)).toContain("gpt-6-astra");
+      expect(effortPrompt.options).toContainEqual({ value: "max", label: "max" });
+      expect(modelPrompt.options.map((option) => option.value)).toContain(choice);
       expect(prompts.indexOf(modelPrompt)).toBeLessThan(prompts.indexOf(effortPrompt));
+      expect(mocks.text).toHaveBeenCalledTimes(choice === "__custom__" ? 3 : 0);
 
       const stored = JSON.parse(fs.readFileSync(path.join(homeDir, ".jorgex-stack", "model-map.json"), "utf8"));
       expect(stored.codex).toEqual({
-        strong: { model: "gpt-6-astra", variant: "max" },
-        standard: { model: "gpt-6-astra", variant: "max" },
-        cheap: { model: "gpt-6-astra", variant: "max" },
+        strong: { model, variant: "max" },
+        standard: { model, variant: "max" },
+        cheap: { model, variant: "max" },
         overrides: {
           implementer: { model: "gpt-5.6-luna", variant: "max" },
           tester: { model: "gpt-5.6-luna", variant: "max" },
