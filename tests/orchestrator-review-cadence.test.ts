@@ -46,6 +46,18 @@ describe("orchestrator review cadence", () => {
     );
   });
 
+  it("revalida la cobertura aplicable al devolver un draft standard desde ready", () => {
+    const reference = readFileSync(
+      fileURLToPath(new URL("../stack/skills/orchestrator/references/standard-workflow.md", import.meta.url)),
+      "utf8",
+    );
+    const draftCadence = sectionBetween(reference, "### Draft PR cadence", "### Handoff rule");
+
+    expect(draftCadence).toContain("gh pr ready --undo <number>");
+    expect(draftCadence).toMatch(/repeat VERIFY and the applicable review revalidation from the common coverage rule/i);
+    expect(draftCadence).not.toContain("repeat VERIFY and the final review before readying it again");
+  });
+
   it("carga xreview para cobertura final que falta y conserva el scope del candidato", () => {
     const finalReview = sectionBetween(body, "### Final review and PR lifecycle", "## Closing rule");
 

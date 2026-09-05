@@ -79,7 +79,7 @@ Commit after each task or bounded group of tasks, with a message that reflects t
 
 - After the first coherent commit, push the branch and create the PR against its real base with `gh pr create --draft`. Do not wait until SHIP to open it.
 - Keep every code change, commit and push inside the draft phase. The PR remains draft until the code, applicable version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview when applicable, final diff, and full review are complete.
-- Never push to a ready PR. If a ready PR needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft and repeat VERIFY and the final review before readying it again.
+- Never push to a ready PR. If a ready PR needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft and repeat VERIFY and the applicable review revalidation from the common coverage rule before readying it again.
 
 ### Handoff rule
 
