@@ -353,6 +353,23 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(protocolPayload).toMatch(/no separate outcome destination[^\n]{0,120}return the result to the coordinator/i);
   });
 
+  it.each(["human", "programmatic"] as const)("proyecta el prompt global compacto sin modos artificiales en %s", (mode) => {
+    const { ctx, actions } = plan(mode);
+    const runtimePaths = adapter.paths(ctx.configDir);
+    const prompt = plannedContent(actions, runtimePaths.systemPromptFile);
+    const systemPrompt = sectionBetween(prompt, "<!-- jorgex:system-prompt -->", "<!-- /jorgex:system-prompt -->");
+    const role = sectionBetween(systemPrompt, "## Role", "## Communication Style");
+    const communication = sectionBetween(systemPrompt, "## Communication Style", "## General Behavior");
+    const testing = sectionBetween(systemPrompt, "## Testing and Verification", "## Git");
+    const documentation = sectionBetween(systemPrompt, "## Documentation", "## Project-Local AGENTS.md");
+
+    expect(systemPrompt).not.toMatch(/^### (?:Developer|Assistant) Mode$/m);
+    expect(role).toMatch(/Senior full-stack developer[\s\S]{0,160}Verify before assuming[\s\S]{0,160}KISS, YAGNI, Clean Code, and DRY/i);
+    expect(communication).toMatch(/Spanish \(Spain\)[\s\S]{0,180}useful, direct, and opinionated[\s\S]{0,120}short by default; no filler[\s\S]{0,120}No emojis/i);
+    expect(testing).toContain("specific test > partial suite > full suite");
+    expect(documentation).toMatch(/Update docs when changed use, contracts or operations need explanation[\s\S]{0,140}not for every internal edit/i);
+  });
+
   it.each(["human", "programmatic"] as const)("proyecta íntegro el contrato de análisis F2-B en el payload %s", (mode) => {
     const { ctx, actions } = plan(mode);
 
