@@ -2,16 +2,16 @@
 
 JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
 
-Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y documenta la adopción publicada y verificada de `jorgex-pi@0.8.3` por Stack `1.9.4`.
+Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0`, la adopción publicada de `jorgex-pi@0.8.3` por Stack `1.9.5` y el candidato de adopción `jorgex-pi@0.8.4` para Stack `1.9.6`.
 
 ## Paquete e integridad
 
-El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. El [tarball `jorgex-pi@0.8.3` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.3.tgz) es el pin gestionado actual, con `89129618` bytes. `src/lib/pi-runtime.ts` es la fuente autoritativa de tamaño, SHA-256 y SHA-512; la URL se deriva de la versión. La fixture `tests/fixtures/pi-runtime.ts` mantiene la misma identidad para las pruebas.
+El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. El [tarball `jorgex-pi@0.8.3` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.3.tgz) es el pin saliente de Stack `1.9.5`, con `89129618` bytes. El [tarball `jorgex-pi@0.8.4` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.4.tgz) es el artefacto del candidato Stack `1.9.6`, con `89133070` bytes. `src/lib/pi-runtime.ts` es la fuente autoritativa de tamaño, SHA-256 y SHA-512; la URL se deriva de la versión. La fixture `tests/fixtures/pi-runtime.ts` mantiene la misma identidad para las pruebas.
 
 La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al objeto exacto:
 
 ```json
-{ "source": "npm:jorgex-pi@0.8.3", "skills": [], "prompts": [] }
+{ "source": "npm:jorgex-pi@0.8.4", "skills": [], "prompts": [] }
 ```
 
 Los filtros `skills: []` y `prompts: []` se aplican únicamente después de que la proyección compartida haya terminado. Así el paquete no carga una segunda copia de los recursos comunes.
@@ -62,11 +62,11 @@ La proyección usa las mismas copias canónicas de `stack/` que los demás runti
 
 En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
 
-## Release publicada Pi 0.8.3
+## Candidato Stack 1.9.6 / Pi 0.8.4
 
-El release exacto que sustituye al pin saliente es `npm:jorgex-pi@0.8.3`. La evidencia pública verificada fija `89129618` bytes; su release checkout/provenance commit es `0a35c283fe30a9fed87da3cedc00bab97163e68b` y su `parity.source.commit` es `fac3ba828c20134858e2a9aa1e68b920270f7b5a`. El artefacto 0.8.3 conserva la introducción histórica de `work-audit` de 0.8.0.
+El release publicado que sustituye al pin saliente es `npm:jorgex-pi@0.8.4`. La fuente ejecutable fija `89133070` bytes, SHA-256 `e30cbc0595bfbaa35b37f97096b77d46749315e3cf6ab13f830fe84432798b10` y SHA-512 `39255e7ccf7aad2cbe1069e2dbeb3335dc59f28ad1f0f32b677889e39e167e5fd39b546da9f448c33fad4581f0b4a8f1dda95a2f1b1bce010cc031b188ffc292`. Su `provenance.commit` es `2b5cf37d9bfdb0c574e66712000ecc432eca8a69`; el `parity.source.commit` comprobado en el artefacto es `5e89b970e72cfac0003b11e054c861bed6d44884`. Stack `1.9.6` es candidato y aún no publicado; no se debe presentar esta pareja como publicada ni instalada.
 
-Stack `1.9.4` publica y reconoce este receipt exacto; el readback de metadata y tarball en npm quedó verificado antes de documentar la transición.
+Stack `1.9.5` publica y reconoce el receipt saliente `npm:jorgex-pi@0.8.3`. El candidato Stack `1.9.6` fija el receipt `npm:jorgex-pi@0.8.4` para una transición posterior a su publicación. La madurez gestionada de 24 horas se aplica al consumo real del paquete Pi nuevo, no a esta validación ni a la publicación de Stack.
 
 ## Lifecycle y seguridad
 
@@ -81,13 +81,13 @@ Las operaciones con `--target-dir` aíslan home, `PI_CODING_AGENT_DIR`, estado, 
 
 ## Receipt exacto y rollback
 
-Stack `1.9.4` reconoce el receipt exacto `npm:jorgex-pi@0.8.3`. Si el receipt no es reconocido o la limpieza no puede verificar ownership, la operación se detiene; no se editan receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime, y no se usa una versión aproximada para saltarse el control.
+Stack `1.9.5` reconoce el receipt exacto `npm:jorgex-pi@0.8.3`. El código candidato de Stack `1.9.6` ya reconoce `npm:jorgex-pi@0.8.4`; las operaciones por el canal publicado esperan a que `1.9.6` se publique. Si el receipt no es reconocido o la limpieza no puede verificar ownership, la operación se detiene; no se editan receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime, y no se usa una versión aproximada para saltarse el control.
 
 Para reinstalar el pin publicado:
 
 ```bash
-pnpm dlx jorgex-stack@1.9.4 uninstall --agents pi
-pnpm dlx jorgex-stack@1.9.4 install --agents pi
+pnpm dlx jorgex-stack@1.9.5 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
 Las parejas históricas se conservan como referencia y cada paso usa la versión de Stack que reconoce el receipt presente. No se editan receipts ni se borra estado manualmente:
@@ -101,13 +101,13 @@ pnpm dlx jorgex-stack@1.9.2 install --agents pi
 pnpm dlx jorgex-stack@1.9.2 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.0 install --agents pi
 
-# Transición publicada Pi 0.8.0 → 0.8.3
-pnpm dlx jorgex-stack@1.9.3 uninstall --agents pi
-pnpm dlx jorgex-stack@1.9.4 install --agents pi
+# Transición futura, sólo después de publicar Stack 1.9.6 y de superar la madurez de Pi 0.8.4
+pnpm dlx jorgex-stack@1.9.5 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.6 install --agents pi
 
-# Rollback publicado Pi 0.8.3 → 0.8.0
-pnpm dlx jorgex-stack@1.9.4 uninstall --agents pi
-pnpm dlx jorgex-stack@1.9.3 install --agents pi
+# Rollback futuro Pi 0.8.4 → 0.8.3, usando primero la versión que reconoce cada receipt
+pnpm dlx jorgex-stack@1.9.6 uninstall --agents pi
+pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
 La publicación de Stack 1.9.2 fue aceptada por npm y su readback público confirmó metadata y tarball. La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni publicación. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
@@ -131,7 +131,7 @@ Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership.
 
 ## Modelo principal
 
-El release publicado `jorgex-pi@0.8.3` gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contextWindow: 872000` para ese modelo. Pi registra ownership por campo y elimina únicamente valores canónicos que aún posea. 872K es metadata local solicitada, no una garantía del límite de contexto aceptado por el backend OAuth.
+El release publicado `jorgex-pi@0.8.4` gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contextWindow: 872000` para ese modelo. Pi registra ownership por campo y elimina únicamente valores canónicos que aún posea. 872K es metadata local solicitada, no una garantía del límite de contexto aceptado por el backend OAuth.
 
 ## Troubleshooting
 

@@ -72,6 +72,6 @@ Este límite es procedimental. No convierte al orchestrator en un proceso con sa
 
 ## Relación con Pi
 
-Stack es la fuente canónica y el canal gestionado principal. La versión publicada `1.9.4` adopta y reconoce el pin exacto `npm:jorgex-pi@0.8.3`; la proyección es propiedad de Stack, no una mutación del paquete Pi. La introducción histórica de `work-audit` en Pi `0.8.0`, publicada con Stack `1.9.2`, se conserva como antecedente.
+Stack es la fuente canónica y el canal gestionado principal. La versión publicada `1.9.5` adopta y reconoce el pin exacto `npm:jorgex-pi@0.8.3`; el candidato `1.9.6` prepara el pin publicado `npm:jorgex-pi@0.8.4`, pero no debe tratarse como publicado. La proyección es propiedad de Stack, no una mutación del paquete Pi. La introducción histórica de `work-audit` en Pi `0.8.0`, publicada con Stack `1.9.2`, se conserva como antecedente.
 
-La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.3 conserva esa snapshot previa; esta referencia no afirma una carga de F1 en el canal directo ni una verificación smoke de Cloud.
+La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.4 está publicado e incorpora el contrato F1 de specs recuperables y handoffs separados, con `parity.source.commit` `5e89b970e72cfac0003b11e054c861bed6d44884`. Esta referencia no afirma ahorro LLM medido ni una verificación smoke de Cloud.
