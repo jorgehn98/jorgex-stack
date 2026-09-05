@@ -1,6 +1,6 @@
 # Auditoría SDD portable
 
-JorgeX Stack usa una única cadena de artefactos para el trabajo no trivial:
+El SDD formal de JorgeX Stack usa una única cadena de artefactos:
 
 1. `work/{name}/PRD.md` conserva intención y decisiones revisadas por la persona.
 2. `work/{name}/plan.md` es el único tablero de criterios, PRs y tareas.
@@ -8,6 +8,14 @@ JorgeX Stack usa una única cadena de artefactos para el trabajo no trivial:
 4. El código y la evidencia deben converger con esos artefactos antes de SHIP.
 
 La skill propia `work-audit` añade dos gates a esa cadena. No introduce `.specify/`, otro task board, un agente nuevo ni un motor de workflows.
+
+## Carril corto y SDD formal
+
+El orchestrator es el owner del routing `short`/`standard`, que se decide antes del workflow por alcance, incertidumbre, riesgo y verificación; no son modos humanos/programáticos ni un umbral de archivos. Estos criterios describen el contrato de aplicabilidad, no un algoritmo de decisión nuevo. `short` requiere un objetivo claro y que el contrato afectado esté entendido, además de cambio acotado y verificación suficiente. Puede ejecutarlo un responsable principal o un especialista cuando aporte valor, sin imponer la cadena PRE/POST ni scaffolding formal por ceremonia.
+
+`short` standalone no es SDD formal y no crea PRD, plan, Spec, PRE o POST. Si el trabajo ya pertenece a un SDD activo, conserva su Spec, fila, ownership, alcance y lifecycle; no crea tareas hijas por fase o poll. Si aumenta el alcance, la incertidumbre, el riesgo o la necesidad de verificación, se promueve a `standard` antes de continuar. Al promover, se lee explícitamente `references/standard-workflow.md` desde la skill del orchestrator.
+
+Ambos carriles conservan las mismas guardas: seguridad, permisos, ownership, backups, consentimiento de dependencias, memoria, testing/TDD por riesgo, worktree y disciplina Git, revisión final, gates configurados y aprobación explícita para merge. La ruta corta no legitima ampliar el alcance ni relaja los contratos humanos/programáticos existentes.
 
 ## PRE: consistencia antes de aprobar el plan
 
@@ -72,6 +80,6 @@ Este límite es procedimental. No convierte al orchestrator en un proceso con sa
 
 ## Relación con Pi
 
-Stack es la fuente canónica y el canal gestionado principal. La versión publicada `1.9.5` adopta y reconoce el pin exacto `npm:jorgex-pi@0.8.3`; el candidato `1.9.6` prepara el pin publicado `npm:jorgex-pi@0.8.4`, pero no debe tratarse como publicado. La proyección es propiedad de Stack, no una mutación del paquete Pi. La introducción histórica de `work-audit` en Pi `0.8.0`, publicada con Stack `1.9.2`, se conserva como antecedente.
+Stack es la fuente canónica y el canal gestionado principal. La versión publicada `1.9.6` adopta y reconoce el pin exacto `npm:jorgex-pi@0.8.4`. La proyección es propiedad de Stack, no una mutación del paquete Pi. La introducción histórica de `work-audit` en Pi `0.8.0`, publicada con Stack `1.9.2`, se conserva como antecedente.
 
-La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.4 está publicado e incorpora el contrato F1 de specs recuperables y handoffs separados, con `parity.source.commit` `5e89b970e72cfac0003b11e054c861bed6d44884`. Esta referencia no afirma ahorro LLM medido ni una verificación smoke de Cloud.
+La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.4 está publicado e incorpora el contrato F1 de specs recuperables y handoffs separados, con `parity.source.commit` `5e89b970e72cfac0003b11e054c861bed6d44884`; no contiene todavía F2-A. La adopción de F2-A en Pi queda para snapshots y adopción posteriores, y no implica actualizar el `HOME` instalado en este checkpoint. Esta referencia no afirma ahorro LLM medido ni una verificación smoke de Cloud.
