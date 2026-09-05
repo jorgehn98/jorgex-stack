@@ -147,6 +147,9 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       stdout?: { maxBytes?: unknown };
     };
     const assets = readTarJson(tarball, "package/contract/assets.v1.json") as { managedExternalWrites?: unknown };
+    const parity = readTarJson(tarball, "package/contract/parity.v2.json") as {
+      source?: { commit?: unknown };
+    };
     expect(manifest).toMatchObject({
       name: PI_RUNTIME_CANDIDATE.package.name,
       version: PI_RUNTIME_CANDIDATE.package.version,
@@ -161,6 +164,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       stdout: { maxBytes: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes },
     });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
+    expect(parity.source?.commit).toBe(PI_RUNTIME_ARCHIVE.parity.source.commit);
     expectArchiveInventory(tarball);
   }, 60_000);
 
