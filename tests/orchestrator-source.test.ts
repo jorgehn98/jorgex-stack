@@ -224,6 +224,8 @@ describe("orchestrator canonical source", () => {
   });
 
   it("continúa tras ready sin ampliar la autorización de merge ni la capacidad de Goal Mode", () => {
+    const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const continuationRule = sectionBetween(entry, "### Continue after a ready checkpoint", "## Closing rule");
     const close = sectionBetween(readStandardWorkflowReference(), "## 8. CLOSE", "## Task rule");
     const continuation = fs.readFileSync(
       path.join(stackDir, "skills", "work-lifecycle", "references", "pr-continuation.md"),
@@ -231,6 +233,10 @@ describe("orchestrator canonical source", () => {
     );
 
     expect(close).toMatch(/continue approved safe work.+real blocker\/end of scope/is);
+    expect(close).not.toContain("STOP here and hand control back to the user");
+    expect(continuationRule).toMatch(
+      /For multi-PR work or a dependency on an unmerged PR, read \[PR continuation\]\(\.\.\/work-lifecycle\/references\/pr-continuation\.md\)[\s\S]{0,180}if unavailable, report that boundary/i,
+    );
     expect(continuation).toMatch(
       /Keep ready parents immutable[\s\S]{0,750}same head SHA does not prove[\s\S]{0,350}return it to draft/is,
     );
