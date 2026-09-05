@@ -13,6 +13,8 @@ La skill propia `work-audit` añade dos gates a esa cadena. No introduce `.speci
 
 El orchestrator es el owner del routing `short`/`standard`, que se decide antes del workflow por alcance, incertidumbre, riesgo y verificación; no son modos humanos/programáticos ni un umbral de archivos. Estos criterios describen el contrato de aplicabilidad, no un algoritmo de decisión nuevo. `short` requiere un objetivo claro y que el contrato afectado esté entendido, además de cambio acotado y verificación suficiente. Puede ejecutarlo un responsable principal o un especialista cuando aporte valor, sin imponer la cadena PRE/POST ni scaffolding formal por ceremonia.
 
+El prompt global mantiene un rol común y un estilo directo, crítico y centrado en el orden y el foco; no introduce un selector técnico/no técnico ni modos artificiales. Los modos de runtime `human` y `programmatic` siguen siendo contratos de instalación y salida, no sustitutos de ese rol común.
+
 `short` standalone no es SDD formal y no crea PRD, plan, Spec, PRE o POST. Si el trabajo ya pertenece a un SDD activo, conserva su Spec, fila, ownership, alcance y lifecycle; no crea tareas hijas por fase o poll. Si aumenta el alcance, la incertidumbre, el riesgo o la necesidad de verificación, se promueve a `standard` antes de continuar. Al promover, se lee explícitamente `references/standard-workflow.md` desde la skill del orchestrator.
 
 Ambos carriles conservan las mismas guardas: seguridad, permisos, ownership, backups, consentimiento de dependencias, memoria, testing/TDD por riesgo, worktree y disciplina Git, revisión final, gates configurados y aprobación explícita para merge. La ruta corta no legitima ampliar el alcance ni relaja los contratos humanos/programáticos existentes.
