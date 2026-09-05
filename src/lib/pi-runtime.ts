@@ -18,16 +18,16 @@ import {
 export const PI_RUNTIME_CANDIDATE = {
   package: {
     name: "jorgex-pi",
-    version: "0.8.4",
-    source: "npm:jorgex-pi@0.8.4",
+    version: "0.8.5",
+    source: "npm:jorgex-pi@0.8.5",
   },
   provenance: {
-    commit: "2b5cf37d9bfdb0c574e66712000ecc432eca8a69",
+    commit: "57cb15413c1dda408251ff80ff9d5658b7e91793",
   },
   tarball: {
-    bytes: 89_133_070,
-    sha256: "e30cbc0595bfbaa35b37f97096b77d46749315e3cf6ab13f830fe84432798b10",
-    sha512: "39255e7ccf7aad2cbe1069e2dbeb3335dc59f28ad1f0f32b677889e39e167e5fd39b546da9f448c33fad4581f0b4a8f1dda95a2f1b1bce010cc031b188ffc292",
+    bytes: 89_133_857,
+    sha256: "ea7ce0fa88c324d15756fbb1f7e222d2d87156de8a17cede8f3f317ad0d90c7e",
+    sha512: "0f6be4e79be3b7add6949b0d3d913a79acb0dd338ea0459d500358fec46ddb1925ad2ec926d0fbe899c7e48f0a7cb9681424fc1a0d1ab104e7e25d350478b989",
   },
   pi: {
     testedVersions: ["0.84.2"],

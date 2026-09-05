@@ -72,12 +72,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tarball="$RUNNER_TEMP/jorgex-pi-0.8.4.tgz"
-          curl --fail --show-error --silent --retry 3 --retry-max-time 180 --connect-timeout 15 --max-time 120 --max-filesize 89133070 --remove-on-error --output "$tarball" \
-            https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.4.tgz
+          tarball="$RUNNER_TEMP/jorgex-pi-0.8.5.tgz"
+          curl --fail --show-error --silent --retry 3 --retry-max-time 180 --connect-timeout 15 --max-time 120 --max-filesize 89133857 --remove-on-error --output "$tarball" \
+            https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.5.tgz
           actual_bytes="$(wc -c < "$tarball")"
-          if [[ "$actual_bytes" -ne 89133070 ]]; then
-            echo "JorgeX Pi artifact size mismatch: expected=89133070 received=$actual_bytes" >&2
+          if [[ "$actual_bytes" -ne 89133857 ]]; then
+            echo "JorgeX Pi artifact size mismatch: expected=89133857 received=$actual_bytes" >&2
             rm -f -- "$tarball"
             exit 1
           fi
@@ -85,7 +85,7 @@ jobs:
       - name: Verify the exact JorgeX Pi artifact contract
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
         env:
-          JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.8.4.tgz
+          JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.8.5.tgz
         run: pnpm exec vitest run tests/pi-cross-repo-contract.test.ts
 
       - run: pnpm test
