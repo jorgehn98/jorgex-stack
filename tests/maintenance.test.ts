@@ -1397,6 +1397,52 @@ describe("test-analyzer: rúbrica canónica de testing", () => {
 });
 
 describe("F1 flexible formal task specification contract", () => {
+  it("handoff sólo permite get directo con ID ligado al proyecto/topic en el almacén actual", () => {
+    const lifecycle = sectionBetween(
+      readRequiredStackFile("skills/work-lifecycle/SKILL.md"), "## Executing", "## Pull request lifecycle",
+    );
+
+    expect.soft(lifecycle, "vincular identidad en el almacén actual debe preceder al get directo").toMatch(
+      /(?:direct[^\n]{0,100}only|only[^\n]{0,100}direct)[^\n]{0,160}\b(?:bound|binding|mapped)\b[^\n]{0,120}project[^\n]{0,80}topic[^\n]{0,120}(?:current|local) (?:store|storage)/i,
+    );
+    expect.soft(lifecycle, "un ID de otra procedencia exige recuperar en scope o bloquear antes de leer").toMatch(
+      /(?:unbound|foreign|unknown|another|different)[^\n]{0,160}(?:resolv|search)[^\n]{0,120}project[^\n]{0,80}topic[^\n]{0,160}(?:before[^\n]{0,100}(?:get|read)|block)/i,
+    );
+  });
+
+  it("resume remite al handoff al resolver la Spec", () => {
+    const resuming = sectionBetween(readRequiredStackFile("skills/work-lifecycle/SKILL.md"), "## Resuming", "## Closing");
+
+    expect(resuming, "la resolución de Spec debe reutilizar la regla canónica del handoff").toMatch(
+      /(?:Spec|Engram)[^\n]{0,120}(?:follow|apply|using|under|per|according to)[^\n]{0,120}(?:handoff|Executing)/i,
+    );
+  });
+  it("la plantilla identifica Engram por proyecto/topic y permite ID local opcional ligado", () => {
+    const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
+    const tasks = sectionBetween(template, "## Tasks", "**Statuses**");
+    const engramRow = tasks.split(/\r?\n/).find((line) => /^\| 01 \|/.test(line));
+
+    expect(engramRow, "la fila Engram conserva un ejemplo con identidad recuperable").toBeDefined();
+    expect.soft(engramRow).toMatch(/Engram[^|]*project[^|]*work\/\[name\]\/task\/01/i);
+    expect.soft(tasks, "el ID opcional no autoriza una lectura sin binding").toMatch(
+      /optional[^\n]{0,80}(?:local[^\n]{0,40})?ID[^\n]{0,160}\b(?:bound|binding|mapped)\b/i,
+    );
+  });
+
+  it.each([
+    ["PRE", "### PRE", "### POST"],
+    ["POST", "### POST", "## Read-only boundary"],
+  ])("%s devuelve gaps tanto por identidad incorrecta como por acceso ausente", (_mode, start, end) => {
+    const audit = sectionBetween(readRequiredStackFile("skills/work-audit/SKILL.md"), start, end);
+
+    expect.soft(audit, "identidad incorrecta debe impedir clean/converged").toMatch(
+      /(?:identity[^\n]{0,40}mismatch|(?:wrong|invalid|mismatched) identity)[^\n]{0,180}`gaps`/i,
+    );
+    expect.soft(audit, "acceso ausente debe impedir clean/converged").toMatch(
+      /(?:(?:missing|absent|unavailable|no) access|access[^\n]{0,40}(?:missing|absent|unavailable|denied))[^\n]{0,180}`gaps`/i,
+    );
+  });
+
   it("el handoff protege la Spec de escritura del worker y separa el destino del resultado", () => {
     const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
     const handoff = sectionBetween(lifecycle, "## Executing", "## Pull request lifecycle");

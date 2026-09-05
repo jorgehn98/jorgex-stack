@@ -11,7 +11,7 @@ Audit the active work without changing it. During PRE/POST remediation, the orch
 
 - the exact active `work/{name}/PRD.md`
 - the exact active `work/{name}/plan.md`
-- every formal task's declared `Spec` reference from the plan: Engram under `work/{name}/task/{NN}` or canonical Markdown under `work/{name}/tasks/{NN}.md`
+- every formal task's declared `Spec` reference from the plan: Engram project + topic_key `work/{name}/task/{NN}` resolved per the lifecycle handoff, or canonical Markdown under `work/{name}/tasks/{NN}.md`
 - the exact PR/checkpoint scope being audited
 - project rules and the implementation diff/evidence when running POST
 
@@ -31,7 +31,7 @@ Check:
    - Report a latent material semantic ambiguity as a gap only when plausible interpretations differ materially in observable behavior, scope, success criteria or testing. Only low-impact implementation preferences, defaults, wording and paths are excluded from gaps or clarification; material alternatives still block.
 2. Success criteria use unique IDs such as `SC-01`; report duplicate or malformed `SC-*` IDs.
 3. Every SC is verifiable and has task coverage in the plan table.
-4. Every formal task resolves and verifies its declared `Spec` reference, task identity and access before execution. A missing source, absent access or invalid access validation is a blocking `gaps` verdict; never reconstruct a missing spec from the PRD.
+4. Every formal task resolves and verifies its declared `Spec` reference, task identity and access before execution. An identity mismatch, missing source or absent access is a blocking `gaps` verdict; never reconstruct a missing spec from the PRD.
 5. Every task references known SCs and has one agent, one bounded scope, affected files, dependencies and a wave consistent with those dependencies.
 6. Each behavior-changing task has a complete testing decision: risk, existing protection, new behavior, chosen seam and action.
 7. PR scopes, bases and ordering are compatible with the task dependencies.
@@ -48,7 +48,7 @@ Run after the planned implementation and deterministic checks, before marking th
 
 Check:
 
-1. Every formal task for the checkpoint resolves and verifies its declared `Spec` reference before convergence is claimed; a missing source or identity mismatch is a `gaps` finding.
+1. Every formal task for the checkpoint resolves and verifies its declared `Spec` reference before convergence is claimed; an identity mismatch, missing source or absent access is a blocking `gaps` finding.
 2. Every planned task for the checkpoint has the expected status and bounded outcome.
 3. Every in-scope SC has concrete evidence in its canonical checkpoint: command/setup, scope, result and relevant limits.
 4. The implementation diff and observed behavior stay within the approved PRD, plan and task scopes.

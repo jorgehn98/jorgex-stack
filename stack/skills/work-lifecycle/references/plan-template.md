@@ -14,7 +14,7 @@ work/[name]/
     └── [NN].md # canonical Markdown spec for task [NN]
 ```
 
-Every formal task has exactly one recoverable `Spec` reference in the plan table: an Engram observation with topic_key `work/[name]/task/[NN]` (the `[NN]` matches `#`) or canonical Markdown at `work/[name]/tasks/[NN].md`. Do not create a second editable copy. Existing Engram task specs remain valid; no mass migration is required.
+Every formal task has exactly one recoverable `Spec` reference in the plan table: an Engram observation with project `[project]` and topic_key `work/[name]/task/[NN]` (the `[NN]` matches `#`) or canonical Markdown at `work/[name]/tasks/[NN].md`. Do not create a second editable copy. Existing Engram task specs remain valid; no mass migration is required.
 
 ---
 
@@ -61,7 +61,7 @@ Every formal task has exactly one recoverable `Spec` reference in the plan table
 
 ## Tasks
 
-> Every formal task has exactly one recoverable `Spec` reference: Engram `work/[name]/task/NN` with its known local ID, or `work/[name]/tasks/NN.md`. Verify identity and access before execution; never leave two active specs.
+> Every formal task has exactly one recoverable `Spec` reference: Engram project `[project]` + topic_key `work/[name]/task/NN`, or `work/[name]/tasks/NN.md`. An optional local ID must already be bound to that identity in the current store via `mem_save` or validated scoped lookup. Follow the lifecycle handoff before full retrieval; verify identity and access before execution and never leave two active specs.
 > A direct message is only an auxiliary, self-contained microassignment of a parent task. It has no independent `SC` or row; if it grows into independent work, persist its spec and add the formal task first.
 > Task status lives ONLY in this table — update it with a surgical edit per task.
 > PR status/evidence lives in the PR Roadmap above.
@@ -70,7 +70,7 @@ Every formal task has exactly one recoverable `Spec` reference in the plan table
 
 | # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |
 |---|----|-------|-------|------|------|-----------|----|--------|------|------|
-| 01 | 01 | [agent] | [bounded scope] | Engram `work/[name]/task/01` (ID: [id]) | [descriptive name] | [one-line description] | SC-01 | ⬜ | 1 | — |
+| 01 | 01 | [agent] | [bounded scope] | Engram project: [project], topic_key: `work/[name]/task/01`, local ID: [id only if bound in current store; otherwise omit] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 1 | — |
 | 02 | 01 | [agent] | [bounded scope] | `work/[name]/tasks/02.md` | [descriptive name] | [one-line description] | SC-02 | ⬜ | 1 | — |
 | 03 | 02 | [agent] | [bounded scope] | [one declared source] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 2 | 01 |
 | 04 | 02 | [agent] | [bounded scope] | [one declared source] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 2 | 01, 02 |
@@ -82,7 +82,7 @@ Every formal task has exactly one recoverable `Spec` reference in the plan table
 
 ## Task observation / Markdown task specification — Template
 
-Use this adaptable content in the one source declared by the plan's `Spec` column. For Engram, save it as the task observation under `work/[name]/task/[NN]`; for Markdown, use `work/[name]/tasks/[NN].md`. The source must be self-contained enough for its assigned worker, but include only what is pertinent.
+Use this adaptable content in the one source declared by the plan's `Spec` column. For Engram, save it in project `[project]` as the task observation under topic_key `work/[name]/task/[NN]`; for Markdown, use `work/[name]/tasks/[NN].md`. The source must be self-contained enough for its assigned worker, but include only what is pertinent.
 
 ```markdown
 # T[NN]: [Descriptive task name]

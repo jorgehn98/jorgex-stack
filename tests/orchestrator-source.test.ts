@@ -115,6 +115,29 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     return { ctx, actions: buildPlan(adapter, ctx) };
   }
 
+  it.each(["human", "programmatic"] as const)("proyecta F1 y sus guardas en el payload %s", (mode) => {
+    const { ctx, actions } = plan(mode);
+    const runtimePaths = adapter.paths(ctx.configDir);
+    const prompt = plannedContent(actions, runtimePaths.systemPromptFile);
+    const systemPrompt = sectionBetween(prompt, "<!-- jorgex:system-prompt -->", "<!-- /jorgex:system-prompt -->");
+    const workState = sectionBetween(systemPrompt, "## Work State", "## Security");
+
+    expect(workState).toMatch(/formal task[^\n]{0,100}one[^\n]{0,100}spec/i);
+    expect(workState).toContain("work/{name}/task/{NN}");
+    expect(workState).toContain("work/{name}/tasks/{NN}.md");
+    expect(workState).toMatch(/identity\/access/i);
+    expect(workState).toMatch(/auxiliary microassignments[^\n]{0,80}parent task/i);
+    expect(workState).toMatch(/independent[^\n]{0,100}persist[^\n]{0,100}before continuing/i);
+    expect(systemPrompt.includes("<!-- jorgex:programmatic-mode -->")).toBe(mode === "programmatic");
+
+    const protocolPayload = adapter.id === "opencode"
+      ? plannedContent(actions, path.join(runtimePaths.pluginsDir!, "engram.ts"))
+      : sectionBetween(prompt, "<!-- jorgex:engram-protocol -->", "<!-- /jorgex:engram-protocol -->");
+    expect(protocolPayload).toMatch(/Spec as read-only/i);
+    expect(protocolPayload).toMatch(/separate outcome topic_key/i);
+    expect(protocolPayload).toMatch(/Never[^\n]{0,180}mem_save[^\n]{0,180}mem_update[^\n]{0,180}Spec observation/i);
+    expect(protocolPayload).toMatch(/no separate outcome destination[^\n]{0,120}return the result to the coordinator/i);
+  });
   it("planSkills instala exactamente una skill canónica", () => {
     const { ctx, actions } = plan("human");
     const skillTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator", "SKILL.md");

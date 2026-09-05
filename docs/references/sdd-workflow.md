@@ -20,7 +20,7 @@ PRE comprueba:
 - que no quede ningún marcador `[NEEDS CLARIFICATION: ...]`;
 - que los criterios de éxito usen IDs únicos `SC-NN` y sean verificables;
 - que cada criterio tenga cobertura en la tabla de tareas;
-- que cada tarea formal resuelva y verifique la identidad y el acceso a la referencia `Spec` declarada, sin reconstruir una spec ausente desde el PRD;
+- que cada tarea formal resuelva y verifique la identidad y el acceso a la referencia `Spec` declarada: en Engram, get directo solo con ID ya vinculado al proyecto/topic esperado en el almacén actual; en otro caso, resolución por proyecto/topic antes del get o bloqueo, y comprobación de identidad tras recuperarla, sin reconstruir una spec ausente desde el PRD;
 - que cada tarea tenga un agente, scope, archivos, dependencias y wave coherentes;
 - que cada cambio de comportamiento tenga una testing decision completa;
 - que PRD, plan y tareas no se contradigan ni dupliquen estado/evidencia.
@@ -59,14 +59,14 @@ Cada dato tiene una sola casa:
 | Texto y estado de `SC-NN` | Success criteria de `plan.md` |
 | Mapping tarea → SC | Columna `SC` de la task table |
 | Estado de la tarea | Task table |
-| Spec completa de la tarea | Una única fuente declarada en `Spec`: Engram `work/{name}/task/{NN}` o `work/{name}/tasks/{NN}.md` |
+| Spec completa de la tarea | Una única fuente declarada en `Spec`: Engram proyecto + topic_key `work/{name}/task/{NN}` (ID local opcional, vinculado a esa identidad en el almacén actual) o `work/{name}/tasks/{NN}.md` |
 | Evidencia observada | PR roadmap o checkpoint correspondiente |
 
 No se crean IDs `US-*`/`REQ-*` ni una matriz paralela. La evidencia del checkpoint cita los SC demostrados y registra comando/setup, scope, resultado y límites.
 
 ## Límite read-only
 
-`work-audit` no escribe, edita ni modifica PRD, plan, Engram, código, tests, checkboxes o estado del PR; tampoco crea tareas. Durante la remediación PRE/POST, el orchestrator es el único escritor de los artefactos activos. Esta regla no sustituye a los writers delegados, que conservan sus scopes acotados de código, tests y documentación durante EXECUTE.
+`work-audit` no escribe, edita ni modifica PRD, plan, Engram, código, tests, checkboxes o estado del PR; tampoco crea tareas. Durante la remediación PRE/POST, el orchestrator es el único escritor de los artefactos activos. La spec es de solo lectura para el worker y su resultado va al destino separado asignado o se devuelve al coordinador. Esta regla no sustituye a los writers delegados, que conservan sus scopes acotados de código, tests y documentación durante EXECUTE.
 
 Este límite es procedimental. No convierte al orchestrator en un proceso con sandbox read-only ni reduce sus permisos efectivos.
 
