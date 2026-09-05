@@ -62,7 +62,9 @@ describe("PR lifecycle hook", () => {
     expect(context).toContain("<pr-lifecycle-state-required>");
     expect(context).toContain("readiness transition was attempted");
     expect(context).toContain("gh pr view --json number,isDraft,headRefOid");
-    expect(context).toContain("Load and run the portable `xreview` skill");
+    expect(context).toMatch(
+      /If the full review was not already completed,[^\n]*Load and run the portable `xreview` skill/i,
+    );
     expect(context).toContain("repeat xreview only when the fixes materially change the diff");
     expect(context).toContain("gh pr ready --undo <number>");
     expect(context).toContain("gh pr checks <number>");

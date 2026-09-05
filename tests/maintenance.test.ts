@@ -33,6 +33,9 @@ const readRequiredStackFile = (relativePath: string) => {
   return fs.readFileSync(absolutePath, "utf8");
 };
 
+const readStandardOrchestratorWorkflow = () =>
+  readRequiredStackFile("skills/orchestrator/references/standard-workflow.md");
+
 const sectionBetween = (content: string, start: string, end: string): string => {
   const startIndex = content.indexOf(start);
   const endIndex = content.indexOf(end, startIndex + start.length);
@@ -1186,8 +1189,7 @@ describe("portable SDD audit contract", () => {
   });
 
   it("un marcador NEEDS CLARIFICATION pendiente bloquea la salida PRE del plan", () => {
-    const content = readStackFile("skills/orchestrator/SKILL.md");
-    const planSection = sectionBetween(content, "## 4. PLAN", "## Work state");
+    const planSection = readStandardOrchestratorWorkflow();
 
     expect(planSection).toContain("An unresolved `[NEEDS CLARIFICATION: ...]` marker blocks PRE.");
   });
@@ -1290,7 +1292,8 @@ describe("subagent uncertainty escalation contract", () => {
       "keep the safe work and relaunch only what still needs guidance",
       "If a subagent reports `blocked` with one concrete uncertainty question",
       "answer it from existing context when possible",
-      "relaunch the original or a suitable specialist with explicit guidance",
+      "ask the user for guidance before relaunching",
+      "original or a suitable specialist with that explicit guidance",
     ]);
   });
 
