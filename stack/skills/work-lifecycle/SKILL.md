@@ -50,7 +50,7 @@ Use this section only after routing selects formal SDD work, including work prom
 
 ## Pull request lifecycle
 
-1. Start from the updated production branch in the canonical worktree/branch. Apply the shared PR-scope rule in [Worktree and PR lifecycle](../orchestrator/SKILL.md#worktree-and-pr-lifecycle); formal SDD does not define a separate size policy.
+1. Start independent work from updated production. For multi-PR work or a Git dependency, choose the verified base using [PR continuation](references/pr-continuation.md). Use the canonical worktree/branch and the shared PR-scope rule in [Worktree and PR lifecycle](../orchestrator/SKILL.md#worktree-and-pr-lifecycle); formal SDD does not define a separate size policy.
 2. Implement one coherent first slice, commit it, push the work branch, and open the PR immediately as draft with `gh pr create --draft`.
 3. Continue implementation, commits and pushes only while the PR is draft. Draft means the code can still change; ready means the current SHA is the candidate to merge.
 4. Before ready, complete every applicable preflight item: code, version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview review when the project uses Vercel, final diff inspection, and full PR review.
@@ -58,7 +58,7 @@ Use this section only after routing selects formal SDD work, including work prom
 6. Never push to a ready PR. If it needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft, repeat preflight and review revalidation, mark ready again, and wait for a fresh complete gate when checks are configured. Use [coverage revalidation](../xreview/SKILL.md#7-revalidate-coverage-and-stop), not an automatic repeated panel; preserve evidence only for still-valid contracts and integration assumptions, including the effective base.
 7. Merge only after explicit user approval. When PR checks are configured, their passing result must match the current candidate SHA.
 
-Dependent PRs are sequential: merge one checkpoint, update the production branch, then create the next worktree/branch from that updated base. Do not stack a dependent PR from an unmerged work branch unless the human explicitly chooses a stacked-PR strategy.
+Development order and merge order are distinct. A ready checkpoint does not block the next independent or permitted Git-stacked checkpoint; an unavailable external prerequisite can. Record the dependencies and merge order in the existing roadmap and follow the continuation reference. Preserve project opt-outs and real supervisor/capability limits, and never turn plan approval into merge authorization.
 
 ## HTML review view (on demand)
 
