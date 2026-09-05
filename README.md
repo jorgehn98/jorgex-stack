@@ -189,7 +189,7 @@ GitHub authentication: requests use `GH_TOKEN`/`GITHUB_TOKEN` from the environme
 
 Goal Mode de OpenCode se ha retirado. Stack ya no instala su plugin ni el comando `/goal`; la continuidad de trabajo usa el lifecycle normal: `work/{name}/PRD.md` y `plan.md` permanecen durante los merges intermedios, `work/{name}/pr/{NN}` conserva cada checkpoint y `work/{name}/done` queda reservado para el cierre final.
 
-La retirada no migra el historial. `sync` sólo puede retirar archivos gestionados cuando dispone de un manifest válido y un inventario completo, con backup previo; conserva los datos existentes en `~/.jorgex-stack/goals` y los plugins ajenos. Si falta el manifest, está corrupto o el inventario es incompleto, no se borra el legacy. `--target-dir` no implica limpiar ese estado.
+La retirada no migra el historial. `sync` sólo puede retirar archivos gestionados cuando dispone de un manifest legible que registre esas rutas como gestionadas y un inventario completo, con backup previo; conserva los datos existentes en `~/.jorgex-stack/goals` y los plugins ajenos cuando el manifest del Stack está íntegro. El registro local no autentica la propiedad ni corrige una lista `owned` editada o inconsistente: si falta, no se puede parsear o el inventario es incompleto, no se borra el legacy. Ante sospecha sobre el manifest, no ejecutes `sync`; revísalo o restáuralo con backup. `--target-dir` no implica limpiar ese estado.
 
 La continuidad entre checkpoints sigue requiriendo trabajo aprobado, capacidades disponibles y merge humano explícito. PiGoal conserva su propio lifecycle. No se afirma disponibilidad de una alternativa GoalV2 de OpenCode.
 
