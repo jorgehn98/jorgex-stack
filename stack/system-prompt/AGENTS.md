@@ -49,7 +49,7 @@ Ask questions when something isn't clear instead of assuming it's correct.
 - Make small, local, reviewable changes.
 - Reuse existing repo patterns before introducing new ones.
 - Do not add dependencies without explicit user approval.
-- Update docs when behavior changes.
+- Update affected docs when a change needs user or operational explanation, or makes existing claims incorrect; do not create prose for every internal edit.
 - Run lint and typecheck after significant changes when available.
 
 ---
@@ -164,7 +164,7 @@ Detect the real environment before running commands; don't assume a shell or OS.
 
 ## Documentation
 
-- Update docs when important behavior changes.
+- Keep documentation accurate for changed use, contracts and operations. Use the orchestrator's documentation rule to identify the needed surfaces and consolidate the specialist's pass; reopen only affected pages after later changes.
 - Respect the separation between public and internal docs when it exists.
 - Keep content, navigation, and metadata in sync when docs are structured that way.
 - If docs are missing and needed, create the minimum useful documentation.

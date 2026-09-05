@@ -171,6 +171,23 @@ describe("orchestrator canonical source", () => {
     expect(retries).toContain("After the third failure, stop retrying");
   });
 
+  it("activa documentación por necesidad y la consolida en cada checkpoint afectado", () => {
+    const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const rule = sectionBetween(entry, "## Documentation when needed", "## Decision before delegation");
+    const workflow = readStandardWorkflowReference();
+    const specialDelegations = sectionBetween(workflow, "### Special delegations", "### Verification cadence");
+    const ship = sectionBetween(workflow, "## 7. SHIP", "## 8. CLOSE");
+
+    expect(rule).toMatch(/audience.+affected surfaces.+explanation of use, contract or operation.+existing claim incorrect/is);
+    expect(rule).toMatch(/concrete reader or operational need.+internal refactor.+already-correct description.+does not require new prose/is);
+    expect(rule).toMatch(/docs-maintainer.+outside the review panel/i);
+    expect(rule).toMatch(/implementation and fixes are stable.+before ready.+checkpoint/i);
+    expect(rule).toMatch(/Later contract changes reopen only affected pages.+contractual correction.+reassessing review coverage/is);
+    expect(specialDelegations).toContain("[Documentation when needed](../SKILL.md#documentation-when-needed)");
+    expect(specialDelegations).toMatch(/stable implementation.+not one dispatch per edit.+new review-panel member/i);
+    expect(ship).toMatch(/necessary documentation under the common rule.+consolidated final diff.+required documentation missing/is);
+  });
+
   it("no convierte contadores de ficheros ni delegación en condiciones del routing", () => {
     const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
     const routing = sectionBetween(entry, "## Routing", "## Shared guards");
@@ -301,6 +318,24 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
       expect(plannedAgentContent(actions, adapter, ctx, name)).toContain(outputFormat);
     }
   });
+
+  it.each(["human", "programmatic"] as const)("proyecta el contrato F4 de docs-maintainer en el payload %s", (mode) => {
+    const { ctx, actions } = plan(mode);
+    const docsMaintainer = loadCanonicalAgents(path.join(stackDir, "agents")).find(
+      (candidate) => candidate.name === "docs-maintainer",
+    );
+    expect(docsMaintainer, "falta el agente canónico docs-maintainer").toBeDefined();
+
+    const scopeAndEvidence = [
+      sectionBetween(docsMaintainer!.body, "## Targets", "## Before editing"),
+      sectionBetween(docsMaintainer!.body, "## Factual accuracy", "## While editing"),
+      sectionBetween(docsMaintainer!.body, "## Rules", "## Checklist"),
+    ];
+    const payload = plannedAgentContent(actions, adapter, ctx, "docs-maintainer");
+
+    for (const contract of scopeAndEvidence) expect(payload).toContain(contract);
+  });
+
   it("planSkills instala exactamente una entrada canónica", () => {
     const { ctx, actions } = plan("human");
     const skillTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator", "SKILL.md");
