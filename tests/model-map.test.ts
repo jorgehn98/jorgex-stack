@@ -110,8 +110,10 @@ describe("model-map persisted state", () => {
     try {
       await withTempHome(homeDir, async () => {
         const { DEFAULT_MODEL_MAP: defaults, loadModelMap, resolveAgentModel } = await import("../src/lib/model-map.js");
-        const models = loadModelMap().codex!;
+        const loaded = loadModelMap();
+        const models = loaded.codex!;
 
+        expect(loaded["claude-code"]).toEqual(defaults["claude-code"]);
         expect(models.standard).toEqual(defaults.codex.standard);
         expect(models.cheap).toEqual(defaults.codex.cheap);
         expect(resolveAgentModel(models, "tester", "strong")).toEqual({ model: "custom/tester", variant: "high" });
