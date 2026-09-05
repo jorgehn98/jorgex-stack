@@ -19,6 +19,7 @@ const TIERS: Tier[] = ["strong", "standard", "cheap"];
 
 /** Niveles de reasoning effort (variant en OpenCode, model_reasoning_effort en Codex). */
 const EFFORTS = ["low", "medium", "high", "xhigh"];
+// `max` solo se ofrece para modelos conocidos; no certifica el soporte del backend.
 const CODEX_EFFORTS = [...EFFORTS, "max"];
 
 const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku", "inherit"];
@@ -79,7 +80,10 @@ interface Detection {
  * un sujeto ("tier strong (…)" o "code-reviewer (tier strong)"):
  * - OpenCode → select de modelo (lista en vivo) + select de variant.
  * - Claude Code → select de alias; no existe effort por subagente.
- * - Codex → select curado de modelo (con vía de escape) + effort compatible.
+ * - Codex → select curado de modelo (con vía de escape) y effort; `max` solo
+ *   aparece para modelos conocidos, y la variante actual se conserva al
+ *   mantener el mismo modelo; para `custom`/`default` no certifica el
+ *   soporte del backend.
  */
 async function askModel(det: Detection, subject: string, current?: TierModel): Promise<TierModel | typeof CANCEL> {
   if (det.id === "codex") {
