@@ -15,6 +15,16 @@ const mocks = vi.hoisted(() => ({
   runDetectedBin: vi.fn(() => "xai/grok-code\nzhipu/glm-code\nminimax/MiniMax-M3\n"),
 }));
 
+type PickerOption = { value: string; label: string };
+type PickerQuestion = {
+  message: string;
+  options: PickerOption[];
+};
+
+function pickerQuestions(): PickerQuestion[] {
+  return mocks.select.mock.calls.map(([question]) => question as PickerQuestion);
+}
+
 vi.mock("@clack/prompts", () => ({
   select: mocks.select,
   text: vi.fn(),
@@ -100,11 +110,15 @@ describe("fresh OpenCode model selection", () => {
       const stored = JSON.parse(
         fs.readFileSync(path.join(homeDir, ".jorgex-stack", "model-map.json"), "utf8"),
       );
+      const openCodeEffortOptions = pickerQuestions()
+        .filter((question) => question.message.includes("OpenCode") && question.message.includes("variant"))
+        .flatMap((question) => question.options.map((option) => option.value));
       expect(stored.opencode).toEqual({
         strong: { model: "xai/grok-code", variant: "high" },
         standard: { model: "zhipu/glm-code", variant: "medium" },
         cheap: { model: "minimax/MiniMax-M3" },
       });
+      expect(openCodeEffortOptions).not.toContain("max");
     } finally {
       restoreTty();
       if (originalHome === undefined) delete process.env.HOME;
