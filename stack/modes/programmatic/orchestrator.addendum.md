@@ -12,6 +12,7 @@
 - `status` is one of `done`, `partial`, `blocked` and `decision` is a short string.
 - `confidence` is a number between 0 and 1.
 - `summary` is a short string.
+- For a PR-ready handoff, use the existing text fields for its metadata, concise changes and observed workflow feedback; keep current limitations in `risks` and pending actions in `next_steps`. Do not add JSON keys or a new `ready` status. A ready PR does not mean the whole assigned work is done when later checkpoints remain.
 - `risks`, `next_steps`, and `delegations` are arrays of strings.
 
 {{CONCURRENCY_RULE}}

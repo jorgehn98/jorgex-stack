@@ -170,7 +170,7 @@ When the plan is fully applied and VERIFY passes:
 
 ## 8. CLOSE
 
-- STOP here and hand control back to the user only after configured Quality Gates pass for the latest commit, or after confirming that the project has no PR checks configured: report the candidate SHA, check result or confirmed absence, review findings applied vs deferred to `work/backlog`, and whether manual testing is advisable (recommend it for big or user-facing changes; small well-tested changes may not need it).
+- STOP here and hand control back to the user only after configured Quality Gates pass for the latest commit, or after confirming that the project has no PR checks configured. Apply the common [Ready handoff](../SKILL.md#ready-handoff): preserve the PR metadata, summarize changes and observed workflow feedback, report valid findings applied vs deferred and whether manual testing is advisable. Do not claim merge, deployment or overall roadmap completion from a ready checkpoint.
 - NEVER merge the PR yourself — merge only on an explicit user order. After each intermediate merge: persist the checkpoint to `work/{name}/pr/{NN}`, update `plan.md`, and keep `work/{name}/` alive. After the final merge: persist the final outcome to memory, clean up `work/{name}/` and remove the worktree (see Work state).
 - If the repo has its own skill for the closing steps (release, deploy, git, cleanup), that skill takes precedence over the default behavior.
 

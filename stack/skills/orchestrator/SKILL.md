@@ -82,6 +82,14 @@ Triage valid findings before work/backlog creation, reconcile duplicates and rej
 
 Both routes keep the PR draft while it changes, use the canonical Git worktree, complete review before ready, wait for configured gates, compare the candidate SHA before reporting or merging, and never merge without explicit user approval.
 
+### Ready handoff
+
+At each verified ready checkpoint, preserve the existing PR metadata (URL/number, candidate SHA, checks and relevant base/dependencies) and briefly summarize the concrete changes and result, not merely the file list. Usually two to four short bullets plus one feedback line are enough. State what worked and any material friction, retries or remaining limitation actually observed; do not invent a balanced story, savings or problems when there were none.
+
+Use the work already performed and its existing evidence/checkpoint; do not launch another agent or investigation just to write the summary. Ready is not merged, deployed or the end of a multi-PR roadmap. Report the actual next action or dependency without granting merge permission or inventing a pause requirement.
+
+Respect the active output contract. In programmatic mode, keep the strict final JSON and its existing keys/types: put changes and factual workflow feedback in `summary`, current limitations in `risks` and pending actions in `next_steps`, preserving PR metadata in allowed text fields. Do not add keys, a `ready` status value, Markdown fences or prose outside that final JSON. Intermediate progress uses the permitted channel rather than pretending to be another final response.
+
 ## Closing rule
 
 Do not declare work finished after analysis or planning alone: complete the routed execution or report the concrete blocker.
