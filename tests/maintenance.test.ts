@@ -149,7 +149,7 @@ const MULTI_PR_LIFECYCLE_CASES = [
       "| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |",
       "Task status lives ONLY in this table",
       "PR status/evidence lives in the PR Roadmap above.",
-      "| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |",
+      "| # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |",
     ],
   },
   {
@@ -1260,7 +1260,7 @@ describe("portable SDD audit contract", () => {
     expect(successCriteria).toContain("**SC-01**: [Verifiable behavior 1]");
     expect(successCriteria).toContain("**SC-02**: [Verifiable behavior 2]");
     expect(successCriteria).not.toContain("Task-specific verification passes");
-    expect(tasks).toContain("| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |");
+    expect(tasks).toContain("| # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |");
     expect(tasks).toContain("single home of task-to-criterion coverage");
     expect(roadmap).toContain("Every evidence entry cites the relevant `SC-*` criteria it proves");
     expect(lifecycle).toMatch(/SC-\*|SC-\d{2}/i);
@@ -1393,5 +1393,40 @@ describe("test-analyzer: rúbrica canónica de testing", () => {
     expect(content).toMatch(/5(?:-|–)7[^\n]+important/i);
     expect(content).toMatch(/1(?:-|–)4[^\n]+not a missing-test finding/i);
     expect(content).not.toMatch(/9(?:-|–)10|7(?:-|–)8|5(?:-|–)6/);
+  });
+});
+
+describe("F1 flexible formal task specification contract", () => {
+  it("mantiene cada tarea formal trazable por una única referencia recuperable y una plantilla suficiente", () => {
+    const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
+    const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
+    const audit = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const orchestrator = readRequiredStackFile("skills/orchestrator/SKILL.md");
+    const taskTable = sectionBetween(template, "## Tasks", "**Statuses**");
+    const taskSpecTemplate = sectionBetween(template, "## Task observation", "## Backlog entry");
+    const pre = sectionBetween(audit, "### PRE", "### POST");
+    const post = sectionBetween(audit, "### POST", "## Read-only boundary");
+
+    expect(lifecycle).toMatch(/(?:formal|atomic) task[\s\S]{0,240}(?:Engram|memory)[\s\S]{0,240}Markdown/i);
+    expect(lifecycle).toMatch(/(?:one|single)[\s\S]{0,120}(?:active )?(?:spec|source|reference)/i);
+    expect(lifecycle).toMatch(/(?:never|do not)[\s\S]{0,160}(?:duplicate|two)[\s\S]{0,160}(?:spec|source|cop(?:y|ies))/i);
+    expect(taskTable).toMatch(/\|\s*#\s*\|\s*PR\s*\|\s*Agent\s*\|\s*Scope\s*\|\s*(?:Spec|Reference)/i);
+    expect(template).toMatch(/work\/\[name\]\/tasks\/\[NN\]\.md/i);
+
+    expect(taskSpecTemplate).toMatch(/(?:result|outcome)[\s\S]{0,100}(?:scope|read|write)/i);
+    expect(taskSpecTemplate).toMatch(/decisive context/i);
+    expect(taskSpecTemplate).toMatch(/(?:contract|invariant)/i);
+    expect(taskSpecTemplate).toMatch(/(?:validation|verification)[\s\S]{0,120}(?:escalat|uncertainty)/i);
+    expect(taskSpecTemplate).toMatch(/(?:do not|never)[\s\S]{0,160}(?:literal code|empty (?:heading|section|field))/i);
+    expectFragments(taskSpecTemplate, ["**Risk**", "**Existing protection**", "**New behavior**", "**Chosen seam**", "**Action**"]);
+
+    expect(pre).toMatch(/(?:every|each)[\s\S]{0,120}(?:formal )?task[\s\S]{0,160}(?:resolve|verif)[\s\S]{0,160}(?:reference|spec)/i);
+    expect(post).toMatch(/(?:every|each)[\s\S]{0,120}(?:formal )?task[\s\S]{0,160}(?:resolve|verif)[\s\S]{0,160}(?:reference|spec)/i);
+    expect(pre).toMatch(/(?:missing|without|cannot|unavailable)[\s\S]{0,120}(?:access|accessible)[\s\S]{0,160}(?:block|gaps?)/i);
+    expect(pre).toMatch(/(?:do not|never)[\s\S]{0,160}reconstruct[\s\S]{0,160}(?:PRD|spec)/i);
+
+    const workState = sectionBetween(orchestrator, "## Work state", "## Delegation map");
+    expect(workState).toMatch(/(?:direct|inline)[\s\S]{0,120}(?:auxiliary|micro)[\s\S]{0,160}(?:formal|independent)/i);
+    expect(workState).toMatch(/(?:grow|independent)[\s\S]{0,160}(?:persist|spec)[\s\S]{0,160}(?:before|continue)/i);
   });
 });
