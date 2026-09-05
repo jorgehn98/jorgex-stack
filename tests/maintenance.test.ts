@@ -1397,6 +1397,18 @@ describe("test-analyzer: rúbrica canónica de testing", () => {
 });
 
 describe("F1 flexible formal task specification contract", () => {
+  it("el handoff protege la Spec de escritura del worker y separa el destino del resultado", () => {
+    const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
+    const handoff = sectionBetween(lifecycle, "## Executing", "## Pull request lifecycle");
+
+    expect.soft(handoff, "el worker debe recibir la Spec como solo lectura").toMatch(
+      /(?:spec[^\n]{0,160}read-only[^\n]{0,100}(?:worker|subagent)|(?:worker|subagent)[^\n]{0,100}read-only[^\n]{0,160}spec)/i,
+    );
+    expect.soft(handoff, "el destino del resultado debe ser distinto de la referencia Spec").toMatch(
+      /(?:result|outcome)[^\n]{0,120}(?:destination|topic_key)[^\n]{0,120}(?:different|distinct|separate)[^\n]{0,120}spec/i,
+    );
+  });
+
   it("mantiene cada tarea formal trazable por una única referencia recuperable y una plantilla suficiente", () => {
     const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
     const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
