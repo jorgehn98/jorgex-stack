@@ -110,11 +110,25 @@ describe("orchestrator canonical source", () => {
     const skill = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
     const decision = sectionBetween(skill, "## Decision before delegation", "## Work state");
     const standardWorkflow = readStandardWorkflowReference();
+    const explore = sectionBetween(standardWorkflow, "## 2. EXPLORE", "## 3. SPEC");
     const handoff = sectionBetween(standardWorkflow, "### Handoff rule", "### Testing decision");
 
     expect(decision).toContain("An analyst's recommendation is evidence for the coordinator");
+    expect(explore).toContain("[Decision before delegation](../SKILL.md#decision-before-delegation)");
+    expect(explore).not.toContain("Launch analysts according to scope:");
     expect(handoff).toContain("[Decision before delegation](../SKILL.md#decision-before-delegation)");
     expect(handoff).not.toMatch(/analyst's \*\*Recommendation\*\*[\s\S]{0,120}implementer/i);
+  });
+
+  it("mantiene el alcance semántico de PR en la guarda común", () => {
+    const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const commonLifecycle = sectionBetween(entry, "### Worktree and PR lifecycle", "### Deterministic verification");
+    const lifecycle = fs.readFileSync(path.join(stackDir, "skills", "work-lifecycle", "SKILL.md"), "utf8");
+    const formalLifecycle = sectionBetween(lifecycle, "## Pull request lifecycle", "## HTML review view");
+
+    expect(commonLifecycle).toMatch(/verifiable vertical slice[\s\S]{0,160}contract, coupling and risk/i);
+    expect(formalLifecycle).toContain("[Worktree and PR lifecycle](../orchestrator/SKILL.md#worktree-and-pr-lifecycle)");
+    expect(formalLifecycle).not.toContain("Keep one concrete objective per PR: a verifiable vertical slice");
   });
 
   it("permite short acotado y exige promoción antes de ampliar el riesgo o el alcance", () => {

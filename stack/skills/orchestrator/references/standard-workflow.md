@@ -20,7 +20,7 @@ The human drives the flow UP TO the plan: the idea, the PRD review and the plan 
 
 ## 2. EXPLORE
 
-Launch analysts according to scope:
+Follow [Decision before delegation](../SKILL.md#decision-before-delegation): reuse verified context and involve an analyst only where material uncertainty needs new evidence. Choose the specialist for that question, rather than launching one merely because an area is touched:
 
 - `backend-analyst` if it affects backend, DB, APIs or server functions
 - `frontend-analyst` if it affects UI, hooks, state or rendering

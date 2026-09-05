@@ -50,7 +50,7 @@ Use this section only after routing selects formal SDD work, including work prom
 
 ## Pull request lifecycle
 
-1. Start from the updated production branch in the canonical worktree/branch. Keep one concrete objective per PR: a verifiable vertical slice bounded by contract, coupling and risk. When assessing size, distinguish behavior (including prompts and configuration), tests/fixtures, documentation and generated files; do not ignore any category or split necessary tests away from their change just to reduce a line count. Split at independently verifiable contracts when the combined risk or review burden warrants it, not at a fixed number of added lines.
+1. Start from the updated production branch in the canonical worktree/branch. Apply the shared PR-scope rule in [Worktree and PR lifecycle](../orchestrator/SKILL.md#worktree-and-pr-lifecycle); formal SDD does not define a separate size policy.
 2. Implement one coherent first slice, commit it, push the work branch, and open the PR immediately as draft with `gh pr create --draft`.
 3. Continue implementation, commits and pushes only while the PR is draft. Draft means the code can still change; ready means the current SHA is the candidate to merge.
 4. Before ready, complete every applicable preflight item: code, version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview review when the project uses Vercel, final diff inspection, and full PR review.
