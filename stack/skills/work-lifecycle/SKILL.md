@@ -1,11 +1,11 @@
 ---
 name: work-lifecycle
-description: Single source for how a piece of work is tracked and advances — PRD and plan as files in work/{name}/ while in progress; task specs, phase outcomes, PR checkpoints and history in Engram memory. Use when starting, tracking, resuming or closing a piece of work, or when deciding where a PRD, plan, task or backlog item should live.
+description: Single source for how a piece of work is tracked and advances — PRD and plan in work/{name}/ while in progress, each formal task's one recoverable spec source (Engram or canonical Markdown), and phase outcomes, PR checkpoints and history in Engram. Use when starting, tracking, resuming or closing a piece of work, or when deciding where a PRD, plan, task or backlog item should live.
 ---
 
 # Work Lifecycle
 
-One rule kills duplication: **every piece of information has exactly ONE home**. Files are for what a human reviews; memory is for what subagents consume and for history. Nothing is ever stored in two places.
+One rule kills duplication: **every piece of information has exactly ONE home**. Files hold human-reviewed artifacts and task specs deliberately chosen as Markdown; memory holds Engram-backed task specs and history. Nothing is ever stored in two places.
 
 ## Identity
 
@@ -17,7 +17,7 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 |---|---|---|
 | PRD | `work/{name}/PRD.md` | Written once, reviewed by the human |
 | Plan (goal, approach, task board) | `work/{name}/plan.md` | The status board: humans glance at it; statuses flip with surgical edits |
-| Full spec of each atomic task | Engram `work/{name}/task/{NN}` | Only subagents consume it; visible from any worktree |
+| Full spec of each formal task | One recoverable source: Engram project + topic_key `work/{name}/task/{NN}` **or** `work/{name}/tasks/{NN}.md` | Choose for durable access; record the exact reference in the plan |
 | PR checkpoint outcome | Engram `work/{name}/pr/{NN}` | Intermediate PR merge record |
 | Phase outcomes, decisions, findings | Engram `work/{name}/{phase}` | History — must survive the folder and compactions |
 | Final outcome | Engram `work/{name}/done` | Permanent record of what shipped after the last PR |
@@ -29,18 +29,19 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 
 1. Pick the canonical name and create `work/{name}/`. If the item came from the backlog, remove it from `work/backlog` in the same step.
 2. Produce the PRD with the `to-prd` skill → `work/{name}/PRD.md`. The human reviews it there.
-3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, `SC-*` success criteria, PR roadmap, and the task table — number, PR, agent, scope, title, one-line description, SC coverage, status, wave, deps.
-4. Save the full spec of each atomic task to memory: one `mem_save` per task with topic_key `work/{name}/task/{NN}` (content structure in `references/plan-template.md`).
+3. Write `work/{name}/plan.md` (structure in `references/plan-template.md`): goal, chosen approach, `SC-*` success criteria, PR roadmap, and the task table — number, PR, agent, scope, **Spec**, title, one-line description, SC coverage, status, wave, deps.
+4. Persist the full spec of every formal task in exactly one recoverable source, then record its exact reference in `Spec`: an Engram observation (project + topic_key `work/{name}/task/{NN}`, with an optional local ID bound as described in the handoff below) or canonical Markdown at `work/{name}/tasks/{NN}.md`. Keep compatible existing Engram task specs; do not migrate them just to change medium.
 5. Run the `work-audit` skill in PRE mode. The audit is read-only; the orchestrator is the single writer and corrects each owner artifact until PRE reports `clean` before the final plan review.
 
 ## Executing
 
 - Execution happens inside a git worktree created for the work; the user's main checkout stays untouched until merge.
 - Worktree path is fixed: first resolve the project root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/<canonical-name>-prNN` for multi-PR checkpoints, with the branch matching the worktree name. Never place worktrees in the repo root, next to the repo, under `work/`, or outside the project.
-- Delegation handoff: the subagent receives its **topic_key + task title**, never the task content inline. It retrieves the spec itself (`mem_search` → `mem_get_observation`).
-- The subagent saves its phase outcome under the topic_key the orchestrator gave it (`work/{name}/{phase}`) BEFORE its final report.
+- Delegation handoff: the subagent receives the task title and its exact `Spec` reference, read-only for the worker. An Engram reference includes its project, topic_key and optional local observation ID; never invent a missing ID. Direct get is allowed only with a known ID already bound to the expected project and topic_key in the current store through `mem_save` or a validated scoped lookup. IDs are not global: for an unknown or unbound ID, or another host/store, search by project and topic_key before any full get by ID; block if resolution is unsafe or unavailable. Recheck the returned identity after retrieval; stop on mismatch. A known current-store binding needs no new search per handoff. For Markdown, locate `tasks/{NN}.md` inside the already-resolved active `work/{name}/` directory, then hand off an absolute path the worker can access; do not concatenate `work/{name}` twice or resolve from the execution CWD, and never assume a gitignored `work/` folder exists in another checkout. A direct or inline message is an auxiliary microassignment under a parent task, not a formal task or independent acceptance criterion. If it grows or becomes independent, persist its formal task spec and add its plan row before continuing.
+- The coordinator is the single writer of a formal task's active spec source and communicates material changes to any in-flight worker; never change that source silently.
+- Only a formal task with an assigned phase outcome saves it BEFORE its final report; its outcome topic_key must be distinct from the `Spec` reference. Never use `mem_save` or `mem_update` to write a result over the Spec observation or its topic_key, or overwrite a Markdown Spec with an outcome. If no separate outcome destination was assigned, return the result to the coordinator for routing. An inline microassignment returns its evidence to the parent and has no separate spec or phase outcome. This does not waive mandatory immediate saves for decisions or findings.
 - Task status lives ONLY in the task table: flip it (⬜ → ✅) with a surgical edit when the task closes. PR status/evidence lives ONLY in the PR roadmap table. Do not mirror task progress into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
-- Success criteria live ONLY in the plan's `SC-*` list. Task-to-criterion coverage lives ONLY in the task table's `SC` column. Verification/merge evidence lives ONLY in the PR roadmap or checkpoint that observed it; cite the relevant SC IDs there instead of copying the criteria into Engram.
+- Success criteria live ONLY in the plan's `SC-*` list. Task-to-criterion coverage lives ONLY in the task table's `SC` column. Verification/merge evidence lives ONLY in the PR roadmap or checkpoint that observed it; cite the relevant SC IDs there instead of copying the criteria into the task spec source.
 - For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree/branch is enough and the roadmap collapses to one checkpoint.
 
 ## Pull request lifecycle
@@ -82,8 +83,8 @@ If the project manages work through an issue tracker, issues (`to-issues`) take 
 
 ## Resuming
 
-1. Read `work/{name}/plan.md` — the board says what's done and what's pending.
-2. If detail is needed: `mem_search("work/{name}")` for the latest phase outcomes (or `mem_context` if recent).
+1. Read `work/{name}/plan.md` — the board says what's done and what's pending, and its `Spec` column names each formal task's only source.
+2. Resolve the declared Spec following the Delegation handoff rule in Executing, including its binding-before-get and scoped lookup requirements. For Markdown, read the canonical absolute path established there; use `mem_context` for recent phase outcomes.
 3. Continue from the first task without ✅.
 
 ## Closing
@@ -115,9 +116,9 @@ For single-PR work, the PR checkpoint and final work close happen together: one 
 - One piece of work = one canonical name, stable across its whole life.
 - Don't mix several distinct pieces of work under the same name/topic_key.
 - Same evolving phase → same topic_key (upsert). Different phases and different tasks must not overwrite each other.
-- Never persist the same artifact in two homes — no file + memory copies, no hybrid writes.
+- Every formal task has one active recoverable spec source. Never duplicate it as file + memory copies or leave two active task spec sources after changing support.
 - Treat `work/backlog` as the exceptional serialized list described above; ordinary topic-key upserts are not a safe substitute for its read-modify-write protocol.
 
 ## Legacy `work/` folders
 
-If a repo still has the old `work/1-TODOs / 2-inProgress / 3-finalized` structure: respect what exists, don't extend it. When you touch a piece of work living there, migrate it to this flow: pending ideas → one entry each in `work/backlog`; an in-progress folder → `work/{name}/` keeping only PRD.md and plan.md, its tasks to memory; finalized folders → one `mem_save` per piece worth keeping, then delete them with the user's OK.
+If a repo still has the old `work/1-TODOs / 2-inProgress / 3-finalized` structure: respect what exists, don't extend it. When you touch a piece of work living there, migrate it to this flow: pending ideas → one entry each in `work/backlog`; an in-progress folder → `work/{name}/` with PRD.md, plan.md and any explicitly chosen canonical Markdown task specs, while existing task observations remain valid Engram sources; finalized folders → one `mem_save` per piece worth keeping, then delete them with the user's OK.

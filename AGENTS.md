@@ -58,7 +58,7 @@ pnpm cli <cmd>
 
 Todo trabajo no trivial usa un git worktree. Primero resolver la raíz con `git rev-parse --show-toplevel`, asegurar `worktrees/` en el `.git/info/exclude` local y crear el directorio dentro de esa raíz si falta. Usar `<project-root>/worktrees/<canonical-name>` para single-PR o `<project-root>/worktrees/<canonical-name>-prNN` para checkpoints multi-PR (branch = worktree name). No crear worktrees junto al repo, bajo `work/` ni en temporales.
 
-El PRD vive en `work/{name}/PRD.md`; `plan.md` es el único tablero operativo (ambos gitignored). Engram conserva specs, resultados de fase, checkpoints e historia. Entre merges intermedios se conservan PRD/plan y cada checkpoint va en `work/{name}/pr/{NN}`; `work/{name}/done` y el borrado de `work/{name}/` solo llegan al cierre del último PR. Seguir la skill `work-lifecycle`.
+El PRD vive en `work/{name}/PRD.md`; `plan.md` es el único tablero operativo (ambos gitignored). Cada tarea formal declara una única spec recuperable: observación Engram identificada por proyecto + topic_key `work/{name}/task/{NN}` con identidad/acceso verificados (ID local opcional, vinculado a esa identidad en el almacén actual; resolver según el handoff de `work-lifecycle` antes del get), o Markdown canónico `work/{name}/tasks/{NN}.md`; la columna `Spec` del plan la referencia. Engram conserva resultados de fase, checkpoints e historia. Entre merges intermedios se conservan PRD/plan y cada checkpoint va en `work/{name}/pr/{NN}`; `work/{name}/done` y el borrado de `work/{name}/` solo llegan al cierre del último PR. Seguir la skill `work-lifecycle`.
 
 Para `work/backlog`, el coordinador es el **único escritor**: leer con `mem_get_observation`, preservar lo ajeno, enviar el **contenido completo** con `mem_update` y volver a leer para **verificar**. Nunca escrituras **concurrentes** ni upsert ciego. No dividirlo por ítems hasta disponer de listado completo paginado por topic; con tracker, usar issues sin duplicar backlog.
 
@@ -88,4 +88,4 @@ Revisar autenticación, permisos, secretos y datos sensibles con mínimo privile
 
 ## Roadmap
 
-El roadmap y el estado operativo viven únicamente en `plan.md`; la historia, specs y checkpoints cerrados se conservan en Engram. Este briefing no replica historial ni una sección `Estado`.
+El roadmap y el estado operativo viven únicamente en `plan.md`; la historia y los checkpoints cerrados se conservan en Engram, mientras cada spec formal sigue su fuente `Spec` declarada. Este briefing no replica historial ni una sección `Estado`.

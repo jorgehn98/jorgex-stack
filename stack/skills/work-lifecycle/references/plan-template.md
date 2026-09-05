@@ -1,6 +1,6 @@
 # Plan & Task Templates
 
-Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and the atomic tasks (Engram observations). `[name]` is the canonical kebab-case name shared by `work/[name]/` and every topic_key. PR branches/worktrees derive from it: `[name]` for single-PR work, `[name]-prNN` for multi-PR checkpoints.
+Templates for the two artifacts of a piece of work: `plan.md` (file — the status board) and each formal task's one recoverable spec source (an Engram observation or canonical Markdown). `[name]` is the canonical kebab-case name shared by `work/[name]/`, task references and Engram topic_keys. PR branches/worktrees derive from it: `[name]` for single-PR work, `[name]-prNN` for multi-PR checkpoints.
 
 ---
 
@@ -9,10 +9,12 @@ Templates for the two artifacts of a piece of work: `plan.md` (file — the stat
 ```
 work/[name]/
 ├── PRD.md      # decisions and design (written by the to-prd skill)
-└── plan.md     # master index + task status board
+├── plan.md     # master index + task status board
+└── tasks/      # only when Markdown is the declared task-spec source
+    └── [NN].md # canonical Markdown spec for task [NN]
 ```
 
-The full spec of each task is NOT a file: it lives in Engram, one observation per task with topic_key `work/[name]/task/[NN]` (the `[NN]` matches the `#` column of the plan table).
+Every formal task has exactly one recoverable `Spec` reference in the plan table: an Engram observation with project `[project]` and topic_key `work/[name]/task/[NN]` (the `[NN]` matches `#`) or canonical Markdown at `work/[name]/tasks/[NN].md`. Do not create a second editable copy. Existing Engram task specs remain valid; no mass migration is required.
 
 ---
 
@@ -59,117 +61,59 @@ The full spec of each task is NOT a file: it lives in Engram, one observation pe
 
 ## Tasks
 
-> Full spec of task NN → Engram topic_key `work/[name]/task/NN`.
+> Every formal task has exactly one recoverable `Spec` reference: Engram project `[project]` + topic_key `work/[name]/task/NN`, or `work/[name]/tasks/NN.md`. An optional local ID must already be bound to that identity in the current store via `mem_save` or validated scoped lookup. Follow the lifecycle handoff before full retrieval; verify identity and access before execution and never leave two active specs.
+> A direct message is only an auxiliary, self-contained microassignment of a parent task. It has no independent `SC` or row; if it grows into independent work, persist its spec and add the formal task first.
 > Task status lives ONLY in this table — update it with a surgical edit per task.
 > PR status/evidence lives in the PR Roadmap above.
 > Map each task to the PR that carries it; intermediate PRs keep `work/[name]/` alive.
-> The `SC` column is the single home of task-to-criterion coverage. Do not duplicate that mapping in the Engram task spec.
+> The `SC` column is the single home of task-to-criterion coverage. Do not duplicate that mapping in the task spec source.
 
-| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |
-|---|----|-------|-------|------|-----------|----|--------|------|------|
-| 01 | 01 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 1 | — |
-| 02 | 01 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 1 | — |
-| 03 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 2 | 01 |
-| 04 | 02 | [agent] | [bounded scope] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 2 | 01, 02 |
+| # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |
+|---|----|-------|-------|------|------|-----------|----|--------|------|------|
+| 01 | 01 | [agent] | [bounded scope] | Engram project: [project], topic_key: `work/[name]/task/01`, local ID: [id only if bound in current store; otherwise omit] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 1 | — |
+| 02 | 01 | [agent] | [bounded scope] | `work/[name]/tasks/02.md` | [descriptive name] | [one-line description] | SC-02 | ⬜ | 1 | — |
+| 03 | 02 | [agent] | [bounded scope] | [one declared source] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 2 | 01 |
+| 04 | 02 | [agent] | [bounded scope] | [one declared source] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 2 | 01, 02 |
 
 **Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
 ```
 
 ---
 
-## Task observation — Template (`mem_save` per task)
+## Task observation / Markdown task specification — Template
 
-Each task observation is self-contained: a subagent retrieves it by topic_key and has all the context needed to work without asking back. Don't write unnecessary information or full code blocks unless needed. In the context section, write only what the subagent needs to understand it perfectly.
-
-`mem_save` fields:
-
-- **title**: `[name]/task/[NN] — [descriptive task name]`
-- **topic_key**: `work/[name]/task/[NN]`
-- **type**: `architecture`
-- **content**: the markdown below
-
-Status, wave, dependencies and SC coverage live in the plan.md table (single home) — do NOT repeat them here.
+Use this adaptable content in the one source declared by the plan's `Spec` column. For Engram, save it in project `[project]` as the task observation under topic_key `work/[name]/task/[NN]`; for Markdown, use `work/[name]/tasks/[NN].md`. The source must be self-contained enough for its assigned worker, but include only what is pertinent.
 
 ```markdown
 # T[NN]: [Descriptive task name]
 
-## Intent
+## result and scope
 
-[EXPLICIT: why we're doing this task. The problem it solves or the need it covers.]
+- **result**: [the completed outcome]
+- **scope**: read [paths/context] and write [bounded paths], if applicable.
 
-## Affected files
+## decisive context
 
-> Only include files the agent of THIS task can modify.
-> If there are tests, translations or user docs, create a separate task for the right specialist.
+[Only the decisions, verified facts and precise references the worker needs. Include a fragment only when it clarifies the contract.]
 
-| File | Action | Why |
-|------|--------|-----|
-| `path/to/file` | CREATE | [concrete reason] |
-| `path/to/other` | MODIFY | [concrete reason] |
+## contract and invariants
 
-## Out of scope / Delegate
+[Relevant behavior, boundaries and edge cases. Omit categories that do not apply.]
 
-| Agent | Pending work | Required inputs |
-|-------|--------------|-----------------|
-| `[agent]` | [work that belongs to another scope] | [minimal inputs] |
+## validation and escalation
 
-## Constraints
-
-[Technical constraints the subagent MUST respect. If none beyond project rules, say so explicitly.]
-
-## Context
-
-[Extracted from the analysts' output — only what's relevant for THIS task. Copy real code snippets, don't describe them. Indicate source file:line for each snippet.]
-
-### Current relevant state
-
-[Existing code being modified or extended — copy literally]
-
-### Pattern to follow
-
-[If there's an existing pattern in the codebase to replicate — copy literally with file:line]
-
-## Specification
-
-[What the code must do — exact behavior.]
-
-### Expected behavior
-
-- **Input**: [what it receives]
-- **Output**: [what it returns/produces]
-- **Side effects**: [queries, mutations, etc. if any]
-
-### Edge cases
-
-- [Edge case and how to handle it]
-
-### Business rules
-
-- [Rule]
+[Verification that demonstrates completion. Escalate a material uncertainty, missing source access or identity mismatch instead of reconstructing the spec from the PRD.]
 
 ## Testing decision
 
 - **Risk**: [meaningful regression this task can introduce]
 - **Existing protection**: [specific existing test/evidence, or none]
 - **New behavior**: [behavior needing new protection, or none]
-- **Chosen seam**: [unit/component/database/integration/contract/e2e and why it is closest to the risk]
+- **Chosen seam**: [closest authoritative seam and why]
 - **Action**: [add | update | reuse | no new test] — [concrete reason]
-
-Prefer one authoritative test per behavior. Another layer is justified only when it protects a distinct contract. Styling, wiring, generated code, mechanical refactors, and trivial changes may use `no new test`; business rules, bugs/regressions, public contracts, and invariants should normally use TDD.
-
-## Acceptance criteria
-
-[VERIFIABLE and SPECIFIC criteria — not generic. Each must be checkable manually or automatically.]
-
-- [ ] [Verifiable criterion 1]
-- [ ] [Verifiable criterion 2]
-- [ ] Task-specific verification passes, if applicable
-
-## Additional notes
-
-[Anything the subagent should know that doesn't fit above.]
 ```
 
+Use only the headings and fields that are pertinent, except retain the complete testing decision when the task changes behavior. Do not require literal code, input/output blocks or empty heading, section or field. Existing Engram task observations remain compatible; adapt this template only for newly created or materially revised specs.
 ---
 
 ## Backlog entry — Template (`work/backlog`)
@@ -200,8 +144,8 @@ Mutation is serialized: the coordinator is the single writer, reads the exact ob
 ### Context
 
 - Copy only the relevant info from the analysis, not the whole report.
-- **Copy code literally**, don't describe it.
-- Indicate source file and line for each copied snippet.
+- Reference the original source precisely; include a literal code fragment only when it clarifies the contract.
+- Indicate source file and line for each included snippet.
 
 ### Acceptance criteria
 

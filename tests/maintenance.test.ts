@@ -149,7 +149,7 @@ const MULTI_PR_LIFECYCLE_CASES = [
       "| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |",
       "Task status lives ONLY in this table",
       "PR status/evidence lives in the PR Roadmap above.",
-      "| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |",
+      "| # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |",
     ],
   },
   {
@@ -1260,7 +1260,7 @@ describe("portable SDD audit contract", () => {
     expect(successCriteria).toContain("**SC-01**: [Verifiable behavior 1]");
     expect(successCriteria).toContain("**SC-02**: [Verifiable behavior 2]");
     expect(successCriteria).not.toContain("Task-specific verification passes");
-    expect(tasks).toContain("| # | PR | Agent | Scope | Task | One-liner | SC | Status | Wave | Deps |");
+    expect(tasks).toContain("| # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |");
     expect(tasks).toContain("single home of task-to-criterion coverage");
     expect(roadmap).toContain("Every evidence entry cites the relevant `SC-*` criteria it proves");
     expect(lifecycle).toMatch(/SC-\*|SC-\d{2}/i);
@@ -1393,5 +1393,98 @@ describe("test-analyzer: rúbrica canónica de testing", () => {
     expect(content).toMatch(/5(?:-|–)7[^\n]+important/i);
     expect(content).toMatch(/1(?:-|–)4[^\n]+not a missing-test finding/i);
     expect(content).not.toMatch(/9(?:-|–)10|7(?:-|–)8|5(?:-|–)6/);
+  });
+});
+
+describe("F1 flexible formal task specification contract", () => {
+  it("handoff sólo permite get directo con ID ligado al proyecto/topic en el almacén actual", () => {
+    const lifecycle = sectionBetween(
+      readRequiredStackFile("skills/work-lifecycle/SKILL.md"), "## Executing", "## Pull request lifecycle",
+    );
+
+    expect.soft(lifecycle, "vincular identidad en el almacén actual debe preceder al get directo").toMatch(
+      /(?:direct[^\n]{0,100}only|only[^\n]{0,100}direct)[^\n]{0,160}\b(?:bound|binding|mapped)\b[^\n]{0,120}project[^\n]{0,80}topic[^\n]{0,120}(?:current|local) (?:store|storage)/i,
+    );
+    expect.soft(lifecycle, "un ID de otra procedencia exige recuperar en scope o bloquear antes de leer").toMatch(
+      /(?:unbound|foreign|unknown|another|different)[^\n]{0,160}(?:resolv|search)[^\n]{0,120}project[^\n]{0,80}topic[^\n]{0,160}(?:before[^\n]{0,100}(?:get|read)|block)/i,
+    );
+  });
+
+  it("resume remite al handoff al resolver la Spec", () => {
+    const resuming = sectionBetween(readRequiredStackFile("skills/work-lifecycle/SKILL.md"), "## Resuming", "## Closing");
+
+    expect(resuming, "la resolución de Spec debe reutilizar la regla canónica del handoff").toMatch(
+      /(?:Spec|Engram)[^\n]{0,120}(?:follow|apply|using|under|per|according to)[^\n]{0,120}(?:handoff|Executing)/i,
+    );
+  });
+  it("la plantilla identifica Engram por proyecto/topic y permite ID local opcional ligado", () => {
+    const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
+    const tasks = sectionBetween(template, "## Tasks", "**Statuses**");
+    const engramRow = tasks.split(/\r?\n/).find((line) => /^\| 01 \|/.test(line));
+
+    expect(engramRow, "la fila Engram conserva un ejemplo con identidad recuperable").toBeDefined();
+    expect.soft(engramRow).toMatch(/Engram[^|]*project[^|]*work\/\[name\]\/task\/01/i);
+    expect.soft(tasks, "el ID opcional no autoriza una lectura sin binding").toMatch(
+      /optional[^\n]{0,80}(?:local[^\n]{0,40})?ID[^\n]{0,160}\b(?:bound|binding|mapped)\b/i,
+    );
+  });
+
+  it.each([
+    ["PRE", "### PRE", "### POST"],
+    ["POST", "### POST", "## Read-only boundary"],
+  ])("%s devuelve gaps tanto por identidad incorrecta como por acceso ausente", (_mode, start, end) => {
+    const audit = sectionBetween(readRequiredStackFile("skills/work-audit/SKILL.md"), start, end);
+
+    expect.soft(audit, "identidad incorrecta debe impedir clean/converged").toMatch(
+      /(?:identity[^\n]{0,40}mismatch|(?:wrong|invalid|mismatched) identity)[^\n]{0,180}`gaps`/i,
+    );
+    expect.soft(audit, "acceso ausente debe impedir clean/converged").toMatch(
+      /(?:(?:missing|absent|unavailable|no) access|access[^\n]{0,40}(?:missing|absent|unavailable|denied))[^\n]{0,180}`gaps`/i,
+    );
+  });
+
+  it("el handoff protege la Spec de escritura del worker y separa el destino del resultado", () => {
+    const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
+    const handoff = sectionBetween(lifecycle, "## Executing", "## Pull request lifecycle");
+
+    expect.soft(handoff, "el worker debe recibir la Spec como solo lectura").toMatch(
+      /(?:spec[^\n]{0,160}read-only[^\n]{0,100}(?:worker|subagent)|(?:worker|subagent)[^\n]{0,100}read-only[^\n]{0,160}spec)/i,
+    );
+    expect.soft(handoff, "el destino del resultado debe ser distinto de la referencia Spec").toMatch(
+      /(?:result|outcome)[^\n]{0,120}(?:destination|topic_key)[^\n]{0,120}(?:different|distinct|separate)[^\n]{0,120}spec/i,
+    );
+  });
+
+  it("mantiene cada tarea formal trazable por una única referencia recuperable y una plantilla suficiente", () => {
+    const lifecycle = readRequiredStackFile("skills/work-lifecycle/SKILL.md");
+    const template = readRequiredStackFile("skills/work-lifecycle/references/plan-template.md");
+    const audit = readRequiredStackFile("skills/work-audit/SKILL.md");
+    const orchestrator = readRequiredStackFile("skills/orchestrator/SKILL.md");
+    const taskTable = sectionBetween(template, "## Tasks", "**Statuses**");
+    const taskSpecTemplate = sectionBetween(template, "## Task observation", "## Backlog entry");
+    const pre = sectionBetween(audit, "### PRE", "### POST");
+    const post = sectionBetween(audit, "### POST", "## Read-only boundary");
+
+    expect(lifecycle).toMatch(/(?:formal|atomic) task[\s\S]{0,240}(?:Engram|memory)[\s\S]{0,240}Markdown/i);
+    expect(lifecycle).toMatch(/(?:one|single)[\s\S]{0,120}(?:active )?(?:spec|source|reference)/i);
+    expect(lifecycle).toMatch(/(?:never|do not)[\s\S]{0,160}(?:duplicate|two)[\s\S]{0,160}(?:spec|source|cop(?:y|ies))/i);
+    expect(taskTable).toMatch(/\|\s*#\s*\|\s*PR\s*\|\s*Agent\s*\|\s*Scope\s*\|\s*(?:Spec|Reference)/i);
+    expect(template).toMatch(/work\/\[name\]\/tasks\/\[NN\]\.md/i);
+
+    expect(taskSpecTemplate).toMatch(/(?:result|outcome)[\s\S]{0,100}(?:scope|read|write)/i);
+    expect(taskSpecTemplate).toMatch(/decisive context/i);
+    expect(taskSpecTemplate).toMatch(/(?:contract|invariant)/i);
+    expect(taskSpecTemplate).toMatch(/(?:validation|verification)[\s\S]{0,120}(?:escalat|uncertainty)/i);
+    expect(taskSpecTemplate).toMatch(/(?:do not|never)[\s\S]{0,160}(?:literal code|empty (?:heading|section|field))/i);
+    expectFragments(taskSpecTemplate, ["**Risk**", "**Existing protection**", "**New behavior**", "**Chosen seam**", "**Action**"]);
+
+    expect(pre).toMatch(/(?:every|each)[\s\S]{0,120}(?:formal )?task[\s\S]{0,160}(?:resolve|verif)[\s\S]{0,160}(?:reference|spec)/i);
+    expect(post).toMatch(/(?:every|each)[\s\S]{0,120}(?:formal )?task[\s\S]{0,160}(?:resolve|verif)[\s\S]{0,160}(?:reference|spec)/i);
+    expect(pre).toMatch(/(?:missing|without|cannot|unavailable)[\s\S]{0,120}(?:access|accessible)[\s\S]{0,160}(?:block|gaps?)/i);
+    expect(pre).toMatch(/(?:do not|never)[\s\S]{0,160}reconstruct[\s\S]{0,160}(?:PRD|spec)/i);
+
+    const workState = sectionBetween(orchestrator, "## Work state", "## Delegation map");
+    expect(workState).toMatch(/(?:direct|inline)[\s\S]{0,120}(?:auxiliary|micro)[\s\S]{0,160}(?:formal|independent)/i);
+    expect(workState).toMatch(/(?:grow|independent)[\s\S]{0,160}(?:persist|spec)[\s\S]{0,160}(?:before|continue)/i);
   });
 });
