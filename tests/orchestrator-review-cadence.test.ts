@@ -62,6 +62,22 @@ describe("orchestrator review cadence", () => {
     expect(body).not.toMatch(/fresh `code-reviewer` pass before closing/i);
   });
 
+  it("SHIP standard remite a la revisión común y conserva la evidencia previa", () => {
+    const reference = readFileSync(
+      fileURLToPath(new URL("../stack/skills/orchestrator/references/standard-workflow.md", import.meta.url)),
+      "utf8",
+    );
+    const ship = sectionBetween(reference, "## 7. SHIP", "## 8. CLOSE");
+    const reviewStep = sectionBetween(ship, "2. ", "3. ");
+
+    expect(reviewStep, "SHIP debe aplicar la política común de la entrada").toContain("SKILL.md");
+    expect(reviewStep).toMatch(/Final review and PR lifecycle/i);
+    expect(reviewStep).not.toMatch(/^2\. Load and run the portable `xreview` skill/m);
+    expect(ship, "una revisión ya completada debe conservar su evidencia").toMatch(/(?:retain|reuse|preserve)[^\n.]*\b(?:prior|existing|previous|completed)\b[^\n.]*\b(?:review|evidence)\b/i);
+    expect(ship).toMatch(/only if[^\n.]*materially (?:changed|change)[^\n.]*diff/i);
+    expect(ship).toMatch(/materially different risk/i);
+  });
+
   it("mantiene Git y la cadencia de review como guardas compartidas por short y standard", () => {
     const sharedGuards = sectionBetween(body, "## Shared guards", "## Work state");
 
