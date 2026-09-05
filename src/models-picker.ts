@@ -19,17 +19,19 @@ const TIERS: Tier[] = ["strong", "standard", "cheap"];
 
 /** Niveles de reasoning effort (variant en OpenCode, model_reasoning_effort en Codex). */
 const EFFORTS = ["low", "medium", "high", "xhigh"];
+const CODEX_EFFORTS = [...EFFORTS, "max"];
 
 const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku", "inherit"];
 
 /**
  * Lista curada de modelos de Codex (login ChatGPT) — sin typos: se elige, no
  * se escribe. "default" usa el modelo vigente del CLI y nunca caduca; los IDs
- * concretos se refrescan con cada release del stack (julio 2026:
+ * concretos se refrescan con cada release del stack (septiembre 2026:
  * developers.openai.com/codex/models). "custom" queda como vía de escape.
  */
 export const CODEX_MODELS = [
   "default",
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -77,18 +79,11 @@ interface Detection {
  * un sujeto ("tier strong (…)" o "code-reviewer (tier strong)"):
  * - OpenCode → select de modelo (lista en vivo) + select de variant.
  * - Claude Code → select de alias; no existe effort por subagente.
- * - Codex → select de effort + select curado de modelos (con vía de escape).
+ * - Codex → select curado de modelo (con vía de escape) + effort compatible.
  */
 async function askModel(det: Detection, subject: string, current?: TierModel): Promise<TierModel | typeof CANCEL> {
   if (det.id === "codex") {
     if (!current) throw new Error("Codex requiere un model-map base.");
-    const effort = await p.select({
-      message: `${det.name} · ${subject} — reasoning effort`,
-      options: EFFORTS.map((v) => ({ value: v, label: v })),
-      initialValue: current.variant ?? "medium",
-    });
-    if (p.isCancel(effort)) return CANCEL;
-
     const modelOptions = [
       ...(CODEX_MODELS.includes(current.model) ? [] : [{ value: current.model, label: `${current.model} (actual)` }]),
       ...CODEX_MODELS.map((m) => ({
@@ -112,6 +107,21 @@ async function askModel(det: Detection, subject: string, current?: TierModel): P
       if (p.isCancel(typed)) return CANCEL;
       model = typed.trim().toLowerCase();
     }
+    const efforts = ["gpt-6-astra", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(model)
+      ? CODEX_EFFORTS
+      : EFFORTS;
+    const keptEffort = model === current.model ? current.variant : undefined;
+    const effort = await p.select({
+      message: `${det.name} · ${subject} — reasoning effort`,
+      options: [
+        ...efforts.map((v) => ({ value: v, label: v })),
+        ...(keptEffort && !efforts.includes(keptEffort)
+          ? [{ value: keptEffort, label: `${keptEffort} (actual)` }]
+          : []),
+      ],
+      initialValue: keptEffort ?? "medium",
+    });
+    if (p.isCancel(effort)) return CANCEL;
     return { model, variant: effort };
   }
 
