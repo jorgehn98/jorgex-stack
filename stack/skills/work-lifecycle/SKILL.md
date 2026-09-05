@@ -7,16 +7,18 @@ description: Single source for how a piece of work is tracked and advances — P
 
 One rule kills duplication: **every piece of information has exactly ONE home**. Files hold human-reviewed artifacts and task specs deliberately chosen as Markdown; memory holds Engram-backed task specs and history. Nothing is ever stored in two places.
 
+This lifecycle applies after the canonical routing in the `orchestrator` skill selects **formal SDD** work. A short standalone change stays outside this lifecycle and does not create PRD, plan, formal task specs, PRE, or POST for ceremony. A bounded short step inside active formal SDD work preserves its approved Spec, plan row, ownership, and tracking. Routing criteria live only in `orchestrator`; do not copy them here.
+
 ## Identity
 
-Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `checkout-refactor`), shared with the single-PR branch/worktree name and the base name for multi-PR checkpoints. The name stays the same across its whole life — it is the key to everything else.
+Every formal SDD piece of work gets a **canonical kebab-case name** when it starts (e.g. `checkout-refactor`), shared with the single-PR branch/worktree name and the base name for multi-PR checkpoints. The name stays the same across its whole life — it is the key to everything else.
 
 ## Where everything lives
 
 | Piece | Single home | Why there |
 |---|---|---|
-| PRD | `work/{name}/PRD.md` | Written once, reviewed by the human |
-| Plan (goal, approach, task board) | `work/{name}/plan.md` | The status board: humans glance at it; statuses flip with surgical edits |
+| Formal SDD PRD | `work/{name}/PRD.md` | Written once, reviewed by the human |
+| Formal SDD plan (goal, approach, task board) | `work/{name}/plan.md` | The status board: humans glance at it; statuses flip with surgical edits |
 | Full spec of each formal task | One recoverable source: Engram project + topic_key `work/{name}/task/{NN}` **or** `work/{name}/tasks/{NN}.md` | Choose for durable access; record the exact reference in the plan |
 | PR checkpoint outcome | Engram `work/{name}/pr/{NN}` | Intermediate PR merge record |
 | Phase outcomes, decisions, findings | Engram `work/{name}/{phase}` | History — must survive the folder and compactions |
@@ -26,6 +28,8 @@ Every piece of work gets a **canonical kebab-case name** when it starts (e.g. `c
 `work/` is **scaffolding, not product**: add it to the project's `.gitignore`. It contains ONLY work in progress — an empty `work/` means nothing is half-done. No `1-TODOs/`, no `3-finalized/`, no phase subfolders.
 
 ## Starting
+
+Use this section only after routing selects formal SDD work, including work promoted from short before it expands. Do not use it to formalize a standalone short change by ceremony.
 
 1. Pick the canonical name and create `work/{name}/`. If the item came from the backlog, remove it from `work/backlog` in the same step.
 2. Produce the PRD with the `to-prd` skill → `work/{name}/PRD.md`. The human reviews it there.
