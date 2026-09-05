@@ -200,7 +200,7 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     return { ctx, actions: buildPlan(adapter, ctx) };
   }
 
-  it.each(["human", "programmatic"] as const)("proyecta F1 y sus guardas en el payload %s", (mode) => {
+  it.each(["human", "programmatic"] as const)("proyecta F1 y la aplicabilidad F2-A en el payload %s", (mode) => {
     const { ctx, actions } = plan(mode);
     const runtimePaths = adapter.paths(ctx.configDir);
     const prompt = plannedContent(actions, runtimePaths.systemPromptFile);
@@ -214,6 +214,21 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(workState).toMatch(/auxiliary microassignments[^\n]{0,80}parent task/i);
     expect(workState).toMatch(/independent[^\n]{0,100}persist[^\n]{0,100}before continuing/i);
     expect(systemPrompt.includes("<!-- jorgex:programmatic-mode -->")).toBe(mode === "programmatic");
+
+    expect(workState).toContain("single source of this flow for formal SDD work");
+    expect(workState).toContain("canonical `orchestrator` routing decides whether work is short or standard");
+    expect(workState).toContain("a standalone short route does not create PRD, plan, formal Specs, PRE, or POST");
+    expect(workState).toContain("a short step inside active formal SDD work preserves its approved tracking and ownership");
+
+    const lifecyclePayload = plannedContent(actions, path.join(runtimePaths.skillsDir, "work-lifecycle", "SKILL.md"));
+    const applicability = sectionBetween(lifecyclePayload, "# Work Lifecycle", "## Identity");
+    expect(applicability).toContain("canonical routing in the `orchestrator` skill selects **formal SDD** work");
+    expect(applicability).toContain("A short standalone change stays outside this lifecycle");
+    expect(applicability).toContain("does not create PRD, plan, formal task specs, PRE, or POST");
+    expect(applicability).toContain("A bounded short step inside active formal SDD work preserves");
+    expect(applicability).toContain("its approved Spec, plan row, ownership, and tracking");
+    expect(applicability).toContain("Routing criteria live only in `orchestrator`");
+    expect(applicability).toContain("do not copy them here");
 
     const protocolPayload = adapter.id === "opencode"
       ? plannedContent(actions, path.join(runtimePaths.pluginsDir!, "engram.ts"))
