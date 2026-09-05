@@ -62,10 +62,9 @@ describe("PR lifecycle hook", () => {
     expect(context).toContain("<pr-lifecycle-state-required>");
     expect(context).toContain("readiness transition was attempted");
     expect(context).toContain("gh pr view --json number,isDraft,headRefOid");
-    expect(context).toMatch(
-      /If the full review was not already completed,[^\n]*Load and run the portable `xreview` skill/i,
-    );
-    expect(context).toContain("repeat xreview only when the fixes materially change the diff");
+    expect(context).toMatch(/reliable review coverage is missing.+portable `xreview` skill.+exact diff/is);
+    expect(context).toMatch(/fix-check.+delta-review.+full review/is);
+    expect(context).toMatch(/previously clean role reopens.+dependencies or risks change/is);
     expect(context).toContain("gh pr ready --undo <number>");
     expect(context).toContain("gh pr checks <number>");
     expect(context).toContain("If the project has PR checks configured");
@@ -74,6 +73,7 @@ describe("PR lifecycle hook", () => {
     expect(context).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
     expect(context).toContain("Immediately before reporting or merging");
     expect(context).toContain("gh pr view --json headRefOid");
+    expect(context).toContain("same head alone does not preserve review coverage");
     expect(context).not.toContain("was created correctly");
     expect(context).not.toContain("is now ready");
   });

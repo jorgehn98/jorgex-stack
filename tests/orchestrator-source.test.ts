@@ -308,6 +308,7 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
       { relative: ["orchestrator", "references", "standard-workflow.md"], source: standardWorkflowReferencePath() },
       { relative: ["work-lifecycle", "SKILL.md"], source: path.join(stackDir, "skills", "work-lifecycle", "SKILL.md") },
       { relative: ["work-lifecycle", "references", "plan-template.md"], source: path.join(stackDir, "skills", "work-lifecycle", "references", "plan-template.md") },
+      { relative: ["xreview", "SKILL.md"], source: path.join(stackDir, "skills", "xreview", "SKILL.md") },
     ];
 
     for (const { relative, source } of sources) {
