@@ -23,6 +23,20 @@ El analista entrega evidencia y recomendaciones —rutas y consumidores, restric
 
 Una PR se delimita por resultado verificable, contrato, dependencias y riesgo, no por un límite bruto de líneas o archivos. Se separan objetivos realmente independientes en entregas verticales con su protección necesaria; no se separan código y tests, documentación o generados cuando forman parte del mismo contrato. Prompts, configuración, migraciones y schemas cuentan como comportamiento.
 
+## Review enfocada y convergente
+
+La review de un candidato comienza con `BASE_SHA`, `HEAD_SHA` y su merge-base resueltos de forma inmutable. Se clasifican todos los grupos del diff y cada reviewer recibe un **primary scope** —la responsabilidad sobre rutas, hunks, contrato o riesgo— junto con **support context** dirigido. `primary` no es una frontera de permisos ni impide leer la fuente necesaria; por ejemplo, el análisis de tests puede consultar el contrato de producción y sus pruebas.
+
+La cobertura se conserva sólo mientras sigan siendo válidos sus contratos, dependencias y supuestos. Un cambio de base, retarget o contexto de integración exige recalcular el diff efectivo y revisar la cobertura aunque el `HEAD_SHA` no cambie. Tras un finding o un fix se elige la actuación mínima que cubra el riesgo:
+
+- **fix-check**: comprobar el finding original, su corrección y la regresión cercana, priorizando evidencia determinista;
+- **delta-review**: revisar los hunks y contratos o dependencias afectados, reabriendo también un rol antes limpio si cambian sus supuestos;
+- **full review**: establecer o reconstruir la cobertura cuando el cambio o la integración la hayan invalidado ampliamente.
+
+Los duplicados y falsos positivos se reconcilian antes de crear trabajo; un finding nuevo válido se atiende y sólo el trabajo válido aplazado entra en el backlog existente. El cierre exige ausencia de bloqueantes válidos, fixes verificados, cobertura justificada y ausencia de incertidumbre material; no exige cero sugerencias. Se mantienen el límite de tres intentos, los gates aplicables, el estado draft mientras el candidato pueda cambiar y la aprobación explícita para merge.
+
+Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. Tampoco convierte el piloto apilado actual en un default instalable ni documenta una política F7.
+
 ## PRE: consistencia antes de aprobar el plan
 
 El orchestrator ejecuta PRE después de crear el plan y las fuentes declaradas de las specs de tareas, antes de presentar el plan final.
