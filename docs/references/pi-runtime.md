@@ -72,7 +72,7 @@ En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la v
 
 Pi `0.8.5` está publicado independientemente. Este checkout de Stack `1.9.7` contiene el pin candidato; no representa una adopción publicada. El tarball candidato es [jorgex-pi@0.8.5](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.5.tgz), con `89133857` bytes, producer commit `57cb15413c1dda408251ff80ff9d5658b7e91793` y parity source commit `c63c2965b4d883aa10971020b53fd44f72472b6b`. La fuente y la fixture canónicas fijan sus hashes, y el cambio está trazado en [PR 97](https://github.com/jorgehn98/jorgex-stack/pull/97). La snapshot contiene 18 árboles de skill y 98 archivos; incluye la referencia F2-A y conserva las skills privadas F1. No hay ahorro de LLM ni cuota medidos.
 
-La transición requiere publicar Stack `1.9.8` y superar la madurez gestionada de Pi `0.8.5`; no debe presentarse como publicada ni instalada antes de ello.
+Al mergear se espera el auto-bump de Stack `1.9.7` a `1.9.8` y su publicación sin esperar las 24 h. Solo la instalación real de Pi `0.8.5` debe esperar su madurez gestionada; no debe presentarse como instalada antes de realizarla.
 
 ## Histórico: candidato Stack 1.9.6 / Pi 0.8.4
 
