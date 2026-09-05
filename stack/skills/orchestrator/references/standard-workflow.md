@@ -83,7 +83,7 @@ Commit after each task or bounded group of tasks, with a message that reflects t
 
 ### Handoff rule
 
-The analyst's **Recommendation** is the implementer's input. Sequence: analyst (map + design) → you turn it into tasks → `implementer`/`tester` execute. Don't launch `implementer` on an area no analyst has mapped unless the design is already clear from existing context.
+Follow the common [Decision before delegation](../SKILL.md#decision-before-delegation) rule: analysis where needed → coordinator closes the material decisions → one Spec → execution by the appropriate owner. A recommendation does not bypass the coordinator's decision, and an already-understood area does not require another analyst pass.
 
 ### Testing decision
 

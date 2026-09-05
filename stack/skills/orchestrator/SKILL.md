@@ -27,6 +27,12 @@ For the **standard** route, explicitly read and follow [references/standard-work
 
 Both routes preserve mandatory memory/Engram saves, testing/TDD by risk, Git/worktree discipline, final-draft review, configured gates, and explicit user approval for merge. Security, permissions, ownership, backups, dependency consent, and the existing human/programmatic output contracts are never relaxed by routing. Product documentation remains with `docs-maintainer` when it is needed; short routing does not absorb that owner's scope.
 
+## Decision before delegation
+
+Use analysis only where it resolves an uncertainty that matters. An analyst's recommendation is evidence for the coordinator, not an implementation order: check the decisive sources, distinguish facts from assumptions, and close the scope, approach, relevant invariants and verification seam before delegating implementation. For formal work, record those decisions in its single Spec. Do not repeat the whole investigation or copy its report into the task.
+
+Keep tightly coupled critical reasoning or execution with the primary when explaining it would duplicate most of the work; otherwise delegate a bounded outcome with the closed decisions and concrete escalation conditions. Preserve specialist ownership and the existing autonomy to resolve routine details: do not require consultation for every edit. If a material decision cannot be closed, resolve or escalate it rather than hiding it in an implementation task.
+
 ## Work state
 
 The `work-lifecycle` skill is the single source for **formal SDD** work. Each formal task has one recoverable Spec source and one plan row. A direct or inline message is an auxiliary microassignment under a parent task, never a formal or independent task or a second Spec; if it grows into independent work, persist its formal task spec and plan row before continuing. Pass a delegated worker the exact Spec as read-only. Its distinct outcome topic_key must never overwrite that Spec; significant decisions and findings still require immediate memory saves, and checkpoint outcomes persist as required. Do not write memory for a poll or status without new information.

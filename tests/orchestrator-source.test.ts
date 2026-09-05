@@ -7,6 +7,7 @@ import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import type { Adapter, InstallContext } from "../src/adapters/types.js";
 import { buildPlan } from "../src/install.js";
+import { loadCanonicalAgents } from "../src/lib/canonical.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { testModelsForRuntime } from "./fixtures/model-map.js";
 
@@ -59,6 +60,22 @@ function readStandardWorkflowReference(): string {
   return fs.readFileSync(reference, "utf8");
 }
 
+function plannedAgentContent(
+  plan: ReturnType<typeof buildPlan>,
+  adapter: Adapter,
+  ctx: InstallContext,
+  name: string,
+): string {
+  const agent = loadCanonicalAgents(path.join(stackDir, "agents")).find((candidate) => candidate.name === name);
+  expect(agent, `falta el agente canónico ${name}`).toBeDefined();
+
+  const rendered = adapter.renderAgent(agent!, ctx.models);
+  expect(rendered, `${name}: debe producir un único artefacto nativo`).toHaveLength(1);
+  const artifact = rendered[0]!;
+  expect(artifact.kind, `${name}: debe seguir siendo un subagente nativo`).toBe("agent");
+  return plannedContent(plan, path.join(adapter.paths(ctx.configDir).agentsDir, artifact.file));
+}
+
 describe("orchestrator canonical source", () => {
   it("la entrada canónica enruta el workflow y el agent canónico es solo un wrapper", () => {
     const skillFile = path.join(stackDir, "skills", "orchestrator", "SKILL.md");
@@ -87,6 +104,17 @@ describe("orchestrator canonical source", () => {
     expect(routing).toContain("references/standard-workflow.md");
     expect(standardWorkflow).toContain("formal SDD PRD and plan");
     expect(standardWorkflow).toContain("PRE before approval and POST before SHIP");
+  });
+
+  it("mantiene una sola regla de decisión compartida antes de la ejecución standard", () => {
+    const skill = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const decision = sectionBetween(skill, "## Decision before delegation", "## Work state");
+    const standardWorkflow = readStandardWorkflowReference();
+    const handoff = sectionBetween(standardWorkflow, "### Handoff rule", "### Testing decision");
+
+    expect(decision).toContain("An analyst's recommendation is evidence for the coordinator");
+    expect(handoff).toContain("[Decision before delegation](../SKILL.md#decision-before-delegation)");
+    expect(handoff).not.toMatch(/analyst's \*\*Recommendation\*\*[\s\S]{0,120}implementer/i);
   });
 
   it("permite short acotado y exige promoción antes de ampliar el riesgo o el alcance", () => {
@@ -238,6 +266,18 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(protocolPayload).toMatch(/Never[^\n]{0,180}mem_save[^\n]{0,180}mem_update[^\n]{0,180}Spec observation/i);
     expect(protocolPayload).toMatch(/no separate outcome destination[^\n]{0,120}return the result to the coordinator/i);
   });
+
+  it.each(["human", "programmatic"] as const)("proyecta íntegro el contrato de análisis F2-B en el payload %s", (mode) => {
+    const { ctx, actions } = plan(mode);
+
+    for (const name of ["backend-analyst", "frontend-analyst"]) {
+      const agent = loadCanonicalAgents(path.join(stackDir, "agents")).find((candidate) => candidate.name === name);
+      expect(agent, `falta el agente canónico ${name}`).toBeDefined();
+      const outputFormat = sectionBetween(agent!.body, "## Output format", "## Result contract").trim();
+
+      expect(plannedAgentContent(actions, adapter, ctx, name)).toContain(outputFormat);
+    }
+  });
   it("planSkills instala exactamente una entrada canónica", () => {
     const { ctx, actions } = plan("human");
     const skillTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator", "SKILL.md");
@@ -246,18 +286,21 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(plannedContent(actions, skillTarget)).toContain("references/standard-workflow.md");
   });
 
-  it.each(["human", "programmatic"] as const)("proyecta entrada y referencia standard byte a byte en %s", (mode) => {
+  it.each(["human", "programmatic"] as const)("proyecta las skills F2-B byte a byte en %s", (mode) => {
     const { ctx, actions } = plan(mode);
-    const targetRoot = path.join(adapter.paths(ctx.configDir).skillsDir, "orchestrator");
-    const skillTarget = path.join(targetRoot, "SKILL.md");
-    const referenceTarget = path.join(targetRoot, "references", "standard-workflow.md");
+    const skillsDir = adapter.paths(ctx.configDir).skillsDir;
+    const sources = [
+      { relative: ["orchestrator", "SKILL.md"], source: path.join(stackDir, "skills", "orchestrator", "SKILL.md") },
+      { relative: ["orchestrator", "references", "standard-workflow.md"], source: standardWorkflowReferencePath() },
+      { relative: ["work-lifecycle", "SKILL.md"], source: path.join(stackDir, "skills", "work-lifecycle", "SKILL.md") },
+      { relative: ["work-lifecycle", "references", "plan-template.md"], source: path.join(stackDir, "skills", "work-lifecycle", "references", "plan-template.md") },
+    ];
 
-    expect(actions.filter((action) => action.target === skillTarget)).toHaveLength(1);
-    expect(actions.filter((action) => action.target === referenceTarget)).toHaveLength(1);
-    expect(plannedContent(actions, skillTarget)).toBe(
-      fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8"),
-    );
-    expect(plannedContent(actions, referenceTarget)).toBe(readStandardWorkflowReference());
+    for (const { relative, source } of sources) {
+      const target = path.join(skillsDir, ...relative);
+      expect(actions.filter((action) => action.target === target)).toHaveLength(1);
+      expect(plannedContent(actions, target)).toBe(fs.readFileSync(source, "utf8"));
+    }
   });
 
   it("planSkills proyecta work-audit exactamente una vez desde el canon", () => {
