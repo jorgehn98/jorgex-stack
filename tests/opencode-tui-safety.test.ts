@@ -4,20 +4,14 @@
  * Covers:
  * 1. Engram plugin hooks resolve without throwing when payloads are malformed
  *    (missing output.context / output.system / output.parts, undefined input.tool).
- * 2. GoalModePlugin returns {} without throwing when JORGEX_GOAL_DB is outside
- *    the allowed ~/.jorgex-stack/goals directory.
  */
 
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Engram } from "../stack/plugins/opencode/engram.js";
-import { GoalModePlugin } from "../stack/plugins/opencode/goal-plugin.js";
 
 // ─── Saved env vars — restored after each test ───────────────────────────────
 
 const originalEngramBin = process.env.ENGRAM_BIN;
-const originalGoalDb = process.env.JORGEX_GOAL_DB;
 
 beforeEach(() => {
   vi.unstubAllGlobals();
@@ -28,9 +22,6 @@ afterEach(() => {
 
   if (originalEngramBin === undefined) delete process.env.ENGRAM_BIN;
   else process.env.ENGRAM_BIN = originalEngramBin;
-
-  if (originalGoalDb === undefined) delete process.env.JORGEX_GOAL_DB;
-  else process.env.JORGEX_GOAL_DB = originalGoalDb;
 });
 
 // ─── Stub helpers ─────────────────────────────────────────────────────────────
@@ -102,20 +93,6 @@ describe("Engram plugin hooks — no propagation on malformed payloads", () => {
     await expect(
       plugin["tool.execute.after"]!({ sessionID: "s" } as any, "x" as any),
     ).resolves.toBeUndefined();
-  });
-});
-
-// ─── GoalModePlugin — fail-safe initialisation ───────────────────────────────
-
-describe("GoalModePlugin — fail-safe when JORGEX_GOAL_DB is outside allowed directory", () => {
-  it("returns empty hooks object instead of throwing when DB path is rejected", async () => {
-    // Point the DB to a temp path that is NOT inside ~/.jorgex-stack/goals.
-    // resolveGoalDatabasePath() throws for any path outside that directory.
-    // The GoalModePlugin try/catch must catch this and return {}.
-    process.env.JORGEX_GOAL_DB = path.join(os.tmpdir(), "jx-safety-test-outside.sqlite");
-    await expect(
-      GoalModePlugin({ directory: process.cwd() } as any),
-    ).resolves.toEqual({});
   });
 });
 

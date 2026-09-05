@@ -223,7 +223,7 @@ describe("orchestrator canonical source", () => {
     expect(close).toMatch(/Do not claim merge, deployment or overall roadmap completion from ready/i);
   });
 
-  it("continúa tras ready sin ampliar la autorización de merge ni la capacidad de Goal Mode", () => {
+  it("continúa tras ready sin ampliar la autorización de merge ni las capacidades reales", () => {
     const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
     const continuationRule = sectionBetween(entry, "### Continue after a ready checkpoint", "## Closing rule");
     const close = sectionBetween(readStandardWorkflowReference(), "## 8. CLOSE", "## Task rule");
@@ -244,7 +244,7 @@ describe("orchestrator canonical source", () => {
       /Merge only on an explicit user order[\s\S]{0,350}Plan approval[\s\S]{0,250}never authorizes future merges/is,
     );
     expect(continuation).toMatch(
-      /Current capability limit:[\s\S]{0,300}Goal Mode[\s\S]{0,350}waiting_for_merge[\s\S]{0,300}Do not bypass/is,
+      /Capability boundary:[\s\S]{0,240}actual available Git\/PR tools and permissions[\s\S]{0,240}Report unavailable capabilities[\s\S]{0,240}does not provide unattended execution/is,
     );
   });
 

@@ -74,6 +74,172 @@ afterEach(() => {
 });
 
 describe("target inventory regressions", () => {
+  it("fresh OpenCode install omits Goal Mode while retaining active plugins", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-goal-removal-fresh-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+
+    try {
+      await withTempHome(homeDir, async () => {
+        mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+        mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+        mocks.runDetectedBin.mockReturnValue("1.2.3");
+
+        const install = await import("../src/install.js");
+        const opencode = install.ADAPTERS.opencode!;
+        const codex = install.ADAPTERS.codex!;
+        const claudeCode = install.ADAPTERS["claude-code"]!;
+        const originalOpencodeDetect = opencode.detect;
+        const originalCodexDetect = codex.detect;
+        const originalClaudeDetect = claudeCode.detect;
+
+        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        codex.detect = () => ({
+          id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex"),
+        });
+        claudeCode.detect = () => ({
+          id: "claude-code", name: "Claude Code", installed: false, binPath: null, configDir: path.join(homeDir, ".claude"),
+        });
+
+        try {
+          await expect(install.runInstall({
+            runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
+          })).resolves.toBe(0);
+
+          expect(fs.existsSync(path.join(configDir, "plugins", "engram.ts"))).toBe(true);
+          expect(fs.existsSync(path.join(configDir, "plugins", "hooks.ts"))).toBe(true);
+          expect(fs.existsSync(path.join(configDir, "plugins", "worktree.ts"))).toBe(true);
+          expect(fs.existsSync(path.join(configDir, "plugins", "goal-plugin.ts"))).toBe(false);
+          expect(fs.existsSync(path.join(configDir, "plugins", "goal"))).toBe(false);
+          expect(fs.existsSync(path.join(configDir, "commands", "goal.md"))).toBe(false);
+        } finally {
+          opencode.detect = originalOpencodeDetect;
+          codex.detect = originalCodexDetect;
+          claudeCode.detect = originalClaudeDetect;
+        }
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("removes only manifest-owned Goal Mode projection during a real sync-style install", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-goal-removal-upgrade-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const ownedGoalPlugin = path.join(configDir, "plugins", "goal-plugin.ts");
+    const ownedGoalStore = path.join(configDir, "plugins", "goal", "store.ts");
+    const ownedGoalCommand = path.join(configDir, "commands", "goal.md");
+    const foreignGoalModule = path.join(configDir, "plugins", "goal", "foreign.ts");
+    const foreignPlugin = path.join(configDir, "plugins", "foreign.ts");
+    const engramPlugin = path.join(configDir, "plugins", "engram.ts");
+    const worktreePlugin = path.join(configDir, "plugins", "worktree.ts");
+    const engramPlaceholder = path.join(homeDir, ".engram", "placeholder");
+    const goalDatabase = path.join(homeDir, ".jorgex-stack", "goals", "goals.sqlite");
+    const goalHistory = path.join(homeDir, ".jorgex-stack", "goals", "history.json");
+    const goalArtifact = path.join(homeDir, ".jorgex-stack", "goals", "artifacts", "plan.md");
+    const userModifiedGoalPlugin = "// user-modified Goal Mode plugin\n";
+
+    try {
+      await withTempHome(homeDir, async () => {
+        mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+        mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+        mocks.runDetectedBin.mockReturnValue("1.2.3");
+        for (const [file, content] of [
+          [ownedGoalPlugin, userModifiedGoalPlugin],
+          [ownedGoalStore, "// managed Goal store\n"],
+          [ownedGoalCommand, "# managed Goal command\n"],
+          [foreignGoalModule, "// foreign nested plugin\n"],
+          [foreignPlugin, "// foreign plugin\n"],
+          [engramPlugin, "// legacy Engram placeholder\n"],
+          [engramPlaceholder, "Engram placeholder\n"],
+          [goalDatabase, "not a real SQLite database\n"],
+          [goalHistory, "{\"history\":true}\n"],
+          [goalArtifact, "# preserved goal artifact\n"],
+        ] as const) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, content);
+        }
+
+        const { listBackups } = await import("../src/lib/backup.js");
+        const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+        writeRuntimeManifest("opencode", {
+          configDir,
+          owned: [ownedGoalPlugin, ownedGoalStore, ownedGoalCommand, engramPlugin],
+          updatedAt: "legacy",
+        });
+
+        const install = await import("../src/install.js");
+        const opencode = install.ADAPTERS.opencode!;
+        const codex = install.ADAPTERS.codex!;
+        const claudeCode = install.ADAPTERS["claude-code"]!;
+        const originalOpencodeDetect = opencode.detect;
+        const originalCodexDetect = codex.detect;
+        const originalClaudeDetect = claudeCode.detect;
+
+        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        codex.detect = () => ({
+          id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex"),
+        });
+        claudeCode.detect = () => ({
+          id: "claude-code", name: "Claude Code", installed: false, binPath: null, configDir: path.join(homeDir, ".claude"),
+        });
+
+        try {
+          await expect(install.runInstall({
+            runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
+          })).resolves.toBe(0);
+
+          for (const ownedGoalFile of [ownedGoalPlugin, ownedGoalStore, ownedGoalCommand]) {
+            expect(fs.existsSync(ownedGoalFile), ownedGoalFile).toBe(false);
+          }
+          expect(fs.readFileSync(foreignGoalModule, "utf8")).toBe("// foreign nested plugin\n");
+          expect(fs.readFileSync(foreignPlugin, "utf8")).toBe("// foreign plugin\n");
+          expect(fs.readFileSync(engramPlugin, "utf8")).toContain("C:/mock/engram.exe");
+          expect(fs.readFileSync(engramPlaceholder, "utf8")).toBe("Engram placeholder\n");
+          expect(fs.readFileSync(goalDatabase, "utf8")).toBe("not a real SQLite database\n");
+          expect(fs.readFileSync(goalHistory, "utf8")).toBe("{\"history\":true}\n");
+          expect(fs.readFileSync(goalArtifact, "utf8")).toBe("# preserved goal artifact\n");
+
+          const backedUpGoalPlugin = listBackups().flatMap((backup) => backup.files)
+            .find((file) => file.original === ownedGoalPlugin);
+          expect(backedUpGoalPlugin).toBeDefined();
+          expect(fs.readFileSync(backedUpGoalPlugin!.stored, "utf8")).toBe(userModifiedGoalPlugin);
+          const ownedAfterRemoval = readManifest().runtimes.opencode?.owned ?? [];
+          for (const ownedGoalFile of [ownedGoalPlugin, ownedGoalStore, ownedGoalCommand]) {
+            expect(ownedAfterRemoval).not.toContain(ownedGoalFile);
+          }
+
+          const backupIds = listBackups().map((backup) => backup.id);
+          const stablePayloads = new Map([
+            engramPlugin,
+            worktreePlugin,
+            foreignGoalModule,
+            foreignPlugin,
+            engramPlaceholder,
+            goalDatabase,
+            goalHistory,
+            goalArtifact,
+          ].map((file) => [file, fs.readFileSync(file)]));
+          mocks.prompts.log.success.mockClear();
+          await expect(install.runInstall({
+            runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
+          })).resolves.toBe(0);
+          expect(fs.existsSync(ownedGoalPlugin)).toBe(false);
+          for (const [file, bytes] of stablePayloads) expect(fs.readFileSync(file)).toEqual(bytes);
+          expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
+          expect(listBackups().map((backup) => backup.id)).toEqual(backupIds);
+        } finally {
+          opencode.detect = originalOpencodeDetect;
+          codex.detect = originalCodexDetect;
+          claudeCode.detect = originalClaudeDetect;
+        }
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("marca el inventario como incompleto si un runtime detectado no tiene contexto/model-map usable", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-inventory-"));
     const homeDir = path.join(tmp, "home");
