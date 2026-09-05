@@ -37,6 +37,10 @@ La cobertura se conserva sólo mientras sigan siendo válidos sus contratos, dep
 
 Los duplicados y falsos positivos se reconcilian antes de crear trabajo; un finding nuevo válido se atiende y sólo el trabajo válido aplazado entra en el backlog existente. El cierre exige ausencia de bloqueantes válidos, fixes verificados, cobertura justificada y ausencia de incertidumbre material; no exige cero sugerencias. Se mantienen el límite de tres intentos, los gates aplicables, el estado draft mientras el candidato pueda cambiar y la aprobación explícita para merge.
 
+### Entrega de cada PR ready
+
+En cada checkpoint ready verificado, conserva la metadata existente de la PR —URL/número, SHA candidato, checks y base/dependencias relevantes— y resume brevemente los cambios concretos, el resultado y el feedback factual observado: sólo dificultades, reintentos o limitaciones reales. Reutiliza la evidencia del checkpoint: no inventes métricas, ahorros ni problemas. En la salida programática se mantienen las siete claves y tipos actuales; usa `summary` para cambios y feedback, `risks` para limitaciones y `next_steps` para pendientes, sin añadir claves ni un estado `ready`. Un ready no equivale a merge, despliegue ni fin del roadmap.
+
 Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. Tampoco convierte el piloto apilado actual en un default instalable ni documenta una política F7.
 
 ## PRE: consistencia antes de aprobar el plan
