@@ -62,11 +62,13 @@ En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la v
 
 ## Pin vigente y contrato
 
-El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` conserva la evidencia del artefacto y la paridad para las pruebas; no es una segunda autoridad del pin. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi, no a validación, merge ni releases.
+El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi, no a validación, merge ni releases.
 
 ## Preparar una adopción de Pi
 
-Ejecuta el preparador desde un checkout de Stack en rama de trabajo o detached, nunca `main`/`master`:
+Con la App configurada y `JORGEX_AUTOMATION_ENABLED=true`, el coordinador puede proponer la adopción del paquete Pi publicado y verificado. Antes de preparar una PR manual, comprueba runs y PRs existentes según el [runbook Stack ↔ Pi](stack-pi-automation.md). Sin opt-in, ante incompatibilidad o fallo explícito, el preparador local y la PR manual son la alternativa, con review, gates y merge por orden de Jorge. Si falta el artefacto publicado, la adopción sigue bloqueada por esa dependencia externa; no edites pines ni hashes a mano para sustituirlo.
+
+Para esa preparación manual, ejecuta el preparador desde un checkout de Stack en rama de trabajo o detached, nunca `main`/`master`:
 
 ```text
 node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--apply]
