@@ -130,7 +130,7 @@ Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership.
 
 ## Modelo principal
 
-La política de modelo y su ownership por campo forman parte del contrato ejecutable de `src/lib/pi-runtime.ts`; Pi elimina únicamente valores canónicos que aún posea. La metadata local no constituye una garantía del límite de contexto aceptado por el backend OAuth.
+Pi gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contextWindow: 872000` para ese modelo. Pi registra ownership por campo y elimina únicamente valores canónicos que aún posea. Estos contratos se conservan en `src/lib/pi-runtime.ts`; 872K es metadata local solicitada, no una garantía del límite de contexto aceptado por el backend OAuth.
 
 ## Troubleshooting
 
