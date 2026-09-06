@@ -67,17 +67,27 @@ jobs:
 
       - run: pnpm typecheck
 
-      - name: Download the exact JorgeX Pi artifact
+      - name: Resolve the exact JorgeX Pi pin
+        id: pi-pin
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
         shell: bash
         run: |
+          node .github/scripts/pi-pin.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Download the exact JorgeX Pi artifact
+        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
+        env:
+          PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}
+          PI_TARBALL_BYTES: ${{ steps.pi-pin.outputs.bytes }}
+        shell: bash
+        run: |
           set -euo pipefail
-          tarball="$RUNNER_TEMP/jorgex-pi-0.8.7.tgz"
-          curl --fail --show-error --silent --retry 3 --retry-max-time 180 --connect-timeout 15 --max-time 120 --max-filesize 89142426 --remove-on-error --output "$tarball" \
-            https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.7.tgz
+          tarball="$RUNNER_TEMP/jorgex-pi.tgz"
+          curl --fail --show-error --silent --retry 3 --retry-max-time 180 --connect-timeout 15 --max-time 120 --max-filesize "$PI_TARBALL_BYTES" --remove-on-error --output "$tarball" \
+            "$PI_TARBALL_URL"
           actual_bytes="$(wc -c < "$tarball")"
-          if [[ "$actual_bytes" -ne 89142426 ]]; then
-            echo "JorgeX Pi artifact size mismatch: expected=89142426 received=$actual_bytes" >&2
+          if [[ "$actual_bytes" -ne "$PI_TARBALL_BYTES" ]]; then
+            echo "JorgeX Pi artifact size mismatch: expected=$PI_TARBALL_BYTES received=$actual_bytes" >&2
             rm -f -- "$tarball"
             exit 1
           fi
@@ -85,7 +95,7 @@ jobs:
       - name: Verify the exact JorgeX Pi artifact contract
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
         env:
-          JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-0.8.7.tgz
+          JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz
         run: pnpm exec vitest run tests/pi-cross-repo-contract.test.ts
 
       - run: pnpm test
