@@ -1,10 +1,78 @@
 /**
- * Data-only candidate frozen from the exact published jorgex-pi@0.8.5
+ * Data-only candidate frozen from the exact published jorgex-pi@0.8.6
  * registry artifact; lifecycle tests must not consume a live checkout.
  * The provenance commit is the release checkout. The workflow trigger is
  * attestation metadata, not this fixture's release-checkout provenance.
  */
 export const PI_RUNTIME_CANDIDATE = {
+  package: {
+    name: "jorgex-pi",
+    version: "0.8.6",
+    source: "npm:jorgex-pi@0.8.6",
+  },
+  provenance: {
+    commit: "ad17c32d98dae15f14c6505152ca916f550a0c24",
+  },
+  tarball: {
+    bytes: 89_140_981,
+    sha256: "ad757f0ce1a6fb311239e5797a0823ebbfaeb6856d80275b6490b7176df6207e",
+    sha512: "5388aa38fdd2a4aa61f5ae2ee68de4863252a2954d682f9aba20ab7e06b5f72123b9bae4cc4193ec3de90e472ce2c1761a3ec70975629ef599fcd5600b271de6",
+  },
+  pi: {
+    testedVersions: ["0.84.2"],
+  },
+  contract: {
+    schemaVersion: 1,
+    capabilities: [
+      "foundation-contract-v1",
+      "stack-snapshot-v2",
+      "runtime-agents-v1",
+      "permission-gated-tools-v1",
+      "structured-questions-v1",
+      "web-access-v1",
+      "goal-continuation-v1",
+      "mcp-adapter-v1",
+      "engram-runtime-tools-v1",
+      "runner-json-v1",
+      "tui-branding-v1",
+      "managed-primary-model-v1",
+      "quality-receipt-contract-v1",
+      "quality-capabilities-contract-v1",
+    ],
+    runner: {
+      bin: "jorgex-pi",
+      commands: ["status", "doctor", "models", "sync", "cleanup"],
+      schemaVersion: 1,
+      maxStdoutBytes: 65_536,
+    },
+    managedExternalWrites: [
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "settings.json",
+        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair; preserve foreign halves; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "models.json",
+        semantics: "merge missing providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow=872000; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/sol-lifecycle.v1.json",
+        semantics: "record field, container, and file ownership; remove the receipt when empty",
+      },
+    ],
+  },
+} as const;
+
+/**
+ * Test-only context for the previously published Stack/Pi 0.8.5 pin. It models the
+ * outgoing Stack context for rollback tests and is not a production candidate.
+ */
+export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
   package: {
     name: "jorgex-pi",
     version: "0.8.5",
@@ -69,82 +137,14 @@ export const PI_RUNTIME_CANDIDATE = {
 } as const;
 
 /**
- * Test-only context for the previously published Stack/Pi 0.8.4 pin. It models the
- * outgoing Stack context for rollback tests and is not a production candidate.
- */
-export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
-  package: {
-    name: "jorgex-pi",
-    version: "0.8.4",
-    source: "npm:jorgex-pi@0.8.4",
-  },
-  provenance: {
-    commit: "2b5cf37d9bfdb0c574e66712000ecc432eca8a69",
-  },
-  tarball: {
-    bytes: 89_133_070,
-    sha256: "e30cbc0595bfbaa35b37f97096b77d46749315e3cf6ab13f830fe84432798b10",
-    sha512: "39255e7ccf7aad2cbe1069e2dbeb3335dc59f28ad1f0f32b677889e39e167e5fd39b546da9f448c33fad4581f0b4a8f1dda95a2f1b1bce010cc031b188ffc292",
-  },
-  pi: {
-    testedVersions: ["0.84.2"],
-  },
-  contract: {
-    schemaVersion: 1,
-    capabilities: [
-      "foundation-contract-v1",
-      "stack-snapshot-v2",
-      "runtime-agents-v1",
-      "permission-gated-tools-v1",
-      "structured-questions-v1",
-      "web-access-v1",
-      "goal-continuation-v1",
-      "mcp-adapter-v1",
-      "engram-runtime-tools-v1",
-      "runner-json-v1",
-      "tui-branding-v1",
-      "managed-primary-model-v1",
-      "quality-receipt-contract-v1",
-      "quality-capabilities-contract-v1",
-    ],
-    runner: {
-      bin: "jorgex-pi",
-      commands: ["status", "doctor", "models", "sync", "cleanup"],
-      schemaVersion: 1,
-      maxStdoutBytes: 65_536,
-    },
-    managedExternalWrites: [
-      {
-        owner: "jorgex-pi",
-        root: "PI_CODING_AGENT_DIR",
-        relativePath: "settings.json",
-        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair; preserve foreign halves; cleanup removes only receipt-owned exact values",
-      },
-      {
-        owner: "jorgex-pi",
-        root: "PI_CODING_AGENT_DIR",
-        relativePath: "models.json",
-        semantics: "merge missing providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow=872000; cleanup removes only receipt-owned exact values",
-      },
-      {
-        owner: "jorgex-pi",
-        root: "PI_CODING_AGENT_DIR",
-        relativePath: "jorgex-pi/sol-lifecycle.v1.json",
-        semantics: "record field, container, and file ownership; remove the receipt when empty",
-      },
-    ],
-  },
-} as const;
-
-/**
  * Evidence about the exact frozen tarball. This is test-only metadata: the
  * runtime receipt intentionally keeps only bytes and digests.
  */
 export const PI_RUNTIME_ARCHIVE = {
-  entries: 13_404,
+  entries: 13_405,
   parity: {
     source: {
-      commit: "c63c2965b4d883aa10971020b53fd44f72472b6b",
+      commit: "1510655a280a45af5c14f32cb87ce126dbee8edd",
     },
   },
   workAudit: {
