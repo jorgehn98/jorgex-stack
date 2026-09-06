@@ -1,8 +1,8 @@
 import artifacts from "./pi-runtime-artifacts.json" with { type: "json" };
 
 /**
- * Data-only candidate frozen from the independently reviewed registry artifact
- * registry artifact; lifecycle tests must not consume a live checkout.
+ * Data-only candidate frozen from independently reviewed registry metadata.
+ * Lifecycle tests must not consume a live checkout.
  * The provenance commit is the release checkout. The workflow trigger is
  * attestation metadata, not this fixture's release-checkout provenance.
  */

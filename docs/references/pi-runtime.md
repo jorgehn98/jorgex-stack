@@ -64,6 +64,20 @@ En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la v
 
 El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` conserva la evidencia del artefacto y la paridad para las pruebas; no es una segunda autoridad del pin. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi, no a validación, merge ni releases.
 
+## Preparar una adopción de Pi
+
+Ejecuta el preparador desde un checkout de Stack en rama de trabajo o detached, nunca `main`/`master`:
+
+```text
+node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--apply]
+```
+
+`--pi-dir` apunta a un checkout Git separado de Pi. El preparador lee ese repositorio: exige el tag `vEXACT`, su ascendencia en `origin/main` y la de la procedencia actual, y compara contratos publicados y vigentes. La versión debe ser exacta, estar publicada en npm y ser compatible; una incompatibilidad requiere revisión manual y no se resuelve retocando fixtures o goldens.
+
+El modo por defecto y `--apply` exigen Stack limpio, en rama de trabajo o detached y sin índices enmascarados (`assume-unchanged` o `skip-worktree`). Para una versión nueva, incluso el dry-run descarga y verifica el tarball mediante SRI, SHA-256/SHA-512, inventario y contratos, pero no ejecuta Pi, publica, crea PR ni configura App. `--apply` actualiza solo el pin y `tests/fixtures/pi-runtime-artifacts.json` con rollback ante errores; la metadata de la fixture sigue independiente y `src/lib/pi-runtime.ts` intacto.
+
+Una versión igual o anterior al pin actual produce `unchanged` sin tocar Pi ni preparar archivos. Si falla la escritura, el preparador intenta restaurar los JSON; si no puede completar el rollback, conserva los backups y comunica su ruta para recuperación manual. Esto es distinto del rollback de una instalación: usa una versión publicada de Stack que reconozca el receipt presente y sigue el procedimiento de esta referencia, sin editar receipts, hashes ni estado del usuario.
+
 ## Histórico: candidato Stack 1.9.6 / Pi 0.8.4
 
 El release publicado histórico fijaba `npm:jorgex-pi@0.8.4`. La fuente ejecutable fijaba `89133070` bytes, SHA-256 `e30cbc0595bfbaa35b37f97096b77d46749315e3cf6ab13f830fe84432798b10` y SHA-512 `39255e7ccf7aad2cbe1069e2dbeb3335dc59f28ad1f0f32b677889e39e167e5fd39b546da9f448c33fad4581f0b4a8f1dda95a2f1b1bce010cc031b188ffc292`. Su `provenance.commit` era `2b5cf37d9bfdb0c574e66712000ecc432eca8a69`; el `parity.source.commit` comprobado en el artefacto era `5e89b970e72cfac0003b11e054c861bed6d44884`. Esta transición histórica quedó superseded por la adopción publicada de Stack `1.9.7` / Pi `0.8.4`.
