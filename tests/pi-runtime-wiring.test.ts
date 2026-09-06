@@ -4,10 +4,49 @@ import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { readManifest } from "../src/lib/manifest.js";
 import { parseCliArgs } from "../src/cli.js";
+import artifacts from "./fixtures/pi-runtime-artifacts.json" with { type: "json" };
 import {
+  PI_RUNTIME_ARCHIVE,
   PI_RUNTIME_CANDIDATE,
   PI_RUNTIME_PREVIOUS_CANDIDATE,
 } from "./fixtures/pi-runtime.js";
+
+const EXPECTED_ARTIFACTS = {
+  current: {
+    package: { name: "jorgex-pi", version: "0.8.7", source: "npm:jorgex-pi@0.8.7" },
+    provenance: { commit: "193cf5d381004f2d24645b6f7f274d5350fd8511" },
+    tarball: {
+      bytes: 89_142_426,
+      sha256: "733e4f5ab7da3b6332340cb53f75d854b2db18d4eed2da6050c039a79b28d580",
+      sha512: "695c8a358aacb7fbd86d77bdf61718b5171fb5d1276ba3c32391aeb5557df47ddde7832d098ed918fd440378eb03bf322841f71e67888a099c66aaf2a0f73c37",
+    },
+  },
+  previous: {
+    package: { name: "jorgex-pi", version: "0.8.6", source: "npm:jorgex-pi@0.8.6" },
+    provenance: { commit: "ad17c32d98dae15f14c6505152ca916f550a0c24" },
+    tarball: {
+      bytes: 89_140_981,
+      sha256: "ad757f0ce1a6fb311239e5797a0823ebbfaeb6856d80275b6490b7176df6207e",
+      sha512: "5388aa38fdd2a4aa61f5ae2ee68de4863252a2954d682f9aba20ab7e06b5f72123b9bae4cc4193ec3de90e472ce2c1761a3ec70975629ef599fcd5600b271de6",
+    },
+  },
+  archive: {
+    entries: 13_405,
+    parity: { source: { commit: "7d1e4cada3a096bf1ba81d004934e682714df46a" } },
+  },
+} as const;
+
+function artifactMetadata(candidate: {
+  package: unknown;
+  provenance: unknown;
+  tarball: unknown;
+}) {
+  return {
+    package: candidate.package,
+    provenance: candidate.provenance,
+    tarball: candidate.tarball,
+  };
+}
 
 type Environment = Record<string, string> & {
   PI_CODING_AGENT_DIR: string;
@@ -114,6 +153,13 @@ function harness(events: string[]) {
 }
 
 describe("Pi runtime wiring", () => {
+  it("preserva los tres objetos de metadata extraídos y los conecta al fixture runtime", () => {
+    expect(artifacts).toEqual(EXPECTED_ARTIFACTS);
+    expect(artifactMetadata(PI_RUNTIME_CANDIDATE)).toEqual(EXPECTED_ARTIFACTS.current);
+    expect(artifactMetadata(PI_RUNTIME_PREVIOUS_CANDIDATE)).toEqual(EXPECTED_ARTIFACTS.previous);
+    expect({ entries: PI_RUNTIME_ARCHIVE.entries, parity: PI_RUNTIME_ARCHIVE.parity }).toEqual(EXPECTED_ARTIFACTS.archive);
+  });
+
   it("registers Pi as a production package runtime, accepts the CLI selector, and leaves adapters, components, manifests, and model maps Pi-free", async () => {
     const { PI_RUNTIME_REGISTRY } = await runtime();
     expect(PI_RUNTIME_REGISTRY.pi).toMatchObject({
