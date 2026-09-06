@@ -2,8 +2,6 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
@@ -17,7 +15,6 @@ import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import * as modelMap from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
-import { runInstall } from "../src/install.js";
 import { planCommands } from "../src/components/commands.js";
 import { planSkills } from "../src/components/skills.js";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
@@ -572,88 +569,7 @@ describe("planPlugins: placeholders resueltos", () => {
   });
 });
 
-describe("planPlugins: Goal Mode de OpenCode", () => {
-  it("copia goal-plugin.ts y el subdirectorio goal/* de forma recursiva", () => {
-    const ctx = {
-      stackDir: stackRoot(),
-      configDir: tmp,
-      engramBin: null,
-      models: OPEN_CODE_TEST_MODELS,
-      warnings: [],
-    };
-    const actions = planPlugins(opencodeAdapter, ctx);
-    const pluginRoot = path.join(tmp, "plugins");
-    const targets = actions.map((action) => path.relative(pluginRoot, action.target).replace(/\\/g, "/"));
-
-    expect(targets).toContain("goal-plugin.ts");
-    expect(targets).toContain("goal/command.ts");
-    expect(targets).toContain("goal/store.ts");
-    expect(targets).not.toContain("package.json");
-  });
-
-  it("install/sync con --target-dir escribe el árbol Goal Mode de forma idempotente", async () => {
-    const targetDir = path.join(tmp, "opencode-target");
-
-    await expect(runInstall({
-      runtimes: ["opencode"],
-      targetDir,
-      dryRun: false,
-      yes: true,
-    })).resolves.toBe(0);
-
-    const installedFiles = [
-      path.join(targetDir, "commands", "goal.md"),
-      path.join(targetDir, "plugins", "goal-plugin.ts"),
-      path.join(targetDir, "plugins", "goal", "db.ts"),
-      path.join(targetDir, "plugins", "goal", "store.ts"),
-      path.join(targetDir, "plugins", "goal", "opencode-hooks.ts"),
-    ];
-    for (const file of installedFiles) {
-      expect(fs.existsSync(file)).toBe(true);
-    }
-
-    await expect(runInstall({
-      runtimes: ["opencode"],
-      targetDir,
-      dryRun: false,
-      yes: true,
-    })).resolves.toBe(0);
-    for (const file of installedFiles) {
-      expect(fs.existsSync(file)).toBe(true);
-    }
-  });
-
-  it("reescribe los imports locales .js a .ts y permite importar el árbol instalado", async () => {
-    const targetDir = path.join(tmp, "opencode-smoke");
-
-    await expect(runInstall({
-      runtimes: ["opencode"],
-      targetDir,
-      dryRun: false,
-      yes: true,
-    })).resolves.toBe(0);
-
-    const goalPlugin = fs.readFileSync(path.join(targetDir, "plugins", "goal-plugin.ts"), "utf8");
-    expect(goalPlugin).toContain('from "./goal/store.ts"');
-    expect(goalPlugin).toContain('from "./goal/opencode-hooks.ts"');
-    expect(goalPlugin).not.toContain('.js"');
-
-    const goalUrl = pathToFileURL(path.join(targetDir, "plugins", "goal-plugin.ts")).href;
-    const engramUrl = pathToFileURL(path.join(targetDir, "plugins", "engram.ts")).href;
-    const smoke = execFileSync(
-      process.execPath,
-      [
-        "--experimental-strip-types",
-        "--input-type=module",
-        "-e",
-        `await import(${JSON.stringify(goalUrl)}); await import(${JSON.stringify(engramUrl)}); console.log("ok");`,
-      ],
-      { encoding: "utf8" },
-    );
-
-    expect(smoke.trim()).toBe("ok");
-  });
-
+describe("planPlugins: límites de runtime", () => {
   it.each(
     [
       ["claude-code", claudeCodeAdapter],
@@ -678,20 +594,6 @@ describe("planCommands: comandos específicos por runtime", () => {
     engramBin: null,
     models: DEFAULT_MODEL_MAP[adapterId]!,
     warnings: [],
-  });
-
-  it("instala /goal solo en OpenCode", () => {
-    const opencodeTargets = planCommands(opencodeAdapter, makeCtx("opencode"))
-      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
-    expect(opencodeTargets).toContain("commands/goal.md");
-
-    const claudeTargets = planCommands(claudeCodeAdapter, makeCtx("claude-code"))
-      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
-    expect(claudeTargets).not.toContain("commands/goal.md");
-
-    const codexTargets = planCommands(codexAdapter, makeCtx("codex"))
-      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
-    expect(codexTargets).not.toContain("skills/goal/SKILL.md");
   });
 
   it("instala wrappers de /xreview en Claude/OpenCode y deja Codex usar la skill portable", () => {
@@ -743,7 +645,7 @@ describe("lean integration: artefactos canónicos del stack", () => {
   });
 });
 
-describe("Goal Mode runtime version contract", () => {
+describe("runtime version contract", () => {
   it("mantiene alineados Node >=22.5, tsup node22 y la documentación", () => {
     const root = path.join(stackRoot(), "..");
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {

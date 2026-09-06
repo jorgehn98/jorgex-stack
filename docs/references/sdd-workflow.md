@@ -49,7 +49,7 @@ Los duplicados y falsos positivos se reconcilian antes de crear trabajo; un find
 
 En cada checkpoint ready verificado, conserva la metadata existente de la PR —URL/número, SHA candidato, checks y base/dependencias relevantes— y resume brevemente los cambios concretos, el resultado y el feedback factual observado: sólo dificultades, reintentos o limitaciones reales. Reutiliza la evidencia del checkpoint: no inventes métricas, ahorros ni problemas. En la salida programática se mantienen las siete claves y tipos actuales; usa `summary` para cambios y feedback, `risks` para limitaciones y `next_steps` para pendientes, sin añadir claves ni un estado `ready`. Un ready no equivale a merge, despliegue ni fin del roadmap.
 
-Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. La continuación encadenada se rige por el trabajo aprobado, las capacidades disponibles, las reglas del proyecto y el orden registrado. El límite actual de Goal Mode F7 es explícito: el store/supervisor de OpenCode registra `waiting_for_merge` cuando hay una PR abierta y pausa la continuación automática; esta política no actualiza esa máquina de estados ni promete retarget automático, autonomía para todas las cadenas o continuación apilada automática.
+Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. La continuación encadenada se rige por el trabajo aprobado, las capacidades disponibles, las reglas del proyecto, el orden registrado y el merge humano explícito. Goal Mode de OpenCode está retirado y no forma parte de este contrato; la continuidad usa el lifecycle normal y no migra su historial. PiGoal conserva su propio lifecycle.
 
 ## PRE: consistencia antes de aprobar el plan
 

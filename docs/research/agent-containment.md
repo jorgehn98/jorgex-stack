@@ -175,7 +175,7 @@ JorgeX ya tiene permisos por runtime, worktrees, defaults read-anywhere, denies 
 - red y herramientas externas como opt-in;
 - ask para impacto alto;
 - deny absoluto para secretos, policy files y write/edit/delete/execute fuera de scope; lectura externa solo cuando el runtime/perfil la permita;
-- circuit breakers en Goal Mode y tareas programáticas;
+- circuit breakers en tareas programáticas;
 - evidencia de cada denial y approval;
 - pruebas de escape como parte del quality gate del stack.
 
