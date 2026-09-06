@@ -10,7 +10,7 @@ INIT → EXPLORE → SPEC → PLAN → EXECUTE → VERIFY → SHIP → CLOSE
 
 ### Autonomy
 
-The human drives the flow UP TO the plan: the idea, the PRD review and the plan review are interactive. Once the plan is approved, EXECUTE → VERIFY → SHIP run **autonomously** — no confirmation pauses: plan approval authorizes commits, pushes to the work branch, draft PR creation, final review, and the draft-to-ready transition after verification. Task-critical uncertainty from a subagent is an operational blocker, not a pause in autonomy: answer from existing context first; only if the decision genuinely cannot be made from available context may you ask the user, then relaunch with explicit guidance. Control returns to the user at CLOSE. Merging the PR is NEVER yours: it always requires an explicit user order. For multi-PR work, each merge is a checkpoint; keep `work/{name}/PRD.md` and `plan.md` alive until the roadmap is finished. Dependent PRs are sequential: after a checkpoint merge, update the production branch and create the next worktree/branch from that updated base.
+The human drives the flow UP TO the plan: the idea, PRD and plan review are interactive. Once approved, EXECUTE → VERIFY → SHIP run **autonomously** within that scope: commits, work-branch pushes, draft PR creation, review and ready transitions are authorized, not merges. Resolve task-critical uncertainty from available context first; ask the user only for a genuinely unresolved material decision. CLOSE finishes the current checkpoint and follows [Continue after a ready checkpoint](../SKILL.md#continue-after-a-ready-checkpoint), not a mandatory pause while safe approved work remains. Every merge still requires an explicit user order. Keep `work/{name}/PRD.md` and `plan.md` until the roadmap is finished; choose production or a permitted parent base through the common continuation rule, never through an assumed need to wait for every merge.
 
 ## 1. INIT
 
@@ -155,7 +155,7 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 
 ## 7. SHIP (automatic)
 
-When the plan is fully applied and VERIFY passes:
+When the current checkpoint's planned work is applied and VERIFY passes:
 
 1. Confirm the draft PR exists, the worktree is clean, and the draft head matches the local HEAD. Complete any necessary documentation under the common rule and inspect the consolidated final diff against the PR's real base; do not publish intermediate behavior with required documentation missing.
 2. Apply **Final review and PR lifecycle** in the entry [SKILL.md](../SKILL.md) and the project's review requirements. Reuse valid prior review evidence; choosing standard does not require another panel. Process the review findings by their three levels:
@@ -170,7 +170,7 @@ When the plan is fully applied and VERIFY passes:
 
 ## 8. CLOSE
 
-- STOP here and hand control back to the user only after configured Quality Gates pass for the latest commit, or after confirming that the project has no PR checks configured. Apply the common [Ready handoff](../SKILL.md#ready-handoff): preserve the PR metadata, summarize changes and observed workflow feedback, report valid findings applied vs deferred and whether manual testing is advisable. Do not claim merge, deployment or overall roadmap completion from a ready checkpoint.
+- After configured Quality Gates pass for the current candidate, or after confirming that none are configured, close this checkpoint with the common [Ready handoff](../SKILL.md#ready-handoff). Preserve metadata, summarize changes and observed feedback, and report valid findings applied vs deferred and whether manual testing is advisable. Then follow [Continue after a ready checkpoint](../SKILL.md#continue-after-a-ready-checkpoint): continue approved safe work, or explain the real blocker/end of scope. Do not claim merge, deployment or overall roadmap completion from ready.
 - NEVER merge the PR yourself — merge only on an explicit user order. After each intermediate merge: persist the checkpoint to `work/{name}/pr/{NN}`, update `plan.md`, and keep `work/{name}/` alive. After the final merge: persist the final outcome to memory, clean up `work/{name}/` and remove the worktree (see Work state).
 - If the repo has its own skill for the closing steps (release, deploy, git, cleanup), that skill takes precedence over the default behavior.
 

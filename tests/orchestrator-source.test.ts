@@ -220,7 +220,32 @@ describe("orchestrator canonical source", () => {
     expect(readyHandoff).toMatch(/changes and factual workflow feedback in `summary`[\s\S]{0,180}limitations in `risks`[\s\S]{0,120}pending actions in `next_steps`/i);
     expect(readyHandoff).toMatch(/Do not add keys, a `ready` status value, Markdown fences or prose outside that final JSON/i);
     expect(close).toContain("[Ready handoff](../SKILL.md#ready-handoff)");
-    expect(close).toMatch(/Do not claim merge, deployment or overall roadmap completion from a ready checkpoint/i);
+    expect(close).toMatch(/Do not claim merge, deployment or overall roadmap completion from ready/i);
+  });
+
+  it("continúa tras ready sin ampliar la autorización de merge ni la capacidad de Goal Mode", () => {
+    const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const continuationRule = sectionBetween(entry, "### Continue after a ready checkpoint", "## Closing rule");
+    const close = sectionBetween(readStandardWorkflowReference(), "## 8. CLOSE", "## Task rule");
+    const continuation = fs.readFileSync(
+      path.join(stackDir, "skills", "work-lifecycle", "references", "pr-continuation.md"),
+      "utf8",
+    );
+
+    expect(close).toMatch(/continue approved safe work.+real blocker\/end of scope/is);
+    expect(close).not.toContain("STOP here and hand control back to the user");
+    expect(continuationRule).toMatch(
+      /For multi-PR work or a dependency on an unmerged PR, read \[PR continuation\]\(\.\.\/work-lifecycle\/references\/pr-continuation\.md\)[\s\S]{0,180}if unavailable, report that boundary/i,
+    );
+    expect(continuation).toMatch(
+      /Keep ready parents immutable[\s\S]{0,750}same head SHA does not prove[\s\S]{0,350}return it to draft/is,
+    );
+    expect(continuation).toMatch(
+      /Merge only on an explicit user order[\s\S]{0,350}Plan approval[\s\S]{0,250}never authorizes future merges/is,
+    );
+    expect(continuation).toMatch(
+      /Current capability limit:[\s\S]{0,300}Goal Mode[\s\S]{0,350}waiting_for_merge[\s\S]{0,300}Do not bypass/is,
+    );
   });
 
   it("carga work-audit en modo PRE durante PLAN y en modo POST durante VERIFY", () => {
@@ -300,6 +325,9 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     const git = sectionBetween(systemPrompt, "## Git", "## Terminal");
     expect(git).toMatch(/revalidate review coverage.+not automatically relaunching every reviewer/is);
     expect(git).toMatch(/effective base and integration context even when head is unchanged/i);
+    expect(git).toMatch(
+      /verified base appropriate to its dependencies[\s\S]{0,280}updated production[\s\S]{0,240}permitted stable parent candidate[\s\S]{0,420}Ready does not by itself stop approved safe work[\s\S]{0,180}runtime capabilities[\s\S]{0,180}Parents ready remain immutable[\s\S]{0,180}explicit user approval/i,
+    );
 
     const lifecyclePayload = plannedContent(actions, path.join(runtimePaths.skillsDir, "work-lifecycle", "SKILL.md"));
     const applicability = sectionBetween(lifecyclePayload, "# Work Lifecycle", "## Identity");
@@ -370,6 +398,7 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
       { relative: ["orchestrator", "references", "standard-workflow.md"], source: standardWorkflowReferencePath() },
       { relative: ["work-lifecycle", "SKILL.md"], source: path.join(stackDir, "skills", "work-lifecycle", "SKILL.md") },
       { relative: ["work-lifecycle", "references", "plan-template.md"], source: path.join(stackDir, "skills", "work-lifecycle", "references", "plan-template.md") },
+      { relative: ["work-lifecycle", "references", "pr-continuation.md"], source: path.join(stackDir, "skills", "work-lifecycle", "references", "pr-continuation.md") },
       { relative: ["xreview", "SKILL.md"], source: path.join(stackDir, "skills", "xreview", "SKILL.md") },
     ];
 

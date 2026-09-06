@@ -46,11 +46,11 @@ Use this section only after routing selects formal SDD work, including work prom
 - Only a formal task with an assigned phase outcome saves it BEFORE its final report; its outcome topic_key must be distinct from the `Spec` reference. Never use `mem_save` or `mem_update` to write a result over the Spec observation or its topic_key, or overwrite a Markdown Spec with an outcome. If no separate outcome destination was assigned, return the result to the coordinator for routing. An inline microassignment returns its evidence to the parent and has no separate spec or phase outcome. This does not waive mandatory immediate saves for decisions or findings.
 - Task status lives ONLY in the task table: flip it (⬜ → ✅) with a surgical edit when the task closes. PR status/evidence lives ONLY in the PR roadmap table. Do not mirror task progress into memory, and do not re-read the whole plan after every task — it is already in context; re-read it on resume.
 - Success criteria live ONLY in the plan's `SC-*` list. Task-to-criterion coverage lives ONLY in the task table's `SC` column. Verification/merge evidence lives ONLY in the PR roadmap or checkpoint that observed it; cite the relevant SC IDs there instead of copying the criteria into the task spec source.
-- For multi-PR work, resume from the first PR/task not done in the roadmap/table. For single-PR work, the canonical name worktree/branch is enough and the roadmap collapses to one checkpoint.
+- For multi-PR work, resume from the next approved executable checkpoint in the roadmap using [PR continuation](references/pr-continuation.md) to resolve its base, dependencies and runtime capability, then select its first pending task. Hand off ready checkpoints without modifying them; awaiting merge alone does not make them the next execution target. For single-PR work, the canonical name worktree/branch is enough and the roadmap collapses to one checkpoint.
 
 ## Pull request lifecycle
 
-1. Start from the updated production branch in the canonical worktree/branch. Apply the shared PR-scope rule in [Worktree and PR lifecycle](../orchestrator/SKILL.md#worktree-and-pr-lifecycle); formal SDD does not define a separate size policy.
+1. Start independent work from updated production. For multi-PR work or a Git dependency, choose the verified base using [PR continuation](references/pr-continuation.md). Use the canonical worktree/branch and the shared PR-scope rule in [Worktree and PR lifecycle](../orchestrator/SKILL.md#worktree-and-pr-lifecycle); formal SDD does not define a separate size policy.
 2. Implement one coherent first slice, commit it, push the work branch, and open the PR immediately as draft with `gh pr create --draft`.
 3. Continue implementation, commits and pushes only while the PR is draft. Draft means the code can still change; ready means the current SHA is the candidate to merge.
 4. Before ready, complete every applicable preflight item: code, version bump, local tests, project quality command (`pnpm qa:quality` when defined), Vercel preview review when the project uses Vercel, final diff inspection, and full PR review.
@@ -58,7 +58,7 @@ Use this section only after routing selects formal SDD work, including work prom
 6. Never push to a ready PR. If it needs changes, first run `gh pr ready --undo <number>`, then modify and push while draft, repeat preflight and review revalidation, mark ready again, and wait for a fresh complete gate when checks are configured. Use [coverage revalidation](../xreview/SKILL.md#7-revalidate-coverage-and-stop), not an automatic repeated panel; preserve evidence only for still-valid contracts and integration assumptions, including the effective base.
 7. Merge only after explicit user approval. When PR checks are configured, their passing result must match the current candidate SHA.
 
-Dependent PRs are sequential: merge one checkpoint, update the production branch, then create the next worktree/branch from that updated base. Do not stack a dependent PR from an unmerged work branch unless the human explicitly chooses a stacked-PR strategy.
+Development order and merge order are distinct. A ready checkpoint does not block the next independent or permitted Git-stacked checkpoint; an unavailable external prerequisite can. Record the dependencies and merge order in the existing roadmap and follow the continuation reference. Preserve project opt-outs and real supervisor/capability limits, and never turn plan approval into merge authorization.
 
 ## HTML review view (on demand)
 
@@ -89,7 +89,7 @@ If the project manages work through an issue tracker, issues (`to-issues`) take 
 
 1. Read `work/{name}/plan.md` — the board says what's done and what's pending, and its `Spec` column names each formal task's only source.
 2. Resolve the declared Spec following the Delegation handoff rule in Executing, including its binding-before-get and scoped lookup requirements. For Markdown, read the canonical absolute path established there; use `mem_context` for recent phase outcomes.
-3. Continue from the first task without ✅.
+3. Select the next approved executable checkpoint using [PR continuation](references/pr-continuation.md) for multi-PR work or a Git dependency, then continue its first pending task. Preserve ready checkpoints unchanged; stop only when no approved work can safely proceed.
 
 ## Closing
 

@@ -45,12 +45,13 @@ Every formal task has exactly one recoverable `Spec` reference in the plan table
 > Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.
 > Every evidence entry cites the relevant `SC-*` criteria it proves and records the command/setup, scope, result and limits.
 > PR status advances: ⬜ Pending → 📝 Draft → 🔍 Reviewed → ⏳ Ready / gates when configured → ✅ Merged.
-> If a ready PR changes, return it to Draft with `gh pr ready --undo`, clear stale gate evidence, and repeat review plus configured gates for the new SHA. If no PR checks are configured, confirm that from project configuration and record their absence instead of blocking the merge. An empty `gh pr checks` result immediately after ready is not evidence that no checks are configured. Immediately before reporting or merging, compare `gh pr view --json headRefOid` with the recorded candidate SHA.
+> If a ready PR needs changes or retargeting, return it to Draft with `gh pr ready --undo`, revalidate affected review coverage and configured gates, and record the new candidate/base context. A changed base or integration context matters even with the same head SHA. If no PR checks are configured, confirm and record that fact; an empty `gh pr checks` immediately after ready does not prove absence. Recheck candidate and base context immediately before reporting or merging.
+> For multiple PRs, use this same roadmap to record base branch/SHA, parent PR or external prerequisite, merge order and the real blocker where applicable. Ready permits continuing approved safe work, not merging; see [PR continuation](pr-continuation.md). Preserve project restrictions and actual runtime capabilities.
 
-| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |
-|----|-------|--------|----------|------|--------|----------------|
-| 01 | [scope] | [branch] | [worktree] | [base] | ⬜ | [evidence] |
-| 02 | [scope] | [branch] | [worktree] | [base] | ⬜ | [evidence] |
+| PR | Scope | Branch | Worktree | Base / prerequisite / merge order | Status / blocker | Merge evidence |
+|----|-------|--------|----------|-----------------------------------|------------------|----------------|
+| 01 | [scope] | [branch] | [worktree] | [base branch@SHA; dependency and order if relevant] | ⬜ | [evidence] |
+| 02 | [scope] | [branch] | [worktree] | [base branch@SHA; dependency and order if relevant] | ⬜ | [evidence] |
 
 > Intermediate PRs do not delete `work/[name]/`; only the final close does.
 

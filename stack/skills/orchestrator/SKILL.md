@@ -90,6 +90,12 @@ Use the work already performed and its existing evidence/checkpoint; do not laun
 
 Respect the active output contract. In programmatic mode, keep the strict final JSON and its existing keys/types: put changes and factual workflow feedback in `summary`, current limitations in `risks` and pending actions in `next_steps`, preserving PR metadata in allowed text fields. Do not add keys, a `ready` status value, Markdown fences or prose outside that final JSON. Intermediate progress uses the permitted channel rather than pretending to be another final response.
 
+### Continue after a ready checkpoint
+
+A verified ready PR is a checkpoint, not an automatic pause. Give the Ready handoff and continue approved remaining work that can be verified with the available capabilities and project rules. An unavailable publication, migration, deployment or material decision blocks its consumers, not unrelated approved work. Do not invent another task just to keep running, and never infer merge permission from plan approval.
+
+For multi-PR work or a dependency on an unmerged PR, read [PR continuation](../work-lifecycle/references/pr-continuation.md) relative to this skill directory before choosing the next base; if unavailable, report that boundary rather than guessing a dependent base. Keep parents ready and immutable; only a permitted child branch/worktree may advance. Stop when no approved safe work remains or a real capability/decision block prevents it. A runtime supervisor that pauses for an open PR remains a real constraint; this policy does not override its state machine or create background execution.
+
 ## Closing rule
 
 Do not declare work finished after analysis or planning alone: complete the routed execution or report the concrete blocker.

@@ -122,7 +122,6 @@ const MULTI_PR_LIFECYCLE_CASES = [
       "work/{name}/pr/{NN}",
       "work/{name}/done",
       "PR status/evidence lives ONLY in the PR roadmap table.",
-      "For multi-PR work, resume from the first PR/task not done in the roadmap/table.",
       "For single-PR work, the PR checkpoint and final work close happen together: one merge, one `work/{name}/done`, then cleanup.",
     ],
   },
@@ -148,7 +147,7 @@ const MULTI_PR_LIFECYCLE_CASES = [
       "This is the live PR-level board: scope, PR status, and merge evidence live here.",
       "Task-level status stays in the task table below.",
       "Full checkpoint history lives in Engram under `work/[name]/pr/[NN]`.",
-      "| PR | Scope | Branch | Worktree | Base | Status | Merge evidence |",
+      "| PR | Scope | Branch | Worktree | Base / prerequisite / merge order | Status / blocker | Merge evidence |",
       "Task status lives ONLY in this table",
       "PR status/evidence lives in the PR Roadmap above.",
       "| # | PR | Agent | Scope | Spec | Task | One-liner | SC | Status | Wave | Deps |",
@@ -966,6 +965,20 @@ describe("worktree workflow contract", () => {
   it.each(MULTI_PR_LIFECYCLE_CASES)("$relativePath preserves the multi-PR checkpoint contract", ({ relativePath, fragments }) => {
     expectFragments(readStackFile(relativePath), [...fragments]);
   });
+
+  it("resumes from the next approved executable checkpoint, not the first unmerged PR", () => {
+    const lifecycle = readStackFile("skills/work-lifecycle/SKILL.md");
+    const executing = sectionBetween(lifecycle, "## Executing", "## Pull request lifecycle");
+    const resuming = sectionBetween(lifecycle, "## Resuming", "## Closing");
+
+    expect(executing).toMatch(
+      /next approved executable checkpoint[\s\S]{0,180}PR continuation[\s\S]{0,180}base, dependencies and runtime capability[\s\S]{0,160}awaiting merge alone does not make them the next execution target/is,
+    );
+    expect(resuming).toMatch(
+      /Select the next approved executable checkpoint[\s\S]{0,180}PR continuation[\s\S]{0,160}first pending task[\s\S]{0,160}Preserve ready checkpoints unchanged/is,
+    );
+    expect(`${executing}\n${resuming}`).not.toMatch(/first PR\/task not done/i);
+  });
 });
 
 describe("PR draft lifecycle contract", () => {
@@ -1025,8 +1038,8 @@ describe("PR draft lifecycle contract", () => {
     const planTemplate = readStackFile("skills/work-lifecycle/references/plan-template.md");
     expect(planTemplate).toContain("gates when configured");
     expect(planTemplate).toContain("no PR checks are configured");
-    expect(planTemplate).toContain("An empty `gh pr checks` result immediately after ready is not evidence");
-    expect(planTemplate).toContain("Immediately before reporting or merging");
+    expect(planTemplate).toMatch(/an empty `gh pr checks` immediately after ready does not prove absence/i);
+    expect(planTemplate).toMatch(/recheck candidate and base context immediately before reporting or merging/i);
   });
 
   it("routes the lifecycle hook so its script can filter readiness transitions", () => {

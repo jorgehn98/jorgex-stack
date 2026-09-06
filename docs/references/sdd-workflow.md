@@ -23,6 +23,14 @@ El analista entrega evidencia y recomendaciones —rutas y consumidores, restric
 
 Una PR se delimita por resultado verificable, contrato, dependencias y riesgo, no por un límite bruto de líneas o archivos. Se separan objetivos realmente independientes en entregas verticales con su protección necesaria; no se separan código y tests, documentación o generados cuando forman parte del mismo contrato. Prompts, configuración, migraciones y schemas cuentan como comportamiento.
 
+### PRs encadenadas y continuación
+
+Clasifica cada siguiente checkpoint antes de crear su rama: **independiente**, con la base `main` de producción actualizada; **dependencia Git**, con una rama/worktree hijo desde un candidato padre estable y verificado; o **prerrequisito externo**, cuando necesita un artefacto, migración, despliegue o decisión fuera de esa cadena. Registra en el plan la base y su SHA, la PR padre o el prerrequisito, y el orden de integración. Una hija puede abrirse y revisarse contra un padre todavía abierto cuando el trabajo esté aprobado, las capacidades disponibles y las reglas del proyecto lo permitan y se respete el orden registrado, pero no está lista para mergear a producción por estar ready contra ese padre.
+
+Los padres ready permanecen inmutables. Si cambia una base, se hace retarget o cambia el contexto de integración, la PR afectada vuelve primero a Draft y se recalculan el diff efectivo, el merge-base, la cobertura de review y los gates; el mismo `HEAD_SHA` no conserva por sí solo esa cobertura. GitHub documenta que cambiar la base puede cambiar el diff y los comentarios de una PR ([Changing the base branch of a pull request](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/changing-the-base-branch-of-a-pull-request)); el retarget mediante CLI usa `gh pr edit --base` ([gh pr edit](https://cli.github.com/manual/gh_pr_edit)). El comportamiento de auto-retarget del proveedor es condicional, no una garantía; no se deben borrar ramas para provocarlo ([Managing branches within your repository](https://docs.github.com/en/pull-requests/how-tos/commit-changes/managing-branches-within-your-repository)).
+
+El merge exige una orden explícita de la persona usuaria identificando la PR o el lote y respetando el orden de dependencias. Plan aprobado, PR ready o checks verdes no autorizan merge ni auto-merge. No se crea una PR hija contra un padre abierto sólo para mantener actividad. Un prerrequisito externo pendiente bloquea a su consumidor, no al resto del trabajo aprobado; `STOP` sólo cuando no quede otro trabajo aprobado que pueda ejecutarse de forma segura con las decisiones y capacidades disponibles.
+
 ## Review enfocada y convergente
 
 La review de un candidato comienza con `BASE_SHA`, `HEAD_SHA` y su merge-base resueltos de forma inmutable. Se clasifican todos los grupos del diff y cada reviewer recibe un **primary scope** —la responsabilidad sobre rutas, hunks, contrato o riesgo— junto con **support context** dirigido. `primary` no es una frontera de permisos ni impide leer la fuente necesaria; por ejemplo, el análisis de tests puede consultar el contrato de producción y sus pruebas.
@@ -41,7 +49,7 @@ Los duplicados y falsos positivos se reconcilian antes de crear trabajo; un find
 
 En cada checkpoint ready verificado, conserva la metadata existente de la PR —URL/número, SHA candidato, checks y base/dependencias relevantes— y resume brevemente los cambios concretos, el resultado y el feedback factual observado: sólo dificultades, reintentos o limitaciones reales. Reutiliza la evidencia del checkpoint: no inventes métricas, ahorros ni problemas. En la salida programática se mantienen las siete claves y tipos actuales; usa `summary` para cambios y feedback, `risks` para limitaciones y `next_steps` para pendientes, sin añadir claves ni un estado `ready`. Un ready no equivale a merge, despliegue ni fin del roadmap.
 
-Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. Tampoco convierte el piloto apilado actual en un default instalable ni documenta una política F7.
+Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. La continuación encadenada se rige por el trabajo aprobado, las capacidades disponibles, las reglas del proyecto y el orden registrado. El límite actual de Goal Mode F7 es explícito: el store/supervisor de OpenCode registra `waiting_for_merge` cuando hay una PR abierta y pausa la continuación automática; esta política no actualiza esa máquina de estados ni promete retarget automático, autonomía para todas las cadenas o continuación apilada automática.
 
 ## PRE: consistencia antes de aprobar el plan
 
