@@ -34,9 +34,10 @@ Una propuesta rechazada no se recrea automáticamente con la misma identidad: re
 
 ## Recuperación y rollback
 
-- **Notificación fallida:** corrige la causa y relanza manualmente el workflow del coordinador. No vuelvas a ejecutar el publisher mutable ni cambies el payload fuera del contrato.
+- **Notificación fallida:** corrige la causa y usa `workflow_dispatch` del coordinador, sin reejecutar el publisher mutable. El dispatch recupera notificaciones o reconcilia nuevas entradas; no recrea propuestas cerradas de la misma identidad, aunque elimines su rama.
 - **PR o rama ya existente:** inspecciona la propuesta y su estado; no la sobreescribas ni fuerces la referencia.
-- **Base o candidato divergente:** detén la ejecución y prepara una propuesta nueva desde el estado actual de `main`.
+- **Cierre sin merge o rechazo:** es terminal para la automatización de esa identidad; nunca sobrescribe el rechazo humano. La recuperación humana consiste en restaurar/reabrir la PR original cuando sea posible (volver a draft antes de cambiar código), o usar el preparador local verificado y abrir manualmente otra PR con base actual, review y gates.
+- **Base o candidato divergente:** detén la ejecución y revalida desde el `main` actual; cambiar la base no cambia la identidad de la entrada. Si esa identidad ya tiene una propuesta cerrada, aplica la recuperación humana anterior: un dispatch no crea otra.
 - **Desactivación:** establece `JORGEX_AUTOMATION_ENABLED` en un valor distinto de `true` o elimina la activación de la variable. Conserva las PRs y ramas existentes para revisión o cierre manual.
 
 La automatización no está activa por defecto. Este documento no afirma ahorro medido ni una publicación automática; sólo documenta el procedimiento para habilitarla de forma deliberada y reversible.
