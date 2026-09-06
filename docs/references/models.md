@@ -120,3 +120,10 @@ de agente; así se puede asignar, por ejemplo, Astra/max únicamente a roles
 concretos. No cambia el modelo primary ni convierte una elección existente en
 un override gestionado por Stack; `sync` tampoco sobrescribe elecciones
 guardadas.
+## Recuperar un model-map inválido
+
+Si `~/.jorgex-stack/model-map.json` existe pero contiene JSON malformado, Stack rechaza el archivo y detiene las operaciones que consumen ese mapa antes de sustituir las elecciones por defaults. El error muestra la ruta del archivo y recomienda corregir el JSON o restaurar una copia revisada.
+
+La recuperación es manual: corrige el JSON o restaura una copia revisada y vuelve a ejecutar la operación. No ejecutes `models` para reparar el archivo automáticamente ni lo borres para forzar un reinicio. Un archivo ausente usa los defaults; un mapa parcial válido hereda los tiers disponibles por defecto y conserva los overrides válidos.
+
+El puente de instalación Pi-only con Playwright no consume este mapa y no queda bloqueado por él.

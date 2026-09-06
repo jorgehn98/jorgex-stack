@@ -71,15 +71,14 @@ export function modelMapFile(): string {
 }
 
 export function loadModelMap(): ModelMap {
-  const raw = readTextIfExists(modelMapFile());
+  const file = modelMapFile();
+  const raw = readTextIfExists(file);
   if (raw === null) return DEFAULT_MODEL_MAP;
   let fromDisk: ModelMap;
   try {
     fromDisk = JSON.parse(raw) as ModelMap;
   } catch {
-    // model-map corrupto: defaults para no brickear todos los comandos;
-    // 'models' lo regenera.
-    return DEFAULT_MODEL_MAP;
+    throw new Error(`El mapa de modelos ${file} contiene JSON inválido. Corrige el JSON o restaura una copia antes de continuar.`);
   }
   // Merge por tier: un runtime editado a mano sin algún tier hereda el default.
   const merged: ModelMap = { ...fromDisk };
