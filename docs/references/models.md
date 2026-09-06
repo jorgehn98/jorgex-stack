@@ -49,7 +49,7 @@ Estos límites son metadatos locales solicitados. No demuestran por sí solos qu
 
 ### Pi
 
-`jorgex-pi@0.8.4` —no los adapters de Stack— gestiona la proyección primaria del candidato de Stack. El Stack publicado `1.9.5` reconoce todavía `npm:jorgex-pi@0.8.3`; el código candidato de Stack `1.9.6` ya reconoce `npm:jorgex-pi@0.8.4`, aunque su consumo mediante el canal publicado espera a la publicación de `1.9.6`:
+`jorgex-pi` —no los adapters de Stack— gestiona su propia política y proyección primaria. El pin exacto, su integridad y la transición reconocida por Stack son autoridad de `src/lib/pi-runtime.ts` y `docs/references/pi-runtime.md`; no se mantienen aquí estados publicados o candidatos:
 
 - `defaultProvider = "openai-codex"`;
 - `defaultModel = "gpt-5.6-sol"`;
