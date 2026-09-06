@@ -4,10 +4,24 @@ import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { readManifest } from "../src/lib/manifest.js";
 import { parseCliArgs } from "../src/cli.js";
+import artifacts from "./fixtures/pi-runtime-artifacts.json" with { type: "json" };
 import {
+  PI_RUNTIME_ARCHIVE,
   PI_RUNTIME_CANDIDATE,
   PI_RUNTIME_PREVIOUS_CANDIDATE,
 } from "./fixtures/pi-runtime.js";
+
+function artifactMetadata(candidate: {
+  package: unknown;
+  provenance: unknown;
+  tarball: unknown;
+}) {
+  return {
+    package: candidate.package,
+    provenance: candidate.provenance,
+    tarball: candidate.tarball,
+  };
+}
 
 type Environment = Record<string, string> & {
   PI_CODING_AGENT_DIR: string;
@@ -114,6 +128,12 @@ function harness(events: string[]) {
 }
 
 describe("Pi runtime wiring", () => {
+  it("proyecta current, previous y archive desde la metadata JSON independiente", () => {
+    expect(artifactMetadata(PI_RUNTIME_CANDIDATE)).toEqual(artifacts.current);
+    expect(artifactMetadata(PI_RUNTIME_PREVIOUS_CANDIDATE)).toEqual(artifacts.previous);
+    expect({ entries: PI_RUNTIME_ARCHIVE.entries, parity: PI_RUNTIME_ARCHIVE.parity }).toEqual(artifacts.archive);
+  });
+
   it("registers Pi as a production package runtime, accepts the CLI selector, and leaves adapters, components, manifests, and model maps Pi-free", async () => {
     const { PI_RUNTIME_REGISTRY } = await runtime();
     expect(PI_RUNTIME_REGISTRY.pi).toMatchObject({
