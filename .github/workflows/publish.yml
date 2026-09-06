@@ -50,6 +50,8 @@ jobs:
 
       - name: Validate pinned action SHAs
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           action_refs="$(
@@ -71,7 +73,7 @@ jobs:
 
             repo="${action_ref%@*}"
             sha="${action_ref#*@}"
-            curl -fsS "https://api.github.com/repos/${repo}/commits/${sha}" --connect-timeout 10 --max-time 30 > /dev/null
+            curl -fsS "https://api.github.com/repos/${repo}/commits/${sha}" --header "Authorization: Bearer $GH_TOKEN" --connect-timeout 10 --max-time 30 > /dev/null
           done <<< "$action_refs"
 
       - name: Resolve validate checkout SHA
