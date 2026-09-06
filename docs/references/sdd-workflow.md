@@ -53,6 +53,14 @@ En cada checkpoint ready verificado, conserva la metadata existente de la PR —
 
 Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. La continuación encadenada se rige por el trabajo aprobado, las capacidades disponibles, las reglas del proyecto, el orden registrado y el merge humano explícito. Goal Mode de OpenCode está retirado y no forma parte de este contrato; la continuidad usa el lifecycle normal y no migra su historial. PiGoal conserva su propio lifecycle.
 
+### Progreso, retrabajo y efectos externos
+
+Para asignaciones costosas o inciertas, acuerda el siguiente resultado observable y una ventana proporcional al trabajo. El silencio o no editar archivos no prueba bloqueo: al vencer la ventana, pide un estado acotado, conserva el trabajo seguro y resuelve o reasigna sólo ante falta de progreso o impedimento concreto, comprobando ownership y el estado detenido del worker anterior. No conviertas el check-in en polling continuo ni inventes capacidades del arnés.
+
+Antes del primer efecto externo irreversible o costoso —incluido un push que despliegue— comprueba triggers reales, decisiones críticas, verificación dirigida y registros/allowlists afectados. No exijas review total antes de cada push ni saltes la apertura draft; resuelve la frontera antes de mutar. Las migraciones ya aplicadas siguen su política de append-only o recuperación y las publicaciones mutables no se cancelan.
+
+Reutiliza verificación sólo si coinciden comando, configuración, entorno, inputs y contratos afectados; inspecciona aliases para no duplicar suites. Si la relevancia es incierta, ejecuta la lane aplicable o falla cerrado. La CI requerida sigue siendo obligatoria para el SHA candidato actual. Tras la review inicial, agrupa el retrabajo por contrato y causa; si persisten bloqueantes o aparecen regresiones, reevalúa causa, scope, owner y seam de pruebas antes de una segunda ronda. Renombrar tareas o reasignar no reinicia el límite de tres intentos. Registra la evidencia útil en el checkpoint existente, sin ledger nuevo ni métricas prometidas.
+
 ## PRE: consistencia antes de aprobar el plan
 
 El orchestrator ejecuta PRE después de crear el plan y las fuentes declaradas de las specs de tareas, antes de presentar el plan final.
@@ -116,6 +124,6 @@ Este límite es procedimental. No convierte al orchestrator en un proceso con sa
 
 ## Relación con Pi
 
-Stack es la fuente canónica y el canal gestionado principal. La versión publicada `1.9.6` adopta y reconoce el pin exacto `npm:jorgex-pi@0.8.4`. La proyección es propiedad de Stack, no una mutación del paquete Pi. La introducción histórica de `work-audit` en Pi `0.8.0`, publicada con Stack `1.9.2`, se conserva como antecedente.
+Stack es la fuente canónica y el canal gestionado principal. La proyección es propiedad de Stack, no una mutación del paquete Pi. El pin, la integridad y las transiciones se consultan en `src/lib/pi-runtime.ts` y `docs/references/pi-runtime.md`; la paridad usa el `source.commit` que esas autoridades declaran.
 
-La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. Pi 0.8.4 está publicado e incorpora el contrato F1 de specs recuperables y handoffs separados, con `parity.source.commit` `5e89b970e72cfac0003b11e054c861bed6d44884`; no contiene todavía F2-A. La adopción de F2-A en Pi queda para snapshots y adopción posteriores, y no implica actualizar el `HOME` instalado en este checkpoint. Esta referencia no afirma ahorro LLM medido ni una verificación smoke de Cloud.
+La instalación directa de JorgeX Pi conserva su propia snapshot, allowlist y runtime contract. El paquete publicado `jorgex-pi@0.8.6` contiene el lote anterior. Las guardas de esta referencia sólo pueden atribuirse a una versión de Pi después de verificar su snapshot y `parity.source.commit` contra el canon fusionado; el pin y `tests/fixtures/pi-runtime.ts` son la autoridad del artefacto. Esta referencia no afirma una próxima versión, instalación personal, ahorro LLM medido ni una verificación smoke de Cloud.
