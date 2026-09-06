@@ -42,9 +42,9 @@ Skills especially relevant to this role:
 
 ## Output format
 
-1. **Map**: services, tables and endpoints involved
-2. **Findings**: patterns, risks and debt (ordered by severity)
-3. **Recommendation**: proposed design for the change
+1. **Map**: affected services, tables, endpoints, consumers and boundaries, with precise file/symbol references for the decisive facts
+2. **Findings**: patterns, risks and debt (ordered by severity); distinguish observed facts from assumptions and identify uncertainties that could change the implementation
+3. **Recommendation**: the smallest compatible design and its tradeoffs; include alternatives only when they affect a decision the coordinator must close
 
 ## Result contract
 

@@ -32,9 +32,9 @@ Adapt to whatever the project uses (React, Vue, Svelte, etc.). Mirror existing c
 
 ## Output format
 
-1. **Map**: components, hooks, state and files involved
-2. **Findings**: existing patterns and risks (ordered by severity)
-3. **Recommendation**: proposed approach for the change
+1. **Map**: affected components, hooks, state, consumers and boundaries, with precise file/symbol references for the decisive facts
+2. **Findings**: existing patterns and risks (ordered by severity); distinguish observed facts from assumptions and identify uncertainties that could change the implementation
+3. **Recommendation**: the smallest compatible approach and its tradeoffs; include alternatives only when they affect a decision the coordinator must close
 
 ## Result contract
 

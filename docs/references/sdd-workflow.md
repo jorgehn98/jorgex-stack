@@ -17,6 +17,12 @@ El orchestrator es el owner del routing `short`/`standard`, que se decide antes 
 
 Ambos carriles conservan las mismas guardas: seguridad, permisos, ownership, backups, consentimiento de dependencias, memoria, testing/TDD por riesgo, worktree y disciplina Git, revisión final, gates configurados y aprobación explícita para merge. La ruta corta no legitima ampliar el alcance ni relaja los contratos humanos/programáticos existentes.
 
+## Handoff y tamaño semántico de la PR
+
+El analista entrega evidencia y recomendaciones —rutas y consumidores, restricciones, alternativas materiales e incógnitas—. El coordinador verifica sólo las fuentes cuyo error cambiaría la decisión y, en trabajo formal, la cierra y la convierte en la Spec única antes de encargar la implementación. No se duplica la investigación en otro informe ni se delega si el traspaso reproduciría casi todo el trabajo; el responsable principal puede conservar el trabajo crítico estrechamente acoplado.
+
+Una PR se delimita por resultado verificable, contrato, dependencias y riesgo, no por un límite bruto de líneas o archivos. Se separan objetivos realmente independientes en entregas verticales con su protección necesaria; no se separan código y tests, documentación o generados cuando forman parte del mismo contrato. Prompts, configuración, migraciones y schemas cuentan como comportamiento.
+
 ## PRE: consistencia antes de aprobar el plan
 
 El orchestrator ejecuta PRE después de crear el plan y las fuentes declaradas de las specs de tareas, antes de presentar el plan final.

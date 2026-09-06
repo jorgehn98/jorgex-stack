@@ -94,7 +94,7 @@ Use this adaptable content in the one source declared by the plan's `Spec` colum
 
 ## decisive context
 
-[Only the decisions, verified facts and precise references the worker needs. Include a fragment only when it clarifies the contract.]
+[Only the closed decisions, verified facts and precise references the worker needs, not the full investigation. Distinguish facts from assumptions or unresolved questions that could change the task. When relevant to a decision, identify the source and whether a state is current, proposed or conditional on a later event. Include a fragment only when it clarifies the contract.]
 
 ## contract and invariants
 
@@ -102,7 +102,7 @@ Use this adaptable content in the one source declared by the plan's `Spec` colum
 
 ## validation and escalation
 
-[Verification that demonstrates completion. Escalate a material uncertainty, missing source access or identity mismatch instead of reconstructing the spec from the PRD.]
+[Verification that demonstrates completion and the concrete conditions requiring escalation. Escalate a material uncertainty, missing source access or identity mismatch instead of reconstructing the spec from the PRD; routine implementation details do not require repeated permission.]
 
 ## Testing decision
 
@@ -114,6 +114,8 @@ Use this adaptable content in the one source declared by the plan's `Spec` colum
 ```
 
 Use only the headings and fields that are pertinent, except retain the complete testing decision when the task changes behavior. Do not require literal code, input/output blocks or empty heading, section or field. Existing Engram task observations remain compatible; adapt this template only for newly created or materially revised specs.
+
+Delimit paths and commands clearly, preserving spaces and flags. Shortening a handoff must not concatenate a path with its access mode or erase distinctions needed to execute it safely.
 ---
 
 ## Backlog entry — Template (`work/backlog`)
