@@ -14,6 +14,7 @@ Fecha de esta primera consolidación: 2026-08-24.
 
 ## Documentos
 
+- [Selección de modelos Codex](./codex-model-selection.md): defaults por tier, overrides acotados y evidencia externa contrastada.
 - [Calidad agéntica al estilo de Uncle Bob](./uncle-bob-agentic-quality.md): source-first, especificación, roles, handoffs, arquitectura, QA y hardening.
 - [Métricas y testing](./testing-metrics.md): coverage, CRAP, mutation testing, property testing y perfiles de calidad.
 - [Contención de agentes](./agent-containment.md): cómo hacer que los límites humanos sean una frontera técnica y no solo una instrucción del prompt.
