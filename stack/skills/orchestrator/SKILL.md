@@ -63,6 +63,16 @@ After each intermediate merge: persist the checkpoint to `work/{name}/pr/{NN}`, 
 
 Deterministic checks are the routine feedback loop while implementation is in progress: run the relevant tests, lint, and typecheck/build checks at the cheapest seam that can catch the section's regressions. Verify coherent sections rather than every small edit or one big-bang run. Normal handoffs between `implementer` and `tester` do not by themselves justify reviewers or analyzers.
 
+Reuse successful local verification only when its command, configuration, environment, inputs and affected contracts still match; record that scope in the existing checkpoint. Inspect command aliases and do not duplicate the same suite under a second name. If relevance is uncertain, run the applicable lane or fail closed. Required CI checks must still pass for the current candidate SHA and integration context; local reuse never waives a configured gate.
+
+### External-effect preflight
+
+Before the first irreversible or costly external effect, including a draft push that deploys, inspect actual triggers, close critical decisions, run targeted verification and check affected registration records and allowlists. A draft flag does not disable deployments. Use the existing bounded early-review rule only for a critical risk left uncovered by deterministic checks. Do not require full review before every push or bypass opening draft: resolve the unsafe effect before crossing that boundary, reporting a real blocker if it cannot be safely separated. An applied migration follows the project's append-only or recovery policy; do not rewrite it to reduce rework. Never cancel a mutable publication to save time.
+
+### Useful progress
+
+For costly or uncertain assignments, agree on the next observable result and a check-in window proportional to the work, not a universal minute limit. Evidence can be narrowed hypotheses, verified contracts, test results or an active long-running command. Silence and no file edits do not prove a block. At the window without evidence, request one bounded status; preserve safe work and resolve the blocker or reassign only when there is no progress or a concrete impediment. Check ownership and the old worker's stopped state before replacement writes to the same scope. Inspect, resume or stop only through capabilities the current harness actually exposes; if unavailable, report the limit rather than inventing an API or launching a competing writer. Do not turn check-ins into constant polling or routine memory writes.
+
 ### Early review
 
 An early review during EXECUTE is an exception, not a default phase. Use it only for a concrete risk that deterministic checks cannot cover and whose feedback can change the remaining implementation. State the bounded risk, use the single most relevant specialist, and run at most one early review per bounded critical section. Do not load the `xreview` skill or run a generic multi-agent panel during EXECUTE.
@@ -72,6 +82,8 @@ Do not launch `code-reviewer`, `code-simplifier`, `test-analyzer`, or `silent-fa
 ### Bounded retries
 
 Both routes cap a failing task or criterion at three attempts. After the third failure, stop retrying, save the meaningful failure and what was tried through the required outcome or memory path, then re-plan with a different approach or report the blocker; never loop blindly.
+
+The three attempts do not reset by renaming tasks, replacing agents or redelegating the same unresolved criterion. Group accepted fixes by contract and cause. Before a second repair round after the initial review, if blockers persist or fixes introduce regressions, reassess the root cause, scope, owner and testing seam instead of automatically repeating the cycle. Do not automatically launch another review panel. Keep new valid bugs in triage; a rework limit never authorizes ignoring blockers or declaring success. Re-plan within approved scope with a concrete changed approach, or escalate a material scope decision. Keep the reason and useful outcome in the existing checkpoint, not a new budget ledger.
 ### Final review and PR lifecycle
 
 The review boundary is the final candidate SHA while the PR is still draft, immediately before `gh pr ready`. It is one final review, not a mandatory panel or multiple reviewers for short work. Load and run the portable `xreview` skill when its scoped review adds value and reliable coverage is missing; pass the exact active `work/{name}` to every review subagent, never another work folder. Freeze base/head and merge-base, assign primary responsibility plus necessary support, and preserve each specialist's output contract.

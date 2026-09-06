@@ -46,6 +46,45 @@ describe("orchestrator review cadence", () => {
     );
   });
 
+  it("requires useful progress and ownership recovery before replacing work", () => {
+    const progress = sectionBetween(body, "### Useful progress", "### Early review");
+
+    expect(progress).toMatch(/next observable (?:result|outcome)/i);
+    expect(progress).toMatch(/(?:check.in )?window.+(?:proportional|proportionate)/is);
+    expect(progress).toMatch(/silence.+no file edits.+do not prove a block/is);
+    expect(progress).toMatch(/one bounded status.+preserve safe work.+reassign only.+(?:no progress|concrete impediment)/is);
+    expect(progress).toMatch(/ownership.+old worker.+stopped state.+before replacement writes/is);
+  });
+
+  it("reassesses a second repair without resetting the attempt cap", () => {
+    const retries = sectionBetween(body, "### Bounded retries", "### Final review and PR lifecycle");
+
+    expect(retries).toMatch(/three attempts do not reset.+(?:renaming|replacing agents|redelegating).+same unresolved criterion/is);
+    expect(retries).toMatch(/second repair round.+(?:blockers persist|fixes introduce regressions).+reassess.+root cause.+scope.+owner.+testing seam/is);
+    expect(retries).toMatch(/group accepted fixes by contract and cause/i);
+    expect(retries).toMatch(/do not automatically launch another review panel/i);
+    expect(retries).toMatch(/new valid bugs.+triage.+never authorizes ignoring blockers/i);
+  });
+
+  it("puts real irreversible effects behind the focused preflight", () => {
+    const preflight = sectionBetween(body, "### External-effect preflight", "### Useful progress");
+
+    expect(preflight).toMatch(/first irreversible or costly external effect.+draft push that deploys/is);
+    expect(preflight).toMatch(/actual triggers.+critical decisions.+targeted verification.+registration records and allowlists/is);
+    expect(preflight).toMatch(/do not require full review before every push.+(?:bypass opening draft|opening draft)/is);
+    expect(preflight).toMatch(/applied migration.+append.only or recovery policy.+do not rewrite/is);
+    expect(preflight).toMatch(/never cancel a mutable publication/i);
+  });
+
+  it("reuses verification only when its identity matches the current candidate", () => {
+    const verification = sectionBetween(body, "### Deterministic verification", "### External-effect preflight");
+
+    expect(verification).toMatch(/only when.+command.+configuration.+environment.+inputs.+affected contracts.+match/is);
+    expect(verification).toMatch(/command aliases.+do not duplicate the same suite/i);
+    expect(verification).toMatch(/relevance is uncertain.+applicable lane or fail closed/i);
+    expect(verification).toMatch(/required CI checks.+current candidate SHA.+local reuse never waives a configured gate/is);
+  });
+
   it("revalida la cobertura aplicable al devolver un draft standard desde ready", () => {
     const reference = readFileSync(
       fileURLToPath(new URL("../stack/skills/orchestrator/references/standard-workflow.md", import.meta.url)),
