@@ -86,6 +86,9 @@ function expectProgrammaticOrchestrator(content: string, concurrency: SubagentCo
   expect(content).toContain("If a subagent reports `blocked`");
   expect(content).toContain("one concrete question");
   expect(content).toContain("explicit guidance");
+  expect(content).toMatch(/PR-ready handoff[\s\S]{0,160}existing text fields[\s\S]{0,160}metadata/i);
+  expect(content).toMatch(/metadata, concise changes and observed workflow feedback[\s\S]{0,140}current limitations in `risks`[\s\S]{0,120}pending actions in `next_steps`/i);
+  expect(content).toContain("Do not add JSON keys or a new `ready` status");
   if (concurrency === "serial") {
     expect(content).toMatch(/one subagent at a time|no parallel delegation/i);
   } else {

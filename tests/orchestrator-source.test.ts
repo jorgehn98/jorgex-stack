@@ -205,6 +205,24 @@ describe("orchestrator canonical source", () => {
     expect(routing).toContain("handoff or delegation adds no value");
   });
 
+  it("centraliza el handoff ready verificado y conserva sus límites en CLOSE", () => {
+    const entry = fs.readFileSync(path.join(stackDir, "skills", "orchestrator", "SKILL.md"), "utf8");
+    const readyHandoff = sectionBetween(entry, "### Ready handoff", "## Closing rule");
+    const close = sectionBetween(readStandardWorkflowReference(), "## 8. CLOSE", "## Task rule");
+
+    expect(readyHandoff).toMatch(/verified ready checkpoint[\s\S]{0,200}URL\/number, candidate SHA, checks and relevant base\/dependencies/i);
+    expect(readyHandoff).toMatch(/concrete changes and result[\s\S]{0,100}not merely the file list/i);
+    expect(readyHandoff).toMatch(/what worked[\s\S]{0,120}material friction, retries or remaining limitation actually observed/i);
+    expect(readyHandoff).toMatch(/do not invent[\s\S]{0,100}savings or problems/i);
+    expect(readyHandoff).toMatch(/do not launch another agent or investigation just to write the summary/i);
+    expect(readyHandoff).toMatch(/not merged, deployed or the end of a multi-PR roadmap/i);
+    expect(readyHandoff).toMatch(/strict final JSON[\s\S]{0,120}existing keys\/types/i);
+    expect(readyHandoff).toMatch(/changes and factual workflow feedback in `summary`[\s\S]{0,180}limitations in `risks`[\s\S]{0,120}pending actions in `next_steps`/i);
+    expect(readyHandoff).toMatch(/Do not add keys, a `ready` status value, Markdown fences or prose outside that final JSON/i);
+    expect(close).toContain("[Ready handoff](../SKILL.md#ready-handoff)");
+    expect(close).toMatch(/Do not claim merge, deployment or overall roadmap completion from a ready checkpoint/i);
+  });
+
   it("carga work-audit en modo PRE durante PLAN y en modo POST durante VERIFY", () => {
     const content = readStandardWorkflowReference();
     const planSection = sectionBetween(content, "## 4. PLAN", "## 5. EXECUTE");
