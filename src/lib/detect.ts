@@ -53,7 +53,7 @@ export function planDetectedBinCommand(bin: string, args: string[]): DetectedBin
  * Los shims .cmd/.bat de npm/pnpm solo corren vía cmd.exe — ahí la ruta se
  * valida antes de interpolarla (los args de los callers son literales).
  */
-export function runDetectedBin(bin: string, args: string[], timeoutMs: number): string | null {
+export function runDetectedBin(bin: string, args: string[], timeoutMs: number, envOverrides?: NodeJS.ProcessEnv): string | null {
   try {
     const command = planDetectedBinCommand(bin, args);
     if (command === null) return null;
@@ -61,6 +61,7 @@ export function runDetectedBin(bin: string, args: string[], timeoutMs: number): 
       encoding: "utf8",
       timeout: timeoutMs,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(envOverrides === undefined ? {} : { env: { ...process.env, ...envOverrides } }),
     });
   } catch {
     return null;
