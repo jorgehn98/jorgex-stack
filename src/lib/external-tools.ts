@@ -95,7 +95,7 @@ export function detectPlaywrightCli(): PlaywrightCliState {
   const binPath = lookPath(PLAYWRIGHT_CLI.bin);
   return resolvePlaywrightCliState({
     binPath,
-    versionOutput: binPath ? runDetectedBin(binPath, ["--version"], 5_000) : null,
+    versionOutput: binPath ? runDetectedBin(binPath, ["--version"], 5_000, { NO_UPDATE_NOTIFIER: "1" }) : null,
   });
 }
 

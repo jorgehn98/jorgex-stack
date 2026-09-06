@@ -11,7 +11,9 @@ import {
   resolvePnpmFailureRemedy,
   resolvePlaywrightCliState,
   executePlaywrightToolAction,
+  detectPlaywrightCli,
 } from "../src/lib/external-tools.js";
+import { runDetectedBin } from "../src/lib/detect.js";
 import {
   loadPlaywrightCliPreference,
   playwrightCliPreferenceFile,
@@ -51,6 +53,26 @@ afterEach(() => {
 });
 
 describe("Playwright CLI external tool core", () => {
+  it("disables update notification only in the Playwright version subprocess", () => {
+    const original = process.env.NO_UPDATE_NOTIFIER;
+    mocks.lookPath.mockReturnValue(process.execPath);
+    mocks.execFileSync.mockReturnValue("0.1.18\n");
+
+    expect(detectPlaywrightCli().status).toBe("current");
+    expect(mocks.execFileSync).toHaveBeenCalledTimes(1);
+    const [command, args, options] = mocks.execFileSync.mock.calls[0]!;
+    expect(command).toBe(process.execPath);
+    expect(args).toEqual(["--version"]);
+    expect(options.timeout).toBe(5000);
+    expect(options.env?.NO_UPDATE_NOTIFIER).toBe("1");
+    expect(options.env?.PATH).toBe(process.env.PATH);
+    expect(process.env.NO_UPDATE_NOTIFIER).toBe(original);
+
+    mocks.execFileSync.mockClear();
+    runDetectedBin(process.execPath, ["--version"], 5000);
+    expect(mocks.execFileSync.mock.calls[0]?.[2]).not.toHaveProperty("env");
+  });
+
   it("defines the approved package, binary, and release pin", () => {
     expect(PLAYWRIGHT_CLI).toMatchObject({
       packageName: "@playwright/cli",
