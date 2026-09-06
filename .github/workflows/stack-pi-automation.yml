@@ -1,0 +1,141 @@
+name: Stack Pi proposals
+
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [pi-published-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Both directions reconcile current published/merged state, not event order.
+# This also catches up after merging a proposal while another change was pending.
+concurrency:
+  group: stack-pi-proposals
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && vars.JORGEX_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        direction: [snapshot, adoption]
+    env:
+      AUTOMATION_DIRECTION: ${{ matrix.direction }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: jorgehn98/jorgex-stack
+          ref: main
+          fetch-depth: 0
+          path: stack
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: jorgehn98/jorgex-pi
+          ref: main
+          fetch-depth: 0
+          path: pi
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Prepare without write credentials
+        id: prepare
+        run: node control/.github/scripts/stack-pi-automation.mjs prepare stack pi proposal
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        if: steps.prepare.outputs.status == 'prepared'
+        with:
+          package_json_file: ${{ steps.prepare.outputs.target }}/package.json
+      - name: Verify prepared snapshot
+        if: steps.prepare.outputs.status == 'prepared' && matrix.direction == 'snapshot'
+        working-directory: pi
+        env:
+          JORGEX_STACK_DIR: ${{ github.workspace }}/stack
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          node --test tests/cross-repo/snapshot-parity.test.mjs
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+      - name: Verify prepared adoption
+        if: steps.prepare.outputs.status == 'prepared' && matrix.direction == 'adoption'
+        working-directory: stack
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          node .github/scripts/pi-pin.mjs > "$RUNNER_TEMP/pi-pin.txt"
+          url="$(sed -n 's/^url=//p' "$RUNNER_TEMP/pi-pin.txt")"
+          bytes="$(sed -n 's/^bytes=//p' "$RUNNER_TEMP/pi-pin.txt")"
+          tarball="$RUNNER_TEMP/jorgex-pi.tgz"
+          curl --fail --show-error --silent --connect-timeout 15 --max-time 120 --max-filesize "$bytes" --remove-on-error --output "$tarball" "$url"
+          test "$(wc -c < "$tarball")" -eq "$bytes"
+          JORGEX_PI_TARBALL="$tarball" pnpm test
+          pnpm build
+      - name: Bind verified files to the proposal
+        if: steps.prepare.outputs.status == 'prepared'
+        run: node control/.github/scripts/stack-pi-automation.mjs seal stack pi proposal
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: proposal-${{ matrix.direction }}
+          path: proposal/proposal.json
+          if-no-files-found: error
+          retention-days: 3
+
+  propose:
+    needs: prepare
+    if: always() && !cancelled() && github.ref == 'refs/heads/main' && vars.JORGEX_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - direction: snapshot
+            repository: jorgex-pi
+          - direction: adoption
+            repository: jorgex-stack
+    steps:
+      # Fresh job: never execute the generated tree or install its dependencies.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: proposal-${{ matrix.direction }}
+          path: proposal
+      - name: Validate bounded proposal before issuing a token
+        id: proposal
+        env:
+          AUTOMATION_DIRECTION: ${{ matrix.direction }}
+        run: node .github/scripts/stack-pi-automation.mjs inspect proposal/proposal.json
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        if: steps.proposal.outputs.status == 'prepared'
+        id: app
+        with:
+          client-id: ${{ vars.JORGEX_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JORGEX_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: jorgehn98
+          repositories: ${{ matrix.repository }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Create immutable draft and mark verified candidate ready
+        if: steps.proposal.outputs.status == 'prepared'
+        env:
+          AUTOMATION_TOKEN: ${{ steps.app.outputs.token }}
+          AUTOMATION_DIRECTION: ${{ matrix.direction }}
+        run: node .github/scripts/stack-pi-automation.mjs publish proposal/proposal.json

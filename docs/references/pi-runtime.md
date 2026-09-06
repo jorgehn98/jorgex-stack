@@ -86,6 +86,8 @@ Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La madurez gestion
 
 ## Lifecycle y seguridad
 
+La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
+
 - `install` verifica el tarball, hace backup y ejecuta primero el paquete y después la proyección.
 - `sync` repara drift del paquete o de la proyección sin duplicar recursos; dos pasadas consecutivas son idempotentes.
 - `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara.
