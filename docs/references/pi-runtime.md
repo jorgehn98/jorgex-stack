@@ -2,7 +2,7 @@
 
 JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
 
-Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. El checkout fija el pin publicado `jorgex-pi@0.8.7`; `package.json` identifica la versión base de Stack `1.9.19`. La publicación de Stack usa el auto-bump existente al mergear y selecciona el patch disponible; el número final debe resolverse y confirmarse en el registro, no suponerse ni prepararse manualmente.
+Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. El checkout fija el pin publicado `jorgex-pi@0.8.7`; `package.json` identifica la versión de Stack. La publicación de Stack usa el auto-bump existente al mergear y selecciona el patch disponible; el número final debe resolverse y confirmarse en el registro, no suponerse ni prepararse manualmente.
 
 ## Paquete e integridad
 
