@@ -262,6 +262,10 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(workState).toContain("a standalone short route does not create PRD, plan, formal Specs, PRE, or POST");
     expect(workState).toContain("a short step inside active formal SDD work preserves its approved tracking and ownership");
 
+    const git = sectionBetween(systemPrompt, "## Git", "## Terminal");
+    expect(git).toMatch(/revalidate review coverage.+not automatically relaunching every reviewer/is);
+    expect(git).toMatch(/effective base and integration context even when head is unchanged/i);
+
     const lifecyclePayload = plannedContent(actions, path.join(runtimePaths.skillsDir, "work-lifecycle", "SKILL.md"));
     const applicability = sectionBetween(lifecyclePayload, "# Work Lifecycle", "## Identity");
     expect(applicability).toContain("canonical routing in the `orchestrator` skill selects **formal SDD** work");
@@ -271,6 +275,11 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(applicability).toContain("its approved Spec, plan row, ownership, and tracking");
     expect(applicability).toContain("Routing criteria live only in `orchestrator`");
     expect(applicability).toContain("do not copy them here");
+
+    const lifecycle = sectionBetween(lifecyclePayload, "## Pull request lifecycle", "## HTML review view");
+    expect(lifecycle).toMatch(/repeat preflight and review revalidation/i);
+    expect(lifecycle).toMatch(/\[coverage revalidation\]\(\.\.\/xreview\/SKILL\.md#7-revalidate-coverage-and-stop\).+not an automatic repeated panel/is);
+    expect(lifecycle).toMatch(/integration assumptions, including the effective base/i);
 
     const protocolPayload = adapter.id === "opencode"
       ? plannedContent(actions, path.join(runtimePaths.pluginsDir!, "engram.ts"))
@@ -308,6 +317,7 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
       { relative: ["orchestrator", "references", "standard-workflow.md"], source: standardWorkflowReferencePath() },
       { relative: ["work-lifecycle", "SKILL.md"], source: path.join(stackDir, "skills", "work-lifecycle", "SKILL.md") },
       { relative: ["work-lifecycle", "references", "plan-template.md"], source: path.join(stackDir, "skills", "work-lifecycle", "references", "plan-template.md") },
+      { relative: ["xreview", "SKILL.md"], source: path.join(stackDir, "skills", "xreview", "SKILL.md") },
     ];
 
     for (const { relative, source } of sources) {

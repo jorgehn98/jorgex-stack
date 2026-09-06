@@ -46,14 +46,29 @@ describe("orchestrator review cadence", () => {
     );
   });
 
-  it("carga xreview sólo si la revisión final del draft aún falta", () => {
+  it("revalida la cobertura aplicable al devolver un draft standard desde ready", () => {
+    const reference = readFileSync(
+      fileURLToPath(new URL("../stack/skills/orchestrator/references/standard-workflow.md", import.meta.url)),
+      "utf8",
+    );
+    const draftCadence = sectionBetween(reference, "### Draft PR cadence", "### Handoff rule");
+
+    expect(draftCadence).toContain("gh pr ready --undo <number>");
+    expect(draftCadence).toMatch(/repeat VERIFY and the applicable review revalidation from the common coverage rule/i);
+    expect(draftCadence).not.toContain("repeat VERIFY and the final review before readying it again");
+  });
+
+  it("carga xreview para cobertura final que falta y conserva el scope del candidato", () => {
     const finalReview = sectionBetween(body, "### Final review and PR lifecycle", "## Closing rule");
 
     expect(finalReview).toContain("final candidate SHA while the PR is still draft");
     expect(finalReview).toContain("immediately before `gh pr ready`");
-    expect(finalReview).toContain("Load and run the portable `xreview` skill only when a full review has not already covered that final draft");
-    expect(finalReview).toContain("retain the prior review evidence");
-    expect(finalReview).toContain("Re-run it only if fixes materially change the diff or introduce a materially different risk");
+    expect(finalReview).toMatch(/xreview.+scoped review adds value and reliable coverage is missing/is);
+    expect(finalReview).toMatch(/Freeze base\/head and merge-base.+primary responsibility.+necessary support/is);
+    expect(finalReview).toMatch(/fix-check.+delta-review.+full review/is);
+    expect(finalReview).toMatch(/material change.+not automatically rerunning the same panel/is);
+    expect(finalReview).toMatch(/Previously clean roles reopen.+dependencies or assumptions change/is);
+    expect(finalReview).toMatch(/base or integration context even when head is unchanged/is);
   });
 
   it("does not retain the mechanical review triggers", () => {
@@ -62,7 +77,7 @@ describe("orchestrator review cadence", () => {
     expect(body).not.toMatch(/fresh `code-reviewer` pass before closing/i);
   });
 
-  it("SHIP standard remite a la revisión común y conserva la evidencia previa", () => {
+  it("SHIP standard remite a la revisión común y revalida sólo la cobertura afectada", () => {
     const reference = readFileSync(
       fileURLToPath(new URL("../stack/skills/orchestrator/references/standard-workflow.md", import.meta.url)),
       "utf8",
@@ -74,8 +89,10 @@ describe("orchestrator review cadence", () => {
     expect(reviewStep).toMatch(/Final review and PR lifecycle/i);
     expect(reviewStep).not.toMatch(/^2\. Load and run the portable `xreview` skill/m);
     expect(ship, "una revisión ya completada debe conservar su evidencia").toMatch(/(?:retain|reuse|preserve)[^\n.]*\b(?:prior|existing|previous|completed)\b[^\n.]*\b(?:review|evidence)\b/i);
-    expect(ship).toMatch(/only if[^\n.]*materially (?:changed|change)[^\n.]*diff/i);
-    expect(ship).toMatch(/materially different risk/i);
+    expect(ship).toMatch(/fix-check, delta-review or full review.+affected contracts and evidence.+not another full panel by default/is);
+    expect(ship).toMatch(/Preserve justified clean coverage.+reopen it when dependencies or assumptions change/is);
+    expect(ship).toMatch(/Do not backlog rejected findings or discard valid findings merely because they are new/is);
+    expect(ship).toMatch(/recheck the effective base and integration context as well/i);
   });
 
   it("mantiene Git y la cadencia de review como guardas compartidas por short y standard", () => {
