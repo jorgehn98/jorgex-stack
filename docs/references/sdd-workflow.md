@@ -27,6 +27,8 @@ Una PR se delimita por resultado verificable, contrato, dependencias y riesgo, n
 
 La review de un candidato comienza con `BASE_SHA`, `HEAD_SHA` y su merge-base resueltos de forma inmutable. Se clasifican todos los grupos del diff y cada reviewer recibe un **primary scope** —la responsabilidad sobre rutas, hunks, contrato o riesgo— junto con **support context** dirigido. `primary` no es una frontera de permisos ni impide leer la fuente necesaria; por ejemplo, el análisis de tests puede consultar el contrato de producción y sus pruebas.
 
+Cuando un cambio necesita documentación por su uso, contrato u operación, el coordinador identifica las superficies afectadas durante la ejecución y consolida un único pase del especialista cuando la implementación y las correcciones ya están estables, antes de poner listo cada checkpoint que lo necesite. Una corrección posterior reabre sólo las páginas afectadas: si es meramente de prosa no invalida la revisión de código sin cambios, mientras que una corrección contractual exige reevaluar la cobertura de revisión.
+
 La cobertura se conserva sólo mientras sigan siendo válidos sus contratos, dependencias y supuestos. Un cambio de base, retarget o contexto de integración exige recalcular el diff efectivo y revisar la cobertura aunque el `HEAD_SHA` no cambie. Tras un finding o un fix se elige la actuación mínima que cubra el riesgo:
 
 - **fix-check**: comprobar el finding original, su corrección y la regresión cercana, priorizando evidencia determinista;

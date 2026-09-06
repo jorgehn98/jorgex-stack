@@ -27,6 +27,12 @@ For the **standard** route, explicitly read and follow [references/standard-work
 
 Both routes preserve mandatory memory/Engram saves, testing/TDD by risk, Git/worktree discipline, final-draft review, configured gates, and explicit user approval for merge. Security, permissions, ownership, backups, dependency consent, and the existing human/programmatic output contracts are never relaxed by routing. Product documentation remains with `docs-maintainer` when it is needed; short routing does not absorb that owner's scope.
 
+## Documentation when needed
+
+The coordinator identifies the audience and affected surfaces when a change needs an explanation of use, contract or operation, or makes an existing claim incorrect. Create documentation only for a concrete reader or operational need; an internal refactor or already-correct description does not require new prose. Product documentation stays with `docs-maintainer`, outside the review panel; code comments, ordinary UI text, translation and work-tracking artifacts keep their existing owners.
+
+Identify needs during execution, then consolidate the necessary documentation pass once the implementation and fixes are stable, before ready for each checkpoint that needs it. Do not wait until the end of a roadmap that publishes intermediate behavior. Later contract changes reopen only affected pages; a prose correction alone does not invalidate unchanged code review, while a contractual correction requires reassessing review coverage.
+
 ## Decision before delegation
 
 Use analysis only where it resolves an uncertainty that matters. An analyst's recommendation is evidence for the coordinator, not an implementation order: check the decisive sources, distinguish facts from assumptions, and close the scope, approach, relevant invariants and verification seam before delegating implementation. For formal work, record those decisions in its single Spec. Do not repeat the whole investigation or copy its report into the task.
