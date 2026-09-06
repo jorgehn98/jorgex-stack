@@ -837,6 +837,10 @@ describe("release preflight contract", () => {
     expect(extractWorkflowStepBlock(jobs.get("tag-release") ?? "", "actions/checkout@")).not.toContain("persist-credentials: false");
 
     const pinValidation = extractWorkflowStepBlock(validate, "Validate pinned action SHAs");
+    expect(pinValidation).toContain("GH_TOKEN: ${{ github.token }}");
+    expect(pinValidation).toContain('--header "Authorization: Bearer $GH_TOKEN"');
+    expect(pinValidation).not.toContain("secrets.");
+    expect(pinValidation).not.toContain("app-token");
     const pinValidationCode = pinValidation
       .split(/\r?\n/)
       .filter((line) => !line.trimStart().startsWith("#"))
