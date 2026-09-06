@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import pin from "./pi-runtime-pin.json" with { type: "json" };
 import { dataDir } from "./paths.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
@@ -16,19 +17,7 @@ import {
 } from "./pi-package-lifecycle.js";
 
 export const PI_RUNTIME_CANDIDATE = {
-  package: {
-    name: "jorgex-pi",
-    version: "0.8.7",
-    source: "npm:jorgex-pi@0.8.7",
-  },
-  provenance: {
-    commit: "193cf5d381004f2d24645b6f7f274d5350fd8511",
-  },
-  tarball: {
-    bytes: 89_142_426,
-    sha256: "733e4f5ab7da3b6332340cb53f75d854b2db18d4eed2da6050c039a79b28d580",
-    sha512: "695c8a358aacb7fbd86d77bdf61718b5171fb5d1276ba3c32391aeb5557df47ddde7832d098ed918fd440378eb03bf322841f71e67888a099c66aaf2a0f73c37",
-  },
+  ...pin,
   pi: {
     testedVersions: ["0.84.2"],
   },

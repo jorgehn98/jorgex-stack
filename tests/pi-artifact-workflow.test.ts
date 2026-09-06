@@ -5,7 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
 import { resolveBashExecutable } from "./helpers/bash.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -311,11 +310,17 @@ const EVENT_MATRIX: EventFixture[] = [
 ];
 
 describe("JorgeX Pi artifact pull-request gate", () => {
-  it("downloads and validates the exact frozen npm tarball before the complete quality suite", () => {
+  it("resuelve metadata Pi validada y conserva el gate antes de la suite completa", () => {
     const workflow = readWorkflow();
-    const { name, version } = PI_RUNTIME_CANDIDATE.package;
-    const tarballUrl = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
+    const { jobs } = readWorkflowShape(workflow);
+    const [job] = jobs;
+    const pinStep = (job?.steps ?? []).find((step) => step.name === "Resolve the exact JorgeX Pi pin");
 
+    expect(pinStep, "Falta el paso que resuelve el pin de JorgeX Pi.").toBeDefined();
+    if (pinStep === undefined) throw new Error("Falta el paso que resuelve el pin de JorgeX Pi.");
+
+    expect(pinStep.raw).toContain("id: pi-pin");
+    expect(extractRunScript(pinStep)).toBe('node .github/scripts/pi-pin.mjs >> "$GITHUB_OUTPUT"\n');
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("permissions:\n  contents: read");
     expect(workflow).toContain("permissions:\n      contents: read");
@@ -325,10 +330,12 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(workflow).toContain("curl --fail");
     expect(workflow).toContain("--connect-timeout 15");
     expect(workflow).toMatch(/(?:^|\s)--max-time\s+120(?:\s|$)/);
-    expect(workflow).toContain(tarballUrl);
-    const artifactPath = "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi-" + version + ".tgz";
-    expect(workflow).toContain(artifactPath);
+    expect(workflow).toContain("PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}");
+    expect(workflow).toContain("PI_TARBALL_BYTES: ${{ steps.pi-pin.outputs.bytes }}");
+    expect(workflow).toContain("JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz");
     expect(workflow).not.toContain("GITHUB_ENV");
+    expect(workflow).not.toContain("0.8.7");
+    expect(workflow).not.toContain("89142426");
     expect(workflow).not.toMatch(/\bnpm\s+(?:install|publish)\b/);
     expect(workflow).not.toContain("NPM_TOKEN");
     expect(workflow).not.toMatch(/(?:contents|id-token):\s*write/);
@@ -336,60 +343,56 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expectInOrder(workflow, [
       "pnpm install --frozen-lockfile",
       "pnpm typecheck",
-      tarballUrl,
-      artifactPath,
+      'node .github/scripts/pi-pin.mjs >> "$GITHUB_OUTPUT"',
+      "PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}",
+      "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz",
       "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts",
       "pnpm test",
       "pnpm build",
     ]);
   });
 
-  it("acota la descarga de Pi al artefacto fijo y verifica su tamaño antes del contrato", () => {
+  it("acota la descarga de Pi a los outputs validados y verifica su tamaño antes del contrato", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
     const [job] = jobs;
-    const { name, version } = PI_RUNTIME_CANDIDATE.package;
-    const { bytes } = PI_RUNTIME_CANDIDATE.tarball;
-    const tarballUrl = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
     const downloadStep = (job?.steps ?? []).find((step) => step.name === "Download the exact JorgeX Pi artifact");
 
     expect(downloadStep, "Falta el paso de descarga del artefacto Pi.").toBeDefined();
-    if (downloadStep === undefined) {
-      throw new Error("Falta el paso de descarga del artefacto Pi.");
-    }
+    if (downloadStep === undefined) throw new Error("Falta el paso de descarga del artefacto Pi.");
 
     const script = extractRunScript(downloadStep);
     const actualSizeCapture = 'actual_bytes="$(wc -c < "$tarball")"';
 
-    expect(script).toContain(tarballUrl);
+    expect(downloadStep.raw).toContain("PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}");
+    expect(downloadStep.raw).toContain("PI_TARBALL_BYTES: ${{ steps.pi-pin.outputs.bytes }}");
+    expect(script).toContain('tarball="$RUNNER_TEMP/jorgex-pi.tgz"');
+    expect(script).toContain('"$PI_TARBALL_URL"');
     expect(script).toContain("--retry 3");
     expect(script).toContain("--connect-timeout 15");
     expect(script).toMatch(/(?:^|\s)--max-time\s+120(?:\s|$)/);
     expect(script).toMatch(/(?:^|\s)--retry-max-time\s+180(?:\s|$)/);
     expect(script).toContain("--remove-on-error");
-    expect(script).toContain(`--max-filesize ${bytes}`);
+    expect(script).toContain('--max-filesize "$PI_TARBALL_BYTES"');
     expect(script).not.toMatch(/\s(?:--location(?:-trusted)?|-L)(?:\s|$)/);
     expect(script).not.toContain("--retry-all-errors");
     expectInOrder(workflow, [actualSizeCapture, "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts"]);
   });
 
-  it("diagnostica y limpia un artefacto Pi cuyo tamaño recibido no coincide antes del contrato", () => {
+  it("diagnostica y limpia un artefacto Pi cuyo tamaño no coincide con el output validado", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
     const [job] = jobs;
-    const { bytes } = PI_RUNTIME_CANDIDATE.tarball;
     const downloadStep = (job?.steps ?? []).find((step) => step.name === "Download the exact JorgeX Pi artifact");
 
     expect(downloadStep, "Falta el paso de descarga del artefacto Pi.").toBeDefined();
-    if (downloadStep === undefined) {
-      throw new Error("Falta el paso de descarga del artefacto Pi.");
-    }
+    if (downloadStep === undefined) throw new Error("Falta el paso de descarga del artefacto Pi.");
 
     const script = extractRunScript(downloadStep);
     const invalidSizeBranch = [
       'actual_bytes="$(wc -c < "$tarball")"',
-      `if [[ "$actual_bytes" -ne ${bytes} ]]; then`,
-      `echo "JorgeX Pi artifact size mismatch: expected=${bytes} received=$actual_bytes" >&2`,
+      'if [[ "$actual_bytes" -ne "$PI_TARBALL_BYTES" ]]; then',
+      'echo "JorgeX Pi artifact size mismatch: expected=$PI_TARBALL_BYTES received=$actual_bytes" >&2',
       'rm -f -- "$tarball"',
       "exit 1",
     ];
@@ -397,7 +400,6 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expectInOrder(script, invalidSizeBranch);
     expectInOrder(workflow, [...invalidSizeBranch, "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts"]);
   });
-
   it("desactiva la caché automática de setup-node y conserva la caché pnpm explícita", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
