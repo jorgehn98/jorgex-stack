@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 
 type PlaywrightToolAction = "install" | "install-browser" | "remove";
 
@@ -94,7 +97,107 @@ async function uninstallToolPlan(removePackage: boolean): Promise<{ actions: Pla
   return mod.resolvePlaywrightUninstallPlan!({ removePackage });
 }
 
+async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  process.env.HOME = homeDir;
+  process.env.USERPROFILE = homeDir;
+
+  try {
+    vi.resetModules();
+    return await run();
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalUserProfile;
+    vi.resetModules();
+  }
+}
+
+function setOnlyCodexDetected(install: typeof import("../src/install.js"), configDir: string): () => void {
+  const originals = Object.values(install.ADAPTERS).map((adapter) => [adapter, adapter.detect] as const);
+  for (const adapter of Object.values(install.ADAPTERS)) {
+    adapter.detect = () => ({
+      id: adapter.id,
+      name: adapter.name,
+      installed: adapter.id === "codex",
+      binPath: null,
+      configDir: adapter.id === "codex" ? configDir : path.join(configDir, adapter.id),
+    });
+  }
+  return () => {
+    for (const [adapter, detect] of originals) adapter.detect = detect;
+  };
+}
+
 describe("Playwright lifecycle contracts", () => {
+  it("runs the Pi-only Playwright bridge without creating or consuming a model map", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-only-playwright-"));
+    const homeDir = path.join(root, "home");
+    const mapFile = path.join(homeDir, ".jorgex-stack", "model-map.json");
+    const actions: PlaywrightToolAction[] = [];
+    const persisted: boolean[] = [];
+    const corrupt = '{"codex":\n';
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const modelMap = await import("../src/lib/model-map.js");
+        const loadModelMap = vi.spyOn(modelMap, "loadModelMap");
+        const prompts = await import("@clack/prompts");
+        const inventoryWarning = vi.spyOn(prompts.log, "warn");
+        const install = await import("../src/install.js");
+        const restoreDetect = setOnlyCodexDetected(install, path.join(homeDir, ".codex"));
+        const options = {
+          runtimes: [],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human" as const, subagentConcurrency: "serial" as const },
+          playwrightToolConsent: {
+            command: "install" as const,
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+          },
+          playwrightToolDeps: {
+            run: async (action: Exclude<PlaywrightToolAction, "remove">) => {
+              actions.push(action);
+              return true;
+            },
+            persistEnabled: (enabled: boolean) => persisted.push(enabled),
+          },
+        };
+
+        try {
+          await expect(install.runInstall(options)).resolves.toBe(0);
+          const createdMapWithoutFileRuntime = fs.existsSync(mapFile);
+
+          expect(loadModelMap).not.toHaveBeenCalled();
+          expect(inventoryWarning).not.toHaveBeenCalledWith(
+            expect.stringMatching(/Limpieza de huérfanos deshabilitada/i),
+          );
+
+          fs.mkdirSync(path.dirname(mapFile), { recursive: true });
+          fs.writeFileSync(mapFile, corrupt);
+
+          await expect(install.runInstall(options)).resolves.toBe(0);
+
+          expect(createdMapWithoutFileRuntime).toBe(false);
+          expect(loadModelMap).not.toHaveBeenCalled();
+          expect(fs.readFileSync(mapFile, "utf8")).toBe(corrupt);
+          expect(actions).toEqual(["install", "install-browser", "install", "install-browser"]);
+          expect(persisted).toEqual([true, true]);
+        } finally {
+          restoreDetect();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves the interactive, --yes, non-TTY, target-dir, and sync consent matrix", async () => {
     const cases = [
       {

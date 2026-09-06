@@ -11,7 +11,7 @@ export interface TierModel {
 
 /**
  * Mapa por tier + ajuste fino opcional: "overrides" por nombre de agente pisa
- * el tier de ESE agente (p.ej. backend-analyst y code-reviewer son ambos
+ * el tier de ESE agente (p.ej. code-reviewer y silent-failure-hunter son ambos
  * strong, pero pueden llevar modelos distintos). Se edita a mano en
  * model-map.json; el picker por tiers lo preserva.
  */
@@ -55,9 +55,14 @@ export const DEFAULT_MODEL_MAP: DefaultModelMap = {
   // la skill de la app heredan el modelo elegido por el usuario. Estos defaults
   // son solo para subagentes; variant → model_reasoning_effort.
   codex: {
-    strong: { model: "gpt-5.6-terra", variant: "xhigh" },
-    standard: { model: "gpt-5.6-terra", variant: "xhigh" },
+    strong: { model: "gpt-6-astra", variant: "max" },
+    standard: { model: "gpt-5.6-sol", variant: "medium" },
     cheap: { model: "gpt-5.6-luna", variant: "medium" },
+    overrides: {
+      implementer: { model: "gpt-5.6-luna", variant: "max" },
+      tester: { model: "gpt-5.6-luna", variant: "max" },
+      "silent-failure-hunter": { model: "gpt-5.6-sol", variant: "medium" },
+    },
   },
 };
 
@@ -66,20 +71,21 @@ export function modelMapFile(): string {
 }
 
 export function loadModelMap(): ModelMap {
-  const raw = readTextIfExists(modelMapFile());
+  const file = modelMapFile();
+  const raw = readTextIfExists(file);
   if (raw === null) return DEFAULT_MODEL_MAP;
   let fromDisk: ModelMap;
   try {
     fromDisk = JSON.parse(raw) as ModelMap;
   } catch {
-    // model-map corrupto: defaults para no brickear todos los comandos;
-    // 'models' lo regenera.
-    return DEFAULT_MODEL_MAP;
+    throw new Error(`El mapa de modelos ${file} contiene JSON inválido. Corrige el JSON o restaura una copia antes de continuar.`);
   }
   // Merge por tier: un runtime editado a mano sin algún tier hereda el default.
   const merged: ModelMap = { ...fromDisk };
   for (const id of Object.keys(DEFAULT_MODEL_MAP) as RuntimeId[]) {
     merged[id] = { ...DEFAULT_MODEL_MAP[id]!, ...(fromDisk[id] ?? {}) } as RuntimeModelMap;
+    // Un mapa guardado decide sus overrides; no imponer los de una instalación nueva.
+    if (fromDisk[id] && !Object.hasOwn(fromDisk[id], "overrides")) delete merged[id]!.overrides;
   }
   return merged;
 }

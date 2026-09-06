@@ -15,6 +15,16 @@ const mocks = vi.hoisted(() => ({
   runDetectedBin: vi.fn(() => "xai/grok-code\nzhipu/glm-code\nminimax/MiniMax-M3\n"),
 }));
 
+type PickerOption = { value: string; label: string };
+type PickerQuestion = {
+  message: string;
+  options: PickerOption[];
+};
+
+function pickerQuestions(): PickerQuestion[] {
+  return mocks.select.mock.calls.map(([question]) => question as PickerQuestion);
+}
+
 vi.mock("@clack/prompts", () => ({
   select: mocks.select,
   text: vi.fn(),
@@ -53,6 +63,35 @@ afterEach(() => {
 });
 
 describe("fresh OpenCode model selection", () => {
+  it("rejects a malformed existing map before starting selection or replacing its bytes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-model-picker-corrupt-"));
+    const homeDir = path.join(root, "home");
+    const file = path.join(homeDir, ".jorgex-stack", "model-map.json");
+    const malformed = '{"opencode":\n';
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    const restoreTty = setStdoutTty();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, malformed);
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+
+    try {
+      const { runModelsPicker } = await import("../src/models-picker.js");
+
+      await expect(runModelsPicker({ yes: false, runtimes: ["opencode"] })).rejects.toThrow(/model-map|corrige|restaura/i);
+      expect(mocks.select).not.toHaveBeenCalled();
+      expect(fs.readFileSync(file, "utf8")).toBe(malformed);
+    } finally {
+      restoreTty();
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects non-interactive initialization instead of writing provider defaults", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-model-picker-noninteractive-"));
     const originalHome = process.env.HOME;
@@ -100,11 +139,15 @@ describe("fresh OpenCode model selection", () => {
       const stored = JSON.parse(
         fs.readFileSync(path.join(homeDir, ".jorgex-stack", "model-map.json"), "utf8"),
       );
+      const openCodeEffortOptions = pickerQuestions()
+        .filter((question) => question.message.includes("OpenCode") && question.message.includes("variant"))
+        .flatMap((question) => question.options.map((option) => option.value));
       expect(stored.opencode).toEqual({
         strong: { model: "xai/grok-code", variant: "high" },
         standard: { model: "zhipu/glm-code", variant: "medium" },
         cheap: { model: "minimax/MiniMax-M3" },
       });
+      expect(openCodeEffortOptions).not.toContain("max");
     } finally {
       restoreTty();
       if (originalHome === undefined) delete process.env.HOME;
