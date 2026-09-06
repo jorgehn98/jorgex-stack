@@ -2,11 +2,11 @@
 
 JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exacto y una proyección de recursos compartidos propiedad de Stack. Pi no se traduce a través del manifest de componentes ni del model map de Stack.
 
-Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. El checkout documentado fija `jorgex-pi@0.8.6`; su pin está preparado en Stack `1.9.18`. Esta página no afirma que `jorgex-stack@1.9.18` esté disponible en npm: antes de consumirlo, comprueba el registro.
+Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. El checkout fija el pin publicado `jorgex-pi@0.8.6`; `package.json` identifica la versión de Stack. La publicación de Stack usa el auto-bump existente al mergear y selecciona el patch disponible; el número final debe resolverse y confirmarse en el registro, no suponerse ni prepararse manualmente.
 
 ## Paquete e integridad
 
-El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. El [tarball `jorgex-pi@0.8.6` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.6.tgz) es el pin preparado por Stack `1.9.18`, con `89140981` bytes. La URL pública y los hashes exactos se contrastan con `src/lib/pi-runtime.ts` y `tests/fixtures/pi-runtime.ts`, que son las autoridades del pin en este checkout; esta referencia no afirma la publicación de Stack. La URL se deriva de la versión.
+El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. El [tarball `jorgex-pi@0.8.6` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.6.tgz) es el pin adoptado por este checkout, con `89140981` bytes. La URL pública y los hashes exactos se contrastan con `src/lib/pi-runtime.ts` y `tests/fixtures/pi-runtime.ts`, que son las autoridades del pin en este checkout; esta referencia no fija un número futuro para la publicación de Stack. La URL se deriva de la versión.
 
 La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al objeto exacto:
 
@@ -63,11 +63,11 @@ La proyección usa las mismas copias canónicas de `stack/` que los demás runti
 
 En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
 
-## Pin preparado Stack 1.9.18 / Pi 0.8.6
+## Pin Pi 0.8.6 adoptado por Stack
 
 El [tarball `jorgex-pi@0.8.6` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.6.tgz) tiene `89140981` bytes, SHA-256 `ad757f0ce1a6fb311239e5797a0823ebbfaeb6856d80275b6490b7176df6207e` y SHA-512 `5388aa38fdd2a4aa61f5ae2ee68de4863252a2954d682f9aba20ab7e06b5f72123b9bae4cc4193ec3de90e472ce2c1761a3ec70975629ef599fcd5600b271de6`. Su productor es `ad17c32d98dae15f14c6505152ca916f550a0c24` y su `parity.source.commit` de Stack es `1510655a280a45af5c14f32cb87ce126dbee8edd`. El tarball contiene `13405` entradas; la snapshot contiene `99` archivos; el paquete declara `17` skills activas y `18` árboles de skill.
 
-El contrato del checkout usa `npm:jorgex-pi@0.8.6` y conserva las capacidades, el runner, las escrituras gestionadas y la política de modelo declaradas por la fuente ejecutable. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi; no bloquea validación, merge ni releases. No se documenta aquí ningún estado operativo de publicación de Stack.
+El contrato del checkout usa `npm:jorgex-pi@0.8.6` y conserva las capacidades, el runner, las escrituras gestionadas y la política de modelo declaradas por la fuente ejecutable. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi; no bloquea validación, merge ni releases. Al mergear, el auto-bump existente determina el patch disponible. La nueva versión de Stack sólo debe consumirse después de confirmar en el registro su versión exacta y que su pin reconoce `0.8.6`.
 
 ## Histórico: candidato Stack 1.9.6 / Pi 0.8.4
 
@@ -88,21 +88,11 @@ Las operaciones con `--target-dir` aíslan home, `PI_CODING_AGENT_DIR`, estado, 
 
 ## Receipt exacto y rollback
 
-La transición adyacente es de `npm:jorgex-pi@0.8.5` a `npm:jorgex-pi@0.8.6`: Stack `1.9.17` reconoce el receipt de `0.8.5` y Stack `1.9.18` reconoce el de `0.8.6`. Antes de consumir una versión de Stack, comprueba que exista en el registro; cada operación debe usar la versión que reconoce el receipt presente. No se borran `HOME` ni receipts. Si el receipt no es reconocido o la limpieza no puede verificar ownership, la operación se detiene; no se editan receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime, y no se usa una versión aproximada para saltarse el control.
+La transición adyacente es de `npm:jorgex-pi@0.8.5` a `npm:jorgex-pi@0.8.6`: Stack `1.9.17` reconoce el receipt de `0.8.5`; la nueva release de Stack, una vez publicada y confirmada en el registro, debe reconocer el de `0.8.6`. Antes de consumir una versión de Stack, resuelve su número exacto en el registro y comprueba que su pin reconoce el receipt presente; nunca uses `latest` ni una versión aproximada. No se borran `HOME` ni receipts. Si el receipt no es reconocido o la limpieza no puede verificar ownership, la operación se detiene; no se editan receipts ni hashes, no se borra `HOME`, Engram o la proyección de otro runtime.
 
-Upgrade `0.8.5` → `0.8.6`, después de comprobar en el registro las dos versiones de Stack:
+Upgrade `0.8.5` → `0.8.6`, en este orden: (1) comprueba en el registro `jorgex-stack@1.9.17` y su reconocimiento del receipt `0.8.5`; (2) ejecuta con esa versión `uninstall --agents pi`; (3) resuelve en el registro la versión exacta de la nueva release y confirma que su pin reconoce `0.8.6`; (4) ejecuta con esa versión `install --agents pi`.
 
-```bash
-pnpm dlx jorgex-stack@1.9.17 uninstall --agents pi
-pnpm dlx jorgex-stack@1.9.18 install --agents pi
-```
-
-Rollback `0.8.6` → `0.8.5`, usando primero la versión que reconoce cada receipt:
-
-```bash
-pnpm dlx jorgex-stack@1.9.18 uninstall --agents pi
-pnpm dlx jorgex-stack@1.9.17 install --agents pi
-```
+Rollback `0.8.6` → `0.8.5`, en este orden: (1) resuelve en el registro la versión exacta de la release que reconoce `0.8.6`; (2) ejecuta con esa versión `uninstall --agents pi`; (3) confirma en el registro `jorgex-stack@1.9.17` y su reconocimiento del receipt `0.8.5`; (4) ejecuta con `1.9.17` `install --agents pi`. No conviertas estos pasos en comandos con un identificador supuesto: cada versión debe salir del registro y del pin verificado.
 
 Las parejas históricas se conservan como referencia y cada paso usa la versión de Stack que reconoce el receipt presente. No se editan receipts ni se borra estado manualmente:
 
