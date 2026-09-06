@@ -8,7 +8,7 @@ import { codexAdapter } from "./adapters/codex.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { detectEngram } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
-import { ensureModelMapFile, loadModelMap } from "./lib/model-map.js";
+import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
@@ -292,20 +292,21 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       targetDir: opts.targetDir !== undefined || opts.playwrightToolConsent.targetDir,
     });
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
-  const modelMap = loadModelMap();
-  if (useManifest) ensureModelMapFile();
+  const hasFileRuntimes = opts.runtimes.length > 0;
+  const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
+  if (hasFileRuntimes && useManifest) ensureModelMapFile();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 
   // El manifest solo aplica a instalaciones reales; --target-dir es de pruebas.
-  const current = useManifest
+  const current = hasFileRuntimes && useManifest
     ? collectAllCurrentTargets(modePreference)
     : { targets: new Set<string>(), complete: false, warnings: [] as string[] };
-  const canOrphan = useManifest && current.complete;
+  const canOrphan = hasFileRuntimes && useManifest && current.complete;
   const canonicalMcp = loadCanonicalMcp(stackDir);
   const canonicalHooks = loadCanonicalHooks(stackDir);
 
-  if (useManifest && (!current.complete || current.warnings.length > 0)) {
+  if (hasFileRuntimes && useManifest && (!current.complete || current.warnings.length > 0)) {
     p.log.warn("Limpieza de huérfanos deshabilitada: no se pudo construir el plan completo de todos los runtimes.");
     for (const warning of current.warnings) p.log.warn(warning);
   }
