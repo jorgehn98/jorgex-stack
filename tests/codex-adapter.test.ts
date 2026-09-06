@@ -97,14 +97,22 @@ describe("codexAdapter.renderAgent", () => {
     expect(out!.content).not.toContain("model_reasoning_effort");
   });
 
-  it("defaults GPT-5.6: Terra/xhigh para standard y Luna/medium para cheap", () => {
-    const [standard] = codexAdapter.renderAgent(agent({ name: "implementer", tier: "standard" }), DEFAULT_MODEL_MAP.codex);
-    expect(standard!.content).toContain('model = "gpt-5.6-terra"');
-    expect(standard!.content).toContain('model_reasoning_effort = "xhigh"');
+  it("projects the approved model and effort for every Codex subagent role", () => {
+    const expected = [
+      ["code-reviewer", "strong", "gpt-6-astra", "max"],
+      ["security-auditor", "strong", "gpt-6-astra", "max"],
+      ["backend-analyst", "standard", "gpt-5.6-sol", "medium"],
+      ["silent-failure-hunter", "strong", "gpt-5.6-sol", "medium"],
+      ["implementer", "standard", "gpt-5.6-luna", "max"],
+      ["tester", "standard", "gpt-5.6-luna", "max"],
+      ["docs-maintainer", "cheap", "gpt-5.6-luna", "medium"],
+    ] as const;
 
-    const [cheap] = codexAdapter.renderAgent(agent({ name: "docs-maintainer", tier: "cheap" }), DEFAULT_MODEL_MAP.codex);
-    expect(cheap!.content).toContain('model = "gpt-5.6-luna"');
-    expect(cheap!.content).toContain('model_reasoning_effort = "medium"');
+    for (const [name, tier, model, effort] of expected) {
+      const [rendered] = codexAdapter.renderAgent(agent({ name, tier }), DEFAULT_MODEL_MAP.codex);
+      expect(rendered!.content).toContain(`model = "${model}"`);
+      expect(rendered!.content).toContain(`model_reasoning_effort = "${effort}"`);
+    }
   });
 
   it("el primary (orchestrator) → profile wrapper, sin skill duplicada, model ni effort", () => {
