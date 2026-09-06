@@ -32,8 +32,10 @@ function assertPinData(pin) {
 }
 
 function git(root, args) {
-  const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
-  for (const key of Object.keys(env)) if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG.*|REPLACE_REF_BASE)$/.test(key)) delete env[key];
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("GIT_")) delete env[key];
+  env.GIT_OPTIONAL_LOCKS = "0";
+  env.GIT_TERMINAL_PROMPT = "0";
   return execFileSync("git", ["--no-replace-objects", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", root, ...args], {
     env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * MAX_JSON, timeout: 30_000, windowsHide: true,
   });

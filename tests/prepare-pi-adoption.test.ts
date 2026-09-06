@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -306,6 +307,90 @@ afterEach(() => {
 });
 
 describe("preparePiAdoption", () => {
+  it.each([false, true])("conserva los datos tras fallar la segunda escritura (rollback incompleto: %s)", async (failRollback) => {
+    const fixture = createAdoptionFixture();
+    const { preparePiAdoption } = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const pinPath = path.join(fixture.root, PIN_PATH);
+    const artifactsPath = path.join(fixture.root, ARTIFACTS_PATH);
+    const originalPin = fs.readFileSync(pinPath);
+    const originalArtifacts = fs.readFileSync(artifactsPath);
+    const before = rootState(fixture);
+    const publishFailure = new Error("Injected second publication failure");
+    const rollbackFailure = new Error("Injected pin restoration failure");
+    const realRename = fs.renameSync;
+    let stage: string | undefined;
+    let pinAtSecondWrite: unknown;
+    let failure: unknown;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      const source = String(from);
+      const parent = path.dirname(source);
+      const isStage = path.dirname(parent) === fixture.root && path.basename(parent).startsWith(".pi-adoption-");
+      if (isStage && path.basename(source) === "1.new" && String(to) === artifactsPath) {
+        stage = parent;
+        pinAtSecondWrite = readJson<Pin>(fixture.root, PIN_PATH);
+        throw publishFailure;
+      }
+      if (failRollback && stage !== undefined && source === path.join(stage, "0.old") && String(to) === pinPath) {
+        throw rollbackFailure;
+      }
+      realRename(from, to);
+    });
+    try {
+      syncBuiltinESMExports();
+      await preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version, apply: true }, {
+        fetch: registryFetch(fixture),
+        now: () => 0,
+        sleep: async () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      rename.mockRestore();
+      syncBuiltinESMExports();
+    }
+
+    // The fault must occur after the first real publication, not during validation.
+    expect(pinAtSecondWrite).toEqual(fixture.next);
+    expect(stage).toBeDefined();
+    expect(fs.readFileSync(artifactsPath)).toEqual(originalArtifacts);
+    if (failRollback) {
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure).toMatchObject({ message: "Adoption rollback incomplete", cause: publishFailure, errors: [rollbackFailure], recoveryPath: stage });
+      expect(fs.statSync(stage!).isDirectory()).toBe(true);
+      expect(fs.readFileSync(path.join(stage!, "0.old"))).toEqual(originalPin);
+      expect(fs.existsSync(pinPath)).toBe(false);
+    } else {
+      expect(failure).toBe(publishFailure);
+      expect(fs.readFileSync(pinPath)).toEqual(originalPin);
+      expect(rootState(fixture)).toEqual(before);
+      expect(fs.existsSync(stage!)).toBe(false);
+    }
+  }, 15_000);
+
+  it("ignora GIT_COMMON_DIR heredado de otro repositorio en un no-op válido", async () => {
+    const fixture = createAdoptionFixture();
+    const { preparePiAdoption } = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+    const previous = process.env.GIT_COMMON_DIR;
+    const fetch = vi.fn();
+    let result: Awaited<ReturnType<PreparePiAdoption>> | undefined;
+    let failure: unknown;
+    try {
+      process.env.GIT_COMMON_DIR = path.join(fixture.piDir, ".git");
+      result = await preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: "0.8.7" }, { fetch });
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (previous === undefined) delete process.env.GIT_COMMON_DIR;
+      else process.env.GIT_COMMON_DIR = previous;
+    }
+
+    expect(rootState(fixture)).toEqual(before);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(failure).toBeUndefined();
+    expect(result).toEqual({ status: "unchanged", version: "0.8.7", changedPaths: [] });
+  });
+
   it("expone el preparador async de adopción con dependencias inyectables", async () => {
     const module = await import(/* @vite-ignore */ adoptionModuleUrl) as {
       preparePiAdoption?: unknown;
