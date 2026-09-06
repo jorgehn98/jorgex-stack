@@ -72,7 +72,7 @@ export function validateProposal(p) {
 
 async function pendingProposal(p, api) {
   const repo = repository(p.direction);
-  // Include closed PRs: an intentionally rejected input must not be recreated.
+  // Include closed PRs so a previously proposed branch is not recreated.
   for (let page = 1; page <= 100; page++) {
     const pulls = await api('GET', `/repos/${repo}/pulls?state=all&per_page=100&page=${page}`);
     assert(Array.isArray(pulls), 'Invalid PR list');
