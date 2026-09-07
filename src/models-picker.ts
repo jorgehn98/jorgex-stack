@@ -77,7 +77,7 @@ interface Detection {
 
 /**
  * Pregunta el modelo (y el reasoning effort donde el runtime lo soporta) para
- * un sujeto ("tier strong (…)" o "code-reviewer (tier strong)"):
+ * un sujeto ("tier strong (…)" o "code-reviewer (tier standard)"):
  * - OpenCode → select de modelo (lista en vivo) + select de variant.
  * - Claude Code → select de alias; no existe effort por subagente.
  * - Codex → select curado de modelo (con vía de escape) y effort; `max` solo

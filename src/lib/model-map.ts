@@ -11,8 +11,8 @@ export interface TierModel {
 
 /**
  * Mapa por tier + ajuste fino opcional: "overrides" por nombre de agente pisa
- * el tier de ESE agente (p.ej. code-reviewer y silent-failure-hunter son ambos
- * strong, pero pueden llevar modelos distintos). Se edita a mano en
+ * el tier de ESE agente (p.ej. security-auditor y silent-failure-hunter son
+ * ambos strong, pero pueden llevar modelos distintos). Se edita a mano en
  * model-map.json; el picker por tiers lo preserva.
  */
 export type RuntimeModelMap = Record<Tier, TierModel> & {
