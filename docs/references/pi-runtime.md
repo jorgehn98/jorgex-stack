@@ -4,7 +4,7 @@ JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exa
 
 Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. La identidad, procedencia y digests del pin vigente son autoritativos en `src/lib/pi-runtime-pin.json`; `src/lib/pi-runtime.ts` es la autoridad del lifecycle y sus contratos. El lector `.github/scripts/pi-pin.mjs` valida ese JSON y el workflow recibe de él la URL y el tamaño mediante variables de entorno. La publicación de Stack usa el auto-bump existente al mergear y selecciona el patch disponible; el número final se resuelve en el registro.
 
-Durante la consolidación de analistas, el canon de Stack de este checkout contiene 14 agentes (primary y 13 subagentes), mientras el pin Pi vigente conserva la snapshot empaquetada anterior de 15 agentes. Esta diferencia es transitoria: este checkpoint no cambia el pin ni afirma una paridad Pi nueva; la adopción se documenta solo cuando exista un artefacto publicado y verificado.
+El canon de Stack y el paquete Pi fijado comparten ya el inventario de 14 agentes (primary y 13 subagentes). La identidad exacta del pin y su procedencia se mantienen en `src/lib/pi-runtime-pin.json`; esta adopción está verificada, no implica una nueva publicación de Stack ni una instalación personal.
 
 ## Paquete e integridad
 
@@ -22,7 +22,7 @@ Estos identificadores describen objetos distintos y no deben intercambiarse:
 
 - El commit productor del pin vigente está en `src/lib/pi-runtime-pin.json` (`provenance.commit`).
 - La fuente Stack de la paridad queda evidenciada por `tests/fixtures/pi-runtime.ts` (`parity.source.commit`); no es el commit productor de Pi.
-- El pin saliente `0.8.6` queda como referencia histórica de rollback, no como pin actual.
+- El pin saliente `0.8.9` queda como referencia histórica de rollback, no como pin actual.
 - La identificación histórica de `0.8.0` se conserva en la sección de inventario; no debe reutilizarse para el pin actual.
 - El metadata de registry no aporta `gitHead`; no se debe inventar uno.
 
