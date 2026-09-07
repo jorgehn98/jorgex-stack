@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 14 agents, 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
+Portable multi-agent harness: one configuration source — 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
