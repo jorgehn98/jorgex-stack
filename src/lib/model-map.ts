@@ -11,8 +11,8 @@ export interface TierModel {
 
 /**
  * Mapa por tier + ajuste fino opcional: "overrides" por nombre de agente pisa
- * el tier de ESE agente (p.ej. code-reviewer y silent-failure-hunter son ambos
- * strong, pero pueden llevar modelos distintos). Se edita a mano en
+ * el tier de ESE agente (p.ej. security-auditor y silent-failure-hunter son
+ * ambos strong, pero pueden llevar modelos distintos). Se edita a mano en
  * model-map.json; el picker por tiers lo preserva.
  */
 export type RuntimeModelMap = Record<Tier, TierModel> & {
@@ -55,14 +55,9 @@ export const DEFAULT_MODEL_MAP: DefaultModelMap = {
   // la skill de la app heredan el modelo elegido por el usuario. Estos defaults
   // son solo para subagentes; variant → model_reasoning_effort.
   codex: {
-    strong: { model: "gpt-6-astra", variant: "max" },
-    standard: { model: "gpt-5.6-sol", variant: "medium" },
+    strong: { model: "gpt-6-astra", variant: "low" },
+    standard: { model: "gpt-5.6-luna", variant: "max" },
     cheap: { model: "gpt-5.6-luna", variant: "medium" },
-    overrides: {
-      implementer: { model: "gpt-5.6-luna", variant: "max" },
-      tester: { model: "gpt-5.6-luna", variant: "max" },
-      "silent-failure-hunter": { model: "gpt-5.6-sol", variant: "medium" },
-    },
   },
 };
 

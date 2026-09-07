@@ -74,22 +74,22 @@ Edita el campo global del runtime después de instalarlo:
 ### Codex
 
 En un mapa nuevo o cuando falta el mapa del runtime se siembran los defaults
-de los tres tiers y los tres overrides aprobados. En un mapa guardado, los tiers
-existentes y sus overrides permanecen intactos; los tiers que falten siguen
-heredando estos defaults, sin convertirlos en elecciones guardadas. El wrapper
+de los tres tiers, sin overrides nominales. En un mapa guardado no se
+reescriben los tiers ni los overrides guardados; un agente sin override
+resuelve, no obstante, el tier canónico que tenga actualmente. El wrapper
 primary heredado permanece intacto.
 
 | Tier | Modelo | Reasoning effort |
 |---|---|---|
-| `strong` | `gpt-6-astra` | `max` |
-| `standard` | `gpt-5.6-sol` | `medium` |
+| `strong` | `gpt-6-astra` | `low` |
+| `standard` | `gpt-5.6-luna` | `max` |
 | `cheap` | `gpt-5.6-luna` | `medium` |
 
-El tier `standard` incluye, entre otros, `codebase-analyst`. `code-reviewer` y
-`security-auditor` reciben Astra/max por
-herencia del tier `strong`, no mediante dos overrides nominales. Los tres
-overrides nominales son `gpt-5.6-luna/max` para `implementer` y `tester`, y
-`gpt-5.6-sol/medium` para `silent-failure-hunter`.
+El tier `standard` incluye, entre otros, `codebase-analyst`. En Codex,
+`code-reviewer` pertenece ahora al tier canónico `standard` y recibe
+`gpt-5.6-luna/max`; `security-auditor` y `silent-failure-hunter` son los
+subagentes que permanecen en `strong` y heredan Astra/low. Codex no tiene
+overrides nominales por defecto.
 
 El picker de Codex pregunta primero el modelo y después el effort. El `max`
 nuevo solo se ofrece para Astra y la familia 5.6; los modelos legacy,
@@ -100,11 +100,11 @@ OpenCode no cambian.
 
 ### OpenCode
 
-Los subagentes siguen siendo provider-agnostic. La primera instalación interactiva ejecuta `opencode models` y exige elegir por tier o por agente. `install --yes`, `sync` y procesos sin TTY fallan si todavía no existe esa selección; nunca inventan modelos de subagente.
+Los subagentes siguen siendo provider-agnostic. La primera instalación interactiva ejecuta `opencode models` y exige elegir por tier o por agente. `install --yes`, `sync` y procesos sin TTY fallan si todavía no existe esa selección; nunca inventan modelos de subagente. `code-reviewer` hereda la selección de `standard`, salvo un override personal.
 
 ### Claude Code
 
-Claude Code conserva sus alias `fable`, `sonnet` y `haiku`, modificables mediante el picker.
+Claude Code conserva sus alias `fable`, `sonnet` y `haiku`, modificables mediante el picker. Con los defaults y salvo override personal, `code-reviewer` hereda `sonnet`.
 
 ## Cambiar subagentes
 
@@ -112,7 +112,7 @@ Claude Code conserva sus alias `fable`, `sonnet` y `haiku`, modificables mediant
 pnpm dlx jorgex-stack models --agents codex
 ```
 
-Los overrides por nombre de agente tienen precedencia sobre su tier. Actualizar Stack no sobrescribe model-maps existentes.
+Los overrides por nombre de agente tienen precedencia sobre su tier. Actualizar Stack no sobrescribe model-maps existentes; si un agente no tiene override, una actualización de su tier canónico puede cambiar el modelo efectivo que hereda.
 
 El picker permite elegir voluntariamente **por tier** o **por subagente**, uno a
 uno. La segunda opción guarda solo las diferencias como overrides por nombre

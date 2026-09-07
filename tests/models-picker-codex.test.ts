@@ -123,11 +123,6 @@ describe("Codex model picker", () => {
         strong: { model, variant: "max" },
         standard: { model, variant: "max" },
         cheap: { model, variant: "max" },
-        overrides: {
-          implementer: { model: "gpt-5.6-luna", variant: "max" },
-          tester: { model: "gpt-5.6-luna", variant: "max" },
-          "silent-failure-hunter": { model: "gpt-5.6-sol", variant: "medium" },
-        },
       });
     });
   });

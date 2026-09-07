@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Read-only code reviewer. Use it AFTER writing or changing code to review against the project guidelines, catch real bugs and flag quality issues. Reviews git diff by default and reports issues with confidence scores. Returns review feedback only — never writes or fixes code. Not for implementing features or refactors, and not for readability/style simplifications (that's code-simplifier).
 mode: subagent
-tier: strong
+tier: standard
 readonly: true
 bash: git-read
 ---

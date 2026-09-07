@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
-import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
+import { loadCanonicalAgents, loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
@@ -99,17 +99,19 @@ describe("codexAdapter.renderAgent", () => {
 
   it("projects the approved model and effort for every Codex subagent role", () => {
     const expected = [
-      ["code-reviewer", "strong", "gpt-6-astra", "max"],
-      ["security-auditor", "strong", "gpt-6-astra", "max"],
-      ["codebase-analyst", "standard", "gpt-5.6-sol", "medium"],
-      ["silent-failure-hunter", "strong", "gpt-5.6-sol", "medium"],
+      ["code-reviewer", "standard", "gpt-5.6-luna", "max"],
+      ["security-auditor", "strong", "gpt-6-astra", "low"],
+      ["codebase-analyst", "standard", "gpt-5.6-luna", "max"],
+      ["silent-failure-hunter", "strong", "gpt-6-astra", "low"],
       ["implementer", "standard", "gpt-5.6-luna", "max"],
       ["tester", "standard", "gpt-5.6-luna", "max"],
       ["docs-maintainer", "cheap", "gpt-5.6-luna", "medium"],
     ] as const;
 
     for (const [name, tier, model, effort] of expected) {
-      const [rendered] = codexAdapter.renderAgent(agent({ name, tier }), DEFAULT_MODEL_MAP.codex);
+      const canonical = loadCanonicalAgents(path.join(stackRoot(), "agents")).find((candidate) => candidate.name === name);
+      expect(canonical?.tier).toBe(tier);
+      const [rendered] = codexAdapter.renderAgent(canonical!, DEFAULT_MODEL_MAP.codex);
       expect(rendered!.content).toContain(`model = "${model}"`);
       expect(rendered!.content).toContain(`model_reasoning_effort = "${effort}"`);
     }
