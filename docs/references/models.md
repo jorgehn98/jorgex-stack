@@ -85,8 +85,8 @@ primary heredado permanece intacto.
 | `standard` | `gpt-5.6-sol` | `medium` |
 | `cheap` | `gpt-5.6-luna` | `medium` |
 
-El tier `standard` incluye, entre otros, `backend-analyst` y
-`frontend-analyst`. `code-reviewer` y `security-auditor` reciben Astra/max por
+El tier `standard` incluye, entre otros, `codebase-analyst`. `code-reviewer` y
+`security-auditor` reciben Astra/max por
 herencia del tier `strong`, no mediante dos overrides nominales. Los tres
 overrides nominales son `gpt-5.6-luna/max` para `implementer` y `tester`, y
 `gpt-5.6-sol/medium` para `silent-failure-hunter`.

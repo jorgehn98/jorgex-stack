@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 15 agents, 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
+Portable multi-agent harness: one configuration source — 14 agents, 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
@@ -105,6 +105,8 @@ Programmatic mode does **not** provide:
 - Telemetry, JSONL streams, or runtime token-budget enforcement.
 
 ### Pi runtime
+
+El canon de Stack de este checkout contiene 14 agentes; el pin Pi vigente conserva temporalmente la snapshot empaquetada anterior de 15 agentes. Este checkpoint no cambia ese pin ni anticipa una nueva publicación.
 
 Pi combines the frozen **snapshot v2** package with a Stack-owned shared projection. The published Stack `1.9.7` recognizes the exact package **`jorgex-pi@0.8.4`**. Pi `0.8.5` is published independently; this checkout keeps the Stack `1.9.7` baseline with the Pi `0.8.5` candidate pin. On merge, Stack is expected to auto-bump to `1.9.8` and publish without waiting 24 hours.
 

@@ -6,8 +6,8 @@ Fecha de consolidación: 2026-09-06.
 
 Los defaults de Codex reservan `gpt-6-astra/max` para `strong`,
 `gpt-5.6-sol/medium` para `standard` y `gpt-5.6-luna/medium` para `cheap`.
-El tier `standard` incluye, entre otros, `backend-analyst` y
-`frontend-analyst`. `code-reviewer` y `security-auditor` reciben Astra/max por
+El tier `standard` incluye, entre otros, `codebase-analyst`. `code-reviewer` y
+`security-auditor` reciben Astra/max por
 el tier `strong`, no como dos overrides nominales. Los tres overrides nominales son
 `gpt-5.6-luna/max` para `implementer` y `tester`, y `gpt-5.6-sol/medium` para
 `silent-failure-hunter`. La selección por roles es una inferencia de ingeniería
