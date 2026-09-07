@@ -101,7 +101,7 @@ describe("codexAdapter.renderAgent", () => {
     const expected = [
       ["code-reviewer", "strong", "gpt-6-astra", "max"],
       ["security-auditor", "strong", "gpt-6-astra", "max"],
-      ["backend-analyst", "standard", "gpt-5.6-sol", "medium"],
+      ["codebase-analyst", "standard", "gpt-5.6-sol", "medium"],
       ["silent-failure-hunter", "strong", "gpt-5.6-sol", "medium"],
       ["implementer", "standard", "gpt-5.6-luna", "max"],
       ["tester", "standard", "gpt-5.6-luna", "max"],

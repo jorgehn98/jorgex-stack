@@ -40,9 +40,10 @@ All subagents are CONDITIONAL and read-only. Launch one only when the scope indi
 Subagents and their triggers:
 
 1. Task(subagent_type='code-simplifier') — always; this is the lean/anti-bloat pass
-2. Task(subagent_type='backend-analyst') — if the scope includes backend, DB, APIs, server logic, or data flows
-3. Task(subagent_type='frontend-analyst') — if the scope includes UI, hooks, state, rendering, or client-side flows
-4. Task(subagent_type='type-design-analyzer') — if the scope changes types, interfaces, schemas, or contracts
+2. Task(subagent_type='codebase-analyst') — only when a concrete question about modules, consumers, UI or data flows needs evidence within the audit scope; pass that question and the relevant paths, not a full-stack checklist
+3. Task(subagent_type='type-design-analyzer') — only when the audit scope presents a concrete invariant question or risk (states, field relationships, mutation or boundary validation); the mere presence of types or interfaces is not a trigger, and this repo/path audit does not require a diff
+
+Use separate `codebase-analyst` instances only for independent questions with distinct scopes, not merely because both frontend and backend exist.
 
 If none of a subagent's triggers are present, skip it and note that it was skipped. Always state which subagents ran and which were skipped and why.
 

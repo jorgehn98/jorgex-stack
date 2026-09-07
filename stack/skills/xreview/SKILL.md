@@ -75,7 +75,7 @@ Subagents and their triggers:
 
 1. `test-analyzer` — only if the diff touches tests or code that should be tested
 2. `silent-failure-hunter` — only if the diff includes error handling, try/catch, fallbacks, or async flows
-3. `type-design-analyzer` — only if the diff changes types, interfaces, schemas, or public contracts
+3. `type-design-analyzer` — only if the diff introduces or changes a meaningful invariant in states, field relationships, mutation or public/boundary contracts; a trivial type/interface addition or mechanical rename alone is not a trigger
 4. `code-reviewer` — for general code quality whenever non-trivial source code changed
 5. `code-simplifier` — only if the diff introduces complexity worth simplifying; this is the lean/anti-bloat pass for diffs and PRs
 6. `security-auditor` — only if the diff touches auth, authorization, permissions, secrets/credentials, sensitive data, input validation, webhooks, or other security-critical flows
