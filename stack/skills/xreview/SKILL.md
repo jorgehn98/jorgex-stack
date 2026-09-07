@@ -88,10 +88,11 @@ If none of a subagent's triggers are present, skip it and note that it was skipp
 
 After the relevant subagents complete, synthesize their findings into a unified report. Use 4R internally (Reliability / Resilience / Readability / Risk) as a checklist while synthesizing; do not add a separate 4R section or taxonomy to the final report.
 
-Reconcile duplicates and verify disputed premises before creating work. Distinguish a missed bug, a regression introduced by a fix and an optional suggestion. A new valid finding still needs triage; being new is not a reason to discard it. Record justified rejection of false positives, not backlog entries for them. Only valid work deliberately deferred belongs in the existing backlog, using its single-writer protocol.
+Reconcile duplicates and verify disputed premises before creating work. Distinguish a missed bug, a regression introduced by a fix and an optional suggestion. Apply the orchestrator's [substantial simplifications gate](../orchestrator/SKILL.md#substantial-simplifications): report validated substantial simplifications as required before ready or closure, even without a functional bug, not as nice-to-have suggestions. This classification does not authorize a read-only reviewer to edit code. A new valid finding still needs triage; being new is not a reason to discard it. Record justified rejection of false positives, not backlog entries for them. Only valid work deliberately deferred belongs in the existing backlog, using its single-writer protocol and the gate's approval requirement.
 
 - Review scope used (BASE/HEAD or working diff) and how it was chosen
 - Subagents run vs skipped (with reason)
+- Substantial Simplifications (required before ready/closure unless explicitly deferred by the user); the following three levels cover the remaining findings
 - Critical Issues (must fix)
 - Important Improvements (should fix)
 - Suggestions (nice to have)

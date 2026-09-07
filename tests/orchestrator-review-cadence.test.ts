@@ -66,6 +66,42 @@ describe("orchestrator review cadence", () => {
     expect(retries).toMatch(/new valid bugs.+triage.+never authorizes ignoring blockers/i);
   });
 
+  it("requires validated substantial simplifications before readiness", () => {
+    const simplifications = sectionBetween(
+      body,
+      "### Substantial simplifications",
+      "### Final review and PR lifecycle",
+    );
+
+    expect(simplifications).toMatch(
+      /substantial simplification demonstrably removes significant structural or cognitive complexity/i,
+    );
+    expect(simplifications).toMatch(/not.+(?:line count|style)/is);
+    expect(simplifications).toMatch(/coordinator validates/i);
+    const coordinatorValidation =
+      simplifications.match(/[^\n.]*coordinator[^\n.]*(?:\.|$)/i)?.[0] ?? "";
+    expect(coordinatorValidation).toMatch(/evidence/i);
+    expect(coordinatorValidation).toMatch(/behavior preservation/i);
+    expect(coordinatorValidation).toMatch(/approved scope/i);
+    expect(coordinatorValidation).toMatch(/risk/i);
+    expect(simplifications).toMatch(
+      /validated substantial simplifications within approved scope are required work.+implement and verify.+before ready or closure/is,
+    );
+    expect(simplifications).toMatch(
+      /do not downgrade.+optional suggestions.+defer.+backlog.+unilaterally/is,
+    );
+    expect(simplifications).toMatch(/expanded scope/i);
+    expect(simplifications).toMatch(/unverified behavior preservation/i);
+    expect(simplifications).toMatch(/unresolved risk/i);
+    expect(simplifications).toMatch(/explicit user decision/i);
+    expect(simplifications).toMatch(/keep the unresolved gate visible/i);
+    expect(simplifications).toMatch(/optional.+suggestions.+non-blocking/is);
+    expect(simplifications).toMatch(/simplifier stays read-only/i);
+    expect(simplifications).toMatch(
+      /standalone read-only audit.+does not authorize implementation/is,
+    );
+  });
+
   it("puts real irreversible effects behind the focused preflight", () => {
     const preflight = sectionBetween(body, "### External-effect preflight", "### Useful progress");
 
