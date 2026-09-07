@@ -2,6 +2,8 @@
 
 Una sola fuente por agente. El instalador los traduce al formato de cada runtime (PRD §6): Markdown+frontmatter para Claude Code y OpenCode, TOML para Codex. El workflow completo del orchestrator vive únicamente en `skills/orchestrator/SKILL.md`; el agente primary es un wrapper corto que obliga a cargar esa skill.
 
+`codebase-analyst` es el único explorador general: recibe una pregunta y un alcance, y activa solo las comprobaciones de UI/renderizado o de servicios/datos que hagan falta. `type-design-analyzer` se reserva para una garantía relevante o una pregunta explícita de invariantes; añadir o renombrar un tipo trivial no lo activa.
+
 ## Frontmatter canónico
 
 | Campo | Valores | Significado |

@@ -827,6 +827,10 @@ describe("lean integration: prompt wiring", () => {
 
     expect(content).toMatch(/explicit repo\/path audit targets its type\/interface\/schema\/contract definitions, not a default diff/i);
     expect(content).toMatch(/primary definitions and only the supporting usages needed for their invariants/i);
+    expect(content).toMatch(/failure path/i);
+    expect(content).toMatch(/static types do not validate external data/i);
+    expect(content).toMatch(/data-only structures and separate functions/i);
+    expect(content).not.toMatch(/Rate 1-10|### Ratings|Anemic domain models with no behavior/);
   });
 });
 

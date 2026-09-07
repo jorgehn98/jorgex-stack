@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OPEN_CODE_TEST_MODELS } from "./fixtures/model-map.js";
+import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -74,6 +74,77 @@ afterEach(() => {
 });
 
 describe("target inventory regressions", () => {
+  it.each(["opencode", "codex", "claude-code"] as const)(
+    "%s replaces manifest-owned analysts with codebase-analyst, preserving foreign files and idempotency",
+    async (runtime) => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-analyst-upgrade-"));
+      const homeDir = path.join(tmp, "home");
+      const configDir = path.join(homeDir, `.${runtime}`);
+      const extension = runtime === "codex" ? "toml" : "md";
+      const retired = ["backend-analyst", "frontend-analyst"].map((name) =>
+        path.join(configDir, "agents", `${name}.${extension}`));
+      const foreign = path.join(configDir, "agents", "personal", `backend-analyst.${extension}`);
+      const replacement = path.join(configDir, "agents", `codebase-analyst.${extension}`);
+
+      try {
+        await withTempHome(homeDir, async () => {
+          mocks.modelMapOverride = TEST_MODEL_MAP;
+          mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+          mocks.runDetectedBin.mockReturnValue("1.2.3");
+          for (const file of [...retired, foreign]) {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, `user content: ${path.basename(file)}\n`);
+          }
+          const { listBackups } = await import("../src/lib/backup.js");
+          const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+          writeRuntimeManifest(runtime, { configDir, owned: retired, updatedAt: "legacy" });
+          const { ADAPTERS, runInstall } = await import("../src/install.js");
+          const originals = Object.values(ADAPTERS).map((adapter) => ({ adapter, detect: adapter.detect }));
+          for (const { adapter } of originals) {
+            adapter.detect = () => ({
+              id: adapter.id, name: adapter.name, installed: adapter.id === runtime, binPath: null,
+              configDir: path.join(homeDir, `.${adapter.id}`),
+            });
+          }
+
+          try {
+            const options = {
+              runtimes: [runtime], dryRun: false, yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+            } as const;
+            const install = () => runInstall({ ...options, runtimes: [runtime] });
+            await expect(install()).resolves.toBe(0);
+            expect(fs.existsSync(replacement)).toBe(true);
+            const ownership = readManifest().runtimes[runtime]?.owned ?? [];
+            expect(ownership).toContain(replacement);
+            for (const file of retired) {
+              expect(fs.existsSync(file), file).toBe(false);
+              expect(ownership).not.toContain(file);
+              const backup = listBackups().flatMap((entry) => entry.files).find((entry) => entry.original === file);
+              expect(backup, file).toBeDefined();
+              expect(fs.readFileSync(backup!.stored, "utf8")).toBe(`user content: ${path.basename(file)}\n`);
+            }
+            expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
+            expect(ownership).not.toContain(foreign);
+            const payload = fs.readFileSync(replacement);
+            const backupIds = listBackups().map((entry) => entry.id);
+            mocks.prompts.log.success.mockClear();
+            await expect(install()).resolves.toBe(0);
+            expect(fs.readFileSync(replacement)).toEqual(payload);
+            expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
+            for (const file of retired) expect(fs.existsSync(file)).toBe(false);
+            expect(listBackups().map((entry) => entry.id)).toEqual(backupIds);
+            expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
+          } finally {
+            for (const { adapter, detect } of originals) adapter.detect = detect;
+          }
+        });
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("fresh OpenCode install omits Goal Mode while retaining active plugins", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-goal-removal-fresh-"));
     const homeDir = path.join(tmp, "home");
@@ -437,7 +508,7 @@ describe("target inventory regressions", () => {
     const homeDir = path.join(tmp, "home");
     const configDir = path.join(homeDir, ".opencode");
     const previousOwned = path.join(configDir, "legacy", "orphan.txt");
-    const currentOwned = path.join(configDir, "agents", "backend-analyst.md");
+    const currentOwned = path.join(configDir, "agents", "codebase-analyst.md");
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");

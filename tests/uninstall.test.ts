@@ -156,11 +156,11 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
   });
 });
 
-describe("paridad entre adapters (los 15 agentes canónicos reales)", () => {
+describe("paridad entre adapters (los 14 agentes canónicos reales)", () => {
   const agents = loadCanonicalAgents(path.join(stackRoot(), "agents"));
 
-  it("hay 15 agentes canónicos (1 primary + 14 subagentes)", () => {
-    expect(agents).toHaveLength(15);
+  it("hay 14 agentes canónicos (1 primary + 13 subagentes)", () => {
+    expect(agents).toHaveLength(14);
     expect(agents.filter((a) => a.mode === "primary")).toHaveLength(1);
   });
 

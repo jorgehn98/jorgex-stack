@@ -372,15 +372,22 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(documentation).toMatch(/Update docs when changed use, contracts or operations need explanation[\s\S]{0,140}not for every internal edit/i);
   });
 
-  it.each(["human", "programmatic"] as const)("proyecta íntegro el contrato de análisis F2-B en el payload %s", (mode) => {
+  it.each(["human", "programmatic"] as const)("proyecta el analista unificado y su contrato de evidencia en %s", (mode) => {
     const { ctx, actions } = plan(mode);
-
-    for (const name of ["backend-analyst", "frontend-analyst"]) {
-      const agent = loadCanonicalAgents(path.join(stackDir, "agents")).find((candidate) => candidate.name === name);
-      expect(agent, `falta el agente canónico ${name}`).toBeDefined();
-      const outputFormat = sectionBetween(agent!.body, "## Output format", "## Result contract").trim();
-
-      expect(plannedAgentContent(actions, adapter, ctx, name)).toContain(outputFormat);
+    const agents = loadCanonicalAgents(path.join(stackDir, "agents"));
+    const agent = agents.find((candidate) => candidate.name === "codebase-analyst");
+    expect(agent).toMatchObject({ mode: "subagent", tier: "standard", readonly: true, bash: "git-read" });
+    expect(agents.map((candidate) => candidate.name)).not.toContain("backend-analyst");
+    expect(agents.map((candidate) => candidate.name)).not.toContain("frontend-analyst");
+    const payload = plannedAgentContent(actions, adapter, ctx, "codebase-analyst");
+    const outputFormat = sectionBetween(agent!.body, "## Output format", "## Result contract").trim();
+    expect(payload).toContain(outputFormat);
+    const domainChecks = sectionBetween(agent!.body, "## Domain checks", "## Output format").trim();
+    expect(payload).toContain(domainChecks);
+    expect(domainChecks).toContain("DESIGN.md");
+    expect(domainChecks).toContain("supabase-postgres-best-practices");
+    for (const action of actions) {
+      expect(path.basename(action.target)).not.toMatch(/^(backend|frontend)-analyst\.(md|toml)$/);
     }
   });
 

@@ -4,6 +4,8 @@ JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exa
 
 Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. La identidad, procedencia y digests del pin vigente son autoritativos en `src/lib/pi-runtime-pin.json`; `src/lib/pi-runtime.ts` es la autoridad del lifecycle y sus contratos. El lector `.github/scripts/pi-pin.mjs` valida ese JSON y el workflow recibe de él la URL y el tamaño mediante variables de entorno. La publicación de Stack usa el auto-bump existente al mergear y selecciona el patch disponible; el número final se resuelve en el registro.
 
+Durante la consolidación de analistas, el canon de Stack de este checkout contiene 14 agentes (primary y 13 subagentes), mientras el pin Pi vigente conserva la snapshot empaquetada anterior de 15 agentes. Esta diferencia es transitoria: este checkpoint no cambia el pin ni afirma una paridad Pi nueva; la adopción se documenta solo cuando exista un artefacto publicado y verificado.
+
 ## Paquete e integridad
 
 El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. Para el pin vigente, consulta `src/lib/pi-runtime-pin.json`: contiene nombre, versión, `source`, commit de procedencia, tamaño y SHA-256/SHA-512. La URL pública se deriva de la versión por `.github/scripts/pi-pin.mjs`; no se duplican aquí valores que cambian en cada adopción.

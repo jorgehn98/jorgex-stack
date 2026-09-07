@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 15 agents, 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
+Portable multi-agent harness: one configuration source — 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
@@ -106,9 +106,11 @@ Programmatic mode does **not** provide:
 
 ### Pi runtime
 
-Pi combines the frozen **snapshot v2** package with a Stack-owned shared projection. The published Stack `1.9.7` recognizes the exact package **`jorgex-pi@0.8.4`**. Pi `0.8.5` is published independently; this checkout keeps the Stack `1.9.7` baseline with the Pi `0.8.5` candidate pin. On merge, Stack is expected to auto-bump to `1.9.8` and publish without waiting 24 hours.
+El canon de Stack de este checkout contiene 14 agentes; el pin Pi vigente conserva temporalmente la snapshot empaquetada anterior de 15 agentes. Este checkpoint no cambia ese pin ni anticipa una nueva publicación.
 
-The current published command set uses Stack `1.9.7` with Pi `0.8.4`:
+Pi combines the frozen **snapshot v2** package with a Stack-owned shared projection. The following version references describe a historical Stack/Pi transition, not the current pin: Stack `1.9.7` recognized **`jorgex-pi@0.8.4`**, while Pi `0.8.5` was a separately published candidate. The current pin, package integrity and lifecycle are maintained in [docs/references/pi-runtime.md](docs/references/pi-runtime.md); this README does not predict a future release.
+
+The following command block is retained as historical reference for that transition:
 
 ```bash
 pnpm dlx jorgex-stack@1.9.7 install --agents pi
@@ -132,7 +134,7 @@ The package owns Pi's native primary-model projection: `openai-codex/gpt-5.6-sol
 
 Engram remains mandatory and user-owned. An existing binary is preserved. Interactive install may offer the native `brew`/`go`/release channel with explicit confirmation; `--yes` and non-TTY installs fail with a remedy when Engram is absent. The database and memories are never updated or deleted, and uninstall never deletes the Engram binary. Under `--target-dir`, Stack accepts only `<target>/bin/engram`, isolates Pi/Home/XDG/AppData/temp/npm-cache paths inside the target, and never consults the host Engram or Pi configuration.
 
-The published Stack `1.9.7` recognizes the exact Pi receipt `npm:jorgex-pi@0.8.4`. Use exact versions, never `latest`, and never edit receipts or hashes or delete `HOME`, Engram, or another runtime's projection to force trust. The transition and rollback commands are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
+Históricamente, Stack `1.9.7` reconocía el receipt exacto de Pi `npm:jorgex-pi@0.8.4`. Usa versiones exactas, nunca `latest`, y no edites receipts o hashes ni borres `HOME`, Engram o la proyección de otro runtime para forzar confianza. El pin y los comandos actuales de transición y rollback están en [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
 The 24-hour managed-consumption maturity rule applies only to real installation or consumption of the new Pi package; development, PR validation, merge and Stack publication may proceed immediately. Installing it on a real user scope before the maturity window requires Jorge's explicit exception.
 

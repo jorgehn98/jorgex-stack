@@ -26,15 +26,14 @@ Importante sobre el mecanismo:
 | `tester` | decide/escribe/ejecuta tests según riesgo | hay que decidir la protección adecuada, falta un test valioso, hay tests rotos por un cambio de contrato, o hay que verificar comportamiento |
 | `translator` | traducciones, locales, multiidioma | strings hardcodeadas visibles, locales desincronizados, copy en varios idiomas |
 | `docs-maintainer` | documentación (/docs y docs site público) | el cambio deja docs desactualizadas o requiere nueva documentación |
-| `backend-analyst` | análisis backend (read-only) | hace falta mapear servicios, DB, APIs o riesgos backend antes de actuar |
-| `frontend-analyst` | análisis frontend (read-only) | hace falta mapear componentes, estado, rendering o riesgos de UI antes de actuar |
+| `codebase-analyst` | exploración de código y flujos (read-only) | una pregunta concreta exige mapear módulos, consumidores, UI o datos antes de actuar o en un audit explícito; solo los dominios necesarios |
 | `security-auditor` | seguridad y privacidad (read-only) | auth, permisos, secretos, datos sensibles, validación de input, webhooks |
 | `code-reviewer` | calidad de código vs guías (read-only) | hace falta revisar el diff contra las reglas del proyecto y detectar bugs |
 | `code-simplifier` | simplificación (read-only, propone) | el código introduce complejidad que merece simplificarse |
 | `silent-failure-hunter` | manejo de errores (read-only) | hay try/catch, fallbacks, errores silenciados o flujos async que auditar |
 | `comment-fixer` | comentarios (escribe SOLO comentarios, los corrige directamente) | hay comentarios/docstrings nuevos o cambiados que corregir |
 | `test-analyzer` | cobertura de tests (read-only) | hay que evaluar si los tests cubren bien lo cambiado (analiza, NO escribe) |
-| `type-design-analyzer` | diseño de tipos/invariantes (read-only) | cambian tipos, interfaces, schemas o contratos públicos |
+| `type-design-analyzer` | tipos/invariantes (read-only) | cambia una garantía relevante de estados, campos, mutación o contratos; en audit explícito, hay una pregunta/riesgo concreto de invariantes, no basta con que existan tipos |
 | `engram` | lectura de memoria (read-only) | hace falta recuperar contexto, decisiones o trabajo previo de memoria |
 
 Nota: `test-analyzer` analiza cobertura pero no escribe tests; escribir los tests recomendados es de `tester`.

@@ -22,9 +22,10 @@ The human drives the flow UP TO the plan: the idea, PRD and plan review are inte
 
 Follow [Decision before delegation](../SKILL.md#decision-before-delegation): reuse verified context and involve an analyst only where material uncertainty needs new evidence. Choose the specialist for that question, rather than launching one merely because an area is touched:
 
-- `backend-analyst` if it affects backend, DB, APIs or server functions
-- `frontend-analyst` if it affects UI, hooks, state or rendering
+- `codebase-analyst` for a concrete question about modules, consumers, UI or data flows; assign only the paths and domain checks needed to resolve it
 - `security-auditor` if the area is sensitive
+
+Independent questions may use separate instances of `codebase-analyst` with distinct scopes; touching frontend and backend does not by itself require two analyses or a full-stack audit.
 
 ## 3. SPEC
 
