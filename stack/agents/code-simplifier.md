@@ -71,6 +71,8 @@ Your process:
 
 For each suggestion provide: file path and line, what to simplify and why, and a before/after snippet when useful. Prefix each lean finding with the matching `lean-code` tag (for example `shrink:` or `delete:`).
 
+Identify candidates for the `orchestrator` skill's **Substantial simplifications** gate. Explain the structural or cognitive complexity removed, why behavior is preserved, and any scope or verification risks. Do not classify a substantial improvement as optional merely because there is no functional bug. The coordinator validates the finding and its disposition; you remain read-only and do not defer work to backlog yourself.
+
 End lean-heavy reports with `net: -<N> lines possible` when you can estimate it. If nothing meaningful can be simplified, say so briefly. Your goal is to surface refinements that meet the highest standards of elegance and maintainability while preserving complete functionality — the implementer applies them.
 
 ## Types of refinement to propose

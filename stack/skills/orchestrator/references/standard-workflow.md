@@ -158,7 +158,7 @@ An early review during EXECUTE is an **exception**, not a default phase. Use it 
 When the current checkpoint's planned work is applied and VERIFY passes:
 
 1. Confirm the draft PR exists, the worktree is clean, and the draft head matches the local HEAD. Complete any necessary documentation under the common rule and inspect the consolidated final diff against the PR's real base; do not publish intermediate behavior with required documentation missing.
-2. Apply **Final review and PR lifecycle** in the entry [SKILL.md](../SKILL.md) and the project's review requirements. Reuse valid prior review evidence; choosing standard does not require another panel. Process the review findings by their three levels:
+2. Apply **Final review and PR lifecycle** in the entry [SKILL.md](../SKILL.md) and the project's review requirements. Reuse valid prior review evidence; choosing standard does not require another panel. Apply the [substantial simplifications gate](../SKILL.md#substantial-simplifications) first: required simplifications are not discretionary improvements or nice-to-have suggestions. Process the remaining review findings by their three levels:
    - **Critical Issues (must fix)**: apply ALL of them — the PR must not reach merge with these open.
    - **Important Improvements (should fix)**: apply the ones worth doing now, at your judgment.
    - **Suggestions (nice to have)**: apply only if trivial and safe.
