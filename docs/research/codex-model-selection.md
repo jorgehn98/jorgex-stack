@@ -4,26 +4,28 @@ Fecha de consolidación: 2026-09-06.
 
 ## Decisión
 
-Los defaults de Codex reservan `gpt-6-astra/max` para `strong`,
-`gpt-5.6-sol/medium` para `standard` y `gpt-5.6-luna/medium` para `cheap`.
-El tier `standard` incluye, entre otros, `codebase-analyst`. `code-reviewer` y
-`security-auditor` reciben Astra/max por
-el tier `strong`, no como dos overrides nominales. Los tres overrides nominales son
-`gpt-5.6-luna/max` para `implementer` y `tester`, y `gpt-5.6-sol/medium` para
-`silent-failure-hunter`. La selección por roles es una inferencia de ingeniería
+Los defaults de Codex reservan `gpt-6-astra/low` para `strong`,
+`gpt-5.6-luna/max` para `standard` y `gpt-5.6-luna/medium` para `cheap`.
+El tier `standard` incluye, entre otros, `codebase-analyst`. En Codex,
+`code-reviewer` pertenece ahora al tier canónico `standard` y recibe
+`gpt-5.6-luna/max`; `security-auditor` y `silent-failure-hunter` son los
+subagentes que permanecen en `strong` y heredan Astra/low. Codex no tiene
+overrides nominales por defecto. La selección por roles es una inferencia de ingeniería
 para este mapa; no es un resultado garantizado por los benchmarks.
 
 En un mapa nuevo o cuando falta el mapa del runtime se siembran los tres
-defaults y los tres overrides aprobados. En un mapa guardado, los tiers
-existentes y sus overrides permanecen intactos; los tiers que falten siguen
-heredando defaults, sin inyectar nuevas elecciones guardadas. El primary
+defaults, sin overrides nominales. En un mapa guardado no se reescriben los
+tiers ni los overrides guardados; un agente sin override resuelve, no obstante,
+el tier canónico que tenga actualmente, por lo que su modelo efectivo puede
+cambiar. El primary
 heredado y las elecciones de OpenCode y Claude Code quedan fuera de esta
 decisión. El código de Pi está inspeccionado: el contexto de
 `pi-projection-lifecycle` contiene una entrada dummy de Codex en `models`, pero
 los componentes usados no leen el model-map de Stack. Si se quiere
 cambiar Codex de forma voluntaria, se usa el mecanismo existente por tier o
 agente (`jorgex-stack models --agents codex`), sin asumir que `sync`
-sobrescribe elecciones.
+sobrescribe elecciones. Los cambios de tier canónico requieren sincronizar la
+snapshot/paridad de Pi desde el commit de Stack ya fusionado.
 
 El picker de Codex pregunta primero el modelo y después el effort. El `max`
 nuevo solo se ofrece para Astra y la familia 5.6; los modelos legacy,
@@ -64,6 +66,9 @@ Fuentes primarias y metodología:
 - [Benchmark de GPT-6 Astra](https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra)
 - [Referencia oficial de GPT-6 Astra en OpenAI](https://developers.openai.com/api/docs/models/gpt-6-astra)
 - [Precios oficiales de ChatGPT](https://learn.chatgpt.com/docs/pricing)
+
+La fila de Astra/`max` en la tabla corresponde al benchmark conservado; el
+default actual de los subagentes Astra es `low`.
 
 Los índices y costes anteriores son una señal comparativa para distribuir
 roles, no una promesa de calidad, velocidad o precio exactos en cada cuenta.

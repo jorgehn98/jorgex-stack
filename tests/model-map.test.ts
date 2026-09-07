@@ -14,14 +14,9 @@ import { DEFAULT_MODEL_MAP, loadModelMap } from "../src/lib/model-map.js";
 import { CODEX_MODELS } from "../src/models-picker.js";
 
 const FRESH_CODEX_DEFAULTS = {
-  strong: { model: "gpt-6-astra", variant: "max" },
-  standard: { model: "gpt-5.6-sol", variant: "medium" },
+  strong: { model: "gpt-6-astra", variant: "low" },
+  standard: { model: "gpt-5.6-luna", variant: "max" },
   cheap: { model: "gpt-5.6-luna", variant: "medium" },
-  overrides: {
-    implementer: { model: "gpt-5.6-luna", variant: "max" },
-    tester: { model: "gpt-5.6-luna", variant: "max" },
-    "silent-failure-hunter": { model: "gpt-5.6-sol", variant: "medium" },
-  },
 };
 
 afterEach(() => {
