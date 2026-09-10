@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 type Operation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type ProjectionOperation = Exclude<Operation, "models" | "update">;
@@ -47,6 +47,16 @@ type PiManagedRuntime = {
   ): Promise<ManagedResult>;
 };
 
+type PiManagedSystem = {
+  runManagedPiSystem(input: {
+    operation: Operation;
+    targetDir?: string;
+    detected: { executable: string; version: string };
+    engramBin: string | null;
+    devtoolsMcpEnabled?: boolean;
+  }): Promise<unknown>;
+};
+
 async function managedRuntime(): Promise<PiManagedRuntime> {
   const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as Partial<PiManagedRuntime>;
   expect(mod.runManagedPiOperation).toBeTypeOf("function");
@@ -85,6 +95,97 @@ function withUninstallLifecycle(
 }
 
 describe("Pi managed package and projection coordination", () => {
+  it("forwards the explicit DevTools choice through package and projection wrappers", async () => {
+    const packageInputs: unknown[] = [];
+    const projectionInputs: unknown[] = [];
+    const devtoolsPreferenceFile = "/isolated/state/devtools-mcp.json";
+    const loadDevtoolsMcpPreference = vi.fn(() => false);
+    const saveDevtoolsMcpPreference = vi.fn();
+    const runPiRuntimeSystem = vi.fn(async (input: unknown): Promise<{ kind: string; reason?: string }> => {
+      packageInputs.push(input);
+      return { kind: "installed" };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "installed" };
+    });
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: { package: { source: "npm:jorgex-pi@test" } },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      devtoolsMcpPreferenceFile: vi.fn(() => devtoolsPreferenceFile),
+      loadDevtoolsMcpPreference,
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        devtoolsMcpEnabled: true,
+      });
+
+      expect(result).toEqual({ kind: "installed" });
+      expect(packageInputs).toEqual([expect.objectContaining({
+        operation: "install",
+      })]);
+      expect(packageInputs[0]).not.toHaveProperty("devtoolsMcpEnabled");
+      expect(projectionInputs).toEqual([expect.objectContaining({
+        operation: "install",
+        devtoolsMcpEnabled: true,
+      })]);
+
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", true);
+
+      await mod.runManagedPiSystem({
+        operation: "sync",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        devtoolsMcpEnabled: false,
+      });
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", false);
+
+      await mod.runManagedPiSystem({
+        operation: "install",
+        targetDir: "/isolated/target",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        devtoolsMcpEnabled: true,
+      });
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
+      expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
+
+      runPiRuntimeSystem.mockResolvedValueOnce({ kind: "blocked", reason: "runner-unhealthy" });
+      await mod.runManagedPiSystem({
+        operation: "sync",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        devtoolsMcpEnabled: true,
+      });
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
   it.each([
     ["models", "models", undefined],
     ["install", "install", "install"],

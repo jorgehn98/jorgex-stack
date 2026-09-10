@@ -58,7 +58,7 @@ La proyección se ejecuta después de la instalación del paquete y se registra 
 | Skills compartidas | `~/.agents/skills` | Stack; se conservan si también las usa otro runtime |
 | Prompt | `~/.pi/agent/prompts/lean-audit.md` | Stack |
 
-La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. Chrome DevTools MCP sigue fuera del selector y de la proyección actual de Stack; el handoff validado descrito para una adopción futura es una implementación propuesta y el candidato Pi `0.8.12` actual todavía no lo soporta. Context7 sigue fuera de este scope.
+La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. El paquete adoptado `jorgex-pi@0.8.13` permite activar Chrome DevTools MCP con `--devtools`; Stack proyecta el handoff fijo en `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json` y guarda su SHA-256 en el campo opcional `devtools.sha256` del receipt de proyección. `--no-devtools` lo retira tras revalidar integridad. El servidor se registra como proxy lazy (`directTools: false`), por lo que Pi no precarga el catálogo completo de herramientas. Un conflicto o archivo ajeno bloquea y conserva el estado. El cambio requiere recargar Pi para que el bootstrap cree la sesión con la nueva configuración. Context7 sigue fuera de este scope.
 
 En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
 
@@ -78,7 +78,7 @@ node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--app
 
 `--pi-dir` apunta a un checkout Git separado de Pi. El preparador lee ese repositorio: exige el tag `vEXACT`, su ascendencia en `origin/main` y la de la procedencia actual, y compara contratos publicados y vigentes. La versión debe ser exacta, estar publicada en npm y ser compatible; una incompatibilidad requiere revisión manual y no se resuelve retocando fixtures o goldens.
 
-El modo por defecto y `--apply` exigen Stack limpio, en rama de trabajo o detached y sin índices enmascarados (`assume-unchanged` o `skip-worktree`). Para una versión nueva, incluso el dry-run descarga y verifica el tarball mediante SRI, SHA-256/SHA-512, inventario y contratos, pero no ejecuta Pi, publica, crea PR ni configura App. `--apply` actualiza solo el pin y `tests/fixtures/pi-runtime-artifacts.json` con rollback ante errores; la metadata de la fixture sigue independiente y `src/lib/pi-runtime.ts` intacto.
+El modo por defecto y `--apply` exigen Stack limpio, en rama de trabajo o detached y sin índices enmascarados (`assume-unchanged` o `skip-worktree`). Para una versión nueva, incluso el dry-run descarga y verifica el tarball mediante SRI, SHA-256/SHA-512, inventario y contratos, pero no ejecuta Pi, publica, crea PR ni configura App. `--apply` actualiza solo el pin y `tests/fixtures/pi-runtime-artifacts.json` con rollback ante errores; la metadata de la fixture sigue independiente y `src/lib/pi-runtime.ts` intacto. El flag mantenedor `--accept-devtools-handoff` solo acepta la capability cuando coinciden exactamente la capability y la exclusión anterior; no valida un handoff vivo ni es un bypass de integridad. Úsalo junto con `--pi-dir ABS --version EXACT [--apply]`.
 
 Una versión igual o anterior al pin actual produce `unchanged` sin tocar Pi ni preparar archivos. Si falla la escritura, el preparador intenta restaurar los JSON; si no puede completar el rollback, conserva los backups y comunica su ruta para recuperación manual. Esto es distinto del rollback de una instalación: usa una versión publicada de Stack que reconozca el receipt presente y sigue el procedimiento de esta referencia, sin editar receipts, hashes ni estado del usuario.
 
@@ -129,7 +129,7 @@ pnpm dlx jorgex-stack@1.9.6 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
-La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni release. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
+La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni release. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge. El preparador no actualiza transparentemente receipts antiguos: cada transición debe usar la versión exacta que reconoce el receipt presente.
 
 ## Engram
 

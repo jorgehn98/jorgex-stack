@@ -6,7 +6,7 @@ JorgeX Stack reemplaza la antigua skill `agent-browser` por dos integraciones **
 >
 > - **Recomendado**: Playwright CLI (`@playwright/cli@0.1.18`) + skill `playwright-cli` vendorizada. Cero schemas MCP permanentes, coste contextual casi nulo para sesiones que no navegan. El prompt de `install` sugiere instalarlo pero el cursor por defecto es **No** (`initialValue: false`): el consentimiento sigue siendo opt-in.
 > - **Avanzado opt-in**: Chrome DevTools MCP en modo **full** (~29 tools, ~5,8–7,7k tokens de schemas). Default-off, selección por runtime, paquete fijado, argv `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics`: Chrome se levanta con un **perfil temporal aislado, eliminado al cerrar** (no hay perfil persistente dedicado), las cabeceras sensibles se redactan, pero los cuerpos de request/response pueden contener tokens o PII; evita sesiones autenticadas o datos sensibles, o desactiva manualmente la captura de red fuera del stack. CrUX + telemetría están deshabilitados.
-> - **Pi**: el selector y la proyección de Stack todavía no activan Chrome DevTools MCP. El handoff opcional y validado pertenece a una implementación propuesta para una futura adopción; el candidato Pi `0.8.12` actual todavía no lo soporta.
+> - **Pi**: el selector activa Chrome DevTools MCP de forma opt-in con el paquete adoptado `0.8.13`. El handoff se escribe en `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json`, queda registrado con SHA-256 en el receipt de proyección y se elimina solo tras volver a comprobar su integridad.
 > - **Excluidos por diseño**: Playwright MCP y Chrome DevTools MCP en modo `--slim` (duplican peor lo que Playwright CLI ya hace).
 
 ---
@@ -142,7 +142,7 @@ Las cifras vienen del `tools/list` publicado por el paquete; pueden variar entre
 
 ### 3.2 Activación
 
-Por defecto **desactivado** en los tres runtimes. Se activa por runtime y persiste en `~/.jorgex-stack/devtools-mcp.json`.
+Por defecto **desactivado** en los cuatro runtimes. Se activa por runtime y persiste en `~/.jorgex-stack/devtools-mcp.json`; para Pi, Stack además proyecta el handoff aislado bajo `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json`.
 
 ```powershell
 # Interactivo (TTY, install): multiselect por runtime con disclosure del coste.
@@ -153,9 +153,11 @@ pnpm dlx jorgex-stack install --devtools       # activa en los runtimes destino
 pnpm dlx jorgex-stack install --no-devtools    # desactiva
 pnpm dlx jorgex-stack sync --devtools          # activa vía sync
 pnpm dlx jorgex-stack sync --no-devtools       # desactiva vía sync
+pnpm dlx jorgex-stack install --agents pi --devtools  # activa Pi
+pnpm dlx jorgex-stack sync --agents pi --no-devtools # desactiva Pi
 ```
 
-`--devtools` + `--no-devtools` juntos falla con mensaje claro. La selección queda guardada por runtime y sobrevive a `sync`/`uninstall`.
+`--devtools` + `--no-devtools` juntos falla con mensaje claro. La selección queda guardada por runtime y sobrevive a `sync`/`uninstall`. En Pi se guarda solo después de una proyección correcta; un handoff ajeno o cuyo contenido no coincide con el SHA registrado bloquea la reconciliación y conserva el archivo para revisión; si falta, la proyección lo crea o repara. Al desactivar, Stack vuelve a comprobar el SHA antes de limpiar el handoff. Pi debe recargarse para que el bootstrap recoja el cambio.
 
 ### 3.3 Comando y argumentos
 

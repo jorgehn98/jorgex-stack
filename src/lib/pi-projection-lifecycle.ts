@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalMcp } from "./canonical.js";
 import { piAdapter } from "../adapters/pi.js";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
 import { planCommands } from "../components/commands.js";
@@ -19,6 +21,7 @@ export interface PiProjectionReceipt {
   schemaVersion: 1;
   scope: PiProjectionScope;
   owned: string[];
+  devtools?: { sha256: string };
 }
 
 export interface PiProjectionScope {
@@ -35,6 +38,8 @@ export interface PiProjectionLifecycleInput {
   stackDir: string;
   engramBin: string;
   playwrightCliEnabled: boolean;
+  devtoolsMcpEnabled?: boolean;
+  pnpmBin?: string | null;
 }
 
 export interface PiProjectionManifest {
@@ -54,6 +59,8 @@ export interface PiProjectionLifecycleDeps {
 }
 
 export type PiProjectionBlockedReason =
+  | "projection-devtools-conflict"
+  | "projection-devtools-command"
   | "projection-backup-failed"
   | "projection-cleanup-failed"
   | "projection-receipt-invalid"
@@ -90,6 +97,7 @@ type PreparedPiProjectionUninstall = {
   prompt: { file: string; content: string } | null;
   ownedToRemove: string[];
   receiptFile: string | null;
+  devtools?: { file: string; sha256: string };
 };
 
 const preparedPiProjectionUninstalls = new WeakMap<object, PreparedPiProjectionUninstall>();
@@ -133,13 +141,30 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
     models: DEFAULT_MODEL_MAP.codex,
     warnings: [],
     playwrightCliEnabled: input.playwrightCliEnabled,
+    enabledMcpServers: input.devtoolsMcpEnabled ? new Set([DEVTOOLS_MCP_SERVER]) : undefined,
   };
   const adapter = projectedPiAdapter(scope);
-  return [
+  const actions: FileAction[] = [
     ...planSystemPrompt(adapter, ctx),
     ...planSkills(adapter, ctx),
     ...planCommands(adapter, ctx),
   ];
+  if (input.devtoolsMcpEnabled && input.pnpmBin) {
+    const server = loadCanonicalMcp(input.stackDir).servers[DEVTOOLS_MCP_SERVER];
+    if (server?.transport !== "stdio" || !Array.isArray(server.args)) throw new Error("Falta la configuración canónica de DevTools.");
+    actions.push({ kind: "write", target: devtoolsPath(scope), content: `${JSON.stringify({
+      schemaVersion: 1, enabled: true, command: input.pnpmBin, args: server.args,
+    }, null, 2)}\n` });
+  }
+  return actions;
+}
+
+function devtoolsPath(scope: PiProjectionScope): string {
+  return path.resolve(scope.codingAgentDir, "jorgex-pi", "devtools.v1.json");
+}
+
+function contentHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function canonicalActionContent(action: FileAction): string {
@@ -150,8 +175,15 @@ function hasActionDrift(action: FileAction, deps: PiProjectionLifecycleDeps): bo
   return deps.readText(action.target) !== canonicalActionContent(action);
 }
 
-function applyActions(actions: FileAction[], deps: PiProjectionLifecycleDeps): void {
+function applyActions(
+  actions: FileAction[], deps: PiProjectionLifecycleDeps,
+  handoff?: { file: string; previous: string | null },
+): PiProjectionBlocked | undefined {
   for (const action of actions) {
+    if (handoff && path.resolve(action.target) === handoff.file) {
+      try { if (deps.readText(handoff.file) !== handoff.previous) return devtoolsConflict(handoff.file); }
+      catch { return devtoolsConflict(handoff.file); }
+    }
     if (action.kind === "write") deps.writeText(action.target, action.content);
     else deps.copyFile(action.source, action.target);
   }
@@ -172,6 +204,7 @@ function receiptFor(plan: FileAction[], scope: ProjectionScope): PiProjectionRec
       .map((action) => path.resolve(action.target))
       .filter((target) => target !== systemPrompt),
   )];
+  const handoff = plan.find((action) => path.resolve(action.target) === devtoolsPath(scope));
   return {
     schemaVersion: 1,
     scope: {
@@ -181,6 +214,7 @@ function receiptFor(plan: FileAction[], scope: ProjectionScope): PiProjectionRec
       receiptFile: scope.receiptFile,
     },
     owned,
+    ...(handoff ? { devtools: { sha256: contentHash(canonicalActionContent(handoff)) } } : {}),
   };
 }
 
@@ -201,8 +235,10 @@ function parseReceipt(raw: string | null, expected: PiProjectionReceipt): PiProj
     const version = Reflect.get(receipt, "schemaVersion");
     const receivedScope = Reflect.get(receipt, "scope");
     const owned = Reflect.get(receipt, "owned");
+    const devtools = Reflect.get(receipt, "devtools");
+    const hasDevtools = Object.hasOwn(receipt, "devtools");
     if (version !== expected.schemaVersion
-      || !hasExactKeys(receipt, ["schemaVersion", "scope", "owned"])
+      || !hasExactKeys(receipt, ["schemaVersion", "scope", "owned", ...(hasDevtools ? ["devtools"] : [])])
       || receivedScope === null
       || typeof receivedScope !== "object"
       || Array.isArray(receivedScope)
@@ -213,14 +249,19 @@ function parseReceipt(raw: string | null, expected: PiProjectionReceipt): PiProj
       || Reflect.get(receivedScope, "home") !== expected.scope.home
       || Reflect.get(receivedScope, "codingAgentDir") !== expected.scope.codingAgentDir
       || Reflect.get(receivedScope, "receiptFile") !== expected.scope.receiptFile
-      || !Array.isArray(owned)
-      || owned.length !== expected.owned.length) {
+      || !Array.isArray(owned)) {
       return null;
     }
-    if (!owned.every((file, index): file is string => typeof file === "string" && file === expected.owned[index])) {
-      return null;
-    }
-    return expected;
+    if (hasDevtools && (devtools === null || typeof devtools !== "object" || Array.isArray(devtools)
+      || !hasExactKeys(devtools, ["sha256"]) || typeof Reflect.get(devtools, "sha256") !== "string"
+      || !/^[a-f0-9]{64}$/.test(Reflect.get(devtools, "sha256")))) return null;
+    const handoff = devtoolsPath(expected.scope);
+    const expectedOwned = expected.owned.filter((file) => file !== handoff);
+    if (hasDevtools) expectedOwned.push(handoff);
+    if (owned.length !== expectedOwned.length
+      || !owned.every((file, index): file is string => typeof file === "string" && file === expectedOwned[index])) return null;
+    return { schemaVersion: 1, scope: expected.scope, owned: expectedOwned,
+      ...(hasDevtools ? { devtools: { sha256: Reflect.get(devtools, "sha256") as string } } : {}) };
   } catch {
     return null;
   }
@@ -387,6 +428,34 @@ function readProjectionReceipt(
   }
 }
 
+function devtoolsConflict(file: string): PiProjectionBlocked {
+  return blocked("projection-devtools-conflict", [file],
+    "El handoff de DevTools es ajeno o fue modificado. Consérvalo y revisa su propiedad antes de reintentar; Stack no lo sobrescribe ni elimina.");
+}
+
+function inspectDevtools(
+  input: PiProjectionLifecycleInput,
+  scope: ProjectionScope,
+  expected: PiProjectionReceipt,
+  deps: PiProjectionLifecycleDeps,
+): { kind: "checked"; previous: PiProjectionReceipt | null; content: string | null } | PiProjectionBlocked {
+  const file = devtoolsPath(scope);
+  const read = readProjectionReceipt(scope.receiptFile, deps);
+  if (read.kind === "unreadable") return receiptUnreadable(scope.receiptFile);
+  const previous = read.kind === "present" ? parseReceipt(read.content, expected) : null;
+  let content: string | null;
+  try { content = deps.readText(file); }
+  catch { return devtoolsConflict(file); }
+  let recordedDevtools = false;
+  if (read.kind === "present") {
+    try { recordedDevtools = Object.hasOwn(JSON.parse(read.content), "devtools"); }
+    catch { /* Preserve existing receipt repair only while DevTools is off and its handoff file is absent. */ }
+    if (!previous && (input.devtoolsMcpEnabled || content !== null || recordedDevtools)) return receiptInvalid(scope.receiptFile);
+  }
+  if (content !== null && (!previous?.devtools || contentHash(content) !== previous.devtools.sha256)) return devtoolsConflict(file);
+  return { kind: "checked", previous, content };
+}
+
 /** Prepara y respalda la limpieza de Pi sin modificar los archivos proyectados. */
 export function preparePiProjectionUninstall(
   input: PiProjectionLifecycleInput,
@@ -414,11 +483,13 @@ export function preparePiProjectionUninstall(
   if (receiptRead.kind === "unreadable") return receiptUnreadable(scope.receiptFile);
 
   let ownedToRemove: string[] = [];
+  let ownedReceipt: PiProjectionReceipt | null = null;
   let receiptFile: string | null = null;
   let backupTargets = promptUpdate === null ? [] : [promptUpdate.file];
   if (receiptRead.kind === "present") {
     const receipt = parseReceipt(receiptRead.content, expectedReceipt);
     if (receipt === null) return receiptInvalid(scope.receiptFile);
+    ownedReceipt = receipt;
 
     let retained: Set<string>;
     try {
@@ -431,6 +502,11 @@ export function preparePiProjectionUninstall(
     backupTargets = [...backupTargets, ...receipt.owned, receiptFile];
   }
 
+  const handoff = devtoolsPath(scope);
+  let handoffContent: string | null;
+  try { handoffContent = deps.readText(handoff); }
+  catch { return devtoolsConflict(handoff); }
+  if (handoffContent !== null && (!ownedReceipt?.devtools || contentHash(handoffContent) !== ownedReceipt.devtools.sha256)) return devtoolsConflict(handoff);
   const backup = backupExisting(backupTargets, deps);
   if (backup.kind === "backup-failed") return backupFailure(backup.paths);
 
@@ -439,6 +515,7 @@ export function preparePiProjectionUninstall(
     prompt: promptUpdate,
     ownedToRemove,
     receiptFile,
+    ...(ownedReceipt?.devtools ? { devtools: { file: handoff, sha256: ownedReceipt.devtools.sha256 } } : {}),
   });
   return { kind: "prepared", plan: token };
 }
@@ -456,6 +533,12 @@ export function completePiProjectionUninstall(
     return cleanupFailure([]);
   }
 
+  if (prepared.devtools) {
+    let current: string | null;
+    try { current = deps.readText(prepared.devtools.file); }
+    catch { return devtoolsConflict(prepared.devtools.file); }
+    if (current !== null && contentHash(current) !== prepared.devtools.sha256) return devtoolsConflict(prepared.devtools.file);
+  }
   if (prepared.prompt !== null) {
     try {
       deps.writeText(prepared.prompt.file, prepared.prompt.content);
@@ -465,6 +548,10 @@ export function completePiProjectionUninstall(
   }
   for (const owned of prepared.ownedToRemove) {
     try {
+      if (prepared.devtools?.file === owned) {
+        const current = deps.readText(owned);
+        if (current !== null && contentHash(current) !== prepared.devtools.sha256) return devtoolsConflict(owned);
+      }
       deps.removeFile(owned);
     } catch {
       return cleanupFailure([owned]);
@@ -493,14 +580,29 @@ export function runPiProjectionLifecycle(
       : completePiProjectionUninstall(prepared.plan, deps);
   }
 
+  if (input.devtoolsMcpEnabled && (!input.pnpmBin || !path.isAbsolute(input.pnpmBin))) {
+    return blocked("projection-devtools-command", [devtoolsPath(scope)], "DevTools requiere un ejecutable pnpm absoluto disponible en PATH.");
+  }
   const plan = projectionPlan(input, scope);
   assertPlanContained(plan, scope);
   const receipt = receiptFor(plan, scope);
+  const devtools = inspectDevtools(input, scope, receipt, deps);
+  if (devtools.kind === "blocked") return input.operation === "doctor" ? { kind: "drift", paths: devtools.paths } : devtools;
+  const removeHandoff = !input.devtoolsMcpEnabled && devtools.previous?.devtools !== undefined && devtools.content !== null;
   const expectedReceipt = receiptContent(receipt);
   const drifted = plan.filter((action) => hasActionDrift(action, deps));
 
+  if (input.devtoolsMcpEnabled
+    && devtools.previous?.devtools?.sha256 !== receipt.devtools?.sha256
+    && !drifted.some((action) => path.resolve(action.target) === devtoolsPath(scope))) {
+    return input.operation === "doctor"
+      ? { kind: "drift", paths: [devtoolsPath(scope)] }
+      : devtoolsConflict(devtoolsPath(scope));
+  }
+
   if (input.operation === "doctor") {
     const paths = drifted.map((action) => path.resolve(action.target));
+    if (removeHandoff) paths.push(devtoolsPath(scope));
     const currentSettings = deps.readText(scope.settingsFile);
     if (currentSettings === null
       || filterProjectedPiPackage(currentSettings, input.packageSource) !== currentSettings) {
@@ -520,20 +622,31 @@ export function runPiProjectionLifecycle(
   }
   const packageWillChange = filteredSettings !== null && filteredSettings !== currentSettings;
   const receiptChanged = deps.readText(scope.receiptFile) !== expectedReceipt;
-  if (drifted.length > 0 || packageWillChange || receiptChanged) {
+  if (drifted.length > 0 || packageWillChange || receiptChanged || removeHandoff) {
     const backup = backupExisting([
       ...drifted.map((action) => action.target),
+      ...(removeHandoff ? [devtoolsPath(scope)] : []),
       ...(packageWillChange ? [scope.settingsFile] : []),
       ...(receiptChanged ? [scope.receiptFile] : []),
     ], deps);
     if (backup.kind === "backup-failed") return backupFailure(backup.paths);
   }
-  applyActions(drifted, deps);
+  if (removeHandoff) {
+    try {
+      const current = deps.readText(devtoolsPath(scope));
+      if (current !== null && contentHash(current) !== devtools.previous?.devtools?.sha256) return devtoolsConflict(devtoolsPath(scope));
+      deps.removeFile(devtoolsPath(scope));
+    }
+    catch { return cleanupFailure([devtoolsPath(scope)]); }
+  }
+  const writeResult = applyActions(drifted, deps, input.devtoolsMcpEnabled
+    ? { file: devtoolsPath(scope), previous: devtools.content } : undefined);
+  if (writeResult) return writeResult;
   if (packageWillChange && filteredSettings !== null) deps.writeText(scope.settingsFile, filteredSettings);
   if (receiptChanged) deps.writeText(scope.receiptFile, expectedReceipt);
 
   if (input.operation === "install") return { kind: "installed", receipt };
-  return { kind: "synced", changed: drifted.length > 0 || packageWillChange || receiptChanged };
+  return { kind: "synced", changed: drifted.length > 0 || packageWillChange || receiptChanged || removeHandoff };
 }
 
 export interface PiProjectionLifecycleSystemInput {
@@ -542,6 +655,8 @@ export interface PiProjectionLifecycleSystemInput {
   packageSource: string;
   engramBin: string | null;
   playwrightCliEnabled: boolean;
+  devtoolsMcpEnabled?: boolean;
+  pnpmBin?: string | null;
 }
 
 function systemProjectionLifecycle(
@@ -565,6 +680,8 @@ function systemProjectionLifecycle(
       stackDir: stackRoot(),
       engramBin: input.engramBin ?? "",
       playwrightCliEnabled: input.playwrightCliEnabled,
+      devtoolsMcpEnabled: input.devtoolsMcpEnabled,
+      pnpmBin: input.pnpmBin,
     },
     deps: {
       readText: readTextOnlyIfMissing,

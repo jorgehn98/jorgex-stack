@@ -993,6 +993,61 @@ describe("target inventory regressions", () => {
     });
   });
 
+  it("acepta receipts legacy y nuevos de Pi con handoff DevTools, manteniendo validación estricta", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-receipt-devtools-reader-"));
+    const homeDir = path.join(tmp, "home");
+    const pnpmBin = path.join(tmp, "bin", "pnpm");
+    const handoff = path.join(homeDir, ".pi", "agent", "jorgex-pi", "devtools.v1.json");
+    const previousPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
+      fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
+
+      await withTempHome(homeDir, async () => {
+        const { PI_RUNTIME_CANDIDATE } = await import("../src/lib/pi-runtime.js");
+        const { readRealPiProjectionOwned, runPiProjectionLifecycleSystem } =
+          await import("../src/lib/pi-projection-lifecycle.js");
+        const baseInput = {
+          packageSource: PI_RUNTIME_CANDIDATE.package.source,
+          engramBin: null,
+          playwrightCliEnabled: false,
+        };
+
+        expect(runPiProjectionLifecycleSystem({
+          ...baseInput,
+          operation: "install",
+        })).toMatchObject({ kind: "installed" });
+        expect(readRealPiProjectionOwned()).toMatchObject({
+          kind: "valid",
+          owned: expect.any(Array),
+        });
+
+        expect(runPiProjectionLifecycleSystem({
+          ...baseInput,
+          operation: "install",
+          devtoolsMcpEnabled: true,
+          pnpmBin,
+        })).toMatchObject({ kind: "installed" });
+        expect(readRealPiProjectionOwned()).toMatchObject({
+          kind: "valid",
+          owned: expect.arrayContaining([path.resolve(handoff)]),
+        });
+
+        const receiptFile = path.join(homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+        const receipt = JSON.parse(fs.readFileSync(receiptFile, "utf8")) as Record<string, unknown>;
+        receipt.devtools = { sha256: "0".repeat(64), extra: true };
+        fs.writeFileSync(receiptFile, `${JSON.stringify(receipt, null, 2)}\n`);
+        expect(readRealPiProjectionOwned()).toMatchObject({ kind: "corrupt", file: receiptFile });
+      });
+    } finally {
+      if (previousPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousPiCodingAgentDir;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "codex",
     "opencode",

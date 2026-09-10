@@ -106,11 +106,21 @@ vi.mock("../src/lib/pi-managed-runtime.js", () => ({
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
 
-async function runCli(args: string[], homeDir: string): Promise<typeof process.exitCode> {
+function setStdoutTty(value: boolean): () => void {
+  const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", { configurable: true, value, writable: true });
+  return () => {
+    if (original === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+    else Object.defineProperty(process.stdout, "isTTY", original);
+  };
+}
+
+async function runCli(args: string[], homeDir: string, tty = false): Promise<typeof process.exitCode> {
   const originalArgv = [...process.argv];
   const originalExitCode = process.exitCode;
   const originalHome = process.env.HOME;
   const originalUserProfile = process.env.USERPROFILE;
+  const restoreTty = tty ? setStdoutTty(true) : null;
   let observedExitCode: typeof process.exitCode = undefined;
 
   process.env.HOME = homeDir;
@@ -128,6 +138,7 @@ async function runCli(args: string[], homeDir: string): Promise<typeof process.e
     else process.env.HOME = originalHome;
     if (originalUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = originalUserProfile;
+    restoreTty?.();
     vi.resetModules();
   }
   return observedExitCode;
@@ -140,6 +151,13 @@ function writeCorruptBrowserPreference(homeDir: string): string {
   return preferenceFile;
 }
 
+function writeDevtoolsPreference(homeDir: string, value: unknown): string {
+  const preferenceFile = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+  fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+  fs.writeFileSync(preferenceFile, JSON.stringify(value) + "\n");
+  return preferenceFile;
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   mocks.installMissingEngram.mockReset().mockResolvedValue({ ok: true, bin: "/isolated/bin/engram" });
@@ -147,6 +165,87 @@ afterEach(() => {
 });
 
 describe("CLI Pi package-runtime dispatch", () => {
+  it.each([
+    ["mixed", ["codex", "pi"]],
+    ["Pi-only", ["pi"]],
+  ] as const)("includes Pi in the optional DevTools selector for %s selections", async (_name, selection) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-selector-"));
+    mocks.prompts.multiselect.mockResolvedValueOnce([]);
+
+    const exitCode = await runCli(["install", "--agents", selection.join(","), "--mode", "human"], home, true);
+
+    expect(exitCode).toBe(0);
+    const selector = mocks.prompts.multiselect.mock.calls[0]?.[0] as {
+      options: Array<{ value: string; label: string }>;
+      required?: boolean;
+    } | undefined;
+    expect(selector?.options).toEqual(expect.arrayContaining([{ value: "pi", label: "Pi" }]));
+    expect(selector?.required).toBe(false);
+    if (selection.some((runtime) => runtime !== "pi")) {
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        runtimes: selection.filter((runtime) => runtime !== "pi"),
+      }));
+    } else {
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+    }
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      devtoolsMcpEnabled: false,
+    }));
+  });
+
+  it.each([
+    ["install", "--devtools", true],
+    ["install", "--no-devtools", false],
+    ["sync", "--devtools", true],
+    ["sync", "--no-devtools", false],
+  ] as const)("passes %s %s to the managed Pi coordinator", async (operation, flag, enabled) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-devtools-flag-"));
+
+    const exitCode = await runCli([operation, "--agents", "pi", "--mode", "human", "--yes", flag], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation,
+      devtoolsMcpEnabled: enabled,
+    }));
+  });
+
+  it.each([
+    ["dry-run", undefined],
+    ["target-dir", "target"],
+  ] as const)("does not mutate host DevTools preferences during %s", async (name, targetName) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-devtools-${name}-`));
+    const initial = JSON.stringify({
+      version: 1,
+      enabled: { opencode: true },
+      owned: { opencode: { ["chrome-devtools"]: true } },
+    }) + "\n";
+    const preference = writeDevtoolsPreference(home, JSON.parse(initial));
+    const targetDir = targetName === undefined ? undefined : path.join(home, targetName);
+    const args = [
+      "install",
+      "--agents",
+      "pi",
+      "--mode",
+      "human",
+      "--yes",
+      "--devtools",
+      ...(targetDir === undefined ? ["--dry-run"] : ["--target-dir", targetDir]),
+    ];
+
+    expect(await runCli(args, home)).toBe(0);
+    expect(fs.readFileSync(preference, "utf8")).toBe(initial);
+    if (targetDir === undefined) {
+      expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    } else {
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        targetDir,
+        devtoolsMcpEnabled: true,
+      }));
+    }
+  });
+
   it("splits a mixed install so only file runtimes reach the adapter pipeline and Pi reaches its package lifecycle", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mixed-"));
 

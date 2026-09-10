@@ -4,6 +4,21 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const detectMocks = vi.hoisted(() => ({
+  lookPath: vi.fn((_: string): string | null => null),
+  runDetectedBin: vi.fn((_bin: string, _args: string[], _timeoutMs: number, _env?: NodeJS.ProcessEnv): string | null => null),
+}));
+
+vi.mock("../src/lib/detect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/detect.js")>();
+  return {
+    ...actual,
+    lookPath: detectMocks.lookPath,
+    runDetectedBin: detectMocks.runDetectedBin,
+  };
+});
+
 import {
   latestGithubRelease,
   latestGithubCommit,
@@ -150,11 +165,15 @@ beforeEach(() => {
   // para que los tests de "sin token" no fallen por variables heredadas.
   vi.stubEnv("GH_TOKEN", "");
   vi.stubEnv("GITHUB_TOKEN", "");
+  detectMocks.lookPath.mockReset().mockReturnValue(null);
+  detectMocks.runDetectedBin.mockReset().mockReturnValue(null);
   // PATH no se manipula aquí: downloadRepoTarball usa resolveTarBin() con
   // ruta absoluta a System32\tar.exe, no depende del PATH en runtime.
 });
 
 afterEach(() => {
+  detectMocks.lookPath.mockReset().mockReturnValue(null);
+  detectMocks.runDetectedBin.mockReset().mockReturnValue(null);
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -416,10 +435,26 @@ describe("token: precedencia y caché", () => {
     expect(ghPresentButTokenFailed()).toBe(false);
   });
 
-  // La rama "gh auth token" real no se cubre con vi.mock porque githubToken() es
-  // privada (solo observable por headers) y mockear lookPath/runDetectedBin
-  // requeriría inyección de dependencias o vi.mock del módulo interno.
-  // Documentado como deliberadamente no cubierto.
+  it("sin env vars y gh detectado con salida vacía → sin header Authorization, ghPresentButTokenFailed() === true", async () => {
+    detectMocks.lookPath.mockReturnValue("/isolated/bin/gh");
+    detectMocks.runDetectedBin.mockReturnValue(" \n");
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", mockFetch);
+
+    await latestGithubRelease("owner/repo");
+
+    const headers = mockFetch.mock.calls[0]?.[1]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBeUndefined();
+    expect(ghPresentButTokenFailed()).toBe(true);
+    expect(detectMocks.lookPath).toHaveBeenCalledWith("gh");
+    expect(detectMocks.runDetectedBin).toHaveBeenCalledWith(
+      "/isolated/bin/gh",
+      ["auth", "token"],
+      5_000,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
