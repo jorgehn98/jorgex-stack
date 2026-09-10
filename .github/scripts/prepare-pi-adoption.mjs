@@ -175,9 +175,9 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
-  if (typeof apply !== "boolean") throw new Error("apply must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -202,7 +202,25 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
   for (const member of CONTRACTS) {
     oldContracts[member] = JSON.parse(git(piDir, ["show", `${current.provenance.commit}:${member}`]));
     newContracts[member] = JSON.parse(git(piDir, ["show", `${producer}:${member}`]));
-    assert.deepEqual(comparable(member, newContracts[member]), comparable(member, oldContracts[member]), `${member} compatibility requires manual review`);
+  }
+  const expectedContracts = structuredClone(oldContracts);
+  const rootContract = "contract/jorgex-pi.v1.json";
+  const capability = "chrome-devtools-handoff-v1";
+  if (acceptDevtoolsHandoff
+    && !oldContracts[rootContract].capabilities.includes(capability)
+    && newContracts[rootContract].capabilities.includes(capability)) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    const runnerIndex = capabilities.indexOf("runner-json-v1");
+    assert(runnerIndex >= 0, "DevTools handoff requires the existing JSON runner");
+    capabilities.splice(runnerIndex, 0, capability);
+    const exclusions = expectedContracts[PARITY].exclusions;
+    const matches = exclusions.filter((item) => item.kind === "capability-integration" && item.id === "chrome-devtools-capability-handoff");
+    assert.equal(matches.length, 1, "DevTools handoff requires exactly one former exclusion");
+    assert.deepEqual(matches[0], { kind: "capability-integration", id: "chrome-devtools-capability-handoff" });
+    exclusions.splice(exclusions.indexOf(matches[0]), 1);
+  }
+  for (const member of CONTRACTS) {
+    assert.deepEqual(comparable(member, newContracts[member]), comparable(member, expectedContracts[member]), `${member} compatibility requires manual review`);
   }
   assert.equal(newContracts["package.json"].name, "jorgex-pi");
   assert.equal(newContracts["package.json"].version, version);
@@ -260,11 +278,14 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   try {
     const args = process.argv.slice(2);
-    if (![4, 5].includes(args.length) || args[0] !== "--pi-dir" || args[2] !== "--version" || (args.length === 5 && args[4] !== "--apply")) throw new Error("Invalid arguments");
-    const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3], apply: args.length === 5 });
+    const flags = args.slice(4);
+    if (args.length < 4 || args.length > 6 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff"].includes(flag))) throw new Error("Invalid arguments");
+    const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
+      apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff]");
     process.exitCode = 1;
   }
 }

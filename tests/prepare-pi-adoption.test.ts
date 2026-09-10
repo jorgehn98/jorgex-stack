@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type PreparePiAdoption = (
-  input: { root: string; piDir: string; version: string; apply?: boolean },
+  input: { root: string; piDir: string; version: string; apply?: boolean; acceptDevtoolsHandoff?: boolean },
   dependencies?: {
     fetch?: typeof globalThis.fetch;
     now?: () => number;
@@ -125,8 +125,22 @@ function writePiRelease(
   root: string,
   version: string,
   sourceCommit: string,
-  options: { runnerCommands?: string[] } = {},
+  options: {
+    runnerCommands?: string[];
+    devtoolsHandoff?: boolean;
+    devtoolsCapability?: boolean;
+    devtoolsExclusion?: boolean;
+    extraCapabilities?: string[];
+  } = {},
 ): void {
+  const devtoolsCapability = options.devtoolsCapability ?? options.devtoolsHandoff ?? false;
+  const devtoolsExclusion = options.devtoolsExclusion ?? !devtoolsCapability;
+  const capabilities = [
+    "foundation-contract-v1",
+    ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
+    "runner-json-v1",
+    ...(options.extraCapabilities ?? []),
+  ];
   const packageIdentity = { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` };
   writeJson(root, "package.json", {
     name: packageIdentity.name,
@@ -149,7 +163,7 @@ function writePiRelease(
     schemaVersion: 1,
     package: packageIdentity,
     pi: { minimumVersion: "0.84.2", maximumVersion: "0.84.2", testedVersions: ["0.84.2"] },
-    capabilities: ["foundation-contract-v1"],
+    capabilities,
     snapshot: { contractPath: "contract/parity.v2.json", schemaVersion: 2 },
     assets: { manifestVersion: 1, manifestPath: "contract/assets.v1.json" },
     components: { inventoryPath: "contract/components.v1.json" },
@@ -189,7 +203,9 @@ function writePiRelease(
     source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: sourceCommit },
     agents: [{ name: "tester", sourcePath: "stack/agents/tester.md", targetPath: "snapshot/agents/tester.md" }],
     skills: [],
-    exclusions: [],
+    exclusions: devtoolsExclusion
+      ? [{ kind: "capability-integration", id: "chrome-devtools-capability-handoff" }]
+      : [],
   });
 }
 
@@ -206,7 +222,14 @@ function archiveEntries(root: string, tarball: Buffer): number {
   return output.trimEnd().split(/\r?\n/).filter(Boolean).length;
 }
 
-function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): AdoptionFixture {
+function createAdoptionFixture(options: {
+  runnerCommands?: string[];
+  previousDevtoolsHandoff?: boolean;
+  devtoolsHandoff?: boolean;
+  devtoolsCapability?: boolean;
+  devtoolsExclusion?: boolean;
+  extraCapabilities?: string[];
+} = {}): AdoptionFixture {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-"));
   temporaryRoots.push(parent);
   const root = path.join(parent, "stack");
@@ -222,7 +245,7 @@ function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): Ado
 
   fs.mkdirSync(piDir, { recursive: true });
   initializeGit(piDir);
-  writePiRelease(piDir, "0.8.7", previousSourceCommit);
+  writePiRelease(piDir, "0.8.7", previousSourceCommit, { devtoolsHandoff: options.previousDevtoolsHandoff });
   const oldProducer = commit(piDir, "pi: 0.8.7");
   git(piDir, ["tag", "v0.8.7", oldProducer]);
   const oldTarball = gitArchive(piDir, oldProducer);
@@ -243,7 +266,13 @@ function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): Ado
   git(root, ["update-ref", "refs/remotes/origin/main", git(root, ["rev-parse", "HEAD"])]);
   git(root, ["switch", "-c", "adoption-test"]);
 
-  writePiRelease(piDir, "0.8.8", sourceCommit, options);
+  writePiRelease(piDir, "0.8.8", sourceCommit, {
+    runnerCommands: options.runnerCommands,
+    devtoolsHandoff: options.devtoolsHandoff,
+    devtoolsCapability: options.devtoolsCapability,
+    devtoolsExclusion: options.devtoolsExclusion,
+    extraCapabilities: options.extraCapabilities,
+  });
   const nextProducer = commit(piDir, "pi: 0.8.8");
   git(piDir, ["tag", "v0.8.8", nextProducer]);
   git(piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
@@ -307,6 +336,125 @@ afterEach(() => {
 });
 
 describe("preparePiAdoption", () => {
+  it("acepta la transición completa de DevTools sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({ devtoolsHandoff: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptDevtoolsHandoff: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
+
+  it.each([
+    ["sólo añade la capability", { devtoolsCapability: true, devtoolsExclusion: true }],
+    ["sólo retira la exclusión", { devtoolsCapability: false, devtoolsExclusion: false }],
+  ])("rechaza una transición parcial con confirmación (%s)", async (_label, options) => {
+    const fixture = createAdoptionFixture(options);
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza la transición inversa aunque se confirme DevTools", async () => {
+    const fixture = createAdoptionFixture({ previousDevtoolsHandoff: true, devtoolsHandoff: false });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza una capability adicional junto a la transición confirmada", async () => {
+    const fixture = createAdoptionFixture({ devtoolsHandoff: true, extraCapabilities: ["unexpected-capability-v1"] });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("mantiene la adopción ordinaria compatible aunque se confirme DevTools", async () => {
+    const fixture = createAdoptionFixture();
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(rootState(fixture)).toEqual(before);
+  });
+
   it.each([false, true])("conserva los datos tras fallar la segunda escritura (rollback incompleto: %s)", async (failRollback) => {
     const fixture = createAdoptionFixture();
     const { preparePiAdoption } = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
