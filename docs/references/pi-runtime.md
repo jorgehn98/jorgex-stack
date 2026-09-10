@@ -58,7 +58,7 @@ La proyección se ejecuta después de la instalación del paquete y se registra 
 | Skills compartidas | `~/.agents/skills` | Stack; se conservan si también las usa otro runtime |
 | Prompt | `~/.pi/agent/prompts/lean-audit.md` | Stack |
 
-La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. Chrome DevTools MCP y Context7 siguen fuera de este scope.
+La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. Chrome DevTools MCP sigue fuera del selector y de la proyección actual de Stack; el handoff validado descrito para una adopción futura es una implementación propuesta y el candidato Pi `0.8.12` actual todavía no lo soporta. Context7 sigue fuera de este scope.
 
 En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
 
@@ -133,7 +133,7 @@ La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instal
 
 ## Engram
 
-Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. Una instalación interactiva puede ofrecer el canal nativo con confirmación explícita por defecto negativa; `--yes` y los procesos sin TTY fallan con un remedio si falta Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
+Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. `install` resuelve o instala antes de configurar cualquier runtime el binario oficial fijado en v1.20.0, bajo `~/.local/bin/engram` (o el equivalente de la plataforma), verificando tamaño y SHA-256; el instalador de release no requiere Brew ni Go. En una ejecución interactiva se pide confirmación; `--engram` autoriza la descarga en flujos no interactivos. `sync`, dry-run y `--target-dir` no descargan Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
 
 ## Comandos
 

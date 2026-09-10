@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => {
     confirm: vi.fn().mockResolvedValue(false),
     multiselect: vi.fn().mockResolvedValue([]),
     isCancel: vi.fn().mockReturnValue(false),
+    intro: vi.fn(),
+    outro: vi.fn(),
     log: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -38,6 +40,7 @@ const mocks = vi.hoisted(() => {
     hasManagedPiRuntime: vi.fn().mockReturnValue(false),
     resolvePiEngramBin: vi.fn().mockReturnValue("/isolated/bin/engram"),
     resolvePiEngramRequirement: vi.fn(),
+    installMissingEngram: vi.fn().mockResolvedValue({ ok: true, bin: "/isolated/bin/engram" }),
     // Keep the package-only boundary stubbed; dispatch assertions exercise the
     // managed lifecycle instead.
     runPiRuntimeSystem: vi.fn().mockReturnValue({ kind: "healthy" }),
@@ -50,6 +53,12 @@ vi.mock("@clack/prompts", () => ({
   isCancel: mocks.prompts.isCancel,
   log: mocks.prompts.log,
   multiselect: mocks.prompts.multiselect,
+  intro: mocks.prompts.intro,
+  outro: mocks.prompts.outro,
+}));
+
+vi.mock("../src/lib/engram-install.js", () => ({
+  installMissingEngram: mocks.installMissingEngram,
 }));
 
 vi.mock("../src/install.js", async () => {
@@ -133,6 +142,8 @@ function writeCorruptBrowserPreference(homeDir: string): string {
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.installMissingEngram.mockReset().mockResolvedValue({ ok: true, bin: "/isolated/bin/engram" });
+  mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
 });
 
 describe("CLI Pi package-runtime dispatch", () => {
@@ -258,6 +269,191 @@ describe("CLI Pi package-runtime dispatch", () => {
       engramBin: "/isolated/bin/engram",
     });
     expect(mocks.runInstall.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("resolves the host Engram before configuring a mixed install", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-engram-order-"));
+    let engramAvailable = false;
+    mocks.resolvePiEngramBin.mockImplementation(() => engramAvailable ? "/isolated/bin/engram" : null);
+    mocks.installMissingEngram.mockImplementation(async () => {
+      engramAvailable = true;
+      return { ok: true, bin: "/isolated/bin/engram" };
+    });
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex,pi",
+      "--mode",
+      "human",
+      "--yes",
+      "--engram",
+    ], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.installMissingEngram).toHaveBeenCalledOnce();
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ runtimes: ["codex"] }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      engramBin: "/isolated/bin/engram",
+    }));
+    expect(mocks.installMissingEngram.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runInstall.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.installMissingEngram.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("aborts before configuring runtimes when host Engram installation fails", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-engram-failure-"));
+    mocks.resolvePiEngramBin.mockReturnValue(null);
+    mocks.installMissingEngram.mockResolvedValue({ ok: false, reason: "download-failed" });
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex,pi",
+      "--mode",
+      "human",
+      "--yes",
+      "--engram",
+    ], home);
+
+    expect(exitCode).toBe(1);
+    expect(mocks.installMissingEngram).toHaveBeenCalledOnce();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["dry-run", ["--dry-run"]],
+    ["target-dir", ["--target-dir", "TARGET"]],
+  ] as const)("does not download host Engram in %s", async (name, extraArgs) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-engram-${name}-`));
+    const targetArgs = extraArgs[0] === "--target-dir"
+      ? [extraArgs[0], path.join(home, "target")]
+      : extraArgs;
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "human",
+      "--yes",
+      "--engram",
+      ...targetArgs,
+    ], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+    if (name === "target-dir") {
+      expect(mocks.resolvePiEngramBin.mock.calls.some(([root]) => root === undefined)).toBe(false);
+    }
+  });
+
+  it("passes the existing host Engram to runInstall during dry-run without downloading", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-engram-dry-run-bin-"));
+    const existingEngram = "/isolated/bin/engram";
+    mocks.resolvePiEngramBin.mockReturnValue(existingEngram);
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "human",
+      "--yes",
+      "--engram",
+      "--dry-run",
+    ], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      runtimes: ["codex"],
+      dryRun: true,
+      engramBin: existingEngram,
+    }));
+  });
+
+  it("preserves exit code 1 for an invalid mode after the final summary", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-invalid-mode-"));
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "invalid",
+      "--yes",
+    ], home);
+
+    expect(exitCode).toBe(1);
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.prompts.outro).toHaveBeenCalledWith(expect.stringMatching(/errores/i));
+  });
+
+  it("does not treat --yes as consent to download missing Engram", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-engram-no-consent-"));
+    mocks.resolvePiEngramBin.mockReturnValue(null);
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "human",
+      "--yes",
+    ], home);
+
+    expect(exitCode).toBe(1);
+    expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+  });
+
+  it("resolves host Engram for a file-only install before runInstall", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-engram-file-only-"));
+    let engramAvailable = false;
+    mocks.resolvePiEngramBin.mockImplementation(() => engramAvailable ? "/isolated/bin/engram" : null);
+    mocks.installMissingEngram.mockImplementation(async () => {
+      engramAvailable = true;
+      return { ok: true, bin: "/isolated/bin/engram" };
+    });
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "human",
+      "--yes",
+      "--engram",
+    ], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.installMissingEngram).toHaveBeenCalledOnce();
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      runtimes: ["codex"],
+      engramBin: "/isolated/bin/engram",
+    }));
+    expect(mocks.installMissingEngram.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runInstall.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+  });
+
+  it("emits the final summary after Pi completes", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-summary-order-"));
+
+    const exitCode = await runCli(["install", "--agents", "pi", "--yes"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.prompts.outro).toHaveBeenCalledOnce();
+    expect(mocks.prompts.outro.mock.invocationCallOrder[0]).toBeGreaterThan(
       mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
     );
   });

@@ -26,6 +26,10 @@ export interface PlaywrightCliDetectionInput {
 
 export type PlaywrightCliAction = "install" | "update" | "remove" | "install-browser";
 
+export type PnpmSetupResult =
+  | { ok: true; env: NodeJS.ProcessEnv }
+  | { ok: false; reason: string };
+
 export type PlaywrightToolActionFailureReason =
   | "pnpm-unavailable"
   | "pnpm-command"
@@ -37,7 +41,7 @@ export type PlaywrightToolActionResult =
   | { ok: false; reason: PlaywrightToolActionFailureReason };
 
 export const PNPM_GLOBAL_BIN_REMEDY =
-  "Ejecuta 'pnpm setup', abre una terminal nueva y reintenta. El stack no modifica PNPM_HOME ni PATH.";
+  "Ejecuta 'pnpm setup', abre una terminal nueva y reintenta. Sin consentimiento, el stack no modifica la configuración de la shell.";
 
 /** Devuelve un remedio accionable solo para fallos atribuibles a pnpm. */
 export function resolvePnpmFailureRemedy(reason: PlaywrightToolActionFailureReason): string | null {
@@ -108,6 +112,46 @@ export function resolvePnpmBin(): string | null {
   return pnpmCmd !== null && !pnpmCmd.toLowerCase().endsWith(".ps1") ? pnpmCmd : null;
 }
 
+function resolvePnpmHome(
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  homeDir = os.homedir(),
+): string {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  if (env.PNPM_HOME) return env.PNPM_HOME;
+  if (env.XDG_DATA_HOME) return paths.join(env.XDG_DATA_HOME, "pnpm");
+  if (platform === "darwin") return paths.join(homeDir, "Library", "pnpm");
+  if (platform === "win32") return env.LOCALAPPDATA ? paths.join(env.LOCALAPPDATA, "pnpm") : paths.join(homeDir, ".pnpm");
+  return paths.join(homeDir, ".local", "share", "pnpm");
+}
+
+/** Ejecuta pnpm setup en un entorno hijo sin mutar el proceso del CLI. */
+export function setupPnpmGlobal(
+  pnpmBin: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  homeDir = os.homedir(),
+): PnpmSetupResult {
+  const pnpmHome = resolvePnpmHome(env, platform, homeDir);
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  if (!paths.isAbsolute(pnpmHome)) return { ok: false, reason: "PNPM_HOME debe ser una ruta absoluta; corrige la configuración antes de reintentar." };
+  const pathEntries = [pnpmHome, paths.join(pnpmHome, "bin")];
+  if (env.PATH !== undefined) pathEntries.push(env.PATH);
+  const childEnv: NodeJS.ProcessEnv = {
+    ...env,
+    PNPM_HOME: pnpmHome,
+    PATH: pathEntries.join(platform === "win32" ? ";" : ":"),
+  };
+  const invocation = planDetectedBinCommand(pnpmBin, ["setup"]);
+  if (invocation === null) return { ok: false, reason: "No se pudo preparar la invocación de pnpm setup." };
+  try {
+    execFileSync(invocation.command, invocation.args, { stdio: "inherit", env: childEnv });
+    return { ok: true, env: childEnv };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * Comprueba la caché de navegadores de Playwright sin arrancar un navegador ni
  * abrir una URL. Es una señal conservadora: una caché desconocida se trata como
@@ -162,6 +206,7 @@ export function planPlaywrightCliCommand(action: PlaywrightCliAction, pnpmBin: s
 export function executePlaywrightToolAction(
   action: PlaywrightCliAction,
   pnpmBin = resolvePnpmBin(),
+  env?: NodeJS.ProcessEnv,
 ): PlaywrightToolActionResult {
   if (pnpmBin === null) return { ok: false, reason: "pnpm-unavailable" };
 
@@ -169,7 +214,10 @@ export function executePlaywrightToolAction(
     const preflight = planDetectedBinCommand(pnpmBin, ["bin", "--global"]);
     if (preflight === null) return { ok: false, reason: "pnpm-command" };
     try {
-      execFileSync(preflight.command, preflight.args, { stdio: "inherit" });
+      execFileSync(preflight.command, preflight.args, {
+        stdio: "inherit",
+        ...(env === undefined ? {} : { env }),
+      });
     } catch (error) {
       return { ok: false, reason: hasNonzeroProcessStatus(error) ? "pnpm-global-bin" : "pnpm-command" };
     }
@@ -180,7 +228,10 @@ export function executePlaywrightToolAction(
   if (invocation === null) return { ok: false, reason: "pnpm-command" };
 
   try {
-    execFileSync(invocation.command, invocation.args, { stdio: "inherit" });
+    execFileSync(invocation.command, invocation.args, {
+      stdio: "inherit",
+      ...(env === undefined ? {} : { env }),
+    });
     return { ok: true };
   } catch {
     return { ok: false, reason: "action-failed" };

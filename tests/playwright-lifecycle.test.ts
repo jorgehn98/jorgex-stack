@@ -3,7 +3,29 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+const promptMocks = vi.hoisted(() => ({
+  confirm: vi.fn().mockResolvedValue(false),
+  logError: vi.fn(),
+}));
+
+vi.mock("@clack/prompts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@clack/prompts")>();
+  return {
+    ...actual,
+    confirm: promptMocks.confirm,
+    log: { ...actual.log, error: promptMocks.logError },
+  };
+});
+
 type PlaywrightToolAction = "install" | "install-browser" | "remove";
+
+type PlaywrightToolRunResult =
+  | boolean
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "pnpm-unavailable" | "pnpm-command" | "pnpm-global-bin" | "action-failed";
+    };
 
 interface PlaywrightToolPlan {
   actions: PlaywrightToolAction[];
@@ -11,8 +33,14 @@ interface PlaywrightToolPlan {
 }
 
 interface PlaywrightToolPlanDeps {
-  run: (action: Exclude<PlaywrightToolAction, "remove">) => Promise<boolean>;
+  run: (
+    action: Exclude<PlaywrightToolAction, "remove">,
+    env?: NodeJS.ProcessEnv,
+  ) => Promise<PlaywrightToolRunResult>;
   persistEnabled: (enabled: boolean) => void;
+  setupPnpm?: (pnpmBin: string) =>
+    | { ok: true; env: NodeJS.ProcessEnv }
+    | { ok: false; reason: string };
 }
 
 type PlaywrightToolFailure = Exclude<PlaywrightToolAction, "remove"> | "persist";
@@ -192,6 +220,112 @@ describe("Playwright lifecycle contracts", () => {
         } finally {
           restoreDetect();
         }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("asks consent for pnpm setup and retains its child env through the browser action", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-pnpm-repair-"));
+    const homeDir = path.join(root, "home");
+    const preparedEnv: NodeJS.ProcessEnv = {
+      PNPM_HOME: "/isolated/pnpm",
+      PATH: `/isolated/pnpm/bin${path.delimiter}/isolated/pnpm`,
+    };
+    const seen: Array<{ action: Exclude<PlaywrightToolAction, "remove">; env?: NodeJS.ProcessEnv }> = [];
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const externalTools = await import("../src/lib/external-tools.js");
+        const resolvePnpmBin = vi.spyOn(externalTools, "resolvePnpmBin").mockReturnValue("/isolated/pnpm");
+        promptMocks.confirm.mockResolvedValue(true);
+        const install = await import("../src/install.js");
+        const setupPnpm = vi.fn().mockReturnValue({ ok: true, env: preparedEnv });
+        const run = vi.fn(async (
+          action: Exclude<PlaywrightToolAction, "remove">,
+          env?: NodeJS.ProcessEnv,
+        ): Promise<PlaywrightToolRunResult> => {
+          seen.push({ action, env });
+          return seen.length === 1 ? { ok: false, reason: "pnpm-global-bin" } : true;
+        });
+        const persistEnabled = vi.fn();
+
+        try {
+          await expect(install.runInstall({
+            runtimes: [],
+            dryRun: false,
+            yes: false,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+            playwrightToolConsent: {
+              command: "install",
+              interactive: true,
+              yes: false,
+              targetDir: false,
+              explicitToolSelection: true,
+              confirmed: true,
+            },
+            playwrightToolDeps: { run, persistEnabled, setupPnpm },
+          })).resolves.toBe(0);
+        } finally {
+          promptMocks.confirm.mockReset().mockResolvedValue(false);
+          resolvePnpmBin.mockRestore();
+        }
+
+        expect(setupPnpm).toHaveBeenCalledWith("/isolated/pnpm");
+        expect(seen).toEqual([
+          { action: "install", env: undefined },
+          { action: "install", env: preparedEnv },
+          { action: "install-browser", env: preparedEnv },
+        ]);
+        expect(persistEnabled).toHaveBeenCalledWith(true);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the pnpm-global diagnostic when the consented setup fails", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-pnpm-repair-failure-"));
+    const homeDir = path.join(root, "home");
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const externalTools = await import("../src/lib/external-tools.js");
+        const resolvePnpmBin = vi.spyOn(externalTools, "resolvePnpmBin").mockReturnValue("/isolated/pnpm");
+        promptMocks.confirm.mockResolvedValue(true);
+        promptMocks.logError.mockImplementation(() => undefined);
+        const install = await import("../src/install.js");
+        const setupPnpm = vi.fn().mockReturnValue({ ok: false, reason: "setup permission denied" });
+        const run = vi.fn().mockResolvedValue({ ok: false, reason: "pnpm-global-bin" });
+        const persistEnabled = vi.fn();
+
+        try {
+          await expect(install.runInstall({
+            runtimes: [],
+            dryRun: false,
+            yes: false,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+            playwrightToolConsent: {
+              command: "install",
+              interactive: true,
+              yes: false,
+              targetDir: false,
+              explicitToolSelection: true,
+              confirmed: true,
+            },
+            playwrightToolDeps: { run, persistEnabled, setupPnpm },
+          })).resolves.toBe(1);
+          expect(promptMocks.logError).toHaveBeenCalledWith(expect.stringContaining("setup permission denied"));
+        } finally {
+          promptMocks.confirm.mockReset().mockResolvedValue(false);
+          promptMocks.logError.mockReset();
+          resolvePnpmBin.mockRestore();
+        }
+
+        expect(setupPnpm).toHaveBeenCalledWith("/isolated/pnpm");
+        expect(run).toHaveBeenCalledOnce();
+        expect(persistEnabled).not.toHaveBeenCalled();
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
