@@ -234,6 +234,54 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
 });
 
 describe("Playwright prompt install ordering", () => {
+  it("persists file-runtime Playwright choices without consuming the pending Pi choice", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configRoot = path.join(homeDir, "configs");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    writeRuntimeModelMap(homeDir, ["opencode"]);
+    fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+    fs.writeFileSync(preferenceFile, JSON.stringify({
+      version: 2,
+      enabled: { opencode: false, "claude-code": false, codex: false, pi: true },
+    }) + "\n");
+
+    await withTempHome(homeDir, async () => {
+      vi.doMock("../src/lib/external-tools.js", async () => ({
+        ...(await vi.importActual<typeof import("../src/lib/external-tools.js")>("../src/lib/external-tools.js")),
+        executePlaywrightToolAction: vi.fn(() => ({ ok: true })),
+        resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+      }));
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, path.join(configRoot, "opencode"));
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+            runtimeSelection: { opencode: true, pi: false },
+          },
+        })).resolves.toBe(0);
+
+        expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual({
+          version: 2,
+          enabled: { opencode: true, "claude-code": false, codex: false, pi: true },
+        });
+      } finally {
+        restoreDetect();
+        vi.doUnmock("../src/lib/external-tools.js");
+      }
+    });
+  });
+
   it("reconciles the guide only for selected runtimes and persists the shared selection after success", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");

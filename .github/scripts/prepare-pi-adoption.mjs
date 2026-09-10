@@ -175,9 +175,9 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -218,6 +218,15 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert.equal(matches.length, 1, "DevTools handoff requires exactly one former exclusion");
     assert.deepEqual(matches[0], { kind: "capability-integration", id: "chrome-devtools-capability-handoff" });
     exclusions.splice(exclusions.indexOf(matches[0]), 1);
+  }
+  const playwrightCapability = "playwright-handoff-v1";
+  if (acceptPlaywrightHandoff
+    && !oldContracts[rootContract].capabilities.includes(playwrightCapability)
+    && newContracts[rootContract].capabilities.includes(playwrightCapability)) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    const runnerIndex = capabilities.indexOf("runner-json-v1");
+    assert(runnerIndex >= 0, "Playwright handoff requires the existing JSON runner");
+    capabilities.splice(runnerIndex, 0, playwrightCapability);
   }
   for (const member of CONTRACTS) {
     assert.deepEqual(comparable(member, newContracts[member]), comparable(member, expectedContracts[member]), `${member} compatibility requires manual review`);
@@ -279,13 +288,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     const args = process.argv.slice(2);
     const flags = args.slice(4);
-    if (args.length < 4 || args.length > 6 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 7 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
-      apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff") });
+      apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff]");
     process.exitCode = 1;
   }
 }

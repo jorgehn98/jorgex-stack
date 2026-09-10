@@ -7,7 +7,14 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type PreparePiAdoption = (
-  input: { root: string; piDir: string; version: string; apply?: boolean; acceptDevtoolsHandoff?: boolean },
+  input: {
+    root: string;
+    piDir: string;
+    version: string;
+    apply?: boolean;
+    acceptDevtoolsHandoff?: boolean;
+    acceptPlaywrightHandoff?: boolean;
+  },
   dependencies?: {
     fetch?: typeof globalThis.fetch;
     now?: () => number;
@@ -130,6 +137,8 @@ function writePiRelease(
     devtoolsHandoff?: boolean;
     devtoolsCapability?: boolean;
     devtoolsExclusion?: boolean;
+    playwrightHandoff?: boolean;
+    rootContractMutation?: boolean;
     extraCapabilities?: string[];
   } = {},
 ): void {
@@ -138,6 +147,7 @@ function writePiRelease(
   const capabilities = [
     "foundation-contract-v1",
     ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
+    ...(options.playwrightHandoff ? ["playwright-handoff-v1"] : []),
     "runner-json-v1",
     ...(options.extraCapabilities ?? []),
   ];
@@ -162,7 +172,11 @@ function writePiRelease(
   writeJson(root, "contract/jorgex-pi.v1.json", {
     schemaVersion: 1,
     package: packageIdentity,
-    pi: { minimumVersion: "0.84.2", maximumVersion: "0.84.2", testedVersions: ["0.84.2"] },
+    pi: {
+      minimumVersion: options.rootContractMutation ? "0.84.3" : "0.84.2",
+      maximumVersion: "0.84.2",
+      testedVersions: ["0.84.2"],
+    },
     capabilities,
     snapshot: { contractPath: "contract/parity.v2.json", schemaVersion: 2 },
     assets: { manifestVersion: 1, manifestPath: "contract/assets.v1.json" },
@@ -228,6 +242,9 @@ function createAdoptionFixture(options: {
   devtoolsHandoff?: boolean;
   devtoolsCapability?: boolean;
   devtoolsExclusion?: boolean;
+  previousPlaywrightHandoff?: boolean;
+  playwrightHandoff?: boolean;
+  rootContractMutation?: boolean;
   extraCapabilities?: string[];
 } = {}): AdoptionFixture {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-"));
@@ -245,7 +262,10 @@ function createAdoptionFixture(options: {
 
   fs.mkdirSync(piDir, { recursive: true });
   initializeGit(piDir);
-  writePiRelease(piDir, "0.8.7", previousSourceCommit, { devtoolsHandoff: options.previousDevtoolsHandoff });
+  writePiRelease(piDir, "0.8.7", previousSourceCommit, {
+    devtoolsHandoff: options.previousDevtoolsHandoff,
+    playwrightHandoff: options.previousPlaywrightHandoff,
+  });
   const oldProducer = commit(piDir, "pi: 0.8.7");
   git(piDir, ["tag", "v0.8.7", oldProducer]);
   const oldTarball = gitArchive(piDir, oldProducer);
@@ -271,6 +291,8 @@ function createAdoptionFixture(options: {
     devtoolsHandoff: options.devtoolsHandoff,
     devtoolsCapability: options.devtoolsCapability,
     devtoolsExclusion: options.devtoolsExclusion,
+    playwrightHandoff: options.playwrightHandoff,
+    rootContractMutation: options.rootContractMutation,
     extraCapabilities: options.extraCapabilities,
   });
   const nextProducer = commit(piDir, "pi: 0.8.8");
@@ -363,6 +385,97 @@ describe("preparePiAdoption", () => {
       archive: fixture.nextArchive,
     });
   }, 15_000);
+
+  it("acepta la transición exacta de Playwright sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
+
+  it("rechaza una mutación ajena del contrato raíz aunque se confirme Playwright", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true, rootContractMutation: true });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza una capability adicional junto a la transición confirmada de Playwright", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true, extraCapabilities: ["unexpected-capability-v1"] });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza la retirada de Playwright aunque se confirme la transición", async () => {
+    const fixture = createAdoptionFixture({ previousPlaywrightHandoff: true, playwrightHandoff: false });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
 
   it.each([
     ["sólo añade la capability", { devtoolsCapability: true, devtoolsExclusion: true }],
