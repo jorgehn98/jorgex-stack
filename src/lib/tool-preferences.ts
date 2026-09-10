@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { RuntimeId } from "../adapters/types.js";
+import type { RuntimeId, SelectableRuntimeId } from "../adapters/types.js";
 import { writeText } from "./fsx.js";
 import { dataDir } from "./paths.js";
 
@@ -15,7 +15,7 @@ interface PlaywrightCliPreference {
 
 interface DevtoolsMcpPreference {
   version: typeof DEVTOOLS_MCP_PREFERENCE_VERSION;
-  enabled: Partial<Record<RuntimeId, boolean>>;
+  enabled: Partial<Record<SelectableRuntimeId, boolean>>;
   owned: Partial<Record<RuntimeId, Record<string, true>>>;
 }
 
@@ -101,7 +101,7 @@ function parseDevtoolsMcpState(raw: string): DevtoolsMcpPreference | null {
 
     const enabled: DevtoolsMcpPreference["enabled"] = {};
     for (const [runtime, selected] of Object.entries(value.enabled)) {
-      if (!isRuntimeId(runtime) || typeof selected !== "boolean") return null;
+      if ((!isRuntimeId(runtime) && runtime !== "pi") || typeof selected !== "boolean") return null;
       enabled[runtime] = selected;
     }
 
@@ -146,12 +146,12 @@ function saveDevtoolsMcpState(file: string, state: DevtoolsMcpPreference): void 
 }
 
 /** Sin una elección válida y explícita, DevTools MCP permanece deshabilitado. */
-export function loadDevtoolsMcpPreference(file: string, runtime: RuntimeId): boolean {
+export function loadDevtoolsMcpPreference(file: string, runtime: SelectableRuntimeId): boolean {
   return loadDevtoolsMcpState(file).enabled[runtime] === true;
 }
 
 /** Persiste una selección por runtime sin modificar las elecciones de los demás. */
-export function saveDevtoolsMcpPreference(file: string, runtime: RuntimeId, enabled: boolean): void {
+export function saveDevtoolsMcpPreference(file: string, runtime: SelectableRuntimeId, enabled: boolean): void {
   const state = loadDevtoolsMcpState(file);
   state.enabled[runtime] = enabled;
   saveDevtoolsMcpState(file, state);

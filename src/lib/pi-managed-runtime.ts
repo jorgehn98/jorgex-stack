@@ -4,7 +4,8 @@ import {
   runPiProjectionLifecycleSystem,
 } from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
-import { loadPlaywrightCliPreference } from "./tool-preferences.js";
+import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
+import { resolvePnpmBin } from "./external-tools.js";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -123,17 +124,22 @@ function managedPackageResult(
 }
 
 /** Coordina el paquete Pi con la proyección compartida de Stack. */
-export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManagedOperationResult> {
+export async function runManagedPiSystem(input: PiRuntimeInput & { devtoolsMcpEnabled?: boolean }): Promise<PiManagedOperationResult> {
+  const { devtoolsMcpEnabled: explicitDevtools, ...runtimeInput } = input;
+  const devtoolsMcpEnabled = explicitDevtools
+    ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
   const playwrightCliEnabled = input.targetDir === undefined && loadPlaywrightCliPreference() === true;
   const projectionInput = {
     targetDir: input.targetDir,
     packageSource: PI_RUNTIME_CANDIDATE.package.source,
     engramBin: input.engramBin,
     playwrightCliEnabled,
+    devtoolsMcpEnabled,
+    pnpmBin: devtoolsMcpEnabled && input.operation !== "uninstall" ? resolvePnpmBin() : null,
   };
-  return runManagedPiOperation(input.operation, {
+  const result = await runManagedPiOperation(input.operation, {
     async runPackage(operation) {
-      return managedPackageResult(await runPiRuntimeSystem({ ...input, operation }));
+      return managedPackageResult(await runPiRuntimeSystem({ ...runtimeInput, operation }));
     },
     runProjection(operation) {
       const result = runPiProjectionLifecycleSystem({
@@ -156,4 +162,9 @@ export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManag
       return Promise.resolve(completePiProjectionUninstallSystem(token, { operation: "uninstall", ...projectionInput }));
     },
   });
+  if (input.targetDir === undefined && explicitDevtools !== undefined
+    && (input.operation === "install" || input.operation === "sync") && result.kind !== "blocked") {
+    saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", explicitDevtools);
+  }
+  return result;
 }

@@ -285,8 +285,8 @@ async function resolvePlaywrightToolConsent(
 async function resolveDevtoolsMcpSelection(
   command: "install" | "sync",
   flags: Flags,
-  runtimes: RuntimeId[],
-): Promise<Partial<Record<RuntimeId, boolean>> | null> {
+  runtimes: SelectableRuntimeId[],
+): Promise<Partial<Record<SelectableRuntimeId, boolean>> | null> {
   if (flags.devtools && flags.noDevtools) {
     console.error("Usa solo uno de --devtools o --no-devtools.");
     process.exitCode = 1;
@@ -303,12 +303,12 @@ async function resolveDevtoolsMcpSelection(
 
   const file = devtoolsMcpPreferenceFile();
   const selected = await p.multiselect({
-    message: "Chrome DevTools MCP avanzado (full: ~29 tools y ~5.8–7.7k tokens de schemas). ¿En qué runtimes activarlo?",
-    options: runtimes.map((runtime) => ({ value: runtime, label: ADAPTERS[runtime]?.name ?? runtime })),
+    message: "Chrome DevTools MCP avanzado (opcional). ¿En qué runtimes activarlo?",
+    options: runtimes.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
     initialValues: runtimes.filter((runtime) => loadDevtoolsMcpPreference(file, runtime)),
   });
   if (p.isCancel(selected)) return null;
-  const enabled = new Set(selected as RuntimeId[]);
+  const enabled = new Set(selected as SelectableRuntimeId[]);
   return Object.fromEntries(runtimes.map((runtime) => [runtime, enabled.has(runtime)]));
 }
 
@@ -404,6 +404,7 @@ async function runSelectedPi(
   targetDir?: string,
   yes = false,
   resolvedEngramBin?: string | null,
+  devtoolsMcpEnabled?: boolean,
 ): Promise<number> {
   if (targetDir === undefined && operation !== "models") {
     const preferenceErrors = browserPreferenceErrors();
@@ -451,6 +452,7 @@ async function runSelectedPi(
     targetDir,
     detected: { executable: detected.executable, version: detected.version },
     engramBin,
+    ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
   });
   if (result.kind === "blocked") {
     const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
@@ -608,7 +610,7 @@ async function main(): Promise<void> {
         }
         const mode = fileRuntimes.length > 0 ? await resolveInstallMode(flags) : undefined;
         if (mode === null) return;
-        const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, fileRuntimes);
+        const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, runtimes);
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
         if (playwrightToolConsent === null) return;
@@ -649,7 +651,7 @@ async function main(): Promise<void> {
         if (runtimes.includes("pi") && piCanRun) {
           if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
           else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes,
-            flags.targetDir === undefined ? engramBin : undefined));
+            flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi));
         }
         completed = true;
       } catch (error) {
