@@ -592,6 +592,14 @@ export function runPiProjectionLifecycle(
   const expectedReceipt = receiptContent(receipt);
   const drifted = plan.filter((action) => hasActionDrift(action, deps));
 
+  if (input.devtoolsMcpEnabled
+    && devtools.previous?.devtools?.sha256 !== receipt.devtools?.sha256
+    && !drifted.some((action) => path.resolve(action.target) === devtoolsPath(scope))) {
+    return input.operation === "doctor"
+      ? { kind: "drift", paths: [devtoolsPath(scope)] }
+      : devtoolsConflict(devtoolsPath(scope));
+  }
+
   if (input.operation === "doctor") {
     const paths = drifted.map((action) => path.resolve(action.target));
     if (removeHandoff) paths.push(devtoolsPath(scope));

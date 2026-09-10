@@ -497,6 +497,64 @@ describe("Pi shared projection lifecycle", () => {
     }
   });
 
+  it("blocks a DevTools handoff that appears between ownership inspection and drift planning", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-intermediate-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+      const pnpmBin = path.join(root, "bin", "pnpm");
+      fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
+      fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
+      const handoffContent = devtoolsHandoffContent(pnpmBin);
+      const events: string[] = [];
+      const baseDeps = temporaryDeps(root, events, { runtimes: {} });
+      let handoffReads = 0;
+      const deps: ProjectionDeps = {
+        ...baseDeps,
+        readText(file) {
+          if (path.resolve(file) === path.resolve(handoff)) {
+            handoffReads += 1;
+            if (handoffReads >= 2) {
+              fs.mkdirSync(path.dirname(handoff), { recursive: true });
+              fs.writeFileSync(handoff, handoffContent);
+              return handoffContent;
+            }
+            return null;
+          }
+          return baseDeps.readText(file);
+        },
+      };
+
+      const result = runPiProjectionLifecycle({
+        operation: "install",
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true,
+        pnpmBin,
+      }, deps);
+
+      expect(result).toMatchObject({
+        kind: "blocked",
+        reason: "projection-devtools-conflict",
+        paths: [path.resolve(handoff)],
+      });
+      expect(fs.readFileSync(handoff, "utf8")).toBe(handoffContent);
+      const receipt = fs.existsSync(target.projectionReceipt)
+        ? JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt
+        : null;
+      expect(receipt?.devtools).toBeUndefined();
+      expect(receipt?.owned ?? []).not.toContain(path.resolve(handoff));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rechecks the DevTools handoff between uninstall phases before deleting it", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const { preparePiProjectionUninstall, completePiProjectionUninstall } = await uninstallCore();
