@@ -10,7 +10,7 @@ El canon de Stack y el paquete Pi fijado comparten ya el inventario de 14 agente
 
 El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. Para el pin vigente, consulta `src/lib/pi-runtime-pin.json`: contiene nombre, versión, `source`, commit de procedencia, tamaño y SHA-256/SHA-512. La URL pública se deriva de la versión por `.github/scripts/pi-pin.mjs`; no se duplican aquí valores que cambian en cada adopción.
 
-La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al `source` del JSON y conserva los campos adicionales de la entrada existente; para la entrada gestionada, `skills: []` y `prompts: []` siguen siendo los valores esperados.
+La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al `source` del JSON y conserva los campos adicionales de la entrada existente. Solo la forma gestionada exacta `{ "source": "...", "skills": [], "prompts": [] }` completa el lifecycle de instalación, proyección, `sync` y `doctor`; filtros no vacíos, filtros personalizados o metadatos adicionales se conservan y quedan bloqueados como `source-divergent`, sin normalizarse ni eliminarse silenciosamente.
 
 Los filtros `skills: []` y `prompts: []` se aplican únicamente después de que la proyección compartida haya terminado. Así el paquete no carga una segunda copia de los recursos comunes.
 
