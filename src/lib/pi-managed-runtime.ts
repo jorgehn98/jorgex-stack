@@ -128,7 +128,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & { devtoolsMcpEn
   const { devtoolsMcpEnabled: explicitDevtools, ...runtimeInput } = input;
   const devtoolsMcpEnabled = explicitDevtools
     ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
-  const playwrightCliEnabled = input.targetDir === undefined && loadPlaywrightCliPreference() === true;
+  const playwrightCliEnabled = input.targetDir === undefined && loadPlaywrightCliPreference(undefined, "pi") === true;
   const projectionInput = {
     targetDir: input.targetDir,
     packageSource: PI_RUNTIME_CANDIDATE.package.source,

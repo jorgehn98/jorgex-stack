@@ -8,10 +8,11 @@ const PLAYWRIGHT_CLI_PREFERENCE_VERSION = 1;
 const DEVTOOLS_MCP_PREFERENCE_VERSION = 1;
 const PRIMARY_MODEL_OWNERSHIP_VERSION = 1;
 
-interface PlaywrightCliPreference {
-  version: typeof PLAYWRIGHT_CLI_PREFERENCE_VERSION;
-  enabled: boolean;
-}
+export type PlaywrightRuntimeSelection = Partial<Record<SelectableRuntimeId, boolean>>;
+type PlaywrightCliPreference =
+  | { version: 1; enabled: boolean }
+  | { version: 2; enabled: PlaywrightRuntimeSelection };
+const PLAYWRIGHT_RUNTIMES: SelectableRuntimeId[] = ["opencode", "claude-code", "codex", "pi"];
 
 interface DevtoolsMcpPreference {
   version: typeof DEVTOOLS_MCP_PREFERENCE_VERSION;
@@ -39,11 +40,15 @@ export function playwrightCliPreferenceFile(stateDir = dataDir()): string {
   return path.join(stateDir, "playwright-cli.json");
 }
 
-function parsePlaywrightCliPreference(raw: string): boolean | undefined {
+function parsePlaywrightCliPreference(raw: string): PlaywrightCliPreference | undefined {
   try {
-    const value = JSON.parse(raw) as Partial<PlaywrightCliPreference>;
-    if (value.version !== PLAYWRIGHT_CLI_PREFERENCE_VERSION || typeof value.enabled !== "boolean") return undefined;
-    return value.enabled;
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value)) return undefined;
+    if (value.version === 1 && typeof value.enabled === "boolean") return { version: 1, enabled: value.enabled };
+    if (value.version !== 2 || !isRecord(value.enabled)) return undefined;
+    if (Object.entries(value.enabled).some(([runtime, enabled]) =>
+      !PLAYWRIGHT_RUNTIMES.includes(runtime as SelectableRuntimeId) || typeof enabled !== "boolean")) return undefined;
+    return { version: 2, enabled: value.enabled as PlaywrightRuntimeSelection };
   } catch {
     return undefined;
   }
@@ -60,17 +65,38 @@ export function playwrightCliPreferenceError(file = playwrightCliPreferenceFile(
 }
 
 /** Missing, unreadable, or invalid state is deliberately not an authorization. */
-export function loadPlaywrightCliPreference(file = playwrightCliPreferenceFile()): boolean | undefined {
+export function loadPlaywrightCliPreference(
+  file = playwrightCliPreferenceFile(),
+  runtime?: SelectableRuntimeId,
+): boolean | undefined {
   const { raw } = readPreference(file);
-  if (raw === null) return undefined;
-  return parsePlaywrightCliPreference(raw);
+  const state = raw === null ? undefined : parsePlaywrightCliPreference(raw);
+  if (state === undefined) return undefined;
+  if (state.version === 1) return state.enabled;
+  return runtime === undefined ? Object.values(state.enabled).some(Boolean) : state.enabled[runtime] === true;
 }
 
-/** Stores only an explicit choice, atomically, outside runtime manifests. */
-export function savePlaywrightCliPreference(file: string, enabled: boolean): void {
+/** Conserva las selecciones ajenas a la elección explícita y migra instalaciones heredadas. */
+export function savePlaywrightCliPreference(
+  file: string,
+  enabled: boolean,
+  selection?: PlaywrightRuntimeSelection,
+): void {
   const error = playwrightCliPreferenceError(file);
   if (error !== null) throw new Error(error);
-  writeText(file, JSON.stringify({ version: PLAYWRIGHT_CLI_PREFERENCE_VERSION, enabled }) + "\n");
+  const { raw } = readPreference(file);
+  const previous = raw === null ? undefined : parsePlaywrightCliPreference(raw);
+  if (selection === undefined && previous?.version !== 2) {
+    writeText(file, JSON.stringify({ version: PLAYWRIGHT_CLI_PREFERENCE_VERSION, enabled }) + "\n");
+    return;
+  }
+  const inherited: PlaywrightRuntimeSelection = previous?.version === 2 ? previous.enabled
+    : Object.fromEntries(PLAYWRIGHT_RUNTIMES.map((runtime) => [runtime, previous?.enabled === true]));
+  const choices = { ...inherited, ...selection };
+  const state = { version: 2, enabled: enabled ? choices : Object.fromEntries(Object.keys(choices).map((runtime) => [runtime, false])) };
+  const content = JSON.stringify(state) + "\n";
+  if (parsePlaywrightCliPreference(content) === undefined) throw new Error("Playwright CLI: selección de runtimes inválida.");
+  writeText(file, content);
 }
 
 export function devtoolsMcpPreferenceFile(stateDir = dataDir()): string {
