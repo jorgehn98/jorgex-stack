@@ -478,7 +478,7 @@ function inspectHandoffs(
     let recorded = false;
     if (read.kind === "present") {
       try { recorded = Object.hasOwn(JSON.parse(read.content), kind); }
-      catch { /* Legacy receipt repair is allowed only with both handoffs absent and disabled. */ }
+      catch { /* La reparación de receipts legacy solo se permite con ambos handoffs ausentes y desactivados. */ }
       if (!previous && (handoffEnabled(input, kind) || content !== null || recorded)) return receiptInvalid(scope.receiptFile);
     }
     if (content !== null && (!previous?.[kind] || contentHash(content) !== previous[kind].sha256)) return handoffConflict(kind, file);
@@ -556,7 +556,7 @@ export function preparePiProjectionUninstall(
   return { kind: "prepared", plan: token };
 }
 
-/** Completa una limpieza de Pi ya preparada sin volver a leer ni respaldar su estado. */
+/** Completa una limpieza de Pi ya preparada revalidando los handoffs antes de eliminarlos. */
 export function completePiProjectionUninstall(
   plan: unknown,
   deps: PiProjectionLifecycleDeps,
