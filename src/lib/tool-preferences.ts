@@ -76,7 +76,7 @@ export function loadPlaywrightCliPreference(
   return runtime === undefined ? Object.values(state.enabled).some(Boolean) : state.enabled[runtime] === true;
 }
 
-/** Preserves choices outside the explicit runtime selection and legacy installations. */
+/** Conserva las selecciones ajenas a la elección explícita y migra instalaciones heredadas. */
 export function savePlaywrightCliPreference(
   file: string,
   enabled: boolean,

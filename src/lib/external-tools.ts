@@ -212,7 +212,7 @@ export function planPlaywrightCliCommand(action: PlaywrightCliAction, pnpmBin: s
   }
 }
 
-/** Prueba Chromium del paquete global en un perfil efímero, sin abrir sitios externos. */
+/** Comprueba que Chromium del CLI global puede arrancar en un perfil efímero, sin abrir sitios externos. */
 export function verifyPlaywrightBrowser(
   pnpmBin: string,
   env: NodeJS.ProcessEnv = process.env,
