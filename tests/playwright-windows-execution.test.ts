@@ -34,7 +34,13 @@ describe("Playwright pnpm execution on Windows", () => {
     tempDirs.push(dir);
     const shim = path.join(dir, "pnpm.cmd");
     const observedArgs = path.join(dir, "pnpm-args.txt");
-    fs.writeFileSync(shim, '@echo off\r\necho %* > "%JX_PLAYWRIGHT_ACTION_FILE%"\r\n');
+    fs.writeFileSync(
+      shim,
+      '@echo off\r\nif "%1"=="bin" if "%2"=="--global" (\r\n'
+        + '  echo C:\\Users\\test\\AppData\\Local\\pnpm\r\n'
+        + '  exit /b 0\r\n'
+        + ')\r\necho %* > "%JX_PLAYWRIGHT_ACTION_FILE%"\r\n',
+    );
     process.env.JX_PLAYWRIGHT_ACTION_FILE = observedArgs;
     mocks.resolvePnpmBin.mockReturnValue(shim);
 
