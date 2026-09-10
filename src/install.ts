@@ -38,6 +38,7 @@ import {
   loadDevtoolsMcpOwnership,
   loadDevtoolsMcpPreference,
   loadPlaywrightCliPreference,
+  type PlaywrightRuntimeSelection,
   loadPrimaryModelOwnership,
   playwrightCliPreferenceFile,
   primaryModelOwnershipError,
@@ -97,6 +98,7 @@ export interface PlaywrightToolConsent {
   targetDir: boolean;
   explicitToolSelection: boolean;
   confirmed: boolean;
+  runtimeSelection?: PlaywrightRuntimeSelection;
 }
 
 export interface PlaywrightToolPlanDeps {
@@ -204,7 +206,7 @@ export function makeContext(
     models,
     warnings: [],
     enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
-    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference() === true,
+    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true,
     ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
     ownedPrimaryModelFields: useBrowserPreferences
       ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
@@ -355,7 +357,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       models,
       warnings: [],
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
-      playwrightCliEnabled: projectPlaywrightPrompt || (useManifest && loadPlaywrightCliPreference() === true),
+      playwrightCliEnabled: projectPlaywrightPrompt
+        ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
+        : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true),
       ownedMcpServers: ownedMcpServers(id, useManifest),
       ownedPrimaryModelFields: useManifest
         ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir)
@@ -472,7 +476,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           const pnpmBin = resolvePnpmBin();
           return executePlaywrightToolAction(action, pnpmBin, env);
         },
-        persistEnabled: (enabled: boolean) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
+        persistEnabled: (enabled: boolean) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, opts.playwrightToolConsent?.runtimeSelection),
         setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
       } satisfies PlaywrightToolPlanDeps;
       let setupAttempted = false;
@@ -500,6 +504,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             return first;
           }
           preparedEnv = setup.env;
+          p.log.info("pnpm preparado para esta instalación. Abre una terminal nueva al terminar para que otras herramientas y doctor reciban el PATH actualizado.");
           return baseDeps.run(action, preparedEnv);
         },
       });
@@ -517,7 +522,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       } else {
         let promptReconciliationFailed = false;
         for (const { adapter, ctx } of successfulContexts) {
-          const browserCtx: InstallContext = { ...ctx, playwrightCliEnabled: true, warnings: [] };
+          const browserCtx: InstallContext = { ...ctx,
+            playwrightCliEnabled: opts.playwrightToolConsent?.runtimeSelection?.[adapter.id] ?? true, warnings: [] };
           try {
             const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
             if (browserChanges.length === 0) continue;
@@ -543,7 +549,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           exitCode = 1;
           p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
         } else {
-          p.log.success("Playwright CLI y navegador instalados.");
+          p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
         }
       }
     }

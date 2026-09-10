@@ -10,6 +10,7 @@ import { planSystemPrompt } from "../src/components/system-prompt.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
 import { upsertMarkdownSection } from "../src/lib/filemerge.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { savePlaywrightCliPreference } from "../src/lib/tool-preferences.js";
 import { testModelsForRuntime } from "./fixtures/model-map.js";
 
 const DEVTOOLS_SERVER = "chrome-devtools";
@@ -147,6 +148,34 @@ function setOnlyOpenCodeDetected(install: typeof import("../src/install.js"), co
   };
 }
 
+function setDetectedRuntimes(
+  install: typeof import("../src/install.js"),
+  runtimes: RuntimeId[],
+  configRoot: string,
+): () => void {
+  const originals = Object.values(install.ADAPTERS).map((adapter) => [adapter, adapter.detect] as const);
+  for (const adapter of Object.values(install.ADAPTERS)) {
+    adapter.detect = () => ({
+      id: adapter.id,
+      name: adapter.name,
+      installed: runtimes.includes(adapter.id),
+      binPath: null,
+      configDir: path.join(configRoot, adapter.id),
+    });
+  }
+  return () => {
+    for (const [adapter, detect] of originals) adapter.detect = detect;
+  };
+}
+
+function writeRuntimeModelMap(homeDir: string, runtimes: RuntimeId[]): void {
+  const file = path.join(homeDir, ".jorgex-stack", "model-map.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(
+    Object.fromEntries(runtimes.map((runtime) => [runtime, testModelsForRuntime(runtime)])),
+  ) + "\n");
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
@@ -205,6 +234,105 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
 });
 
 describe("Playwright prompt install ordering", () => {
+  it("reconciles the guide only for selected runtimes and persists the shared selection after success", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configRoot = path.join(homeDir, "configs");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    const selection = { opencode: true, codex: false } as const;
+    writeRuntimeModelMap(homeDir, ["opencode", "codex"]);
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setDetectedRuntimes(install, ["opencode", "codex"], configRoot);
+      const actions: string[] = [];
+      try {
+        const code = await install.runInstall({
+          runtimes: ["opencode", "codex"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+            runtimeSelection: selection,
+          },
+          playwrightToolDeps: {
+            run: async (action) => {
+              actions.push(action);
+              return true;
+            },
+            persistEnabled: (enabled) => savePlaywrightCliPreference(preferenceFile, enabled, selection),
+          },
+        });
+
+        const opencodePrompt = fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8");
+        const codexPrompt = fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8");
+        expect(code).toBe(0);
+        expect(actions).toEqual(["install", "install-browser"]);
+        expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual({
+          version: 2,
+          enabled: { opencode: true, codex: false, "claude-code": false, pi: false },
+        });
+        expect(browserSection(opencodePrompt)).toMatch(/Playwright CLI/i);
+        expect(browserSection(codexPrompt)).toBeNull();
+      } finally {
+        restoreDetect();
+      }
+    });
+  });
+
+  it("keeps the existing runtime selection and guides when the Playwright plan fails", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configRoot = path.join(homeDir, "configs");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    const before = { version: 2, enabled: { opencode: false, codex: true } };
+    const requested = { opencode: true, codex: false } as const;
+    writeRuntimeModelMap(homeDir, ["opencode", "codex"]);
+    fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+    fs.writeFileSync(preferenceFile, JSON.stringify(before) + "\n");
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setDetectedRuntimes(install, ["opencode", "codex"], configRoot);
+      const persistEnabled = vi.fn();
+      try {
+        const code = await install.runInstall({
+          runtimes: ["opencode", "codex"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+            runtimeSelection: requested,
+          },
+          playwrightToolDeps: {
+            run: async () => false,
+            persistEnabled,
+          },
+        });
+
+        expect(code).toBe(1);
+        expect(persistEnabled).not.toHaveBeenCalled();
+        expect(fs.readFileSync(preferenceFile, "utf8")).toBe(`${JSON.stringify(before)}\n`);
+        expect(browserSection(fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8"))).toBeNull();
+        expect(browserSection(fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8"))).toMatch(/Playwright CLI/i);
+      } finally {
+        restoreDetect();
+      }
+    });
+  });
+
   it("dry-run --playwright previews the browser prompt diff without running setup or persisting state", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");

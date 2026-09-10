@@ -31,7 +31,7 @@ export interface PlaywrightDoctorState {
 }
 
 export interface ResolvedPlaywrightDoctorState {
-  status: "disabled" | "healthy" | "missing" | "broken" | "outdated" | "unreadable";
+  status: "disabled" | "healthy" | "missing" | "broken" | "outdated" | "unreadable" | "not-in-path";
   missing?: "package" | "browser";
   path?: string;
   errorCode?: string;
@@ -40,6 +40,7 @@ export interface ResolvedPlaywrightDoctorState {
 /** Clasifica el requisito opcional sin I/O para conservar los estados accionables. */
 export function resolvePlaywrightDoctorState(input: PlaywrightDoctorState): ResolvedPlaywrightDoctorState {
   if (input.enabled !== true) return { status: "disabled" };
+  if (input.cli.status === "not-in-path") return { status: "not-in-path" };
   if (input.cli.status === "absent") return { status: "missing", missing: "package" };
   if (input.cli.status === "broken") return { status: "broken" };
   if (input.cli.status === "outdated") return { status: "outdated" };
@@ -112,7 +113,10 @@ export async function runDoctor(): Promise<number> {
     if (playwright.status === "disabled") {
       p.log.info("Playwright CLI: deshabilitado (opcional). Usa 'install --playwright' para instalarlo de forma explícita.");
     } else if (playwright.status === "healthy") {
-      p.log.success("Playwright CLI: paquete y navegador listos.");
+      p.log.success("Playwright CLI: paquete y caché de Chromium detectados (doctor no prueba el arranque).");
+    } else if (playwright.status === "not-in-path") {
+      p.log.warn("Playwright CLI: instalado en el directorio de pnpm, pero fuera del PATH de esta terminal. Abre una terminal nueva tras pnpm setup; no hace falta reinstalarlo.");
+      problems++;
     } else if (playwright.status === "missing") {
       const target = playwright.missing === "package" ? "el paquete global" : "el navegador de Playwright";
       p.log.warn(`Playwright CLI: habilitado, pero falta ${target} → ejecuta 'jorgex-stack install --playwright'.`);

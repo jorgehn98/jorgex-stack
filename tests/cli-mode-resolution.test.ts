@@ -8,6 +8,18 @@ const mocks = vi.hoisted(() => {
   const runInstall = vi.fn().mockResolvedValue(0);
   const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
+  const detectPiRuntime = vi.fn().mockReturnValue({
+    id: "pi",
+    name: "Pi",
+    installed: false,
+    executable: null,
+    version: null,
+    codingAgentDir: "/isolated/pi-agent",
+  });
+  const hasManagedPiRuntime = vi.fn().mockReturnValue(false);
+  const resolvePiEngramBin = vi.fn().mockReturnValue("/isolated/bin/engram");
+  const resolvePiEngramRequirement = vi.fn();
+  const runManagedPiSystem = vi.fn().mockResolvedValue({ kind: "healthy" });
   const prompts = {
     confirm: vi.fn().mockResolvedValue(true),
     multiselect: vi.fn().mockResolvedValue([]),
@@ -23,7 +35,17 @@ const mocks = vi.hoisted(() => {
       message: vi.fn(),
     },
   };
-  return { prompts, runInteractiveUpdate, runInstall, runModelsPicker };
+  return {
+    prompts,
+    runInteractiveUpdate,
+    runInstall,
+    runModelsPicker,
+    detectPiRuntime,
+    hasManagedPiRuntime,
+    resolvePiEngramBin,
+    resolvePiEngramRequirement,
+    runManagedPiSystem,
+  };
 });
 
 vi.mock("@clack/prompts", () => ({
@@ -49,6 +71,21 @@ vi.mock("../src/models-picker.js", async () => {
   const actual = await vi.importActual<typeof import("../src/models-picker.js")>("../src/models-picker.js");
   return { ...actual, runModelsPicker: mocks.runModelsPicker };
 });
+
+vi.mock("../src/lib/pi-runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/pi-runtime.js")>("../src/lib/pi-runtime.js");
+  return {
+    ...actual,
+    detectPiRuntime: mocks.detectPiRuntime,
+    hasManagedPiRuntime: mocks.hasManagedPiRuntime,
+    resolvePiEngramBin: mocks.resolvePiEngramBin,
+    resolvePiEngramRequirement: mocks.resolvePiEngramRequirement,
+  };
+});
+
+vi.mock("../src/lib/pi-managed-runtime.js", () => ({
+  runManagedPiSystem: mocks.runManagedPiSystem,
+}));
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
@@ -119,6 +156,17 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.detectPiRuntime.mockReset().mockReturnValue({
+    id: "pi",
+    name: "Pi",
+    installed: false,
+    executable: null,
+    version: null,
+    codingAgentDir: "/isolated/pi-agent",
+  });
+  mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
+  mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
+  mocks.runManagedPiSystem.mockReset().mockResolvedValue({ kind: "healthy" });
 });
 
 function collectedMessages(spies: Array<{ mock: { calls: unknown[][] } }>): string[] {
@@ -367,7 +415,7 @@ describe("opciones de navegador en main()", () => {
 
       expect(exitCode).toBeUndefined();
       const output = collectedMessages([log]);
-      for (const flag of ["--playwright", "--remove-playwright", "--devtools", "--no-devtools"]) {
+      for (const flag of ["--playwright", "--playwright-runtimes", "--remove-playwright", "--devtools", "--no-devtools"]) {
         expect(output.some((line) => line.includes(flag))).toBe(true);
       }
     } finally {
@@ -411,5 +459,162 @@ describe("opciones de navegador en main()", () => {
       }),
       devtoolsMcpSelection: { opencode: true },
     }));
+  });
+
+  it("accepts --playwright-runtimes with --playwright and passes true/false for current agents", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-flag-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "opencode,claude-code,codex",
+      "--mode",
+      "human",
+      "--yes",
+      "--playwright",
+      "--playwright-runtimes=opencode,codex",
+    ], homeDir);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({
+        explicitToolSelection: true,
+        runtimeSelection: { opencode: true, "claude-code": false, codex: true },
+      }),
+    }));
+  });
+
+  it("opens the runtime selector only after Playwright consent and passes partial choices", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-picker-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+    mocks.prompts.confirm.mockResolvedValueOnce(true);
+    mocks.prompts.multiselect
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(["codex"]);
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "opencode,claude-code,codex",
+      "--mode",
+      "human",
+    ], homeDir, true);
+
+    expect(exitCode).toBe(0);
+    const playwrightPicker = mocks.prompts.multiselect.mock.calls.find(([input]) =>
+      typeof input === "object" && input !== null && "message" in input
+        && /Playwright/i.test(String(Reflect.get(input, "message"))),
+    );
+    expect(playwrightPicker?.[0]).toMatchObject({ required: false });
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({
+        confirmed: true,
+        runtimeSelection: { opencode: false, "claude-code": false, codex: true },
+      }),
+    }));
+    const playwrightPickerIndex = mocks.prompts.multiselect.mock.calls.findIndex(([input]) =>
+      typeof input === "object" && input !== null
+      && /Playwright/i.test(String(Reflect.get(input, "message"))),
+    );
+    expect(playwrightPickerIndex).toBeGreaterThanOrEqual(0);
+    expect(mocks.prompts.confirm.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.prompts.multiselect.mock.invocationCallOrder[playwrightPickerIndex]!,
+    );
+  });
+
+  it("rejects --playwright-runtimes without --playwright before runInstall", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-no-consent-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli([
+        "install",
+        "--agents",
+        "opencode",
+        "--mode",
+        "human",
+        "--playwright-runtimes=opencode",
+      ], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(collectedMessages([error])).toEqual(expect.arrayContaining([
+        expect.stringMatching(/--playwright-runtimes.*--playwright/i),
+      ]));
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("rejects unknown and out-of-agents Playwright runtimes before runInstall", async () => {
+    const cases = [
+      { name: "unknown", agents: "opencode", selection: "opencode,wat", pattern: /runtime.*wat|desconocido.*wat/i },
+      { name: "outside agents", agents: "opencode", selection: "codex", pattern: /codex.*agents|codex.*destino|no est[aá].*agents/i },
+    ] as const;
+
+    for (const testCase of cases) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `jx-playwright-runtime-${testCase.name}-`));
+      const homeDir = path.join(tmp, "home");
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        const exitCode = await runCli([
+          "install",
+          "--agents",
+          testCase.agents,
+          "--mode",
+          "human",
+          "--yes",
+          "--playwright",
+          `--playwright-runtimes=${testCase.selection}`,
+        ], homeDir);
+
+        expect(exitCode, testCase.name).toBe(1);
+        expect(mocks.runInstall, testCase.name).not.toHaveBeenCalled();
+        const messages = collectedMessages([error]);
+        expect(messages.some((message) => /Flag no reconocido/i.test(message)), testCase.name).toBe(false);
+        expect(messages.some((message) => testCase.pattern.test(message)), testCase.name).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    }
+  });
+
+  it("rejects Playwright for Pi before any install when the candidate lacks playwright-handoff-v1", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-pi-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/opt/pi/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+
+    try {
+      const exitCode = await runCli([
+        "install",
+        "--agents",
+        "pi",
+        "--mode",
+        "human",
+        "--yes",
+        "--playwright",
+        "--playwright-runtimes=pi",
+      ], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+      expect(collectedMessages([error]).some((message) => /Pi.*playwright-handoff-v1|playwright-handoff-v1.*Pi/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

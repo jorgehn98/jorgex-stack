@@ -91,13 +91,17 @@ vi.mock("../src/models-picker.js", async () => {
   return { ...actual, runModelsPicker: mocks.runModelsPicker };
 });
 
-vi.mock("../src/lib/pi-runtime.js", () => ({
-  detectPiRuntime: mocks.detectPiRuntime,
-  hasManagedPiRuntime: mocks.hasManagedPiRuntime,
-  resolvePiEngramBin: mocks.resolvePiEngramBin,
-  resolvePiEngramRequirement: mocks.resolvePiEngramRequirement,
-  runPiRuntimeSystem: mocks.runPiRuntimeSystem,
-}));
+vi.mock("../src/lib/pi-runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/pi-runtime.js")>("../src/lib/pi-runtime.js");
+  return {
+    ...actual,
+    detectPiRuntime: mocks.detectPiRuntime,
+    hasManagedPiRuntime: mocks.hasManagedPiRuntime,
+    resolvePiEngramBin: mocks.resolvePiEngramBin,
+    resolvePiEngramRequirement: mocks.resolvePiEngramRequirement,
+    runPiRuntimeSystem: mocks.runPiRuntimeSystem,
+  };
+});
 
 vi.mock("../src/lib/pi-managed-runtime.js", () => ({
   runManagedPiSystem: mocks.runManagedPiSystem,

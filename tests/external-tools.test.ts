@@ -12,6 +12,7 @@ import {
   setupPnpmGlobal,
   resolvePlaywrightCliState,
   executePlaywrightToolAction,
+  verifyPlaywrightBrowser,
   detectPlaywrightCli,
 } from "../src/lib/external-tools.js";
 import { runDetectedBin } from "../src/lib/detect.js";
@@ -122,7 +123,7 @@ describe("Playwright CLI external tool core", () => {
     ["install", ["add", "--global", PINNED_PACKAGE]],
     ["update", ["add", "--global", PINNED_PACKAGE]],
     ["remove", ["remove", "--global", "@playwright/cli"]],
-    ["install-browser", ["dlx", PINNED_PACKAGE, "install-browser"]],
+    ["install-browser", ["dlx", PINNED_PACKAGE, "install-browser", "chromium"]],
   ] as const)("plans %s as direct pinned pnpm argv", (action, args) => {
     expect(planPlaywrightCliCommand(action, WINDOWS_PNPM_BIN)).toEqual({
       command: WINDOWS_PNPM_BIN,
@@ -130,30 +131,113 @@ describe("Playwright CLI external tool core", () => {
     });
   });
 
-  it("returns a typed global-bin failure without mutating global actions, but keeps browser downloads successful", () => {
+  it("returns a typed global-bin failure without mutating global actions", () => {
     const preflightCalls: string[][] = [];
     const globalMutationCalls: string[][] = [];
-    const browserInstallCalls: string[][] = [];
     mocks.execFileSync.mockImplementation((_command, args: string[]) => {
       if (args[0] === "bin" && args[1] === "--global") {
         preflightCalls.push(args);
         throw Object.assign(new Error("Unable to find the global bin directory"), { status: 1 });
       }
       if (args[1] === "--global") globalMutationCalls.push(args);
-      if (args[0] === "dlx") browserInstallCalls.push(args);
       return "";
     });
     const pnpmBin = "C:\\tools\\pnpm.exe";
     const globalActions = ["install", "update", "remove"] as const;
 
     const globalResults = globalActions.map((action) => executePlaywrightToolAction(action, pnpmBin));
-    const browserResult = executePlaywrightToolAction("install-browser", pnpmBin);
 
     expect(globalResults).toEqual(globalActions.map(() => ({ ok: false, reason: "pnpm-global-bin" })));
-    expect(browserResult).toEqual({ ok: true });
     expect(preflightCalls).toEqual(globalActions.map(() => ["bin", "--global"]));
     expect(globalMutationCalls).toEqual([]);
-    expect(browserInstallCalls).toEqual([["dlx", PINNED_PACKAGE, "install-browser"]]);
+  });
+
+  it("returns browser-launch when Chromium cannot launch after the pinned browser download", () => {
+    const globalRoot = tempDir();
+    const packageDir = path.join(globalRoot, "@playwright", "cli");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@playwright/cli", version: "0.1.18" }));
+
+    let downloadCwd: string | undefined;
+    mocks.execFileSync.mockImplementation((command, args: string[], options?: { cwd?: string }) => {
+      if (args[0] === "dlx") {
+        downloadCwd = options?.cwd;
+        return "";
+      }
+      if (args[0] === "root" && args[1] === "--global") return `${globalRoot}\n`;
+      if (command === process.execPath && args[0] === "-e") {
+        throw Object.assign(new Error("Chromium failed to launch"), { status: 1 });
+      }
+      throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+    });
+
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", PNPM_HOME: "/tmp/jx-pnpm", JX_TEST_ENV: "preserved" };
+    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm", env)).toEqual({
+      ok: false,
+      reason: "browser-launch",
+    });
+
+    expect(downloadCwd).toBeDefined();
+    expect(downloadCwd).not.toBe(process.cwd());
+    expect(downloadCwd && fs.existsSync(downloadCwd)).toBe(false);
+    const downloadCall = mocks.execFileSync.mock.calls.find(([, args]) => args?.[0] === "dlx");
+    expect(downloadCall?.[1]).toEqual(["dlx", PINNED_PACKAGE, "install-browser", "chromium"]);
+    expect(downloadCall?.[2]).toEqual(expect.objectContaining({
+      cwd: downloadCwd,
+      env: expect.objectContaining({ JX_TEST_ENV: "preserved", NO_UPDATE_NOTIFIER: "1" }),
+    }));
+    expect(mocks.execFileSync.mock.calls.some(([, args]) => args?.[0] === "add" || args?.[0] === "remove")).toBe(false);
+  });
+
+  it("returns success only after the global CLI Chromium smoke test passes and cleans its temporary cwd", () => {
+    const globalRoot = tempDir();
+    const packageDir = path.join(globalRoot, "@playwright", "cli");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@playwright/cli", version: "0.1.18" }));
+
+    let downloadCwd: string | undefined;
+    mocks.execFileSync.mockImplementation((command, args: string[], options?: { cwd?: string }) => {
+      if (args[0] === "dlx") {
+        downloadCwd = options?.cwd;
+        return "";
+      }
+      if (args[0] === "root" && args[1] === "--global") return `${globalRoot}\n`;
+      if (command === process.execPath && args[0] === "-e") return "";
+      throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+    });
+
+    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", PNPM_HOME: "/tmp/jx-pnpm", JX_TEST_ENV: "preserved" };
+    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm", env)).toEqual({ ok: true });
+
+    expect(downloadCwd).toBeDefined();
+    expect(downloadCwd && fs.existsSync(downloadCwd)).toBe(false);
+    const smokeCall = mocks.execFileSync.mock.calls.find(([command, args]) => command === process.execPath && args?.[0] === "-e");
+    expect(smokeCall?.[2]).toEqual(expect.objectContaining({
+      cwd: downloadCwd,
+      timeout: 25_000,
+      env: expect.objectContaining({ JX_TEST_ENV: "preserved", NO_UPDATE_NOTIFIER: "1" }),
+    }));
+    expect(smokeCall?.[1]).toEqual(expect.arrayContaining([
+      "-e",
+      expect.stringContaining("chromium"),
+    ]));
+    expect(smokeCall?.[1]).toEqual(expect.arrayContaining([
+      expect.stringContaining("about:blank"),
+    ]));
+  });
+
+  it("exposes the Chromium verification helper as a boolean process boundary", () => {
+    const globalRoot = tempDir();
+    const packageDir = path.join(globalRoot, "@playwright", "cli");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@playwright/cli", version: "0.1.18" }));
+    mocks.execFileSync.mockImplementation((command, args: string[]) => {
+      if (args[0] === "root" && args[1] === "--global") return `${globalRoot}\n`;
+      if (command === process.execPath && args[0] === "-e") return "";
+      throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+    });
+
+    expect(verifyPlaywrightBrowser("/usr/bin/pnpm", { PATH: "/usr/bin:/bin" })).toBe(true);
   });
 
   it.each(["", " \n", "\t\n"])(
@@ -179,7 +263,7 @@ describe("Playwright CLI external tool core", () => {
     },
   );
 
-  it("accepts a non-empty global-bin path and keeps install-browser free of the preflight", () => {
+  it("accepts a non-empty global-bin path for global package actions", () => {
     const calls: string[][] = [];
     mocks.execFileSync.mockImplementation((_command, args: string[]) => {
       calls.push(args);
@@ -192,9 +276,6 @@ describe("Playwright CLI external tool core", () => {
       ["add", "--global", PINNED_PACKAGE],
     ]);
 
-    calls.length = 0;
-    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm")).toEqual({ ok: true });
-    expect(calls).toEqual([["dlx", PINNED_PACKAGE, "install-browser"]]);
   });
 
   it("passes the prepared child environment to pnpm preflight and action", () => {
@@ -266,6 +347,22 @@ describe("Playwright CLI external tool core", () => {
     expect(resolvePnpmBin()).toBeNull();
     expect(mocks.lookPath).toHaveBeenCalledWith("pnpm");
     expect(mocks.lookPath).toHaveBeenCalledWith("pnpm.cmd");
+  });
+
+  it("reports a known pnpm-home Playwright shim outside PATH without executing it", () => {
+    const pnpmHome = tempDir();
+    const shim = path.join(pnpmHome, PLAYWRIGHT_CLI.bin);
+    fs.writeFileSync(shim, "#!/bin/sh\n");
+    vi.stubEnv("PNPM_HOME", pnpmHome);
+    vi.stubEnv("PATH", "/empty");
+    mocks.lookPath.mockReturnValue(null);
+
+    expect(detectPlaywrightCli()).toEqual({
+      status: "not-in-path",
+      binPath: shim,
+      detectedVersion: null,
+    });
+    expect(mocks.execFileSync).not.toHaveBeenCalled();
   });
 
   it.each([
