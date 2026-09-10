@@ -304,6 +304,7 @@ async function resolveDevtoolsMcpSelection(
   const file = devtoolsMcpPreferenceFile();
   const selected = await p.multiselect({
     message: "Chrome DevTools MCP avanzado (opcional). ¿En qué runtimes activarlo?",
+    required: false,
     options: runtimes.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
     initialValues: runtimes.filter((runtime) => loadDevtoolsMcpPreference(file, runtime)),
   });

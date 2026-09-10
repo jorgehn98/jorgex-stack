@@ -168,17 +168,19 @@ describe("CLI Pi package-runtime dispatch", () => {
   it.each([
     ["mixed", ["codex", "pi"]],
     ["Pi-only", ["pi"]],
-  ] as const)("includes Pi in the interactive install selector for %s selections", async (_name, selection) => {
+  ] as const)("includes Pi in the optional DevTools selector for %s selections", async (_name, selection) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-selector-"));
-    mocks.prompts.multiselect.mockResolvedValueOnce(selection);
+    mocks.prompts.multiselect.mockResolvedValueOnce([]);
 
-    const exitCode = await runCli(["install", "--mode", "human", "--devtools"], home, true);
+    const exitCode = await runCli(["install", "--agents", selection.join(","), "--mode", "human"], home, true);
 
     expect(exitCode).toBe(0);
     const selector = mocks.prompts.multiselect.mock.calls[0]?.[0] as {
       options: Array<{ value: string; label: string }>;
+      required?: boolean;
     } | undefined;
     expect(selector?.options).toEqual(expect.arrayContaining([{ value: "pi", label: "Pi" }]));
+    expect(selector?.required).toBe(false);
     if (selection.some((runtime) => runtime !== "pi")) {
       expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
         runtimes: selection.filter((runtime) => runtime !== "pi"),
@@ -186,7 +188,10 @@ describe("CLI Pi package-runtime dispatch", () => {
     } else {
       expect(mocks.runInstall).not.toHaveBeenCalled();
     }
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "install" }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      devtoolsMcpEnabled: false,
+    }));
   });
 
   it.each([
