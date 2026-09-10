@@ -228,11 +228,14 @@ function normalizeInstalledSource(settingsJson: string, alias: string, canonical
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const packages = Reflect.get(parsed, "packages");
     if (!Array.isArray(packages)) return null;
-    const hasCanonical = packages.some((entry) => entry === canonical
-      || (entry !== null && typeof entry === "object" && !Array.isArray(entry)
-        && Reflect.get(entry, "source") === canonical));
-    if (packages.filter((entry) => entry === alias).length !== 1 || hasCanonical) return null;
-    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? canonical : entry));
+    const sourceOf = (entry: unknown): unknown => entry !== null && typeof entry === "object" && !Array.isArray(entry)
+      ? Reflect.get(entry, "source") : entry;
+    if (packages.filter((entry) => sourceOf(entry) === alias).length !== 1
+      || packages.some((entry) => sourceOf(entry) === canonical)) return null;
+    Reflect.set(parsed, "packages", packages.map((entry) => {
+      if (sourceOf(entry) !== alias) return entry;
+      return typeof entry === "string" ? canonical : { ...entry, source: canonical };
+    }));
     return JSON.stringify(parsed);
   } catch {
     return null;

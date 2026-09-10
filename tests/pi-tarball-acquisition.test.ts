@@ -76,6 +76,7 @@ function doctorJson(): string {
 function deps(
   events: string[],
   artifact: { bytes: number; sha256: string; sha512: string } = candidate,
+  settingsJson = JSON.stringify({ packages: ["npm:foreign@1.0.0", `npm:jorgex-pi@file:${tarball}`] }),
 ) {
   return {
     download(destination: string) {
@@ -94,7 +95,7 @@ function deps(
     },
     readSettings() {
       events.push("read-settings");
-      return JSON.stringify({ packages: ["npm:foreign@1.0.0", `npm:jorgex-pi@file:${tarball}`] });
+      return settingsJson;
     },
     rewriteSettings(content: string) {
       events.push(`settings:${content}`);
@@ -139,6 +140,82 @@ describe("Pi tarball acquisition and portable scope", () => {
     expect(trace).not.toContain("PI_PACKAGE_DIR");
     expect(trace).not.toContain("NPM_TOKEN");
     expect(trace).not.toContain(process.env.HOME ?? "__no_home__");
+  });
+
+  it("normalizes an object alias while preserving its filters, metadata, and foreign entries", async () => {
+    const { installPiFromVerifiedTarball } = await acquisition();
+    const events: string[] = [];
+    const alias = `npm:jorgex-pi@file:${tarball}`;
+    const settingsJson = JSON.stringify({
+      packages: [
+        { source: "npm:foreign@1.0.0", skills: ["foreign-skill"], prompts: ["foreign-prompt"], custom: true },
+        { source: alias, skills: ["keep-skill"], prompts: ["keep-prompt"], custom: { label: "keep" } },
+      ],
+      foreignSetting: "keep",
+    });
+
+    const result = installPiFromVerifiedTarball({
+      targetDir: target,
+      piExecutable: "/opt/pi/bin/pi",
+      engramBin: targetEnvironment.ENGRAM_BIN,
+      candidate,
+    }, deps(events, candidate, settingsJson));
+
+    expect(result).toMatchObject({ kind: "installed" });
+    expect(events).toContain(`settings:${JSON.stringify({
+      packages: [
+        { source: "npm:foreign@1.0.0", skills: ["foreign-skill"], prompts: ["foreign-prompt"], custom: true },
+        { source: candidate.source, skills: ["keep-skill"], prompts: ["keep-prompt"], custom: { label: "keep" } },
+      ],
+      foreignSetting: "keep",
+    })}`);
+  });
+
+  it("blocks a string and object alias duplicate without rewriting settings", async () => {
+    const { installPiFromVerifiedTarball } = await acquisition();
+    const events: string[] = [];
+    const alias = `npm:jorgex-pi@file:${tarball}`;
+    const settingsJson = JSON.stringify({
+      packages: [
+        "npm:foreign@1.0.0",
+        alias,
+        { source: alias, skills: ["keep-skill"], prompts: ["keep-prompt"], custom: true },
+      ],
+    });
+
+    const result = installPiFromVerifiedTarball({
+      targetDir: target,
+      piExecutable: "/opt/pi/bin/pi",
+      engramBin: targetEnvironment.ENGRAM_BIN,
+      candidate,
+    }, deps(events, candidate, settingsJson));
+
+    expect(result).toEqual({ kind: "blocked", reason: "settings-corrupt" });
+    expect(events.filter((event) => event.startsWith("settings:")).length).toBe(0);
+  });
+
+  it("blocks an ambiguous canonical registration without rewriting settings", async () => {
+    const { installPiFromVerifiedTarball } = await acquisition();
+    const events: string[] = [];
+    const alias = `npm:jorgex-pi@file:${tarball}`;
+    const settingsJson = JSON.stringify({
+      packages: [
+        "npm:foreign@1.0.0",
+        alias,
+        candidate.source,
+        { source: candidate.source, skills: [], prompts: [] },
+      ],
+    });
+
+    const result = installPiFromVerifiedTarball({
+      targetDir: target,
+      piExecutable: "/opt/pi/bin/pi",
+      engramBin: targetEnvironment.ENGRAM_BIN,
+      candidate,
+    }, deps(events, candidate, settingsJson));
+
+    expect(result).toEqual({ kind: "blocked", reason: "settings-corrupt" });
+    expect(events.filter((event) => event.startsWith("settings:")).length).toBe(0);
   });
 
   it("fails closed on any size or digest mismatch before Pi, settings, runner, or receipt mutation", async () => {
