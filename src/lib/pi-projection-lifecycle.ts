@@ -449,7 +449,7 @@ function inspectDevtools(
   let recordedDevtools = false;
   if (read.kind === "present") {
     try { recordedDevtools = Object.hasOwn(JSON.parse(read.content), "devtools"); }
-    catch { /* Legacy receipt repair is unchanged when the optional handoff is absent. */ }
+    catch { /* Preserve existing receipt repair only while DevTools is off and its handoff file is absent. */ }
     if (!previous && (input.devtoolsMcpEnabled || content !== null || recordedDevtools)) return receiptInvalid(scope.receiptFile);
   }
   if (content !== null && (!previous?.devtools || contentHash(content) !== previous.devtools.sha256)) return devtoolsConflict(file);
