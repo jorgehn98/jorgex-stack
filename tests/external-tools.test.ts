@@ -9,6 +9,7 @@ import {
   planPlaywrightCliCommand,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
+  setupPnpmGlobal,
   resolvePlaywrightCliState,
   executePlaywrightToolAction,
   detectPlaywrightCli,
@@ -50,6 +51,7 @@ afterEach(() => {
   mocks.execFileSync.mockReset();
   mocks.lookPath.mockReset();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("Playwright CLI external tool core", () => {
@@ -152,6 +154,41 @@ describe("Playwright CLI external tool core", () => {
     expect(preflightCalls).toEqual(globalActions.map(() => ["bin", "--global"]));
     expect(globalMutationCalls).toEqual([]);
     expect(browserInstallCalls).toEqual([["dlx", PINNED_PACKAGE, "install-browser"]]);
+  });
+
+  it("passes the prepared child environment to pnpm preflight and action", () => {
+    mocks.lookPath.mockReturnValue("/usr/bin/pnpm");
+    mocks.execFileSync.mockReturnValue("");
+    const childEnv: NodeJS.ProcessEnv = {
+      PNPM_HOME: "/isolated/pnpm",
+      PATH: `/isolated/pnpm/bin${path.delimiter}/isolated/pnpm`,
+    };
+
+    expect(executePlaywrightToolAction("install", "/usr/bin/pnpm", childEnv)).toEqual({ ok: true });
+    expect(mocks.execFileSync).toHaveBeenCalledTimes(2);
+    for (const [, , options] of mocks.execFileSync.mock.calls) {
+      expect(options).toEqual(expect.objectContaining({ env: childEnv }));
+    }
+  });
+
+  it("prepares pnpm setup with a returned environment without mutating the parent process", () => {
+    const pnpmHome = path.join(tempDir(), "pnpm-home");
+    vi.stubEnv("PNPM_HOME", pnpmHome);
+    vi.stubEnv("PATH", "/usr/bin:/bin");
+    const parentPnpmHome = process.env.PNPM_HOME;
+    const parentPath = process.env.PATH;
+    mocks.execFileSync.mockReturnValue("");
+
+    const result = setupPnpmGlobal("/usr/bin/pnpm");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.env.PNPM_HOME).toBe(pnpmHome);
+    const pathEntries = result.env.PATH?.split(path.delimiter) ?? [];
+    expect(pathEntries).toEqual(expect.arrayContaining([pnpmHome, path.join(pnpmHome, "bin")]));
+    expect(mocks.execFileSync.mock.calls.some(([, args]) => args?.[0] === "setup")).toBe(true);
+    expect(process.env.PNPM_HOME).toBe(parentPnpmHome);
+    expect(process.env.PATH).toBe(parentPath);
   });
 
   it.each(["ENOENT", "EACCES"] as const)("classifies a %s preflight spawn failure as a pnpm command error", (code) => {

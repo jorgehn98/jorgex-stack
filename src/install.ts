@@ -26,7 +26,9 @@ import {
   isPlaywrightBrowserReady,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
+  setupPnpmGlobal,
   type PlaywrightCliAction,
+  type PnpmSetupResult,
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
@@ -65,14 +67,22 @@ export interface InstallOptions {
   playwrightToolDeps?: PlaywrightToolPlanDeps;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
+  /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
+  engramBin?: string | null;
+  /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
+  showSummary?: boolean;
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
 export type PlaywrightInstallAction = Exclude<PlaywrightToolAction, "remove">;
 
 /** Puente de instalación al ejecutor tipado de external-tools. */
-export function executePlaywrightToolAction(action: PlaywrightCliAction): PlaywrightToolActionResult {
-  return executeExternalPlaywrightToolAction(action, resolvePnpmBin());
+export function executePlaywrightToolAction(
+  action: PlaywrightCliAction,
+  pnpmBin = resolvePnpmBin(),
+  env?: NodeJS.ProcessEnv,
+): PlaywrightToolActionResult {
+  return executeExternalPlaywrightToolAction(action, pnpmBin, env);
 }
 
 export interface PlaywrightToolPlan {
@@ -90,8 +100,9 @@ export interface PlaywrightToolConsent {
 }
 
 export interface PlaywrightToolPlanDeps {
-  run: (action: PlaywrightInstallAction) => Promise<boolean | PlaywrightToolActionResult>;
+  run: (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv) => Promise<boolean | PlaywrightToolActionResult>;
   persistEnabled: (enabled: boolean) => void;
+  setupPnpm?: (pnpmBin: string) => PnpmSetupResult;
 }
 
 export type PlaywrightToolPlanResult =
@@ -269,10 +280,11 @@ export function collectAllCurrentTargets(
 }
 
 export async function runInstall(opts: InstallOptions): Promise<number> {
-  p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
+  const showSummary = opts.showSummary !== false;
+  if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
 
   const stackDir = stackRoot();
-  const engramBin = detectEngram();
+  const engramBin = opts.engramBin === undefined ? detectEngram() : opts.engramBin;
   const modePreference = opts.mode === undefined
     ? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE)
     : normalizeInstallModePreference(opts.mode);
@@ -282,7 +294,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     : [];
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
-    p.outro("Install cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
+    if (showSummary) p.outro("Install cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
   const toolPlan = opts.playwrightToolConsent === undefined
@@ -455,9 +467,41 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (opts.dryRun) {
       p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
     } else if (exitCode === 0) {
-      const result = await runPlaywrightToolPlan(toolPlan, opts.playwrightToolDeps ?? {
-        run: async (action) => executePlaywrightToolAction(action),
-        persistEnabled: (enabled) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
+      const baseDeps = opts.playwrightToolDeps ?? {
+        run: async (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv) => {
+          const pnpmBin = resolvePnpmBin();
+          return executePlaywrightToolAction(action, pnpmBin, env);
+        },
+        persistEnabled: (enabled: boolean) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
+        setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
+      } satisfies PlaywrightToolPlanDeps;
+      let setupAttempted = false;
+      let preparedEnv: NodeJS.ProcessEnv | undefined;
+      const result = await runPlaywrightToolPlan(toolPlan, {
+        ...baseDeps,
+        run: async (action) => {
+          const first = await baseDeps.run(action, preparedEnv);
+          if (first === true || first === false || first.ok || first.reason !== "pnpm-global-bin") return first;
+          if (setupAttempted || opts.dryRun || opts.targetDir !== undefined) return first;
+          const consent = opts.playwrightToolConsent;
+          const canAskForSetup = consent?.interactive === true && !opts.yes;
+          if (!canAskForSetup) return first;
+          setupAttempted = true;
+          const accepted = await p.confirm({
+            message: "pnpm no tiene directorio global. ¿Ejecutar 'pnpm setup' ahora? Esto modificará la configuración de tu shell.",
+            initialValue: false,
+          });
+          if (p.isCancel(accepted) || !accepted) return first;
+          const pnpmBin = resolvePnpmBin();
+          if (pnpmBin === null) return first;
+          const setup = baseDeps.setupPnpm?.(pnpmBin) ?? setupPnpmGlobal(pnpmBin);
+          if (!setup.ok) {
+            p.log.error(`pnpm setup falló: ${setup.reason}`);
+            return first;
+          }
+          preparedEnv = setup.env;
+          return baseDeps.run(action, preparedEnv);
+        },
       });
       if (!result.ok) {
         const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
@@ -521,12 +565,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     saveInstallModePreference(installModePreferenceFile(), modePreference);
   }
 
-  p.outro(opts.dryRun
-    ? exitCode === 0
-      ? "Dry-run: no se ha escrito nada."
-      : "Dry-run completado con errores (revisa arriba)."
-    : exitCode === 0
-      ? "Hecho."
-      : "Install completado con errores (revisa arriba).");
+  if (showSummary) {
+    p.outro(opts.dryRun
+      ? exitCode === 0
+        ? "Dry-run: no se ha escrito nada."
+        : "Dry-run completado con errores (revisa arriba)."
+      : exitCode === 0
+        ? "Hecho."
+        : "Install completado con errores (revisa arriba).");
+  }
   return exitCode;
 }

@@ -91,6 +91,9 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
   const originalUserProfile = process.env.USERPROFILE;
   const restoreTty = tty ? setStdoutTty(true) : null;
   let observedExitCode: typeof process.exitCode = undefined;
+  const engram = path.join(homeDir, ".local", "bin", process.platform === "win32" ? "engram.exe" : "engram");
+  fs.mkdirSync(path.dirname(engram), { recursive: true });
+  fs.writeFileSync(engram, "fixture; never execute", { mode: 0o755 });
 
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;

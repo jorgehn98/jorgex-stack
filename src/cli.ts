@@ -29,6 +29,7 @@ import { runManagedPiSystem } from "./lib/pi-managed-runtime.js";
 import { writeText } from "./lib/fsx.js";
 import { runQualityPlan } from "./lib/quality-runner.js";
 import { serializeQualityReceipt } from "./lib/quality-receipt.js";
+import { installMissingEngram } from "./lib/engram-install.js";
 
 const VERSION = readPackageVersion();
 
@@ -47,6 +48,7 @@ export interface Flags {
   list: boolean;
   check: boolean;
   removeEngram: boolean;
+  engram: boolean;
   playwright: boolean;
   removePlaywright: boolean;
   devtools: boolean;
@@ -102,6 +104,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     list: false,
     check: false,
     removeEngram: false,
+    engram: false,
     playwright: false,
     removePlaywright: false,
     devtools: false,
@@ -170,6 +173,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     else if (arg === "--list") flags.list = true;
     else if (arg === "--check") flags.check = true;
     else if (arg === "--remove-engram") flags.removeEngram = true;
+    else if (arg === "--engram") flags.engram = true;
     else if (arg === "--playwright") flags.playwright = true;
     else if (arg === "--remove-playwright") flags.removePlaywright = true;
     else if (arg === "--devtools") flags.devtools = true;
@@ -357,7 +361,50 @@ async function resolveRuntimes(flags: Flags, includeAvailablePi = false): Promis
   return choice;
 }
 
-async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, yes = false): Promise<number> {
+type HostEngramResolution =
+  | { ok: true; bin: string | null }
+  | { ok: false; message: string };
+
+/** Resuelve Engram una sola vez antes de tocar cualquier runtime del install. */
+async function resolveHostEngramForInstall(
+  flags: Flags,
+): Promise<HostEngramResolution> {
+  if (flags.targetDir !== undefined) return { ok: true, bin: null };
+
+  const existing = resolvePiEngramBin();
+  if (flags.dryRun) return { ok: true, bin: existing };
+  if (existing !== null) return { ok: true, bin: existing };
+
+  let accepted = flags.engram;
+  if (!accepted && !flags.yes && process.stdin.isTTY === true && process.stdout.isTTY === true) {
+    const answer = await p.confirm({
+      message: "Engram no está instalado. ¿Descargar e instalar ahora el binario oficial verificado?",
+      initialValue: false,
+    });
+    if (!p.isCancel(answer)) accepted = answer === true;
+  }
+  if (!accepted) {
+    return {
+      ok: false,
+      message: "Engram no está instalado. Usa --engram para autorizar su instalación o instálalo antes de reintentar.",
+    };
+  }
+
+  try {
+    const result = await installMissingEngram();
+    if (result.ok) return { ok: true, bin: result.bin };
+    return { ok: false, message: `Engram: ${result.reason}` };
+  } catch (error) {
+    return { ok: false, message: `Engram: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function runSelectedPi(
+  operation: PiRuntimeOperation,
+  targetDir?: string,
+  yes = false,
+  resolvedEngramBin?: string | null,
+): Promise<number> {
   if (targetDir === undefined && operation !== "models") {
     const preferenceErrors = browserPreferenceErrors();
     if (preferenceErrors.length > 0) {
@@ -374,7 +421,9 @@ async function runSelectedPi(operation: PiRuntimeOperation, targetDir?: string, 
     console.error("No se pudo verificar la versión instalada de Pi sin ejecutarlo; revisa la instalación de Pi.");
     return 1;
   }
-  let engramBin = resolvePiEngramBin(targetDir);
+  let engramBin = resolvedEngramBin === undefined
+    ? resolvePiEngramBin(targetDir)
+    : resolvedEngramBin;
   if (operation === "install" && engramBin === null) {
     const requirement = await resolvePiEngramRequirement({
       targetDir,
@@ -438,6 +487,7 @@ Opciones:
   --dry-run             Muestra el plan sin escribir nada
   --yes, -y             No interactivo
   --playwright          Autoriza Playwright CLI global y sus navegadores (requerido con --yes/sin TTY)
+  --engram              (install) autoriza instalar el binario Engram si falta
   --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
@@ -476,6 +526,12 @@ async function main(): Promise<void> {
 
   const { command, flags } = parsed;
 
+  if (flags.engram && command !== "install") {
+    console.error("--engram solo se admite durante install.");
+    process.exitCode = 1;
+    return;
+  }
+
   if (command !== "quality" && flags.targetDir !== undefined && flags.agents.length !== 1) {
     console.error("--target-dir requiere exactamente un runtime en --agents.");
     process.exitCode = 1;
@@ -494,6 +550,7 @@ async function main(): Promise<void> {
         || flags.list
         || flags.check
         || flags.removeEngram
+        || flags.engram
         || flags.playwright
         || flags.removePlaywright
         || flags.devtools
@@ -538,52 +595,74 @@ async function main(): Promise<void> {
       }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       let exitCode = 0;
-      if (fileRuntimes.length > 0) {
-        const mode = await resolveInstallMode(flags);
+      let completed = false;
+      p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
+      try {
+        if (flags.targetDir === undefined) {
+          const errors = browserPreferenceErrors();
+          if (errors.length > 0) {
+            for (const error of errors) p.log.error(error);
+            exitCode = 1;
+            return;
+          }
+        }
+        const mode = fileRuntimes.length > 0 ? await resolveInstallMode(flags) : undefined;
         if (mode === null) return;
         const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, fileRuntimes);
-        if (devtoolsMcpSelection === null) return;
+        if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
         if (playwrightToolConsent === null) return;
-        const hasOpenCodeModels = await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes);
-        if (!hasOpenCodeModels) {
-          process.exitCode = 1;
-          return;
+        if (!await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes)) { exitCode = 1; return; }
+
+        let engramBin: string | null | undefined;
+        if (command === "install") {
+          const engram = await resolveHostEngramForInstall(flags);
+          if (!engram.ok) { p.log.error(engram.message); exitCode = 1; return; }
+          engramBin = engram.bin;
         }
-        exitCode = await runInstall({
-          runtimes: fileRuntimes,
-          targetDir: flags.targetDir,
-          dryRun: flags.dryRun,
-          yes: flags.yes,
-          mode,
-          playwrightToolConsent,
-          devtoolsMcpSelection,
-        });
-      }
-      let piCanRun = true;
-      if (command === "install" && fileRuntimes.length === 0 && runtimes.includes("pi")) {
-        const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags);
-        if (playwrightToolConsent === null) return;
-        if (resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0) {
+        if (fileRuntimes.length > 0) {
+          exitCode = await runInstall({
+            runtimes: fileRuntimes,
+            targetDir: flags.targetDir,
+            dryRun: flags.dryRun,
+            yes: flags.yes,
+            mode,
+            playwrightToolConsent,
+            devtoolsMcpSelection,
+            engramBin,
+            showSummary: false,
+          });
+        }
+        let piCanRun = true;
+        if (command === "install" && fileRuntimes.length === 0 && runtimes.includes("pi")
+          && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0) {
           if (flags.dryRun) {
             p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
           } else {
             exitCode = await runInstall({
-              runtimes: [],
-              targetDir: flags.targetDir,
-              dryRun: false,
-              yes: flags.yes,
-              playwrightToolConsent,
+              runtimes: [], targetDir: flags.targetDir, dryRun: false, yes: flags.yes,
+              playwrightToolConsent, engramBin, showSummary: false,
             });
             piCanRun = exitCode === 0;
           }
         }
+        if (runtimes.includes("pi") && piCanRun) {
+          if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
+          else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes,
+            flags.targetDir === undefined ? engramBin : undefined));
+        }
+        completed = true;
+      } catch (error) {
+        p.log.error(error instanceof Error ? error.message : String(error));
+        exitCode = 1;
+      } finally {
+        if (process.exitCode === 1) exitCode = 1;
+        process.exitCode = exitCode;
+        p.outro(exitCode !== 0
+          ? `${command} completado con errores (revisa arriba).`
+          : !completed ? `${command} cancelado.`
+          : flags.dryRun ? "Dry-run: no se ha escrito nada." : "Hecho.");
       }
-      if (runtimes.includes("pi") && piCanRun) {
-        if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
-        else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes));
-      }
-      process.exitCode = exitCode;
       return;
     }
     case "uninstall": {
