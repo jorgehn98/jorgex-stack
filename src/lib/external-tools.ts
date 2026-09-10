@@ -214,10 +214,12 @@ export function executePlaywrightToolAction(
     const preflight = planDetectedBinCommand(pnpmBin, ["bin", "--global"]);
     if (preflight === null) return { ok: false, reason: "pnpm-command" };
     try {
-      execFileSync(preflight.command, preflight.args, {
-        stdio: "inherit",
+      const globalBin = execFileSync(preflight.command, preflight.args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
         ...(env === undefined ? {} : { env }),
       });
+      if (globalBin.trim() === "") return { ok: false, reason: "pnpm-global-bin" };
     } catch (error) {
       return { ok: false, reason: hasNonzeroProcessStatus(error) ? "pnpm-global-bin" : "pnpm-command" };
     }

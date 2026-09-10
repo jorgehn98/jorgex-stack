@@ -156,9 +156,50 @@ describe("Playwright CLI external tool core", () => {
     expect(browserInstallCalls).toEqual([["dlx", PINNED_PACKAGE, "install-browser"]]);
   });
 
+  it.each(["", " \n", "\t\n"])(
+    "treats pnpm bin --global output %j as a global-bin failure without mutating global actions",
+    (preflightOutput) => {
+      const preflightCalls: string[][] = [];
+      const globalMutationCalls: string[][] = [];
+      mocks.execFileSync.mockImplementation((_command, args: string[]) => {
+        if (args[0] === "bin" && args[1] === "--global") {
+          preflightCalls.push(args);
+          return preflightOutput;
+        }
+        if (args[1] === "--global") globalMutationCalls.push(args);
+        return "/home/test/.local/share/pnpm\n";
+      });
+
+      const globalActions = ["install", "update", "remove"] as const;
+      const results = globalActions.map((action) => executePlaywrightToolAction(action, "/usr/bin/pnpm"));
+
+      expect(results).toEqual(globalActions.map(() => ({ ok: false, reason: "pnpm-global-bin" })));
+      expect(preflightCalls).toEqual(globalActions.map(() => ["bin", "--global"]));
+      expect(globalMutationCalls).toEqual([]);
+    },
+  );
+
+  it("accepts a non-empty global-bin path and keeps install-browser free of the preflight", () => {
+    const calls: string[][] = [];
+    mocks.execFileSync.mockImplementation((_command, args: string[]) => {
+      calls.push(args);
+      return "/home/test/.local/share/pnpm\n";
+    });
+
+    expect(executePlaywrightToolAction("install", "/usr/bin/pnpm")).toEqual({ ok: true });
+    expect(calls).toEqual([
+      ["bin", "--global"],
+      ["add", "--global", PINNED_PACKAGE],
+    ]);
+
+    calls.length = 0;
+    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm")).toEqual({ ok: true });
+    expect(calls).toEqual([["dlx", PINNED_PACKAGE, "install-browser"]]);
+  });
+
   it("passes the prepared child environment to pnpm preflight and action", () => {
     mocks.lookPath.mockReturnValue("/usr/bin/pnpm");
-    mocks.execFileSync.mockReturnValue("");
+    mocks.execFileSync.mockReturnValue("/isolated/pnpm\n");
     const childEnv: NodeJS.ProcessEnv = {
       PNPM_HOME: "/isolated/pnpm",
       PATH: `/isolated/pnpm/bin${path.delimiter}/isolated/pnpm`,
