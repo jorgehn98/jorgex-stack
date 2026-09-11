@@ -34,8 +34,7 @@ La snapshot validada declara:
 
 | Campo | Valor |
 | --- | --- |
-| `testedVersions` | `[0.84.2, 0.85.1]` |
-| Compatibilidad | Solo las versiones explícitas `0.84.2` y `0.85.1`; no se acepta `0.85.0` ni un intervalo implícito. |
+| `testedVersions` | `[0.84.2]` |
 | `schemaVersion` | `1` |
 | Runner | `jorgex-pi`, comandos `status`, `doctor`, `models`, `sync` y `cleanup`, contrato `v1` |
 | `maxStdoutBytes` | `65536` |
@@ -66,6 +65,8 @@ En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la v
 ## Pin vigente y contrato
 
 El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La disponibilidad para consumo comienza tras la publicación y adopción verificadas; la validación, el pin exacto, la integridad y la compatibilidad siguen siendo obligatorios.
+
+La compatibilidad vigente es una allowlist explícita de Pi `0.84.2` y `0.85.1`; no incluye `0.85.0` ni un intervalo implícito. Los límites del contrato vigente corresponden a los extremos de esa lista.
 
 ## Preparar una adopción de Pi
 
