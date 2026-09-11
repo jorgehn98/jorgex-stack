@@ -14,6 +14,8 @@ const logs = vi.hoisted(() => ({
   success: vi.fn(),
 }));
 
+const detectEngram = vi.hoisted(() => vi.fn(() => null));
+
 vi.mock("@clack/prompts", () => ({
   intro: logs.intro,
   outro: logs.outro,
@@ -25,6 +27,11 @@ vi.mock("@clack/prompts", () => ({
     success: logs.success,
   },
 }));
+
+vi.mock("../src/lib/detect.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/detect.js")>("../src/lib/detect.js");
+  return { ...actual, detectEngram };
+});
 
 type DoctorOptions = {
   targetDir?: string;
@@ -242,6 +249,36 @@ describe("doctor de estilo global", () => {
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("con runtimes vacíos sigue ejecutando las comprobaciones generales del doctor", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-empty-runtimes-"));
+    const home = path.join(root, "home");
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    const originalEngramDataDir = process.env.ENGRAM_DATA_DIR;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.ENGRAM_DATA_DIR = path.join(home, ".engram");
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ runtimes: [] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(detectEngram).toHaveBeenCalled();
+      expect(outputText).toMatch(/Engram: NO detectado/i);
+      expect(outputText).not.toContain("Diagnóstico limitado al estilo");
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      if (originalEngramDataDir === undefined) delete process.env.ENGRAM_DATA_DIR;
+      else process.env.ENGRAM_DATA_DIR = originalEngramDataDir;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
