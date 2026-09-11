@@ -127,9 +127,12 @@ function archiveEntries(file) {
   return entries;
 }
 
+function tarText(file, member) {
+  return execFileSync("tar", ["-xOf", file, `package/${member}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_JSON, timeout: 30_000, windowsHide: true });
+}
+
 function tarJson(file, member) {
-  const text = execFileSync("tar", ["-xOf", file, `package/${member}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_JSON, timeout: 30_000, windowsHide: true });
-  return JSON.parse(text);
+  return JSON.parse(tarText(file, member));
 }
 
 function comparable(member, input) {
@@ -220,9 +223,10 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     exclusions.splice(exclusions.indexOf(matches[0]), 1);
   }
   const playwrightCapability = "playwright-handoff-v1";
-  if (acceptPlaywrightHandoff
+  const playwrightTransition = acceptPlaywrightHandoff
     && !oldContracts[rootContract].capabilities.includes(playwrightCapability)
-    && newContracts[rootContract].capabilities.includes(playwrightCapability)) {
+    && newContracts[rootContract].capabilities.includes(playwrightCapability);
+  if (playwrightTransition) {
     const capabilities = expectedContracts[rootContract].capabilities;
     const runnerIndex = capabilities.indexOf("runner-json-v1");
     assert(runnerIndex >= 0, "Playwright handoff requires the existing JSON runner");
@@ -258,7 +262,23 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    if (playwrightTransition) {
+      const module = "extensions/playwright.ts";
+      assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", module]).trim(), "", "Playwright module must be new in this transition");
+      const previousFile = join(stage, "previous.tgz");
+      const previousTarball = await downloadTarball(fetch,
+        `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
+        `sha512-${Buffer.from(current.tarball.sha512, "hex").toString("base64")}`);
+      assert.deepEqual(previousTarball, current.tarball, "Previous pinned tarball differs");
+      const previousEntries = archiveEntries(previousFile);
+      assert.equal(previousEntries.length, artifacts.archive.entries, "Previous archive inventory differs");
+      assert(!previousEntries.includes(`package/${module}`), "Playwright module must be absent from the previous archive");
+      assert.deepEqual([...entries].sort(), [...previousEntries, `package/${module}`].sort(),
+        "Playwright archive inventory requires exactly the reviewed module addition");
+      assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
+    } else {
+      assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    }
     for (const member of CONTRACTS) {
       const packed = tarJson(tarballFile, member), expected = structuredClone(newContracts[member]);
       if (member === "package.json") {
@@ -269,7 +289,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     }
     const pin = { package: { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` }, provenance: { commit: producer }, tarball };
     readPiPin(pin);
-    const nextArtifacts = { current: pin, previous: current, archive: { entries: artifacts.archive.entries, parity: { source: { commit: sourceCommit } } } };
+    const nextArtifacts = { current: pin, previous: current, archive: { entries: entries.length, parity: { source: { commit: sourceCommit } } } };
     if (git(root, ["rev-parse", "HEAD"]).trim() !== baseCommit) throw new Error("Stack HEAD changed during preparation");
     assertClean(root, stage);
     if (apply) applyJsonFiles(root, stage, [pin, nextArtifacts]);

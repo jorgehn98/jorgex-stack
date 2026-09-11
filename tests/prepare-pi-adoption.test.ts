@@ -52,6 +52,7 @@ type AdoptionFixture = {
   next: Pin;
   sourceCommit: string;
   nextArchive: Artifacts["archive"];
+  previousTarball: Buffer;
   tarball: Buffer;
 };
 
@@ -138,6 +139,7 @@ function writePiRelease(
     devtoolsCapability?: boolean;
     devtoolsExclusion?: boolean;
     playwrightHandoff?: boolean;
+    extraArchiveFile?: { path: string; content: string };
     rootContractMutation?: boolean;
     extraCapabilities?: string[];
   } = {},
@@ -157,7 +159,7 @@ function writePiRelease(
     version,
     type: "module",
     bin: { "jorgex-pi": "./bin/jorgex-pi.mjs" },
-    files: ["agents", "assets", "bin", "contract", "snapshot/agents"],
+    files: ["agents", "assets", "bin", "contract", "extensions", "snapshot/agents"],
     dependencies: { "pi-web-access": "0.24.1" },
   });
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
@@ -168,6 +170,16 @@ function writePiRelease(
   fs.writeFileSync(path.join(root, "assets", "system-prompt", "AGENTS.md"), "fixture policy\n", "utf8");
   fs.mkdirSync(path.join(root, "snapshot", "agents"), { recursive: true });
   fs.writeFileSync(path.join(root, "snapshot", "agents", "tester.md"), "fixture agent\n", "utf8");
+  fs.mkdirSync(path.join(root, "extensions"), { recursive: true });
+  fs.writeFileSync(path.join(root, "extensions", "bootstrap.ts"), "export const bootstrap = true;\n", "utf8");
+  const playwrightExtension = path.join(root, "extensions", "playwright.ts");
+  if (options.playwrightHandoff) fs.writeFileSync(playwrightExtension, "export const playwright = true;\n", "utf8");
+  else if (fs.existsSync(playwrightExtension)) fs.unlinkSync(playwrightExtension);
+  if (options.extraArchiveFile) {
+    const extraFile = path.join(root, options.extraArchiveFile.path);
+    fs.mkdirSync(path.dirname(extraFile), { recursive: true });
+    fs.writeFileSync(extraFile, options.extraArchiveFile.content, "utf8");
+  }
 
   writeJson(root, "contract/jorgex-pi.v1.json", {
     schemaVersion: 1,
@@ -236,6 +248,26 @@ function archiveEntries(root: string, tarball: Buffer): number {
   return output.trimEnd().split(/\r?\n/).filter(Boolean).length;
 }
 
+function replaceArchiveMember(root: string, tarball: Buffer, member: string, content: string, outputMember = member): Buffer {
+  const workspace = fs.mkdtempSync(path.join(path.dirname(root), "tarball-edit-"));
+  const archive = path.join(workspace, "source.tgz");
+  const extraction = path.join(workspace, "extract");
+  fs.writeFileSync(archive, tarball);
+  fs.mkdirSync(extraction);
+  execFileSync("tar", ["-xzf", archive, "-C", extraction], {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (outputMember !== member) fs.renameSync(path.join(extraction, member), path.join(extraction, outputMember));
+  fs.writeFileSync(path.join(extraction, outputMember), content, "utf8");
+  return execFileSync("tar", ["-czf", "-", "-C", extraction, "package"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+    windowsHide: true,
+  });
+}
+
 function createAdoptionFixture(options: {
   runnerCommands?: string[];
   previousDevtoolsHandoff?: boolean;
@@ -244,6 +276,7 @@ function createAdoptionFixture(options: {
   devtoolsExclusion?: boolean;
   previousPlaywrightHandoff?: boolean;
   playwrightHandoff?: boolean;
+  extraArchiveFile?: { path: string; content: string };
   rootContractMutation?: boolean;
   extraCapabilities?: string[];
 } = {}): AdoptionFixture {
@@ -292,6 +325,7 @@ function createAdoptionFixture(options: {
     devtoolsCapability: options.devtoolsCapability,
     devtoolsExclusion: options.devtoolsExclusion,
     playwrightHandoff: options.playwrightHandoff,
+    extraArchiveFile: options.extraArchiveFile,
     rootContractMutation: options.rootContractMutation,
     extraCapabilities: options.extraCapabilities,
   });
@@ -309,26 +343,39 @@ function createAdoptionFixture(options: {
     next,
     sourceCommit,
     nextArchive: { entries: archiveEntries(parent, tarball), parity: { source: { commit: sourceCommit } } },
+    previousTarball: oldTarball,
     tarball,
   };
 }
 
 function registryFetch(
   fixture: AdoptionFixture,
-  options: { integrity?: string; tarball?: string } = {},
+  options: {
+    integrity?: string;
+    previousIntegrity?: string;
+    tarball?: string;
+    nextTarballBytes?: Buffer;
+    previousTarballBytes?: Buffer;
+  } = {},
 ) {
+  const nextTarball = options.nextTarballBytes ?? fixture.tarball;
+  const previousTarball = options.previousTarballBytes ?? fixture.previousTarball;
+  const sri = (value: Buffer) => `sha512-${Buffer.from(sha512(value), "hex").toString("base64")}`;
+  const metadataResponse = (version: string, artifact: Buffer, artifactUrl: string, integrity?: string) => new Response(JSON.stringify({
+    name: "jorgex-pi",
+    version,
+    dist: { tarball: artifactUrl, integrity: integrity ?? sri(artifact) },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+
   return vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
     if (String(url) === `https://registry.npmjs.org/jorgex-pi/${fixture.version}`) {
-      return new Response(JSON.stringify({
-        name: "jorgex-pi",
-        version: fixture.version,
-        dist: {
-          tarball: options.tarball ?? tarballUrl(fixture.version),
-          integrity: options.integrity ?? `sha512-${Buffer.from(fixture.next.tarball.sha512, "hex").toString("base64")}`,
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
+      return metadataResponse(fixture.version, nextTarball, options.tarball ?? tarballUrl(fixture.version), options.integrity);
     }
-    if (String(url) === tarballUrl(fixture.version)) return new Response(new Uint8Array(fixture.tarball), { status: 200 });
+    if (String(url) === `https://registry.npmjs.org/jorgex-pi/${fixture.current.package.version}`) {
+      return metadataResponse(fixture.current.package.version, previousTarball, tarballUrl(fixture.current.package.version), options.previousIntegrity);
+    }
+    if (String(url) === tarballUrl(fixture.version)) return new Response(new Uint8Array(nextTarball), { status: 200 });
+    if (String(url) === tarballUrl(fixture.current.package.version)) return new Response(new Uint8Array(previousTarball), { status: 200 });
     throw new Error(`Unexpected fixture fetch: ${String(url)}`);
   });
 }
@@ -386,7 +433,7 @@ describe("preparePiAdoption", () => {
     });
   }, 15_000);
 
-  it("acepta la transición exacta de Playwright sólo con confirmación explícita", async () => {
+  it("acepta la transición exacta de Playwright con bootstrap compartido sólo con confirmación explícita", async () => {
     const fixture = createAdoptionFixture({ playwrightHandoff: true });
     const fetch = registryFetch(fixture);
     const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
@@ -412,6 +459,112 @@ describe("preparePiAdoption", () => {
       previous: fixture.current,
       archive: fixture.nextArchive,
     });
+  }, 15_000);
+
+  it("rechaza un archivo adicional junto al delta de Playwright confirmado", async () => {
+    const fixture = createAdoptionFixture({
+      playwrightHandoff: true,
+      extraArchiveFile: { path: "extensions/extra.ts", content: "export const extra = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright archive inventory requires exactly the reviewed module addition/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un renombrado con el mismo número esperado de entradas", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const renamedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/bootstrap.ts",
+      "export const bootstrap = true;\n",
+      "package/extensions/other.ts",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: renamedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright archive inventory requires exactly the reviewed module addition/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un tarball previo que no coincide con sus bytes fijados", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const previousTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.previousTarball,
+      "package/extensions/bootstrap.ts",
+      "export const bootstrap = false;\n",
+    );
+    const fetch = registryFetch(fixture, { previousTarballBytes: previousTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Registry SRI mismatch/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza el contenido de playwright.ts si el tarball no coincide con el blob Git del productor", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const substitutedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/playwright.ts",
+      "export const playwright = false;\n",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: substitutedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright module does not match producer/);
+
+    expect(rootState(fixture)).toEqual(before);
   }, 15_000);
 
   it("rechaza una mutación ajena del contrato raíz aunque se confirme Playwright", async () => {
