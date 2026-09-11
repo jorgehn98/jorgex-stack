@@ -452,6 +452,7 @@ async function runSelectedPi(
   yes = false,
   resolvedEngramBin?: string | null,
   devtoolsMcpEnabled?: boolean,
+  playwrightCliEnabled?: boolean,
 ): Promise<number> {
   if (targetDir === undefined && operation !== "models") {
     const preferenceErrors = browserPreferenceErrors();
@@ -500,6 +501,7 @@ async function runSelectedPi(
     detected: { executable: detected.executable, version: detected.version },
     engramBin,
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
+    ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
   });
   if (result.kind === "blocked") {
     const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
@@ -705,7 +707,9 @@ async function main(): Promise<void> {
         if (runtimes.includes("pi") && piCanRun) {
           if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
           else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes,
-            flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi));
+            flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi,
+            flags.targetDir === undefined && exitCode === 0 && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0
+              ? playwrightToolConsent.runtimeSelection?.pi : undefined));
         }
         completed = true;
       } catch (error) {

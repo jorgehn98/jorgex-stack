@@ -95,6 +95,13 @@ vi.mock("../src/lib/pi-runtime.js", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/pi-runtime.js")>("../src/lib/pi-runtime.js");
   return {
     ...actual,
+    PI_RUNTIME_CANDIDATE: {
+      ...actual.PI_RUNTIME_CANDIDATE,
+      contract: {
+        ...actual.PI_RUNTIME_CANDIDATE.contract,
+        capabilities: [...actual.PI_RUNTIME_CANDIDATE.contract.capabilities, "playwright-handoff-v1"],
+      },
+    },
     detectPiRuntime: mocks.detectPiRuntime,
     hasManagedPiRuntime: mocks.hasManagedPiRuntime,
     resolvePiEngramBin: mocks.resolvePiEngramBin,
@@ -152,6 +159,13 @@ function writeCorruptBrowserPreference(homeDir: string): string {
   const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
   fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
   fs.writeFileSync(preferenceFile, "{not-json\n");
+  return preferenceFile;
+}
+
+function writePlaywrightPreference(homeDir: string, value: unknown): string {
+  const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+  fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+  fs.writeFileSync(preferenceFile, `${JSON.stringify(value)}\n`);
   return preferenceFile;
 }
 
@@ -363,6 +377,7 @@ describe("CLI Pi package-runtime dispatch", () => {
         targetDir: false,
         explicitToolSelection: true,
         confirmed: false,
+        runtimeSelection: { pi: true },
       },
     }));
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
@@ -370,6 +385,7 @@ describe("CLI Pi package-runtime dispatch", () => {
       targetDir: undefined,
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
       engramBin: "/isolated/bin/engram",
+      playwrightCliEnabled: true,
     });
     expect(mocks.runInstall.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
@@ -572,6 +588,28 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
   });
 
+  it("does not persist the Pi Playwright choice when the managed projection fails", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-projection-failure-"));
+    const preference = writePlaywrightPreference(home, {
+      version: 2,
+      enabled: { opencode: true, "claude-code": false, codex: false, pi: false },
+    });
+    const before = fs.readFileSync(preference, "utf8");
+    mocks.runInstall.mockResolvedValueOnce(0);
+    mocks.runManagedPiSystem.mockResolvedValueOnce({
+      kind: "blocked",
+      reason: "projection-write-failed",
+      remedy: "Reintenta la proyección.",
+    });
+
+    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(1);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      playwrightCliEnabled: true,
+    }));
+    expect(fs.readFileSync(preference, "utf8")).toBe(before);
+  });
+
   it("keeps a Pi-only target-dir Playwright install out of the global installer and real browser preferences", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
     const targetDir = path.join(home, "target");
@@ -585,6 +623,7 @@ describe("CLI Pi package-runtime dispatch", () => {
       operation: "install",
       targetDir,
     }));
+    expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]).not.toHaveProperty("playwrightCliEnabled");
   });
 
   it.each(["install", "sync", "update", "uninstall"] as const)(

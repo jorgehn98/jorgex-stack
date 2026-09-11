@@ -6,7 +6,7 @@ JorgeX Stack reemplaza la antigua skill `agent-browser` por dos integraciones **
 >
 > - **Recomendado**: Playwright CLI (`@playwright/cli@0.1.18`) + skill `playwright-cli` vendorizada. Cero schemas MCP permanentes, coste contextual casi nulo para sesiones que no navegan. El prompt de `install` sugiere instalarlo pero el cursor por defecto es **No** (`initialValue: false`): el consentimiento sigue siendo opt-in.
 > - **Avanzado opt-in**: Chrome DevTools MCP en modo **full** (~29 tools, ~5,8–7,7k tokens de schemas). Default-off, selección por runtime, paquete fijado, argv `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics`: Chrome se levanta con un **perfil temporal aislado, eliminado al cerrar** (no hay perfil persistente dedicado), las cabeceras sensibles se redactan, pero los cuerpos de request/response pueden contener tokens o PII; evita sesiones autenticadas o datos sensibles, o desactiva manualmente la captura de red fuera del stack. CrUX + telemetría están deshabilitados.
-> - **Pi**: el selector activa Chrome DevTools MCP de forma opt-in con el paquete adoptado `0.8.13`. El handoff se escribe en `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json`, queda registrado con SHA-256 en el receipt de proyección y se elimina solo tras volver a comprobar su integridad.
+> - **Pi**: el selector activa las integraciones solo cuando el candidato declara la capability correspondiente. DevTools usa `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json`; Playwright usa `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`. Cada handoff queda registrado con SHA-256 en el receipt de proyección y se elimina solo tras volver a comprobar su integridad.
 > - **Excluidos por diseño**: Playwright MCP y Chrome DevTools MCP en modo `--slim` (duplican peor lo que Playwright CLI ya hace).
 
 ---
@@ -53,7 +53,7 @@ pnpm dlx jorgex-stack install --playwright --playwright-runtimes=opencode,claude
 
 `--playwright-runtimes` solo es válido junto con `install --playwright` y debe limitarse a los runtimes incluidos en `--agents`. La preferencia v2 conserva las elecciones de otros runtimes al cambiar una selección parcial; las preferencias v1 con `enabled: true` se migran inicialmente a todos los runtimes.
 
-Pi solo aparece en el selector cuando el paquete Pi adoptado declara `playwright-handoff-v1`. Mientras el candidato instalado no exponga esa capability, el stack puede instalar igualmente el CLI global y Chromium, pero informa de que no puede proyectar la guía en Pi. Esto no impide usar Playwright desde Pi manualmente.
+Pi aparece en el selector porque el pin vigente declara `playwright-handoff-v1`. La instalación global del CLI y Chromium es compartida por la máquina, y la selección solo decide en qué runtimes se proyecta la guía y, para Pi, su handoff. Esto no impide usar Playwright desde Pi manualmente.
 
 Bajo el capó, `--playwright` ejecuta **dos** planes pnpm consecutivos como argv directo (`execFileSync`, sin shell):
 
@@ -134,6 +134,27 @@ Reglas del ciclo de vida de la sección:
 - **Reconciliación post-setup parcial**: si la instalación del paquete y del navegador termina bien pero la reconciliación del `systemPromptFile` (upsert de la sección) falla — verificación de idempotencia inestable o excepción al planificar/aplicar la guía — el CLI devuelve `exit 1` y reporta que *la guía de navegador quedó en estado parcial*, recomendando repetir `install --playwright` o ejecutar `sync` para repararla. El paquete queda instalado y la preferencia habilitada; solo la sección marcada está desalineada. Si el estado parcial de Pi procede de una entrada alias del paquete, repite `install`; `sync` no repara ese bloqueo, aunque conserva los campos adicionales de la entrada.
 
 La marca canónica vive en `stack/system-prompt/browser-playwright.md` y `stack/system-prompt/browser-chrome-devtools.md`; los adapter generan el bloque completo vía `upsertMarkdownSection` y aplican la inversa en `planUnmerge`.
+
+### 2.8 Handoff de Playwright para Pi
+
+Cuando el candidato de Pi declara `playwright-handoff-v1` y la selección de Playwright para Pi se confirma, Stack proyecta `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json` con exactamente estos campos:
+
+```json
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "command": "/ruta/absoluta/playwright-cli",
+  "version": "0.1.18"
+}
+```
+
+El handoff se escribe durante la proyección, después de que la instalación del paquete Pi haya terminado correctamente. La selección de Pi se persiste solo después de que la proyección completa termine con éxito; un conflicto, drift, receipt ilegible o fallo de proyección deja la preferencia sin actualizar. El CLI global y Chromium se instalan y verifican en Stack; Pi valida el comando absoluto y la versión fijada cuando lee el handoff. Si `pnpm setup` deja el binario fuera del `PATH` de la sesión, Stack puede conservar y proyectar la ruta absoluta conocida del binario tras preparar el entorno hijo; no es necesario que el comando aparezca en el `PATH` de Pi.
+
+La guía de navegador y el handoff son controles separados: `playwrightCliEnabled` proyecta la sección de guía, mientras `playwrightHandoffEnabled` controla el JSON que Pi consume. El coordinador solo activa ambos para un candidato que declara `playwright-handoff-v1`; esta separación conserva la compatibilidad hacia atrás del API y de la proyección sin anunciar una capacidad no adoptada.
+
+El receipt `~/.jorgex-stack/pi-projection-receipt.json` admite los campos opcionales `devtools.sha256` y `playwright.sha256`. Las formas legacy (sin handoff), DevTools-only, Playwright-only y ambas se conservan mediante el esquema existente. Un handoff ajeno al receipt, con contenido modificado o con un digest distinto falla cerrado. `uninstall` valida primero ambos handoffs y sus digests, crea los backups y vuelve a validar antes de eliminar cada archivo; un conflicto conserva el archivo para revisión.
+
+La adopción del capability se mantiene separada de la actualización del pin. El preparador admite `--accept-playwright-handoff` únicamente para añadir exactamente `playwright-handoff-v1` y `package/extensions/playwright.ts` cuando verifica el conjunto exacto de archivos frente al tarball Pi previo, cuyos hashes están fijados, y comprueba los bytes del nuevo módulo contra el commit productor de Pi. Conserva las comprobaciones de contratos e integridad restantes. La identidad, procedencia y digests del paquete adoptado siguen siendo autoritativos en `src/lib/pi-runtime-pin.json`.
 
 ---
 

@@ -127,9 +127,12 @@ function archiveEntries(file) {
   return entries;
 }
 
+function tarText(file, member) {
+  return execFileSync("tar", ["-xOf", file, `package/${member}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_JSON, timeout: 30_000, windowsHide: true });
+}
+
 function tarJson(file, member) {
-  const text = execFileSync("tar", ["-xOf", file, `package/${member}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_JSON, timeout: 30_000, windowsHide: true });
-  return JSON.parse(text);
+  return JSON.parse(tarText(file, member));
 }
 
 function comparable(member, input) {
@@ -175,9 +178,9 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -219,6 +222,16 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert.deepEqual(matches[0], { kind: "capability-integration", id: "chrome-devtools-capability-handoff" });
     exclusions.splice(exclusions.indexOf(matches[0]), 1);
   }
+  const playwrightCapability = "playwright-handoff-v1";
+  const playwrightTransition = acceptPlaywrightHandoff
+    && !oldContracts[rootContract].capabilities.includes(playwrightCapability)
+    && newContracts[rootContract].capabilities.includes(playwrightCapability);
+  if (playwrightTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    const runnerIndex = capabilities.indexOf("runner-json-v1");
+    assert(runnerIndex >= 0, "Playwright handoff requires the existing JSON runner");
+    capabilities.splice(runnerIndex, 0, playwrightCapability);
+  }
   for (const member of CONTRACTS) {
     assert.deepEqual(comparable(member, newContracts[member]), comparable(member, expectedContracts[member]), `${member} compatibility requires manual review`);
   }
@@ -249,7 +262,23 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    if (playwrightTransition) {
+      const module = "extensions/playwright.ts";
+      assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", module]).trim(), "", "Playwright module must be new in this transition");
+      const previousFile = join(stage, "previous.tgz");
+      const previousTarball = await downloadTarball(fetch,
+        `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
+        `sha512-${Buffer.from(current.tarball.sha512, "hex").toString("base64")}`);
+      assert.deepEqual(previousTarball, current.tarball, "Previous pinned tarball differs");
+      const previousEntries = archiveEntries(previousFile);
+      assert.equal(previousEntries.length, artifacts.archive.entries, "Previous archive inventory differs");
+      assert(!previousEntries.includes(`package/${module}`), "Playwright module must be absent from the previous archive");
+      assert.deepEqual([...entries].sort(), [...previousEntries, `package/${module}`].sort(),
+        "Playwright archive inventory requires exactly the reviewed module addition");
+      assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
+    } else {
+      assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    }
     for (const member of CONTRACTS) {
       const packed = tarJson(tarballFile, member), expected = structuredClone(newContracts[member]);
       if (member === "package.json") {
@@ -260,7 +289,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     }
     const pin = { package: { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` }, provenance: { commit: producer }, tarball };
     readPiPin(pin);
-    const nextArtifacts = { current: pin, previous: current, archive: { entries: artifacts.archive.entries, parity: { source: { commit: sourceCommit } } } };
+    const nextArtifacts = { current: pin, previous: current, archive: { entries: entries.length, parity: { source: { commit: sourceCommit } } } };
     if (git(root, ["rev-parse", "HEAD"]).trim() !== baseCommit) throw new Error("Stack HEAD changed during preparation");
     assertClean(root, stage);
     if (apply) applyJsonFiles(root, stage, [pin, nextArtifacts]);
@@ -279,13 +308,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     const args = process.argv.slice(2);
     const flags = args.slice(4);
-    if (args.length < 4 || args.length > 6 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 7 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
-      apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff") });
+      apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff]");
     process.exitCode = 1;
   }
 }
