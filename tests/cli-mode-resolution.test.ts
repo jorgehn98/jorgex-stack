@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
   const resolvePiEngramBin = vi.fn().mockReturnValue("/isolated/bin/engram");
   const resolvePiEngramRequirement = vi.fn();
   const runManagedPiSystem = vi.fn().mockResolvedValue({ kind: "healthy" });
+  const piCapabilityMode = { value: "actual" as "actual" | "without-playwright" };
   const prompts = {
     confirm: vi.fn().mockResolvedValue(true),
     multiselect: vi.fn().mockResolvedValue([]),
@@ -45,6 +46,7 @@ const mocks = vi.hoisted(() => {
     resolvePiEngramBin,
     resolvePiEngramRequirement,
     runManagedPiSystem,
+    piCapabilityMode,
   };
 });
 
@@ -74,8 +76,19 @@ vi.mock("../src/models-picker.js", async () => {
 
 vi.mock("../src/lib/pi-runtime.js", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/pi-runtime.js")>("../src/lib/pi-runtime.js");
+  const contract = { ...actual.PI_RUNTIME_CANDIDATE.contract };
+  Object.defineProperty(contract, "capabilities", {
+    enumerable: true,
+    get: () => mocks.piCapabilityMode.value === "without-playwright"
+      ? actual.PI_RUNTIME_CANDIDATE.contract.capabilities.filter((capability) => String(capability) !== "playwright-handoff-v1")
+      : actual.PI_RUNTIME_CANDIDATE.contract.capabilities,
+  });
   return {
     ...actual,
+    PI_RUNTIME_CANDIDATE: {
+      ...actual.PI_RUNTIME_CANDIDATE,
+      contract,
+    },
     detectPiRuntime: mocks.detectPiRuntime,
     hasManagedPiRuntime: mocks.hasManagedPiRuntime,
     resolvePiEngramBin: mocks.resolvePiEngramBin,
@@ -167,6 +180,7 @@ afterEach(() => {
   mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
   mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
   mocks.runManagedPiSystem.mockReset().mockResolvedValue({ kind: "healthy" });
+  mocks.piCapabilityMode.value = "actual";
 });
 
 function collectedMessages(spies: Array<{ mock: { calls: unknown[][] } }>): string[] {
@@ -684,6 +698,7 @@ describe("opciones de navegador en main()", () => {
       version: "0.84.2",
       codingAgentDir: "/isolated/pi-agent",
     });
+    mocks.piCapabilityMode.value = "without-playwright";
 
     try {
       const exitCode = await runCli([

@@ -456,6 +456,7 @@ async function runSelectedPi(
   devtoolsMcpEnabled?: boolean,
   writingStyle?: WritingStyleSnapshot,
   modePreference?: InstallModePreference,
+  playwrightCliEnabled?: boolean,
 ): Promise<number> {
   if (targetDir === undefined && operation !== "models") {
     const preferenceErrors = browserPreferenceErrors();
@@ -509,6 +510,7 @@ async function runSelectedPi(
     detected: { executable: detected.executable, version: detected.version },
     engramBin,
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
+    ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
   });
   if (result.kind === "blocked") {
     const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
@@ -729,7 +731,9 @@ async function main(): Promise<void> {
           if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
           else {
             const piExitCode = await runSelectedPi(command, flags.targetDir, flags.yes,
-              flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi, writingStyle, mode);
+              flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi, writingStyle, mode,
+              flags.targetDir === undefined && exitCode === 0 && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0
+                ? playwrightToolConsent.runtimeSelection?.pi : undefined);
             exitCode = Math.max(exitCode, piExitCode);
           }
         }

@@ -34,6 +34,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
       "chrome-devtools-handoff-v1",
+      "playwright-handoff-v1",
       "runner-json-v1",
       "tui-branding-v1",
       "managed-primary-model-v1",

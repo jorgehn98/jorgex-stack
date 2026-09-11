@@ -486,7 +486,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           const pnpmBin = resolvePnpmBin();
           return executePlaywrightToolAction(action, pnpmBin, env);
         },
-        persistEnabled: (enabled: boolean) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, opts.playwrightToolConsent?.runtimeSelection),
+        persistEnabled: (enabled: boolean) => {
+          const selected = opts.playwrightToolConsent?.runtimeSelection;
+          const fileSelection = selected === undefined ? undefined
+            : Object.fromEntries(Object.entries(selected).filter(([runtime]) => runtime !== "pi"));
+          savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection);
+        },
         setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
       } satisfies PlaywrightToolPlanDeps;
       let setupAttempted = false;
