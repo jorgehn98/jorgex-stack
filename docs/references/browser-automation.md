@@ -53,7 +53,7 @@ pnpm dlx jorgex-stack install --playwright --playwright-runtimes=opencode,claude
 
 `--playwright-runtimes` solo es válido junto con `install --playwright` y debe limitarse a los runtimes incluidos en `--agents`. La preferencia v2 conserva las elecciones de otros runtimes al cambiar una selección parcial; las preferencias v1 con `enabled: true` se migran inicialmente a todos los runtimes.
 
-Pi solo aparece en el selector cuando el paquete Pi adoptado declara `playwright-handoff-v1`. Mientras el candidato instalado no exponga esa capability, el stack puede instalar igualmente el CLI global y Chromium, pero informa de que no puede proyectar la guía en Pi. Esto no impide usar Playwright desde Pi manualmente.
+Pi aparece en el selector porque el pin vigente declara `playwright-handoff-v1`. La instalación global del CLI y Chromium es compartida por la máquina, y la selección solo decide en qué runtimes se proyecta la guía y, para Pi, su handoff. Esto no impide usar Playwright desde Pi manualmente.
 
 Bajo el capó, `--playwright` ejecuta **dos** planes pnpm consecutivos como argv directo (`execFileSync`, sin shell):
 
@@ -154,7 +154,7 @@ La guía de navegador y el handoff son controles separados: `playwrightCliEnable
 
 El receipt `~/.jorgex-stack/pi-projection-receipt.json` admite los campos opcionales `devtools.sha256` y `playwright.sha256`. Las formas legacy (sin handoff), DevTools-only, Playwright-only y ambas se conservan mediante el esquema existente. Un handoff ajeno al receipt, con contenido modificado o con un digest distinto falla cerrado. `uninstall` valida primero ambos handoffs y sus digests, crea los backups y vuelve a validar antes de eliminar cada archivo; un conflicto conserva el archivo para revisión.
 
-La adopción del capability se mantiene separada de la actualización del pin. El preparador admite `--accept-playwright-handoff` únicamente para añadir exactamente `playwright-handoff-v1` cuando coincide con la capability del paquete Pi candidato; no modifica el pin, la snapshot ni la historia por sí solo. El candidato congelado actual sigue sin esa capability, por lo que esta documentación prepara el contrato y la adopción queda pendiente de la publicación compatible de Pi.
+La adopción del capability se mantiene separada de la actualización del pin. El preparador admite `--accept-playwright-handoff` únicamente para añadir exactamente `playwright-handoff-v1` y `package/extensions/playwright.ts` cuando verifica el conjunto exacto de archivos frente al tarball Pi previo, cuyos hashes están fijados, y comprueba los bytes del nuevo módulo contra el commit productor de Pi. Conserva las comprobaciones de contratos e integridad restantes. La identidad, procedencia y digests del paquete adoptado siguen siendo autoritativos en `src/lib/pi-runtime-pin.json`.
 
 ---
 
