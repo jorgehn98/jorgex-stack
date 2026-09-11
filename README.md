@@ -148,6 +148,12 @@ Pi puede consumirse inmediatamente después de publicar y verificar el artefacto
 
 `update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
+### Estilo global de escritura
+
+Puedes definir preferencias opcionales de escritura en `~/.jorgex-stack/writing-style.md` y aplicarlas con `sync --mode human` a los runtimes seleccionados. Stack añade una sección independiente sin cambiar sus instrucciones técnicas ni su configuración nativa de personalidad. El archivo no se crea automáticamente; vacío o ausente desactiva la capa tras sincronizar, y el modo programático la omite.
+
+Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md). La fuente y sus backups pueden contener preferencias privadas y no forman parte del paquete público.
+
 ### Browser automation
 
 Browser automation is opt-in and explicit. The legacy `agent-browser` integration has been removed; rely on the two surfaces below.
