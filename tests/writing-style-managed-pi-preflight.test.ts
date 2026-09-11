@@ -10,10 +10,10 @@ const mocks = vi.hoisted(() => ({
   completeProjectionUninstall: vi.fn(),
 }));
 
-vi.mock("../src/lib/pi-runtime.js", () => ({
-  PI_RUNTIME_CANDIDATE: { package: { source: "npm:jorgex-pi@test" } },
-  runPiRuntimeSystem: mocks.runPackage,
-}));
+vi.mock("../src/lib/pi-runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/pi-runtime.js")>("../src/lib/pi-runtime.js");
+  return { ...actual, runPiRuntimeSystem: mocks.runPackage };
+});
 
 vi.mock("../src/lib/pi-projection-lifecycle.js", () => ({
   runPiProjectionLifecycleSystem: mocks.runProjection,
