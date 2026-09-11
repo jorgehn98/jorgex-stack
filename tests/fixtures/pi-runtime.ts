@@ -9,7 +9,7 @@ import artifacts from "./pi-runtime-artifacts.json" with { type: "json" };
 export const PI_RUNTIME_CANDIDATE = {
   ...artifacts.current,
   pi: {
-    testedVersions: ["0.84.2"],
+    testedVersions: ["0.84.2", "0.85.1"],
   },
   contract: {
     schemaVersion: 1,
@@ -82,6 +82,7 @@ export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
       "chrome-devtools-handoff-v1",
+      "playwright-handoff-v1",
       "runner-json-v1",
       "tui-branding-v1",
       "managed-primary-model-v1",
