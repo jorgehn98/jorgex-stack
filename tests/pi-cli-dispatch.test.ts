@@ -258,12 +258,12 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(exitCode).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ runtimes: ["codex"] }));
     expect(mocks.runInstall).not.toHaveBeenCalledWith(expect.objectContaining({ runtimes: expect.arrayContaining(["pi"]) }));
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
       operation: "install",
       targetDir: undefined,
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
       engramBin: "/isolated/bin/engram",
-    });
+    }));
   });
 
   it("keeps Pi-only target-dir model selection out of adapter and model-map flows", async () => {
@@ -336,12 +336,12 @@ describe("CLI Pi package-runtime dispatch", () => {
     try {
       expect(await runCli(["install", "--mode", "human", "--yes"], home)).toBe(0);
       expect(mocks.hasManagedPiRuntime).not.toHaveBeenCalled();
-      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
         operation: "install",
         targetDir: undefined,
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
-      });
+      }));
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
@@ -365,12 +365,12 @@ describe("CLI Pi package-runtime dispatch", () => {
         confirmed: false,
       },
     }));
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith({
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
       operation: "install",
       targetDir: undefined,
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
       engramBin: "/isolated/bin/engram",
-    });
+    }));
     expect(mocks.runInstall.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
     );

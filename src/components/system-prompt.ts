@@ -40,5 +40,9 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
   content = browser === ""
     ? removeMarkdownSection(content, "browser")
     : upsertMarkdownSection(content, "browser", browser);
+  const style = ctx.mode === "programmatic" ? null : ctx.writingStyle?.content;
+  content = style
+    ? upsertMarkdownSection(content, "writing-style", `## Estilo de escritura\n\nEstas preferencias se aplican solo a la prosa dirigida al usuario. Respeta el encargo, los formatos obligatorios y las instrucciones técnicas y superiores; no cambies permisos, verificaciones ni autorizaciones.\n\n${style}`)
+    : removeMarkdownSection(content, "writing-style");
   return [{ kind: "write", target, content }];
 }

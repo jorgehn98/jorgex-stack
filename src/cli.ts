@@ -8,6 +8,7 @@ import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
+import { readWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
 import { readPackageVersion } from "./lib/release.js";
 import { loadModelMap } from "./lib/model-map.js";
 import {
@@ -452,6 +453,8 @@ async function runSelectedPi(
   yes = false,
   resolvedEngramBin?: string | null,
   devtoolsMcpEnabled?: boolean,
+  writingStyle?: WritingStyleSnapshot,
+  writingStyleMode?: "human" | "programmatic",
 ): Promise<number> {
   if (targetDir === undefined && operation !== "models") {
     const preferenceErrors = browserPreferenceErrors();
@@ -459,6 +462,9 @@ async function runSelectedPi(
       for (const error of preferenceErrors) console.error(error);
       return 1;
     }
+  }
+  if (operation === "install" || operation === "sync" || operation === "update") {
+    writingStyle ??= readWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir });
   }
   const detected = detectPiRuntime();
   if (!detected.installed || detected.executable === null) {
@@ -495,6 +501,8 @@ async function runSelectedPi(
     engramBin = requirement.bin;
   }
   const result = await runManagedPiSystem({
+    writingStyle,
+    writingStyleMode,
     operation,
     targetDir,
     detected: { executable: detected.executable, version: detected.version },
@@ -654,6 +662,7 @@ async function main(): Promise<void> {
       let completed = false;
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
+        const writingStyle = readWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
         if (flags.targetDir === undefined) {
           const errors = browserPreferenceErrors();
           if (errors.length > 0) {
@@ -662,7 +671,8 @@ async function main(): Promise<void> {
             return;
           }
         }
-        const mode = fileRuntimes.length > 0 ? await resolveInstallMode(flags) : undefined;
+        const mode = fileRuntimes.length > 0 || flags.mode !== undefined || flags.subagentConcurrency !== undefined
+          ? await resolveInstallMode(flags) : undefined;
         if (mode === null) return;
         const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, runtimes);
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
@@ -679,6 +689,7 @@ async function main(): Promise<void> {
         if (fileRuntimes.length > 0) {
           exitCode = await runInstall({
             runtimes: fileRuntimes,
+            writingStyle,
             targetDir: flags.targetDir,
             dryRun: flags.dryRun,
             yes: flags.yes,
@@ -696,6 +707,7 @@ async function main(): Promise<void> {
             p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
           } else {
             exitCode = await runInstall({
+              writingStyle,
               runtimes: [], targetDir: flags.targetDir, dryRun: false, yes: flags.yes,
               playwrightToolConsent, engramBin, showSummary: false,
             });
@@ -705,7 +717,7 @@ async function main(): Promise<void> {
         if (runtimes.includes("pi") && piCanRun) {
           if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
           else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes,
-            flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi));
+            flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi, writingStyle, mode?.mode));
         }
         completed = true;
       } catch (error) {
