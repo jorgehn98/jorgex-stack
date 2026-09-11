@@ -4,6 +4,7 @@ import type { FileAction, InstallContext, SharedProjectionAdapter } from "../ada
 import { DEVTOOLS_MCP_SERVER } from "../lib/canonical.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { removeMarkdownSection, stripLeadingHtmlComments, upsertMarkdownSection } from "../lib/filemerge.js";
+import { renderWritingStyle } from "../lib/writing-style.js";
 import { composeProgrammaticSystemPrompt } from "../lib/mode-composition.js";
 
 const normalize = (s: string): string => s.replace(/\r\n/g, "\n");
@@ -42,7 +43,7 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
     : upsertMarkdownSection(content, "browser", browser);
   const style = ctx.mode === "programmatic" ? null : ctx.writingStyle?.content;
   content = style
-    ? upsertMarkdownSection(content, "writing-style", `## Estilo de escritura\n\nEstas preferencias se aplican solo a la prosa dirigida al usuario. Respeta el encargo, los formatos obligatorios y las instrucciones técnicas y superiores; no cambies permisos, verificaciones ni autorizaciones.\n\n${style}`)
+    ? upsertMarkdownSection(content, "writing-style", renderWritingStyle(style))
     : removeMarkdownSection(content, "writing-style");
   return [{ kind: "write", target, content }];
 }

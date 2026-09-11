@@ -51,7 +51,6 @@ afterEach(() => {
   mocks.runProjection.mockReturnValue({ kind: "installed" });
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-
 describe("preflight de estilo en el coordinador de Pi", () => {
   it("no ejecuta el paquete ni la proyección si la fuente target-dir es inválida", async () => {
     const targetDir = tempRoot();
@@ -90,4 +89,3 @@ describe("preflight de estilo en el coordinador de Pi", () => {
     }));
   });
 });
-

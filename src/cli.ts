@@ -760,11 +760,15 @@ async function main(): Promise<void> {
       return;
     }
     case "doctor": {
-      const fileDoctorSelected = flags.agents.length === 0 || flags.agents.some(isFileManagedRuntime);
-      let exitCode = fileDoctorSelected ? await runDoctor() : 0;
+      const mode = flags.mode !== undefined || flags.subagentConcurrency !== undefined
+        ? await resolveInstallMode(flags) : undefined;
+      if (mode === null) return;
       const piSelected = flags.agents.includes("pi")
         || (flags.agents.length === 0 && detectPiRuntime().installed && hasManagedPiRuntime(flags.targetDir));
-      if (piSelected) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir));
+      const doctorRuntimes = flags.agents.length > 0 ? flags.agents
+        : piSelected ? [...Object.keys(ADAPTERS) as RuntimeId[], "pi" as const] : undefined;
+      let exitCode = await runDoctor({ targetDir: flags.targetDir, runtimes: doctorRuntimes, mode });
+      if (piSelected) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir, false, undefined, undefined, undefined, mode?.mode));
       process.exitCode = exitCode;
       return;
     }

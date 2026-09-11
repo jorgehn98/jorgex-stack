@@ -43,3 +43,7 @@ export function readWritingStyle(sourcePath: string, options: { rootDir?: string
   if (content.includes("jorgex:")) throw new Error(`La fuente de estilo ${sourcePath} contiene marcadores jorgex: reservados.`);
   return { sourcePath, content: content || null };
 }
+
+export function renderWritingStyle(content: string): string {
+  return `## Estilo de escritura\n\nEstas preferencias se aplican solo a la prosa dirigida al usuario. Respeta el encargo, los formatos obligatorios y las instrucciones técnicas y superiores; no cambies permisos, verificaciones ni autorizaciones.\n\n${content}`;
+}

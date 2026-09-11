@@ -15,7 +15,6 @@ function tempRoot(): string {
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-
 describe("preflight de writing-style en runInstall", () => {
   it("rechaza una fuente inválida antes de crear cualquier archivo del destino", async () => {
     const targetDir = tempRoot();
@@ -53,4 +52,3 @@ describe("preflight de writing-style en runInstall", () => {
     expect(fs.existsSync(path.join(targetDir, "AGENTS.md"))).toBe(false);
   });
 });
-

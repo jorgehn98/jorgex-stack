@@ -284,14 +284,14 @@ describe("CLI Pi package-runtime dispatch", () => {
     });
   });
 
-  it("keeps Pi-only target-dir doctor out of the global Stack doctor", async () => {
+  it("runs the isolated style doctor before the Pi-only target-dir doctor", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-"));
     const targetDir = path.join(home, "target");
 
     const exitCode = await runCli(["doctor", "--agents", "pi", "--target-dir", targetDir], home);
 
     expect(exitCode).toBe(0);
-    expect(mocks.runDoctor).not.toHaveBeenCalled();
+    expect(mocks.runDoctor).toHaveBeenCalledWith({ targetDir, runtimes: ["pi"], mode: undefined });
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor", targetDir }));
   });
 
@@ -623,6 +623,29 @@ describe("CLI Pi package-runtime dispatch", () => {
     } finally {
       error.mockRestore();
     }
+  });
+
+  it("passes the explicit programmatic mode to a target-dir doctor", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-target-programmatic-"));
+    const targetDir = path.join(home, "target");
+
+    const exitCode = await runCli([
+      "doctor",
+      "--agents",
+      "codex",
+      "--target-dir",
+      targetDir,
+      "--mode",
+      "programmatic",
+      "--yes",
+    ], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runDoctor).toHaveBeenCalledWith({
+      targetDir,
+      runtimes: ["codex"],
+      mode: { mode: "programmatic", subagentConcurrency: "serial" },
+    });
   });
 
   it("reports every blocked Pi operation with its reason, paths, and remedy", async () => {
