@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => {
     // managed lifecycle instead.
     runPiRuntimeSystem: vi.fn().mockReturnValue({ kind: "healthy" }),
     runManagedPiSystem: vi.fn().mockResolvedValue({ kind: "healthy" }),
+    forceFileAdaptersAbsent: false,
   };
 });
 
@@ -63,7 +64,19 @@ vi.mock("../src/lib/engram-install.js", () => ({
 
 vi.mock("../src/install.js", async () => {
   const actual = await vi.importActual<typeof import("../src/install.js")>("../src/install.js");
-  return { ...actual, runInstall: mocks.runInstall };
+  const adapters = Object.fromEntries(Object.entries(actual.ADAPTERS).map(([id, adapter]) => [
+    id,
+    adapter === undefined
+      ? adapter
+      : {
+          ...adapter,
+          detect: () => {
+            const detected = adapter.detect();
+            return mocks.forceFileAdaptersAbsent ? { ...detected, installed: false } : detected;
+          },
+        },
+  ])) as typeof actual.ADAPTERS;
+  return { ...actual, ADAPTERS: adapters, runInstall: mocks.runInstall };
 });
 
 vi.mock("../src/uninstall.js", async () => {
@@ -166,6 +179,8 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.installMissingEngram.mockReset().mockResolvedValue({ ok: true, bin: "/isolated/bin/engram" });
   mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
+  mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
+  mocks.forceFileAdaptersAbsent = false;
 });
 
 describe("CLI Pi package-runtime dispatch", () => {
@@ -317,6 +332,111 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(await runCli(["update", "--check", "--agents", "pi"], home)).toBe(0);
     expect(mocks.runUpdateCheck).not.toHaveBeenCalled();
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
+  });
+
+  it.each(["install", "sync"] as const)("persiste el modo explícito tras un %s Pi-only correcto", async (operation) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-mode-persist-${operation}-`));
+    const preference = path.join(home, ".jorgex-stack", "install-mode.json");
+
+    expect(await runCli([
+      operation,
+      "--agents",
+      "pi",
+      "--mode",
+      "programmatic",
+      "--subagent-concurrency",
+      "parallel",
+      "--yes",
+    ], home)).toBe(0);
+
+    expect(JSON.parse(fs.readFileSync(preference, "utf8"))).toEqual({
+      mode: "programmatic",
+      subagentConcurrency: "parallel",
+    });
+  });
+
+  it("no persiste el modo Pi-only cuando el lifecycle queda bloqueado", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mode-blocked-"));
+    const preference = path.join(home, ".jorgex-stack", "install-mode.json");
+    mocks.runManagedPiSystem.mockResolvedValueOnce({
+      kind: "blocked",
+      reason: "projection-drift",
+      paths: [path.join(home, ".pi", "agent", "AGENTS.md")],
+      remedy: "Repara la proyección sintética.",
+    });
+
+    expect(await runCli([
+      "sync",
+      "--agents",
+      "pi",
+      "--mode",
+      "programmatic",
+      "--subagent-concurrency",
+      "parallel",
+      "--yes",
+    ], home)).toBe(1);
+
+    expect(fs.existsSync(preference)).toBe(false);
+  });
+
+  it("no persiste el modo Pi-only durante dry-run", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mode-dry-run-"));
+    const preference = path.join(home, ".jorgex-stack", "install-mode.json");
+
+    expect(await runCli([
+      "install",
+      "--agents",
+      "pi",
+      "--mode",
+      "programmatic",
+      "--subagent-concurrency",
+      "parallel",
+      "--dry-run",
+      "--yes",
+    ], home)).toBe(0);
+
+    expect(fs.existsSync(preference)).toBe(false);
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+  });
+
+  it("no persiste el modo Pi-only de un target-dir en el HOME global", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mode-target-dir-"));
+    const targetDir = path.join(home, "target");
+    const preference = path.join(home, ".jorgex-stack", "install-mode.json");
+
+    expect(await runCli([
+      "install",
+      "--agents",
+      "pi",
+      "--target-dir",
+      targetDir,
+      "--mode",
+      "programmatic",
+      "--subagent-concurrency",
+      "parallel",
+      "--yes",
+    ], home)).toBe(0);
+
+    expect(fs.existsSync(preference)).toBe(false);
+  });
+
+  it("doctor sin --agents limita el diagnóstico al Pi gestionado cuando no hay runtimes de archivo seleccionados", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-default-selection-"));
+    mocks.hasManagedPiRuntime.mockReturnValue(true);
+    mocks.forceFileAdaptersAbsent = true;
+
+    try {
+      expect(await runCli(["doctor"], home)).toBe(0);
+
+      expect(mocks.runDoctor).toHaveBeenCalledWith({
+        targetDir: undefined,
+        runtimes: ["pi"],
+        mode: undefined,
+      });
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
+    } finally {
+      mocks.forceFileAdaptersAbsent = false;
+    }
   });
 
   it("does not select Pi implicitly from the CLI alone when Stack owns no Pi package state", async () => {

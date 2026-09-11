@@ -231,6 +231,94 @@ describe("CLI follow-up sync mode resolution", () => {
     }));
   });
 
+  it("update mixto reutiliza la instantánea inicial y el modo explícito al sincronizar Pi", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-style-snapshot-mixed-"));
+    const homeDir = path.join(tmp, "home");
+    const styleFile = path.join(homeDir, ".jorgex-stack", "writing-style.md");
+    const originalStyle = "Estilo sintético inicial de update.";
+    const changedStyle = "Estilo sintético cambiado durante update.";
+    fs.mkdirSync(path.dirname(styleFile), { recursive: true });
+    fs.writeFileSync(styleFile, `${originalStyle}\n`);
+    writeOpenCodeModelMap(homeDir);
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/isolated/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+    mocks.runInteractiveUpdate.mockImplementationOnce(async () => {
+      fs.writeFileSync(styleFile, `${changedStyle}\n`);
+      return { exitCode: 0, appliedUpdates: false, syncRequired: false };
+    });
+
+    try {
+      await runCli([
+        "update",
+        "--agents",
+        "opencode,pi",
+        "--mode",
+        "programmatic",
+        "--subagent-concurrency",
+        "parallel",
+        "--yes",
+      ], homeDir);
+
+      const expectedStyle = { sourcePath: styleFile, content: originalStyle };
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        writingStyle: expectedStyle,
+        mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+      }));
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "update",
+        writingStyle: expectedStyle,
+        writingStyleMode: "programmatic",
+      }));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("update solo Pi conserva la instantánea y el modo explícito", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-style-snapshot-pi-"));
+    const homeDir = path.join(tmp, "home");
+    const styleFile = path.join(homeDir, ".jorgex-stack", "writing-style.md");
+    const style = "Estilo sintético solo para Pi.";
+    fs.mkdirSync(path.dirname(styleFile), { recursive: true });
+    fs.writeFileSync(styleFile, `${style}\n`);
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/isolated/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+
+    try {
+      await runCli([
+        "update",
+        "--agents",
+        "pi",
+        "--mode",
+        "programmatic",
+        "--subagent-concurrency",
+        "parallel",
+        "--yes",
+      ], homeDir);
+
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "update",
+        writingStyle: { sourcePath: styleFile, content: style },
+        writingStyleMode: "programmatic",
+      }));
+      expect(mocks.runInteractiveUpdate).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("update omite el sync previo cuando no hay preferencia guardada y sigue con el update", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-missing-mode-"));
     const homeDir = path.join(tmp, "home");

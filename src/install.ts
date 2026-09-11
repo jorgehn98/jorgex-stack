@@ -317,7 +317,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
   const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
-  if (hasFileRuntimes && useManifest) ensureModelMapFile();
+  if (hasFileRuntimes && useManifest && !opts.dryRun) ensureModelMapFile();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 

@@ -20,6 +20,15 @@ import {
 } from "./lib/external-tools.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference, primaryModelOwnershipError } from "./lib/tool-preferences.js";
 
+function readDoctorTextIfExists(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 export function engramVersion(bin: string): string | null {
   const out = runDetectedBin(bin, ["--version"], 5_000);
   if (out === null) return null;
@@ -92,7 +101,7 @@ function reportWritingStyle(options: DoctorOptions, style: WritingStyleSnapshot,
       : options.targetDir ?? ADAPTERS[id as RuntimeId]!.detect().configDir;
     const file = adapter.paths(configDir).systemPromptFile;
     try {
-      const content = readTextIfExists(file) ?? "";
+      const content = readDoctorTextIfExists(file) ?? "";
       const open = "<!-- jorgex:writing-style -->";
       const close = "<!-- /jorgex:writing-style -->";
       const healthy = hasHealthyManagedMarkdownMarkers(content, "writing-style");
@@ -107,7 +116,7 @@ function reportWritingStyle(options: DoctorOptions, style: WritingStyleSnapshot,
       }
       if (id === "codex") {
         const override = path.join(configDir, "AGENTS.override.md");
-        if ((readTextIfExists(override) ?? "").trim() !== "") {
+        if ((readDoctorTextIfExists(override) ?? "").trim() !== "") {
           p.log.warn(`Codex: ${override} no vacío puede ocultar el AGENTS.md gestionado; revísalo sin modificarlo automáticamente.`);
           problems++;
         }

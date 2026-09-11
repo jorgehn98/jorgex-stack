@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeId } from "../src/adapters/types.js";
+import { listBackups } from "../src/lib/backup.js";
+import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
 
 const prompts = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -158,5 +160,44 @@ describe("lifecycle del estilo global", () => {
         for (const [candidate, detect] of originalDetectors) candidate.detect = detect;
       }
     });
+  });
+
+  it("el lifecycle real de Pi respalda y retira solo sus marcadores, preservando la política del usuario y la fuente", () => {
+    const root = tempRoot();
+    const targetDir = path.join(root, "target");
+    const sourcePath = path.join(root, "writing-style.md");
+    const style = "Estilo sintético de Pi para lifecycle.";
+    const agentPrompt = path.join(targetDir, "pi-agent", "AGENTS.md");
+    const backupsRoot = path.join(targetDir, "backups");
+    fs.writeFileSync(sourcePath, `${style}\n`);
+    fs.mkdirSync(path.dirname(agentPrompt), { recursive: true });
+    fs.writeFileSync(agentPrompt, "# Instrucciones de usuario\n\nNo elimines esta política.\n");
+
+    const input = {
+      targetDir,
+      packageSource: "npm:jorgex-pi@test",
+      engramBin: null,
+      playwrightCliEnabled: false,
+      writingStyle: { sourcePath, content: style },
+    };
+
+    expect(runPiProjectionLifecycleSystem({ operation: "install", ...input })).toMatchObject({ kind: "installed" });
+    const installedPrompt = fs.readFileSync(agentPrompt, "utf8");
+    expect(installedPrompt).toContain("<!-- jorgex:writing-style -->");
+    expect(installedPrompt).toContain(style);
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(`${style}\n`);
+
+    expect(runPiProjectionLifecycleSystem({ operation: "uninstall", ...input })).toEqual({ kind: "uninstalled" });
+    const uninstalledPrompt = fs.readFileSync(agentPrompt, "utf8");
+    expect(uninstalledPrompt).toContain("# Instrucciones de usuario");
+    expect(uninstalledPrompt).toContain("No elimines esta política.");
+    expect(uninstalledPrompt).not.toContain("jorgex:writing-style");
+    expect(uninstalledPrompt).not.toContain("jorgex:system-prompt");
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(`${style}\n`);
+
+    const promptBackups = listBackups(backupsRoot).flatMap((backup) => backup.files)
+      .filter((file) => file.original === agentPrompt);
+    expect(promptBackups.length).toBeGreaterThan(0);
+    expect(promptBackups.some((file) => fs.readFileSync(file.stored, "utf8").includes("jorgex:writing-style"))).toBe(true);
   });
 });

@@ -165,21 +165,32 @@ describe("preflight de estilo antes del coordinador de runtimes", () => {
     }));
   });
 
-  it("target-dir usa solo su fuente y no filtra el estilo del HOME real", async () => {
+  it.each(["pi", "codex"] as const)("target-dir usa solo su fuente y no filtra el estilo del HOME real en %s", async (runtime) => {
     const home = tempRoot();
     const targetDir = path.join(home, "target");
     const realSource = writeStateStyle(home, "ESTILO REAL QUE NO DEBE APARECER");
     const targetSource = writeTargetStyle(targetDir, STYLE);
 
-    await expect(runCli(["install", "--agents", "pi", "--target-dir", targetDir, "--yes"], home)).resolves.toBe(0);
+    await expect(runCli(["install", "--agents", runtime, "--target-dir", targetDir, "--yes"], home)).resolves.toBe(0);
 
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      targetDir,
-      writingStyle: { sourcePath: targetSource, content: STYLE },
-    }));
-    expect(mocks.runManagedPiSystem).not.toHaveBeenCalledWith(expect.objectContaining({
-      writingStyle: expect.objectContaining({ sourcePath: realSource, content: expect.stringContaining("ESTILO REAL") }),
-    }));
+    if (runtime === "pi") {
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        targetDir,
+        writingStyle: { sourcePath: targetSource, content: STYLE },
+      }));
+      expect(mocks.runManagedPiSystem).not.toHaveBeenCalledWith(expect.objectContaining({
+        writingStyle: expect.objectContaining({ sourcePath: realSource, content: expect.stringContaining("ESTILO REAL") }),
+      }));
+    } else {
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        runtimes: ["codex"],
+        targetDir,
+        writingStyle: { sourcePath: targetSource, content: STYLE },
+      }));
+      expect(mocks.runInstall).not.toHaveBeenCalledWith(expect.objectContaining({
+        writingStyle: expect.objectContaining({ sourcePath: realSource, content: expect.stringContaining("ESTILO REAL") }),
+      }));
+    }
   });
 
   it("dry-run valida la fuente aunque no ejecute ningún lifecycle ni escriba destinos", async () => {

@@ -245,4 +245,73 @@ describe("doctor de estilo global", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("falla cerrado si la proyección de Codex no se puede leer, aunque el estilo esté desactivado", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-unreadable-prompt-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const prompt = path.join(targetDir, "AGENTS.md");
+    const privateBody = "CUERPO DE PROYECCIÓN ILEGIBLE QUE NO DEBE SALIR";
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, "writing-style.md"), " \n\t\n");
+    fs.writeFileSync(prompt, privateBody);
+    fs.chmodSync(prompt, 0o000);
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(outputText).toMatch(/no se puede leer|ilegible|permiso|AGENTS\.md|revisa/i);
+      expect(outputText).not.toContain(privateBody);
+    } finally {
+      fs.chmodSync(prompt, 0o600);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falla cerrado si el override global de Codex no se puede leer y no imprime su contenido", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-unreadable-override-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const override = path.join(targetDir, "AGENTS.override.md");
+    const privateBody = "CUERPO DE OVERRIDE ILEGIBLE QUE NO DEBE SALIR";
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, "writing-style.md"), " \n\t\n");
+    fs.writeFileSync(path.join(targetDir, "AGENTS.md"), "# Configuración sintética\n");
+    fs.writeFileSync(override, privateBody);
+    fs.chmodSync(override, 0o000);
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(outputText).toMatch(/no se puede leer|ilegible|permiso|AGENTS\.override\.md|revisa/i);
+      expect(outputText).not.toContain(privateBody);
+    } finally {
+      fs.chmodSync(override, 0o600);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
