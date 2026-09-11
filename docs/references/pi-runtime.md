@@ -60,11 +60,11 @@ La proyección se ejecuta después de la instalación del paquete y se registra 
 
 La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. La instalación global del CLI y de Chromium es compartida por la máquina; el selector `--playwright-runtimes` decide en qué runtimes se proyecta la guía. Pi solo se puede seleccionar cuando el paquete adoptado declara `playwright-handoff-v1`; si no, Stack informa de que la capacidad global puede instalarse, pero la proyección en Pi queda pendiente de esa capability. Las instalaciones repetidas reparan la entrada alias de Pi y conservan sus campos adicionales. Si ese fallo deja un estado parcial o divergente, repite `install`; `sync` no repara ese bloqueo. El paquete adoptado `jorgex-pi@0.8.13` permite activar Chrome DevTools MCP con `--devtools`; Stack proyecta el handoff fijo en `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json` y guarda su SHA-256 en el campo opcional `devtools.sha256` del receipt de proyección. `--no-devtools` lo retira tras revalidar integridad. El servidor se registra como proxy lazy (`directTools: false`), por lo que Pi no precarga el catálogo completo de herramientas. Un conflicto o archivo ajeno bloquea y conserva el estado. El cambio requiere recargar Pi para que el bootstrap cree la sesión con la nueva configuración. Context7 sigue fuera de este scope.
 
-En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
+En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; esas evidencias siguen separadas de la verificación local del artefacto Pi.
 
 ## Pin vigente y contrato
 
-El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi, no a validación, merge ni releases.
+El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La disponibilidad para consumo comienza tras la publicación y adopción verificadas; la validación, el pin exacto, la integridad y la compatibilidad siguen siendo obligatorios.
 
 ## Preparar una adopción de Pi
 
@@ -86,7 +86,7 @@ Una versión igual o anterior al pin actual produce `unchanged` sin tocar Pi ni 
 
 El release publicado histórico fijaba `npm:jorgex-pi@0.8.4`. La fuente ejecutable fijaba `89133070` bytes, SHA-256 `e30cbc0595bfbaa35b37f97096b77d46749315e3cf6ab13f830fe84432798b10` y SHA-512 `39255e7ccf7aad2cbe1069e2dbeb3335dc59f28ad1f0f32b677889e39e167e5fd39b546da9f448c33fad4581f0b4a8f1dda95a2f1b1bce010cc031b188ffc292`. Su `provenance.commit` era `2b5cf37d9bfdb0c574e66712000ecc432eca8a69`; el `parity.source.commit` comprobado en el artefacto era `5e89b970e72cfac0003b11e054c861bed6d44884`. Esta transición histórica quedó superseded por la adopción publicada de Stack `1.9.7` / Pi `0.8.4`.
 
-Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La madurez gestionada de 24 horas se aplica al consumo real del paquete Pi nuevo, no a la validación, merge ni release de Stack.
+Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad inmediata tras publicación y adopción verificadas no cambia la validación, el merge, el pin exacto ni la compatibilidad exigidos.
 
 ## Lifecycle y seguridad
 
@@ -129,7 +129,7 @@ pnpm dlx jorgex-stack@1.9.6 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
-La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni release. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge. El preparador no actualiza transparentemente receipts antiguos: cada transición debe usar la versión exacta que reconoce el receipt presente.
+La instalación o consumo del paquete Pi queda disponible tras la publicación y adopción verificadas. El preparador no actualiza transparentemente receipts antiguos: cada transición debe usar la versión exacta que reconoce el receipt presente.
 
 ## Engram
 

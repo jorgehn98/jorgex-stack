@@ -42,6 +42,14 @@ pnpm dlx jorgex-stack install
 pnpm dlx jorgex-stack sync
 ```
 
+For a fresh Engram installation, always consult the current published Stack and bypass only the `pnpm dlx` cache:
+
+```bash
+pnpm --config.dlx-cache-max-age=0 dlx jorgex-stack@latest install --engram
+```
+
+`dlx-cache-max-age` is separate from the pnpm 11 dependency-age filter: it controls only the cached `dlx` package, while `minimumReleaseAgeExclude` applies only to the named package resolution. An explicit Stack version such as `@1.9.30` does not reuse the cache entry for another version. Do not use `@latest` for Pi; Pi consumption still requires its exact validated pin.
+
 Other important commands:
 
 ```bash
@@ -136,7 +144,7 @@ Engram remains mandatory and user-owned. An existing binary is preserved. `insta
 
 Históricamente, Stack `1.9.7` reconocía el receipt exacto de Pi `npm:jorgex-pi@0.8.4`. Usa versiones exactas, nunca `latest`, y no edites receipts o hashes ni borres `HOME`, Engram o la proyección de otro runtime para forzar confianza. El pin y los comandos actuales de transición y rollback están en [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
-The 24-hour managed-consumption maturity rule applies only to real installation or consumption of the new Pi package; development, PR validation, merge and Stack publication may proceed immediately. Installing it on a real user scope before the maturity window requires Jorge's explicit exception.
+Pi puede consumirse inmediatamente después de publicar y verificar el artefacto adoptado. El pin exacto, la procedencia, los SHA-256/SHA-512, el SRI, la compatibilidad y el procedimiento de rollback siguen siendo obligatorios; no uses `latest` ni una versión aproximada.
 
 `update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
@@ -239,6 +247,8 @@ La integración de este App pertenece al release del repositorio Stack. No conce
 ## Development
 
 Requirements: Node >= 22.5 and pnpm (never npm).
+
+pnpm 11 dependency resolution uses `minimumReleaseAge=1440` by default, with `minimumReleaseAgeExclude` for `jorgex-stack` and `jorgex-pi`. Keep that exclusion in the user-level pnpm config for `pnpm dlx` launched from HOME and in each repository workspace config for local commands; preserve every unrelated existing setting. This documents the maintainer environment and does not change other users' global configuration.
 
 ```
 pnpm install
