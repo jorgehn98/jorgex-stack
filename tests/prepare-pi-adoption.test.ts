@@ -14,6 +14,7 @@ type PreparePiAdoption = (
     apply?: boolean;
     acceptDevtoolsHandoff?: boolean;
     acceptPlaywrightHandoff?: boolean;
+    acceptPiVersion?: string;
   },
   dependencies?: {
     fetch?: typeof globalThis.fetch;
@@ -42,6 +43,18 @@ type Artifacts = {
   current: Pin;
   previous: Pin;
   archive: { entries: number; parity: { source: { commit: string } } };
+};
+
+type PiVersionContract = {
+  readonly minimumVersion: string;
+  readonly maximumVersion: string;
+  readonly testedVersions: readonly string[];
+};
+
+const DEFAULT_PI_VERSION_CONTRACT: PiVersionContract = {
+  minimumVersion: "0.84.2",
+  maximumVersion: "0.84.2",
+  testedVersions: ["0.84.2"],
 };
 
 type AdoptionFixture = {
@@ -142,10 +155,12 @@ function writePiRelease(
     extraArchiveFile?: { path: string; content: string };
     rootContractMutation?: boolean;
     extraCapabilities?: string[];
+    piVersionContract?: PiVersionContract;
   } = {},
 ): void {
   const devtoolsCapability = options.devtoolsCapability ?? options.devtoolsHandoff ?? false;
   const devtoolsExclusion = options.devtoolsExclusion ?? !devtoolsCapability;
+  const piVersionContract = options.piVersionContract ?? DEFAULT_PI_VERSION_CONTRACT;
   const capabilities = [
     "foundation-contract-v1",
     ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
@@ -184,11 +199,9 @@ function writePiRelease(
   writeJson(root, "contract/jorgex-pi.v1.json", {
     schemaVersion: 1,
     package: packageIdentity,
-    pi: {
-      minimumVersion: options.rootContractMutation ? "0.84.3" : "0.84.2",
-      maximumVersion: "0.84.2",
-      testedVersions: ["0.84.2"],
-    },
+    pi: options.rootContractMutation
+      ? { ...piVersionContract, minimumVersion: "0.84.3" }
+      : piVersionContract,
     capabilities,
     snapshot: { contractPath: "contract/parity.v2.json", schemaVersion: 2 },
     assets: { manifestVersion: 1, manifestPath: "contract/assets.v1.json" },
@@ -279,6 +292,7 @@ function createAdoptionFixture(options: {
   extraArchiveFile?: { path: string; content: string };
   rootContractMutation?: boolean;
   extraCapabilities?: string[];
+  piVersionContract?: PiVersionContract;
 } = {}): AdoptionFixture {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-"));
   temporaryRoots.push(parent);
@@ -328,6 +342,7 @@ function createAdoptionFixture(options: {
     extraArchiveFile: options.extraArchiveFile,
     rootContractMutation: options.rootContractMutation,
     extraCapabilities: options.extraCapabilities,
+    piVersionContract: options.piVersionContract,
   });
   const nextProducer = commit(piDir, "pi: 0.8.8");
   git(piDir, ["tag", "v0.8.8", nextProducer]);
@@ -405,6 +420,79 @@ afterEach(() => {
 });
 
 describe("preparePiAdoption", () => {
+  it("acepta sólo la incorporación explícita de Pi 0.85.1 y ajusta sus límites", async () => {
+    const fixture = createAdoptionFixture({
+      piVersionContract: {
+        minimumVersion: "0.84.2",
+        maximumVersion: "0.85.1",
+        testedVersions: ["0.84.2", "0.85.1"],
+      },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPiVersion: "0.85.1",
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  }, 15_000);
+
+  it.each([
+    ["retira la versión anterior", {
+      minimumVersion: "0.85.1",
+      maximumVersion: "0.85.1",
+      testedVersions: ["0.85.1"],
+    }],
+    ["añade otra versión además de la aceptada", {
+      minimumVersion: "0.84.2",
+      maximumVersion: "0.85.1",
+      testedVersions: ["0.84.2", "0.84.3", "0.85.1"],
+    }],
+    ["añade una versión intermedia en lugar de la aceptada", {
+      minimumVersion: "0.84.2",
+      maximumVersion: "0.84.3",
+      testedVersions: ["0.84.2", "0.84.3"],
+    }],
+  ] as const)("rechaza una transición que %s aunque se confirme Pi 0.85.1", async (_case, piVersionContract) => {
+    const fixture = createAdoptionFixture({ piVersionContract });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPiVersion: "0.85.1",
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
   it("acepta la transición completa de DevTools sólo con confirmación explícita", async () => {
     const fixture = createAdoptionFixture({ devtoolsHandoff: true });
     const fetch = registryFetch(fixture);

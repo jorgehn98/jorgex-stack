@@ -178,8 +178,9 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
+  if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
   if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
@@ -208,6 +209,12 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
   }
   const expectedContracts = structuredClone(oldContracts);
   const rootContract = "contract/jorgex-pi.v1.json";
+  if (acceptPiVersion !== undefined) {
+    const pi = expectedContracts[rootContract].pi;
+    pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
+    pi.minimumVersion = pi.testedVersions[0];
+    pi.maximumVersion = pi.testedVersions.at(-1);
+  }
   const capability = "chrome-devtools-handoff-v1";
   if (acceptDevtoolsHandoff
     && !oldContracts[rootContract].capabilities.includes(capability)
@@ -308,13 +315,20 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     const args = process.argv.slice(2);
     const flags = args.slice(4);
-    if (args.length < 4 || args.length > 7 || args[0] !== "--pi-dir" || args[2] !== "--version"
+    const versionFlag = flags.indexOf("--accept-pi-version");
+    let acceptPiVersion;
+    if (versionFlag !== -1) {
+      acceptPiVersion = flags[versionFlag + 1];
+      versionParts(acceptPiVersion);
+      flags.splice(versionFlag, 2);
+    }
+    if (args.length < 4 || args.length > 9 || args[0] !== "--pi-dir" || args[2] !== "--version"
       || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
-      apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff") });
+      acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z]");
     process.exitCode = 1;
   }
 }
