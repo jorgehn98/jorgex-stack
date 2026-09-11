@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
-import { readWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
@@ -288,8 +288,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
 
   let writingStyle: WritingStyleSnapshot;
+  let preparedStyle: WritingStylePlan | undefined;
   try {
-    writingStyle = opts.writingStyle ?? readWritingStyle(resolveWritingStyleFile({ targetDir: opts.targetDir }), { rootDir: opts.targetDir });
+    if (opts.writingStyle !== undefined) writingStyle = opts.writingStyle;
+    else writingStyle = preparedStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: opts.targetDir }), { rootDir: opts.targetDir });
   } catch (error) {
     p.log.error(error instanceof Error ? error.message : String(error));
     return 1;
@@ -317,6 +319,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
   const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
+  if (preparedStyle !== undefined) {
+    try {
+      p.log.info(`Estilo Humanizer Jorge: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+      applyWritingStyle(preparedStyle, opts.dryRun);
+    } catch (error) {
+      p.log.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
   if (hasFileRuntimes && useManifest && !opts.dryRun) ensureModelMapFile();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");

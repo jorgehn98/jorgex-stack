@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { upsertMarkdownSection } from "../src/lib/filemerge.js";
+import { applyWritingStyle, prepareWritingStyle } from "../src/lib/writing-style.js";
 
 const logs = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -66,22 +67,160 @@ function output(): string {
   ].flat().map(String).join("\n");
 }
 
+function installCanonicalStyle(targetDir: string, note?: string): ReturnType<typeof prepareWritingStyle> {
+  const source = path.join(targetDir, "writing-style.md");
+  fs.mkdirSync(targetDir, { recursive: true });
+  if (note !== undefined) fs.writeFileSync(source, `${note}\n`);
+  const plan = prepareWritingStyle(source, { rootDir: targetDir });
+  applyWritingStyle(plan);
+  return plan;
+}
+
+function writeProjection(targetDir: string, content: string): void {
+  fs.writeFileSync(
+    path.join(targetDir, "AGENTS.md"),
+    upsertMarkdownSection("# Instrucción ajena\n", "writing-style", renderedWritingStyle(content)),
+  );
+}
+
 afterEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
 });
 
 describe("doctor de estilo global", () => {
+  it("informa el canon incluido y marca la fuente local ausente como pendiente", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-pending-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(outputText).toMatch(/canónico|incluido/i);
+      expect(outputText).toMatch(/pendiente/i);
+      expect(outputText).not.toMatch(/estilo: desactivado/i);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("marca como actual una fuente canónica instalada y su proyección, sin imprimir notas locales", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-current-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const privateNote = "NOTA PRIVADA DEL USUARIO QUE DOCTOR NO DEBE IMPRIMIR";
+    const plan = installCanonicalStyle(targetDir, privateNote);
+    writeProjection(targetDir, plan.content);
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(0);
+      expect(outputText).toMatch(/canónico|incluido/i);
+      expect(outputText).toMatch(/coincide|actual/i);
+      expect(outputText).not.toContain(privateNote);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("marca como desactualizada una proyección que no coincide con el canon local", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-outdated-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const privateNote = "NOTA PRIVADA DE PROYECCIÓN QUE NO DEBE SALIR";
+    const plan = installCanonicalStyle(targetDir, privateNote);
+    writeProjection(targetDir, `Estilo viejo.\n${privateNote}`);
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(outputText).toMatch(/desactualizada|pendiente/i);
+      expect(outputText).not.toContain(privateNote);
+      expect(plan.content).toContain(privateNote);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("marca como pendiente una fuente local cuyo bloque gestionado fue editado", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-local-drift-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const privateNote = "NOTA LOCAL PRIVADA QUE DOCTOR NO DEBE IMPRIMIR";
+    const plan = installCanonicalStyle(targetDir, privateNote);
+    const source = path.join(targetDir, "writing-style.md");
+    fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace("# Humanizer Jorge", "Texto local modificado."));
+    writeProjection(targetDir, plan.content);
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(outputText).toMatch(/local|pendiente|desactualizada/i);
+      expect(outputText).not.toContain(privateNote);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("informa configuración, tamaño, proyección y override Codex sin imprimir el cuerpo ni tocar HOME", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-"));
     const home = path.join(root, "home");
     const targetDir = path.join(root, "target");
-    const source = path.join(targetDir, "writing-style.md");
     const prompt = path.join(targetDir, "AGENTS.md");
     const override = path.join(targetDir, "AGENTS.override.md");
     fs.mkdirSync(targetDir, { recursive: true });
-    fs.writeFileSync(source, `Preferencias sintéticas.\n\n${PRIVATE_STYLE_BODY}\n`);
-    fs.writeFileSync(prompt, upsertMarkdownSection("# Instrucción ajena\n", "writing-style", `## Estilo\n\n${PRIVATE_STYLE_BODY}`));
+    const plan = installCanonicalStyle(targetDir, PRIVATE_STYLE_BODY);
+    fs.writeFileSync(prompt, upsertMarkdownSection("# Instrucción ajena\n", "writing-style", renderedWritingStyle(plan.content)));
     fs.writeFileSync(override, "Override global sintético\n");
 
     const originalHome = process.env.HOME;
@@ -116,11 +255,8 @@ describe("doctor de estilo global", () => {
     const targetDir = path.join(root, "target");
     const content = "Estilo exacto sintético.";
     fs.mkdirSync(targetDir, { recursive: true });
-    fs.writeFileSync(path.join(targetDir, "writing-style.md"), `${content}\n`);
-    fs.writeFileSync(
-      path.join(targetDir, "AGENTS.md"),
-      upsertMarkdownSection("# Instrucción ajena\n", "writing-style", renderedWritingStyle(content)),
-    );
+    const plan = installCanonicalStyle(targetDir, content);
+    writeProjection(targetDir, plan.content);
     fs.writeFileSync(path.join(targetDir, "AGENTS.override.md"), " \n\t\n");
 
     const originalHome = process.env.HOME;
@@ -182,8 +318,7 @@ describe("doctor de estilo global", () => {
     const codexDir = path.join(home, ".codex");
     const privateBody = "ESTILO PROGRAMMATIC SINTÉTICO";
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.mkdirSync(path.join(home, ".jorgex-stack"), { recursive: true });
-    fs.writeFileSync(path.join(home, ".jorgex-stack", "writing-style.md"), `${privateBody}\n`);
+    installCanonicalStyle(path.join(home, ".jorgex-stack"), privateBody);
     fs.writeFileSync(path.join(home, ".jorgex-stack", "install-mode.json"), JSON.stringify({
       mode: "programmatic",
       subagentConcurrency: "serial",
@@ -223,7 +358,7 @@ describe("doctor de estilo global", () => {
     const home = path.join(root, "home");
     const targetDir = path.join(root, "target");
     fs.mkdirSync(targetDir, { recursive: true });
-    fs.writeFileSync(path.join(targetDir, "writing-style.md"), "Estilo target sintético.\n");
+    installCanonicalStyle(targetDir, "Estilo target sintético.");
     fs.writeFileSync(path.join(targetDir, "AGENTS.md"), "# Destino programmatic sin estilo\n");
 
     const originalHome = process.env.HOME;

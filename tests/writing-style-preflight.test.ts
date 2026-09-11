@@ -59,6 +59,7 @@ vi.mock("../src/lib/pi-runtime.js", async () => {
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
+const CANONICAL_STYLE = path.join(ROOT, "stack", "system-prompt", "writing-style.md");
 const STYLE = "Prefiere una prosa directa y conectada.\nRespeta siempre el formato pedido.";
 
 const tempRoots: string[] = [];
@@ -124,6 +125,29 @@ afterEach(() => {
 });
 
 describe("preflight de estilo antes del coordinador de runtimes", () => {
+  it("instala el estilo canónico en la fuente local en un install nuevo", async () => {
+    const home = tempRoot();
+    const source = path.join(home, ".jorgex-stack", "writing-style.md");
+
+    await expect(runCli(["install", "--agents", "codex", "--yes"], home)).resolves.toBe(0);
+
+    expect(fs.existsSync(source)).toBe(true);
+    const installed = fs.readFileSync(source, "utf8");
+    const canonical = fs.readFileSync(CANONICAL_STYLE, "utf8");
+    expect(installed).toContain("<!-- jorgex:writing-style-default -->");
+    expect(installed).toContain(canonical.trim());
+    expect(installed).toContain("<!-- /jorgex:writing-style-default -->");
+    expect(installed.match(/<!-- jorgex:writing-style-default -->/g)).toHaveLength(1);
+    expect(installed.match(/<!-- \/jorgex:writing-style-default -->/g)).toHaveLength(1);
+    expect(installed).not.toContain("<!-- jorgex:writing-style -->");
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      writingStyle: expect.objectContaining({
+        sourcePath: source,
+        content: canonical.trim(),
+      }),
+    }));
+  });
+
   it("lee una sola instantánea y la entrega idéntica a los runtimes de archivo y Pi", async () => {
     const home = tempRoot();
     const source = writeStateStyle(home, STYLE);
@@ -137,7 +161,14 @@ describe("preflight de estilo antes del coordinador de runtimes", () => {
       writingStyle?: { sourcePath: string; content: string | null };
       writingStyleMode?: string;
     } | undefined;
-    expect(installInput?.writingStyle).toEqual({ sourcePath: source, content: STYLE });
+    expect(installInput?.writingStyle).toEqual(expect.objectContaining({
+      sourcePath: source,
+      content: expect.stringContaining(STYLE),
+      canonicalPath: CANONICAL_STYLE,
+      originalContent: STYLE,
+      installedContent: expect.stringContaining("jorgex:writing-style-default"),
+    }));
+    expect(installInput?.writingStyle?.content).toContain("# Humanizer Jorge");
     expect(piInput?.writingStyle).toBe(installInput?.writingStyle);
     expect(piInput?.writingStyleMode).toBe("human");
   });
@@ -160,7 +191,11 @@ describe("preflight de estilo antes del coordinador de runtimes", () => {
 
     expect(mocks.runInstall).not.toHaveBeenCalled();
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      writingStyle: { sourcePath: source, content: STYLE },
+      writingStyle: expect.objectContaining({
+        sourcePath: source,
+        content: expect.stringContaining(STYLE),
+        canonicalPath: CANONICAL_STYLE,
+      }),
       writingStyleMode: "programmatic",
     }));
   });
@@ -176,19 +211,27 @@ describe("preflight de estilo antes del coordinador de runtimes", () => {
     if (runtime === "pi") {
       expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
         targetDir,
-        writingStyle: { sourcePath: targetSource, content: STYLE },
+        writingStyle: expect.objectContaining({
+          sourcePath: targetSource,
+          content: expect.stringContaining(STYLE),
+          canonicalPath: CANONICAL_STYLE,
+        }),
       }));
       expect(mocks.runManagedPiSystem).not.toHaveBeenCalledWith(expect.objectContaining({
-        writingStyle: expect.objectContaining({ sourcePath: realSource, content: expect.stringContaining("ESTILO REAL") }),
+        writingStyle: expect.objectContaining({ sourcePath: realSource }),
       }));
     } else {
       expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
         runtimes: ["codex"],
         targetDir,
-        writingStyle: { sourcePath: targetSource, content: STYLE },
+        writingStyle: expect.objectContaining({
+          sourcePath: targetSource,
+          content: expect.stringContaining(STYLE),
+          canonicalPath: CANONICAL_STYLE,
+        }),
       }));
       expect(mocks.runInstall).not.toHaveBeenCalledWith(expect.objectContaining({
-        writingStyle: expect.objectContaining({ sourcePath: realSource, content: expect.stringContaining("ESTILO REAL") }),
+        writingStyle: expect.objectContaining({ sourcePath: realSource }),
       }));
     }
   });

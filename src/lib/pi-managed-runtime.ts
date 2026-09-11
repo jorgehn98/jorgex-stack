@@ -1,4 +1,4 @@
-import { readWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./writing-style.js";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./writing-style.js";
 import { loadInstallModePreference } from "./install-mode.js";
 import type { InstallMode } from "../adapters/types.js";
 import {
@@ -141,9 +141,10 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     ...runtimeInput
   } = input;
   const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
-  const style = readsStyle
-    ? suppliedStyle ?? readWritingStyle(resolveWritingStyleFile({ targetDir: input.targetDir }), { rootDir: input.targetDir })
+  const preparedStyle = readsStyle && suppliedStyle === undefined
+    ? prepareWritingStyle(resolveWritingStyleFile({ targetDir: input.targetDir }), { rootDir: input.targetDir })
     : undefined;
+  const style = readsStyle ? suppliedStyle ?? preparedStyle : undefined;
   const mode = readsStyle
     ? writingStyleMode ?? (input.targetDir === undefined ? loadInstallModePreference().mode : "human")
     : "human";
@@ -166,6 +167,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     devtoolsMcpEnabled,
     pnpmBin: devtoolsMcpEnabled && input.operation !== "uninstall" ? resolvePnpmBin() : null,
   };
+  if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
   const result = await runManagedPiOperation(input.operation, {
     async runPackage(operation) {
       return managedPackageResult(await runPiRuntimeSystem({ ...runtimeInput, operation }));

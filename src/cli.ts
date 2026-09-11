@@ -8,7 +8,7 @@ import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
-import { readWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
 import { readPackageVersion } from "./lib/release.js";
 import { loadModelMap } from "./lib/model-map.js";
 import {
@@ -466,7 +466,11 @@ async function runSelectedPi(
     }
   }
   if (operation === "install" || operation === "sync" || operation === "update") {
-    writingStyle ??= readWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir });
+    if (writingStyle === undefined) {
+      const prepared = prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir });
+      applyWritingStyle(prepared);
+      writingStyle = prepared;
+    }
   }
   const detected = detectPiRuntime();
   if (!detected.installed || detected.executable === null) {
@@ -675,7 +679,7 @@ async function main(): Promise<void> {
       let completed = false;
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
-        const writingStyle = readWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
+        const writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
         if (flags.targetDir === undefined) {
           const errors = browserPreferenceErrors();
           if (errors.length > 0) {
@@ -691,6 +695,8 @@ async function main(): Promise<void> {
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
+        p.log.info(`Estilo Humanizer Jorge: ${writingStyle.sourcePath}${flags.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+        applyWritingStyle(writingStyle, flags.dryRun);
         if (!await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes)) { exitCode = 1; return; }
 
         let engramBin: string | null | undefined;
@@ -820,10 +826,11 @@ async function main(): Promise<void> {
         ? await resolveInstallMode(flags, false)
         : DEFAULT_INSTALL_MODE_PREFERENCE;
       if (mode === null) return;
-      const writingStyle = readWritingStyle(
+      const writingStyle = prepareWritingStyle(
         resolveWritingStyleFile({ targetDir: flags.targetDir }),
         { rootDir: flags.targetDir },
       );
+      applyWritingStyle(writingStyle, flags.dryRun);
       if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
         const piExitCode = await runSelectedPi("update", flags.targetDir, false, undefined, undefined, writingStyle, mode);
         process.exitCode = piExitCode;

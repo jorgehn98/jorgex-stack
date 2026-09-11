@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeId } from "../src/adapters/types.js";
 import { listBackups } from "../src/lib/backup.js";
 import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
 
@@ -28,8 +27,6 @@ const MODELS = {
   standard: { model: "provider/standard" },
   cheap: { model: "provider/cheap" },
 };
-const STYLE_ONE = "Primera versión sintética del estilo.";
-const STYLE_TWO = "Segunda versión sintética del estilo.";
 
 function tempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-lifecycle-"));
@@ -41,13 +38,6 @@ function writeModelMap(homeDir: string): void {
   const file = path.join(homeDir, ".jorgex-stack", "model-map.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ codex: MODELS }) + "\n");
-}
-
-function writeStyle(homeDir: string, content: string): string {
-  const file = path.join(homeDir, ".jorgex-stack", "writing-style.md");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
-  return file;
 }
 
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
@@ -73,7 +63,7 @@ describe("lifecycle del estilo global", () => {
     vi.clearAllMocks();
   });
 
-  it("actualiza, desactiva, repite, desinstala y restaura con backup sin tocar la fuente", async () => {
+  it("instala el canon, desinstala y restaura con backup sin leer ni borrar la fuente", async () => {
     const root = tempRoot();
     const homeDir = path.join(root, "home");
     const configDir = path.join(homeDir, ".codex");
@@ -82,14 +72,11 @@ describe("lifecycle del estilo global", () => {
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(promptFile, "# Instrucción propia\n\nConserva esta línea.\n");
     writeModelMap(homeDir);
-    const source = writeStyle(homeDir, `${STYLE_ONE}\n`);
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
       const uninstall = await import("../src/uninstall.js");
       const backup = await import("../src/lib/backup.js");
-      const style = await import("../src/lib/writing-style.js");
-      const adapter = install.ADAPTERS.codex!;
       const originalDetectors = Object.values(install.ADAPTERS).map((candidate) => [candidate, candidate.detect] as const);
 
       for (const candidate of Object.values(install.ADAPTERS)) {
@@ -102,45 +89,25 @@ describe("lifecycle del estilo global", () => {
         });
       }
 
-      const runInstall = async (snapshot: { sourcePath: string; content: string | null }): Promise<void> => {
+      try {
         await expect(install.runInstall({
           runtimes: ["codex"],
-          writingStyle: snapshot,
           dryRun: false,
           yes: true,
           mode: HUMAN_MODE,
           engramBin: null,
           showSummary: false,
         })).resolves.toBe(0);
-      };
 
-      try {
-        await runInstall(style.readWritingStyle(source));
+        const source = path.join(homeDir, ".jorgex-stack", "writing-style.md");
         const firstPrompt = fs.readFileSync(promptFile, "utf8");
-        expect(firstPrompt).toContain(STYLE_ONE);
+        const firstSource = fs.readFileSync(source, "utf8");
+        expect(firstSource).toContain("<!-- jorgex:writing-style-default -->");
+        expect(firstSource).toContain("# Humanizer Jorge");
         expect(firstPrompt.match(/<!-- jorgex:writing-style -->/g)).toHaveLength(1);
-        expect(fs.readFileSync(source, "utf8")).toBe(`${STYLE_ONE}\n`);
 
-        fs.writeFileSync(source, `${STYLE_TWO}\n`);
-        await runInstall(style.readWritingStyle(source));
-        const updateBackup = backup.listBackups(backupsRoot).find((candidate) => candidate.files.some((file) =>
-          file.original === promptFile && fs.readFileSync(file.stored, "utf8").includes(STYLE_ONE)));
-        expect(updateBackup).toBeDefined();
-        expect(fs.readFileSync(promptFile, "utf8")).toContain(STYLE_TWO);
-        expect(fs.readFileSync(promptFile, "utf8")).not.toContain(STYLE_ONE);
-        expect(fs.readFileSync(source, "utf8")).toBe(`${STYLE_TWO}\n`);
-
-        const backupsBeforeDisable = backup.listBackups(backupsRoot).length;
-        fs.writeFileSync(source, " \n\t\n");
-        await runInstall(style.readWritingStyle(source));
-        expect(fs.readFileSync(promptFile, "utf8")).not.toContain("jorgex:writing-style");
-        expect(fs.readFileSync(source, "utf8")).toBe(" \n\t\n");
-
-        const backupsAfterDisable = backup.listBackups(backupsRoot).length;
-        expect(backupsAfterDisable).toBeGreaterThan(backupsBeforeDisable);
-        await runInstall(style.readWritingStyle(source));
-        expect(backup.listBackups(backupsRoot).length).toBe(backupsAfterDisable);
-        expect(fs.readFileSync(promptFile, "utf8")).not.toContain("jorgex:writing-style");
+        const unreadableSource = Buffer.from([0xc3, 0x28]);
+        fs.writeFileSync(source, unreadableSource);
 
         await expect(uninstall.runUninstall({
           runtimes: ["codex"],
@@ -149,13 +116,17 @@ describe("lifecycle del estilo global", () => {
           removeEngram: false,
           removePlaywright: false,
         })).resolves.toBe(0);
-        expect(fs.readFileSync(source, "utf8")).toBe(" \n\t\n");
+        expect(fs.readFileSync(source)).toEqual(unreadableSource);
         expect(fs.readFileSync(promptFile, "utf8")).not.toContain("jorgex:writing-style");
 
-        const restored = backup.restoreBackup(updateBackup!.id, backupsRoot, homeDir);
+        const uninstallBackup = backup.listBackups(backupsRoot).find((candidate) => candidate.files.some((file) =>
+          file.original === promptFile && fs.readFileSync(file.stored, "utf8").includes("jorgex:writing-style")));
+        expect(uninstallBackup).toBeDefined();
+
+        const restored = backup.restoreBackup(uninstallBackup!.id, backupsRoot, homeDir);
         expect(restored).toBeGreaterThan(0);
-        expect(fs.readFileSync(promptFile, "utf8")).toContain(STYLE_ONE);
-        expect(fs.readFileSync(source, "utf8")).toBe(" \n\t\n");
+        expect(fs.readFileSync(promptFile, "utf8")).toContain("jorgex:writing-style");
+        expect(fs.readFileSync(source)).toEqual(unreadableSource);
       } finally {
         for (const [candidate, detect] of originalDetectors) candidate.detect = detect;
       }

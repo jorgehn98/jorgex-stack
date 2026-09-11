@@ -279,7 +279,12 @@ describe("CLI follow-up sync mode resolution", () => {
         "--yes",
       ], homeDir);
 
-      const expectedStyle = { sourcePath: styleFile, content: originalStyle };
+      const expectedStyle = expect.objectContaining({
+        sourcePath: styleFile,
+        content: expect.stringContaining(originalStyle),
+        canonicalPath: expect.stringContaining("stack/system-prompt/writing-style.md"),
+        installedContent: expect.stringContaining("jorgex:writing-style-default"),
+      });
       expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
         writingStyle: expectedStyle,
         mode: { mode: "programmatic", subagentConcurrency: "parallel" },
@@ -289,6 +294,8 @@ describe("CLI follow-up sync mode resolution", () => {
         writingStyle: expectedStyle,
         writingStyleMode: "programmatic",
       }));
+      expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]?.writingStyle)
+        .toBe(mocks.runInstall.mock.calls[0]?.[0]?.writingStyle);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -324,7 +331,12 @@ describe("CLI follow-up sync mode resolution", () => {
 
       expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
         operation: "update",
-        writingStyle: { sourcePath: styleFile, content: style },
+        writingStyle: expect.objectContaining({
+          sourcePath: styleFile,
+          content: expect.stringContaining(style),
+          canonicalPath: expect.stringContaining("stack/system-prompt/writing-style.md"),
+          installedContent: expect.stringContaining("jorgex:writing-style-default"),
+        }),
         writingStyleMode: "programmatic",
       }));
       expect(mocks.runInteractiveUpdate).not.toHaveBeenCalled();

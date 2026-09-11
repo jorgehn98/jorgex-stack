@@ -49,6 +49,8 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.runPackage.mockResolvedValue({ kind: "installed" });
   mocks.runProjection.mockReturnValue({ kind: "installed" });
+  mocks.prepareProjectionUninstall.mockReset();
+  mocks.completeProjectionUninstall.mockReset();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 describe("preflight de estilo en el coordinador de Pi", () => {
@@ -86,6 +88,69 @@ describe("preflight de estilo en el coordinador de Pi", () => {
     expect(mocks.runPackage.mock.calls[0]?.[0]).not.toHaveProperty("writingStyle");
     expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
       writingStyle: { sourcePath: style.sourcePath, content: null },
+    }));
+  });
+
+  it("la llamada directa sin snapshot instala la fuente local antes de proyectar", async () => {
+    const targetDir = tempRoot();
+    const mod = await managedPi();
+
+    await expect(mod.runManagedPiSystem({
+      operation: "install",
+      targetDir,
+      detected: { executable: "/isolated/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    })).resolves.toEqual({ kind: "installed" });
+
+    const source = path.join(targetDir, "writing-style.md");
+    const installed = fs.readFileSync(source, "utf8");
+    expect(installed).toContain("<!-- jorgex:writing-style-default -->");
+    expect(installed).toContain("# Humanizer Jorge");
+    expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
+      writingStyle: expect.objectContaining({
+        sourcePath: source,
+        content: expect.stringContaining("# Humanizer Jorge"),
+      }),
+    }));
+  });
+
+  it("en programmatic crea la fuente local pero entrega una proyección sin prosa", async () => {
+    const targetDir = tempRoot();
+    const mod = await managedPi();
+
+    await expect(mod.runManagedPiSystem({
+      operation: "install",
+      targetDir,
+      writingStyleMode: "programmatic",
+      detected: { executable: "/isolated/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    })).resolves.toEqual({ kind: "installed" });
+
+    expect(fs.readFileSync(path.join(targetDir, "writing-style.md"), "utf8")).toContain("# Humanizer Jorge");
+    expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
+      writingStyle: expect.objectContaining({ sourcePath: path.join(targetDir, "writing-style.md"), content: null }),
+    }));
+  });
+
+  it("desinstala sin leer ni modificar una fuente local ilegible", async () => {
+    const targetDir = tempRoot();
+    const source = path.join(targetDir, "writing-style.md");
+    const invalidBytes = Buffer.from([0xc3, 0x28]);
+    fs.writeFileSync(source, invalidBytes);
+    mocks.prepareProjectionUninstall.mockResolvedValue({ kind: "prepared", token: "uninstall-token" });
+    mocks.completeProjectionUninstall.mockResolvedValue({ kind: "uninstalled" });
+    const mod = await managedPi();
+
+    await expect(mod.runManagedPiSystem({
+      operation: "uninstall",
+      targetDir,
+      detected: { executable: "/isolated/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    })).resolves.toEqual({ kind: "uninstalled" });
+
+    expect(fs.readFileSync(source)).toEqual(invalidBytes);
+    expect(mocks.prepareProjectionUninstall).toHaveBeenCalledWith(expect.objectContaining({
+      writingStyle: undefined,
     }));
   });
 });

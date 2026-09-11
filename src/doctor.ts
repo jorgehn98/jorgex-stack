@@ -10,7 +10,7 @@ import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { piAdapter } from "./adapters/pi.js";
 import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
-import { readWritingStyle, renderWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
+import { prepareWritingStyle, renderWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
 import { HOME } from "./lib/paths.js";
 import {
   detectPlaywrightCli,
@@ -84,10 +84,15 @@ export interface DoctorOptions {
   runtimes?: SelectableRuntimeId[];
 }
 
-function reportWritingStyle(options: DoctorOptions, style: WritingStyleSnapshot, mode: InstallModePreference): number {
+function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mode: InstallModePreference): number {
   let problems = 0;
-  p.log.info(`Estilo: ${style.content === null ? "desactivado" : "activo configurado"}; fuente ${style.sourcePath}; tamaño ${Buffer.byteLength(style.content ?? "", "utf8")} bytes de texto normalizado. La carga nativa no está verificada.`);
-  const expected = style.content !== null && mode.mode !== "programmatic"
+  p.log.info(`Estilo Humanizer Jorge incluido: ${style.canonicalPath}; fuente local ${style.sourcePath}; tamaño ${Buffer.byteLength(style.content, "utf8")} bytes de texto normalizado. La carga nativa no está verificada.`);
+  if (style.originalContent === style.installedContent) p.log.success("Archivo local de estilo actualizado con el canon incluido.");
+  else {
+    p.log.warn(`Archivo local de estilo ${style.originalContent === null ? "pendiente de instalar" : "desactualizado; pendiente de sincronizar"}; ejecuta install o sync (${style.sourcePath}).`);
+    problems++;
+  }
+  const expected = mode.mode !== "programmatic"
     ? upsertMarkdownSection(null, "writing-style", renderWritingStyle(style.content)).trim()
     : null;
   const runtimes = options.runtimes ?? Object.values(ADAPTERS).filter((adapter) => options.targetDir !== undefined || adapter.detect().installed).map((adapter) => adapter.id);
@@ -131,10 +136,10 @@ function reportWritingStyle(options: DoctorOptions, style: WritingStyleSnapshot,
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
   p.intro("jorgex-stack doctor");
-  let writingStyle: WritingStyleSnapshot;
+  let writingStyle: WritingStylePlan;
   let modePreference: InstallModePreference;
   try {
-    writingStyle = readWritingStyle(resolveWritingStyleFile({ targetDir: options.targetDir }), { rootDir: options.targetDir });
+    writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: options.targetDir }), { rootDir: options.targetDir });
     modePreference = options.mode ?? (options.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE);
   } catch (error) {
     p.log.error(error instanceof Error ? error.message : String(error));
