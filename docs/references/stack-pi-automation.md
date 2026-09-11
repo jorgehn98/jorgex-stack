@@ -24,13 +24,15 @@ Referencias oficiales: [tokens de instalación de GitHub App](https://docs.githu
 5. Comprueba el preflight y el resultado: puede ser un no-op o una PR con los datos, candidato y gates esperados. Si el preflight falla, termina antes de crear una PR; no hagas reintentos ciegos.
 6. `ready` y checks verdes no autorizan el merge: el merge sigue siendo humano.
 
-La coordinación acepta eventos `push` y `workflow_dispatch` sobre `main`, y el dispatch `pi-published-v1` con el payload exacto `version`, `producer_sha` y `run_id`. Las propuestas se limitan a las rutas y tamaños que valida `.github/scripts/stack-pi-automation.mjs`; las duplicidades, incompatibilidades, races, cambios de base o divergencias bloquean explícitamente.
+La coordinación acepta eventos `push` y `workflow_dispatch` sobre `main`, y el dispatch `pi-published-v1` con el payload exacto `version`, `producer_sha` y `run_id`. Las propuestas se limitan a las rutas y tamaños que valida `.github/scripts/stack-pi-automation.mjs`; las duplicidades, incompatibilidades, races, cambios de base o divergencias bloquean explícitamente. La compatibilidad Pi es una lista explícita de versiones probadas definida por el contrato y `pi-runtime.md`; no se interpreta como un intervalo.
 
 ## Preparación y escritura
 
 El preparador trabaja con checkouts limpios de ambos repositorios y genera un artefacto acotado. La preparación y sus verificaciones se ejecutan sin el token de la App. El job de escritura usa el artefacto del mismo run, vuelve a validar la base y el árbol, y comprueba el head y base exactos de la PR antes de marcarla ready.
 
 Una propuesta rechazada no se recrea automáticamente con la misma identidad: requiere recuperación manual. Si una escritura remota falla después de crear la PR, el estado puede haber quedado incierto (por ejemplo, la PR puede estar ya lista); conserva la PR y la rama, verifica su estado y, si necesitas editarla, vuelve a ponerla en draft antes de hacerlo. No repitas la operación sin resolver la causa. No se publica de nuevo un paquete para recuperar una notificación: inspecciona el dispatch desde el coordinador y usa su recuperación manual.
+
+Cuando la adopción amplía la lista de versiones compatibles, el preparador exige la aceptación explícita de la versión exacta (`--accept-pi-version EXACT`) después del smoke real. Esa opción solo añade esa versión, conserva las anteriores y ajusta los límites a los extremos de la lista resultante; no relaja otras comparaciones del contrato ni las comprobaciones de integridad o hashes.
 
 ## Recuperación y rollback
 
