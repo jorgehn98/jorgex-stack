@@ -416,6 +416,9 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
 
   if (input.operation === "install" || input.operation === "sync" || input.operation === "models") {
     const plan = deps.prepare(lifecycleInput);
+    if (plan !== null && typeof plan === "object" && Reflect.get(plan, "kind") === "blocked") {
+      return plan as RuntimeResult;
+    }
     const result = deps.execute({
       operation: input.operation,
       plan,
