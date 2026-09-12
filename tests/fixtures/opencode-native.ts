@@ -53,7 +53,7 @@ export async function nativePermission(input: {
     OPENCODE_CONFIG_DIR: configDir, OPENCODE_DISABLE_MODELS_FETCH: "true", OPENCODE_DISABLE_AUTOUPDATE: "true", NO_COLOR: "1",
   };
   for (const dir of [env.HOME!, env.XDG_CONFIG_HOME!, env.XDG_DATA_HOME!, env.XDG_CACHE_HOME!, configDir]) fs.mkdirSync(dir, { recursive: true });
-  // The native permission engine runs normally; this shell never evaluates the proposed command.
+  // OpenCode's native permission engine runs normally; this shell stub only prints a marker and ignores the proposed command.
   env.SHELL = path.join(root, "bash");
   fs.writeFileSync(env.SHELL, "#!/bin/sh\nprintf NATIVE_INTERCEPTED\n", { mode: 0o755 });
   fs.writeFileSync(path.join(root, "opencode.json"), JSON.stringify({
