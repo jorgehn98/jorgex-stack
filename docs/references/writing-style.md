@@ -1,33 +1,50 @@
 # Estilo global de escritura
 
-Stack puede añadir tus preferencias de escritura a las instrucciones globales de Claude Code, Codex, OpenCode y Pi. Es opcional: el archivo no se crea automáticamente y no requiere instalar Humanizer, gentle-ai ni otra skill.
+Stack incluye el estilo Humanizer Jorge como parte de su canon. Durante `install` y `sync` crea o actualiza automáticamente el archivo local `~/.jorgex-stack/writing-style.md` y, en modo humano, proyecta ese estilo en las instrucciones globales de Claude Code, Codex, OpenCode y Pi seleccionados. No necesitas crear el archivo, instalar Humanizer ni invocar otra skill.
 
 ## Configurar y actualizar
 
-Crea `~/.jorgex-stack/writing-style.md` como archivo UTF-8. `~` representa tu directorio de usuario. Un ejemplo sintético:
+El canon incluido vive en `stack/system-prompt/writing-style.md` dentro del paquete. El archivo local es una copia gestionada para que el estilo pueda viajar con el contexto global de cada runtime. `~` representa tu directorio de usuario. Stack coloca el canon dentro de un bloque marcado como `jorgex:writing-style-default`; si ya tienes texto fuera de ese bloque, lo conserva.
 
-```markdown
-Usa español de España, natural y directo.
-Conecta las ideas en párrafos breves y explica el porqué cuando ayude a decidir.
-Evita las fórmulas de cortesía repetitivas. Respeta siempre el formato solicitado.
+El uso normal no requiere preparar nada:
+
+```bash
+pnpm dlx jorgex-stack install --agents claude-code,codex,opencode,pi --mode human
+pnpm dlx jorgex-stack sync --agents claude-code,codex,opencode,pi --mode human
 ```
 
-Después, sincroniza los runtimes que utilices:
+Si editas el archivo para añadir notas propias, mantenlas fuera del bloque gestionado. En cada `sync`, Stack vuelve a aplicar el canon incluido y conserva esas notas. El canon ya contiene las instrucciones de estilo necesarias y deja fuera corpus, informes y activación como skill.
+
+El archivo local resultante tiene esta forma conceptual:
+
+```markdown
+<!-- jorgex:writing-style-default -->
+[canon Humanizer Jorge incluido por Stack]
+<!-- /jorgex:writing-style-default -->
+
+[notas locales opcionales, conservadas por Stack]
+```
+
+Un ejemplo sintético de nota local sería:
+
+```markdown
+Cuando el encargo sea para un cliente, mantén el registro profesional que ya use ese cliente.
+```
+
+Después de cambiar notas locales, sincroniza los runtimes que utilices:
 
 ```bash
 pnpm dlx jorgex-stack sync --agents claude-code,codex,opencode,pi --mode human
 pnpm dlx jorgex-stack doctor --agents claude-code,codex,opencode,pi
 ```
 
-La lista selecciona los destinos; no instala runtimes que falten. También se aplica durante `install`. Cada cambio en la fuente requiere otra sincronización y una sesión nueva del runtime. No hay selector de estilos, recarga en caliente ni estilos distintos por runtime.
-
-Si partes de una skill de redacción, extrae únicamente preferencias de idioma, tono, claridad y estructura. Deja en la skill los pasos de trabajo, herramientas, preguntas obligatorias y formatos de entrega específicos. No copies su frontmatter, ejemplos privados o instrucciones de activación como si fueran preferencias permanentes.
+La lista selecciona los destinos; no instala runtimes que falten. Cada cambio en el canon o en las notas locales requiere otra sincronización y una sesión nueva del runtime. No hay selector de estilos, recarga en caliente ni estilos distintos por runtime.
 
 Stack limita esta capa a la prosa dirigida al usuario. El encargo, los formatos de máquina, el código, las instrucciones técnicas y las autorizaciones conservan sus reglas. La capa no cambia modelos, permisos, agentes primarios ni configuraciones nativas de personalidad.
 
 ## Fuente, destinos y validación
 
-La fuente pertenece al usuario. Stack copia una instantánea de su texto normalizado a la sección independiente `writing-style`, fuera de las secciones de sistema, Engram y navegador. Conserva el contenido ajeno a los marcadores gestionados.
+Stack toma el canon del paquete y prepara una instantánea del archivo local antes de realizar cualquier escritura. Con esa instantánea actualiza el bloque gestionado y proyecta el contenido efectivo a la sección independiente `writing-style`, fuera de las secciones de sistema, Engram y navegador. Conserva el contenido ajeno a los marcadores gestionados.
 
 | Runtime | Destino global habitual |
 | --- | --- |
@@ -36,22 +53,22 @@ La fuente pertenece al usuario. Stack copia una instantánea de su texto normali
 | OpenCode | `~/.config/opencode/AGENTS.md` |
 | Pi | `~/.pi/agent/AGENTS.md` |
 
-Los adapters resuelven los destinos efectivos. El texto proyectado pasa a formar parte del contexto que recibe el modelo cuando el runtime carga ese archivo. La fuente, las proyecciones y sus backups son archivos locales; no se incorporan al canon ni al paquete público de Stack.
+Los adapters resuelven los destinos efectivos. El texto proyectado pasa a formar parte del contexto que recibe el modelo cuando el runtime carga ese archivo. El canon forma parte del paquete; el archivo local, las proyecciones y sus backups permanecen en el equipo del usuario.
 
-Install/sync, sus dry-runs y el sync interno de update validan la fuente antes de sus escrituras. Un directorio, un error de lectura, UTF-8 inválido o texto que contenga `jorgex:` producen un error; no se interpretan como desactivación. Se normalizan saltos de línea y espacios exteriores, conservando el contenido interior. Los enlaces escritos en el Markdown no se descargan ni se expanden como imports.
+Install/sync, sus dry-runs y el sync interno de update validan el canon y el archivo local antes de sus escrituras. Un canon ausente o vacío, un directorio, un error de lectura, UTF-8 inválido o marcadores locales ambiguos producen un error; no se interpretan como desactivación. Se normalizan saltos de línea y espacios exteriores, conservando el contenido interior. Los enlaces escritos en el Markdown no se descargan ni se expanden como imports.
 
 ## Desactivar, desinstalar y recuperar
 
-- **Desactivar:** deja el archivo vacío o solo con espacios, o muévelo fuera de la ruta configurada; después ejecuta sync. Se retira únicamente la sección de estilo. Puedes guardar la fuente en otra ubicación para recuperarla.
+- **Archivo local ausente o vacío:** `install` y `sync` vuelven a crear o completar el bloque desde el canon incluido. No es un mecanismo de desactivación.
 - **Modo programático:** install/sync con `--mode programmatic` retira la sección aunque la fuente siga presente. Volver a `--mode human` permite proyectarla otra vez. En Pi esta selección filtra la capa de estilo; no sustituye el prompt base de JorgeX Pi.
-- **Uninstall:** retira la proyección conforme al ownership y los backups del lifecycle existente. Conserva la fuente privada y el contenido ajeno.
-- **Restore:** restaura los destinos de un backup mediante el comando habitual. Puede recuperar una proyección antigua; el siguiente sync vuelve a aplicar la fuente actual. No restaura ni modifica la fuente.
+- **Uninstall:** retira la proyección conforme al ownership y los backups del lifecycle existente. Conserva el archivo local instalado y el contenido ajeno.
+- **Restore:** repone los archivos incluidos en el backup elegido mediante el comando habitual. Si el backup `writing-style` contiene el archivo local, también puede restaurarlo. Restore no valida el contenido contra el canon; el siguiente sync vuelve a aplicar el canon actual y conserva las notas ajenas válidas.
 
-Uninstall y restore no necesitan leer la fuente y no quedan bloqueados si está dañada. Los backups pueden contener el estilo anterior; trátalos como parte de tu configuración privada. Consulta también el [lifecycle de Pi](pi-runtime.md).
+Uninstall no necesita leer el archivo local y no queda bloqueado si está dañado. Restore opera sobre el backup seleccionado y puede recuperar ese archivo sin depender de que su contenido sea válido. Los backups pueden contener el estilo anterior; trátalos como parte de tu configuración privada. Consulta también el [lifecycle de Pi](pi-runtime.md).
 
 ## Probar en un destino aislado
 
-Con `--target-dir`, la única fuente es `<target-dir>/writing-style.md`. Stack no busca el estilo en el HOME real y rechaza enlaces de esa fuente que salgan del destino. Prepara allí un ejemplo sintético:
+Con `--target-dir`, Stack instala el canon únicamente en `<target-dir>/writing-style.md` y no busca el archivo local del HOME real. Rechaza enlaces de esa fuente que salgan del destino. Prepara allí el destino aislado:
 
 ```bash
 pnpm dlx jorgex-stack sync --agents codex --target-dir ./prueba-estilo --mode human --dry-run
@@ -59,7 +76,7 @@ pnpm dlx jorgex-stack sync --agents codex --target-dir ./prueba-estilo --mode hu
 pnpm dlx jorgex-stack doctor --agents codex --target-dir ./prueba-estilo
 ```
 
-El dry-run valida y planifica sin escribir. Para los runtimes de archivos, usa un destino por runtime. En Pi la proyección aislada se encuentra bajo `<target-dir>/pi-agent/AGENTS.md`.
+El dry-run valida y planifica sin escribir la fuente local, backups ni proyecciones. Un archivo local nuevo recibe permisos POSIX `0600`; si ya existe, conserva sus permisos. En un destino aislado, los backups se guardan dentro de `<target-dir>/backups`. Para los runtimes de archivos, usa un destino por runtime. En Pi la proyección aislada se encuentra bajo `<target-dir>/pi-agent/AGENTS.md`.
 
 El diagnóstico aislado usa modo humano por defecto. Si preparaste una proyección programática, pasa también `--mode programmatic` a doctor para comparar contra la ausencia esperada del estilo:
 
@@ -73,7 +90,7 @@ El diagnóstico de Stack con `doctor --target-dir` se limita explícitamente al 
 
 ## Diagnóstico y límites de carga
 
-Doctor muestra la ruta de la fuente, si está configurada o desactivada, su tamaño normalizado y si la sección proyectada coincide. No imprime el cuerpo ni afirma que el modelo esté siguiendo el estilo. Si hay diferencias, revisa la fuente y sincroniza; si no puede leer un archivo, revisa la ruta y los permisos.
+Doctor muestra la ruta del canon, la ruta del archivo local, si este está instalado, pendiente o desactualizado, su tamaño normalizado y si la sección proyectada coincide. No imprime el cuerpo ni afirma que el modelo esté siguiendo el estilo. Si hay diferencias, sincroniza; si no puede leer un archivo, revisa la ruta y los permisos.
 
 «Global» significa ámbito de usuario, no prioridad absoluta. La configuración de proyecto, las instrucciones superiores y las opciones del runtime pueden cambiar lo que llega al modelo:
 

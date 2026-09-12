@@ -150,9 +150,9 @@ Pi puede consumirse inmediatamente después de publicar y verificar el artefacto
 
 ### Estilo global de escritura
 
-Puedes definir preferencias opcionales de escritura en `~/.jorgex-stack/writing-style.md` y aplicarlas con `sync --mode human` a los runtimes seleccionados. Stack añade una sección independiente sin cambiar sus instrucciones técnicas ni su configuración nativa de personalidad. El archivo no se crea automáticamente; vacío o ausente desactiva la capa tras sincronizar, y el modo programático la omite.
+Stack incluye el estilo Humanizer Jorge y lo instala automáticamente en `~/.jorgex-stack/writing-style.md` durante `install` y `sync`. En modo humano, proyecta ese contenido en una sección independiente de las instrucciones globales de Claude Code, Codex, OpenCode y Pi para los runtimes seleccionados. Conserva las instrucciones técnicas y la configuración nativa de personalidad. Si el archivo local falta o está vacío, Stack lo vuelve a crear o completar desde el canon incluido; no funciona como un interruptor para desactivar el estilo. El modo programático conserva el archivo, pero omite la proyección de prosa.
 
-Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md). La fuente y sus backups pueden contener preferencias privadas y no forman parte del paquete público.
+Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md). El canon se distribuye dentro de Stack; las muestras originales y los informes privados que sirvieron para elaborarlo no forman parte del paquete.
 
 ### Browser automation
 
