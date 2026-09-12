@@ -1,15 +1,15 @@
 {
   "package": {
     "name": "jorgex-pi",
-    "version": "0.8.17",
-    "source": "npm:jorgex-pi@0.8.17"
+    "version": "0.8.18",
+    "source": "npm:jorgex-pi@0.8.18"
   },
   "provenance": {
-    "commit": "53717b51dac13a460cd1c8c3ae4b6a3052fe70c2"
+    "commit": "61d676b300707d61840165616f0880d8c6588ce7"
   },
   "tarball": {
-    "bytes": 89122677,
-    "sha256": "07e8c36b237aac074c62a993cb2a89b45609e2d55cfab7f5f4dc33f5203d7750",
-    "sha512": "3bf7ffa62a992bf1a73f42821301b400f8ebe52d595cb4cb188e764bfeff8b0f3dd7247eda49990a97310728c6bd9699ffd03299b26641b8f17994b178763720"
+    "bytes": 89122709,
+    "sha256": "02e5577d95d19ae28de55c170d4b6b48e682fbe741c8eec26cd79587da2f829e",
+    "sha512": "a9fa60be18b6a84dca6703bf38a1462482dd3ea00d9eb82aead06e9a86b3d92ce09b68da2968cb760d6b3ad8d5b2b36d53889bed227e7ea6791932ce25153220"
   }
 }
