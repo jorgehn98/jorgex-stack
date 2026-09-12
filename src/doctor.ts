@@ -10,7 +10,7 @@ import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { piAdapter } from "./adapters/pi.js";
 import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
-import { prepareWritingStyle, renderWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
+import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
 import { HOME } from "./lib/paths.js";
 import {
   detectPlaywrightCli,
@@ -86,14 +86,14 @@ export interface DoctorOptions {
 
 function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mode: InstallModePreference): number {
   let problems = 0;
-  p.log.info(`Estilo Humanizer Jorge incluido: ${style.canonicalPath}; fuente local ${style.sourcePath}; tamaño ${Buffer.byteLength(style.content, "utf8")} bytes de texto normalizado. La carga nativa no está verificada.`);
+  p.log.info(`Estilo de escritura incluido: ${style.canonicalPath}; fuente local ${style.sourcePath}; tamaño ${Buffer.byteLength(style.content, "utf8")} bytes de texto normalizado. La carga nativa no está verificada.`);
   if (style.originalContent === style.installedContent) p.log.success("Archivo local de estilo actualizado con el canon incluido.");
   else {
     p.log.warn(`Archivo local de estilo ${style.originalContent === null ? "pendiente de instalar" : "desactualizado; pendiente de sincronizar"}; ejecuta install o sync (${style.sourcePath}).`);
     problems++;
   }
   const expected = mode.mode !== "programmatic"
-    ? upsertMarkdownSection(null, "writing-style", renderWritingStyle(style.content)).trim()
+    ? upsertMarkdownSection(null, "writing-style", style.content).trim()
     : null;
   const runtimes = options.runtimes ?? Object.values(ADAPTERS).filter((adapter) => options.targetDir !== undefined || adapter.detect().installed).map((adapter) => adapter.id);
   for (const id of runtimes) {

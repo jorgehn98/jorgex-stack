@@ -321,7 +321,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
   if (preparedStyle !== undefined) {
     try {
-      p.log.info(`Estilo Humanizer Jorge: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+      p.log.info(`Estilo de escritura: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
       applyWritingStyle(preparedStyle, opts.dryRun);
     } catch (error) {
       p.log.error(error instanceof Error ? error.message : String(error));

@@ -120,7 +120,3 @@ export function applyWritingStyle(plan: WritingStylePlan, dryRun = false): void 
   const mode = current === null ? 0o600 : fs.statSync(plan.sourcePath).mode & 0o777;
   writeText(plan.sourcePath, plan.installedContent, mode);
 }
-
-export function renderWritingStyle(content: string): string {
-  return `## Estilo de escritura\n\nEstas preferencias se aplican solo a la prosa dirigida al usuario. Respeta el encargo, los formatos obligatorios y las instrucciones técnicas y superiores; no cambies permisos, verificaciones ni autorizaciones.\n\n${content}`;
-}

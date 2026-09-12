@@ -46,16 +46,6 @@ type DoctorModule = {
 
 const PRIVATE_STYLE_BODY = "CUERPO PRIVADO SINTÉTICO QUE DOCTOR NO DEBE IMPRIMIR";
 
-function renderedWritingStyle(content: string): string {
-  return [
-    "## Estilo de escritura",
-    "",
-    "Estas preferencias se aplican solo a la prosa dirigida al usuario. Respeta el encargo, los formatos obligatorios y las instrucciones técnicas y superiores; no cambies permisos, verificaciones ni autorizaciones.",
-    "",
-    content,
-  ].join("\n");
-}
-
 function output(): string {
   return [
     ...logs.info.mock.calls,
@@ -79,7 +69,7 @@ function installCanonicalStyle(targetDir: string, note?: string): ReturnType<typ
 function writeProjection(targetDir: string, content: string): void {
   fs.writeFileSync(
     path.join(targetDir, "AGENTS.md"),
-    upsertMarkdownSection("# Instrucción ajena\n", "writing-style", renderedWritingStyle(content)),
+    upsertMarkdownSection("# Instrucción ajena\n", "writing-style", content),
   );
 }
 
@@ -187,7 +177,7 @@ describe("doctor de estilo global", () => {
     const privateNote = "NOTA LOCAL PRIVADA QUE DOCTOR NO DEBE IMPRIMIR";
     const plan = installCanonicalStyle(targetDir, privateNote);
     const source = path.join(targetDir, "writing-style.md");
-    fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace("# Humanizer Jorge", "Texto local modificado."));
+    fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace("# Writing style", "Texto local modificado."));
     writeProjection(targetDir, plan.content);
 
     const originalHome = process.env.HOME;
@@ -220,7 +210,7 @@ describe("doctor de estilo global", () => {
     const override = path.join(targetDir, "AGENTS.override.md");
     fs.mkdirSync(targetDir, { recursive: true });
     const plan = installCanonicalStyle(targetDir, PRIVATE_STYLE_BODY);
-    fs.writeFileSync(prompt, upsertMarkdownSection("# Instrucción ajena\n", "writing-style", renderedWritingStyle(plan.content)));
+    fs.writeFileSync(prompt, upsertMarkdownSection("# Instrucción ajena\n", "writing-style", plan.content));
     fs.writeFileSync(override, "Override global sintético\n");
 
     const originalHome = process.env.HOME;

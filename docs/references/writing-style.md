@@ -1,6 +1,6 @@
 # Estilo global de escritura
 
-Stack incluye el estilo Humanizer Jorge como parte de su canon. Durante `install` y `sync` crea o actualiza automáticamente el archivo local `~/.jorgex-stack/writing-style.md` y, en modo humano, proyecta ese estilo en las instrucciones globales de Claude Code, Codex, OpenCode y Pi seleccionados. No necesitas crear el archivo, instalar Humanizer ni invocar otra skill.
+Stack incluye un prompt genérico de estilo de escritura como parte de su canon. Durante `install` y `sync` crea o actualiza automáticamente `~/.jorgex-stack/writing-style.md` y, en modo humano, proyecta su contenido efectivo en las instrucciones globales de Claude Code, Codex, OpenCode y Pi seleccionados. El prompt está escrito en inglés para mantener el idioma del resto de las instrucciones del sistema, pero indica al modelo que responda en el idioma que usa el usuario, salvo que este pida otro. No necesitas crear el archivo ni instalar otra skill.
 
 ## Configurar y actualizar
 
@@ -19,7 +19,7 @@ El archivo local resultante tiene esta forma conceptual:
 
 ```markdown
 <!-- jorgex:writing-style-default -->
-[canon Humanizer Jorge incluido por Stack]
+[canon de estilo incluido por Stack]
 <!-- /jorgex:writing-style-default -->
 
 [notas locales opcionales, conservadas por Stack]
@@ -60,7 +60,7 @@ Install/sync, sus dry-runs y el sync interno de update validan el canon y el arc
 ## Desactivar, desinstalar y recuperar
 
 - **Archivo local ausente o vacío:** `install` y `sync` vuelven a crear o completar el bloque desde el canon incluido. No es un mecanismo de desactivación.
-- **Modo programático:** install/sync con `--mode programmatic` retira la sección aunque la fuente siga presente. Volver a `--mode human` permite proyectarla otra vez. En Pi esta selección filtra la capa de estilo; no sustituye el prompt base de JorgeX Pi.
+- **Modo programático:** install/sync con `--mode programmatic` retira la sección aunque la fuente siga presente. Volver a `--mode human` permite proyectarla otra vez. En Pi esta selección filtra la capa de estilo; no sustituye el prompt base del runtime.
 - **Uninstall:** retira la proyección conforme al ownership y los backups del lifecycle existente. Conserva el archivo local instalado y el contenido ajeno.
 - **Restore:** repone los archivos incluidos en el backup elegido mediante el comando habitual. Si el backup `writing-style` contiene el archivo local, también puede restaurarlo. Restore no valida el contenido contra el canon; el siguiente sync vuelve a aplicar el canon actual y conserva las notas ajenas válidas.
 
@@ -97,6 +97,6 @@ Doctor muestra la ruta del canon, la ruta del archivo local, si este está insta
 - **Claude Code:** Stack usa CLAUDE.md y conserva el output-style seleccionado. Los estilos nativos y las excepciones de contexto de subagentes siguen aplicándose. [Memoria y reglas](https://code.claude.com/docs/en/memory), [output styles](https://code.claude.com/docs/en/output-styles), [contexto de subagentes](https://code.claude.com/docs/en/sub-agents#what-loads-at-startup).
 - **Codex:** un `AGENTS.override.md` global no vacío puede ocultar AGENTS.md. Doctor avisa sin editarlo. Comprueba la versión instalada y los límites de carga; Stack no cambia `personality` ni reemplaza las instrucciones base. [Carga de AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 - **OpenCode:** la proyección usa AGENTS.md, no un prompt de agente ni la opción `instructions`. Las versiones V1 y V2 difieren; no presupongas que una opción de una versión funciona igual en otra. [Reglas V1](https://opencode.ai/docs/rules/), [instrucciones V2](https://opencode.ai/v2/docs/instructions).
-- **Pi:** JorgeX Pi conserva esta sección independiente al recomponer las secciones compartidas. Sus agentes que heredan contexto de proyecto pueden recibirla también; deben conservar sus formatos técnicos obligatorios. Opciones upstream que deshabilitan archivos de contexto o cambian su precedencia dependen de la versión. [Archivos de contexto de Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/usage.md).
+- **Pi:** Stack proyecta esta sección independiente al recomponer las secciones compartidas. Las snapshots Pi 0.8.16 y 0.8.17 inyectan todavía un fallback propio con `Communication Style` en español; hace falta una nueva snapshot, su publicación y la adopción posterior desde Stack para actualizarlo. Sus agentes que heredan contexto de proyecto pueden recibir también la sección proyectada y deben conservar sus formatos técnicos obligatorios. Las opciones upstream que deshabilitan archivos de contexto o cambian su precedencia dependen de la versión. [Archivos de contexto de Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/usage.md).
 
 La coincidencia de archivos y la conservación durante el bootstrap no demuestran carga nativa ni una calidad concreta de redacción. Comprueba el resultado en una sesión nueva de tu runtime autenticado, incluyendo un encargo de formato estricto. No se garantiza herencia uniforme por todos los subagentes ni una voz idéntica entre modelos.

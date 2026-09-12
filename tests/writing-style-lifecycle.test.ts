@@ -103,7 +103,7 @@ describe("lifecycle del estilo global", () => {
         const firstPrompt = fs.readFileSync(promptFile, "utf8");
         const firstSource = fs.readFileSync(source, "utf8");
         expect(firstSource).toContain("<!-- jorgex:writing-style-default -->");
-        expect(firstSource).toContain("# Humanizer Jorge");
+        expect(firstSource).toContain("# Writing style");
         expect(firstPrompt.match(/<!-- jorgex:writing-style -->/g)).toHaveLength(1);
 
         const unreadableSource = Buffer.from([0xc3, 0x28]);

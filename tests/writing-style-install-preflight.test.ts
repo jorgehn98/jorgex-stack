@@ -92,7 +92,7 @@ describe("preflight de writing-style en runInstall", () => {
       const source = path.join(targetDir, "writing-style.md");
       const installed = fs.readFileSync(source, "utf8");
       expect(installed).toContain("<!-- jorgex:writing-style-default -->");
-      expect(installed).toContain("# Humanizer Jorge");
+      expect(installed).toContain("# Writing style");
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
@@ -124,7 +124,7 @@ describe("preflight de writing-style en runInstall", () => {
         showSummary: false,
       })).resolves.toBe(0);
 
-      expect(fs.readFileSync(path.join(targetDir, "writing-style.md"), "utf8")).toContain("# Humanizer Jorge");
+      expect(fs.readFileSync(path.join(targetDir, "writing-style.md"), "utf8")).toContain("# Writing style");
       expect(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8")).not.toContain("jorgex:writing-style");
     } finally {
       if (originalHome === undefined) delete process.env.HOME;

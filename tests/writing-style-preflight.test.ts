@@ -168,7 +168,7 @@ describe("preflight de estilo antes del coordinador de runtimes", () => {
       originalContent: STYLE,
       installedContent: expect.stringContaining("jorgex:writing-style-default"),
     }));
-    expect(installInput?.writingStyle?.content).toContain("# Humanizer Jorge");
+    expect(installInput?.writingStyle?.content).toContain("# Writing style");
     expect(piInput?.writingStyle).toBe(installInput?.writingStyle);
     expect(piInput?.writingStyleMode).toBe("human");
   });

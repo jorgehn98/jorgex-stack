@@ -105,11 +105,11 @@ describe("preflight de estilo en el coordinador de Pi", () => {
     const source = path.join(targetDir, "writing-style.md");
     const installed = fs.readFileSync(source, "utf8");
     expect(installed).toContain("<!-- jorgex:writing-style-default -->");
-    expect(installed).toContain("# Humanizer Jorge");
+    expect(installed).toContain("# Writing style");
     expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
       writingStyle: expect.objectContaining({
         sourcePath: source,
-        content: expect.stringContaining("# Humanizer Jorge"),
+        content: expect.stringContaining("# Writing style"),
       }),
     }));
   });
@@ -126,7 +126,7 @@ describe("preflight de estilo en el coordinador de Pi", () => {
       engramBin: "/isolated/bin/engram",
     })).resolves.toEqual({ kind: "installed" });
 
-    expect(fs.readFileSync(path.join(targetDir, "writing-style.md"), "utf8")).toContain("# Humanizer Jorge");
+    expect(fs.readFileSync(path.join(targetDir, "writing-style.md"), "utf8")).toContain("# Writing style");
     expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
       writingStyle: expect.objectContaining({ sourcePath: path.join(targetDir, "writing-style.md"), content: null }),
     }));

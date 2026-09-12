@@ -695,7 +695,7 @@ async function main(): Promise<void> {
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
-        p.log.info(`Estilo Humanizer Jorge: ${writingStyle.sourcePath}${flags.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+        p.log.info(`Estilo de escritura: ${writingStyle.sourcePath}${flags.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
         applyWritingStyle(writingStyle, flags.dryRun);
         if (!await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes)) { exitCode = 1; return; }
 

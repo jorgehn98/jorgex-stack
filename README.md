@@ -150,9 +150,11 @@ Pi puede consumirse inmediatamente después de publicar y verificar el artefacto
 
 ### Estilo global de escritura
 
-Stack incluye el estilo Humanizer Jorge y lo instala automáticamente en `~/.jorgex-stack/writing-style.md` durante `install` y `sync`. En modo humano, proyecta ese contenido en una sección independiente de las instrucciones globales de Claude Code, Codex, OpenCode y Pi para los runtimes seleccionados. Conserva las instrucciones técnicas y la configuración nativa de personalidad. Si el archivo local falta o está vacío, Stack lo vuelve a crear o completar desde el canon incluido; no funciona como un interruptor para desactivar el estilo. El modo programático conserva el archivo, pero omite la proyección de prosa.
+Stack incluye un prompt genérico de estilo de escritura como parte de su canon. `install` y `sync` lo gestionan en `~/.jorgex-stack/writing-style.md`; en modo humano proyectan el contenido efectivo directamente en una sección independiente de las instrucciones globales de los runtimes seleccionados. El prompt se aplica a la prosa dirigida al usuario, sigue el idioma en el que escribe el usuario salvo que pida otro y conserva las instrucciones técnicas, los formatos de máquina, el código y la configuración nativa. El modo programático conserva la fuente local, pero omite la proyección de prosa.
 
-Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md). El canon se distribuye dentro de Stack; las muestras originales y los informes privados que sirvieron para elaborarlo no forman parte del paquete.
+La proyección contiene el canon directamente: Stack no añade un wrapper adicional ni una identidad personal. Si falta el archivo local o está vacío, Stack recrea el bloque gestionado. El corpus de mensajes y los informes privados de análisis no se distribuyen en el paquete. Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md).
+
+Las snapshots Pi 0.8.16 y 0.8.17 inyectan todavía un fallback propio con la sección `Communication Style` en español. Hace falta una nueva snapshot, su publicación y la adopción posterior desde Stack para corregirlo; este cambio no lo resuelve.
 
 ### Browser automation
 
