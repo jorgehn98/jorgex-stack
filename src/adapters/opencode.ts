@@ -167,6 +167,12 @@ export const opencodeAdapter: Adapter = {
         for (const command of gitReadCommands) {
           lines.push(`    ${yamlString(command)}: allow`, `    ${yamlString(`${command} *`)}: allow`);
         }
+        const permission = objectValue(loadCanonicalDefaults(stackRoot())["opencode"]?.permission);
+        const bash = objectValue(permission?.bash);
+        if (bash === null) throw new Error("OpenCode: canonical Bash policy is required for git-read agents.");
+        for (const [pattern, decision] of Object.entries(bash)) {
+          if (decision === "deny") lines.push(`    ${yamlString(pattern)}: deny`);
+        }
       }
       if (!agent.spawn) lines.push("  task: deny");
     }

@@ -14,8 +14,13 @@ const safeDiff = "git --no-pager -c core.fsmonitor=false -c log.showSignature=fa
 describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 native permission contract", () => {
   beforeAll(() => { expect(execFileSync(binary!, ["--version"], { encoding: "utf8" }).trim()).toBe("1.18.30"); });
   it.each([
-    ["printf ordinary", "allow"], ["git status", "allow"], ["git diff", "allow"], ["git log -10", "allow"],
-    ["rm -rf ordinary", "ask"], ["rm -rf /", "deny"], ["rm -rf /tmp/ordinary", "ask"], ["sudo rm -rf /", "deny"], ["rm -rf /etc/ordinary", "deny"], ["git reset --hard", "ask"], ["git clean -fd", "ask"],
+    ["printf ordinary", "allow"],
+    ["FOO=bar git reset --hard", "ask"], ["GIT_OPTIONAL_LOCKS=0 git push --force origin main", "ask"],
+    ["FOO=bar rm -rf ordinary", "ask"], ["FOO=bar sudo printf ordinary", "ask"],
+    ["find . -delete", "ask"], ["find . -exec rm -rf /tmp/ordinary \\;", "ask"],
+    ["truncate -s 0 ordinary", "ask"], ["Remove-Item -Recurse ordinary", "ask"],
+    ["FOO=bar rm -rf .env", "deny"], ["git status", "allow"], ["git diff", "allow"], ["git log -10", "allow"],
+    ["rm -rf ordinary", "ask"], ["rm -rf /", "deny"], ["rm -rf /tmp/ordinary", "ask"], ["sudo rm -rf /", "deny"], ["rm -rf /etc/ordinary", "deny"], ["git reset --hard", "ask"], ["/usr/bin/git reset --hard", "ask"], ["/usr/bin/git push --force origin main", "ask"], ["git clean -fd", "ask"],
     ["git push --force-with-lease origin main", "ask"], ["git push origin main -f", "ask"], ["sudo printf ordinary", "ask"],
     ["dd if=ordinary of=output", "deny"], ["mkfs.ext4 ordinary", "deny"], ["shred ordinary", "deny"],
     ["cat .env", "deny"], ["cat ~/.ssh/id_ed25519", "deny"], ["printf ordinary; rm -rf ordinary", "ask"],
@@ -35,6 +40,8 @@ describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 nativ
   it.each([
     ["none", "printf ordinary", "deny"], ["full", "rm -rf ordinary", "ask"],
     ["git-read", "printf ordinary", "deny"], ["git-read", `${safeDiff} HEAD`, "allow"],
+    ["git-read", `${safeDiff} HEAD -- .env`, "deny"],
+    ["git-read", `${safeDiff} HEAD -- credentials.key`, "deny"],
     ["git-read", `${safeDiff} HEAD; printf side-effect`, "deny"],
     ["git-read", `${safeDiff} $(printf side-effect)`, "deny"],
   ] as const)("%s subagent: %s → %s", async (bash, command, expected) => {
