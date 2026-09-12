@@ -189,11 +189,11 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
     problems += preferenceErrors.length;
+  } else if (options.dryRun) {
+    p.log.info("Playwright CLI: comprobación omitida en dry-run; no se evalúa el estado del paquete ni del navegador.");
   } else {
     const enabled = loadPlaywrightCliPreference();
-    const capability = options.dryRun
-      ? undefined
-      : options.playwrightCapability ?? (enabled === true ? inspectPlaywrightCapability() : undefined);
+    const capability = options.playwrightCapability ?? (enabled === true ? inspectPlaywrightCapability() : undefined);
     effectivePlaywright = capability?.effective;
     const cli = capability?.cli ?? { status: "absent" as const };
     const playwright = resolvePlaywrightDoctorState({

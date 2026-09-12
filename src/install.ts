@@ -32,7 +32,11 @@ import {
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
-import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
+import {
+  inspectPlaywrightCapability,
+  type PlaywrightCapabilitySnapshot,
+  type VerifiedPlaywrightCapabilitySnapshot,
+} from "./lib/playwright-capability.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -71,7 +75,7 @@ export interface InstallOptions {
   /** Snapshot de capacidad compartida por el coordinador para este comando. */
   playwrightCapability?: PlaywrightCapabilitySnapshot;
   /** Entrega al coordinador la snapshot posterior a un setup verificado. */
-  onPlaywrightCapability?: (snapshot: PlaywrightCapabilitySnapshot) => void;
+  onPlaywrightCapability?: (snapshot: VerifiedPlaywrightCapabilitySnapshot) => void;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
@@ -346,7 +350,6 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const playwrightCapability = opts.dryRun || !useManifest
     ? undefined
     : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectPlaywrightCapability() : undefined);
-  if (playwrightCapability !== undefined) opts.onPlaywrightCapability?.(playwrightCapability);
   const effectivePlaywright = playwrightCapability?.effective;
   const plannedPlaywright = effectivePlaywright
     ?? (toolPlan !== null && toolPlan.actions.length > 0 ? false : undefined);
@@ -608,7 +611,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           exitCode = 1;
           p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
         } else {
-          opts.onPlaywrightCapability?.(inspectPlaywrightCapability({ browserVerified: true }));
+          const verified = preparedEnv === undefined
+            ? inspectPlaywrightCapability({ browserVerified: true })
+            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv });
+          if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
+            && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
+            opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
+          }
           p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
         }
       }
