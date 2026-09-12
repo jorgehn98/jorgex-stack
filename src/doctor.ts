@@ -84,7 +84,7 @@ export interface DoctorOptions {
   targetDir?: string;
   runtimes?: SelectableRuntimeId[];
   dryRun?: boolean;
-  /** Snapshot efectiva compartida por el coordinador para este comando. */
+  /** Snapshot de capacidad compartida por el coordinador para este comando. */
   playwrightCapability?: PlaywrightCapabilitySnapshot;
 }
 

@@ -68,7 +68,7 @@ export interface InstallOptions {
   playwrightToolConsent?: PlaywrightToolConsent;
   /** Seams para verificar el flujo sin ejecutar instalaciones globales. */
   playwrightToolDeps?: PlaywrightToolPlanDeps;
-  /** Snapshot efectiva compartida por el coordinador para este comando. */
+  /** Snapshot de capacidad compartida por el coordinador para este comando. */
   playwrightCapability?: PlaywrightCapabilitySnapshot;
   /** Entrega al coordinador la snapshot posterior a un setup verificado. */
   onPlaywrightCapability?: (snapshot: PlaywrightCapabilitySnapshot) => void;
