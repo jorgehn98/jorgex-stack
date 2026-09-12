@@ -23,9 +23,7 @@ import { planHooks } from "./components/hooks.js";
 import { planMcp } from "./components/mcp.js";
 import { planPlugins } from "./components/plugins.js";
 import {
-  detectPlaywrightCli,
   executePlaywrightToolAction as executeExternalPlaywrightToolAction,
-  isPlaywrightBrowserReady,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
   setupPnpmGlobal,
@@ -34,6 +32,7 @@ import {
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
+import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -69,6 +68,10 @@ export interface InstallOptions {
   playwrightToolConsent?: PlaywrightToolConsent;
   /** Seams para verificar el flujo sin ejecutar instalaciones globales. */
   playwrightToolDeps?: PlaywrightToolPlanDeps;
+  /** Snapshot efectiva compartida por el coordinador para este comando. */
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
+  /** Entrega al coordinador la snapshot posterior a un setup verificado. */
+  onPlaywrightCapability?: (snapshot: PlaywrightCapabilitySnapshot) => void;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
@@ -197,6 +200,7 @@ export function makeContext(
   configDir: string,
   mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
   useBrowserPreferences = true,
+  playwrightCapability?: boolean,
 ): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
@@ -209,7 +213,9 @@ export function makeContext(
     models,
     warnings: [],
     enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
-    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true,
+    playwrightCliEnabled: useBrowserPreferences
+      && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true
+      && (playwrightCapability ?? true),
     ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
     ownedPrimaryModelFields: useBrowserPreferences
       ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
@@ -259,6 +265,7 @@ function applyChanges(changes: PlannedChange[], onOwnershipWritten?: (action: Fi
  */
 export function collectAllCurrentTargets(
   mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
+  playwrightCapability?: boolean,
 ): { targets: Set<string>; complete: boolean; warnings: string[] } {
   const targets = new Set<string>();
   let complete = true;
@@ -266,7 +273,7 @@ export function collectAllCurrentTargets(
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) continue;
-    const ctx = makeContext(adapter, detection.configDir, mode);
+    const ctx = makeContext(adapter, detection.configDir, mode, true, playwrightCapability);
     if (!ctx) {
       complete = false;
       warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
@@ -332,6 +339,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     });
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
+  const shouldInspectPlaywright = useManifest
+    && !opts.dryRun
+    && (toolPlan === null || toolPlan.actions.length === 0)
+    && loadPlaywrightCliPreference() === true;
+  const playwrightCapability = opts.dryRun || !useManifest
+    ? undefined
+    : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectPlaywrightCapability() : undefined);
+  if (playwrightCapability !== undefined) opts.onPlaywrightCapability?.(playwrightCapability);
+  const effectivePlaywright = playwrightCapability?.effective;
+  const plannedPlaywright = effectivePlaywright
+    ?? (toolPlan !== null && toolPlan.actions.length > 0 ? false : undefined);
   const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
   if (preparedStyle !== undefined) {
     try {
@@ -348,7 +366,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
   // El manifest solo aplica a instalaciones reales; --target-dir es de pruebas.
   const current = hasFileRuntimes && useManifest
-    ? collectAllCurrentTargets(modePreference)
+    ? collectAllCurrentTargets(modePreference, plannedPlaywright)
     : { targets: new Set<string>(), complete: false, warnings: [] as string[] };
   const canOrphan = hasFileRuntimes && useManifest && current.complete;
   const canonicalMcp = loadCanonicalMcp(stackDir);
@@ -394,7 +412,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
       playwrightCliEnabled: projectPlaywrightPrompt
         ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
-        : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true),
+        : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true
+          && (plannedPlaywright ?? true)),
       ownedMcpServers: ownedMcpServers(id, useManifest),
       ownedPrimaryModelFields: useManifest
         ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir)
@@ -589,21 +608,20 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           exitCode = 1;
           p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
         } else {
+          opts.onPlaywrightCapability?.(inspectPlaywrightCapability({ browserVerified: true }));
           p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
         }
       }
     }
-  } else if (useManifest && opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {
-    const cli = detectPlaywrightCli();
-    if (cli.status !== "current") {
+  } else if (playwrightCapability !== undefined && !playwrightCapability.effective) {
+    if (playwrightCapability.cli.status !== "current") {
       p.log.warn("Playwright CLI sigue habilitado, pero el paquete no está listo; sync no instala herramientas. Ejecuta 'jorgex-stack install --playwright'.");
+    } else if (playwrightCapability.browserCache.status === "unreadable") {
+      p.log.warn(`Playwright CLI sigue habilitado, pero no se puede leer la caché de navegadores en ${playwrightCapability.browserCache.path} (${playwrightCapability.browserCache.errorCode}). Revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
+    } else if (playwrightCapability.browserCache.status === "missing") {
+      p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
     } else {
-      const browserCache = isPlaywrightBrowserReady();
-      if (browserCache.status === "unreadable") {
-        p.log.warn(`Playwright CLI sigue habilitado, pero no se puede leer la caché de navegadores en ${browserCache.path} (${browserCache.errorCode}). Revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
-      } else if (browserCache.status === "missing") {
-        p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
-      }
+      p.log.warn("Playwright CLI sigue habilitado, pero Chromium no arranca; se ha retirado la guía. Ejecuta 'jorgex-stack install --playwright' para repararlo.");
     }
   }
 

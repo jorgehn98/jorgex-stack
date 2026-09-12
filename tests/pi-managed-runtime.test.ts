@@ -56,6 +56,7 @@ type PiManagedSystem = {
     engramBin: string | null;
     devtoolsMcpEnabled?: boolean;
     playwrightCliEnabled?: boolean;
+    playwrightCapability?: import("../src/lib/playwright-capability.js").PlaywrightCapabilitySnapshot;
   }): Promise<unknown>;
 };
 
@@ -202,7 +203,7 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
-  it("forwards a selected Playwright handoff only through a supported Pi candidate, including a known absolute bin outside PATH", async () => {
+  it("forwards a selected Playwright handoff only through a supported Pi candidate, only when its supplied capability is verified", async () => {
     const packageInputs: unknown[] = [];
     const projectionInputs: unknown[] = [];
     const playwrightPreferenceFile = "/isolated/state/playwright-cli.json";
@@ -257,9 +258,16 @@ describe("Pi managed package and projection coordination", () => {
         writingStyle: FORWARDING_STYLE,
       };
 
-      await expect(mod.runManagedPiSystem(input)).resolves.toEqual({ kind: "installed" });
-      await expect(mod.runManagedPiSystem({ ...input, operation: "sync" })).resolves.toEqual({ kind: "installed" });
-      await expect(mod.runManagedPiSystem({ ...input, operation: "doctor" })).resolves.toEqual({ kind: "installed" });
+      const capability = {
+        cli: { status: "current" as const, binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" },
+        browserCache: { status: "ready" as const, path: "/isolated/browser" },
+        browserVerified: true,
+        effective: true,
+      };
+      const verifiedInput = { ...input, playwrightCapability: capability };
+      await expect(mod.runManagedPiSystem(verifiedInput)).resolves.toEqual({ kind: "installed" });
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toEqual({ kind: "installed" });
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "doctor", playwrightCapability: { ...capability, browserVerified: false, effective: false } })).resolves.toEqual({ kind: "installed" });
 
       expect(packageInputs).toHaveLength(3);
       expect(packageInputs[0]).not.toHaveProperty("playwrightCliEnabled");
@@ -274,22 +282,29 @@ describe("Pi managed package and projection coordination", () => {
           operation: "sync",
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
-          playwrightCliCommand: "/isolated/pnpm/playwright-cli",
+          playwrightCliCommand: "/isolated/bin/playwright-cli",
         }),
         expect.objectContaining({
           operation: "doctor",
-          playwrightCliEnabled: true,
-          playwrightHandoffEnabled: true,
+          playwrightCliEnabled: false,
+          playwrightHandoffEnabled: false,
           playwrightCliCommand: null,
         }),
       ]);
-      expect(detectPlaywrightCli).toHaveBeenCalledTimes(3);
+      expect(detectPlaywrightCli).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).toHaveBeenCalledWith(playwrightPreferenceFile, true, { pi: true });
+
+      await expect(mod.runManagedPiSystem(input)).resolves.toEqual({ kind: "installed" });
+      expect(projectionInputs.at(-1)).toEqual(expect.objectContaining({
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+      }));
 
       const successfulSaveCount = savePlaywrightCliPreference.mock.calls.length;
       detectPlaywrightCli.mockReturnValueOnce({ status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" });
       runPiProjectionLifecycleSystem.mockReturnValueOnce({ kind: "blocked", reason: "projection-write-failed" });
-      await expect(mod.runManagedPiSystem({ ...input, operation: "sync" })).resolves.toMatchObject({
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toMatchObject({
         kind: "blocked",
         reason: "projection-write-failed",
       });
