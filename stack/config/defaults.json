@@ -643,7 +643,9 @@
         "* find * /sys *-delete*": "deny",
         "* find /sys/* *-delete*": "deny",
         "* find * /sys/* *-delete*": "deny"
-      }
+      },
+      "engram_*": "allow",
+      "context7_*": "allow"
     }
   },
   "claude-code": {

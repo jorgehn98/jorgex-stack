@@ -182,6 +182,15 @@ comandos sin argumentos y rutas de sistema:
   borrados ordinarios, incluidos los que están fuera del workspace, piden
   aprobación.
 
+**MCP conocido y MCP desconocido.** En la configuración fresca, las
+herramientas MCP de Engram (`engram_*`) y Context7 (`context7_*`) reciben
+`allow` para que los dos servicios gestionados puedan operar sin prompts por
+herramienta. El wildcard solo cubre esos dos prefijos: una herramienta MCP de
+otro servidor, o un nombre que no coincida, conserva el fallback global
+`ask`. Esta regla se ha comprobado con el matching nativo de OpenCode para
+los dos prefijos conocidos y un nombre MCP desconocido; no es un permiso
+general para cualquier servidor MCP.
+
 **Por qué las reglas específicas importan.** OpenCode evalúa sus reglas de
 matching según la semántica nativa del runtime; el `* = ask` superior cubre
 formas desconocidas y cada allow o deny más específico expresa una

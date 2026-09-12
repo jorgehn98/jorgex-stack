@@ -9,6 +9,14 @@ interface NativeEvent {
   part?: { tool?: string; state?: { status?: string; output?: string; error?: string } };
 }
 
+interface NativeMcpServer {
+  name: string;
+}
+
+interface OpenAiTool {
+  function?: { name?: string };
+}
+
 export async function nativePermission(input: {
   binary: string;
   permission: unknown;
@@ -16,6 +24,7 @@ export async function nativePermission(input: {
   file?: string;
   tool?: "bash" | "read" | "write";
   agent?: string;
+  mcp?: NativeMcpServer;
 }): Promise<"allow" | "ask" | "deny"> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-native-permission-"));
   const configDir = path.join(root, "config", "opencode");
@@ -29,14 +38,49 @@ export async function nativePermission(input: {
   const server = http.createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
-    let body: { messages?: Array<{ role?: string }> };
+    let body: {
+      messages?: Array<{ role?: string }>;
+      tools?: OpenAiTool[];
+    };
     try { body = JSON.parse(raw); }
     catch { response.writeHead(404); response.end(); return; }
+    if (request.url === "/mcp") {
+      const requestBody = body as unknown as { id?: number; method?: string };
+      const result = requestBody.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "native-permission-fixture", version: "1.0.0" } }
+        : requestBody.method === "tools/list"
+          ? { tools: [{ name: "read_docs", description: "Read fixture documentation.", inputSchema: { type: "object", properties: {} } }] }
+          : requestBody.method === "tools/call"
+            ? { content: [{ type: "text", text: "Fixture MCP result." }], isError: false }
+            : undefined;
+      if (requestBody.method?.startsWith("notifications/")) {
+        response.writeHead(202);
+        response.end();
+        return;
+      }
+      if (!result) {
+        response.writeHead(400, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: requestBody.id ?? null, error: { code: -32601, message: "Unknown MCP method" } }));
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: requestBody.id ?? null, result }));
+      return;
+    }
     const done = body.messages?.some((message) => message.role === "tool");
+    const mcpToolName = input.mcp
+      ? body.tools?.find((candidate) => candidate.function?.name?.endsWith("read_docs"))?.function?.name
+      : undefined;
+    if (input.mcp && !mcpToolName) {
+      response.writeHead(500, { "Content-Type": "text/plain" });
+      response.end("MCP tool name was not exposed by OpenCode");
+      return;
+    }
+    const selectedTool = mcpToolName ?? tool;
     const completion = {
       id: "fixture-completion", object: "chat.completion.chunk", created: 1, model: "fixture",
       choices: [{ index: 0, delta: done ? { content: "Fixture complete." } : {
-        role: "assistant", tool_calls: [{ index: 0, id: "fixture-call", type: "function", function: { name: tool, arguments: JSON.stringify(args) } }],
+        role: "assistant", tool_calls: [{ index: 0, id: "fixture-call", type: "function", function: { name: selectedTool, arguments: JSON.stringify(input.mcp ? {} : args) } }],
       }, finish_reason: null }],
     };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -59,6 +103,7 @@ export async function nativePermission(input: {
   fs.writeFileSync(path.join(root, "opencode.json"), JSON.stringify({
     provider: { fixture: { npm: "@ai-sdk/openai-compatible", name: "Local fixture", options: { baseURL: `http://127.0.0.1:${address.port}/v1` }, models: { fixture: { name: "fixture", limit: { context: 100000, output: 10000 } } } } },
     model: "fixture/fixture", small_model: "fixture/fixture", permission: input.permission,
+    ...(input.mcp ? { mcp: { [input.mcp.name]: { type: "remote", url: `http://127.0.0.1:${address.port}/mcp`, enabled: true } } } : {}),
   }));
   if (input.agent) {
     fs.mkdirSync(path.join(configDir, "agents"), { recursive: true });
@@ -80,7 +125,7 @@ export async function nativePermission(input: {
     if (state?.error?.includes("user rejected permission")) return "ask";
     if (state?.error?.includes("rule which prevents")) return "deny";
     if (state?.status === "completed") {
-      if (tool === "bash" && state.output !== "NATIVE_INTERCEPTED") throw new Error("Native fixture shell was not used");
+      if (!input.mcp && tool === "bash" && state.output !== "NATIVE_INTERCEPTED") throw new Error("Native fixture shell was not used");
       return "allow";
     }
     throw new Error(`Unexpected native permission result: ${JSON.stringify(state)} ${stderr.slice(-800)}`);

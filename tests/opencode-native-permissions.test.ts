@@ -38,6 +38,11 @@ describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 nativ
     expect(await nativePermission({ binary: binary!, permission, tool: "write", file: ".env", agent: agent!.content })).toBe("deny");
   }, 25000);
   it.each([
+    ["engram", "allow"], ["context7", "allow"], ["unknown", "ask"],
+  ] as const)("MCP %s read_docs → %s", async (name, expected) => {
+    expect(await nativePermission({ binary: binary!, permission, mcp: { name } })).toBe(expected);
+  }, 25000);
+  it.each([
     ["none", "printf ordinary", "deny"], ["full", "rm -rf ordinary", "ask"],
     ["git-read", "printf ordinary", "deny"], ["git-read", `${safeDiff} HEAD`, "allow"],
     ["git-read", `${safeDiff} HEAD -- .env`, "deny"],
