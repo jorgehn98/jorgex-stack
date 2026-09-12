@@ -839,6 +839,7 @@ describe("CLI effective browser capability", () => {
       expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
       expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
         operation: "doctor",
+        packageOnly: true,
       }));
       expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]).not.toHaveProperty("playwrightCapability");
     } finally {

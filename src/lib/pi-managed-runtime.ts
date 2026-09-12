@@ -136,6 +136,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   writingStyleMode?: InstallMode;
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
+  packageOnly?: boolean;
 }): Promise<PiManagedOperationResult> {
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
   if (!supportedVersions.includes(input.detected.version)) {
@@ -149,10 +150,15 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     devtoolsMcpEnabled: explicitDevtools,
     playwrightCliEnabled: explicitPlaywright,
     playwrightCapability,
+    packageOnly,
     writingStyle: suppliedStyle,
     writingStyleMode,
     ...runtimeInput
   } = input;
+  if (input.operation === "doctor" && packageOnly) {
+    const result = managedPackageResult(await runPiRuntimeSystem(runtimeInput));
+    return result.kind === "manual-existing" ? manualExistingResult(result) : result;
+  }
   const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
   if (input.operation !== "models") {
     try { assertSystemPromptFile(piSystemPromptFile(input.targetDir), input.targetDir); }

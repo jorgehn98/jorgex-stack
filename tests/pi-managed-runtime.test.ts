@@ -56,6 +56,7 @@ type PiManagedSystem = {
     engramBin: string | null;
     devtoolsMcpEnabled?: boolean;
     playwrightCliEnabled?: boolean;
+    packageOnly?: boolean;
     playwrightCapability?: import("../src/lib/playwright-capability.js").PlaywrightCapabilitySnapshot;
   }): Promise<unknown>;
 };
@@ -890,4 +891,31 @@ describe("Pi managed package and projection coordination", () => {
     expect(result).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
     expect(trace).toEqual([`package:${operation}`, "projection:sync"]);
   });
+});
+
+
+it("package-only update checks do not compare unprobed Playwright projections", async () => {
+  vi.resetModules();
+  const runPiRuntimeSystem = vi.fn().mockResolvedValue({ kind: "healthy" });
+  const runProjection = vi.fn(() => ({ kind: "drift", paths: ["browser-guide"], remedy: "unexpected" }));
+  vi.doMock("../src/lib/pi-runtime.js", () => ({
+    PI_RUNTIME_CANDIDATE: { package: { source: "npm:jorgex-pi@test" }, pi: { testedVersions: MOCK_TESTED_PI_VERSIONS }, contract: { capabilities: ["playwright-handoff-v1"] } },
+    runPiRuntimeSystem,
+  }));
+  vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+    runPiProjectionLifecycleSystem: runProjection,
+    preparePiProjectionUninstallSystem: vi.fn(), completePiProjectionUninstallSystem: vi.fn(),
+  }));
+  try {
+    const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+    await expect(mod.runManagedPiSystem({ operation: "doctor", packageOnly: true,
+      detected: { executable: "/isolated/pi", version: "0.84.2" }, engramBin: "/isolated/engram",
+      writingStyle: FORWARDING_STYLE, playwrightCliEnabled: true,
+    })).resolves.toEqual({ kind: "healthy" });
+    expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
+    expect(runPiRuntimeSystem.mock.calls[0]![0]).not.toHaveProperty("packageOnly");
+    expect(runProjection).not.toHaveBeenCalled();
+  } finally {
+    vi.doUnmock("../src/lib/pi-runtime.js");vi.doUnmock("../src/lib/pi-projection-lifecycle.js");vi.resetModules();
+  }
 });

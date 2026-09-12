@@ -481,6 +481,7 @@ interface RunSelectedPiOptions {
   modePreference?: InstallModePreference;
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
+  packageOnly?: boolean;
 }
 
 async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
@@ -545,6 +546,7 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     engramBin = requirement.bin;
   }
   const result = await runManagedPiSystem({
+    ...(options.packageOnly ? { packageOnly: true } : {}),
     writingStyle,
     writingStyleMode: modePreference?.mode,
     operation,
@@ -902,6 +904,7 @@ async function main(): Promise<void> {
             exitCode = Math.max(exitCode, await runSelectedPi({
               operation: "doctor",
               targetDir: flags.targetDir,
+              packageOnly: true,
             }));
           }
         }

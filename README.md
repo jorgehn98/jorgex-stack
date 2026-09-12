@@ -146,7 +146,7 @@ Históricamente, Stack `1.9.7` reconocía el receipt exacto de Pi `npm:jorgex-pi
 
 Pi puede consumirse inmediatamente después de publicar y verificar el artefacto adoptado. El pin exacto, la procedencia, los SHA-256/SHA-512, el SRI, la compatibilidad y el procedimiento de rollback siguen siendo obligatorios; no uses `latest` ni una versión aproximada.
 
-`update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
+`update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` performs a read-only check of the Pi package and local registration metadata through the package runner. It does not compare Stack's projection, run the browser smoke check, or mutate Pi state; use `doctor --agents pi` for the complete package-and-projection diagnosis. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
 ### Estilo global de escritura
 
