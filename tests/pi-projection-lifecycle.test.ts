@@ -1621,3 +1621,106 @@ describe("Pi shared projection lifecycle", () => {
     }
   });
 });
+
+describe("retired Playwright skill migration", () => {
+  // Inventory shipped by Stack 1.9.34, independent of the current canon.
+  const legacyFiles = [
+    "SKILL.md", "references/element-attributes.md", "references/playwright-tests.md",
+    "references/request-mocking.md", "references/running-code.md", "references/session-management.md",
+    "references/storage-state.md", "references/test-generation.md", "references/tracing.md",
+    "references/video-recording.md",
+  ];
+
+  async function fixture(handoffs = true) {
+    const { runPiProjectionLifecycle: run } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-retired-playwright-"));
+    const source = "npm:jorgex-pi@0.8.16";
+    const target = seedTarget(root, source);
+    const canon = path.join(root, "canon");
+    fs.cpSync(stackRoot(), canon, { recursive: true });
+    const legacyRoot = path.join(canon, "skills", "playwright-cli");
+    for (const relative of legacyFiles) {
+      const file = path.join(legacyRoot, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `legacy ${relative}\n`);
+    }
+    const events: string[] = [];
+    const deps = temporaryDeps(root, events, { runtimes: {} });
+    const input = {
+      scope: target.scope, packageSource: source, stackDir: canon,
+      engramBin: path.join(root, "engram"), playwrightCliEnabled: handoffs,
+      devtoolsMcpEnabled: handoffs, pnpmBin: path.join(root, "pnpm"),
+      playwrightHandoffEnabled: handoffs, playwrightCliCommand: path.join(root, "playwright-cli"),
+    };
+    expect(run({ ...input, operation: "install" }, deps).kind).toBe("installed");
+    const retired = legacyFiles.map((relative) => path.join(target.home, ".agents", "skills", "playwright-cli", relative));
+    fs.writeFileSync(retired[0]!, "edited managed skill\n");
+    const foreign = path.join(path.dirname(retired[0]!), "personal.md");
+    fs.writeFileSync(foreign, "foreign content\n");
+    fs.rmSync(legacyRoot, { recursive: true });
+    const receiptBefore = fs.readFileSync(target.projectionReceipt, "utf8");
+    events.length = 0;
+    return { root, run, target, input, deps, retired, foreign, events, receiptBefore };
+  }
+
+  it.each([false, true])("retires only the complete owned skill with backups and idempotence (handoffs=%s)", async (handoffs) => {
+    const f = await fixture(handoffs);
+    try {
+      const backupBytes = new Map<string, string>();
+      const deps = { ...f.deps, backup(files: string[]) {
+        f.deps.backup(files);
+        for (const file of files) backupBytes.set(file, fs.readFileSync(file, "utf8"));
+      } };
+      expect(f.run({ ...f.input, operation: "doctor" }, deps).kind).toBe("drift");
+      expect(mutationEvents(f.events)).toEqual([]);
+      expect(fs.readFileSync(f.retired[0]!, "utf8")).toBe("edited managed skill\n");
+      expect(f.run({ ...f.input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: true });
+      expectBackupsBeforeMutation(f.events, [...f.retired, f.target.projectionReceipt]);
+      expect(backupBytes.get(f.retired[0]!)).toBe("edited managed skill\n");
+      for (const file of f.retired) expect(fs.existsSync(file)).toBe(false);
+      expect(fs.readFileSync(f.foreign, "utf8")).toBe("foreign content\n");
+      const receipt = JSON.parse(fs.readFileSync(f.target.projectionReceipt, "utf8")) as ProjectionReceipt;
+      expect(receipt.owned.some((file) => f.retired.includes(file))).toBe(false);
+      if (handoffs) {
+        const old = JSON.parse(f.receiptBefore) as ProjectionReceipt;
+        expect(receipt.devtools).toEqual(old.devtools);
+        expect(receipt.playwright).toEqual(old.playwright);
+      }
+      f.events.length = 0;
+      expect(f.run({ ...f.input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
+      expect(f.events).toEqual([]);
+      expect(f.run({ ...f.input, operation: "doctor" }, deps)).toEqual({ kind: "healthy" });
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it.each(["extra", "partial", "reordered", "escape"] as const)("rejects a %s legacy inventory without mutations", async (change) => {
+    const f = await fixture();
+    try {
+      const receipt = JSON.parse(f.receiptBefore) as ProjectionReceipt;
+      if (change === "extra") receipt.owned.push(f.foreign);
+      if (change === "partial") receipt.owned.splice(receipt.owned.indexOf(f.retired[0]!), 1);
+      if (change === "reordered") receipt.owned.reverse();
+      if (change === "escape") receipt.owned[receipt.owned.indexOf(f.retired[0]!)] = path.join(f.root, "outside.md");
+      fs.writeFileSync(f.target.projectionReceipt, JSON.stringify(receipt));
+      expect(f.run({ ...f.input, operation: "sync" }, f.deps)).toMatchObject({ kind: "blocked", reason: "projection-receipt-invalid" });
+      expect(mutationEvents(f.events)).toEqual([]);
+      for (const file of f.retired) expect(fs.existsSync(file)).toBe(true);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it.each(["backup", "remove"] as const)("preserves the legacy receipt and supports retry after %s failure", async (failure) => {
+    const f = await fixture();
+    try {
+      const deps = temporaryDeps(f.root, f.events, { runtimes: {} },
+        failure === "remove" ? new Set([f.retired[1]!]) : new Set(),
+        failure === "backup" ? new Error("backup failed") : null);
+      expect(f.run({ ...f.input, operation: "sync" }, deps)).toMatchObject({
+        kind: "blocked", reason: failure === "backup" ? "projection-backup-failed" : "projection-cleanup-failed",
+      });
+      expect(fs.readFileSync(f.target.projectionReceipt, "utf8")).toBe(f.receiptBefore);
+      if (failure === "backup") expect(mutationEvents(f.events)).toEqual([]);
+      expect(fs.readFileSync(f.foreign, "utf8")).toBe("foreign content\n");
+      expect(f.run({ ...f.input, operation: "sync" }, f.deps)).toEqual({ kind: "synced", changed: true });
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+});
