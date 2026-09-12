@@ -178,10 +178,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -239,6 +239,21 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert(runnerIndex >= 0, "Playwright handoff requires the existing JSON runner");
     capabilities.splice(runnerIndex, 0, playwrightCapability);
   }
+  const skillName = "playwright-cli";
+  const skillSource = "stack/skills/playwright-cli";
+  const skillTarget = "skills/playwright-cli";
+  const skills = expectedContracts[PARITY].skills;
+  const skillIndex = skills.findIndex((skill) => skill.name === skillName);
+  const playwrightSkillRemoval = acceptPlaywrightSkillRemoval && skillIndex !== -1
+    && !newContracts[PARITY].skills.some((skill) => skill.name === skillName);
+  if (playwrightSkillRemoval) {
+    assert.equal(skills.filter((skill) => skill.name === skillName).length, 1, "Playwright skill must have one canonical entry");
+    assert.equal(skills[skillIndex].sourcePath, skillSource, "Unexpected Playwright skill source");
+    assert.equal(skills[skillIndex].targetPath, skillTarget, "Unexpected Playwright skill target");
+    assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", skillTarget]).trim(), "", "Playwright skill must be absent from producer");
+    assert.equal(git(root, ["ls-tree", "--name-only", newContracts[PARITY].source.commit, "--", skillSource]).trim(), "", "Playwright skill must be absent from Stack source");
+    skills.splice(skillIndex, 1);
+  }
   for (const member of CONTRACTS) {
     assert.deepEqual(comparable(member, newContracts[member]), comparable(member, expectedContracts[member]), `${member} compatibility requires manual review`);
   }
@@ -269,9 +284,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition) {
-      const module = "extensions/playwright.ts";
-      assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", module]).trim(), "", "Playwright module must be new in this transition");
+    if (playwrightTransition || playwrightSkillRemoval) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -279,10 +292,25 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       assert.deepEqual(previousTarball, current.tarball, "Previous pinned tarball differs");
       const previousEntries = archiveEntries(previousFile);
       assert.equal(previousEntries.length, artifacts.archive.entries, "Previous archive inventory differs");
-      assert(!previousEntries.includes(`package/${module}`), "Playwright module must be absent from the previous archive");
-      assert.deepEqual([...entries].sort(), [...previousEntries, `package/${module}`].sort(),
-        "Playwright archive inventory requires exactly the reviewed module addition");
-      assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
+      let expectedEntries = [...previousEntries];
+      if (playwrightSkillRemoval) {
+        const prefix = `package/${skillTarget}`;
+        assert(previousEntries.includes(`${prefix}/SKILL.md`), "Playwright skill must exist in the previous archive");
+        expectedEntries = expectedEntries.filter((entry) => entry !== prefix && !entry.startsWith(`${prefix}/`));
+      }
+      if (playwrightTransition) {
+        const module = "extensions/playwright.ts";
+        assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", module]).trim(), "", "Playwright module must be new in this transition");
+        assert(!previousEntries.includes(`package/${module}`), "Playwright module must be absent from the previous archive");
+        expectedEntries.push(`package/${module}`);
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal"].filter(Boolean).join(" and ");
+      assert.deepEqual([...entries].sort(), expectedEntries.sort(),
+        `Playwright archive inventory requires exactly the reviewed ${changes}`);
+      if (playwrightTransition) {
+        const module = "extensions/playwright.ts";
+        assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
+      }
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
     }
@@ -322,13 +350,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 9 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 10 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
-      acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff") });
+      acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal]");
     process.exitCode = 1;
   }
 }
