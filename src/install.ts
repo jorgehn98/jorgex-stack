@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
@@ -56,6 +57,7 @@ export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
 };
 
 export interface InstallOptions {
+  writingStyle?: WritingStyleSnapshot;
   runtimes: RuntimeId[];
   /** Override del dir de config destino (pruebas/paridad). Solo válido con un único runtime. */
   targetDir?: string;
@@ -285,6 +287,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
 
+  let writingStyle: WritingStyleSnapshot;
+  let preparedStyle: WritingStylePlan | undefined;
+  try {
+    if (opts.writingStyle !== undefined) writingStyle = opts.writingStyle;
+    else writingStyle = preparedStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: opts.targetDir }), { rootDir: opts.targetDir });
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
   const stackDir = stackRoot();
   const engramBin = opts.engramBin === undefined ? detectEngram() : opts.engramBin;
   const modePreference = opts.mode === undefined
@@ -308,7 +319,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
   const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
-  if (hasFileRuntimes && useManifest) ensureModelMapFile();
+  if (preparedStyle !== undefined) {
+    try {
+      p.log.info(`Estilo de escritura: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+      applyWritingStyle(preparedStyle, opts.dryRun);
+    } catch (error) {
+      p.log.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
+  if (hasFileRuntimes && useManifest && !opts.dryRun) ensureModelMapFile();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 
@@ -349,6 +369,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     }
 
     const ctx: InstallContext = {
+      writingStyle,
       stackDir,
       configDir,
       mode: modePreference.mode,

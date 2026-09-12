@@ -101,6 +101,30 @@ describe("install-mode regressions", () => {
     expect(fs.existsSync(path.join(targetDir, "agents"))).toBe(false);
   });
 
+  it("no crea model-map.json en un HOME nuevo durante un dry-run", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-dry-run-fresh-home-"));
+    const homeDir = path.join(tmp, "home");
+    const dataDir = path.join(homeDir, ".jorgex-stack");
+    const modelMap = modelMapFile(homeDir);
+
+    try {
+      const { runInstall } = await importInstallModule(homeDir);
+
+      await expect(runInstall({
+        runtimes: ["codex"],
+        dryRun: true,
+        yes: true,
+        mode: { mode: "human", subagentConcurrency: "serial" },
+        showSummary: false,
+      })).resolves.toBe(0);
+
+      expect(fs.existsSync(modelMap)).toBe(false);
+      expect(fs.existsSync(dataDir)).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("ignora la preferencia guardada cuando --target-dir debería forzar artefactos human", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-target-dir-"));
     const homeDir = path.join(tmp, "home");

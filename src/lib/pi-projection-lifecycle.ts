@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import type { WritingStyleSnapshot } from "./writing-style.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalMcp } from "./canonical.js";
 import { piAdapter } from "../adapters/pi.js";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
@@ -34,6 +35,7 @@ export interface PiProjectionScope {
 }
 
 export interface PiProjectionLifecycleInput {
+  writingStyle?: WritingStyleSnapshot;
   operation: PiProjectionOperation;
   scope: PiProjectionScope;
   packageSource: string;
@@ -160,6 +162,7 @@ function projectedPiAdapter(scope: ProjectionScope): SharedProjectionAdapter {
 
 function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScope): FileAction[] {
   const ctx: InstallContext = {
+    writingStyle: input.writingStyle,
     stackDir: input.stackDir,
     configDir: scope.codingAgentDir,
     engramBin: input.engramBin,
@@ -383,7 +386,7 @@ function manifestOwned(manifest: PiProjectionManifest): Set<string> {
 }
 
 function withoutManagedPromptSections(content: string): string {
-  return ["system-prompt", "engram-protocol", "browser"]
+  return ["system-prompt", "engram-protocol", "browser", "writing-style"]
     .reduce((current, section) => removeMarkdownSection(current, section), content);
 }
 
@@ -725,6 +728,7 @@ export function runPiProjectionLifecycle(
 }
 
 export interface PiProjectionLifecycleSystemInput {
+  writingStyle?: WritingStyleSnapshot;
   operation: PiProjectionOperation;
   targetDir?: string;
   packageSource: string;
@@ -752,6 +756,7 @@ function systemProjectionLifecycle(
   return {
     input: {
       operation: input.operation,
+      writingStyle: input.writingStyle,
       scope,
       packageSource: input.packageSource,
       stackDir: stackRoot(),

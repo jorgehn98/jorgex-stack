@@ -148,6 +148,14 @@ Pi puede consumirse inmediatamente después de publicar y verificar el artefacto
 
 `update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
+### Estilo global de escritura
+
+Stack incluye un prompt genérico de estilo de escritura como parte de su canon. `install` y `sync` lo gestionan en `~/.jorgex-stack/writing-style.md`; en modo humano proyectan el contenido efectivo directamente en una sección independiente de las instrucciones globales de los runtimes seleccionados. El prompt se aplica a la prosa dirigida al usuario, sigue el idioma en el que escribe el usuario salvo que pida otro y conserva las instrucciones técnicas, los formatos de máquina, el código y la configuración nativa. El modo programático conserva la fuente local, pero omite la proyección de prosa.
+
+La proyección contiene el canon directamente: Stack no añade un wrapper adicional ni una identidad personal. Si falta el archivo local o está vacío, Stack recrea el bloque gestionado. El corpus de mensajes y los informes privados de análisis no se distribuyen en el paquete. Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md).
+
+Las snapshots Pi 0.8.16 y 0.8.17 inyectan todavía un fallback propio con la sección `Communication Style` en español. Hace falta una nueva snapshot, su publicación y la adopción posterior desde Stack para corregirlo; este cambio no lo resuelve.
+
 ### Browser automation
 
 Browser automation is opt-in and explicit. The legacy `agent-browser` integration and the vendored Playwright skill have been removed; the shared CLI remains available through the global tool flow.

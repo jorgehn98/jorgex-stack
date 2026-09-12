@@ -1,13 +1,16 @@
 import path from "node:path";
 import fs from "node:fs";
 import * as p from "@clack/prompts";
-import type { RuntimeId } from "./adapters/types.js";
+import type { InstallModePreference, RuntimeId, SelectableRuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, collectAllCurrentTargets, diffPlan, makeContext } from "./install.js";
 import { detectEngram, runDetectedBin } from "./lib/detect.js";
 import { readTextIfExists } from "./lib/fsx.js";
-import { loadInstallModePreference } from "./lib/install-mode.js";
+import { DEFAULT_INSTALL_MODE_PREFERENCE, loadInstallModePreference } from "./lib/install-mode.js";
 import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
+import { piAdapter } from "./adapters/pi.js";
+import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
+import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
 import { HOME } from "./lib/paths.js";
 import {
   detectPlaywrightCli,
@@ -16,6 +19,15 @@ import {
   type PlaywrightCliStatus,
 } from "./lib/external-tools.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference, primaryModelOwnershipError } from "./lib/tool-preferences.js";
+
+function readDoctorTextIfExists(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
 
 export function engramVersion(bin: string): string | null {
   const out = runDetectedBin(bin, ["--version"], 5_000);
@@ -66,9 +78,79 @@ function context7KeyConfigured(id: RuntimeId, configDir: string): boolean | null
   return match[1] !== "";
 }
 
-export async function runDoctor(): Promise<number> {
-  p.intro("jorgex-stack doctor");
+export interface DoctorOptions {
+  mode?: InstallModePreference;
+  targetDir?: string;
+  runtimes?: SelectableRuntimeId[];
+}
+
+function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mode: InstallModePreference): number {
   let problems = 0;
+  p.log.info(`Estilo de escritura incluido: ${style.canonicalPath}; fuente local ${style.sourcePath}; tamaño ${Buffer.byteLength(style.content, "utf8")} bytes de texto normalizado. La carga nativa no está verificada.`);
+  if (style.originalContent === style.installedContent) p.log.success("Archivo local de estilo actualizado con el canon incluido.");
+  else {
+    p.log.warn(`Archivo local de estilo ${style.originalContent === null ? "pendiente de instalar" : "desactualizado; pendiente de sincronizar"}; ejecuta install o sync (${style.sourcePath}).`);
+    problems++;
+  }
+  const expected = mode.mode !== "programmatic"
+    ? upsertMarkdownSection(null, "writing-style", style.content).trim()
+    : null;
+  const runtimes = options.runtimes ?? Object.values(ADAPTERS).filter((adapter) => options.targetDir !== undefined || adapter.detect().installed).map((adapter) => adapter.id);
+  for (const id of runtimes) {
+    const adapter = id === "pi" ? piAdapter : ADAPTERS[id];
+    if (adapter === undefined) continue;
+    const configDir = id === "pi"
+      ? options.targetDir === undefined
+        ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
+        : path.join(options.targetDir, "pi-agent")
+      : options.targetDir ?? ADAPTERS[id as RuntimeId]!.detect().configDir;
+    const file = adapter.paths(configDir).systemPromptFile;
+    try {
+      const content = readDoctorTextIfExists(file) ?? "";
+      const open = "<!-- jorgex:writing-style -->";
+      const close = "<!-- /jorgex:writing-style -->";
+      const healthy = hasHealthyManagedMarkdownMarkers(content, "writing-style");
+      const block = healthy ? content.slice(content.indexOf(open), content.indexOf(close) + close.length) : null;
+      const matches = expected === null
+        ? !content.includes(open) && !content.includes(close)
+        : healthy && block === expected;
+      if (matches) p.log.success(`${id}: proyección de estilo coincide (${file})${mode.mode === "programmatic" ? "; omitida en modo programmatic" : ""}.`);
+      else {
+        p.log.warn(`${id}: proyección de estilo desactualizada o ausente (${file}); ejecuta sync.`);
+        problems++;
+      }
+      if (id === "codex") {
+        const override = path.join(configDir, "AGENTS.override.md");
+        if ((readDoctorTextIfExists(override) ?? "").trim() !== "") {
+          p.log.warn(`Codex: ${override} no vacío puede ocultar el AGENTS.md gestionado; revísalo sin modificarlo automáticamente.`);
+          problems++;
+        }
+      }
+    } catch {
+      p.log.error(`${id}: no se puede leer la proyección de estilo o su override en ${configDir}; revisa archivos y permisos.`);
+      problems++;
+    }
+  }
+  return problems;
+}
+
+export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
+  p.intro("jorgex-stack doctor");
+  let writingStyle: WritingStylePlan;
+  let modePreference: InstallModePreference;
+  try {
+    writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: options.targetDir }), { rootDir: options.targetDir });
+    modePreference = options.mode ?? (options.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE);
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    p.outro("No se puede diagnosticar el estilo; corrige la fuente o la preferencia indicada.");
+    return 1;
+  }
+  let problems = reportWritingStyle(options, writingStyle, modePreference);
+  if (options.targetDir !== undefined || (options.runtimes !== undefined && options.runtimes.length > 0 && options.runtimes.every((id) => id === "pi"))) {
+    p.outro("Diagnóstico limitado al estilo; no se han ejecutado las comprobaciones globales del sistema.");
+    return problems > 0 ? 1 : 0;
+  }
 
   // Engram (D7): se informa, jamás se toca.
   const engramBin = detectEngram();
@@ -134,7 +216,6 @@ export async function runDoctor(): Promise<number> {
   }
 
   const manifest = readManifest();
-  const modePreference = loadInstallModePreference();
   const current = collectAllCurrentTargets(modePreference);
 
   if (!current.complete || current.warnings.length > 0) {
@@ -144,6 +225,7 @@ export async function runDoctor(): Promise<number> {
   }
 
   for (const adapter of Object.values(ADAPTERS)) {
+    if (options.runtimes !== undefined && !options.runtimes.includes(adapter.id)) continue;
     const detection = adapter.detect();
     if (!detection.installed) {
       p.log.warn(`${adapter.name}: no instalado en esta máquina.`);
@@ -157,6 +239,7 @@ export async function runDoctor(): Promise<number> {
 
     const ctx = makeContext(adapter, detection.configDir, modePreference);
     if (!ctx) continue;
+    ctx.writingStyle = writingStyle;
 
     let pending: number;
     try {
@@ -184,12 +267,6 @@ export async function runDoctor(): Promise<number> {
 
     if (adapter.id === "codex" && fs.existsSync(path.join(detection.configDir, "hooks.json"))) {
       p.log.info("Codex: recuerda que los hooks requieren aprobación manual — verifica con /hooks dentro de codex.");
-    }
-    if (adapter.id === "codex" && fs.existsSync(path.join(detection.configDir, "AGENTS.override.md"))) {
-      p.log.warn(
-        "Codex: existe ~/.codex/AGENTS.override.md — tiene prioridad ABSOLUTA y tapa el AGENTS.md gestionado por el stack.",
-      );
-      problems++;
     }
 
     const key = context7KeyConfigured(adapter.id, detection.configDir);

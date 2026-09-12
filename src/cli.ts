@@ -8,6 +8,7 @@ import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
 import { readPackageVersion } from "./lib/release.js";
 import { loadModelMap } from "./lib/model-map.js";
 import {
@@ -16,6 +17,7 @@ import {
   installModePreferenceFile,
   loadInstallModePreference,
   parseInstallModePreferenceFlags,
+  saveInstallModePreference,
 } from "./lib/install-mode.js";
 import { browserPreferenceErrors, devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, type PlaywrightRuntimeSelection } from "./lib/tool-preferences.js";
 import {
@@ -452,6 +454,8 @@ async function runSelectedPi(
   yes = false,
   resolvedEngramBin?: string | null,
   devtoolsMcpEnabled?: boolean,
+  writingStyle?: WritingStyleSnapshot,
+  modePreference?: InstallModePreference,
   playwrightCliEnabled?: boolean,
 ): Promise<number> {
   if (targetDir === undefined && operation !== "models") {
@@ -459,6 +463,13 @@ async function runSelectedPi(
     if (preferenceErrors.length > 0) {
       for (const error of preferenceErrors) console.error(error);
       return 1;
+    }
+  }
+  if (operation === "install" || operation === "sync" || operation === "update") {
+    if (writingStyle === undefined) {
+      const prepared = prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir });
+      applyWritingStyle(prepared);
+      writingStyle = prepared;
     }
   }
   const detected = detectPiRuntime();
@@ -496,6 +507,8 @@ async function runSelectedPi(
     engramBin = requirement.bin;
   }
   const result = await runManagedPiSystem({
+    writingStyle,
+    writingStyleMode: modePreference?.mode,
     operation,
     targetDir,
     detected: { executable: detected.executable, version: detected.version },
@@ -511,6 +524,16 @@ async function runSelectedPi(
   if (result.kind === "models" && result.models !== undefined) console.log(JSON.stringify(result.models));
   else p.log.success(`Pi: ${result.kind}.`);
   return 0;
+}
+
+function persistSuccessfulGlobalMode(
+  mode: InstallModePreference | undefined,
+  targetDir: string | undefined,
+  dryRun: boolean,
+  exitCode: number,
+): void {
+  if (mode === undefined || targetDir !== undefined || dryRun || exitCode !== 0) return;
+  saveInstallModePreference(installModePreferenceFile(), mode);
 }
 
 function printHelp(): void {
@@ -656,6 +679,7 @@ async function main(): Promise<void> {
       let completed = false;
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
+        const writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
         if (flags.targetDir === undefined) {
           const errors = browserPreferenceErrors();
           if (errors.length > 0) {
@@ -664,12 +688,15 @@ async function main(): Promise<void> {
             return;
           }
         }
-        const mode = fileRuntimes.length > 0 ? await resolveInstallMode(flags) : undefined;
+        const mode = fileRuntimes.length > 0 || flags.mode !== undefined || flags.subagentConcurrency !== undefined
+          ? await resolveInstallMode(flags) : undefined;
         if (mode === null) return;
         const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, runtimes);
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
+        p.log.info(`Estilo de escritura: ${writingStyle.sourcePath}${flags.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+        applyWritingStyle(writingStyle, flags.dryRun);
         if (!await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes)) { exitCode = 1; return; }
 
         let engramBin: string | null | undefined;
@@ -681,6 +708,7 @@ async function main(): Promise<void> {
         if (fileRuntimes.length > 0) {
           exitCode = await runInstall({
             runtimes: fileRuntimes,
+            writingStyle,
             targetDir: flags.targetDir,
             dryRun: flags.dryRun,
             yes: flags.yes,
@@ -698,6 +726,7 @@ async function main(): Promise<void> {
             p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
           } else {
             exitCode = await runInstall({
+              writingStyle,
               runtimes: [], targetDir: flags.targetDir, dryRun: false, yes: flags.yes,
               playwrightToolConsent, engramBin, showSummary: false,
             });
@@ -706,11 +735,15 @@ async function main(): Promise<void> {
         }
         if (runtimes.includes("pi") && piCanRun) {
           if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
-          else exitCode = Math.max(exitCode, await runSelectedPi(command, flags.targetDir, flags.yes,
-            flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi,
-            flags.targetDir === undefined && exitCode === 0 && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0
-              ? playwrightToolConsent.runtimeSelection?.pi : undefined));
+          else {
+            const piExitCode = await runSelectedPi(command, flags.targetDir, flags.yes,
+              flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi, writingStyle, mode,
+              flags.targetDir === undefined && exitCode === 0 && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0
+                ? playwrightToolConsent.runtimeSelection?.pi : undefined);
+            exitCode = Math.max(exitCode, piExitCode);
+          }
         }
+        if (runtimes.includes("pi")) persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, exitCode);
         completed = true;
       } catch (error) {
         p.log.error(error instanceof Error ? error.message : String(error));
@@ -752,11 +785,21 @@ async function main(): Promise<void> {
       return;
     }
     case "doctor": {
-      const fileDoctorSelected = flags.agents.length === 0 || flags.agents.some(isFileManagedRuntime);
-      let exitCode = fileDoctorSelected ? await runDoctor() : 0;
+      const mode = flags.mode !== undefined || flags.subagentConcurrency !== undefined
+        ? await resolveInstallMode(flags) : undefined;
+      if (mode === null) return;
       const piSelected = flags.agents.includes("pi")
         || (flags.agents.length === 0 && detectPiRuntime().installed && hasManagedPiRuntime(flags.targetDir));
-      if (piSelected) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir));
+      const doctorRuntimes: SelectableRuntimeId[] = flags.agents.length > 0
+        ? flags.agents
+        : flags.targetDir === undefined
+          ? [
+              ...Object.values(ADAPTERS).filter((adapter) => adapter.detect().installed).map((adapter) => adapter.id),
+              ...(piSelected ? ["pi" as const] : []),
+            ]
+          : [...Object.keys(ADAPTERS) as RuntimeId[], ...(piSelected ? ["pi" as const] : [])];
+      let exitCode = await runDoctor({ targetDir: flags.targetDir, runtimes: doctorRuntimes, mode });
+      if (piSelected) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir, false, undefined, undefined, undefined, mode));
       process.exitCode = exitCode;
       return;
     }
@@ -775,22 +818,30 @@ async function main(): Promise<void> {
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
-      if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
-        process.exitCode = await runSelectedPi("update", flags.targetDir);
-        return;
-      }
       const preferenceFile = installModePreferenceFile();
       const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
       const hasSavedMode = hasInstallModePreference(preferenceFile);
       const canResolveMode = flags.targetDir !== undefined || explicitMode || hasSavedMode;
-      const mode = fileRuntimes.length > 0 && canResolveMode
+      const mode = canResolveMode
         ? await resolveInstallMode(flags, false)
         : DEFAULT_INSTALL_MODE_PREFERENCE;
       if (mode === null) return;
+      const writingStyle = prepareWritingStyle(
+        resolveWritingStyleFile({ targetDir: flags.targetDir }),
+        { rootDir: flags.targetDir },
+      );
+      applyWritingStyle(writingStyle, flags.dryRun);
+      if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
+        const piExitCode = await runSelectedPi("update", flags.targetDir, false, undefined, undefined, writingStyle, mode);
+        process.exitCode = piExitCode;
+        persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, piExitCode);
+        return;
+      }
       const canSync = fileRuntimes.length === 0 || canResolveMode;
       if (fileRuntimes.length > 0 && canSync) {
         const code = await runInstall({
           runtimes: fileRuntimes,
+          writingStyle,
           targetDir: flags.targetDir,
           dryRun: flags.dryRun,
           yes: true,
@@ -811,7 +862,7 @@ async function main(): Promise<void> {
       );
       process.exitCode = result.exitCode;
       if (result.exitCode === 0 && runtimes.includes("pi")) {
-        process.exitCode = Math.max(process.exitCode, await runSelectedPi("update", flags.targetDir));
+        process.exitCode = Math.max(process.exitCode, await runSelectedPi("update", flags.targetDir, false, undefined, undefined, writingStyle, mode));
       }
       // Solo skills/stack cambian los artefactos que el sync propaga.
       if (result.syncRequired && fileRuntimes.length > 0 && (result.exitCode !== 0 || !canSync)) {
@@ -821,6 +872,7 @@ async function main(): Promise<void> {
         if (!p.isCancel(apply) && apply) {
           process.exitCode = await runInstall({
             runtimes: fileRuntimes,
+            writingStyle,
             targetDir: flags.targetDir,
             dryRun: false,
             yes: false,
@@ -831,6 +883,9 @@ async function main(): Promise<void> {
         }
       } else if (result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
         console.log("Skills/stack actualizados. Ejecuta jorgex-stack sync para aplicarlos a los runtimes.");
+      }
+      if (runtimes.includes("pi")) {
+        persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, process.exitCode ?? result.exitCode);
       }
       return;
     }

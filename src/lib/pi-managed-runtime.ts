@@ -1,3 +1,6 @@
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./writing-style.js";
+import { loadInstallModePreference } from "./install-mode.js";
+import type { InstallMode } from "../adapters/types.js";
 import {
   completePiProjectionUninstallSystem,
   preparePiProjectionUninstallSystem,
@@ -124,7 +127,12 @@ function managedPackageResult(
 }
 
 /** Coordina el paquete Pi con la proyección compartida de Stack. */
-export async function runManagedPiSystem(input: PiRuntimeInput & { devtoolsMcpEnabled?: boolean; playwrightCliEnabled?: boolean }): Promise<PiManagedOperationResult> {
+export async function runManagedPiSystem(input: PiRuntimeInput & {
+  devtoolsMcpEnabled?: boolean;
+  writingStyle?: WritingStyleSnapshot;
+  writingStyleMode?: InstallMode;
+  playwrightCliEnabled?: boolean;
+}): Promise<PiManagedOperationResult> {
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
   if (!supportedVersions.includes(input.detected.version)) {
     return {
@@ -133,7 +141,22 @@ export async function runManagedPiSystem(input: PiRuntimeInput & { devtoolsMcpEn
       remedy: `Pi ${input.detected.version} no está entre las versiones verificadas (${supportedVersions.join(", ")}). Actualiza Stack a una versión compatible antes de gestionar Pi.`,
     };
   }
-  const { devtoolsMcpEnabled: explicitDevtools, playwrightCliEnabled: explicitPlaywright, ...runtimeInput } = input;
+  const {
+    devtoolsMcpEnabled: explicitDevtools,
+    playwrightCliEnabled: explicitPlaywright,
+    writingStyle: suppliedStyle,
+    writingStyleMode,
+    ...runtimeInput
+  } = input;
+  const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
+  const preparedStyle = readsStyle && suppliedStyle === undefined
+    ? prepareWritingStyle(resolveWritingStyleFile({ targetDir: input.targetDir }), { rootDir: input.targetDir })
+    : undefined;
+  const style = readsStyle ? suppliedStyle ?? preparedStyle : undefined;
+  const mode = readsStyle
+    ? writingStyleMode ?? (input.targetDir === undefined ? loadInstallModePreference().mode : "human")
+    : "human";
+  const writingStyle = style && mode === "programmatic" ? { ...style, content: null } : style;
   const devtoolsMcpEnabled = explicitDevtools
     ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
   const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
@@ -142,6 +165,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & { devtoolsMcpEn
   const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
     ? detectPlaywrightCli().binPath : null;
   const projectionInput = {
+    writingStyle,
     targetDir: input.targetDir,
     packageSource: PI_RUNTIME_CANDIDATE.package.source,
     engramBin: input.engramBin,
@@ -151,6 +175,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & { devtoolsMcpEn
     devtoolsMcpEnabled,
     pnpmBin: devtoolsMcpEnabled && input.operation !== "uninstall" ? resolvePnpmBin() : null,
   };
+  if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
   const result = await runManagedPiOperation(input.operation, {
     async runPackage(operation) {
       return managedPackageResult(await runPiRuntimeSystem({ ...runtimeInput, operation }));

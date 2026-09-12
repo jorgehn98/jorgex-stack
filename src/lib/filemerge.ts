@@ -53,7 +53,7 @@ export function upsertMarkdownSection(existing: string | null, name: string, con
   if (start !== -1 && end !== -1 && end > start) {
     return existing.slice(0, start) + block + existing.slice(end + close.length);
   }
-  const sep = existing.endsWith("\n") ? "\n" : "\n\n";
+  const sep = existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
   return existing + sep + block + "\n";
 }
 
