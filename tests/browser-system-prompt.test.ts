@@ -92,6 +92,7 @@ function expectCapabilities(content: string, playwright: boolean, devtools: bool
     expect(section).toMatch(/Playwright CLI/i);
     expect(section).not.toMatch(/\bskill\b/i);
     expect(section).toContain("playwright-cli --help");
+    expect(section).toContain("playwright-cli open --browser=chromium");
     expect(section).toContain("playwright-cli snapshot");
     expect(section).toMatch(/verify/i);
     expect(section).toContain("playwright-cli close");

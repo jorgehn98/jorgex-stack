@@ -1,21 +1,21 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
+Portable multi-agent harness: one configuration source — 17 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
 ## Skills: release snapshot and supply chain
 
-The 1.9.2 release carries a fixed **18-skill snapshot**: **6 stack-owned** skills and **12 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
+The current canon carries a fixed **17-skill snapshot**: **6 stack-owned** skills and **11 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
 
 | Set | Skills |
 | --- | --- |
 | Stack-owned (6) | `agent-delegation`, `lean-code`, `orchestrator`, `work-audit`, `work-lifecycle`, `xreview` |
-| Vendored (12) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `playwright-cli`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
+| Vendored (11) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
 
 The supply-chain contract is deliberately explicit:
 
-- **Snapshot:** the 18 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
+- **Snapshot:** the 17 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
 - **Per-skill pin:** `upstreams.json` records each vendored source/path and its accepted commit pin (plus package/binary pins where applicable). A pin identifies the last reviewed snapshot; it does not mean that later upstream changes were accepted.
 - **Manual review:** only a maintainer running from a git clone may inspect and propose vendored-skill updates. The flow downloads to a temporary directory, shows a mandatory diff, requests confirmation, and re-pins only after deliberate review. Local changes marked `modified: true` receive an additional warning/confirmation.
 
@@ -114,7 +114,7 @@ Programmatic mode does **not** provide:
 
 ### Pi runtime
 
-El canon de Stack y el paquete Pi fijado comparten ya el inventario de 14 agentes (primary y 13 subagentes). La identidad exacta del pin y su procedencia se mantienen en `src/lib/pi-runtime-pin.json`; esta adopción no implica una nueva publicación de Stack ni una instalación personal.
+El canon de Stack mantiene 17 skills, mientras el paquete Pi fijado `jorgex-pi@0.8.16` todavía contiene su snapshot anterior. La publicación de una nueva versión de Pi y su adopción posterior son prerrequisitos para reflejar este canon en el paquete; este cambio no los anticipa.
 
 Pi combines the frozen **snapshot v2** package with a Stack-owned shared projection. The version references that follow describe historical Stack/Pi transitions, not the current pin. The current pin, package integrity and lifecycle are maintained in [docs/references/pi-runtime.md](docs/references/pi-runtime.md) and `src/lib/pi-runtime-pin.json`; this README does not imply a future release.
 
@@ -128,7 +128,7 @@ pnpm dlx jorgex-stack@1.9.7 sync --agents pi
 pnpm dlx jorgex-stack@1.9.7 uninstall --agents pi
 ```
 
-Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. The historical `0.8.0` tarball was `89128340` bytes; the exact adopted artifact and integrity values are authoritative in `src/lib/pi-runtime-pin.json`, while the lifecycle remains authoritative in `src/lib/pi-runtime.ts`. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. After the package is healthy, Stack projects the shared resources into Pi: marked `jorgex:system-prompt` and `jorgex:engram-protocol` sections in `~/.pi/agent/AGENTS.md`, canonical skills under `~/.agents/skills`, and `~/.pi/agent/prompts/lean-audit.md`. When the managed Playwright preference is active, the projection also adds or removes the marked `jorgex:browser` section dynamically. The global Playwright package and Chromium cache are shared by the machine; `--playwright-runtimes` controls which runtime receives the guide. The pin vigente declara `playwright-handoff-v1`, por lo que Pi puede seleccionarse y recibe su handoff de Playwright además de la guía. El paquete Pi fijado también soporta el handoff opcional de Chrome DevTools; Stack persiste cada handoff como parte de la proyección y registra su SHA-256 en el receipt correspondiente tras una operación correcta. Context7 remains outside the Pi scope. The published `1.9.7` entry `{ "source": "npm:jorgex-pi@0.8.4", "skills": [], "prompts": [] }` and the `0.8.5` snapshot reference are historical; they do not describe the adopted pin. Filters are applied only after this projection exists, so the package does not duplicate shared resources. Package ownership is recorded separately in `~/.jorgex-stack/pi-receipt.json`; projection ownership is recorded in `~/.jorgex-stack/pi-projection-receipt.json`. Package receipts reject manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state. Projection cleanup requires an exact scope-bound ownership receipt; DevTools conflicts preserve the handoff for review.
+Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. The exact artifact and integrity values are authoritative in `src/lib/pi-runtime-pin.json`, while the lifecycle remains authoritative in `src/lib/pi-runtime.ts`. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. After the package is healthy, Stack projects the shared resources into Pi: marked `jorgex:system-prompt` and `jorgex:engram-protocol` sections in `~/.pi/agent/AGENTS.md`, canonical skills under `~/.agents/skills`, and `~/.pi/agent/prompts/lean-audit.md`. When the managed Playwright preference is active, the projection also adds or removes the marked `jorgex:browser` section dynamically. The global Playwright package and Chromium cache are shared by the machine; `--playwright-runtimes` controls which runtime receives the guide. The contract candidate declares `playwright-handoff-v1`, and the pinned Pi package `0.8.16` already implements and tests `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; its previous snapshot still contains the eliminated skill, so Pi publication and subsequent adoption are required only to remove that skill from the package. Context7 remains outside the Pi scope. Historical package entries do not describe the current pin. Filters are applied only after this projection exists, so the package does not duplicate shared resources. Package ownership is recorded separately in `~/.jorgex-stack/pi-receipt.json`; projection ownership is recorded in `~/.jorgex-stack/pi-projection-receipt.json`. Package receipts reject manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state. Projection cleanup requires an exact scope-bound ownership receipt; DevTools conflicts preserve the handoff for review.
 
 Historically, the published Pi 0.8.0 direct-package snapshot added `work-audit`: the snapshot grew from **17 to 18 skill trees** (96 to 97 files), and the active runtime allowlist grew from **16 to 17 skills**. The historical Pi 0.8.5 snapshot reference records 18 skill trees and 98 files; it does not describe the adopted pin. Reference F2-A is included while the private F1 skills remain preserved. `playwright-cli` remains in the snapshot but inactive because browser automation is a separate opt-in integration.
 
@@ -150,9 +150,9 @@ Pi puede consumirse inmediatamente después de publicar y verificar el artefacto
 
 ### Browser automation
 
-Browser automation is opt-in and explicit. The legacy `agent-browser` integration has been removed; rely on the two surfaces below.
+Browser automation is opt-in and explicit. The legacy `agent-browser` integration and the vendored Playwright skill have been removed; the shared CLI remains available through the global tool flow.
 
-- **Playwright CLI** (recommended): `@playwright/cli@0.1.18` plus a vendored skill that ships pinned with the stack. The skill is loaded on demand, contributes no permanent MCP schemas, and declares `allowed-tools: Bash(playwright-cli:*)` only (no `Bash(pnpm:*)`). This is the skill's declaration, not a security boundary: effective permissions still come from the adapter/runtime, and OpenCode/full-bash may expose broader Bash or other capabilities. See [docs/references/browser-automation.md](docs/references/browser-automation.md) for the full lifecycle, the security profile and troubleshooting.
+- **Playwright CLI** (recommended): the global package `@playwright/cli@0.1.18`, shared by the machine and enabled explicitly. The conditional browser guide tells agents to open Chromium with `--browser=chromium`, consult `playwright-cli --help`, use a task-specific session, take a `snapshot`, verify results and close only sessions they created. See [docs/references/browser-automation.md](docs/references/browser-automation.md) for the lifecycle, privacy profile and troubleshooting.
 - **Chrome DevTools MCP** (advanced diagnostics, opt-in): exposes ~29 tools and ~5,800–7,700 tokens of schemas in full mode. Disabled by default, selected per runtime, version-pinned, and launched with a fixed argv `pnpm dlx chrome-devtools-mcp@1.6.0 --isolated --redact-network-headers --no-performance-crux --no-usage-statistics`. `--isolated` starts Chrome with an ephemeral, isolated profile that is deleted when Chrome closes (no persistent dedicated profile, no shared cookies/extensions/sessions with your personal Chrome); `--redact-network-headers` redacts sensitive headers in captured network traffic, but not request/response bodies, which may contain tokens or PII. Avoid authenticated sessions or sensitive data, or disable network capture manually outside the stack when needed. `--no-performance-crux` disables CrUX reporting; `--no-usage-statistics` disables telemetry. `--slim` and Playwright MCP are intentionally excluded.
 
 Setup that respects the zero-secrets, pnpm-only and explicit-consent rules:
