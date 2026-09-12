@@ -19,7 +19,7 @@ import {
 export const PI_RUNTIME_CANDIDATE = {
   ...pin,
   pi: {
-    testedVersions: ["0.84.2"],
+    testedVersions: ["0.84.2", "0.85.1"],
   },
   contract: {
     schemaVersion: 1,
@@ -33,6 +33,8 @@ export const PI_RUNTIME_CANDIDATE = {
       "goal-continuation-v1",
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
+      "chrome-devtools-handoff-v1",
+      "playwright-handoff-v1",
       "runner-json-v1",
       "tui-branding-v1",
       "managed-primary-model-v1",
@@ -227,11 +229,14 @@ function normalizeInstalledSource(settingsJson: string, alias: string, canonical
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const packages = Reflect.get(parsed, "packages");
     if (!Array.isArray(packages)) return null;
-    const hasCanonical = packages.some((entry) => entry === canonical
-      || (entry !== null && typeof entry === "object" && !Array.isArray(entry)
-        && Reflect.get(entry, "source") === canonical));
-    if (packages.filter((entry) => entry === alias).length !== 1 || hasCanonical) return null;
-    Reflect.set(parsed, "packages", packages.map((entry) => entry === alias ? canonical : entry));
+    const sourceOf = (entry: unknown): unknown => entry !== null && typeof entry === "object" && !Array.isArray(entry)
+      ? Reflect.get(entry, "source") : entry;
+    if (packages.filter((entry) => sourceOf(entry) === alias).length !== 1
+      || packages.some((entry) => sourceOf(entry) === canonical)) return null;
+    Reflect.set(parsed, "packages", packages.map((entry) => {
+      if (sourceOf(entry) !== alias) return entry;
+      return typeof entry === "string" ? canonical : { ...entry, source: canonical };
+    }));
     return JSON.stringify(parsed);
   } catch {
     return null;
@@ -411,6 +416,9 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
 
   if (input.operation === "install" || input.operation === "sync" || input.operation === "models") {
     const plan = deps.prepare(lifecycleInput);
+    if (plan !== null && typeof plan === "object" && Reflect.get(plan, "kind") === "blocked") {
+      return plan as RuntimeResult;
+    }
     const result = deps.execute({
       operation: input.operation,
       plan,

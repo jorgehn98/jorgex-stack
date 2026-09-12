@@ -9,17 +9,6 @@
     }
   },
   "skills": {
-    "playwright-cli": {
-      "source": "github:microsoft/playwright-cli",
-      "path": "skills/playwright-cli",
-      "package": "@playwright/cli",
-      "binary": "playwright-cli",
-      "version": "0.1.18",
-      "commit": "2f85a94b7b885dbf4a5d34462f253a8746a690c9",
-      "license": "Apache-2.0",
-      "modified": true,
-      "note": "bundle release firmado 0.1.18 en ca196c297169a494ee5517584883eada60dc8d0e; el pin commit es el HEAD revisado del repo"
-    },
     "deploy-to-vercel": {
       "source": "github:vercel-labs/agent-skills",
       "path": "skills/deploy-to-vercel",

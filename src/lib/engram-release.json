@@ -1,0 +1,35 @@
+{
+  "assets": {
+    "darwin_arm64": {
+      "name": "engram_1.20.0_darwin_arm64.tar.gz",
+      "sha256": "2363d5012f23e58878f86c3ddcc1f63cfe9dcf3eec7f413e70eaafcbb9d394cc",
+      "size": 6949031
+    },
+    "darwin_x64": {
+      "name": "engram_1.20.0_darwin_amd64.tar.gz",
+      "sha256": "3b9015dcfcdd9f823eb7ad0b590b1dbc4c25bb5d81dda3f84e623709815afe80",
+      "size": 7367005
+    },
+    "linux_arm64": {
+      "name": "engram_1.20.0_linux_arm64.tar.gz",
+      "sha256": "7eb815910a76ae6cfa9a5d0161d3701e293dcca71f7743cffa62e236e5af59af",
+      "size": 6673857
+    },
+    "linux_x64": {
+      "name": "engram_1.20.0_linux_amd64.tar.gz",
+      "sha256": "7dc3003318e303bee269a4772144f3ce01c8ec700bfd524aaec76770acd389ca",
+      "size": 7236400
+    },
+    "windows_arm64": {
+      "name": "engram_1.20.0_windows_arm64.zip",
+      "sha256": "eb93c6d7d5a4020ddcf1ff956909f3e90694f6447519433316b10f964f8f37b5",
+      "size": 6723366
+    },
+    "windows_x64": {
+      "name": "engram_1.20.0_windows_amd64.zip",
+      "sha256": "c945c47d58367f943642cb8451fa45f208174407839f1dda33a975a05d6e465b",
+      "size": 7416778
+    }
+  },
+  "version": "1.20.0"
+}

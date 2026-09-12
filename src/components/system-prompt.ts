@@ -40,5 +40,9 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
   content = browser === ""
     ? removeMarkdownSection(content, "browser")
     : upsertMarkdownSection(content, "browser", browser);
+  const style = ctx.mode === "programmatic" ? null : ctx.writingStyle?.content;
+  content = style
+    ? upsertMarkdownSection(content, "writing-style", style)
+    : removeMarkdownSection(content, "writing-style");
   return [{ kind: "write", target, content }];
 }

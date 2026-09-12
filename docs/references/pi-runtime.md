@@ -4,13 +4,13 @@ JorgeX Stack integra Pi mediante dos capas coordinadas: el paquete Pi-native exa
 
 Esta referencia conserva la introducción histórica de `jorgex-pi@0.8.0` y las adopciones anteriores. La identidad, procedencia y digests del pin vigente son autoritativos en `src/lib/pi-runtime-pin.json`; `src/lib/pi-runtime.ts` es la autoridad del lifecycle y sus contratos. El lector `.github/scripts/pi-pin.mjs` valida ese JSON y el workflow recibe de él la URL y el tamaño mediante variables de entorno. La publicación de Stack usa el auto-bump existente al mergear y selecciona el patch disponible; el número final se resuelve en el registro.
 
-El canon de Stack y el paquete Pi fijado comparten ya el inventario de 14 agentes (primary y 13 subagentes). La identidad exacta del pin y su procedencia se mantienen en `src/lib/pi-runtime-pin.json`; esta adopción está verificada, no implica una nueva publicación de Stack ni una instalación personal.
+El canon de Stack y el paquete Pi adoptado mantienen una snapshot de 17 skills y 89 archivos. El handoff Playwright ya está implementado y probado en `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; la identidad, procedencia e integridad del paquete adoptado son autoritativas en `src/lib/pi-runtime-pin.json`.
 
 ## Paquete e integridad
 
 El artefacto histórico de referencia es el [tarball `jorgex-pi@0.8.0` publicado en npm](https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-0.8.0.tgz), con `89128340` bytes. Para el pin vigente, consulta `src/lib/pi-runtime-pin.json`: contiene nombre, versión, `source`, commit de procedencia, tamaño y SHA-256/SHA-512. La URL pública se deriva de la versión por `.github/scripts/pi-pin.mjs`; no se duplican aquí valores que cambian en cada adopción.
 
-La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al `source` del JSON, con `skills: []` y `prompts: []`.
+La verificación del tarball sigue siendo obligatoria antes de cualquier operación gestionada. La entrada del paquete queda normalizada al `source` del JSON y conserva los campos adicionales de la entrada existente. Solo la forma gestionada exacta `{ "source": "...", "skills": [], "prompts": [] }` completa el lifecycle de instalación, proyección, `sync` y `doctor`; filtros no vacíos, filtros personalizados o metadatos adicionales se conservan y quedan bloqueados como `source-divergent`, sin normalizarse ni eliminarse silenciosamente.
 
 Los filtros `skills: []` y `prompts: []` se aplican únicamente después de que la proyección compartida haya terminado. Así el paquete no carga una segunda copia de los recursos comunes.
 
@@ -58,13 +58,15 @@ La proyección se ejecuta después de la instalación del paquete y se registra 
 | Skills compartidas | `~/.agents/skills` | Stack; se conservan si también las usa otro runtime |
 | Prompt | `~/.pi/agent/prompts/lean-audit.md` | Stack |
 
-La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. `install --agents pi --playwright` instala y persiste Playwright con el mismo flujo opt-in que los demás harnesses. Chrome DevTools MCP y Context7 siguen fuera de este scope.
+La proyección usa las mismas copias canónicas de `stack/` que los demás runtimes. El contenido del usuario fuera de las secciones marcadas se conserva. Cuando la preferencia gestionada de Playwright está activa, añade o retira dinámicamente la sección marcada `jorgex:browser` en `AGENTS.md`. La instalación global del CLI y de Chromium es compartida por la máquina; el selector `--playwright-runtimes` decide en qué runtimes se proyecta la guía. El contrato adoptado declara `playwright-handoff-v1`, y el paquete Pi adoptado mantiene 17 skills y 89 archivos e implementa y prueba `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`. Las instalaciones repetidas reparan la entrada alias de Pi y conservan sus campos adicionales. Si ese fallo deja un estado parcial o divergente, repite `install`; `sync` no repara ese bloqueo. El paquete Pi adoptado permite activar Chrome DevTools MCP con `--devtools`; Stack proyecta el handoff fijo en `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json` y guarda su SHA-256 en el campo opcional `devtools.sha256` del receipt de proyección. `--no-devtools` lo retira tras revalidar integridad. El servidor se registra como proxy lazy (`directTools: false`), por lo que Pi no precarga el catálogo completo de herramientas. Un conflicto o archivo ajeno bloquea y conserva el estado. El cambio requiere recargar Pi para que el bootstrap cree la sesión con la nueva configuración. Context7 sigue fuera de este scope.
 
-En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; la madurez gestionada de 24 horas se mantiene separada de esas dos evidencias.
+En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la versión publicada `1.9.3` conserva ese pin saliente. La publicación de Stack fue aceptada por npm y el readback confirmó metadata y tarball públicos; esas evidencias siguen separadas de la verificación local del artefacto Pi.
 
 ## Pin vigente y contrato
 
-El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La madurez gestionada de 24 horas afecta al consumo real del paquete Pi, no a validación, merge ni releases.
+El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La disponibilidad para consumo comienza tras la publicación y adopción verificadas; la validación, el pin exacto, la integridad y la compatibilidad siguen siendo obligatorios.
+
+La compatibilidad vigente es una allowlist explícita de Pi `0.84.2` y `0.85.1`; no incluye `0.85.0` ni un intervalo implícito. Los límites del contrato vigente corresponden a los extremos de esa lista.
 
 ## Preparar una adopción de Pi
 
@@ -73,12 +75,16 @@ Con la App configurada y `JORGEX_AUTOMATION_ENABLED=true`, el coordinador puede 
 Para esa preparación manual, ejecuta el preparador desde un checkout de Stack en rama de trabajo o detached, nunca `main`/`master`:
 
 ```text
-node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--apply]
+node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--accept-pi-version 0.85.1] [--accept-playwright-skill-removal] [--apply]
 ```
 
 `--pi-dir` apunta a un checkout Git separado de Pi. El preparador lee ese repositorio: exige el tag `vEXACT`, su ascendencia en `origin/main` y la de la procedencia actual, y compara contratos publicados y vigentes. La versión debe ser exacta, estar publicada en npm y ser compatible; una incompatibilidad requiere revisión manual y no se resuelve retocando fixtures o goldens.
 
-El modo por defecto y `--apply` exigen Stack limpio, en rama de trabajo o detached y sin índices enmascarados (`assume-unchanged` o `skip-worktree`). Para una versión nueva, incluso el dry-run descarga y verifica el tarball mediante SRI, SHA-256/SHA-512, inventario y contratos, pero no ejecuta Pi, publica, crea PR ni configura App. `--apply` actualiza solo el pin y `tests/fixtures/pi-runtime-artifacts.json` con rollback ante errores; la metadata de la fixture sigue independiente y `src/lib/pi-runtime.ts` intacto.
+`--accept-pi-version 0.85.1` muestra la aceptación explícita de una versión exacta solicitada para ampliar la compatibilidad del contrato tras el smoke real. Solo permite añadir exactamente esa versión a las versiones probadas, conserva `0.84.2` y mantiene los límites correspondientes; no acepta `0.85.0`, rangos ni otras versiones. Sin este flag, un cambio semántico de compatibilidad se rechaza. La aceptación no anticipa una release ni sustituye la verificación del artefacto publicado.
+
+`--accept-playwright-skill-removal` es opcional. Sin esta opción, la retirada de la entrada `playwright-cli` se rechaza. Debe usarse cuando el artefacto publicado elimina únicamente esa entrada de la paridad: el preparador exige los `sourcePath`/`targetPath` canónicos, comprueba que el subtree no existe en la fuente Stack fusionada ni en el productor Pi, verifica el tarball anterior con sus hashes fijados y compara el inventario nuevo con una única diferencia, la retirada de `package/skills/playwright-cli/**`. Esta opción por sí sola no autoriza otros cambios; puede combinarse con flags explícitos que pasan sus propias verificaciones. El handoff Playwright, el SDK existente, las dependencias y el resto del contrato deben permanecer iguales. La aceptación es manual porque esta topología cruza dos checkouts Git y un tarball publicado; no se puede inferir el borrado seguro a partir de un recuento o de una diferencia parcial.
+
+El modo por defecto y `--apply` exigen Stack limpio, en rama de trabajo o detached y sin índices enmascarados (`assume-unchanged` o `skip-worktree`). Para una versión nueva, incluso el dry-run descarga y verifica el tarball mediante SRI, SHA-256/SHA-512, inventario y contratos, pero no ejecuta Pi, publica, crea PR ni configura App. `--apply` actualiza normalmente el pin y `tests/fixtures/pi-runtime-artifacts.json` con rollback ante errores; la metadata de la fixture sigue independiente y `src/lib/pi-runtime.ts` intacto. `--accept-devtools-handoff` relaja únicamente la comparación revisada que añade `chrome-devtools-handoff-v1` y elimina su exclusión emparejada; `--accept-playwright-handoff` permite únicamente insertar `playwright-handoff-v1` y añadir `package/extensions/playwright.ts` cuando el preparador verifica el conjunto exacto de archivos frente al tarball previo, cuyos hashes están fijados, y comprueba los bytes del nuevo módulo contra el commit productor de Pi. No relaja las demás comprobaciones de contrato o integridad. Ninguno valida handoffs vivos ni es bypass de integridad. Úsalos junto con `--pi-dir ABS --version EXACT [--apply]`; no alteran el pin, la snapshot ni la historia por sí solos.
 
 Una versión igual o anterior al pin actual produce `unchanged` sin tocar Pi ni preparar archivos. Si falla la escritura, el preparador intenta restaurar los JSON; si no puede completar el rollback, conserva los backups y comunica su ruta para recuperación manual. Esto es distinto del rollback de una instalación: usa una versión publicada de Stack que reconozca el receipt presente y sigue el procedimiento de esta referencia, sin editar receipts, hashes ni estado del usuario.
 
@@ -86,7 +92,7 @@ Una versión igual o anterior al pin actual produce `unchanged` sin tocar Pi ni 
 
 El release publicado histórico fijaba `npm:jorgex-pi@0.8.4`. La fuente ejecutable fijaba `89133070` bytes, SHA-256 `e30cbc0595bfbaa35b37f97096b77d46749315e3cf6ab13f830fe84432798b10` y SHA-512 `39255e7ccf7aad2cbe1069e2dbeb3335dc59f28ad1f0f32b677889e39e167e5fd39b546da9f448c33fad4581f0b4a8f1dda95a2f1b1bce010cc031b188ffc292`. Su `provenance.commit` era `2b5cf37d9bfdb0c574e66712000ecc432eca8a69`; el `parity.source.commit` comprobado en el artefacto era `5e89b970e72cfac0003b11e054c861bed6d44884`. Esta transición histórica quedó superseded por la adopción publicada de Stack `1.9.7` / Pi `0.8.4`.
 
-Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La madurez gestionada de 24 horas se aplica al consumo real del paquete Pi nuevo, no a la validación, merge ni release de Stack.
+Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad inmediata tras publicación y adopción verificadas no cambia la validación, el merge, el pin exacto ni la compatibilidad exigidos.
 
 ## Lifecycle y seguridad
 
@@ -129,11 +135,11 @@ pnpm dlx jorgex-stack@1.9.6 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
-La regla de madurez gestionada de 24 horas de npm afecta únicamente a la instalación o consumo real del paquete Pi nuevo; no bloquea validación, merge ni release. Una instalación real antes de esa ventana requiere la excepción explícita de Jorge.
+La instalación o consumo del paquete Pi queda disponible tras la publicación y adopción verificadas. El preparador no actualiza transparentemente receipts antiguos: cada transición debe usar la versión exacta que reconoce el receipt presente.
 
 ## Engram
 
-Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. Una instalación interactiva puede ofrecer el canal nativo con confirmación explícita por defecto negativa; `--yes` y los procesos sin TTY fallan con un remedio si falta Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
+Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. `install` resuelve o instala antes de configurar cualquier runtime el binario oficial fijado en v1.20.0, bajo `~/.local/bin/engram` (o el equivalente de la plataforma), verificando tamaño y SHA-256; el instalador de release no requiere Brew ni Go. En una ejecución interactiva se pide confirmación; `--engram` autoriza la descarga en flujos no interactivos. `sync`, dry-run y `--target-dir` no descargan Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
 
 ## Comandos
 
@@ -157,7 +163,7 @@ Pi gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contex
 | Resultado | Remedio |
 | --- | --- |
 | `tarball-integrity` | No omitas la verificación; reintenta desde un registro/red de confianza. |
-| `unsupported-pi-version` | Usa la versión de Pi declarada por el release congelado. |
+| `unsupported-pi-version` | Usa una versión explícitamente probada (`0.84.2` o `0.85.1`) por el release congelado; no asumas compatibilidad con versiones intermedias. |
 | `engram-required` / `engram-missing-target` | Configura Engram explícitamente; en target añade el binario dentro de `<target>/bin/engram`. |
 | `manual-existing` | El paquete existe sin package receipt; consérvalo o retíralo explícitamente antes de pedir ownership gestionado. |
 | `duplicate-package` / `source-divergent` | Conserva una única entrada exacta con `skills: []` y `prompts: []`, y vuelve a ejecutar `sync`. |

@@ -7,7 +7,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type PreparePiAdoption = (
-  input: { root: string; piDir: string; version: string; apply?: boolean },
+  input: {
+    root: string;
+    piDir: string;
+    version: string;
+    apply?: boolean;
+    acceptDevtoolsHandoff?: boolean;
+    acceptPlaywrightHandoff?: boolean;
+    acceptPlaywrightSkillRemoval?: boolean;
+    acceptPiVersion?: string;
+  },
   dependencies?: {
     fetch?: typeof globalThis.fetch;
     now?: () => number;
@@ -24,6 +33,11 @@ const PIN_PATH = "src/lib/pi-runtime-pin.json";
 const ARTIFACTS_PATH = "tests/fixtures/pi-runtime-artifacts.json";
 const tarballUrl = (version: string) => `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${version}.tgz`;
 const temporaryRoots: string[] = [];
+const PLAYWRIGHT_SKILL_FILES = ["SKILL.md", "references/guide.md"] as const;
+
+function playwrightSkillContent(relativePath: string): string {
+  return `legacy Playwright skill ${relativePath}\n`;
+}
 
 type Pin = {
   package: { name: "jorgex-pi"; version: string; source: string };
@@ -37,6 +51,18 @@ type Artifacts = {
   archive: { entries: number; parity: { source: { commit: string } } };
 };
 
+type PiVersionContract = {
+  readonly minimumVersion: string;
+  readonly maximumVersion: string;
+  readonly testedVersions: readonly string[];
+};
+
+const DEFAULT_PI_VERSION_CONTRACT: PiVersionContract = {
+  minimumVersion: "0.84.2",
+  maximumVersion: "0.84.2",
+  testedVersions: ["0.84.2"],
+};
+
 type AdoptionFixture = {
   root: string;
   piDir: string;
@@ -45,6 +71,7 @@ type AdoptionFixture = {
   next: Pin;
   sourceCommit: string;
   nextArchive: Artifacts["archive"];
+  previousTarball: Buffer;
   tarball: Buffer;
 };
 
@@ -125,15 +152,41 @@ function writePiRelease(
   root: string,
   version: string,
   sourceCommit: string,
-  options: { runnerCommands?: string[] } = {},
+  options: {
+    runnerCommands?: string[];
+    devtoolsHandoff?: boolean;
+    devtoolsCapability?: boolean;
+    devtoolsExclusion?: boolean;
+    playwrightHandoff?: boolean;
+    playwrightSkill?: boolean;
+    playwrightSkillTree?: boolean;
+    persistentControlSkill?: boolean;
+    extraArchiveFile?: { path: string; content: string };
+    removeArchiveFile?: string;
+    rootContractMutation?: boolean;
+    extraCapabilities?: string[];
+    piVersionContract?: PiVersionContract;
+  } = {},
 ): void {
+  const devtoolsCapability = options.devtoolsCapability ?? options.devtoolsHandoff ?? false;
+  const devtoolsExclusion = options.devtoolsExclusion ?? !devtoolsCapability;
+  const piVersionContract = options.piVersionContract ?? DEFAULT_PI_VERSION_CONTRACT;
+  const playwrightSkillEnabled = options.playwrightSkill ?? false;
+  const playwrightSkillTree = options.playwrightSkillTree ?? playwrightSkillEnabled;
+  const capabilities = [
+    "foundation-contract-v1",
+    ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
+    ...(options.playwrightHandoff ? ["playwright-handoff-v1"] : []),
+    "runner-json-v1",
+    ...(options.extraCapabilities ?? []),
+  ];
   const packageIdentity = { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` };
   writeJson(root, "package.json", {
     name: packageIdentity.name,
     version,
     type: "module",
     bin: { "jorgex-pi": "./bin/jorgex-pi.mjs" },
-    files: ["agents", "assets", "bin", "contract", "snapshot/agents"],
+    files: ["agents", "assets", "bin", "contract", "extensions", "snapshot/agents"],
     dependencies: { "pi-web-access": "0.24.1" },
   });
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
@@ -144,12 +197,43 @@ function writePiRelease(
   fs.writeFileSync(path.join(root, "assets", "system-prompt", "AGENTS.md"), "fixture policy\n", "utf8");
   fs.mkdirSync(path.join(root, "snapshot", "agents"), { recursive: true });
   fs.writeFileSync(path.join(root, "snapshot", "agents", "tester.md"), "fixture agent\n", "utf8");
+  fs.mkdirSync(path.join(root, "extensions"), { recursive: true });
+  fs.writeFileSync(path.join(root, "extensions", "bootstrap.ts"), "export const bootstrap = true;\n", "utf8");
+  const playwrightExtension = path.join(root, "extensions", "playwright.ts");
+  if (options.playwrightHandoff) fs.writeFileSync(playwrightExtension, "export const playwright = true;\n", "utf8");
+  else if (fs.existsSync(playwrightExtension)) fs.unlinkSync(playwrightExtension);
+  const playwrightSkillRoot = path.join(root, "skills", "playwright-cli");
+  if (playwrightSkillTree) {
+    for (const relativePath of PLAYWRIGHT_SKILL_FILES) {
+      const file = path.join(playwrightSkillRoot, relativePath);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, playwrightSkillContent(relativePath), "utf8");
+    }
+  } else {
+    fs.rmSync(playwrightSkillRoot, { recursive: true, force: true });
+  }
+  const controlSkillRoot = path.join(root, "skills", "control-skill");
+  if (options.persistentControlSkill) {
+    const controlSkillFile = path.join(controlSkillRoot, "SKILL.md");
+    fs.mkdirSync(path.dirname(controlSkillFile), { recursive: true });
+    fs.writeFileSync(controlSkillFile, "persistent control skill\n", "utf8");
+  } else {
+    fs.rmSync(controlSkillRoot, { recursive: true, force: true });
+  }
+  if (options.extraArchiveFile) {
+    const extraFile = path.join(root, options.extraArchiveFile.path);
+    fs.mkdirSync(path.dirname(extraFile), { recursive: true });
+    fs.writeFileSync(extraFile, options.extraArchiveFile.content, "utf8");
+  }
+  if (options.removeArchiveFile) fs.rmSync(path.join(root, options.removeArchiveFile), { force: true });
 
   writeJson(root, "contract/jorgex-pi.v1.json", {
     schemaVersion: 1,
     package: packageIdentity,
-    pi: { minimumVersion: "0.84.2", maximumVersion: "0.84.2", testedVersions: ["0.84.2"] },
-    capabilities: ["foundation-contract-v1"],
+    pi: options.rootContractMutation
+      ? { ...piVersionContract, minimumVersion: "0.84.3" }
+      : piVersionContract,
+    capabilities,
     snapshot: { contractPath: "contract/parity.v2.json", schemaVersion: 2 },
     assets: { manifestVersion: 1, manifestPath: "contract/assets.v1.json" },
     components: { inventoryPath: "contract/components.v1.json" },
@@ -184,12 +268,33 @@ function writePiRelease(
   for (const schema of ["runner-response", "quality-receipt", "quality-capabilities"]) {
     writeJson(root, `contract/schemas/${schema}.v1.schema.json`, { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" });
   }
+  const paritySkills = options.persistentControlSkill
+    ? [{
+      name: "control-skill",
+      sourcePath: "stack/skills/control-skill",
+      targetPath: "skills/control-skill",
+      files: [{ path: "SKILL.md", sha256: sha256(Buffer.from("persistent control skill\n", "utf8")) }],
+    }]
+    : [];
+  if (playwrightSkillEnabled) {
+    paritySkills.push({
+      name: "playwright-cli",
+      sourcePath: "stack/skills/playwright-cli",
+      targetPath: "skills/playwright-cli",
+      files: PLAYWRIGHT_SKILL_FILES.map((relativePath) => ({
+        path: relativePath,
+        sha256: sha256(Buffer.from(playwrightSkillContent(relativePath), "utf8")),
+      })),
+    });
+  }
   writeJson(root, "contract/parity.v2.json", {
     schemaVersion: 2,
     source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: sourceCommit },
     agents: [{ name: "tester", sourcePath: "stack/agents/tester.md", targetPath: "snapshot/agents/tester.md" }],
-    skills: [],
-    exclusions: [],
+    skills: paritySkills,
+    exclusions: devtoolsExclusion
+      ? [{ kind: "capability-integration", id: "chrome-devtools-capability-handoff" }]
+      : [],
   });
 }
 
@@ -206,7 +311,45 @@ function archiveEntries(root: string, tarball: Buffer): number {
   return output.trimEnd().split(/\r?\n/).filter(Boolean).length;
 }
 
-function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): AdoptionFixture {
+function replaceArchiveMember(root: string, tarball: Buffer, member: string, content: string, outputMember = member): Buffer {
+  const workspace = fs.mkdtempSync(path.join(path.dirname(root), "tarball-edit-"));
+  const archive = path.join(workspace, "source.tgz");
+  const extraction = path.join(workspace, "extract");
+  fs.writeFileSync(archive, tarball);
+  fs.mkdirSync(extraction);
+  execFileSync("tar", ["-xzf", archive, "-C", extraction], {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (outputMember !== member) fs.renameSync(path.join(extraction, member), path.join(extraction, outputMember));
+  fs.writeFileSync(path.join(extraction, outputMember), content, "utf8");
+  return execFileSync("tar", ["-czf", "-", "-C", extraction, "package"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+    windowsHide: true,
+  });
+}
+
+function createAdoptionFixture(options: {
+  runnerCommands?: string[];
+  previousDevtoolsHandoff?: boolean;
+  devtoolsHandoff?: boolean;
+  devtoolsCapability?: boolean;
+  devtoolsExclusion?: boolean;
+  previousPlaywrightHandoff?: boolean;
+  playwrightHandoff?: boolean;
+  previousPlaywrightSkill?: boolean;
+  playwrightSkill?: boolean;
+  producerPlaywrightSkillTree?: boolean;
+  sourcePlaywrightSkill?: boolean;
+  previousExtraArchiveFile?: { path: string; content: string };
+  removeExtraArchiveFile?: string;
+  extraArchiveFile?: { path: string; content: string };
+  rootContractMutation?: boolean;
+  extraCapabilities?: string[];
+  piVersionContract?: PiVersionContract;
+} = {}): AdoptionFixture {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-"));
   temporaryRoots.push(parent);
   const root = path.join(parent, "stack");
@@ -218,11 +361,25 @@ function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): Ado
   fs.writeFileSync(path.join(root, "stack", "agents", "tester.md"), "old source\n", "utf8");
   const previousSourceCommit = commit(root, "stack: previous source");
   fs.writeFileSync(path.join(root, "stack", "agents", "tester.md"), "new source\n", "utf8");
+  if (options.sourcePlaywrightSkill) {
+    for (const relativePath of PLAYWRIGHT_SKILL_FILES) {
+      const file = path.join(root, "stack", "skills", "playwright-cli", relativePath);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `source Playwright skill ${relativePath}\n`, "utf8");
+    }
+  }
   const sourceCommit = commit(root, "stack: source candidate");
+  const retainControlSkill = options.previousPlaywrightSkill === true && options.playwrightSkill === false;
 
   fs.mkdirSync(piDir, { recursive: true });
   initializeGit(piDir);
-  writePiRelease(piDir, "0.8.7", previousSourceCommit);
+  writePiRelease(piDir, "0.8.7", previousSourceCommit, {
+    devtoolsHandoff: options.previousDevtoolsHandoff,
+    playwrightHandoff: options.previousPlaywrightHandoff,
+    playwrightSkill: options.previousPlaywrightSkill,
+    persistentControlSkill: retainControlSkill,
+    extraArchiveFile: options.previousExtraArchiveFile,
+  });
   const oldProducer = commit(piDir, "pi: 0.8.7");
   git(piDir, ["tag", "v0.8.7", oldProducer]);
   const oldTarball = gitArchive(piDir, oldProducer);
@@ -243,7 +400,21 @@ function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): Ado
   git(root, ["update-ref", "refs/remotes/origin/main", git(root, ["rev-parse", "HEAD"])]);
   git(root, ["switch", "-c", "adoption-test"]);
 
-  writePiRelease(piDir, "0.8.8", sourceCommit, options);
+  writePiRelease(piDir, "0.8.8", sourceCommit, {
+    runnerCommands: options.runnerCommands,
+    devtoolsHandoff: options.devtoolsHandoff,
+    devtoolsCapability: options.devtoolsCapability,
+    devtoolsExclusion: options.devtoolsExclusion,
+    playwrightHandoff: options.playwrightHandoff,
+    playwrightSkill: options.playwrightSkill,
+    playwrightSkillTree: options.producerPlaywrightSkillTree,
+    persistentControlSkill: retainControlSkill,
+    extraArchiveFile: options.extraArchiveFile,
+    removeArchiveFile: options.removeExtraArchiveFile,
+    rootContractMutation: options.rootContractMutation,
+    extraCapabilities: options.extraCapabilities,
+    piVersionContract: options.piVersionContract,
+  });
   const nextProducer = commit(piDir, "pi: 0.8.8");
   git(piDir, ["tag", "v0.8.8", nextProducer]);
   git(piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
@@ -258,26 +429,39 @@ function createAdoptionFixture(options: { runnerCommands?: string[] } = {}): Ado
     next,
     sourceCommit,
     nextArchive: { entries: archiveEntries(parent, tarball), parity: { source: { commit: sourceCommit } } },
+    previousTarball: oldTarball,
     tarball,
   };
 }
 
 function registryFetch(
   fixture: AdoptionFixture,
-  options: { integrity?: string; tarball?: string } = {},
+  options: {
+    integrity?: string;
+    previousIntegrity?: string;
+    tarball?: string;
+    nextTarballBytes?: Buffer;
+    previousTarballBytes?: Buffer;
+  } = {},
 ) {
+  const nextTarball = options.nextTarballBytes ?? fixture.tarball;
+  const previousTarball = options.previousTarballBytes ?? fixture.previousTarball;
+  const sri = (value: Buffer) => `sha512-${Buffer.from(sha512(value), "hex").toString("base64")}`;
+  const metadataResponse = (version: string, artifact: Buffer, artifactUrl: string, integrity?: string) => new Response(JSON.stringify({
+    name: "jorgex-pi",
+    version,
+    dist: { tarball: artifactUrl, integrity: integrity ?? sri(artifact) },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+
   return vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
     if (String(url) === `https://registry.npmjs.org/jorgex-pi/${fixture.version}`) {
-      return new Response(JSON.stringify({
-        name: "jorgex-pi",
-        version: fixture.version,
-        dist: {
-          tarball: options.tarball ?? tarballUrl(fixture.version),
-          integrity: options.integrity ?? `sha512-${Buffer.from(fixture.next.tarball.sha512, "hex").toString("base64")}`,
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
+      return metadataResponse(fixture.version, nextTarball, options.tarball ?? tarballUrl(fixture.version), options.integrity);
     }
-    if (String(url) === tarballUrl(fixture.version)) return new Response(new Uint8Array(fixture.tarball), { status: 200 });
+    if (String(url) === `https://registry.npmjs.org/jorgex-pi/${fixture.current.package.version}`) {
+      return metadataResponse(fixture.current.package.version, previousTarball, tarballUrl(fixture.current.package.version), options.previousIntegrity);
+    }
+    if (String(url) === tarballUrl(fixture.version)) return new Response(new Uint8Array(nextTarball), { status: 200 });
+    if (String(url) === tarballUrl(fixture.current.package.version)) return new Response(new Uint8Array(previousTarball), { status: 200 });
     throw new Error(`Unexpected fixture fetch: ${String(url)}`);
   });
 }
@@ -307,6 +491,674 @@ afterEach(() => {
 });
 
 describe("preparePiAdoption", () => {
+  it("acepta sólo la incorporación explícita de Pi 0.85.1 y ajusta sus límites", async () => {
+    const fixture = createAdoptionFixture({
+      piVersionContract: {
+        minimumVersion: "0.84.2",
+        maximumVersion: "0.85.1",
+        testedVersions: ["0.84.2", "0.85.1"],
+      },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPiVersion: "0.85.1",
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  }, 15_000);
+
+  it.each([
+    ["retira la versión anterior", {
+      minimumVersion: "0.85.1",
+      maximumVersion: "0.85.1",
+      testedVersions: ["0.85.1"],
+    }],
+    ["añade otra versión además de la aceptada", {
+      minimumVersion: "0.84.2",
+      maximumVersion: "0.85.1",
+      testedVersions: ["0.84.2", "0.84.3", "0.85.1"],
+    }],
+    ["añade una versión intermedia en lugar de la aceptada", {
+      minimumVersion: "0.84.2",
+      maximumVersion: "0.84.3",
+      testedVersions: ["0.84.2", "0.84.3"],
+    }],
+  ] as const)("rechaza una transición que %s aunque se confirme Pi 0.85.1", async (_case, piVersionContract) => {
+    const fixture = createAdoptionFixture({ piVersionContract });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPiVersion: "0.85.1",
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("acepta la transición completa de DevTools sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({ devtoolsHandoff: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptDevtoolsHandoff: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
+
+  it("acepta la transición exacta de Playwright con bootstrap compartido sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
+
+  it("acepta la retirada exacta de la skill Playwright sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/parity\.v2\.json compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
+
+  it("acepta conjuntamente la retirada de la skill y el handoff Playwright explícito", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightSkill: true,
+      playwrightHandoff: true,
+      playwrightSkill: false,
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
+
+  it("rechaza un archivo ajeno añadido junto a la retirada confirmada", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+      extraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*review/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un archivo ajeno retirado junto a la retirada confirmada", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+      previousExtraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
+      removeExtraArchiveFile: "extensions/unrelated.ts",
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*review/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un renombrado ajeno con el mismo inventario esperado", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+    });
+    const renamedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/bootstrap.ts",
+      "export const bootstrap = true;\n",
+      "package/extensions/renamed.ts",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: renamedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*review/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un tarball previo corrupto y conserva pin y fixture", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+    });
+    const previousTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.previousTarball,
+      "package/extensions/bootstrap.ts",
+      "export const bootstrap = false;\n",
+    );
+    const fetch = registryFetch(fixture, { previousTarballBytes: previousTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Registry SRI mismatch/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("no permite que la confirmación de retirada relaje otro cambio de contrato", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+      runnerCommands: ["doctor", "sync", "cleanup"],
+    });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/runner\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza la retirada si el productor conserva la carpeta de la skill", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+      producerPlaywrightSkillTree: true,
+    });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright skill must be absent from producer/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza la retirada si la fuente Stack fusionada conserva la carpeta de la skill", async () => {
+    const fixture = createAdoptionFixture({
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      previousPlaywrightSkill: true,
+      playwrightSkill: false,
+      sourcePlaywrightSkill: true,
+    });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightSkillRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright skill must be absent from Stack source/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza un archivo adicional junto al delta de Playwright confirmado", async () => {
+    const fixture = createAdoptionFixture({
+      playwrightHandoff: true,
+      extraArchiveFile: { path: "extensions/extra.ts", content: "export const extra = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright archive inventory requires exactly the reviewed module addition/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un renombrado con el mismo número esperado de entradas", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const renamedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/bootstrap.ts",
+      "export const bootstrap = true;\n",
+      "package/extensions/other.ts",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: renamedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright archive inventory requires exactly the reviewed module addition/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un tarball previo que no coincide con sus bytes fijados", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const previousTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.previousTarball,
+      "package/extensions/bootstrap.ts",
+      "export const bootstrap = false;\n",
+    );
+    const fetch = registryFetch(fixture, { previousTarballBytes: previousTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Registry SRI mismatch/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza el contenido de playwright.ts si el tarball no coincide con el blob Git del productor", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true });
+    const substitutedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/playwright.ts",
+      "export const playwright = false;\n",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: substitutedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Playwright module does not match producer/);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza una mutación ajena del contrato raíz aunque se confirme Playwright", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true, rootContractMutation: true });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza una capability adicional junto a la transición confirmada de Playwright", async () => {
+    const fixture = createAdoptionFixture({ playwrightHandoff: true, extraCapabilities: ["unexpected-capability-v1"] });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza la retirada de Playwright aunque se confirme la transición", async () => {
+    const fixture = createAdoptionFixture({ previousPlaywrightHandoff: true, playwrightHandoff: false });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptPlaywrightHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it.each([
+    ["sólo añade la capability", { devtoolsCapability: true, devtoolsExclusion: true }],
+    ["sólo retira la exclusión", { devtoolsCapability: false, devtoolsExclusion: false }],
+  ])("rechaza una transición parcial con confirmación (%s)", async (_label, options) => {
+    const fixture = createAdoptionFixture(options);
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza la transición inversa aunque se confirme DevTools", async () => {
+    const fixture = createAdoptionFixture({ previousDevtoolsHandoff: true, devtoolsHandoff: false });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza una capability adicional junto a la transición confirmada", async () => {
+    const fixture = createAdoptionFixture({ devtoolsHandoff: true, extraCapabilities: ["unexpected-capability-v1"] });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("mantiene la adopción ordinaria compatible aunque se confirme DevTools", async () => {
+    const fixture = createAdoptionFixture();
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptDevtoolsHandoff: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(rootState(fixture)).toEqual(before);
+  });
+
   it.each([false, true])("conserva los datos tras fallar la segunda escritura (rollback incompleto: %s)", async (failRollback) => {
     const fixture = createAdoptionFixture();
     const { preparePiAdoption } = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };

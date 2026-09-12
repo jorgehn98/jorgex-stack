@@ -119,6 +119,45 @@ afterEach(() => {
 });
 
 describe("browser preference safety", () => {
+  it("preserves a Pi enabled selection with file runtimes while keeping ownership file-only", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-browser-preference-"));
+    const preference = path.join(root, "devtools-mcp.json");
+    const initial = {
+      version: 1,
+      enabled: { opencode: true, codex: false },
+      owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+    };
+
+    try {
+      fs.writeFileSync(preference, JSON.stringify(initial) + "\n");
+      const preferences = await import("../src/lib/tool-preferences.js") as unknown as {
+        loadDevtoolsMcpPreference(file: string, runtime: "pi"): boolean;
+        saveDevtoolsMcpPreference(file: string, runtime: "pi", enabled: boolean): void;
+        loadDevtoolsMcpOwnership(file: string, runtime: "pi", server: string): boolean;
+        devtoolsMcpPreferenceError(file: string): string | null;
+      };
+
+      preferences.saveDevtoolsMcpPreference(preference, "pi", true);
+
+      expect(preferences.loadDevtoolsMcpPreference(preference, "pi")).toBe(true);
+      expect(JSON.parse(fs.readFileSync(preference, "utf8"))).toEqual({
+        version: 1,
+        enabled: { opencode: true, codex: false, pi: true },
+        owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+      });
+      expect(preferences.loadDevtoolsMcpOwnership(preference, "pi", DEVTOOLS_SERVER)).toBe(false);
+
+      fs.writeFileSync(preference, JSON.stringify({
+        version: 1,
+        enabled: { pi: true },
+        owned: { pi: { [DEVTOOLS_SERVER]: true } },
+      }) + "\n");
+      expect(preferences.devtoolsMcpPreferenceError(preference)).toMatch(/inv[aá]lida/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps real DevTools and Playwright state out of target-dir install and uninstall", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-browser-state-"));
     const homeDir = path.join(root, "home");

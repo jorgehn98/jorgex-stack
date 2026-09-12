@@ -1,21 +1,21 @@
 # JorgeX Stack
 
-Portable multi-agent harness: one configuration source — 18 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
+Portable multi-agent harness: one configuration source — 17 skills, hooks, persistent memory ([Engram](https://github.com/Gentleman-Programming/engram)), MCPs, and system prompt — installable with one command in **Claude Code**, **Codex CLI**, **OpenCode**, and **Pi**.
 
 > Inspired by [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), rebuilt for the JorgeX stack.
 
 ## Skills: release snapshot and supply chain
 
-The 1.9.2 release carries a fixed **18-skill snapshot**: **6 stack-owned** skills and **12 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
+The current canon carries a fixed **17-skill snapshot**: **6 stack-owned** skills and **11 vendored** skills. Runtime adapters execute only the local copies committed under `stack/skills`; they do not fetch, install, or execute upstream content at runtime.
 
 | Set | Skills |
 | --- | --- |
 | Stack-owned (6) | `agent-delegation`, `lean-code`, `orchestrator`, `work-audit`, `work-lifecycle`, `xreview` |
-| Vendored (12) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `playwright-cli`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
+| Vendored (11) | `deploy-to-vercel`, `diagnose`, `find-skills`, `mcp-builder`, `react-doctor`, `skill-creator`, `supabase`, `supabase-postgres-best-practices`, `tdd`, `to-issues`, `to-prd` |
 
 The supply-chain contract is deliberately explicit:
 
-- **Snapshot:** the 18 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
+- **Snapshot:** the 17 directories above are the release input. A published package ships this snapshot instead of a live mirror of any upstream.
 - **Per-skill pin:** `upstreams.json` records each vendored source/path and its accepted commit pin (plus package/binary pins where applicable). A pin identifies the last reviewed snapshot; it does not mean that later upstream changes were accepted.
 - **Manual review:** only a maintainer running from a git clone may inspect and propose vendored-skill updates. The flow downloads to a temporary directory, shows a mandatory diff, requests confirmation, and re-pins only after deliberate review. Local changes marked `modified: true` receive an additional warning/confirmation.
 
@@ -42,6 +42,14 @@ pnpm dlx jorgex-stack install
 pnpm dlx jorgex-stack sync
 ```
 
+For a fresh Engram installation, always consult the current published Stack and bypass only the `pnpm dlx` cache:
+
+```bash
+pnpm --config.dlx-cache-max-age=0 dlx jorgex-stack@latest install --engram
+```
+
+`dlx-cache-max-age` is separate from the pnpm 11 dependency-age filter: it controls only the cached `dlx` package, while `minimumReleaseAgeExclude` applies only to the named package resolution. An explicit Stack version such as `@1.9.30` does not reuse the cache entry for another version. Do not use `@latest` for Pi; Pi consumption still requires its exact validated pin.
+
 Other important commands:
 
 ```bash
@@ -56,7 +64,7 @@ pnpm dlx jorgex-stack uninstall       # remove managed files; keep Engram data i
 
 For development from a clone, run the same commands through `pnpm cli <command>` (see [Development](#development)).
 
-Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched.
+Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched. `--yes` does not authorize downloading missing Engram; use `--engram` for that explicit consent. The interactive install asks before installing it, while dry-run and target-dir never download it.
 
 Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for the Sol primary default, field-level ownership and independent subagent routing. The quality policy and `jorgex.quality.receipt` contract are documented in [docs/references/quality-receipt.md](docs/references/quality-receipt.md). OpenCode remains provider-agnostic for subagents; its primary defaults to the OpenAI OAuth model `openai/gpt-5.6-sol` unless the user replaces it.
 
@@ -106,7 +114,7 @@ Programmatic mode does **not** provide:
 
 ### Pi runtime
 
-El canon de Stack y el paquete Pi fijado comparten ya el inventario de 14 agentes (primary y 13 subagentes). La identidad exacta del pin y su procedencia se mantienen en `src/lib/pi-runtime-pin.json`; esta adopción no implica una nueva publicación de Stack ni una instalación personal.
+El canon de Stack y el paquete Pi adoptado mantienen una snapshot de 17 skills y 89 archivos. La identidad, procedencia e integridad del paquete adoptado son autoritativas en `src/lib/pi-runtime-pin.json`.
 
 Pi combines the frozen **snapshot v2** package with a Stack-owned shared projection. The version references that follow describe historical Stack/Pi transitions, not the current pin. The current pin, package integrity and lifecycle are maintained in [docs/references/pi-runtime.md](docs/references/pi-runtime.md) and `src/lib/pi-runtime-pin.json`; this README does not imply a future release.
 
@@ -120,7 +128,7 @@ pnpm dlx jorgex-stack@1.9.7 sync --agents pi
 pnpm dlx jorgex-stack@1.9.7 uninstall --agents pi
 ```
 
-Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. The historical `0.8.0` tarball was `89128340` bytes; the exact adopted artifact and integrity values are authoritative in `src/lib/pi-runtime-pin.json`, while the lifecycle remains authoritative in `src/lib/pi-runtime.ts`. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. After the package is healthy, Stack projects the shared resources into Pi: marked `jorgex:system-prompt` and `jorgex:engram-protocol` sections in `~/.pi/agent/AGENTS.md`, canonical skills under `~/.agents/skills`, and `~/.pi/agent/prompts/lean-audit.md`. When the managed Playwright preference is active, the projection also adds or removes the marked `jorgex:browser` section dynamically. The Pi-only `install --agents pi --playwright` flow installs and persists that Playwright capability just like the other harnesses. Chrome DevTools MCP and Context7 remain outside the Pi scope. The published `1.9.7` entry `{ "source": "npm:jorgex-pi@0.8.4", "skills": [], "prompts": [] }` and the `0.8.5` snapshot reference are historical; they do not describe the adopted pin. Filters are applied only after this projection exists, so the package does not duplicate shared resources. Package ownership is recorded separately in `~/.jorgex-stack/pi-receipt.json`; projection ownership is recorded in `~/.jorgex-stack/pi-projection-receipt.json`. Both receipts are scope-bound and fail closed for manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state.
+Stack downloads the frozen registry tarball, verifies its exact size plus SHA-256/SHA-512, backs up Pi's `settings.json`, and only then asks Pi to install that local file. The exact artifact and integrity values are authoritative in `src/lib/pi-runtime-pin.json`, while the lifecycle remains authoritative in `src/lib/pi-runtime.ts`. Pi's own package-manager invocation is the narrow runtime exception to the repository's pnpm-only rule; the Stack lifecycle never launches npm directly. After the package is healthy, Stack projects the shared resources into Pi: marked `jorgex:system-prompt` and `jorgex:engram-protocol` sections in `~/.pi/agent/AGENTS.md`, canonical skills under `~/.agents/skills`, and `~/.pi/agent/prompts/lean-audit.md`. When the managed Playwright preference is active, the projection also adds or removes the marked `jorgex:browser` section dynamically. The global Playwright package and Chromium cache are shared by the machine; `--playwright-runtimes` controls which runtime receives the guide. The adopted Pi package implements and tests `playwright-handoff-v1` through `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`. Context7 remains outside the Pi scope. Historical package entries do not describe the current pin. Filters are applied only after this projection exists, so the package does not duplicate shared resources. Package ownership is recorded separately in `~/.jorgex-stack/pi-receipt.json`; projection ownership is recorded in `~/.jorgex-stack/pi-projection-receipt.json`. Package receipts reject manual, duplicate, divergent, partial, corrupt, copied-to-another-scope, or unknown-history state. Projection cleanup requires an exact scope-bound ownership receipt; DevTools conflicts preserve the handoff for review.
 
 Historically, the published Pi 0.8.0 direct-package snapshot added `work-audit`: the snapshot grew from **17 to 18 skill trees** (96 to 97 files), and the active runtime allowlist grew from **16 to 17 skills**. The historical Pi 0.8.5 snapshot reference records 18 skill trees and 98 files; it does not describe the adopted pin. Reference F2-A is included while the private F1 skills remain preserved. `playwright-cli` remains in the snapshot but inactive because browser automation is a separate opt-in integration.
 
@@ -132,19 +140,27 @@ Install, sync and uninstall back up every managed file before changing it and ar
 
 The package owns Pi's native primary-model projection: `openai-codex/gpt-5.6-sol`, with a local `contextWindow` request of 872K. It merges only missing compatible fields, records field ownership in `PI_CODING_AGENT_DIR/jorgex-pi/sol-lifecycle.v1.json`, and cleanup removes only still-owned canonical values. Stack does not duplicate that package-owned settings/models logic. The 872K value is local OAuth metadata until a real long-context smoke test confirms backend acceptance; it is not the API context limit.
 
-Engram remains mandatory and user-owned. An existing binary is preserved. Interactive install may offer the native `brew`/`go`/release channel with explicit confirmation; `--yes` and non-TTY installs fail with a remedy when Engram is absent. The database and memories are never updated or deleted, and uninstall never deletes the Engram binary. Under `--target-dir`, Stack accepts only `<target>/bin/engram`, isolates Pi/Home/XDG/AppData/temp/npm-cache paths inside the target, and never consults the host Engram or Pi configuration.
+Engram remains mandatory and user-owned. An existing binary is preserved. `install` resolves or installs the verified official v1.20.0 release before configuring any selected runtime; use `--engram` to authorize that download in non-interactive flows. The release installer writes only `~/.local/bin/engram` (or the platform equivalent), checks the pinned size and SHA-256, and does not use Brew or Go. `sync`, dry-run and `--target-dir` never download it. The database and memories are never updated or deleted, and uninstall never deletes the Engram binary. Under `--target-dir`, Stack accepts only `<target>/bin/engram`, isolates Pi/Home/XDG/AppData/temp/npm-cache paths inside the target, and never consults the host Engram or Pi configuration.
 
 Históricamente, Stack `1.9.7` reconocía el receipt exacto de Pi `npm:jorgex-pi@0.8.4`. Usa versiones exactas, nunca `latest`, y no edites receipts o hashes ni borres `HOME`, Engram o la proyección de otro runtime para forzar confianza. El pin y los comandos actuales de transición y rollback están en [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
-The 24-hour managed-consumption maturity rule applies only to real installation or consumption of the new Pi package; development, PR validation, merge and Stack publication may proceed immediately. Installing it on a real user scope before the maturity window requires Jorge's explicit exception.
+Pi puede consumirse inmediatamente después de publicar y verificar el artefacto adoptado. El pin exacto, la procedencia, los SHA-256/SHA-512, el SRI, la compatibilidad y el procedimiento de rollback siguen siendo obligatorios; no uses `latest` ni una versión aproximada.
 
 `update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` is a read-only Pi doctor. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
 
+### Estilo global de escritura
+
+Stack incluye un prompt genérico de estilo de escritura como parte de su canon. `install` y `sync` lo gestionan en `~/.jorgex-stack/writing-style.md`; en modo humano proyectan el contenido efectivo directamente en una sección independiente de las instrucciones globales de los runtimes seleccionados. El prompt se aplica a la prosa dirigida al usuario, sigue el idioma en el que escribe el usuario salvo que pida otro y conserva las instrucciones técnicas, los formatos de máquina, el código y la configuración nativa. El modo programático conserva la fuente local, pero omite la proyección de prosa.
+
+La proyección contiene el canon directamente: Stack no añade un wrapper adicional ni una identidad personal. Si falta el archivo local o está vacío, Stack recrea el bloque gestionado. El corpus de mensajes y los informes privados de análisis no se distribuyen en el paquete. Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md).
+
+El paquete Pi adoptado ya no inyecta un fallback propio con `Communication Style` en español; el estilo de escritura que recibe Pi procede de la proyección gestionada por Stack.
+
 ### Browser automation
 
-Browser automation is opt-in and explicit. The legacy `agent-browser` integration has been removed; rely on the two surfaces below.
+Browser automation is opt-in and explicit. The legacy `agent-browser` integration and the vendored Playwright skill have been removed; the shared CLI remains available through the global tool flow.
 
-- **Playwright CLI** (recommended): `@playwright/cli@0.1.18` plus a vendored skill that ships pinned with the stack. The skill is loaded on demand, contributes no permanent MCP schemas, and declares `allowed-tools: Bash(playwright-cli:*)` only (no `Bash(pnpm:*)`). This is the skill's declaration, not a security boundary: effective permissions still come from the adapter/runtime, and OpenCode/full-bash may expose broader Bash or other capabilities. See [docs/references/browser-automation.md](docs/references/browser-automation.md) for the full lifecycle, the security profile and troubleshooting.
+- **Playwright CLI** (recommended): the global package `@playwright/cli@0.1.18`, shared by the machine and enabled explicitly. The conditional browser guide tells agents to open Chromium with `--browser=chromium`, consult `playwright-cli --help`, use a task-specific session, take a `snapshot`, verify results and close only sessions they created. See [docs/references/browser-automation.md](docs/references/browser-automation.md) for the lifecycle, privacy profile and troubleshooting.
 - **Chrome DevTools MCP** (advanced diagnostics, opt-in): exposes ~29 tools and ~5,800–7,700 tokens of schemas in full mode. Disabled by default, selected per runtime, version-pinned, and launched with a fixed argv `pnpm dlx chrome-devtools-mcp@1.6.0 --isolated --redact-network-headers --no-performance-crux --no-usage-statistics`. `--isolated` starts Chrome with an ephemeral, isolated profile that is deleted when Chrome closes (no persistent dedicated profile, no shared cookies/extensions/sessions with your personal Chrome); `--redact-network-headers` redacts sensitive headers in captured network traffic, but not request/response bodies, which may contain tokens or PII. Avoid authenticated sessions or sensitive data, or disable network capture manually outside the stack when needed. `--no-performance-crux` disables CrUX reporting; `--no-usage-statistics` disables telemetry. `--slim` and Playwright MCP are intentionally excluded.
 
 Setup that respects the zero-secrets, pnpm-only and explicit-consent rules:
@@ -156,12 +172,17 @@ pnpm dlx jorgex-stack install
 # Non-interactive / agent: --playwright authorizes the global install.
 pnpm dlx jorgex-stack install --yes --playwright
 
+# Instala el paquete compartido y activa la guía solo en estos runtimes.
+pnpm dlx jorgex-stack install --playwright --playwright-runtimes=opencode,claude-code
+
 # Enable Chrome DevTools MCP explicitly per runtime.
 pnpm dlx jorgex-stack install --devtools
 pnpm dlx jorgex-stack install --no-devtools
+pnpm dlx jorgex-stack install --agents pi --devtools
+pnpm dlx jorgex-stack sync --agents pi --no-devtools
 ```
 
-Under the hood, `--playwright` runs two `pnpm` argv-only plans back to back: `pnpm add --global @playwright/cli@0.1.18` (the package) and then `pnpm dlx @playwright/cli@0.1.18 install-browser` (the browser binary cache). Removal is `pnpm remove --global @playwright/cli` (no version suffix). If installation fails, the error identifies the failed phase — global package, browser download, or preference persistence — and recommends `jorgex-stack install --playwright`; the preference is not marked enabled unless the complete plan succeeds.
+Under the hood, `--playwright` runs two `pnpm` argv-only plans back to back: `pnpm add --global @playwright/cli@0.1.18` (the package) and then `pnpm dlx @playwright/cli@0.1.18 install-browser chromium` (the Chromium cache). It then verifies that the pinned package launches Chromium headless against `about:blank`. Removal is `pnpm remove --global @playwright/cli` (no version suffix). If installation fails, the error identifies the failed phase — global package, browser download, browser launch, or preference persistence — and recommends `jorgex-stack install --playwright`; the preference is not marked enabled unless the complete plan succeeds.
 
 Daily operation:
 
@@ -177,7 +198,7 @@ Daily operation:
 
 1. **Stack** (jorgex-stack): detects whether it is a git clone or a global install, then offers an update with confirmation.
 2. **Engram** (binary): detects the installed version and offers an update through the **native channel** (brew -> `go install` -> release URL). Nothing needs to be stopped: as in upstream macOS/Linux, live processes keep using the old version until clients restart; on Windows, the in-use `.exe` is rotated by rename before installation. **Automatic DB backup before updating**. The database and memories are never touched.
-3. **Playwright CLI** (only when explicitly enabled): compares the detected binary with the approved bundle pin and offers to realign it with explicit confirmation. The realignment re-applies **both** plans — `pnpm add --global @playwright/cli@0.1.18` (package) and `pnpm dlx @playwright/cli@0.1.18 install-browser` (browser cache) — and fails closed if either step returns non-zero. The error identifies whether the package-update or browser-download phase failed and recommends `jorgex-stack install --playwright` to retry both; a Playwright update does not require `sync`.
+3. **Playwright CLI** (only when explicitly enabled): compares the detected binary with the approved bundle pin and offers to realign it with explicit confirmation. The realignment re-applies **both** plans — `pnpm add --global @playwright/cli@0.1.18` (package) and `pnpm dlx @playwright/cli@0.1.18 install-browser chromium` (Chromium cache) — and fails closed if either step returns non-zero. The error identifies whether the package-update or browser-download phase failed and recommends `jorgex-stack install --playwright` to retry both; a Playwright update does not require `sync`.
 4. **Vendored skills** (maintainer only): third-party skills ship **pinned** with the stack version, so the installed package never reaches out to their upstreams. Only when running from a git clone (`pnpm cli update`) does `update` scan the upstreams in `upstreams.json`, download to a temp directory, **show a mandatory diff**, and ask for confirmation. A moved upstream is only a candidate until that review is accepted and a deliberate re-pin is made for a future release; it is never treated as an accepted official update automatically. Skills with local changes (`modified: true`) warn and require double confirmation.
 
 Usage:
@@ -234,6 +255,8 @@ La integración de este App pertenece al release del repositorio Stack. No conce
 ## Development
 
 Requirements: Node >= 22.5 and pnpm (never npm).
+
+pnpm 11 dependency resolution uses `minimumReleaseAge=1440` by default, with `minimumReleaseAgeExclude` for `jorgex-stack` and `jorgex-pi`. Keep that exclusion in the user-level pnpm config for `pnpm dlx` launched from HOME and in each repository workspace config for local commands; preserve every unrelated existing setting. This documents the maintainer environment and does not change other users' global configuration.
 
 ```
 pnpm install

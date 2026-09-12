@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
@@ -26,7 +27,9 @@ import {
   isPlaywrightBrowserReady,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
+  setupPnpmGlobal,
   type PlaywrightCliAction,
+  type PnpmSetupResult,
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
@@ -36,6 +39,7 @@ import {
   loadDevtoolsMcpOwnership,
   loadDevtoolsMcpPreference,
   loadPlaywrightCliPreference,
+  type PlaywrightRuntimeSelection,
   loadPrimaryModelOwnership,
   playwrightCliPreferenceFile,
   primaryModelOwnershipError,
@@ -53,6 +57,7 @@ export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
 };
 
 export interface InstallOptions {
+  writingStyle?: WritingStyleSnapshot;
   runtimes: RuntimeId[];
   /** Override del dir de config destino (pruebas/paridad). Solo válido con un único runtime. */
   targetDir?: string;
@@ -65,14 +70,22 @@ export interface InstallOptions {
   playwrightToolDeps?: PlaywrightToolPlanDeps;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
+  /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
+  engramBin?: string | null;
+  /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
+  showSummary?: boolean;
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
 export type PlaywrightInstallAction = Exclude<PlaywrightToolAction, "remove">;
 
 /** Puente de instalación al ejecutor tipado de external-tools. */
-export function executePlaywrightToolAction(action: PlaywrightCliAction): PlaywrightToolActionResult {
-  return executeExternalPlaywrightToolAction(action, resolvePnpmBin());
+export function executePlaywrightToolAction(
+  action: PlaywrightCliAction,
+  pnpmBin = resolvePnpmBin(),
+  env?: NodeJS.ProcessEnv,
+): PlaywrightToolActionResult {
+  return executeExternalPlaywrightToolAction(action, pnpmBin, env);
 }
 
 export interface PlaywrightToolPlan {
@@ -87,11 +100,13 @@ export interface PlaywrightToolConsent {
   targetDir: boolean;
   explicitToolSelection: boolean;
   confirmed: boolean;
+  runtimeSelection?: PlaywrightRuntimeSelection;
 }
 
 export interface PlaywrightToolPlanDeps {
-  run: (action: PlaywrightInstallAction) => Promise<boolean | PlaywrightToolActionResult>;
+  run: (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv) => Promise<boolean | PlaywrightToolActionResult>;
   persistEnabled: (enabled: boolean) => void;
+  setupPnpm?: (pnpmBin: string) => PnpmSetupResult;
 }
 
 export type PlaywrightToolPlanResult =
@@ -193,7 +208,7 @@ export function makeContext(
     models,
     warnings: [],
     enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
-    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference() === true,
+    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true,
     ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
     ownedPrimaryModelFields: useBrowserPreferences
       ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
@@ -269,10 +284,20 @@ export function collectAllCurrentTargets(
 }
 
 export async function runInstall(opts: InstallOptions): Promise<number> {
-  p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
+  const showSummary = opts.showSummary !== false;
+  if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
 
+  let writingStyle: WritingStyleSnapshot;
+  let preparedStyle: WritingStylePlan | undefined;
+  try {
+    if (opts.writingStyle !== undefined) writingStyle = opts.writingStyle;
+    else writingStyle = preparedStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: opts.targetDir }), { rootDir: opts.targetDir });
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
   const stackDir = stackRoot();
-  const engramBin = detectEngram();
+  const engramBin = opts.engramBin === undefined ? detectEngram() : opts.engramBin;
   const modePreference = opts.mode === undefined
     ? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE)
     : normalizeInstallModePreference(opts.mode);
@@ -282,7 +307,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     : [];
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
-    p.outro("Install cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
+    if (showSummary) p.outro("Install cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
   const toolPlan = opts.playwrightToolConsent === undefined
@@ -294,7 +319,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
   const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
-  if (hasFileRuntimes && useManifest) ensureModelMapFile();
+  if (preparedStyle !== undefined) {
+    try {
+      p.log.info(`Estilo de escritura: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
+      applyWritingStyle(preparedStyle, opts.dryRun);
+    } catch (error) {
+      p.log.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
+  if (hasFileRuntimes && useManifest && !opts.dryRun) ensureModelMapFile();
 
   p.log.info(engramBin ? `Engram detectado: ${engramBin} (se respeta, D7)` : "Engram NO detectado.");
 
@@ -335,6 +369,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     }
 
     const ctx: InstallContext = {
+      writingStyle,
       stackDir,
       configDir,
       mode: modePreference.mode,
@@ -343,7 +378,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       models,
       warnings: [],
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
-      playwrightCliEnabled: projectPlaywrightPrompt || (useManifest && loadPlaywrightCliPreference() === true),
+      playwrightCliEnabled: projectPlaywrightPrompt
+        ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
+        : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true),
       ownedMcpServers: ownedMcpServers(id, useManifest),
       ownedPrimaryModelFields: useManifest
         ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir)
@@ -455,9 +492,47 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (opts.dryRun) {
       p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
     } else if (exitCode === 0) {
-      const result = await runPlaywrightToolPlan(toolPlan, opts.playwrightToolDeps ?? {
-        run: async (action) => executePlaywrightToolAction(action),
-        persistEnabled: (enabled) => savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled),
+      const baseDeps = opts.playwrightToolDeps ?? {
+        run: async (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv) => {
+          const pnpmBin = resolvePnpmBin();
+          return executePlaywrightToolAction(action, pnpmBin, env);
+        },
+        persistEnabled: (enabled: boolean) => {
+          const selected = opts.playwrightToolConsent?.runtimeSelection;
+          const fileSelection = selected === undefined ? undefined
+            : Object.fromEntries(Object.entries(selected).filter(([runtime]) => runtime !== "pi"));
+          savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection);
+        },
+        setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
+      } satisfies PlaywrightToolPlanDeps;
+      let setupAttempted = false;
+      let preparedEnv: NodeJS.ProcessEnv | undefined;
+      const result = await runPlaywrightToolPlan(toolPlan, {
+        ...baseDeps,
+        run: async (action) => {
+          const first = await baseDeps.run(action, preparedEnv);
+          if (first === true || first === false || first.ok || first.reason !== "pnpm-global-bin") return first;
+          if (setupAttempted || opts.dryRun || opts.targetDir !== undefined) return first;
+          const consent = opts.playwrightToolConsent;
+          const canAskForSetup = consent?.interactive === true && !opts.yes;
+          if (!canAskForSetup) return first;
+          setupAttempted = true;
+          const accepted = await p.confirm({
+            message: "pnpm no tiene directorio global. ¿Ejecutar 'pnpm setup' ahora? Esto modificará la configuración de tu shell.",
+            initialValue: false,
+          });
+          if (p.isCancel(accepted) || !accepted) return first;
+          const pnpmBin = resolvePnpmBin();
+          if (pnpmBin === null) return first;
+          const setup = baseDeps.setupPnpm?.(pnpmBin) ?? setupPnpmGlobal(pnpmBin);
+          if (!setup.ok) {
+            p.log.error(`pnpm setup falló: ${setup.reason}`);
+            return first;
+          }
+          preparedEnv = setup.env;
+          p.log.info("pnpm preparado para esta instalación. Abre una terminal nueva al terminar para que otras herramientas y doctor reciban el PATH actualizado.");
+          return baseDeps.run(action, preparedEnv);
+        },
       });
       if (!result.ok) {
         const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
@@ -473,7 +548,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       } else {
         let promptReconciliationFailed = false;
         for (const { adapter, ctx } of successfulContexts) {
-          const browserCtx: InstallContext = { ...ctx, playwrightCliEnabled: true, warnings: [] };
+          const browserCtx: InstallContext = { ...ctx,
+            playwrightCliEnabled: opts.playwrightToolConsent?.runtimeSelection?.[adapter.id] ?? true, warnings: [] };
           try {
             const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
             if (browserChanges.length === 0) continue;
@@ -499,7 +575,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           exitCode = 1;
           p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
         } else {
-          p.log.success("Playwright CLI y navegador instalados.");
+          p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
         }
       }
     }
@@ -521,12 +597,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     saveInstallModePreference(installModePreferenceFile(), modePreference);
   }
 
-  p.outro(opts.dryRun
-    ? exitCode === 0
-      ? "Dry-run: no se ha escrito nada."
-      : "Dry-run completado con errores (revisa arriba)."
-    : exitCode === 0
-      ? "Hecho."
-      : "Install completado con errores (revisa arriba).");
+  if (showSummary) {
+    p.outro(opts.dryRun
+      ? exitCode === 0
+        ? "Dry-run: no se ha escrito nada."
+        : "Dry-run completado con errores (revisa arriba)."
+      : exitCode === 0
+        ? "Hecho."
+        : "Install completado con errores (revisa arriba).");
+  }
   return exitCode;
 }

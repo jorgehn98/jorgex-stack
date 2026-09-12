@@ -33,10 +33,10 @@ function renameInto(tmp: string, target: string): void {
  * Escritura atómica: temporal en el mismo dir + rename. Un corte a mitad de
  * escritura nunca deja una config del usuario corrupta o a medias.
  */
-export function writeText(file: string, content: string): void {
+export function writeText(file: string, content: string, mode?: number): void {
   ensureDir(path.dirname(file));
   const tmp = tmpPath(file);
-  fs.writeFileSync(tmp, content, "utf8");
+  fs.writeFileSync(tmp, content, { encoding: "utf8", mode });
   renameInto(tmp, file);
 }
 

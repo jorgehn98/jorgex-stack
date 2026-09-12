@@ -303,6 +303,7 @@ export const claudeCodeAdapter: Adapter = {
       let content = removeMarkdownSection(prompt, "system-prompt");
       content = removeMarkdownSection(content, "engram-protocol");
       content = removeMarkdownSection(content, "browser");
+      content = removeMarkdownSection(content, "writing-style");
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 

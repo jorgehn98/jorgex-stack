@@ -4,6 +4,7 @@
  * (src/components/) iteran (componente × adapter) sin switches por runtime.
  */
 
+import type { WritingStyleSnapshot } from "../lib/writing-style.js";
 import type { RuntimeDetection } from "../lib/detect.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
@@ -45,6 +46,7 @@ export type FileAction =
   | { kind: "copy"; target: string; source: string };
 
 export interface InstallContext {
+  writingStyle?: WritingStyleSnapshot;
   /** Raíz de la fuente canónica (stack/). */
   stackDir: string;
   /** Dir de config del runtime destino (puede venir de --target-dir en pruebas). */

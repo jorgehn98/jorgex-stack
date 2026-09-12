@@ -8,16 +8,12 @@ import { validateExtractedTree } from "../src/lib/github.js";
 import { buildEligibleSkillUpdates, hasIncompleteSkillScan, isGitClone, rotateLockedBinary, skillsToScan, type SkillQueryResult, type Upstreams } from "../src/update.js";
 import { writeText } from "../src/lib/fsx.js";
 import { listBackups } from "../src/lib/backup.js";
+import * as runtimePaths from "../src/lib/paths.js";
 
 let tmp: string;
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const EXPECTED_UPSTREAM_METADATA = {
-  "playwright-cli": {
-    source: "github:microsoft/playwright-cli",
-    path: "skills/playwright-cli",
-    commit: "2f85a94b7b885dbf4a5d34462f253a8746a690c9",
-  },
   "deploy-to-vercel": {
     source: "github:vercel-labs/agent-skills",
     path: "skills/deploy-to-vercel",
@@ -77,9 +73,11 @@ const EXPECTED_UPSTREAM_METADATA = {
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-skill-update-"));
+  vi.spyOn(runtimePaths, "dataDir").mockReturnValue(path.join(tmp, "state"));
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -377,7 +375,6 @@ describe("protección de skills: PROTECTED_SKILLS y kind=release", () => {
       "diagnose",
       "find-skills",
       "mcp-builder",
-      "playwright-cli",
       "react-doctor",
       "skill-creator",
       "supabase",

@@ -24,13 +24,17 @@ Referencias oficiales: [tokens de instalación de GitHub App](https://docs.githu
 5. Comprueba el preflight y el resultado: puede ser un no-op o una PR con los datos, candidato y gates esperados. Si el preflight falla, termina antes de crear una PR; no hagas reintentos ciegos.
 6. `ready` y checks verdes no autorizan el merge: el merge sigue siendo humano.
 
-La coordinación acepta eventos `push` y `workflow_dispatch` sobre `main`, y el dispatch `pi-published-v1` con el payload exacto `version`, `producer_sha` y `run_id`. Las propuestas se limitan a las rutas y tamaños que valida `.github/scripts/stack-pi-automation.mjs`; las duplicidades, incompatibilidades, races, cambios de base o divergencias bloquean explícitamente.
+La coordinación acepta eventos `push` y `workflow_dispatch` sobre `main`, y el dispatch `pi-published-v1` con el payload exacto `version`, `producer_sha` y `run_id`. Las propuestas se limitan a las rutas y tamaños que valida `.github/scripts/stack-pi-automation.mjs`; las duplicidades, incompatibilidades, races, cambios de base o divergencias bloquean explícitamente. La compatibilidad Pi es una lista explícita de versiones probadas definida por el contrato y `pi-runtime.md`; no se interpreta como un intervalo.
 
 ## Preparación y escritura
 
 El preparador trabaja con checkouts limpios de ambos repositorios y genera un artefacto acotado. La preparación y sus verificaciones se ejecutan sin el token de la App. El job de escritura usa el artefacto del mismo run, vuelve a validar la base y el árbol, y comprueba el head y base exactos de la PR antes de marcarla ready.
 
 Una propuesta rechazada no se recrea automáticamente con la misma identidad: requiere recuperación manual. Si una escritura remota falla después de crear la PR, el estado puede haber quedado incierto (por ejemplo, la PR puede estar ya lista); conserva la PR y la rama, verifica su estado y, si necesitas editarla, vuelve a ponerla en draft antes de hacerlo. No repitas la operación sin resolver la causa. No se publica de nuevo un paquete para recuperar una notificación: inspecciona el dispatch desde el coordinador y usa su recuperación manual.
+
+Cuando la adopción amplía la lista de versiones compatibles, el preparador exige la aceptación explícita de la versión exacta (`--accept-pi-version EXACT`) después del smoke real. Esa opción solo añade esa versión, conserva las anteriores y ajusta los límites a los extremos de la lista resultante; no relaja otras comparaciones del contrato ni las comprobaciones de integridad o hashes.
+
+La retirada de la skill Playwright del paquete Pi requiere además `--accept-playwright-skill-removal`; sin esa opción, la retirada se rechaza. La opción solo acepta una entrada `playwright-cli` en la paridad con `sourcePath` y `targetPath` canónicos, ausente tanto de la fuente Stack fusionada como del checkout productor de Pi. Por sí sola no autoriza otros cambios y puede combinarse con flags explícitos que pasan sus propias verificaciones. Para proteger la topología del cambio, descarga el tarball anterior y valida sus hashes fijados, y exige que el inventario del nuevo tarball sea idéntico salvo por `package/skills/playwright-cli/**`; el handoff Playwright, el SDK existente, las dependencias y el resto de contratos se conservan. Esta aceptación es manual porque la comprobación necesita coordinar ambos checkouts y el artefacto publicado, no solo leer el diff de una rama.
 
 ## Recuperación y rollback
 

@@ -1,10 +1,14 @@
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./writing-style.js";
+import { loadInstallModePreference } from "./install-mode.js";
+import type { InstallMode } from "../adapters/types.js";
 import {
   completePiProjectionUninstallSystem,
   preparePiProjectionUninstallSystem,
   runPiProjectionLifecycleSystem,
 } from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
-import { loadPlaywrightCliPreference } from "./tool-preferences.js";
+import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
+import { detectPlaywrightCli, resolvePnpmBin } from "./external-tools.js";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -123,17 +127,58 @@ function managedPackageResult(
 }
 
 /** Coordina el paquete Pi con la proyección compartida de Stack. */
-export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManagedOperationResult> {
-  const playwrightCliEnabled = input.targetDir === undefined && loadPlaywrightCliPreference() === true;
+export async function runManagedPiSystem(input: PiRuntimeInput & {
+  devtoolsMcpEnabled?: boolean;
+  writingStyle?: WritingStyleSnapshot;
+  writingStyleMode?: InstallMode;
+  playwrightCliEnabled?: boolean;
+}): Promise<PiManagedOperationResult> {
+  const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
+  if (!supportedVersions.includes(input.detected.version)) {
+    return {
+      kind: "blocked",
+      reason: "unsupported-pi-version",
+      remedy: `Pi ${input.detected.version} no está entre las versiones verificadas (${supportedVersions.join(", ")}). Actualiza Stack a una versión compatible antes de gestionar Pi.`,
+    };
+  }
+  const {
+    devtoolsMcpEnabled: explicitDevtools,
+    playwrightCliEnabled: explicitPlaywright,
+    writingStyle: suppliedStyle,
+    writingStyleMode,
+    ...runtimeInput
+  } = input;
+  const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
+  const preparedStyle = readsStyle && suppliedStyle === undefined
+    ? prepareWritingStyle(resolveWritingStyleFile({ targetDir: input.targetDir }), { rootDir: input.targetDir })
+    : undefined;
+  const style = readsStyle ? suppliedStyle ?? preparedStyle : undefined;
+  const mode = readsStyle
+    ? writingStyleMode ?? (input.targetDir === undefined ? loadInstallModePreference().mode : "human")
+    : "human";
+  const writingStyle = style && mode === "programmatic" ? { ...style, content: null } : style;
+  const devtoolsMcpEnabled = explicitDevtools
+    ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
+  const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  const playwrightCliEnabled = input.targetDir === undefined && supportsPlaywright
+    && (explicitPlaywright ?? loadPlaywrightCliPreference(undefined, "pi") === true);
+  const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
+    ? detectPlaywrightCli().binPath : null;
   const projectionInput = {
+    writingStyle,
     targetDir: input.targetDir,
     packageSource: PI_RUNTIME_CANDIDATE.package.source,
     engramBin: input.engramBin,
     playwrightCliEnabled,
+    playwrightHandoffEnabled: playwrightCliEnabled,
+    playwrightCliCommand,
+    devtoolsMcpEnabled,
+    pnpmBin: devtoolsMcpEnabled && input.operation !== "uninstall" ? resolvePnpmBin() : null,
   };
-  return runManagedPiOperation(input.operation, {
+  if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
+  const result = await runManagedPiOperation(input.operation, {
     async runPackage(operation) {
-      return managedPackageResult(await runPiRuntimeSystem({ ...input, operation }));
+      return managedPackageResult(await runPiRuntimeSystem({ ...runtimeInput, operation }));
     },
     runProjection(operation) {
       const result = runPiProjectionLifecycleSystem({
@@ -156,4 +201,13 @@ export async function runManagedPiSystem(input: PiRuntimeInput): Promise<PiManag
       return Promise.resolve(completePiProjectionUninstallSystem(token, { operation: "uninstall", ...projectionInput }));
     },
   });
+  if (input.targetDir === undefined && explicitDevtools !== undefined
+    && (input.operation === "install" || input.operation === "sync") && result.kind !== "blocked") {
+    saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", explicitDevtools);
+  }
+  if (input.targetDir === undefined && supportsPlaywright && explicitPlaywright !== undefined
+    && (input.operation === "install" || input.operation === "sync") && result.kind !== "blocked") {
+    savePlaywrightCliPreference(playwrightCliPreferenceFile(), true, { pi: explicitPlaywright });
+  }
+  return result;
 }

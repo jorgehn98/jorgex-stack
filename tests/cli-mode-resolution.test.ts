@@ -8,6 +8,19 @@ const mocks = vi.hoisted(() => {
   const runInstall = vi.fn().mockResolvedValue(0);
   const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
+  const detectPiRuntime = vi.fn().mockReturnValue({
+    id: "pi",
+    name: "Pi",
+    installed: false,
+    executable: null,
+    version: null,
+    codingAgentDir: "/isolated/pi-agent",
+  });
+  const hasManagedPiRuntime = vi.fn().mockReturnValue(false);
+  const resolvePiEngramBin = vi.fn().mockReturnValue("/isolated/bin/engram");
+  const resolvePiEngramRequirement = vi.fn();
+  const runManagedPiSystem = vi.fn().mockResolvedValue({ kind: "healthy" });
+  const piCapabilityMode = { value: "actual" as "actual" | "without-playwright" };
   const prompts = {
     confirm: vi.fn().mockResolvedValue(true),
     multiselect: vi.fn().mockResolvedValue([]),
@@ -23,7 +36,18 @@ const mocks = vi.hoisted(() => {
       message: vi.fn(),
     },
   };
-  return { prompts, runInteractiveUpdate, runInstall, runModelsPicker };
+  return {
+    prompts,
+    runInteractiveUpdate,
+    runInstall,
+    runModelsPicker,
+    detectPiRuntime,
+    hasManagedPiRuntime,
+    resolvePiEngramBin,
+    resolvePiEngramRequirement,
+    runManagedPiSystem,
+    piCapabilityMode,
+  };
 });
 
 vi.mock("@clack/prompts", () => ({
@@ -49,6 +73,32 @@ vi.mock("../src/models-picker.js", async () => {
   const actual = await vi.importActual<typeof import("../src/models-picker.js")>("../src/models-picker.js");
   return { ...actual, runModelsPicker: mocks.runModelsPicker };
 });
+
+vi.mock("../src/lib/pi-runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/pi-runtime.js")>("../src/lib/pi-runtime.js");
+  const contract = { ...actual.PI_RUNTIME_CANDIDATE.contract };
+  Object.defineProperty(contract, "capabilities", {
+    enumerable: true,
+    get: () => mocks.piCapabilityMode.value === "without-playwright"
+      ? actual.PI_RUNTIME_CANDIDATE.contract.capabilities.filter((capability) => String(capability) !== "playwright-handoff-v1")
+      : actual.PI_RUNTIME_CANDIDATE.contract.capabilities,
+  });
+  return {
+    ...actual,
+    PI_RUNTIME_CANDIDATE: {
+      ...actual.PI_RUNTIME_CANDIDATE,
+      contract,
+    },
+    detectPiRuntime: mocks.detectPiRuntime,
+    hasManagedPiRuntime: mocks.hasManagedPiRuntime,
+    resolvePiEngramBin: mocks.resolvePiEngramBin,
+    resolvePiEngramRequirement: mocks.resolvePiEngramRequirement,
+  };
+});
+
+vi.mock("../src/lib/pi-managed-runtime.js", () => ({
+  runManagedPiSystem: mocks.runManagedPiSystem,
+}));
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
@@ -91,6 +141,9 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
   const originalUserProfile = process.env.USERPROFILE;
   const restoreTty = tty ? setStdoutTty(true) : null;
   let observedExitCode: typeof process.exitCode = undefined;
+  const engram = path.join(homeDir, ".local", "bin", process.platform === "win32" ? "engram.exe" : "engram");
+  fs.mkdirSync(path.dirname(engram), { recursive: true });
+  fs.writeFileSync(engram, "fixture; never execute", { mode: 0o755 });
 
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
@@ -116,6 +169,18 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.detectPiRuntime.mockReset().mockReturnValue({
+    id: "pi",
+    name: "Pi",
+    installed: false,
+    executable: null,
+    version: null,
+    codingAgentDir: "/isolated/pi-agent",
+  });
+  mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
+  mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
+  mocks.runManagedPiSystem.mockReset().mockResolvedValue({ kind: "healthy" });
+  mocks.piCapabilityMode.value = "actual";
 });
 
 function collectedMessages(spies: Array<{ mock: { calls: unknown[][] } }>): string[] {
@@ -178,6 +243,106 @@ describe("CLI follow-up sync mode resolution", () => {
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       mode: { mode: "programmatic", subagentConcurrency: "parallel" },
     }));
+  });
+
+  it("update mixto reutiliza la instantánea inicial y el modo explícito al sincronizar Pi", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-style-snapshot-mixed-"));
+    const homeDir = path.join(tmp, "home");
+    const styleFile = path.join(homeDir, ".jorgex-stack", "writing-style.md");
+    const originalStyle = "Estilo sintético inicial de update.";
+    const changedStyle = "Estilo sintético cambiado durante update.";
+    fs.mkdirSync(path.dirname(styleFile), { recursive: true });
+    fs.writeFileSync(styleFile, `${originalStyle}\n`);
+    writeOpenCodeModelMap(homeDir);
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/isolated/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+    mocks.runInteractiveUpdate.mockImplementationOnce(async () => {
+      fs.writeFileSync(styleFile, `${changedStyle}\n`);
+      return { exitCode: 0, appliedUpdates: false, syncRequired: false };
+    });
+
+    try {
+      await runCli([
+        "update",
+        "--agents",
+        "opencode,pi",
+        "--mode",
+        "programmatic",
+        "--subagent-concurrency",
+        "parallel",
+        "--yes",
+      ], homeDir);
+
+      const expectedStyle = expect.objectContaining({
+        sourcePath: styleFile,
+        content: expect.stringContaining(originalStyle),
+        canonicalPath: expect.stringContaining("stack/system-prompt/writing-style.md"),
+        installedContent: expect.stringContaining("jorgex:writing-style-default"),
+      });
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        writingStyle: expectedStyle,
+        mode: { mode: "programmatic", subagentConcurrency: "parallel" },
+      }));
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "update",
+        writingStyle: expectedStyle,
+        writingStyleMode: "programmatic",
+      }));
+      expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]?.writingStyle)
+        .toBe(mocks.runInstall.mock.calls[0]?.[0]?.writingStyle);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("update solo Pi conserva la instantánea y el modo explícito", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-style-snapshot-pi-"));
+    const homeDir = path.join(tmp, "home");
+    const styleFile = path.join(homeDir, ".jorgex-stack", "writing-style.md");
+    const style = "Estilo sintético solo para Pi.";
+    fs.mkdirSync(path.dirname(styleFile), { recursive: true });
+    fs.writeFileSync(styleFile, `${style}\n`);
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/isolated/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+
+    try {
+      await runCli([
+        "update",
+        "--agents",
+        "pi",
+        "--mode",
+        "programmatic",
+        "--subagent-concurrency",
+        "parallel",
+        "--yes",
+      ], homeDir);
+
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "update",
+        writingStyle: expect.objectContaining({
+          sourcePath: styleFile,
+          content: expect.stringContaining(style),
+          canonicalPath: expect.stringContaining("stack/system-prompt/writing-style.md"),
+          installedContent: expect.stringContaining("jorgex:writing-style-default"),
+        }),
+        writingStyleMode: "programmatic",
+      }));
+      expect(mocks.runInteractiveUpdate).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("update omite el sync previo cuando no hay preferencia guardada y sigue con el update", async () => {
@@ -364,7 +529,7 @@ describe("opciones de navegador en main()", () => {
 
       expect(exitCode).toBeUndefined();
       const output = collectedMessages([log]);
-      for (const flag of ["--playwright", "--remove-playwright", "--devtools", "--no-devtools"]) {
+      for (const flag of ["--playwright", "--playwright-runtimes", "--remove-playwright", "--devtools", "--no-devtools"]) {
         expect(output.some((line) => line.includes(flag))).toBe(true);
       }
     } finally {
@@ -408,5 +573,163 @@ describe("opciones de navegador en main()", () => {
       }),
       devtoolsMcpSelection: { opencode: true },
     }));
+  });
+
+  it("accepts --playwright-runtimes with --playwright and passes true/false for current agents", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-flag-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "opencode,claude-code,codex",
+      "--mode",
+      "human",
+      "--yes",
+      "--playwright",
+      "--playwright-runtimes=opencode,codex",
+    ], homeDir);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({
+        explicitToolSelection: true,
+        runtimeSelection: { opencode: true, "claude-code": false, codex: true },
+      }),
+    }));
+  });
+
+  it("opens the runtime selector only after Playwright consent and passes partial choices", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-picker-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+    mocks.prompts.confirm.mockResolvedValueOnce(true);
+    mocks.prompts.multiselect
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(["codex"]);
+
+    const exitCode = await runCli([
+      "install",
+      "--agents",
+      "opencode,claude-code,codex",
+      "--mode",
+      "human",
+    ], homeDir, true);
+
+    expect(exitCode).toBe(0);
+    const playwrightPicker = mocks.prompts.multiselect.mock.calls.find(([input]) =>
+      typeof input === "object" && input !== null && "message" in input
+        && /Playwright/i.test(String(Reflect.get(input, "message"))),
+    );
+    expect(playwrightPicker?.[0]).toMatchObject({ required: false });
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({
+        confirmed: true,
+        runtimeSelection: { opencode: false, "claude-code": false, codex: true },
+      }),
+    }));
+    const playwrightPickerIndex = mocks.prompts.multiselect.mock.calls.findIndex(([input]) =>
+      typeof input === "object" && input !== null
+      && /Playwright/i.test(String(Reflect.get(input, "message"))),
+    );
+    expect(playwrightPickerIndex).toBeGreaterThanOrEqual(0);
+    expect(mocks.prompts.confirm.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.prompts.multiselect.mock.invocationCallOrder[playwrightPickerIndex]!,
+    );
+  });
+
+  it("rejects --playwright-runtimes without --playwright before runInstall", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-no-consent-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli([
+        "install",
+        "--agents",
+        "opencode",
+        "--mode",
+        "human",
+        "--playwright-runtimes=opencode",
+      ], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(collectedMessages([error])).toEqual(expect.arrayContaining([
+        expect.stringMatching(/--playwright-runtimes.*--playwright/i),
+      ]));
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("rejects unknown and out-of-agents Playwright runtimes before runInstall", async () => {
+    const cases = [
+      { name: "unknown", agents: "opencode", selection: "opencode,wat", pattern: /runtime.*wat|desconocido.*wat/i },
+      { name: "outside agents", agents: "opencode", selection: "codex", pattern: /codex.*agents|codex.*destino|no est[aá].*agents/i },
+    ] as const;
+
+    for (const testCase of cases) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `jx-playwright-runtime-${testCase.name}-`));
+      const homeDir = path.join(tmp, "home");
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        const exitCode = await runCli([
+          "install",
+          "--agents",
+          testCase.agents,
+          "--mode",
+          "human",
+          "--yes",
+          "--playwright",
+          `--playwright-runtimes=${testCase.selection}`,
+        ], homeDir);
+
+        expect(exitCode, testCase.name).toBe(1);
+        expect(mocks.runInstall, testCase.name).not.toHaveBeenCalled();
+        const messages = collectedMessages([error]);
+        expect(messages.some((message) => /Flag no reconocido/i.test(message)), testCase.name).toBe(false);
+        expect(messages.some((message) => testCase.pattern.test(message)), testCase.name).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    }
+  });
+
+  it("rejects Playwright for Pi before any install when the candidate lacks playwright-handoff-v1", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-pi-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/opt/pi/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+    mocks.piCapabilityMode.value = "without-playwright";
+
+    try {
+      const exitCode = await runCli([
+        "install",
+        "--agents",
+        "pi",
+        "--mode",
+        "human",
+        "--yes",
+        "--playwright",
+        "--playwright-runtimes=pi",
+      ], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+      expect(collectedMessages([error]).some((message) => /Pi.*playwright-handoff-v1|playwright-handoff-v1.*Pi/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

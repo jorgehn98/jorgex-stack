@@ -183,6 +183,39 @@ describe("Pi runtime wiring", () => {
     expect(trace).not.toContain("NPM_TOKEN");
   });
 
+  it("preserves a blocked lifecycle plan without executing it", async () => {
+    const { runPiRuntime } = await runtime();
+    const events: string[] = [];
+    const deps = harness(events);
+    deps.prepare = () => {
+      events.push("prepare");
+      return {
+        kind: "blocked",
+        reason: "unsupported-pi-version",
+        remedy: "Pi detectado 0.85.1; versiones admitidas: 0.84.2",
+      };
+    };
+    deps.execute = () => {
+      events.push("execute");
+      return { kind: "blocked", reason: "runner-unhealthy" };
+    };
+
+    const result = runPiRuntime({
+      targetDir: target,
+      operation: "sync",
+      detected: { executable: "/opt/pi/bin/pi", version: "0.85.1" },
+      engramBin: environment.ENGRAM_BIN,
+    }, deps);
+
+    expect(result).toMatchObject({
+      kind: "blocked",
+      reason: "unsupported-pi-version",
+      remedy: "Pi detectado 0.85.1; versiones admitidas: 0.84.2",
+    });
+    expect(events).toContain("prepare");
+    expect(events).not.toContain("execute");
+  });
+
   it("blocks missing noninteractive Engram before reads or subprocesses, and promotes only the verified update receipt", async () => {
     const { runPiRuntime } = await runtime();
     const blockedEvents: string[] = [];

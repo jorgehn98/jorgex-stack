@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
+import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
 
 const piDirectory = process.env.JORGEX_PI_DIR;
 const crossRepo = piDirectory === undefined ? describe.skip : describe;
@@ -80,6 +81,78 @@ function expectArchiveInventory(tarball: string): void {
   for (const binding of PI_RUNTIME_ARCHIVE.nativeBindings) {
     expect(entries.has(`package/node_modules/${binding}`), binding).toBe(true);
   }
+}
+
+function writeFakePlaywright(root: string): string {
+  const bin = path.join(root, "bin", process.platform === "win32" ? "playwright-cli.cmd" : "playwright-cli");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  if (process.platform === "win32") {
+    fs.writeFileSync(bin, "@echo off\r\necho 0.1.18\r\n");
+  } else {
+    fs.writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write("0.1.18\\n");\n`);
+    fs.chmodSync(bin, 0o755);
+  }
+  return bin;
+}
+
+function runPublishedBootstrap(packageRoot: string, agentDir: string, home: string): string {
+  const harness = path.join(path.dirname(packageRoot), "bootstrap-harness.mjs");
+  fs.writeFileSync(harness, `
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const packageRoot = process.argv[2];
+const { createBootstrap } = await import(pathToFileURL(join(packageRoot, "extensions", "bootstrap.ts")).href);
+const handlers = new Map();
+const eventHandlers = new Map();
+const activeTools = [];
+const pi = {
+  events: {
+    on(name, handler) { eventHandlers.set(name, handler); },
+    emit() {},
+  },
+  on(name, handler) { handlers.set(name, handler); },
+  getActiveTools() { return [...activeTools]; },
+  setActiveTools(names) { activeTools.splice(0, activeTools.length, ...names); },
+  registerTool() {},
+  registerCommand() {},
+  sendUserMessage() {},
+  sendMessage() {},
+};
+
+await createBootstrap({
+  loadCompanion: async () => () => {},
+  getPermissionsService: () => true,
+})(pi);
+await handlers.get("session_start")?.({}, { sessionId: "published-handoff" });
+await eventHandlers.get("permissions:ready")?.({ sessionId: "published-handoff" });
+const result = await handlers.get("before_agent_start")?.(
+  { systemPrompt: "Base policy" },
+  { sessionId: "published-handoff", hasUI: true },
+);
+process.stdout.write(JSON.stringify({ prompt: result?.systemPrompt ?? "" }));
+`, "utf8");
+  const isolationRoot = path.dirname(packageRoot);
+  const emptyPath = path.join(isolationRoot, "empty-bin");
+  fs.mkdirSync(emptyPath, { recursive: true });
+  const result = spawnSync(process.execPath, [harness, packageRoot], {
+    cwd: isolationRoot,
+    encoding: "utf8",
+    env: {
+      HOME: home,
+      USERPROFILE: home,
+      PI_CODING_AGENT_DIR: agentDir,
+      XDG_CONFIG_HOME: path.join(isolationRoot, "xdg-config"),
+      XDG_CACHE_HOME: path.join(isolationRoot, "xdg-cache"),
+      PATH: emptyPath,
+      NODE_NO_WARNINGS: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    throw new Error(`Publicado Pi bootstrap falló (${result.status}): ${result.stderr || result.stdout}`);
+  }
+  return (JSON.parse(result.stdout) as { prompt: string }).prompt;
 }
 
 function expectRunnerOutput(
@@ -242,6 +315,59 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
     });
+  }, 60_000);
+
+  it("consumes Stack's Playwright handoff in the published Pi bootstrap and hides it after disable", () => {
+    const tarball = path.resolve(registryTarball!);
+    const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as { capabilities?: unknown };
+    expect(contract.capabilities).toEqual(expect.arrayContaining(["playwright-handoff-v1"]));
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-published-playwright-"));
+    temporaryPaths.push(root);
+    execFileSync("tar", ["-xzf", tarball, "-C", root], { stdio: ["ignore", "ignore", "pipe"] });
+
+    const packageRoot = path.join(root, "package");
+    const targetDir = path.join(root, "stack-target");
+    const agentDir = path.join(targetDir, "pi-agent");
+    const home = path.join(targetDir, "home");
+    const playwrightCommand = writeFakePlaywright(root);
+    const packageSource = `npm:jorgex-pi@${PI_RUNTIME_CANDIDATE.package.version}`;
+
+    expect(runPiProjectionLifecycleSystem({
+      operation: "install",
+      targetDir,
+      packageSource,
+      engramBin: path.join(root, "engram"),
+      playwrightCliEnabled: true,
+      playwrightHandoffEnabled: true,
+      playwrightCliCommand: playwrightCommand,
+    })).toMatchObject({ kind: "installed" });
+
+    const handoff = path.join(agentDir, "jorgex-pi", "playwright.v1.json");
+    expect(readJson(handoff)).toEqual({
+      schemaVersion: 1,
+      enabled: true,
+      command: playwrightCommand,
+      version: "0.1.18",
+    });
+
+    const enabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
+    expect(enabledPrompt).toContain(playwrightCommand);
+
+    expect(runPiProjectionLifecycleSystem({
+      operation: "sync",
+      targetDir,
+      packageSource,
+      engramBin: path.join(root, "engram"),
+      playwrightCliEnabled: false,
+      playwrightHandoffEnabled: false,
+      playwrightCliCommand: null,
+    })).toMatchObject({ kind: "synced" });
+    expect(fs.existsSync(handoff)).toBe(false);
+
+    const disabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
+    expect(disabledPrompt).not.toContain(playwrightCommand);
+    expect(disabledPrompt).not.toMatch(/playwright-cli/i);
   }, 60_000);
 });
 
@@ -436,4 +562,5 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({ packages: [foreignSource], foreignState });
     expect(fs.existsSync(packageRoot)).toBe(false);
   }, 60_000);
+
 });
