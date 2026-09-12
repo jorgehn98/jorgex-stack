@@ -12,9 +12,13 @@ import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
-import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
+
+const gitReadPrefix = "git --no-pager -c core.fsmonitor=false -c log.showSignature=false";
+const gitReadCommands = [
+  "diff", "diff --stat", "diff --name-only", "diff --cached", "log", "log --oneline -10",
+].map((action) => `${gitReadPrefix} ${action} --no-ext-diff --no-textconv --end-of-options`);
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
@@ -155,15 +159,20 @@ export const opencodeAdapter: Adapter = {
       lines.push(`model: ${tierModel.model}`);
       if (tierModel.variant) lines.push(`variant: ${tierModel.variant}`);
 
-      lines.push("permission:");
-      lines.push(`  edit: ${agent.readonly ? "deny" : "allow"}`);
+      if (agent.readonly || agent.bash !== "full" || !agent.spawn) lines.push("permission:");
+      if (agent.readonly) lines.push("  edit: deny");
       if (agent.bash === "none") lines.push("  bash: deny");
-      else if (agent.bash === "git-read") lines.push('  bash:\n    "git diff*": allow\n    "git log*": allow');
-      else {
-        // full-bash: todo permitido EXCEPTO git destructivo. OpenCode evalúa por
-        // orden (última regla que matchea gana), así que "*" allow va primero.
-        const deny = DESTRUCTIVE_GIT_DENY.map((p) => `    ${yamlString(p)}: deny`).join("\n");
-        lines.push(`  bash:\n    "*": allow\n${deny}`);
+      else if (agent.bash === "git-read") {
+        lines.push('  bash:\n    "*": deny');
+        for (const command of gitReadCommands) {
+          lines.push(`    ${yamlString(command)}: allow`, `    ${yamlString(`${command} *`)}: allow`);
+        }
+        const permission = objectValue(loadCanonicalDefaults(stackRoot())["opencode"]?.permission);
+        const bash = objectValue(permission?.bash);
+        if (bash === null) throw new Error("OpenCode: canonical Bash policy is required for git-read agents.");
+        for (const [pattern, decision] of Object.entries(bash)) {
+          if (decision === "deny") lines.push(`    ${yamlString(pattern)}: deny`);
+        }
       }
       if (!agent.spawn) lines.push("  task: deny");
     }
@@ -173,7 +182,7 @@ export const opencodeAdapter: Adapter = {
     return [
       {
         file: `${agent.name}.md`,
-        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
+        content: `---\n${lines.join("\n")}\n---\n${agent.body}${agent.bash === "git-read" ? `\n\nUse only these read-only Git command prefixes; put refs and paths after --end-of-options:\n${gitReadCommands.map((command) => `- \`${command}\``).join("\n")}\n` : ""}`,
         kind: "agent" as const,
       },
     ];
@@ -307,7 +316,7 @@ export const opencodeAdapter: Adapter = {
       if (isFreshConfig && defaults?.["permission"] !== undefined) {
         root["permission"] = defaults["permission"];
         ctx.warnings.push(
-          "OpenCode: fresh config enables read-anywhere via external_directory:*; edits, web egress and arbitrary bash remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+          "OpenCode: fresh config allows ordinary reads, edits, web access and Bash; sensitive operations ask, while protected paths and obvious destruction are denied. Native matching is not a universal filesystem sandbox.",
         );
       }
 

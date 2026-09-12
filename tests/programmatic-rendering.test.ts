@@ -166,14 +166,14 @@ function expectDeliveryAgentContract(adapter: Adapter, ctx: InstallContext, file
   if (adapter.id === "opencode") {
     const header = frontmatter(content);
     expect(header).toContain(`mode: ${agent.mode}`);
-    expect(header).toContain("permission:");
-    expect(header).toContain(`edit: ${agent.readonly ? "deny" : "allow"}`);
+    if (agent.readonly) expect(header).toContain("edit: deny");
+    else expect(header).not.toMatch(/edit: allow/);
     if (agent.bash === "git-read") {
-      expect(header).toContain('"git diff*": allow');
-      expect(header).toContain('"git log*": allow');
+      expect(header).toContain('"*": deny');
+      expect(header).toContain('--end-of-options *": allow');
       expect(header).not.toMatch(/"\*": allow/);
     } else if (agent.bash === "full") {
-      expect(header).toMatch(/bash:\n\s+"\*": allow/);
+      expect(header).not.toMatch(/bash:/);
     }
   } else if (adapter.id === "claude-code") {
     const header = frontmatter(content);

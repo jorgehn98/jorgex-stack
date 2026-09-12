@@ -13,7 +13,7 @@ Una sola fuente por agente. El instalador los traduce al formato de cada runtime
 | `mode` | `primary` \| `subagent` | Agente principal o subagente delegable |
 | `tier` | `strong` \| `standard` \| `cheap` | Se resuelve a un modelo concreto por runtime vía model-map (PRD §6.1) |
 | `readonly` | `true` \| `false` | `true` → sin edición ni escritura de archivos |
-| `bash` | `none` \| `git-read` \| `full` | `none`: sin shell · `git-read`: solo `git diff*`/`git log*` · `full`: shell completo |
+| `bash` | `none` \| `git-read` \| `full` | `none`: sin shell · `git-read`: solo los prefijos Git de lectura validados · `full`: Bash sujeto a la política general |
 | `spawn` | `false` (opcional) | `false` → no puede lanzar subagentes (default: puede) |
 
 ## Traducción por adapter (en install)
@@ -22,11 +22,11 @@ Una sola fuente por agente. El instalador los traduce al formato de cada runtime
 |---|---|---|---|
 | `tier` | alias `fable`/`opus`/`sonnet`/`haiku` según model-map | `model` + `model_reasoning_effort` | `provider/model` del model-map |
 | `readonly: true` | `tools: Read, Grep, Glob` (+Bash si aplica) | `sandbox_mode = "read-only"` | `permission: { edit: deny }` |
-| `bash: git-read` | `Bash` completo en tools — la restricción a git read es solo de prompt (el frontmatter de Claude Code no tiene esa granularidad) | con `readonly: true` el sandbox read-only impide escrituras; con `readonly: false` la restricción es solo de prompt | `permission.bash: { "git diff*": allow, "git log*": allow }` (única aplicación real) |
+| `bash: git-read` | `Bash` completo en tools — la restricción a Git read es un contrato de prompt en Claude Code | con `readonly: true` el sandbox read-only impide escrituras; con `readonly: false` la restricción es solo de prompt | catch-all `deny` y allow solo para `diff`, `diff --stat`, `diff --name-only`, `diff --cached`, `log` y `log --oneline -10`, con prefijos que desactivan pager, fsmonitor, firmas, ext-diff y textconv y colocan `--end-of-options` antes de refs/rutas |
 | `bash: none` | sin `Bash` en tools | sandbox read-only | `permission: { bash: deny }` |
 | `spawn: false` | sin tool `Agent`/`Task` | n/a | `permission: { task: deny }` |
 
-> Ojo: solo OpenCode aplica `git-read` de verdad. En Claude Code y Codex la combinación `readonly: false` + `bash: git-read` (p.ej. `docs-maintainer`) se degrada a shell completo guiado por prompt.
+> Ojo: entre estos tres adapters, solo OpenCode aplica `git-read` de verdad. En Claude Code y Codex la combinación `readonly: false` + `bash: git-read` (p.ej. `docs-maintainer`) se degrada a shell completo guiado por prompt. En OpenCode, `full` hereda la política global y `none` deniega Bash. Pi mantiene su propia proyección validada.
 
 ## Convenciones de contenido
 

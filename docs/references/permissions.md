@@ -1,22 +1,14 @@
 # Permisos por defecto del stack
 
-Lo que `pnpm dlx jorgex-stack install` (o `sync`) escribe en la config de cada
-runtime cuando el usuario **no** tiene config previa. Si el usuario ya
-tiene su propia config, el stack la respeta: no la toca, no la re-impone
-y no la migra — ni siquiera si coincide exactamente con el default
-anterior. Revisado y aceptado el 2026-07-09 tras el commit
-`feat(config): allow external read defaults`, endurecido tras T13/T14
-para retirar la auto-migración de legacy exacto y endurecer el default
-fresco de OpenCode contra write-anywhere silencioso, y endurecido una
-segunda vez tras T17 (`fix(config): harden read permission defaults`)
-para ampliar la capa best-effort de denies de secretos (`.ssh`,
-`.aws/credentials`, `.npmrc`, `.git-credentials`, `*.pem`, `*.key`,
-`id_rsa`, `id_ed25519`) y emitir un aviso en `ctx.warnings` cada vez
-que se siembra un default fresco con read-anywhere. Endurecido de nuevo
-tras T20 para pasar `Bash`/`Edit`/`Write` de Claude a `ask`, quitar el
-allow de `git diff*` en OpenCode y hacer recursiva la deny de `.ssh` en
-Codex. Endurecido una vez más para pasar también el egress web
-(`WebFetch`/`WebSearch`, `webfetch`/`websearch`) a `ask`.
+Esta referencia describe los defaults que `pnpm dlx jorgex-stack install` (o
+`sync`) siembra en una configuración fresca o vacía. La política común es
+semántica: el trabajo ordinario se permite, las operaciones legítimas pero
+sensibles o irreversibles piden aprobación, y los secretos y la destrucción
+evidente se deniegan. Cuando no existe una regla específica, el fallback es
+`ask`.
+
+Una configuración existente se conserva completa. El stack no reimpone ni
+migra sus permisos, aunque la configuración coincida con un default anterior.
 
 > Fuente canónica: `stack/config/defaults.json`. Los detalles de la limitación
 > posicional del matching de `Bash` en Claude Code viven en
@@ -39,8 +31,8 @@ adapter no la toca, no la re-impone y no la migra automáticamente. Una
 vez escrita (en la primera instalación), esa sección pasa a ser
 **config del usuario**: quitarla o editarla a mano es seguro, y el
 próximo `sync` ya no la sobrescribirá porque ya no es "fresca". Esta
-es la regla "read-anywhere fresco, escritura externa no silenciosa" del
-briefing del repo.
+es la regla de que el default solo se siembra en un archivo fresco y las
+decisiones posteriores quedan bajo control del usuario.
 
 > **"Fresco o vacío" se evalúa sobre el archivo entero, no sobre la
 > clave.** `isFreshConfig` significa que `~/.config/opencode/opencode.json`
@@ -56,10 +48,10 @@ briefing del repo.
 instalación fresca, además de escribirlo deja constancia en
 `ctx.warnings` (visible al final de `install`/`sync`). Los mensajes son:
 
-- OpenCode → `OpenCode: fresh config enables read-anywhere via
-  external_directory:*; edits, web egress and arbitrary bash remain
-  approval-gated, but broad local reads can expose secrets not covered
-  by deny rules.`
+- OpenCode → `OpenCode: fresh config allows ordinary reads, edits, web access
+  and Bash; sensitive operations ask, while protected paths and obvious
+  destruction are denied. Native matching is not a universal filesystem
+  sandbox.`
 - Claude Code → `Claude Code: fresh config enables read-anywhere via
   Read/Grep/Glob allow rules; shell, writes and web egress remain
   approval-gated, but broad local reads can expose secrets not covered
@@ -75,11 +67,27 @@ Estos mensajes **no** aparecen en configs existentes — son parte del
 
 ## 2. OpenCode — `permission`
 
-Bloque escrito bajo la clave `permission` **solo en config fresca o vacía**:
+Extracto del bloque escrito bajo la clave `permission` **solo en config fresca
+o vacía**. El JSON canónico contiene además las variantes equivalentes para
+comandos sin argumentos y rutas de sistema:
 
 ```jsonc
 {
-  "edit": "ask",
+  "*": "ask",
+  "edit": {
+    "*": "allow",
+    "*.env": "deny",
+    "*.env.*": "deny",
+    "*.env.example": "allow",
+    "*/.ssh/*": "deny",
+    "*/.aws/credentials": "deny",
+    "*/.npmrc": "deny",
+    "*/.git-credentials": "deny",
+    "*/id_rsa": "deny",
+    "*/id_ed25519": "deny",
+    "*.pem": "deny",
+    "*.key": "deny"
+  },
   "read": {
     "*": "allow",
     "*.env": "deny",
@@ -99,17 +107,52 @@ Bloque escrito bajo la clave `permission` **solo en config fresca o vacía**:
   "grep": "allow",
   "list": "allow",
   "lsp": "allow",
-  "webfetch": "ask",
-  "websearch": "ask",
+  "webfetch": "allow",
+  "websearch": "allow",
+  "task": "allow",
+  "skill": "allow",
+  "todowrite": "allow",
+  "todoread": "allow",
+  "question": "allow",
   "bash": {
-    "*": "ask",
-    "git diff*": "ask",
-    "git log*": "allow",
-    "git status*": "allow",
+    "*": "allow",
     "rm *": "ask",
-    "del *": "ask",
     "rmdir *": "ask",
-    "git push --force*": "ask",
+    "del *": "ask",
+    "unlink *": "ask",
+    "sudo *": "ask",
+    "doas *": "ask",
+    "runas *": "ask",
+    "su *": "ask",
+    "env *": "ask",
+    "eval *": "ask",
+    "exec *": "ask",
+    "xargs *": "ask",
+    "sh *": "ask",
+    "bash *": "ask",
+    "zsh *": "ask",
+    "fish *": "ask",
+    "pwsh *": "ask",
+    "powershell *": "ask",
+    "python *": "ask",
+    "python3 *": "ask",
+    "node *": "ask",
+    "ruby *": "ask",
+    "perl *": "ask",
+    "deno *": "ask",
+    "git *reset*": "ask",
+    "git *clean*": "ask",
+    "git *push*": "ask",
+    "git -c *": "ask",
+    "git * -c *": "ask",
+    "git --config-env*": "ask",
+    "git *--output*": "ask",
+    "git *--ext-diff*": "ask",
+    "git *--textconv*": "ask",
+    "git *--show-signature*": "ask",
+    "git *%G*": "ask",
+    "pnpm exec*": "ask",
+    "pnpm dlx*": "ask",
     "format *": "deny",
     "mkfs *": "deny",
     "dd *": "deny",
@@ -118,35 +161,33 @@ Bloque escrito bajo la clave `permission` **solo en config fresca o vacía**:
 }
 ```
 
-- **`read` como objeto**: `* = allow` quita el prompt para cualquier ruta;
+- **`* = ask`**: herramientas o formas sin una regla específica piden
+  aprobación.
+- **Trabajo ordinario**: `read`, `edit`, `glob`, `grep`, `list`, `lsp`,
+  `external_directory`, `webfetch`, `websearch` y las herramientas de apoyo
+  reciben `allow`, con las excepciones sensibles descritas abajo.
+- **`read` y `edit` como objetos**: `* = allow` quita el prompt para cualquier ruta;
   `*.env` y `*.env.*` niegan secretos locales; `*.env.example` se permite
   como fixture. El resto de denies (`*/.ssh/*`, `*/.aws/credentials`,
   `*/.npmrc`, `*/.git-credentials`, `*/id_rsa`, `*/id_ed25519`,
   `*.pem`, `*.key`) son una capa best-effort sobre los nombres de secretos
   más comunes — ver §6.
-- **`external_directory: * = allow`**: rutas fuera del cwd no preguntan
-  para lecturas (`read`/`glob`/`grep`). Es la pieza que habilita el
-  read-anywhere.
-- **`edit: ask`**: ningún edit (interno ni externo) corre sin aprobación
-  explícita del usuario. Endurecimiento T14: el default fresco ya no
-  concede `edit: allow`.
-- **`webfetch` / `websearch`: `ask`**: leer cualquier fichero local y
-  llamar a red sin aprobación es una vía de exfiltración. El default fresco
-  no auto-aprueba egress web.
-- **`bash: { "*": "ask", ... }`**: cualquier comando arbitrario pide
-  aprobación. `git diff*` también queda en `ask`, porque `git diff
-  --no-index <secreto> <otro>` puede volcar contenido arbitrario a stdout
-  y saltarse las denies de `read`. Solo `git log*` y `git status*` van con
-  `allow`.
+- **`external_directory: * = allow`**: las lecturas y búsquedas fuera del
+  cwd se permiten; la escritura sigue las reglas de `edit` y Bash.
+- **`bash: { "*": "allow", ... }`**: Bash ordinario se permite. Comandos
+  sensibles, intérpretes, escalado de privilegios y formas Git irreversibles
+  pasan a `ask`; `format`, `mkfs`, `dd` y `shred` quedan en `deny`.
+- **Rutas de destrucción del sistema**: los patrones específicos de `/etc`,
+  `/usr`, `/bin`, `/sbin`, `/boot`, `/dev`, `/proc` y `/sys` se deniegan. Los
+  borrados ordinarios, incluidos los que están fuera del workspace, piden
+  aprobación.
 
-**Por qué `external_directory: * = allow` no implica write-anywhere
-silencioso.** `external_directory` aplica a `read`/`glob`/`grep` y a
-algunos comandos `bash`, pero los `edit` y el resto de `bash` se rigen
-por sus propias claves — que en este default están en `ask`. La
-combinación es: leer sin prompt, escribir con prompt. Quien quiera
-endurecer más puede bajar `external_directory: *` a `ask` o `deny` a
-mano — el stack no lo sobreescribirá después, porque ya no es la clave
-de una config fresca/vacía.
+**Por qué las reglas específicas importan.** OpenCode evalúa sus reglas de
+matching según la semántica nativa del runtime; el `* = ask` superior cubre
+formas desconocidas y cada allow o deny más específico expresa una
+excepción deliberada. La política no es un sandbox universal del sistema de
+archivos. Quien quiera endurecerla puede editarla a mano; el stack no
+sobrescribirá esa decisión después.
 
 **El adapter no migra.** El default viejo era `read: "allow"` (string
 plano) y `bash: { "*": "allow", ... }`, sin `external_directory`. Si tu
