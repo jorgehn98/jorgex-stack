@@ -154,7 +154,7 @@ Stack incluye un prompt genérico de estilo de escritura como parte de su canon.
 
 La proyección contiene el canon directamente: Stack no añade un wrapper adicional ni una identidad personal. Si falta el archivo local o está vacío, Stack recrea el bloque gestionado. El corpus de mensajes y los informes privados de análisis no se distribuyen en el paquete. Consulta [configuración, prueba aislada, diagnóstico y límites](docs/references/writing-style.md).
 
-Las snapshots Pi 0.8.16 y 0.8.17 inyectan todavía un fallback propio con la sección `Communication Style` en español. Hace falta una nueva snapshot, su publicación y la adopción posterior desde Stack para corregirlo; este cambio no lo resuelve.
+El paquete Pi adoptado ya no inyecta un fallback propio con `Communication Style` en español; el estilo de escritura que recibe Pi procede de la proyección gestionada por Stack.
 
 ### Browser automation
 
