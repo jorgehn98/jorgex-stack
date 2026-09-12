@@ -20,6 +20,7 @@ import {
   saveInstallModePreference,
 } from "./lib/install-mode.js";
 import { browserPreferenceErrors, devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, type PlaywrightRuntimeSelection } from "./lib/tool-preferences.js";
+import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import {
   detectPiRuntime,
   PI_RUNTIME_CANDIDATE,
@@ -97,6 +98,13 @@ async function ensureOpenCodeModelsForInstall(
     "OpenCode no tiene modelos configurados. Ejecuta 'jorgex-stack models --agents opencode' de forma interactiva antes de install/sync.",
   );
   return false;
+}
+
+function shouldInspectPlaywrightCapability(targetDir: string | undefined, dryRun: boolean): boolean {
+  return targetDir === undefined
+    && !dryRun
+    && browserPreferenceErrors().length === 0
+    && loadPlaywrightCliPreference() === true;
 }
 
 export function parseFlags(args: string[], allowReceipt = false): Flags {
@@ -463,16 +471,32 @@ async function resolveHostEngramForInstall(
   }
 }
 
-async function runSelectedPi(
-  operation: PiRuntimeOperation,
-  targetDir?: string,
-  yes = false,
-  resolvedEngramBin?: string | null,
-  devtoolsMcpEnabled?: boolean,
-  writingStyle?: WritingStyleSnapshot,
-  modePreference?: InstallModePreference,
-  playwrightCliEnabled?: boolean,
-): Promise<number> {
+interface RunSelectedPiOptions {
+  operation: PiRuntimeOperation;
+  targetDir?: string;
+  yes?: boolean;
+  resolvedEngramBin?: string | null;
+  devtoolsMcpEnabled?: boolean;
+  writingStyle?: WritingStyleSnapshot;
+  modePreference?: InstallModePreference;
+  playwrightCliEnabled?: boolean;
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
+  packageOnly?: boolean;
+}
+
+async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
+  const {
+    operation,
+    targetDir,
+    yes = false,
+    resolvedEngramBin,
+    devtoolsMcpEnabled,
+    writingStyle: suppliedWritingStyle,
+    modePreference,
+    playwrightCliEnabled,
+    playwrightCapability,
+  } = options;
+  let writingStyle = suppliedWritingStyle;
   if (targetDir === undefined && operation !== "models") {
     const preferenceErrors = browserPreferenceErrors();
     if (preferenceErrors.length > 0) {
@@ -522,6 +546,7 @@ async function runSelectedPi(
     engramBin = requirement.bin;
   }
   const result = await runManagedPiSystem({
+    ...(options.packageOnly ? { packageOnly: true } : {}),
     writingStyle,
     writingStyleMode: modePreference?.mode,
     operation,
@@ -530,6 +555,7 @@ async function runSelectedPi(
     engramBin,
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
     ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
+    ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
   });
   if (result.kind === "blocked") {
     const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
@@ -711,6 +737,14 @@ async function main(): Promise<void> {
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
+        const playwrightToolPlan = resolvePlaywrightToolPlan(playwrightToolConsent);
+        let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+          && playwrightToolPlan.actions.length === 0
+          ? inspectPlaywrightCapability()
+          : undefined;
+        const capturePlaywrightCapability = (snapshot: PlaywrightCapabilitySnapshot): void => {
+          playwrightCapability = snapshot;
+        };
         p.log.info(`Estilo de escritura: ${writingStyle.sourcePath}${flags.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
         applyWritingStyle(writingStyle, flags.dryRun);
         if (!await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes)) { exitCode = 1; return; }
@@ -732,19 +766,24 @@ async function main(): Promise<void> {
             playwrightToolConsent,
             devtoolsMcpSelection,
             engramBin,
+            ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+            ...(playwrightToolPlan.actions.length === 0 ? {} : { onPlaywrightCapability: capturePlaywrightCapability }),
             showSummary: false,
           });
         }
         let piCanRun = true;
         if (command === "install" && fileRuntimes.length === 0 && runtimes.includes("pi")
-          && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0) {
+          && playwrightToolPlan.actions.length > 0) {
           if (flags.dryRun) {
             p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
           } else {
             exitCode = await runInstall({
               writingStyle,
               runtimes: [], targetDir: flags.targetDir, dryRun: false, yes: flags.yes,
-              playwrightToolConsent, engramBin, showSummary: false,
+              playwrightToolConsent,
+              engramBin,
+              onPlaywrightCapability: capturePlaywrightCapability,
+              showSummary: false,
             });
             piCanRun = exitCode === 0;
           }
@@ -752,10 +791,18 @@ async function main(): Promise<void> {
         if (runtimes.includes("pi") && piCanRun) {
           if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
           else {
-            const piExitCode = await runSelectedPi(command, flags.targetDir, flags.yes,
-              flags.targetDir === undefined ? engramBin : undefined, devtoolsMcpSelection.pi, writingStyle, mode,
-              flags.targetDir === undefined && exitCode === 0 && resolvePlaywrightToolPlan(playwrightToolConsent).actions.length > 0
-                ? playwrightToolConsent.runtimeSelection?.pi : undefined);
+            const piExitCode = await runSelectedPi({
+              operation: command,
+              targetDir: flags.targetDir,
+              yes: flags.yes,
+              resolvedEngramBin: flags.targetDir === undefined ? engramBin : undefined,
+              devtoolsMcpEnabled: devtoolsMcpSelection.pi,
+              writingStyle,
+              modePreference: mode,
+              playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
+                ? playwrightToolConsent.runtimeSelection?.pi : undefined,
+              playwrightCapability,
+            });
             exitCode = Math.max(exitCode, piExitCode);
           }
         }
@@ -801,7 +848,7 @@ async function main(): Promise<void> {
         : 0;
       if (runtimes.includes("pi")) {
         if (flags.dryRun) p.log.info("Pi: uninstall previsto; dry-run conserva paquete y receipt.");
-        else exitCode = Math.max(exitCode, await runSelectedPi("uninstall", flags.targetDir));
+        else exitCode = Math.max(exitCode, await runSelectedPi({ operation: "uninstall", targetDir: flags.targetDir }));
       }
       process.exitCode = exitCode;
       return;
@@ -820,8 +867,27 @@ async function main(): Promise<void> {
               ...(piSelected ? ["pi" as const] : []),
             ]
           : [...Object.keys(ADAPTERS) as RuntimeId[], ...(piSelected ? ["pi" as const] : [])];
-      let exitCode = await runDoctor({ targetDir: flags.targetDir, runtimes: doctorRuntimes, mode });
-      if (piSelected) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir, false, undefined, undefined, undefined, mode));
+      const doctorCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+        ? inspectPlaywrightCapability()
+        : undefined;
+      let exitCode = await runDoctor({
+        targetDir: flags.targetDir,
+        runtimes: doctorRuntimes,
+        mode,
+        ...(flags.dryRun ? { dryRun: true } : {}),
+        ...(doctorCapability === undefined ? {} : { playwrightCapability: doctorCapability }),
+      });
+      if (piSelected) {
+        if (flags.dryRun) p.log.info("Pi: doctor previsto; dry-run no ejecuta subprocess ni smoke de Playwright.");
+        else {
+          exitCode = Math.max(exitCode, await runSelectedPi({
+            operation: "doctor",
+            targetDir: flags.targetDir,
+            modePreference: mode,
+            playwrightCapability: doctorCapability,
+          }));
+        }
+      }
       process.exitCode = exitCode;
       return;
     }
@@ -832,7 +898,16 @@ async function main(): Promise<void> {
         let exitCode = flags.agents.length === 0 || fileRuntimeExplicit
           ? await runUpdateCheck(VERSION, flags.targetDir === undefined)
           : 0;
-        if (piExplicit) exitCode = Math.max(exitCode, await runSelectedPi("doctor", flags.targetDir));
+        if (piExplicit) {
+          if (flags.dryRun) p.log.info("Pi: doctor previsto; dry-run no ejecuta subprocess ni smoke de Playwright.");
+          else {
+            exitCode = Math.max(exitCode, await runSelectedPi({
+              operation: "doctor",
+              targetDir: flags.targetDir,
+              packageOnly: true,
+            }));
+          }
+        }
         process.exitCode = exitCode;
         return;
       }
@@ -859,8 +934,17 @@ async function main(): Promise<void> {
         { rootDir: flags.targetDir },
       );
       applyWritingStyle(writingStyle, flags.dryRun);
+      let updateCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+        ? inspectPlaywrightCapability()
+        : undefined;
       if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
-        const piExitCode = await runSelectedPi("update", flags.targetDir, false, undefined, undefined, writingStyle, mode);
+        const piExitCode = await runSelectedPi({
+          operation: "update",
+          targetDir: flags.targetDir,
+          writingStyle,
+          modePreference: mode,
+          playwrightCapability: updateCapability,
+        });
         process.exitCode = piExitCode;
         persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, piExitCode);
         return;
@@ -874,6 +958,7 @@ async function main(): Promise<void> {
           dryRun: flags.dryRun,
           yes: true,
           mode,
+          ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
         });
         if (code !== 0) {
           process.exitCode = code;
@@ -889,13 +974,36 @@ async function main(): Promise<void> {
         flags.targetDir === undefined,
       );
       process.exitCode = result.exitCode;
+      let playwrightReconciled = false;
+      if (result.exitCode === 0 && result.playwrightCapability !== undefined) {
+        updateCapability = result.playwrightCapability;
+        if (fileRuntimes.length > 0 && canSync) {
+          const code = await runInstall({
+            runtimes: fileRuntimes,
+            writingStyle,
+            targetDir: flags.targetDir,
+            dryRun: false,
+            yes: true,
+            mode,
+            playwrightCapability: updateCapability,
+          });
+          process.exitCode = Math.max(process.exitCode ?? 0, code);
+          playwrightReconciled = true;
+        }
+      }
       if (result.exitCode === 0 && runtimes.includes("pi")) {
-        process.exitCode = Math.max(process.exitCode, await runSelectedPi("update", flags.targetDir, false, undefined, undefined, writingStyle, mode));
+        process.exitCode = Math.max(process.exitCode ?? 0, await runSelectedPi({
+          operation: "update",
+          targetDir: flags.targetDir,
+          writingStyle,
+          modePreference: mode,
+          playwrightCapability: updateCapability,
+        }));
       }
       // Solo skills/stack cambian los artefactos que el sync propaga.
       if (result.syncRequired && fileRuntimes.length > 0 && (result.exitCode !== 0 || !canSync)) {
         p.log.warn("Skills/stack actualizados, pero el sync con los runtimes sigue pendiente. Ejecuta jorgex-stack sync --mode human|programmatic.");
-      } else if (result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
+      } else if (!playwrightReconciled && result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
         const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });
         if (!p.isCancel(apply) && apply) {
           process.exitCode = await runInstall({
@@ -905,6 +1013,7 @@ async function main(): Promise<void> {
             dryRun: false,
             yes: false,
             mode,
+            ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
           });
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
@@ -931,7 +1040,7 @@ async function main(): Promise<void> {
       let code = fileRuntimes.length > 0
         ? await runModelsPicker({ yes: flags.yes, runtimes: fileRuntimes })
         : 0;
-      if (runtimes.includes("pi")) code = Math.max(code, await runSelectedPi("models", flags.targetDir));
+      if (runtimes.includes("pi")) code = Math.max(code, await runSelectedPi({ operation: "models", targetDir: flags.targetDir }));
       process.exitCode = code;
       // Elegir modelos solo escribe el model-map local; aplicarlos a los
       // agentes instalados es trabajo de sync. Ofrecerlo aquí evita el paso
@@ -949,7 +1058,17 @@ async function main(): Promise<void> {
           }
           const mode = await resolveInstallMode(flags, false);
           if (mode === null) return;
-          process.exitCode = await runInstall({ runtimes: fileRuntimes, targetDir: flags.targetDir, dryRun: flags.dryRun, yes: false, mode });
+          const playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+            ? inspectPlaywrightCapability()
+            : undefined;
+          process.exitCode = await runInstall({
+            runtimes: fileRuntimes,
+            targetDir: flags.targetDir,
+            dryRun: flags.dryRun,
+            yes: false,
+            mode,
+            ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+          });
         } else {
           console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
         }

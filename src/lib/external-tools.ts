@@ -98,10 +98,13 @@ export function resolvePlaywrightCliState({ binPath, versionOutput }: Playwright
 }
 
 /** Detecta la herramienta con el mismo acceso seguro a PATH/procesos que el resto del CLI. */
-export function detectPlaywrightCli(): PlaywrightCliState {
-  const binPath = lookPath(PLAYWRIGHT_CLI.bin);
+export function detectPlaywrightCli(env?: NodeJS.ProcessEnv): PlaywrightCliState {
+  const actualEnv = env ?? process.env;
+  const binPath = env === undefined
+    ? lookPath(PLAYWRIGHT_CLI.bin)
+    : lookPath(PLAYWRIGHT_CLI.bin, env);
   if (binPath === null) {
-    const pnpmHome = resolvePnpmHome();
+    const pnpmHome = resolvePnpmHome(actualEnv);
     const name = process.platform === "win32" ? `${PLAYWRIGHT_CLI.bin}.cmd` : PLAYWRIGHT_CLI.bin;
     const known = [path.join(pnpmHome, name), path.join(pnpmHome, "bin", name)]
       .find((file) => { try { return fs.statSync(file).isFile(); } catch { return false; } });
@@ -109,16 +112,16 @@ export function detectPlaywrightCli(): PlaywrightCliState {
   }
   return resolvePlaywrightCliState({
     binPath,
-    versionOutput: binPath ? runDetectedBin(binPath, ["--version"], 5_000, { NO_UPDATE_NOTIFIER: "1" }) : null,
+    versionOutput: binPath ? runDetectedBin(binPath, ["--version"], 5_000, { ...actualEnv, NO_UPDATE_NOTIFIER: "1" }) : null,
   });
 }
 
 /** Resuelve pnpm para que los callers ejecuten el plan sin shell. */
-export function resolvePnpmBin(): string | null {
-  const pnpm = lookPath("pnpm");
+export function resolvePnpmBin(env?: NodeJS.ProcessEnv): string | null {
+  const pnpm = env === undefined ? lookPath("pnpm") : lookPath("pnpm", env);
   if (pnpm !== null && !pnpm.toLowerCase().endsWith(".ps1")) return pnpm;
 
-  const pnpmCmd = lookPath("pnpm.cmd");
+  const pnpmCmd = env === undefined ? lookPath("pnpm.cmd") : lookPath("pnpm.cmd", env);
   return pnpmCmd !== null && !pnpmCmd.toLowerCase().endsWith(".ps1") ? pnpmCmd : null;
 }
 

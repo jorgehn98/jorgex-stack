@@ -100,7 +100,7 @@ La coordinación opcional entre Stack y Pi está descrita en el [runbook de auto
 
 - `install` verifica el tarball, hace backup y ejecuta primero el paquete y después la proyección.
 - `sync` repara drift del paquete o de la proyección sin duplicar recursos; dos pasadas consecutivas son idempotentes.
-- `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara.
+- `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. En una ejecución explícita también ejecuta el diagnóstico completo del runtime, incluida la comprobación local de las capacidades que corresponda.
 - `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime.
 - Si un receipt es ilegible, de otro scope, parcial o de historial desconocido, la operación destructiva falla cerrada; no se adopta ni se elimina estado manual silenciosamente.
 - El binario y la base de datos/memorias de Engram son siempre del usuario. La instalación interactiva puede ofrecer el canal nativo con confirmación explícita; la base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario.
@@ -149,7 +149,7 @@ Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership.
 | `sync --agents pi` | Reconcilia paquete y proyección; no instala recursos globales ni duplica skills/prompts. |
 | `models --agents pi` | Devuelve routing heredado de la sesión; no escribe model map de Stack. |
 | `doctor --agents pi` | Comprueba package/projection receipts, scope, entradas y drift. |
-| `update --check --agents pi` | Ejecuta la comprobación Pi en modo lectura; no entra en el updater global. |
+| `update --check --agents pi` | Ejecuta mediante el runner una comprobación de solo lectura del paquete y del registro; no compara la proyección compartida, no ejecuta el smoke del navegador y no entra en el updater global. Usa `doctor --agents pi` para el diagnóstico completo de paquete y proyección. |
 | `uninstall --agents pi` | Hace backup, limpia solo ownership verificable y conserva Engram y estado ajeno. |
 
 `--dry-run` no ejecuta Pi ni escribe receipts.

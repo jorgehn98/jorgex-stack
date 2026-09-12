@@ -56,6 +56,8 @@ type PiManagedSystem = {
     engramBin: string | null;
     devtoolsMcpEnabled?: boolean;
     playwrightCliEnabled?: boolean;
+    packageOnly?: boolean;
+    playwrightCapability?: import("../src/lib/playwright-capability.js").PlaywrightCapabilitySnapshot;
   }): Promise<unknown>;
 };
 
@@ -202,7 +204,7 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
-  it("forwards a selected Playwright handoff only through a supported Pi candidate, including a known absolute bin outside PATH", async () => {
+  it("forwards a selected Playwright handoff only through a supported Pi candidate, only when its supplied capability is verified", async () => {
     const packageInputs: unknown[] = [];
     const projectionInputs: unknown[] = [];
     const playwrightPreferenceFile = "/isolated/state/playwright-cli.json";
@@ -257,9 +259,16 @@ describe("Pi managed package and projection coordination", () => {
         writingStyle: FORWARDING_STYLE,
       };
 
-      await expect(mod.runManagedPiSystem(input)).resolves.toEqual({ kind: "installed" });
-      await expect(mod.runManagedPiSystem({ ...input, operation: "sync" })).resolves.toEqual({ kind: "installed" });
-      await expect(mod.runManagedPiSystem({ ...input, operation: "doctor" })).resolves.toEqual({ kind: "installed" });
+      const capability = {
+        cli: { status: "current" as const, binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" },
+        browserCache: { status: "ready" as const, path: "/isolated/browser" },
+        browserVerified: true,
+        effective: true,
+      };
+      const verifiedInput = { ...input, playwrightCapability: capability };
+      await expect(mod.runManagedPiSystem(verifiedInput)).resolves.toEqual({ kind: "installed" });
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toEqual({ kind: "installed" });
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "doctor", playwrightCapability: { ...capability, browserVerified: false, effective: false } })).resolves.toEqual({ kind: "installed" });
 
       expect(packageInputs).toHaveLength(3);
       expect(packageInputs[0]).not.toHaveProperty("playwrightCliEnabled");
@@ -274,22 +283,29 @@ describe("Pi managed package and projection coordination", () => {
           operation: "sync",
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
-          playwrightCliCommand: "/isolated/pnpm/playwright-cli",
+          playwrightCliCommand: "/isolated/bin/playwright-cli",
         }),
         expect.objectContaining({
           operation: "doctor",
-          playwrightCliEnabled: true,
-          playwrightHandoffEnabled: true,
+          playwrightCliEnabled: false,
+          playwrightHandoffEnabled: false,
           playwrightCliCommand: null,
         }),
       ]);
-      expect(detectPlaywrightCli).toHaveBeenCalledTimes(3);
+      expect(detectPlaywrightCli).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).toHaveBeenCalledWith(playwrightPreferenceFile, true, { pi: true });
+
+      await expect(mod.runManagedPiSystem(input)).resolves.toEqual({ kind: "installed" });
+      expect(projectionInputs.at(-1)).toEqual(expect.objectContaining({
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+      }));
 
       const successfulSaveCount = savePlaywrightCliPreference.mock.calls.length;
       detectPlaywrightCli.mockReturnValueOnce({ status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" });
       runPiProjectionLifecycleSystem.mockReturnValueOnce({ kind: "blocked", reason: "projection-write-failed" });
-      await expect(mod.runManagedPiSystem({ ...input, operation: "sync" })).resolves.toMatchObject({
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toMatchObject({
         kind: "blocked",
         reason: "projection-write-failed",
       });
@@ -379,6 +395,79 @@ describe("Pi managed package and projection coordination", () => {
       expect((projectionInputs[0] as Record<string, unknown>).playwrightHandoffEnabled).not.toBe(true);
       expect(detectPlaywrightCli).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  it("keeps an effective Playwright snapshot isolated from Pi target-dir preferences and handoff", async () => {
+    const projectionInputs: unknown[] = [];
+    const loadPlaywrightCliPreference = vi.fn(() => {
+      throw new Error("target-dir must not read the host Playwright preference");
+    });
+    const savePlaywrightCliPreference = vi.fn();
+    const runPiRuntimeSystem = vi.fn(async () => ({ kind: "installed" as const }));
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "installed" as const };
+    });
+    const capability = {
+      cli: { status: "current" as const, binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" },
+      browserCache: { status: "ready" as const, path: "/isolated/browser" },
+      browserVerified: true,
+      effective: true,
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference,
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      await expect(mod.runManagedPiSystem({
+        operation: "install",
+        targetDir: "/isolated/target",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        playwrightCliEnabled: true,
+        playwrightCapability: capability,
+        writingStyle: FORWARDING_STYLE,
+      })).resolves.toEqual({ kind: "installed" });
+
+      expect(loadPlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(projectionInputs).toEqual([expect.objectContaining({
+        targetDir: "/isolated/target",
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+      })]);
     } finally {
       vi.doUnmock("../src/lib/pi-runtime.js");
       vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
@@ -802,4 +891,31 @@ describe("Pi managed package and projection coordination", () => {
     expect(result).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
     expect(trace).toEqual([`package:${operation}`, "projection:sync"]);
   });
+});
+
+
+it("package-only update checks do not compare unprobed Playwright projections", async () => {
+  vi.resetModules();
+  const runPiRuntimeSystem = vi.fn().mockResolvedValue({ kind: "healthy" });
+  const runProjection = vi.fn(() => ({ kind: "drift", paths: ["browser-guide"], remedy: "unexpected" }));
+  vi.doMock("../src/lib/pi-runtime.js", () => ({
+    PI_RUNTIME_CANDIDATE: { package: { source: "npm:jorgex-pi@test" }, pi: { testedVersions: MOCK_TESTED_PI_VERSIONS }, contract: { capabilities: ["playwright-handoff-v1"] } },
+    runPiRuntimeSystem,
+  }));
+  vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+    runPiProjectionLifecycleSystem: runProjection,
+    preparePiProjectionUninstallSystem: vi.fn(), completePiProjectionUninstallSystem: vi.fn(),
+  }));
+  try {
+    const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+    await expect(mod.runManagedPiSystem({ operation: "doctor", packageOnly: true,
+      detected: { executable: "/isolated/pi", version: "0.84.2" }, engramBin: "/isolated/engram",
+      writingStyle: FORWARDING_STYLE, playwrightCliEnabled: true,
+    })).resolves.toEqual({ kind: "healthy" });
+    expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
+    expect(runPiRuntimeSystem.mock.calls[0]![0]).not.toHaveProperty("packageOnly");
+    expect(runProjection).not.toHaveBeenCalled();
+  } finally {
+    vi.doUnmock("../src/lib/pi-runtime.js");vi.doUnmock("../src/lib/pi-projection-lifecycle.js");vi.resetModules();
+  }
 });

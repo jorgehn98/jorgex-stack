@@ -501,7 +501,7 @@ describe("Playwright prompt install ordering", () => {
     });
   });
 
-  it("keeps the existing runtime selection and guides when the Playwright plan fails", async () => {
+  it("keeps the runtime selection without advertising unverified Playwright when setup fails", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
     const configRoot = path.join(homeDir, "configs");
@@ -542,9 +542,69 @@ describe("Playwright prompt install ordering", () => {
         expect(fs.readFileSync(preferenceFile, "utf8")).toBe(`${JSON.stringify(before)}\n`);
         expect(managedSection(fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8"), "playwright")).toBeNull();
         expect(managedSection(fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8"), "chrome-devtools")).toBeNull();
-        expect(managedSection(fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8"), "playwright")).toMatch(/Playwright CLI/i);
+        expect(managedSection(fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8"), "playwright")).toBeNull();
       } finally {
         restoreDetect();
+      }
+    });
+  });
+
+  it.each([true, false])("retira la guía en sync cuando Chromium no arranca y conserva la preferencia (consent=%s)", async (withConsent) => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    const preference = {
+      version: 2,
+      enabled: { opencode: true, codex: false, "claude-code": false, pi: false },
+    } as const;
+    writeOpenCodeModelMap(homeDir);
+    fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+    fs.writeFileSync(preferenceFile, JSON.stringify(preference) + "\n");
+
+    await withTempHome(homeDir, async () => {
+      const externalTools = {
+        detectPlaywrightCli: vi.fn(() => ({
+          status: "current" as const,
+          binPath: "/isolated/bin/playwright-cli",
+          detectedVersion: "0.1.18",
+        })),
+        isPlaywrightBrowserReady: vi.fn(() => ({
+          status: "ready" as const,
+          path: "/isolated/cache/ms-playwright",
+        })),
+        resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+        verifyPlaywrightBrowser: vi.fn(() => false),
+      };
+      vi.doMock("../src/lib/external-tools.js", async () => ({
+        ...(await vi.importActual<typeof import("../src/lib/external-tools.js")>("../src/lib/external-tools.js")),
+        ...externalTools,
+      }));
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: withConsent ? {
+            command: "sync",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: false,
+            confirmed: false,
+          } : undefined,
+        })).resolves.toBe(0);
+
+        const content = fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8");
+        expect(managedSection(content, "playwright")).toBeNull();
+        expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual(preference);
+        expect(externalTools.verifyPlaywrightBrowser).toHaveBeenCalledTimes(1);
+      } finally {
+        restoreDetect();
+        vi.doUnmock("../src/lib/external-tools.js");
       }
     });
   });
@@ -720,6 +780,12 @@ describe("Playwright prompt install ordering", () => {
       try {
         await expect(install.runInstall({
           runtimes: ["opencode"],
+          playwrightCapability: {
+            cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
+            browserCache: { status: "ready", path: "/isolated/browser" },
+            browserVerified: true,
+            effective: true,
+          },
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -734,6 +800,12 @@ describe("Playwright prompt install ordering", () => {
 
         await expect(install.runInstall({
           runtimes: ["opencode"],
+          playwrightCapability: {
+            cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
+            browserCache: { status: "ready", path: "/isolated/browser" },
+            browserVerified: true,
+            effective: true,
+          },
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },

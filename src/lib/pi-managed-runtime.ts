@@ -8,7 +8,8 @@ import {
 } from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
 import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
-import { detectPlaywrightCli, resolvePnpmBin } from "./external-tools.js";
+import { resolvePnpmBin } from "./external-tools.js";
+import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
 import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
 
@@ -134,6 +135,8 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   writingStyle?: WritingStyleSnapshot;
   writingStyleMode?: InstallMode;
   playwrightCliEnabled?: boolean;
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
+  packageOnly?: boolean;
 }): Promise<PiManagedOperationResult> {
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
   if (!supportedVersions.includes(input.detected.version)) {
@@ -146,10 +149,16 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const {
     devtoolsMcpEnabled: explicitDevtools,
     playwrightCliEnabled: explicitPlaywright,
+    playwrightCapability,
+    packageOnly,
     writingStyle: suppliedStyle,
     writingStyleMode,
     ...runtimeInput
   } = input;
+  if (input.operation === "doctor" && packageOnly) {
+    const result = managedPackageResult(await runPiRuntimeSystem(runtimeInput));
+    return result.kind === "manual-existing" ? manualExistingResult(result) : result;
+  }
   const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
   if (input.operation !== "models") {
     try { assertSystemPromptFile(piSystemPromptFile(input.targetDir), input.targetDir); }
@@ -168,10 +177,17 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const devtoolsMcpEnabled = explicitDevtools
     ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
   const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  const persistedPlaywright = input.targetDir === undefined
+    && loadPlaywrightCliPreference(undefined, "pi") === true;
+  const selectedPlaywright = explicitPlaywright
+    ?? persistedPlaywright;
+  const playwrightCapabilityEffective = playwrightCapability?.effective === true;
   const playwrightCliEnabled = input.targetDir === undefined && supportsPlaywright
-    && (explicitPlaywright ?? loadPlaywrightCliPreference(undefined, "pi") === true);
+    && selectedPlaywright
+    && playwrightCapabilityEffective;
   const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
-    ? detectPlaywrightCli().binPath : null;
+    ? playwrightCapability?.cli.binPath ?? null
+    : null;
   const projectionInput = {
     writingStyle,
     targetDir: input.targetDir,

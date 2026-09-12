@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
+  const inspectPlaywrightCapability = vi.fn(() => ({
+    cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
+    browserCache: { status: "ready", path: "/isolated/browser" },
+    browserVerified: true,
+    effective: true,
+  }));
   const runInstall = vi.fn().mockResolvedValue(0);
   const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
@@ -38,6 +44,7 @@ const mocks = vi.hoisted(() => {
   };
   return {
     prompts,
+    inspectPlaywrightCapability,
     runInteractiveUpdate,
     runInstall,
     runModelsPicker,
@@ -49,6 +56,10 @@ const mocks = vi.hoisted(() => {
     piCapabilityMode,
   };
 });
+
+vi.mock("../src/lib/playwright-capability.js", () => ({
+  inspectPlaywrightCapability: mocks.inspectPlaywrightCapability,
+}));
 
 vi.mock("@clack/prompts", () => ({
   confirm: mocks.prompts.confirm,
@@ -730,6 +741,186 @@ describe("opciones de navegador en main()", () => {
       expect(collectedMessages([error]).some((message) => /Pi.*playwright-handoff-v1|playwright-handoff-v1.*Pi/i.test(message))).toBe(true);
     } finally {
       error.mockRestore();
+    }
+  });
+});
+
+
+describe("CLI effective browser capability", () => {
+  it("update Playwright exitoso reconcilia la guía sin pedir un sync manual", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-update-playwright-reconcile-"));
+    const homeDir = path.join(tmp, "home");
+    const beforeUpdate = {
+      cli: { status: "current" as const, binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
+      browserCache: { status: "ready" as const, path: "/isolated/browser" },
+      browserVerified: false,
+      effective: false,
+    };
+    const afterUpdate = { ...beforeUpdate, browserVerified: true, effective: true };
+
+    try {
+      writeOpenCodeModelMap(homeDir);
+      fs.mkdirSync(path.join(homeDir, ".jorgex-stack"), { recursive: true });
+      fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
+        version: 2,
+        enabled: { opencode: true },
+      }) + "\n");
+      mocks.inspectPlaywrightCapability
+        .mockReturnValueOnce(beforeUpdate);
+      mocks.runInteractiveUpdate.mockResolvedValueOnce({
+        exitCode: 0,
+        appliedUpdates: true,
+        syncRequired: false,
+        playwrightCapability: afterUpdate,
+      });
+
+      await runCli(["update", "--agents", "opencode", "--mode", "human"], homeDir, true);
+
+      expect(mocks.inspectPlaywrightCapability).toHaveBeenCalledTimes(1);
+      expect(mocks.runInstall).toHaveBeenCalledTimes(2);
+      expect(mocks.runInstall.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        playwrightCapability: beforeUpdate,
+      }));
+      expect(mocks.runInstall.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        playwrightCapability: afterUpdate,
+      }));
+      expect(mocks.runInstall.mock.invocationCallOrder[1]!).toBeGreaterThan(
+        mocks.runInteractiveUpdate.mock.invocationCallOrder[0]!,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("doctor --dry-run no convierte una comprobación omitida en paquete ausente", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-doctor-dry-run-browser-"));
+    const homeDir = path.join(tmp, "home");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      fs.mkdirSync(path.join(homeDir, ".jorgex-stack"), { recursive: true });
+      fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
+        version: 2,
+        enabled: { opencode: true },
+      }) + "\n");
+
+      await runCli(["doctor", "--agents", "opencode", "--dry-run"], homeDir);
+
+      expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
+      const output = collectedMessages([log, mocks.prompts.log.info, mocks.prompts.log.warn, mocks.prompts.log.error]);
+      expect(output.some((message) => /Playwright CLI.*falta.*paquete|Playwright CLI.*missing.*package/i.test(message))).toBe(false);
+      expect(output.some((message) => /dry.?run|comprobaci[oó]n.*omit|sin.*comprobar/i.test(message))).toBe(true);
+    } finally {
+      log.mockRestore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("update --check de Pi no ejecuta el smoke de Playwright", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-update-check-pi-browser-"));
+    const homeDir = path.join(tmp, "home");
+    fs.mkdirSync(path.join(homeDir, ".jorgex-stack"), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
+      version: 2,
+      enabled: { pi: true },
+    }) + "\n");
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/isolated/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+
+    try {
+      await runCli(["update", "--check", "--agents", "pi"], homeDir);
+
+      expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "doctor",
+        packageOnly: true,
+      }));
+      expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]).not.toHaveProperty("playwrightCapability");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("install Playwright de Pi reenvía la snapshot verificada y su ruta absoluta al lifecycle", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-install-playwright-pi-handoff-"));
+    const homeDir = path.join(tmp, "home");
+    const capability = {
+      cli: {
+        status: "current" as const,
+        binPath: path.join(tmp, "pnpm-home", "playwright-cli"),
+        detectedVersion: "0.1.18",
+      },
+      browserCache: { status: "ready" as const, path: path.join(tmp, "browser-cache") },
+      browserVerified: true,
+      effective: true,
+    };
+
+    try {
+      mocks.detectPiRuntime.mockReturnValue({
+        id: "pi",
+        name: "Pi",
+        installed: true,
+        executable: "/isolated/pi",
+        version: "0.84.2",
+        codingAgentDir: "/isolated/pi-agent",
+      });
+      mocks.runInstall.mockImplementationOnce(async (options: {
+        onPlaywrightCapability?: (snapshot: typeof capability) => void;
+      }) => {
+        options.onPlaywrightCapability?.(capability);
+        return 0;
+      });
+
+      await runCli(["install", "--agents", "pi", "--playwright", "--yes"], homeDir);
+
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "install",
+        playwrightCapability: capability,
+      }));
+      const piInput = mocks.runManagedPiSystem.mock.calls[0]?.[0] as { playwrightCapability?: typeof capability };
+      expect(piInput.playwrightCapability?.cli.binPath).toBe(capability.cli.binPath);
+      expect(path.isAbsolute(piInput.playwrightCapability?.cli.binPath ?? "")).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { args: ["sync", "--agents", "opencode,pi", "--mode", "human", "--yes"], probes: 1, pi: true },
+    { args: ["doctor", "--agents", "pi", "--dry-run"], probes: 0, pi: false },
+    { args: ["update", "--agents", "pi", "--dry-run"], probes: 0, pi: false },
+    { args: ["sync", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], probes: 0, pi: false },
+  ])("shares one probe or skips it for $args", async ({ args, probes, pi }) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-browser-capability-"));
+    const homeDir = path.join(tmp, "home");
+    try {
+      writeOpenCodeModelMap(homeDir);
+      fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
+        version: 2, enabled: { opencode: true, pi: true },
+      }));
+      mocks.detectPiRuntime.mockReturnValue({
+        id: "pi", name: "Pi", installed: true,
+        executable: "/isolated/pi", version: "0.84.2", codingAgentDir: path.join(homeDir, ".pi", "agent"),
+      });
+      mocks.hasManagedPiRuntime.mockReturnValue(true);
+      const actualArgs = args.at(-1) === "--target-dir" ? [...args, path.join(tmp, "target")] : args;
+      await runCli(actualArgs, homeDir);
+      expect(mocks.inspectPlaywrightCapability).toHaveBeenCalledTimes(probes);
+      if (pi) {
+        const snapshot = mocks.inspectPlaywrightCapability.mock.results[0]!.value;
+        expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ playwrightCapability: snapshot }));
+        expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ playwrightCapability: snapshot }));
+      } else {
+        expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

@@ -285,6 +285,94 @@ describe("Playwright lifecycle contracts", () => {
     }
   });
 
+  it("uses the prepared pnpm environment for the verified absolute path handed to Pi", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-pnpm-pi-handoff-"));
+    const homeDir = path.join(root, "home");
+    const playwrightBin = path.join(root, "pnpm-home", "playwright-cli");
+    const preparedEnv: NodeJS.ProcessEnv = {
+      PNPM_HOME: path.join(root, "pnpm-home"),
+      PATH: [path.join(root, "pnpm-home", "bin"), path.join(root, "pnpm-home")].join(path.delimiter),
+    };
+    const staleCapability = {
+      cli: { status: "not-in-path" as const, binPath: playwrightBin, detectedVersion: null },
+      browserCache: { status: "ready" as const, path: path.join(root, "browser-cache") },
+      browserVerified: true,
+      effective: false,
+    };
+    const freshCapability = {
+      cli: { status: "current" as const, binPath: playwrightBin, detectedVersion: "0.1.18" },
+      browserCache: { status: "ready" as const, path: path.join(root, "browser-cache") },
+      browserVerified: true,
+      effective: true,
+    };
+    const seen: Array<{ action: Exclude<PlaywrightToolAction, "remove">; env?: NodeJS.ProcessEnv }> = [];
+    let handedOff: typeof freshCapability | undefined;
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const inspectPlaywrightCapability = vi.fn((options?: {
+          browserVerified?: boolean;
+          env?: NodeJS.ProcessEnv;
+        }) => options?.env?.PATH === preparedEnv.PATH ? freshCapability : staleCapability);
+        vi.doMock("../src/lib/playwright-capability.js", () => ({ inspectPlaywrightCapability }));
+        const install = await import("../src/install.js");
+        promptMocks.confirm.mockResolvedValue(true);
+        const setupPnpm = vi.fn().mockReturnValue({ ok: true, env: preparedEnv });
+        const run = vi.fn(async (
+          action: Exclude<PlaywrightToolAction, "remove">,
+          env?: NodeJS.ProcessEnv,
+        ): Promise<PlaywrightToolRunResult> => {
+          seen.push({ action, env });
+          return seen.length === 1 ? { ok: false, reason: "pnpm-global-bin" } : true;
+        });
+
+        try {
+          await expect(install.runInstall({
+            runtimes: [],
+            dryRun: false,
+            yes: false,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+            playwrightToolConsent: {
+              command: "install",
+              interactive: true,
+              yes: false,
+              targetDir: false,
+              explicitToolSelection: true,
+              confirmed: true,
+            },
+            playwrightToolDeps: {
+              run,
+              persistEnabled: vi.fn(),
+              setupPnpm,
+            },
+            onPlaywrightCapability(snapshot) {
+              handedOff = snapshot;
+            },
+          })).resolves.toBe(0);
+        } finally {
+          promptMocks.confirm.mockReset().mockResolvedValue(false);
+          vi.doUnmock("../src/lib/playwright-capability.js");
+        }
+
+        expect(seen).toEqual([
+          { action: "install", env: undefined },
+          { action: "install", env: preparedEnv },
+          { action: "install-browser", env: preparedEnv },
+        ]);
+        expect(inspectPlaywrightCapability).toHaveBeenCalledWith({
+          browserVerified: true,
+          env: preparedEnv,
+        });
+        expect(handedOff).toEqual(freshCapability);
+        expect(handedOff?.cli.binPath).toBe(playwrightBin);
+        expect(path.isAbsolute(handedOff?.cli.binPath ?? "")).toBe(true);
+        expect(handedOff?.effective).toBe(true);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the pnpm-global diagnostic when the consented setup fails", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-pnpm-repair-failure-"));
     const homeDir = path.join(root, "home");

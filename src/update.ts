@@ -24,6 +24,7 @@ function rateLimitHint(prefix: string): string {
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 import { detectPlaywrightCli, PLAYWRIGHT_CLI, resolvePnpmFailureRemedy, type PlaywrightCliState } from "./lib/external-tools.js";
+import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
 
@@ -667,6 +668,8 @@ export interface InteractiveUpdateResult {
   appliedUpdates: boolean;
   /** true solo si la actualización cambió los archivos que los runtimes consumen. */
   syncRequired: boolean;
+  /** Snapshot verificada tras actualizar Playwright y superar el smoke de arranque de Chromium. */
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
 }
 
 /** Los binarios globales no cambian los artefactos instalados en los runtimes. */
@@ -703,6 +706,7 @@ export async function runInteractiveUpdate(
   let exitCode = 0;
   let appliedUpdates = false;
   const updated: string[] = [];
+  let playwrightCapability: PlaywrightCapabilitySnapshot | undefined;
 
   // Las skills de terceros solo se revisan/actualizan desde el clon del repo
   // (mantenedor): ahí los cambios persisten y se commitean/publican. En el
@@ -985,6 +989,7 @@ export async function runInteractiveUpdate(
         p.log.success("Playwright CLI actualizado al pin aprobado.");
         appliedUpdates = true;
         updated.push("playwright-cli");
+        playwrightCapability = inspectPlaywrightCapability({ browserVerified: true });
       } else {
         const failedResult = packageResult.ok ? browserResult : packageResult;
         const pnpmRemedy = failedResult && !failedResult.ok
@@ -1029,5 +1034,10 @@ export async function runInteractiveUpdate(
   }
 
   p.outro(exitCode === 0 ? "Update completado." : "Update completado con errores (revisa arriba).");
-  return { exitCode, appliedUpdates, syncRequired: resolveUpdateSyncRequired(updated) };
+  return {
+    exitCode,
+    appliedUpdates,
+    syncRequired: resolveUpdateSyncRequired(updated),
+    ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+  };
 }

@@ -13,11 +13,11 @@ export interface RuntimeDetection {
 }
 
 /** Busca un ejecutable en PATH sin invocar shell. */
-export function lookPath(cmd: string): string | null {
+export function lookPath(cmd: string, env: NodeJS.ProcessEnv = process.env): string | null {
   // En Windows, primero las extensiones ejecutables: los shims de npm/pnpm
   // crean también un script sh sin extensión que cmd.exe no puede ejecutar.
   const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ".ps1", ""] : [""];
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+  for (const dir of (env.PATH ?? "").split(path.delimiter)) {
     if (!dir) continue;
     for (const ext of exts) {
       const candidate = path.join(dir, cmd + ext);
