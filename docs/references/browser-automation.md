@@ -6,7 +6,7 @@ JorgeX Stack reemplaza la antigua integración `agent-browser` por dos integraci
 >
 > - **Recomendado**: Playwright CLI global (`@playwright/cli@0.1.18`). No añade schemas MCP permanentes. La guía browser se proyecta condicionalmente tras la activación explícita; indica abrir Chromium con `--browser=chromium`, consultar `playwright-cli --help`, usar una sesión con nombre, obtener refs con `snapshot`, verificar resultados y cerrar solo la sesión creada.
 > - **Avanzado opt-in**: Chrome DevTools MCP en modo **full** (~29 tools, ~5,8–7,7k tokens de schemas). Default-off, selección por runtime, paquete fijado, argv `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics`: Chrome se levanta con un **perfil temporal aislado, eliminado al cerrar** (no hay perfil persistente dedicado), las cabeceras sensibles se redactan, pero los cuerpos de request/response pueden contener tokens o PII; evita sesiones autenticadas o datos sensibles, o desactiva manualmente la captura de red fuera del stack. CrUX + telemetría están deshabilitados.
-> - **Pi**: el selector activa las integraciones solo cuando el candidato declara la capability correspondiente. `jorgex-pi@0.8.16` ya implementa y prueba el handoff Playwright en `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; su snapshot aún contiene la skill anterior, cuya retirada dentro del paquete requiere una publicación y adopción posteriores. DevTools usa `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json`; los handoffs quedan registrados con SHA-256 en el receipt de proyección y se eliminan solo tras volver a comprobar su integridad.
+> - **Pi**: el selector activa las integraciones solo cuando el candidato declara la capability correspondiente. El paquete Pi adoptado mantiene 17 skills y 89 archivos, e implementa y prueba el handoff Playwright en `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`. DevTools usa `PI_CODING_AGENT_DIR/jorgex-pi/devtools.v1.json`; los handoffs quedan registrados con SHA-256 en el receipt de proyección y se eliminan solo tras volver a comprobar su integridad.
 > - **Excluidos por diseño**: Playwright MCP y Chrome DevTools MCP en modo `--slim` (duplican peor lo que Playwright CLI ya hace).
 
 ---
@@ -50,7 +50,7 @@ pnpm dlx jorgex-stack install --playwright --playwright-runtimes=opencode,claude
 
 `--playwright-runtimes` solo es válido junto con `install --playwright` y debe limitarse a los runtimes incluidos en `--agents`. La preferencia v2 conserva las elecciones de otros runtimes al cambiar una selección parcial; las preferencias v1 con `enabled: true` se migran inicialmente a todos los runtimes.
 
-Pi aparece en el selector porque el contrato candidato declara `playwright-handoff-v1`. La instalación global del CLI y Chromium es compartida por la máquina, y la selección decide en qué runtimes se proyecta la guía. El paquete fijado `jorgex-pi@0.8.16` ya implementa y prueba el handoff en `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; conserva la snapshot anterior y solo requiere publicación/adopción posteriores para retirar de ella la skill eliminada.
+Pi aparece en el selector porque el contrato adoptado declara `playwright-handoff-v1`. La instalación global del CLI y Chromium es compartida por la máquina, y la selección decide en qué runtimes se proyecta la guía. El paquete adoptado mantiene la snapshot actual de 17 skills y 89 archivos, e implementa y prueba el handoff en `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`.
 
 Bajo el capó, `--playwright` ejecuta **dos** planes pnpm consecutivos como argv directo (`execFileSync`, sin shell):
 
@@ -134,7 +134,7 @@ La marca canónica vive en `stack/system-prompt/browser-playwright.md` y `stack/
 
 ### 2.8 Handoff de Playwright para Pi
 
-Cuando la selección de Playwright para Pi se confirma, Stack proyecta `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json` con exactamente estos campos; este handoff ya está implementado y probado en `jorgex-pi@0.8.16`:
+Cuando la selección de Playwright para Pi se confirma, Stack proyecta `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json` con exactamente estos campos; este handoff está implementado y probado en el paquete adoptado:
 
 ```json
 {
