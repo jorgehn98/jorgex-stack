@@ -90,10 +90,13 @@ function expectCapabilities(content: string, playwright: boolean, devtools: bool
   expect(section).toMatch(/explicitly.*approves/i);
   if (playwright) {
     expect(section).toMatch(/Playwright CLI/i);
-    expect(section).toContain("`playwright-cli` skill");
-    expect(section).toMatch(/snapshot/i);
-    expect(section).toMatch(/routine/i);
-    expect(section).toMatch(/navigation|interaction|QA/i);
+    expect(section).not.toMatch(/\bskill\b/i);
+    expect(section).toContain("playwright-cli --help");
+    expect(section).toContain("playwright-cli open --browser=chromium");
+    expect(section).toContain("playwright-cli snapshot");
+    expect(section).toMatch(/verify/i);
+    expect(section).toContain("playwright-cli close");
+    expect(section).toMatch(/only.*session.*created|session.*only.*created/i);
   } else {
     expect(section).not.toMatch(/Playwright CLI/i);
   }
