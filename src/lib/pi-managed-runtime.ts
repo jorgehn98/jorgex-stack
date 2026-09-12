@@ -133,6 +133,14 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   writingStyleMode?: InstallMode;
   playwrightCliEnabled?: boolean;
 }): Promise<PiManagedOperationResult> {
+  const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
+  if (!supportedVersions.includes(input.detected.version)) {
+    return {
+      kind: "blocked",
+      reason: "unsupported-pi-version",
+      remedy: `Pi ${input.detected.version} no está entre las versiones verificadas (${supportedVersions.join(", ")}). Actualiza Stack a una versión compatible antes de gestionar Pi.`,
+    };
+  }
   const {
     devtoolsMcpEnabled: explicitDevtools,
     playwrightCliEnabled: explicitPlaywright,

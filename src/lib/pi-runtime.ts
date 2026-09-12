@@ -19,7 +19,7 @@ import {
 export const PI_RUNTIME_CANDIDATE = {
   ...pin,
   pi: {
-    testedVersions: ["0.84.2"],
+    testedVersions: ["0.84.2", "0.85.1"],
   },
   contract: {
     schemaVersion: 1,
@@ -416,6 +416,9 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
 
   if (input.operation === "install" || input.operation === "sync" || input.operation === "models") {
     const plan = deps.prepare(lifecycleInput);
+    if (plan !== null && typeof plan === "object" && Reflect.get(plan, "kind") === "blocked") {
+      return plan as RuntimeResult;
+    }
     const result = deps.execute({
       operation: input.operation,
       plan,

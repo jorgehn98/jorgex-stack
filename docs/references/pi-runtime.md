@@ -66,6 +66,8 @@ En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la v
 
 El contrato del pin vigente, sus capacidades, runner, escrituras gestionadas y política de modelo se declara en `src/lib/pi-runtime.ts`. La fixture independiente `tests/fixtures/pi-runtime.ts` consume la metadata de artefactos y paridad de `tests/fixtures/pi-runtime-artifacts.json` para las pruebas; no es una segunda autoridad del pin. La disponibilidad para consumo comienza tras la publicación y adopción verificadas; la validación, el pin exacto, la integridad y la compatibilidad siguen siendo obligatorios.
 
+La compatibilidad vigente es una allowlist explícita de Pi `0.84.2` y `0.85.1`; no incluye `0.85.0` ni un intervalo implícito. Los límites del contrato vigente corresponden a los extremos de esa lista.
+
 ## Preparar una adopción de Pi
 
 Con la App configurada y `JORGEX_AUTOMATION_ENABLED=true`, el coordinador puede proponer la adopción del paquete Pi publicado y verificado. Antes de preparar una PR manual, comprueba runs y PRs existentes según el [runbook Stack ↔ Pi](stack-pi-automation.md). Sin opt-in, ante incompatibilidad o fallo explícito, el preparador local y la PR manual son la alternativa, con review, gates y merge por orden de Jorge. Si falta el artefacto publicado, la adopción sigue bloqueada por esa dependencia externa; no edites pines ni hashes a mano para sustituirlo.
@@ -73,10 +75,12 @@ Con la App configurada y `JORGEX_AUTOMATION_ENABLED=true`, el coordinador puede 
 Para esa preparación manual, ejecuta el preparador desde un checkout de Stack en rama de trabajo o detached, nunca `main`/`master`:
 
 ```text
-node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--apply]
+node .github/scripts/prepare-pi-adoption.mjs --pi-dir ABS --version EXACT [--accept-pi-version 0.85.1] [--apply]
 ```
 
 `--pi-dir` apunta a un checkout Git separado de Pi. El preparador lee ese repositorio: exige el tag `vEXACT`, su ascendencia en `origin/main` y la de la procedencia actual, y compara contratos publicados y vigentes. La versión debe ser exacta, estar publicada en npm y ser compatible; una incompatibilidad requiere revisión manual y no se resuelve retocando fixtures o goldens.
+
+`--accept-pi-version 0.85.1` es la aceptación explícita para ampliar la compatibilidad del contrato tras el smoke real. Solo permite añadir exactamente `0.85.1` a las versiones probadas, conserva `0.84.2` y mantiene los límites correspondientes; no acepta `0.85.0`, rangos ni otras versiones. Sin este flag, un cambio semántico de compatibilidad se rechaza. La aceptación no anticipa una release ni sustituye la verificación del artefacto publicado.
 
 El modo por defecto y `--apply` exigen Stack limpio, en rama de trabajo o detached y sin índices enmascarados (`assume-unchanged` o `skip-worktree`). Para una versión nueva, incluso el dry-run descarga y verifica el tarball mediante SRI, SHA-256/SHA-512, inventario y contratos, pero no ejecuta Pi, publica, crea PR ni configura App. `--apply` actualiza normalmente el pin y `tests/fixtures/pi-runtime-artifacts.json` con rollback ante errores; la metadata de la fixture sigue independiente y `src/lib/pi-runtime.ts` intacto. `--accept-devtools-handoff` relaja únicamente la comparación revisada que añade `chrome-devtools-handoff-v1` y elimina su exclusión emparejada; `--accept-playwright-handoff` permite únicamente insertar `playwright-handoff-v1` y añadir `package/extensions/playwright.ts` cuando el preparador verifica el conjunto exacto de archivos frente al tarball previo, cuyos hashes están fijados, y comprueba los bytes del nuevo módulo contra el commit productor de Pi. No relaja las demás comprobaciones de contrato o integridad. Ninguno valida handoffs vivos ni es bypass de integridad. Úsalos junto con `--pi-dir ABS --version EXACT [--apply]`; no alteran el pin, la snapshot ni la historia por sí solos.
 
@@ -157,7 +161,7 @@ Pi gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contex
 | Resultado | Remedio |
 | --- | --- |
 | `tarball-integrity` | No omitas la verificación; reintenta desde un registro/red de confianza. |
-| `unsupported-pi-version` | Usa la versión de Pi declarada por el release congelado. |
+| `unsupported-pi-version` | Usa una versión explícitamente probada (`0.84.2` o `0.85.1`) por el release congelado; no asumas compatibilidad con versiones intermedias. |
 | `engram-required` / `engram-missing-target` | Configura Engram explícitamente; en target añade el binario dentro de `<target>/bin/engram`. |
 | `manual-existing` | El paquete existe sin package receipt; consérvalo o retíralo explícitamente antes de pedir ownership gestionado. |
 | `duplicate-package` / `source-divergent` | Conserva una única entrada exacta con `skills: []` y `prompts: []`, y vuelve a ejecutar `sync`. |
