@@ -125,6 +125,22 @@ afterEach(() => {
 });
 
 describe("preflight de estilo antes del coordinador de runtimes", () => {
+  it("bloquea desde el CLI un prompt browser ambiguo antes de preparar estilo o ejecutar runtimes", async () => {
+    const home = tempRoot();
+    const targetDir = path.join(home, "target");
+    const prompt = path.join(targetDir, "AGENTS.md");
+    const ambiguous = "# User prompt\n\n<!-- jorgex:browser -->\nLegacy content without a closing marker.\n";
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(prompt, ambiguous);
+
+    await expect(runCli(["install", "--agents", "codex", "--target-dir", targetDir, "--yes"], home)).resolves.toBe(1);
+
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(fs.readFileSync(prompt, "utf8")).toBe(ambiguous);
+    expect(fs.readdirSync(targetDir)).toEqual(["AGENTS.md"]);
+    expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/browser|marcador|marker|ambig/i));
+  });
+
   it("instala el estilo canónico en la fuente local en un install nuevo", async () => {
     const home = tempRoot();
     const source = path.join(home, ".jorgex-stack", "writing-style.md");

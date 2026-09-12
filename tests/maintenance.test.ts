@@ -977,11 +977,17 @@ describe("work backlog mutation contract", () => {
     for (const relativePath of [
       "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
-      "system-prompt/AGENTS.md",
       "system-prompt/engram-protocol.md",
     ]) {
       expectFragments(readStackFile(relativePath), fragments);
     }
+
+    const basePrompt = readStackFile("system-prompt/AGENTS.md");
+    expectFragments(basePrompt, ["work-lifecycle", "single writer", "project backlog"]);
+    expect(basePrompt).not.toMatch(/mem_(?:save|get_observation|update)|Context7|Engram/i);
+
+    const context7Prompt = readStackFile("system-prompt/context7.md");
+    expect(context7Prompt).toContain("Use Context7");
 
     expectFragments(fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8"), [
       "único escritor",

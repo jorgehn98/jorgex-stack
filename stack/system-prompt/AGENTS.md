@@ -28,15 +28,6 @@ Ask questions when something isn't clear instead of assuming it's correct.
 
 ---
 
-## Context7 MCP
-
-Use Context7 whenever you need current documentation, examples, or API/library details.
-
-- Use it before coding against external libraries.
-- Include the version when relevant.
-
----
-
 ## Default Architecture
 
 Use **Screaming Architecture** by default in new projects.
@@ -67,10 +58,10 @@ Every piece of information about a piece of work has exactly ONE home — never 
 
 - In-progress formal SDD work lives in `work/{name}/` (gitignored): `PRD.md` + `plan.md`. They stay there across intermediate PR merges; `plan.md` is the ONLY task status board — update statuses with surgical edits. An empty `work/` means nothing is half-done.
 - Execution worktrees and their branches always use the same name. Resolve the root with `git rev-parse --show-toplevel`, ensure `worktrees/` is ignored in the repo-local `.git/info/exclude`, then create/use `<project-root>/worktrees/<canonical-name>` for single-PR work or `<project-root>/worktrees/<canonical-name>-prNN` for multi-PR checkpoints; never create worktrees next to the repo, in the repo root, under `work/`, or in external temp/shared folders.
-- Every formal task has one declared recoverable spec source: an Engram observation identified by project + topic_key `work/{name}/task/{NN}` with verified identity/access (optional local ID bound in the current store; resolve per the lifecycle handoff before get), or canonical Markdown at `work/{name}/tasks/{NN}.md`; its plan `Spec` column is the reference. Direct messages are only auxiliary microassignments under a parent task; if one becomes independent, persist its spec and add its plan row before continuing. Phase outcomes, PR checkpoints and history remain in Engram under `work/{name}/{phase}`, `work/{name}/pr/{NN}` and `work/{name}/done`.
-- Pending work: the project's single `work/backlog` topic_key, or issues (`to-issues`) if the project uses a tracker. Never a TODOs folder. The coordinator/orchestrator is its **single writer**: retrieve the exact observation with `mem_get_observation`, preserve unrelated entries, send the complete content with `mem_update`, then read it again to verify; never mutate it concurrently or use a blind topic-key upsert. Do not split it into one memory per item until Engram supports complete paginated topic-prefix listing.
-- On intermediate PR merge: save the checkpoint under `work/{name}/pr/{NN}` and keep `work/{name}/` alive for the remaining PRs.
-- On final close: save the outcome under `work/{name}/done`, move the PRD to the project's docs only if it has lasting value, then delete `work/{name}/`. `work/{name}/done` is the final outcome only. History is memory + git — no archive folders.
+- Every formal task has one recoverable spec source declared in the plan’s `Spec` column, following `work-lifecycle`. Direct messages are only auxiliary microassignments under a parent task; if one becomes independent, persist its spec and add its plan row before continuing. Keep phase outcomes, checkpoints and history in the lifecycle’s declared durable store.
+- Pending work uses the lifecycle’s single project backlog or the project’s issue tracker (`to-issues`), never both. Never a TODOs folder. The coordinator/orchestrator is its single writer: preserve unrelated entries and verify each update; use the store-specific protocol declared by `work-lifecycle`.
+- On intermediate PR merge: persist the checkpoint through `work-lifecycle` and keep `work/{name}/` alive for the remaining PRs.
+- On final close: persist the final outcome through `work-lifecycle`, move the PRD to the project’s docs only if it has lasting value, then delete `work/{name}/`. History stays in the declared durable store and git — no archive folders.
 
 ---
 

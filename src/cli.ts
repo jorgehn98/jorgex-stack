@@ -29,6 +29,8 @@ import {
   type PiRuntimeOperation,
 } from "./lib/pi-runtime.js";
 import { runManagedPiSystem } from "./lib/pi-managed-runtime.js";
+import { piSystemPromptFile } from "./adapters/pi.js";
+import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import { writeText } from "./lib/fsx.js";
 import { runQualityPlan } from "./lib/quality-runner.js";
 import { serializeQualityReceipt } from "./lib/quality-receipt.js";
@@ -361,6 +363,19 @@ async function resolveDevtoolsMcpSelection(
   return Object.fromEntries(runtimes.map((runtime) => [runtime, enabled.has(runtime)]));
 }
 
+function assertSelectedPromptFiles(runtimes: SelectableRuntimeId[], targetDir?: string): void {
+  for (const runtime of runtimes) {
+    if (runtime === "pi") assertSystemPromptFile(piSystemPromptFile(targetDir), targetDir);
+    else {
+      const adapter = ADAPTERS[runtime];
+      if (!adapter) continue;
+      const detection = adapter.detect();
+      if (targetDir === undefined && !detection.installed) continue;
+      assertSystemPromptFile(adapter.paths(targetDir ?? detection.configDir).systemPromptFile, targetDir);
+    }
+  }
+}
+
 export function parseCliArgs(argv: string[]): ParsedCli {
   const [first, ...rest] = argv;
   const isCommand = (COMMANDS as readonly string[]).includes(first ?? "install");
@@ -679,6 +694,7 @@ async function main(): Promise<void> {
       let completed = false;
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
+        assertSelectedPromptFiles(runtimes, flags.targetDir);
         const writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
         if (flags.targetDir === undefined) {
           const errors = browserPreferenceErrors();
@@ -763,6 +779,12 @@ async function main(): Promise<void> {
       if (runtimes === null) return;
       if (runtimes.length === 0 && !flags.removePlaywright) {
         console.error("Ningún runtime detectado (opencode, claude-code, codex).");
+        process.exitCode = 1;
+        return;
+      }
+      try { assertSelectedPromptFiles(runtimes, flags.targetDir); }
+      catch (error) {
+        p.log.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
         return;
       }

@@ -1,3 +1,4 @@
+import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
@@ -506,10 +507,7 @@ export const codexAdapter: Adapter = {
 
     const prompt = readTextIfExists(systemPromptFile);
     if (prompt !== null) {
-      let content = removeMarkdownSection(prompt, "system-prompt");
-      content = removeMarkdownSection(content, "engram-protocol");
-      content = removeMarkdownSection(content, "browser");
-      content = removeMarkdownSection(content, "writing-style");
+      const content = removeSystemPromptSections(prompt);
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 

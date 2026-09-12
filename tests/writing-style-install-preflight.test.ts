@@ -46,6 +46,41 @@ describe("preflight de writing-style en runInstall", () => {
     expect(fs.readdirSync(targetDir)).toEqual(["writing-style.md"]);
   });
 
+  it("rechaza un prompt target-dir que enlaza fuera del destino antes de escribirlo", async (ctx) => {
+    const root = tempRoot();
+    const targetDir = path.join(root, "target");
+    const outsideDir = path.join(root, "outside");
+    const prompt = path.join(targetDir, "AGENTS.md");
+    const outsidePrompt = path.join(outsideDir, "AGENTS.md");
+    const outsideContent = "# Prompt fuera del destino\n";
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(outsidePrompt, outsideContent);
+    try {
+      fs.symlinkSync(outsidePrompt, prompt);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EPERM") {
+        ctx.skip();
+        return;
+      }
+      throw error;
+    }
+
+    vi.resetModules();
+    const install = await import("../src/install.js");
+    await expect(install.runInstall({
+      runtimes: ["codex"],
+      targetDir,
+      dryRun: false,
+      yes: true,
+      mode: { mode: "human", subagentConcurrency: "serial" },
+      showSummary: false,
+    })).resolves.toBe(1);
+
+    expect(fs.readFileSync(outsidePrompt, "utf8")).toBe(outsideContent);
+    expect(fs.lstatSync(prompt).isSymbolicLink()).toBe(true);
+  });
+
   it("dry-run valida y planifica el estilo aislado sin escribir el prompt", async () => {
     const targetDir = tempRoot();
     const source = path.join(targetDir, "writing-style.md");
