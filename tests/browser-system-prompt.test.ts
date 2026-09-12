@@ -251,6 +251,11 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
       error: /marcador|marker|ambigu/i,
     },
     {
+      name: "compact",
+      prompt: "# User notes\n\n<!--jorgex:browser-->\nLegacy content in compact markers.\n<!--/jorgex:browser-->\n",
+      error: /marcador|marker|ambigu/i,
+    },
+    {
       name: "duplicated",
       prompt: [
         "# User notes",

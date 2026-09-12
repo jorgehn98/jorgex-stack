@@ -14,7 +14,7 @@ export function assertSystemPromptMarkers(content: string | null, target: string
   if (content === null) return;
   const ranges: { section: string; start: number; end: number }[] = [];
   for (const section of SYSTEM_PROMPT_SECTIONS) {
-    const markers = [...content.matchAll(new RegExp(`<!--\\s*\\/?jorgex:${section}(?=[\\s>]|$)`, "g"))];
+    const markers = [...content.matchAll(new RegExp(`<!--\\s*\\/?jorgex:${section}(?=[\\s>]|-->|$)`, "g"))];
     if (markers.length === 0) continue;
     if (markers.length !== 2 || !hasHealthyManagedMarkdownMarkers(content, section)) {
       throw new Error(`Marcadores jorgex:${section} ambiguos en ${target}. Repara el bloque antes de reintentar; su contenido se conserva.`);
