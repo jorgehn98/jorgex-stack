@@ -215,7 +215,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     expect(promptContent(adapter, ctx)).toBe(first);
   });
 
-  it("migrates a healthy legacy browser block to independent sections idempotently", () => {
+  it.each(CAPABILITY_CASES)("migrates a healthy legacy browser block to independent sections idempotently for $name", ({ playwright, devtools }) => {
     const root = tempDir();
     const configDir = path.join(root, "config");
     const promptFile = adapter.paths(configDir).systemPromptFile;
@@ -228,17 +228,12 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     fs.mkdirSync(path.dirname(promptFile), { recursive: true });
     fs.writeFileSync(promptFile, upsertMarkdownSection(userText, "browser", legacyBrowser));
 
-    const ctx = context(adapter, configDir, true, true);
+    const ctx = context(adapter, configDir, playwright, devtools);
     const first = promptContent(adapter, ctx);
 
     expect(first).toContain("Keep this instruction.");
-    expect(browserSection(first)).toBeNull();
-    expect(managedSection(first, "context7")).toMatch(/Context7/i);
-    expect(managedSection(first, "playwright")).toMatch(/Playwright CLI/i);
-    expect(managedSection(first, "chrome-devtools")).toMatch(/Chrome DevTools/i);
+    expectCapabilities(first, playwright, devtools);
     expect(first).not.toContain("Legacy Playwright CLI and Chrome DevTools guidance.");
-    expect(first.match(/<!-- jorgex:playwright -->/g)).toHaveLength(1);
-    expect(first.match(/<!-- jorgex:chrome-devtools -->/g)).toHaveLength(1);
 
     fs.writeFileSync(promptFile, first);
     expect(promptContent(adapter, ctx)).toBe(first);
@@ -337,7 +332,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     const promptFile = adapter.paths(configDir).systemPromptFile;
     const userText = "# User notes\n\nKeep this instruction.\n";
     fs.mkdirSync(path.dirname(promptFile), { recursive: true });
-    const seeded = ["playwright", "chrome-devtools"].reduce(
+    const seeded = ["context7", "playwright", "chrome-devtools"].reduce(
       (content, section) => upsertMarkdownSection(content, section, `Managed ${section} guidance.`),
       userText,
     );
@@ -351,6 +346,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     expect(action).toMatchObject({ kind: "write" });
     const content = (action as { content: string }).content;
     expect(browserSection(content)).toBeNull();
+    expect(managedSection(content, "context7")).toBeNull();
     expect(managedSection(content, "playwright")).toBeNull();
     expect(managedSection(content, "chrome-devtools")).toBeNull();
     expect(content).toContain("Keep this instruction.");

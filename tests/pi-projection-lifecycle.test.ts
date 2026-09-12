@@ -1036,6 +1036,7 @@ describe("Pi shared projection lifecycle", () => {
       });
       const installedPrompt = fs.readFileSync(agentsFile, "utf8");
       expect(installedPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      expect(installedPrompt).toContain("Use Context7 whenever you need current documentation");
       expect(installedPrompt).not.toContain("<!-- jorgex:browser -->");
       expect(installedPrompt).not.toContain("<!-- jorgex:context7 -->");
       expect(installedPrompt).not.toContain("<!-- jorgex:playwright -->");

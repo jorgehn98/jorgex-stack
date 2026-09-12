@@ -839,6 +839,12 @@ async function main(): Promise<void> {
       // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
+      try { assertSelectedPromptFiles(runtimes, flags.targetDir); }
+      catch (error) {
+        p.log.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+        return;
+      }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       const preferenceFile = installModePreferenceFile();
       const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
