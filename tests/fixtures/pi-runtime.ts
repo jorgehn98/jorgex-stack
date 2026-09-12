@@ -67,7 +67,7 @@ export const PI_RUNTIME_CANDIDATE = {
 export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
   ...artifacts.previous,
   pi: {
-    testedVersions: ["0.84.2"],
+    testedVersions: ["0.84.2", "0.85.1"],
   },
   contract: {
     schemaVersion: 1,

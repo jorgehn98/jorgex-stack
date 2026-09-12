@@ -34,6 +34,8 @@ Una propuesta rechazada no se recrea automáticamente con la misma identidad: re
 
 Cuando la adopción amplía la lista de versiones compatibles, el preparador exige la aceptación explícita de la versión exacta (`--accept-pi-version EXACT`) después del smoke real. Esa opción solo añade esa versión, conserva las anteriores y ajusta los límites a los extremos de la lista resultante; no relaja otras comparaciones del contrato ni las comprobaciones de integridad o hashes.
 
+La retirada de la skill Playwright del paquete Pi requiere además `--accept-playwright-skill-removal`; sin esa opción, la retirada se rechaza. La opción solo acepta una entrada `playwright-cli` en la paridad con `sourcePath` y `targetPath` canónicos, ausente tanto de la fuente Stack fusionada como del checkout productor de Pi. Por sí sola no autoriza otros cambios y puede combinarse con flags explícitos que pasan sus propias verificaciones. Para proteger la topología del cambio, descarga el tarball anterior y valida sus hashes fijados, y exige que el inventario del nuevo tarball sea idéntico salvo por `package/skills/playwright-cli/**`; el handoff Playwright, el SDK existente, las dependencias y el resto de contratos se conservan. Esta aceptación es manual porque la comprobación necesita coordinar ambos checkouts y el artefacto publicado, no solo leer el diff de una rama.
+
 ## Recuperación y rollback
 
 - **Notificación fallida:** corrige la causa y usa `workflow_dispatch` del coordinador, sin reejecutar el publisher mutable. El dispatch recupera notificaciones o reconcilia nuevas entradas; no recrea propuestas cerradas de la misma identidad, aunque elimines su rama.
