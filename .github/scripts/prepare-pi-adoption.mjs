@@ -207,6 +207,8 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     oldContracts[member] = JSON.parse(git(piDir, ["show", `${current.provenance.commit}:${member}`]));
     newContracts[member] = JSON.parse(git(piDir, ["show", `${producer}:${member}`]));
   }
+  const sourceCommit = newContracts[PARITY].source.commit;
+  if (!fullSha(sourceCommit) || newContracts[PARITY].source.repository !== "https://github.com/jorgehn98/jorgex-stack") throw new Error("Invalid Stack parity source");
   const expectedContracts = structuredClone(oldContracts);
   const rootContract = "contract/jorgex-pi.v1.json";
   if (acceptPiVersion !== undefined) {
@@ -251,7 +253,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert.equal(skills[skillIndex].sourcePath, skillSource, "Unexpected Playwright skill source");
     assert.equal(skills[skillIndex].targetPath, skillTarget, "Unexpected Playwright skill target");
     assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", skillTarget]).trim(), "", "Playwright skill must be absent from producer");
-    assert.equal(git(root, ["ls-tree", "--name-only", newContracts[PARITY].source.commit, "--", skillSource]).trim(), "", "Playwright skill must be absent from Stack source");
+    assert.equal(git(root, ["ls-tree", "--name-only", sourceCommit, "--", skillSource]).trim(), "", "Playwright skill must be absent from Stack source");
     skills.splice(skillIndex, 1);
   }
   for (const member of CONTRACTS) {
@@ -260,8 +262,6 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
   assert.equal(newContracts["package.json"].name, "jorgex-pi");
   assert.equal(newContracts["package.json"].version, version);
   assert.deepEqual(newContracts["contract/jorgex-pi.v1.json"].package, { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` });
-  const sourceCommit = newContracts[PARITY].source.commit;
-  if (!fullSha(sourceCommit) || newContracts[PARITY].source.repository !== "https://github.com/jorgehn98/jorgex-stack") throw new Error("Invalid Stack parity source");
   assert.equal(oldContracts[PARITY].source.commit, artifacts.archive.parity.source.commit, "Accepted parity baseline differs");
   git(root, ["merge-base", "--is-ancestor", sourceCommit, "origin/main"]);
   git(root, ["merge-base", "--is-ancestor", artifacts.archive.parity.source.commit, sourceCommit]);
