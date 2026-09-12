@@ -9,7 +9,8 @@ import { assertSystemPromptMarkers, readSystemPromptFile, SYSTEM_PROMPT_SECTIONS
 const normalize = (s: string): string => s.replace(/\r\n/g, "\n");
 
 /**
- * Proyecta la política y cada capacidad como secciones gestionadas independientes.
+ * Proyecta la política y las capacidades en secciones gestionadas, adaptándolas
+ * cuando el runtime requiere un formato legado.
  * Lo que el usuario tenga fuera de los marcadores se preserva.
  */
 export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallContext): FileAction[] {

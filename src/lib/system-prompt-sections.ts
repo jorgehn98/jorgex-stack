@@ -9,7 +9,7 @@ export const SYSTEM_PROMPT_SECTIONS = [
 
 export type SystemPromptSections = Partial<Record<typeof SYSTEM_PROMPT_SECTIONS[number], string>>;
 
-/** La migración no puede atribuir contenido a marcadores rotos o anidados. */
+/** Las operaciones gestionadas bloquean marcadores rotos o anidados para preservar su contenido. */
 export function assertSystemPromptMarkers(content: string | null, target: string): void {
   if (content === null) return;
   const ranges: { section: string; start: number; end: number }[] = [];
