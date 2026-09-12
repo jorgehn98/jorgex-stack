@@ -709,12 +709,126 @@ describe("target inventory regressions", () => {
     });
   });
 
-  it("conserva la skill Playwright compartida al desinstalar Codex si OpenCode sigue instalado", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-shared-playwright-uninstall-"));
+  it("retira las diez rutas legacy de Playwright con backup, conserva archivos ajenos e idempotencia", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-skill-retirement-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const skillDir = path.join(homeDir, ".agents", "skills", "playwright-cli");
+    const legacyFiles = [
+      "SKILL.md",
+      "references/element-attributes.md",
+      "references/playwright-tests.md",
+      "references/request-mocking.md",
+      "references/running-code.md",
+      "references/session-management.md",
+      "references/storage-state.md",
+      "references/test-generation.md",
+      "references/tracing.md",
+      "references/video-recording.md",
+    ].map((relative) => path.join(skillDir, relative));
+    const foreignFile = path.join(skillDir, "references", "personal-notes.md");
+    const legacyContent = new Map(legacyFiles.map((file, index) => [
+      file,
+      `legacy Playwright file ${index}\n`,
+    ]));
+
+    try {
+      await withTempHome(homeDir, async () => {
+        mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+        mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
+        mocks.runDetectedBin.mockReturnValue("1.2.3");
+        for (const [file, content] of legacyContent) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, content);
+        }
+        fs.writeFileSync(foreignFile, "user-owned Playwright notes\n");
+
+        const { listBackups } = await import("../src/lib/backup.js");
+        const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+        writeRuntimeManifest("opencode", {
+          configDir,
+          owned: legacyFiles,
+          updatedAt: "legacy",
+        });
+
+        const install = await import("../src/install.js");
+        const opencode = install.ADAPTERS.opencode!;
+        const codex = install.ADAPTERS.codex!;
+        const claudeCode = install.ADAPTERS["claude-code"]!;
+        const originalOpencodeDetect = opencode.detect;
+        const originalCodexDetect = codex.detect;
+        const originalClaudeDetect = claudeCode.detect;
+
+        opencode.detect = () => ({
+          id: "opencode",
+          name: "OpenCode",
+          installed: true,
+          binPath: null,
+          configDir,
+        });
+        codex.detect = () => ({
+          id: "codex",
+          name: "Codex CLI",
+          installed: false,
+          binPath: null,
+          configDir: path.join(homeDir, ".codex"),
+        });
+        claudeCode.detect = () => ({
+          id: "claude-code",
+          name: "Claude Code",
+          installed: false,
+          binPath: null,
+          configDir: path.join(homeDir, ".claude"),
+        });
+
+        try {
+          const options = {
+            runtimes: ["opencode"] as const,
+            dryRun: false,
+            yes: true,
+            mode: { mode: "human" as const, subagentConcurrency: "serial" as const },
+          };
+          const runSync = () => install.runInstall({ ...options, runtimes: [...options.runtimes] });
+
+          await expect(runSync()).resolves.toBe(0);
+
+          for (const file of legacyFiles) {
+            expect(fs.existsSync(file), file).toBe(false);
+            const backup = listBackups().flatMap((entry) => entry.files)
+              .find((entry) => entry.original === file);
+            expect(backup, file).toBeDefined();
+            expect(fs.readFileSync(backup!.stored, "utf8")).toBe(legacyContent.get(file));
+          }
+          expect(fs.readFileSync(foreignFile, "utf8")).toBe("user-owned Playwright notes\n");
+          const ownedAfterRemoval = readManifest().runtimes.opencode?.owned ?? [];
+          for (const file of legacyFiles) expect(ownedAfterRemoval).not.toContain(file);
+          expect(ownedAfterRemoval).not.toContain(foreignFile);
+
+          const backupIds = listBackups().map((entry) => entry.id);
+          mocks.prompts.log.success.mockClear();
+          await expect(runSync()).resolves.toBe(0);
+
+          for (const file of legacyFiles) expect(fs.existsSync(file), file).toBe(false);
+          expect(fs.readFileSync(foreignFile, "utf8")).toBe("user-owned Playwright notes\n");
+          expect(listBackups().map((entry) => entry.id)).toEqual(backupIds);
+          expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
+        } finally {
+          opencode.detect = originalOpencodeDetect;
+          codex.detect = originalCodexDetect;
+          claudeCode.detect = originalClaudeDetect;
+        }
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("conserva la skill lean-code compartida al desinstalar Codex si OpenCode sigue instalado", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-shared-lean-code-uninstall-"));
     const homeDir = path.join(tmp, "home");
     const codexDir = path.join(homeDir, ".codex");
     const opencodeDir = path.join(homeDir, ".config", "opencode");
-    const sharedSkill = path.join(homeDir, ".agents", "skills", "playwright-cli", "SKILL.md");
+    const sharedSkill = path.join(homeDir, ".agents", "skills", "lean-code", "SKILL.md");
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
@@ -725,7 +839,7 @@ describe("target inventory regressions", () => {
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
       fs.mkdirSync(path.dirname(sharedSkill), { recursive: true });
-      fs.writeFileSync(sharedSkill, "Playwright CLI skill\n");
+      fs.writeFileSync(sharedSkill, "shared lean-code skill\n");
 
       const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
       writeRuntimeManifest("codex", { configDir: codexDir, owned: [sharedSkill], updatedAt: "t" });

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -168,7 +167,6 @@ const DESTRUCTIVE_GIT_ESCALATION_CASES = [
 
 const EXACT_SEMVER = "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?";
 const EXACT_PACKAGE_SPEC = new RegExp(`^(?:@[^/\\s]+/[^@\\s]+|[^@\\s]+)@${EXACT_SEMVER}$`);
-const PINNED_PLAYWRIGHT_DLX = "pnpm dlx @playwright/cli@0.1.18 --version";
 
 const listFilesRecursively = (root: string): string[] =>
   fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -672,74 +670,20 @@ describe("contrato upstreams.json ↔ skills vendorizadas", () => {
     }
   });
 
-  it("vende Playwright CLI 0.1.18 completo, con pin y guía pnpm coherentes", () => {
+  it("no distribuye Playwright CLI como skill ni lo registra como upstream", () => {
     const root = path.join(stackRoot(), "..");
     const upstreams = JSON.parse(fs.readFileSync(path.join(root, "upstreams.json"), "utf8")) as {
       skills: Record<string, Record<string, unknown>>;
     };
-    const skillFiles = [
-      "SKILL.md",
-      "references/element-attributes.md",
-      "references/playwright-tests.md",
-      "references/request-mocking.md",
-      "references/running-code.md",
-      "references/session-management.md",
-      "references/storage-state.md",
-      "references/test-generation.md",
-      "references/tracing.md",
-      "references/video-recording.md",
-    ];
-    const unmodifiedOfficialFiles = {
-      "references/element-attributes.md": "bf19aa4671e0a50a0fefa9c790f39124e803060eefe395042b723c29fcb7faa2",
-      "references/request-mocking.md": "54e801c9663fc2b6d68ceb058cb1c360724c2499f42acc7852a68e83e5b5f37c",
-      "references/running-code.md": "d95c539a5990b71d02d8bdf1d9414df16191eb6cff95b0063820518b7a13dcb2",
-      "references/session-management.md": "cd3e261b8763bf952f1e371b876cb78d054379afec85482f9250633e1b7e6c44",
-      "references/storage-state.md": "9ac47f9ae4a1aedcd2077f8ac9ab1ba6bee1962cb83ff51adcd36fb6d83b5ec6",
-      "references/tracing.md": "792e0ac7705e56ac48df84c0f5400221ce86107897c671590a64a4ea6a82508e",
-      "references/video-recording.md": "8555ab5400df0d90e66318aacc0a8a4418fbf872e7463824d55d5c41615abd83",
-    };
-    const skillRoot = path.join(stackRoot(), "skills", "playwright-cli");
-
     expect(fs.existsSync(path.join(stackRoot(), "skills", "agent-browser"))).toBe(false);
-    expect(upstreams.skills["playwright-cli"]).toMatchObject({
-      source: "github:microsoft/playwright-cli",
-      path: "skills/playwright-cli",
-      package: "@playwright/cli",
-      binary: "playwright-cli",
-      version: "0.1.18",
-      commit: "2f85a94b7b885dbf4a5d34462f253a8746a690c9",
-      license: "Apache-2.0",
-      modified: true,
-    });
-
-    for (const relativePath of skillFiles) {
-      expect(fs.existsSync(path.join(skillRoot, relativePath)), `falta ${relativePath}`).toBe(true);
-    }
-
-    for (const [relativePath, expectedHash] of Object.entries(unmodifiedOfficialFiles)) {
-      const content = fs.readFileSync(path.join(skillRoot, relativePath));
-      expect(createHash("sha256").update(content).digest("hex"), `${relativePath} diverge del commit oficial`).toBe(expectedHash);
-    }
-
-    const content = skillFiles.map((relativePath) => fs.readFileSync(path.join(skillRoot, relativePath), "utf8")).join("\n");
-    expect(content).not.toMatch(/\b(?:npm|npx)\b/i);
-    expect(content).toContain("pnpm dlx @playwright/cli@0.1.18");
-    expect(content).toContain("pnpm add --global @playwright/cli@0.1.18");
-
-    const frontmatter = /^---\n[\s\S]*?\n---\n/.exec(fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8"))?.[0];
-    expect(frontmatter).toBe(
-      "---\nname: playwright-cli\ndescription: Automate browser interactions, test web pages and work with Playwright tests.\nallowed-tools: Bash(playwright-cli:*)\n---\n",
-    );
-    expect(frontmatter).not.toContain("Bash(pnpm:*)");
+    expect(fs.existsSync(path.join(stackRoot(), "skills", "playwright-cli"))).toBe(false);
+    expect(upstreams.skills["playwright-cli"]).toBeUndefined();
   });
 });
 
 describe("skills distribuidas: ejecución reproducible", () => {
   it("rechaza gestores mutables y dependencias sin versión exacta", () => {
     expect(mutableRuntimeViolations()).toEqual([]);
-
-    const playwright = readStackFile("skills/playwright-cli/SKILL.md");
-    expect(playwright.match(/pnpm dlx @playwright\/cli@\S+ --version/g)).toEqual([PINNED_PLAYWRIGHT_DLX]);
   });
 
   it("find-skills se limita a descubrir y no instruye instalar, actualizar o inicializar", () => {
