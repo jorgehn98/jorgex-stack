@@ -54,6 +54,32 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 describe("preflight de estilo en el coordinador de Pi", () => {
+  it("rechaza un prompt browser ambiguo antes de preparar estilo o ejecutar el paquete Pi", async () => {
+    const targetDir = tempRoot();
+    const prompt = path.join(targetDir, "pi-agent", "AGENTS.md");
+    const ambiguous = "# User prompt\n\n<!-- jorgex:browser -->\nLegacy content without a closing marker.\n";
+    fs.mkdirSync(path.dirname(prompt), { recursive: true });
+    fs.writeFileSync(prompt, ambiguous);
+    const mod = await managedPi();
+
+    const result = await mod.runManagedPiSystem({
+      operation: "install",
+      targetDir,
+      detected: { executable: "/isolated/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    });
+
+    expect(result).toMatchObject({
+      kind: "blocked",
+      reason: "projection-prompt-markers",
+      remedy: expect.stringMatching(/browser|marcador|marker|ambig/i),
+    });
+    expect(mocks.runPackage).not.toHaveBeenCalled();
+    expect(mocks.runProjection).not.toHaveBeenCalled();
+    expect(fs.readFileSync(prompt, "utf8")).toBe(ambiguous);
+    expect(fs.existsSync(path.join(targetDir, "writing-style.md"))).toBe(false);
+  });
+
   it("no ejecuta el paquete ni la proyección si la fuente target-dir es inválida", async () => {
     const targetDir = tempRoot();
     fs.writeFileSync(path.join(targetDir, "writing-style.md"), Buffer.from([0xc3, 0x28]));

@@ -9,6 +9,8 @@ import {
 import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
 import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
 import { detectPlaywrightCli, resolvePnpmBin } from "./external-tools.js";
+import { piSystemPromptFile } from "../adapters/pi.js";
+import { assertSystemPromptFile } from "./system-prompt-sections.js";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -149,6 +151,12 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     ...runtimeInput
   } = input;
   const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
+  if (input.operation !== "models") {
+    try { assertSystemPromptFile(piSystemPromptFile(input.targetDir), input.targetDir); }
+    catch (error) {
+      return { kind: "blocked", reason: "projection-prompt-markers", remedy: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const preparedStyle = readsStyle && suppliedStyle === undefined
     ? prepareWritingStyle(resolveWritingStyleFile({ targetDir: input.targetDir }), { rootDir: input.targetDir })
     : undefined;

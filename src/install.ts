@@ -15,6 +15,7 @@ import { createBackup } from "./lib/backup.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
+import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import { planAgents } from "./components/agents.js";
 import { planSkills } from "./components/skills.js";
 import { planCommands } from "./components/commands.js";
@@ -286,6 +287,19 @@ export function collectAllCurrentTargets(
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
+
+  try {
+    for (const id of opts.runtimes) {
+      const adapter = ADAPTERS[id];
+      if (!adapter) continue;
+      const detection = adapter.detect();
+      if (opts.targetDir === undefined && !detection.installed) continue;
+      assertSystemPromptFile(adapter.paths(opts.targetDir ?? detection.configDir).systemPromptFile, opts.targetDir);
+    }
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
 
   let writingStyle: WritingStyleSnapshot;
   let preparedStyle: WritingStylePlan | undefined;

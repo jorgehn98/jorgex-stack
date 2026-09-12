@@ -1,3 +1,4 @@
+import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -7,7 +8,7 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
+import { upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
@@ -300,10 +301,7 @@ export const claudeCodeAdapter: Adapter = {
 
     const prompt = readTextIfExists(systemPromptFile);
     if (prompt !== null) {
-      let content = removeMarkdownSection(prompt, "system-prompt");
-      content = removeMarkdownSection(content, "engram-protocol");
-      content = removeMarkdownSection(content, "browser");
-      content = removeMarkdownSection(content, "writing-style");
+      const content = removeSystemPromptSections(prompt);
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 

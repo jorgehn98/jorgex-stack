@@ -309,10 +309,11 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     const systemPrompt = sectionBetween(prompt, "<!-- jorgex:system-prompt -->", "<!-- /jorgex:system-prompt -->");
     const workState = sectionBetween(systemPrompt, "## Work State", "## Security");
 
-    expect(workState).toMatch(/formal task[^\n]{0,100}one[^\n]{0,100}spec/i);
-    expect(workState).toContain("work/{name}/task/{NN}");
-    expect(workState).toContain("work/{name}/tasks/{NN}.md");
-    expect(workState).toMatch(/identity\/access/i);
+    expect(workState).toMatch(/formal task[^\n]{0,120}one[^\n]{0,120}recoverable spec source/i);
+    expect(workState).toMatch(/plan.s [`’]Spec` column/i);
+    expect(workState).toMatch(/work-lifecycle/i);
+    expect(workState).toMatch(/single project backlog|issue tracker/i);
+    expect(workState).not.toMatch(/mem_|Context7|Engram/i);
     expect(workState).toMatch(/auxiliary microassignments[^\n]{0,80}parent task/i);
     expect(workState).toMatch(/independent[^\n]{0,100}persist[^\n]{0,100}before continuing/i);
     expect(systemPrompt.includes("<!-- jorgex:programmatic-mode -->")).toBe(mode === "programmatic");
@@ -351,6 +352,11 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(protocolPayload).toMatch(/separate outcome topic_key/i);
     expect(protocolPayload).toMatch(/Never[^\n]{0,180}mem_save[^\n]{0,180}mem_update[^\n]{0,180}Spec observation/i);
     expect(protocolPayload).toMatch(/no separate outcome destination[^\n]{0,120}return the result to the coordinator/i);
+    expect(protocolPayload).toContain("work/{name}/task/{NN}");
+    expect(protocolPayload).toContain("work/{name}/{phase}");
+    expect(protocolPayload).toContain("work/{name}/pr/{NN}");
+    expect(protocolPayload).toContain("work/{name}/done");
+    expect(protocolPayload).toContain("work/backlog");
   });
 
   it.each(["human", "programmatic"] as const)("proyecta el prompt global compacto sin modos artificiales en %s", (mode) => {
@@ -359,16 +365,19 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     const prompt = plannedContent(actions, runtimePaths.systemPromptFile);
     const systemPrompt = sectionBetween(prompt, "<!-- jorgex:system-prompt -->", "<!-- /jorgex:system-prompt -->");
     const role = sectionBetween(systemPrompt, "## Role", "## General Behavior");
-    const behavior = sectionBetween(systemPrompt, "## General Behavior", "## Context7 MCP");
+    const behavior = sectionBetween(systemPrompt, "## General Behavior", "## Default Architecture");
+    const context7 = sectionBetween(prompt, "<!-- jorgex:context7 -->", "<!-- /jorgex:context7 -->");
     const testing = sectionBetween(systemPrompt, "## Testing and Verification", "## Git");
     const documentation = sectionBetween(systemPrompt, "## Documentation", "## Project-Local AGENTS.md");
 
     expect(systemPrompt).not.toContain("## Communication Style");
+    expect(systemPrompt).not.toContain("Context7");
     expect(systemPrompt).not.toMatch(/^### (?:Developer|Assistant) Mode$/m);
     expect(role).toMatch(/Senior full-stack developer[\s\S]{0,160}Verify before assuming[\s\S]{0,160}KISS, YAGNI, Clean Code, and DRY/i);
     expect(behavior).toMatch(/critical and analytical[\s\S]{0,180}errors, limitations and missing or unclear aspects[\s\S]{0,80}suggest better alternatives/i);
     expect(testing).toContain("specific test > partial suite > full suite");
     expect(documentation).toMatch(/Update docs when changed use, contracts or operations need explanation[\s\S]{0,140}not for every internal edit/i);
+    expect(context7).toMatch(/Use Context7[\s\S]{0,160}current documentation/i);
   });
 
   it.each(["human", "programmatic"] as const)("proyecta el analista unificado y su contrato de evidencia en %s", (mode) => {

@@ -9,6 +9,7 @@ import type { RuntimeDetection } from "../lib/detect.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import type { RuntimeModelMap } from "../lib/model-map.js";
 import type { LocalQualityCapabilityReport } from "../lib/quality-capabilities.js";
+import type { SystemPromptSections } from "../lib/system-prompt-sections.js";
 
 export type RuntimeId = "claude-code" | "codex" | "opencode";
 export type SelectableRuntimeId = RuntimeId | "pi";
@@ -102,6 +103,8 @@ export interface SharedProjectionAdapter {
   renderCommand(file: string, content: string): { file: string; content: string };
   /** Decide si el system prompt debe incluir el protocolo Engram. */
   injectEngramProtocol(ctx: InstallContext): boolean;
+  /** Adapta los bloques a un formato legado cuando el runtime aún lo requiere. */
+  adaptSystemPromptSections?(sections: SystemPromptSections): SystemPromptSections;
 }
 
 export interface Adapter extends SharedProjectionAdapter {

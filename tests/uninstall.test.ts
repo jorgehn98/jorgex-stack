@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../src/lib/hooks-format.js";
 import { loadCanonicalAgents, type CanonicalHooks } from "../src/lib/canonical.js";
@@ -153,6 +153,81 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
     expect(result.plugin).toEqual(["@usuario/su-plugin-npm"]);
 
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+describe("uninstall preflight de prompts", () => {
+  it("valida todos los runtimes antes de borrar o crear backups", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-uninstall-prompt-preflight-"));
+    const home = path.join(root, "home");
+    const codexHome = path.join(home, ".codex");
+    const opencodeConfig = path.join(home, ".config", "opencode");
+    const codexPrompt = path.join(codexHome, "AGENTS.md");
+    const opencodePrompt = path.join(opencodeConfig, "AGENTS.md");
+    const codexManagedAgent = path.join(codexHome, "agents", "test-analyzer.toml");
+    const modelMap = path.join(home, ".jorgex-stack", "model-map.json");
+    const validCodexPrompt = upsertMarkdownSection("# Codex user text\n", "system-prompt", "Managed base.");
+    const ambiguousOpenCodePrompt = "# OpenCode user text\n\n<!-- jorgex:browser -->\nBroken legacy marker.\n";
+    const modelMapContent = JSON.stringify({
+      codex: {
+        strong: { model: "provider/strong" },
+        standard: { model: "provider/standard" },
+        cheap: { model: "provider/cheap" },
+      },
+      opencode: OPEN_CODE_MODELS,
+    }, null, 2) + "\n";
+    const previousEnv = {
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      CODEX_HOME: process.env.CODEX_HOME,
+      OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+      PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+    };
+
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(opencodeConfig, { recursive: true });
+    fs.mkdirSync(path.dirname(codexManagedAgent), { recursive: true });
+    fs.mkdirSync(path.dirname(modelMap), { recursive: true });
+    fs.writeFileSync(codexPrompt, validCodexPrompt);
+    fs.writeFileSync(opencodePrompt, ambiguousOpenCodePrompt);
+    fs.writeFileSync(codexManagedAgent, "managed codex agent\n");
+    fs.writeFileSync(modelMap, modelMapContent);
+
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.CODEX_HOME = codexHome;
+    process.env.OPENCODE_CONFIG_DIR = opencodeConfig;
+    process.env.PI_CODING_AGENT_DIR = path.join(home, ".pi", "agent");
+    vi.resetModules();
+    try {
+      const { runUninstall } = await import("../src/uninstall.js");
+      await expect(runUninstall({
+        runtimes: ["codex", "opencode"],
+        dryRun: false,
+        yes: true,
+        removeEngram: false,
+        removePlaywright: false,
+      })).resolves.toBe(1);
+
+      expect(fs.readFileSync(codexPrompt, "utf8")).toBe(validCodexPrompt);
+      expect(fs.readFileSync(opencodePrompt, "utf8")).toBe(ambiguousOpenCodePrompt);
+      expect(fs.readFileSync(codexManagedAgent, "utf8")).toBe("managed codex agent\n");
+      expect(fs.readFileSync(modelMap, "utf8")).toBe(modelMapContent);
+      expect(fs.existsSync(path.join(home, ".jorgex-stack", "backups"))).toBe(false);
+    } finally {
+      if (previousEnv.HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = previousEnv.HOME;
+      if (previousEnv.USERPROFILE === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousEnv.USERPROFILE;
+      if (previousEnv.CODEX_HOME === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousEnv.CODEX_HOME;
+      if (previousEnv.OPENCODE_CONFIG_DIR === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = previousEnv.OPENCODE_CONFIG_DIR;
+      if (previousEnv.PI_CODING_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousEnv.PI_CODING_AGENT_DIR;
+      vi.resetModules();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

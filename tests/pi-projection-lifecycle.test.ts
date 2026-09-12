@@ -1036,7 +1036,11 @@ describe("Pi shared projection lifecycle", () => {
       });
       const installedPrompt = fs.readFileSync(agentsFile, "utf8");
       expect(installedPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      expect(installedPrompt).toContain("Use Context7 whenever you need current documentation");
       expect(installedPrompt).not.toContain("<!-- jorgex:browser -->");
+      expect(installedPrompt).not.toContain("<!-- jorgex:context7 -->");
+      expect(installedPrompt).not.toContain("<!-- jorgex:playwright -->");
+      expect(installedPrompt).not.toContain("<!-- jorgex:chrome-devtools -->");
       expect(fs.readFileSync(target.strictReceipt, "utf8")).toBe(strictReceiptBefore);
       expect(fs.existsSync(target.projectionReceipt)).toBe(true);
       expect(JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8"))).toMatchObject({
@@ -1076,6 +1080,9 @@ describe("Pi shared projection lifecycle", () => {
       expect(browserEnabledPrompt.match(/<!-- jorgex:browser -->/g)).toHaveLength(1);
       expect(browserEnabledPrompt).toContain("Playwright CLI");
       expect(browserEnabledPrompt).not.toContain("Chrome DevTools MCP");
+      expect(browserEnabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+      expect(browserEnabledPrompt).not.toContain("<!-- jorgex:playwright -->");
+      expect(browserEnabledPrompt).not.toContain("<!-- jorgex:chrome-devtools -->");
       expect(browserEnabledPrompt).toContain("<!-- jorgex:engram-protocol -->");
 
       events.length = 0;

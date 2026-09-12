@@ -11,6 +11,7 @@ import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
 import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
+import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -50,6 +51,18 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
  */
 export async function runUninstall(opts: UninstallOptions): Promise<number> {
   p.intro(`jorgex-stack ${opts.dryRun ? "uninstall (dry-run)" : "uninstall"}`);
+  try {
+    for (const id of opts.runtimes) {
+      const adapter = ADAPTERS[id];
+      if (!adapter) continue;
+      const detection = adapter.detect();
+      if (opts.targetDir === undefined && !detection.installed) continue;
+      assertSystemPromptFile(adapter.paths(opts.targetDir ?? detection.configDir).systemPromptFile, opts.targetDir);
+    }
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
   const useBrowserPreferences = opts.targetDir === undefined;
   const preferenceErrors = useBrowserPreferences
     ? [...browserPreferenceErrors(), primaryModelOwnershipError()].filter((error): error is string => error !== null)
