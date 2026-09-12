@@ -23,6 +23,26 @@ const DEFAULT_SECTION = "writing-style-default";
 const DEFAULT_OPEN = `<!-- jorgex:${DEFAULT_SECTION} -->`;
 const DEFAULT_CLOSE = `<!-- /jorgex:${DEFAULT_SECTION} -->`;
 
+function assertContained(file: string, rootDir: string): void {
+  const relative = path.relative(fs.realpathSync(rootDir), fs.realpathSync(file));
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`La ruta de estilo ${file} sale del destino aislado.`);
+  }
+}
+
+function validateBackupRoot(rootDir: string | undefined): void {
+  if (rootDir === undefined) return;
+  const backupRoot = path.join(rootDir, "backups");
+  try {
+    fs.lstatSync(backupRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  assertContained(backupRoot, rootDir);
+  if (!fs.statSync(backupRoot).isDirectory()) throw new Error(`El destino de backups ${backupRoot} no es un directorio.`);
+}
+
 export function resolveWritingStyleFile(options: { stateDir?: string; targetDir?: string } = {}): string {
   return path.join(options.targetDir ?? options.stateDir ?? dataDir(), "writing-style.md");
 }
@@ -36,10 +56,7 @@ function readStyleText(sourcePath: string, options: { rootDir?: string } = {}): 
     throw new Error(`No se puede leer el estilo ${sourcePath}. Revisa los permisos del archivo.`, { cause: error });
   }
   if (options.rootDir !== undefined) {
-    const relative = path.relative(fs.realpathSync(options.rootDir), fs.realpathSync(sourcePath));
-    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error(`El enlace de estilo ${sourcePath} sale del destino aislado.`);
-    }
+    assertContained(sourcePath, options.rootDir);
   }
   if (!(stat.isSymbolicLink() ? fs.statSync(sourcePath) : stat).isFile()) {
     throw new Error(`La fuente de estilo ${sourcePath} debe ser un archivo.`);
@@ -80,6 +97,7 @@ export function prepareWritingStyle(
     }
   }
   const installedContent = upsertMarkdownSection(originalContent, DEFAULT_SECTION, canonical);
+  if (originalContent !== null && originalContent !== installedContent) validateBackupRoot(options.rootDir);
   const content = installedContent.replace(DEFAULT_OPEN, "").replace(DEFAULT_CLOSE, "").replace(/\r\n?/g, "\n").trim();
   return {
     sourcePath, content, canonicalPath, originalContent, installedContent,
@@ -95,7 +113,10 @@ export function applyWritingStyle(plan: WritingStylePlan, dryRun = false): void 
   if (current !== plan.originalContent) {
     throw new Error(`El estilo ${plan.sourcePath} cambió durante la preparación; vuelve a ejecutar el comando.`);
   }
-  createBackup([plan.sourcePath], "writing-style", plan.backupRoot);
+  if (current !== null) {
+    validateBackupRoot(plan.rootDir);
+    createBackup([plan.sourcePath], "writing-style", plan.backupRoot);
+  }
   const mode = current === null ? 0o600 : fs.statSync(plan.sourcePath).mode & 0o777;
   writeText(plan.sourcePath, plan.installedContent, mode);
 }

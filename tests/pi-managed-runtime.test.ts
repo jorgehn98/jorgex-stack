@@ -51,11 +51,17 @@ type PiManagedSystem = {
   runManagedPiSystem(input: {
     operation: Operation;
     targetDir?: string;
+    writingStyle?: { sourcePath: string; content: string | null };
     detected: { executable: string; version: string };
     engramBin: string | null;
     devtoolsMcpEnabled?: boolean;
-    playwrightCliEnabled?: boolean;
+  playwrightCliEnabled?: boolean;
   }): Promise<unknown>;
+};
+
+const FORWARDING_STYLE = {
+  sourcePath: "/isolated/writing-style.md",
+  content: "Estilo sintético coordinado.",
 };
 
 async function managedRuntime(): Promise<PiManagedRuntime> {
@@ -141,6 +147,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         devtoolsMcpEnabled: true,
+        writingStyle: FORWARDING_STYLE,
       });
 
       expect(result).toEqual({ kind: "installed" });
@@ -160,6 +167,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         devtoolsMcpEnabled: false,
+        writingStyle: FORWARDING_STYLE,
       });
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", false);
 
@@ -169,6 +177,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         devtoolsMcpEnabled: true,
+        writingStyle: FORWARDING_STYLE,
       });
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
       expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
@@ -179,6 +188,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         devtoolsMcpEnabled: true,
+        writingStyle: FORWARDING_STYLE,
       });
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
     } finally {
@@ -241,6 +251,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         playwrightCliEnabled: true,
+        writingStyle: FORWARDING_STYLE,
       };
 
       await expect(mod.runManagedPiSystem(input)).resolves.toEqual({ kind: "installed" });
@@ -354,6 +365,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         playwrightCliEnabled: true,
+        writingStyle: FORWARDING_STYLE,
       })).resolves.toEqual({ kind: "installed" });
 
       expect(packageInputs[0]).not.toHaveProperty("playwrightCliEnabled");

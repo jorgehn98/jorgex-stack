@@ -171,6 +171,41 @@ describe("plan y aplicación de la fuente canónica de writing-style", () => {
     expect(fs.existsSync(path.join(root, "home", ".jorgex-stack", "backups"))).toBe(false);
   });
 
+  it("rechaza un directorio de backups de target-dir que escapa mediante symlink", () => {
+    if (process.platform === "win32") return;
+
+    const root = tempRoot();
+    const targetDir = path.join(root, "target");
+    const outsideDir = path.join(root, "outside");
+    const stackDir = path.join(root, "stack");
+    const sourcePath = path.join(targetDir, "writing-style.md");
+    const backupsPath = path.join(targetDir, "backups");
+    const original = "Nota privada que debe conservarse.\n";
+    writeCanonical(stackDir, "Canon aislado para target-dir.\n");
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(sourcePath, original);
+    try {
+      fs.symlinkSync(outsideDir, backupsPath, "dir");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EPERM") return;
+      throw error;
+    }
+
+    expect(() => prepareWritingStyle(sourcePath, { rootDir: targetDir, stackDir }))
+      .toThrow(/backup|destino|enlace|symlink|fuera/i);
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(original);
+    expect(fs.readdirSync(outsideDir)).toEqual([]);
+
+    fs.unlinkSync(backupsPath);
+    const plan = prepareWritingStyle(sourcePath, { rootDir: targetDir, stackDir });
+    fs.symlinkSync(outsideDir, backupsPath, "dir");
+
+    expect(() => applyWritingStyle(plan)).toThrow(/backup|destino|enlace|symlink|fuera/i);
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(original);
+    expect(fs.readdirSync(outsideDir)).toEqual([]);
+  });
+
   it("conserva 0600 al actualizar una fuente privada y crea la fuente nueva con 0600", () => {
     if (process.platform === "win32") return;
 
