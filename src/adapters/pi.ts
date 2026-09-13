@@ -11,7 +11,8 @@ export function piSystemPromptFile(targetDir?: string): string {
 
 /**
  * Proyección mínima de los recursos compartidos que Pi consume fuera de su
- * paquete nativo. El registro completo del runtime llegará en otro slice.
+ * paquete nativo; el registro gestionado del runtime se mantiene en su
+ * lifecycle nativo.
  */
 export const piAdapter: SharedProjectionAdapter & {
   readonly id: Extract<SelectableRuntimeId, "pi">;
@@ -41,13 +42,10 @@ export const piAdapter: SharedProjectionAdapter & {
     return true;
   },
 
-  // Pi 0.8.18 recompone estos marcadores desde su snapshot: no conoce los nuevos.
+  // La guía Context7 se habilita al adoptar su registro HTTP en Pi.
   adaptSystemPromptSections(sections) {
-    const { context7, playwright, "chrome-devtools": devtools, ...legacy } = sections;
-    return {
-      ...legacy,
-      "system-prompt": [legacy["system-prompt"], context7].filter(Boolean).join("\n\n"),
-      browser: [playwright, devtools].filter(Boolean).join("\n\n"),
-    };
+    const modular = { ...sections };
+    delete modular.context7;
+    return modular;
   },
 };

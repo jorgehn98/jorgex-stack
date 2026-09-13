@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type PreparePiAdoption = (
@@ -15,6 +16,7 @@ type PreparePiAdoption = (
     acceptDevtoolsHandoff?: boolean;
     acceptPlaywrightHandoff?: boolean;
     acceptPlaywrightSkillRemoval?: boolean;
+    acceptModularSystemPrompts?: boolean;
     acceptPiVersion?: string;
   },
   dependencies?: {
@@ -34,6 +36,39 @@ const ARTIFACTS_PATH = "tests/fixtures/pi-runtime-artifacts.json";
 const tarballUrl = (version: string) => `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${version}.tgz`;
 const temporaryRoots: string[] = [];
 const PLAYWRIGHT_SKILL_FILES = ["SKILL.md", "references/guide.md"] as const;
+const MODULAR_SYSTEM_PROMPT_MODULES = [
+  {
+    name: "context7",
+    sourcePath: "stack/system-prompt/context7.md",
+    targetPath: "assets/system-prompt/context7.md",
+  },
+  {
+    name: "playwright",
+    sourcePath: "stack/system-prompt/browser-playwright.md",
+    targetPath: "assets/system-prompt/browser-playwright.md",
+  },
+  {
+    name: "chrome-devtools",
+    sourcePath: "stack/system-prompt/browser-chrome-devtools.md",
+    targetPath: "assets/system-prompt/browser-chrome-devtools.md",
+  },
+] as const;
+const MODULAR_CAPABILITY = "modular-system-prompts-v1";
+const MODULAR_BASELINE_EXCLUSIONS = [
+  { kind: "capability-integration", id: "context7-mcp" },
+  { kind: "capability-integration", id: "post-pr-shell-hook-translation" },
+  { kind: "capability-integration", id: "programmatic-mode-negotiation" },
+  { kind: "runtime-specific-overlay", sourcePath: "stack/commands/claude-code/xreview.md" },
+  { kind: "runtime-specific-overlay", sourcePath: "stack/commands/opencode/xreview.md" },
+] as const;
+const LEGACY_BROWSER_EXCLUSIONS = [
+  { kind: "runtime-specific-overlay", sourcePath: "stack/system-prompt/browser-chrome-devtools.md" },
+  { kind: "runtime-specific-overlay", sourcePath: "stack/system-prompt/browser-playwright.md" },
+] as const;
+
+function modularSystemPromptContent(sourcePath: string): string {
+  return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", sourcePath), "utf8");
+}
 
 function playwrightSkillContent(relativePath: string): string {
   return `legacy Playwright skill ${relativePath}\n`;
@@ -157,6 +192,14 @@ function writePiRelease(
     devtoolsHandoff?: boolean;
     devtoolsCapability?: boolean;
     devtoolsExclusion?: boolean;
+    modularSystemPrompts?: boolean;
+    legacyBrowserExclusions?: boolean;
+    extraSystemPromptModule?: {
+      name: string;
+      sourcePath: string;
+      targetPath: string;
+      content: string;
+    };
     playwrightHandoff?: boolean;
     playwrightSkill?: boolean;
     playwrightSkillTree?: boolean;
@@ -170,11 +213,14 @@ function writePiRelease(
 ): void {
   const devtoolsCapability = options.devtoolsCapability ?? options.devtoolsHandoff ?? false;
   const devtoolsExclusion = options.devtoolsExclusion ?? !devtoolsCapability;
+  const modularSystemPrompts = options.modularSystemPrompts ?? false;
   const piVersionContract = options.piVersionContract ?? DEFAULT_PI_VERSION_CONTRACT;
   const playwrightSkillEnabled = options.playwrightSkill ?? false;
   const playwrightSkillTree = options.playwrightSkillTree ?? playwrightSkillEnabled;
   const capabilities = [
     "foundation-contract-v1",
+    "stack-snapshot-v2",
+    ...(modularSystemPrompts ? [MODULAR_CAPABILITY] : []),
     ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
     ...(options.playwrightHandoff ? ["playwright-handoff-v1"] : []),
     "runner-json-v1",
@@ -195,6 +241,14 @@ function writePiRelease(
   fs.writeFileSync(path.join(root, "agents", "tester.md"), "fixture agent\n", "utf8");
   fs.mkdirSync(path.join(root, "assets", "system-prompt"), { recursive: true });
   fs.writeFileSync(path.join(root, "assets", "system-prompt", "AGENTS.md"), "fixture policy\n", "utf8");
+  if (modularSystemPrompts) {
+    for (const module of MODULAR_SYSTEM_PROMPT_MODULES) {
+      fs.writeFileSync(path.join(root, module.targetPath), modularSystemPromptContent(module.sourcePath), "utf8");
+    }
+  }
+  if (options.extraSystemPromptModule) {
+    fs.writeFileSync(path.join(root, options.extraSystemPromptModule.targetPath), options.extraSystemPromptModule.content, "utf8");
+  }
   fs.mkdirSync(path.join(root, "snapshot", "agents"), { recursive: true });
   fs.writeFileSync(path.join(root, "snapshot", "agents", "tester.md"), "fixture agent\n", "utf8");
   fs.mkdirSync(path.join(root, "extensions"), { recursive: true });
@@ -287,14 +341,29 @@ function writePiRelease(
       })),
     });
   }
+  const systemPromptModules = modularSystemPrompts
+    ? [...MODULAR_SYSTEM_PROMPT_MODULES, ...(options.extraSystemPromptModule ? [options.extraSystemPromptModule] : [])].map((module) => {
+      const moduleContent = options.extraSystemPromptModule?.targetPath === module.targetPath
+        ? options.extraSystemPromptModule.content
+        : modularSystemPromptContent(module.sourcePath);
+      const digest = sha256(Buffer.from(moduleContent, "utf8"));
+      return { ...module, sourceSha256: digest, outputSha256: digest };
+    })
+    : undefined;
+  const exclusions = options.legacyBrowserExclusions
+    ? [...MODULAR_BASELINE_EXCLUSIONS, ...LEGACY_BROWSER_EXCLUSIONS]
+    : modularSystemPrompts
+      ? [...MODULAR_BASELINE_EXCLUSIONS]
+      : devtoolsExclusion
+        ? [{ kind: "capability-integration", id: "chrome-devtools-capability-handoff" }]
+        : [];
   writeJson(root, "contract/parity.v2.json", {
     schemaVersion: 2,
     source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: sourceCommit },
     agents: [{ name: "tester", sourcePath: "stack/agents/tester.md", targetPath: "snapshot/agents/tester.md" }],
     skills: paritySkills,
-    exclusions: devtoolsExclusion
-      ? [{ kind: "capability-integration", id: "chrome-devtools-capability-handoff" }]
-      : [],
+    ...(systemPromptModules === undefined ? {} : { systemPromptModules }),
+    exclusions,
   });
 }
 
@@ -337,6 +406,13 @@ function createAdoptionFixture(options: {
   devtoolsHandoff?: boolean;
   devtoolsCapability?: boolean;
   devtoolsExclusion?: boolean;
+  modularSystemPrompts?: boolean;
+  extraSystemPromptModule?: {
+    name: string;
+    sourcePath: string;
+    targetPath: string;
+    content: string;
+  };
   previousPlaywrightHandoff?: boolean;
   playwrightHandoff?: boolean;
   previousPlaywrightSkill?: boolean;
@@ -368,6 +444,18 @@ function createAdoptionFixture(options: {
       fs.writeFileSync(file, `source Playwright skill ${relativePath}\n`, "utf8");
     }
   }
+  if (options.modularSystemPrompts) {
+    for (const module of MODULAR_SYSTEM_PROMPT_MODULES) {
+      const file = path.join(root, module.sourcePath);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, modularSystemPromptContent(module.sourcePath), "utf8");
+    }
+  }
+  if (options.extraSystemPromptModule) {
+    const file = path.join(root, options.extraSystemPromptModule.sourcePath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, options.extraSystemPromptModule.content, "utf8");
+  }
   const sourceCommit = commit(root, "stack: source candidate");
   const retainControlSkill = options.previousPlaywrightSkill === true && options.playwrightSkill === false;
 
@@ -377,6 +465,7 @@ function createAdoptionFixture(options: {
     devtoolsHandoff: options.previousDevtoolsHandoff,
     playwrightHandoff: options.previousPlaywrightHandoff,
     playwrightSkill: options.previousPlaywrightSkill,
+    legacyBrowserExclusions: options.modularSystemPrompts,
     persistentControlSkill: retainControlSkill,
     extraArchiveFile: options.previousExtraArchiveFile,
   });
@@ -405,6 +494,8 @@ function createAdoptionFixture(options: {
     devtoolsHandoff: options.devtoolsHandoff,
     devtoolsCapability: options.devtoolsCapability,
     devtoolsExclusion: options.devtoolsExclusion,
+    modularSystemPrompts: options.modularSystemPrompts,
+    extraSystemPromptModule: options.extraSystemPromptModule,
     playwrightHandoff: options.playwrightHandoff,
     playwrightSkill: options.playwrightSkill,
     playwrightSkillTree: options.producerPlaywrightSkillTree,
@@ -690,6 +781,189 @@ describe("preparePiAdoption", () => {
       previous: fixture.current,
       archive: fixture.nextArchive,
     });
+  }, 15_000);
+
+  it("acepta la transición modular exacta sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({
+      modularSystemPrompts: true,
+      previousDevtoolsHandoff: true,
+      devtoolsHandoff: true,
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptModularSystemPrompts: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+      `https://registry.npmjs.org/jorgex-pi/${fixture.version}`,
+      tarballUrl(fixture.version),
+      tarballUrl(fixture.current.package.version),
+    ]);
+
+    const contract = readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json");
+    expect(contract.capabilities).toContain(MODULAR_CAPABILITY);
+    expect(contract.capabilities).not.toContain("context7-mcp-v1");
+    const parity = readJson<{
+      systemPromptModules: { name: string; sourcePath: string; targetPath: string }[];
+      exclusions: unknown[];
+    }>(fixture.piDir, "contract/parity.v2.json");
+    expect(parity.systemPromptModules.map(({ name, sourcePath, targetPath }) => ({ name, sourcePath, targetPath }))).toEqual(
+      MODULAR_SYSTEM_PROMPT_MODULES,
+    );
+    expect(parity.exclusions).toContainEqual({ kind: "capability-integration", id: "context7-mcp" });
+    expect(parity.exclusions).not.toContainEqual(LEGACY_BROWSER_EXCLUSIONS[0]);
+    expect(parity.exclusions).not.toContainEqual(LEGACY_BROWSER_EXCLUSIONS[1]);
+  }, 15_000);
+
+  it("rechaza un archivo ajeno añadido a la transición modular confirmada", async () => {
+    const fixture = createAdoptionFixture({
+      modularSystemPrompts: true,
+      previousDevtoolsHandoff: true,
+      devtoolsHandoff: true,
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      extraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptModularSystemPrompts: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*review/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un módulo de system prompt adicional aunque se confirme la transición modular", async () => {
+    const fixture = createAdoptionFixture({
+      modularSystemPrompts: true,
+      previousDevtoolsHandoff: true,
+      devtoolsHandoff: true,
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      extraSystemPromptModule: {
+        name: "experimental",
+        sourcePath: "stack/system-prompt/experimental.md",
+        targetPath: "assets/system-prompt/experimental.md",
+        content: "unreviewed system prompt module\n",
+      },
+    });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptModularSystemPrompts: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/parity\.v2\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un registro Context7 junto a la transición modular confirmada", async () => {
+    const fixture = createAdoptionFixture({
+      modularSystemPrompts: true,
+      previousDevtoolsHandoff: true,
+      devtoolsHandoff: true,
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+      extraCapabilities: ["context7-mcp-v1"],
+    });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptModularSystemPrompts: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza bytes de un módulo modular que no coinciden con el productor Git", async () => {
+    const fixture = createAdoptionFixture({
+      modularSystemPrompts: true,
+      previousDevtoolsHandoff: true,
+      devtoolsHandoff: true,
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+    });
+    const tamperedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/assets/system-prompt/context7.md",
+      "tampered module bytes\n",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: tamperedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptModularSystemPrompts: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/context7|module|producer|hash/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
   }, 15_000);
 
   it("rechaza un archivo ajeno añadido junto a la retirada confirmada", async () => {

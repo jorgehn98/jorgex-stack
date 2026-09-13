@@ -18,6 +18,11 @@ const CONTRACTS = [
   "contract/schemas/runner-response.v1.schema.json", "contract/schemas/quality-receipt.v1.schema.json",
   "contract/schemas/quality-capabilities.v1.schema.json",
 ];
+const SYSTEM_PROMPT_MODULES = [
+  { name: "context7", file: "context7.md" },
+  { name: "playwright", file: "browser-playwright.md" },
+  { name: "chrome-devtools", file: "browser-chrome-devtools.md" },
+];
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -148,7 +153,7 @@ function comparable(member, input) {
         else strip(item[key]);
       }
     };
-    for (const key of ["agents", "skills", "policy", "engramProtocol", "commands"]) strip(value[key]);
+    for (const key of ["agents", "skills", "policy", "engramProtocol", "systemPromptModules", "commands"]) strip(value[key]);
   }
   return value;
 }
@@ -178,10 +183,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -211,6 +216,40 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
   if (!fullSha(sourceCommit) || newContracts[PARITY].source.repository !== "https://github.com/jorgehn98/jorgex-stack") throw new Error("Invalid Stack parity source");
   const expectedContracts = structuredClone(oldContracts);
   const rootContract = "contract/jorgex-pi.v1.json";
+  const modularCapability = "modular-system-prompts-v1";
+  const hasModularPrompts = newContracts[rootContract].capabilities.includes(modularCapability);
+  const modularTransition = acceptModularSystemPrompts
+    && !oldContracts[rootContract].capabilities.includes(modularCapability) && hasModularPrompts;
+  const promptModules = hasModularPrompts ? SYSTEM_PROMPT_MODULES.map(({ name, file }) => {
+    const sourcePath = `stack/system-prompt/${file}`;
+    const targetPath = `assets/system-prompt/${file}`;
+    const content = git(root, ["show", `${sourceCommit}:${sourcePath}`]);
+    const digest = createHash("sha256").update(content).digest("hex");
+    assert.equal(git(piDir, ["show", `${producer}:${targetPath}`]), content,
+      "Modular system prompt does not match the canonical source");
+    return { metadata: { name, sourcePath, targetPath, sourceSha256: digest, outputSha256: digest }, content };
+  }) : [];
+  if (hasModularPrompts) {
+    assert.deepEqual(newContracts[PARITY].systemPromptModules, promptModules.map(({ metadata }) => metadata),
+      `${PARITY} compatibility requires manual review (modular system prompt metadata)`);
+  }
+  if (modularTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    const snapshotIndex = capabilities.indexOf("stack-snapshot-v2");
+    assert(snapshotIndex >= 0, "Modular prompts require the existing Stack snapshot");
+    capabilities.splice(snapshotIndex + 1, 0, modularCapability);
+    expectedContracts[PARITY].systemPromptModules = promptModules.map(({ metadata }) => metadata);
+    const exclusions = expectedContracts[PARITY].exclusions;
+    assert.equal(exclusions.filter((item) => item.kind === "capability-integration" && item.id === "context7-mcp").length, 1,
+      "Modular prompts must retain the Context7 MCP exclusion");
+    for (const { file } of SYSTEM_PROMPT_MODULES.filter(({ name }) => name !== "context7")) {
+      const sourcePath = `stack/system-prompt/${file}`;
+      const matches = exclusions.filter((item) => item.kind === "runtime-specific-overlay" && item.sourcePath === sourcePath);
+      assert.equal(matches.length, 1, "Modular browser prompt requires exactly one former exclusion");
+      assert.deepEqual(matches[0], { kind: "runtime-specific-overlay", sourcePath });
+      exclusions.splice(exclusions.indexOf(matches[0]), 1);
+    }
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -284,7 +323,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -304,15 +343,26 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
         assert(!previousEntries.includes(`package/${module}`), "Playwright module must be absent from the previous archive");
         expectedEntries.push(`package/${module}`);
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal"].filter(Boolean).join(" and ");
+      if (modularTransition) {
+        for (const { metadata: { targetPath } } of promptModules) {
+          assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", targetPath]).trim(), "",
+            "Modular system prompt asset must be new in this transition");
+          assert(!previousEntries.includes(`package/${targetPath}`), "Modular system prompt asset must be absent from the previous archive");
+          expectedEntries.push(`package/${targetPath}`);
+        }
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `Playwright archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : "Playwright"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
       }
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    }
+    for (const { metadata: { targetPath }, content } of promptModules) {
+      assert.equal(tarText(tarballFile, targetPath), content, "Modular system prompt archive bytes differ from the reviewed source");
     }
     for (const member of CONTRACTS) {
       const packed = tarJson(tarballFile, member), expected = structuredClone(newContracts[member]);
@@ -351,13 +401,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       flags.splice(versionFlag, 2);
     }
     if (args.length < 4 || args.length > 10 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal"].includes(flag))) throw new Error("Invalid arguments");
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts]");
     process.exitCode = 1;
   }
 }

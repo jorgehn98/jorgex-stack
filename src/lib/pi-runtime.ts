@@ -26,6 +26,7 @@ export const PI_RUNTIME_CANDIDATE = {
     capabilities: [
       "foundation-contract-v1",
       "stack-snapshot-v2",
+      "modular-system-prompts-v1",
       "runtime-agents-v1",
       "permission-gated-tools-v1",
       "structured-questions-v1",
