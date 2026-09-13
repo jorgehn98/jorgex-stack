@@ -192,6 +192,109 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     expect(servers.ajeno).toEqual({ type: "http", url: "https://x" });
     expect(servers.engram).toMatchObject({ type: "stdio" });
   });
+
+  it("registra Context7 ausente y reclama ownership solo después de crear su entrada", () => {
+    const ctx = makeCtx();
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+
+    expect(action).toMatchObject({
+      kind: "write",
+      mcpOwnership: [{ server: "context7", owned: true }],
+    });
+    if (action?.kind !== "write") throw new Error("Expected a Context7 config write");
+
+    const root = JSON.parse(action.content) as {
+      mcpServers?: Record<string, { type?: string; url?: string }>;
+    };
+    expect(root.mcpServers?.context7).toMatchObject({
+      type: "http",
+      url: "https://mcp.context7.com/mcp",
+    });
+  });
+
+  it("conserva completa una entrada Context7 compatible y la deshabilitación por proyecto", () => {
+    const previous = {
+      mcpServers: {
+        context7: {
+          type: "http",
+          url: "https://mcp.context7.com/mcp",
+          headers: { "X-User-Setting": "preserve" },
+          userSetting: "preserve",
+        },
+        ajeno: { type: "http", url: "https://example.invalid/foreign" },
+      },
+      projects: {
+        "/tmp/project": {
+          disabledMcpServers: ["context7"],
+          userSetting: "preserve",
+        },
+      },
+    };
+    fs.writeFileSync(mainFile, JSON.stringify(previous, null, 2) + "\n");
+
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), makeCtx());
+    expect(action).toMatchObject({ kind: "write" });
+    if (action?.kind !== "write") throw new Error("Expected a Context7 config write");
+
+    const result = JSON.parse(action.content) as typeof previous & { mcpOwnership?: unknown };
+    expect(result.mcpServers?.context7).toEqual(previous.mcpServers.context7);
+    expect(result.mcpServers?.ajeno).toEqual(previous.mcpServers.ajeno);
+    expect(result.projects).toEqual(previous.projects);
+    expect(action).not.toHaveProperty("mcpOwnership");
+  });
+
+  it("bloquea una colisión Context7 de otro endpoint sin mutar la configuración", () => {
+    const previous = JSON.stringify({
+      mcpServers: {
+        context7: {
+          type: "http",
+          url: "https://example.invalid/user-context7",
+          userSetting: "preserve",
+        },
+      },
+    }, null, 2) + "\n";
+    fs.writeFileSync(mainFile, previous);
+
+    expect(() => claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), makeCtx()))
+      .toThrow(/context7|endpoint|conflict|collision/i);
+    expect(fs.readFileSync(mainFile, "utf8")).toBe(previous);
+  });
+
+  it("bloquea una colisión Context7 de otro tipo sin mutar la configuración", () => {
+    const previous = JSON.stringify({
+      mcpServers: {
+        context7: { type: "stdio", command: "foreign-context7", userSetting: "preserve" },
+      },
+    }, null, 2) + "\n";
+    fs.writeFileSync(mainFile, previous);
+
+    expect(() => claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), makeCtx()))
+      .toThrow(/context7|type|conflict|collision/i);
+    expect(fs.readFileSync(mainFile, "utf8")).toBe(previous);
+  });
+
+  it.each(["[]", '{"broken": UNTRUSTED_CONFIG_VALUE}'])("rechaza la raíz MCP inválida sin mostrar contenido: %s", (raw) => {
+    fs.writeFileSync(mainFile, raw);
+    let message = "";
+    try { claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), makeCtx()); } catch (error) { message = String(error); }
+    expect(message).toMatch(/MCP/);
+    expect(message).not.toContain("UNTRUSTED_CONFIG_VALUE");
+    expect(fs.readFileSync(mainFile, "utf8")).toBe(raw);
+  });
+
+  it.each([
+    { label: "contenedor array", config: { mcpServers: [] as unknown[] } },
+    { label: "contenedor null", config: { mcpServers: null } },
+    { label: "entrada array", config: { mcpServers: { context7: [] as unknown[] } } },
+    { label: "entrada null", config: { mcpServers: { context7: null } } },
+  ])("rechaza Context7 cuando el $label no es un objeto MCP verificable", ({ config }) => {
+    const previous = JSON.stringify(config, null, 2) + "\n";
+    fs.writeFileSync(mainFile, previous);
+
+    expect(() => claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), makeCtx()))
+      .toThrow(/context7|mcp|object|array|conflict/i);
+    expect(fs.readFileSync(mainFile, "utf8")).toBe(previous);
+  });
 });
 
 describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {

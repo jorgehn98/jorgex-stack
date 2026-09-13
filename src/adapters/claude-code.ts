@@ -41,6 +41,54 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function readMcpConfig(file: string): string | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    if (code === "ENOENT") return null;
+    throw new Error(`Claude Code: no se pudo leer la configuración MCP en ${file} (${code}).`);
+  }
+  if (content.trim() !== "") {
+    try {
+      if (!isRecord(JSON.parse(content))) throw new Error();
+    } catch {
+      throw new Error(`Claude Code: la configuración MCP en ${file} debe contener un objeto JSON válido.`);
+    }
+  }
+  return content;
+}
+
+function isCompatibleContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  if (server.transport !== "http" || typeof server.url !== "string" || !isRecord(value)) return false;
+  return value.type === "http" && value.url === server.url;
+}
+
+function canonicalContext7Server(server: CanonicalMcp["servers"][string]): Record<string, unknown> {
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(server.headers ?? {})) {
+    headers[key] = /^\$\{(\w+)\}$/.test(raw) ? "" : raw;
+  }
+  return {
+    type: "http",
+    url: server.url,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  return isCompatibleContext7Server(server, value) && isDeepStrictEqual(value, canonicalContext7Server(server));
+}
+
+function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value: unknown): void {
+  if (value !== undefined && !isCompatibleContext7Server(server, value)) {
+    throw new Error("Claude Code: MCP 'context7' entra en conflicto con una definición existente (endpoint o tipo incompatible). Conserva la configuración y corrige el conflicto antes de reintentar.");
+  }
+}
+
 function hasClaudeManualApproval(configDir: string): boolean {
   const content = readTextIfExists(path.join(configDir, "settings.json"));
   if (content === null) return false;
@@ -231,11 +279,28 @@ export const claudeCodeAdapter: Adapter = {
     const file = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
 
     const mcpOwnership: McpOwnershipChange[] = [];
-    const content = upsertJson(readTextIfExists(file), (root) => {
+    const content = upsertJson(readMcpConfig(file), (root) => {
+      const rawServers = root["mcpServers"];
+      if (rawServers !== undefined && !isRecord(rawServers)) {
+        throw new Error("Claude Code: la clave 'mcpServers' debe ser un objeto; corrígela antes de reintentar sync.");
+      }
+      const existingServers = rawServers as Record<string, unknown> | undefined;
+      const context7 = canonical.servers.context7;
+      if (context7 !== undefined) assertCompatibleContext7(context7, existingServers?.["context7"]);
+
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
         const existing = servers[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
+        if (name === "context7" && existing !== undefined) {
+          // Context7 es requerido, pero una entrada previa compatible puede
+          // pertenecer al usuario. Si el Stack la creó y el usuario la cambió,
+          // se conserva y se libera ownership para no tocarla en uninstall.
+          if (owned && !isCanonicalContext7Server(server, existing)) {
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
             if (isManagedOptionalStdioServer(server, existing)) delete servers[name];
@@ -288,6 +353,9 @@ export const claudeCodeAdapter: Adapter = {
             url: server.url,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
           };
+          if (name === "context7" && existing === undefined && !owned) {
+            mcpOwnership.push({ server: name, owned: true });
+          }
         }
       }
     });
@@ -315,13 +383,26 @@ export const claudeCodeAdapter: Adapter = {
     }
 
     const mainFile = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
-    const main = readTextIfExists(mainFile);
+    const main = readMcpConfig(mainFile);
     if (main !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
       const content = upsertJson(main, (root) => {
-        const servers = root["mcpServers"] as Record<string, unknown> | undefined;
-        if (!servers) return;
+        const rawServers = root["mcpServers"];
+        if (rawServers === undefined) return;
+        if (!isRecord(rawServers)) {
+          throw new Error("Claude Code: la clave 'mcpServers' debe ser un objeto; corrígela antes de reintentar uninstall.");
+        }
+        const servers = rawServers;
         for (const [name, server] of Object.entries(mcp.servers)) {
+          if (name === "context7") {
+            const canonical = isCanonicalContext7Server(server, servers[name]);
+            const owned = ctx.ownedMcpServers?.has(name) === true;
+            if (owned) {
+              if (canonical) delete servers[name];
+              mcpOwnership.push({ server: name, owned: false });
+            }
+            continue;
+          }
           if (!server.optional) {
             delete servers[name];
             continue;

@@ -180,7 +180,7 @@ function enabledMcpServers(
 function ownedMcpServers(runtime: RuntimeId, useBrowserPreferences = true): ReadonlySet<string> {
   if (!useBrowserPreferences) return new Set();
   const file = devtoolsMcpPreferenceFile();
-  return loadDevtoolsMcpOwnership(file, runtime, DEVTOOLS_MCP_SERVER) ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
+  return new Set([DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server)));
 }
 
 /** El estado de ownership solo avanza tras observar la entrada escrita o ausente. */
@@ -227,16 +227,31 @@ export function makeContext(
   };
 }
 
-export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
+export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   return [
     ...planSystemPrompt(adapter, ctx),
     ...planAgents(adapter, ctx),
     ...planSkills(adapter, ctx),
     ...planCommands(adapter, ctx),
     ...planHooks(adapter, ctx),
-    ...planMcp(adapter, ctx),
     ...planPlugins(adapter, ctx),
   ];
+}
+
+export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
+  return [...planMcp(adapter, ctx), ...buildContentPlan(adapter, ctx)];
+}
+
+/** Validate every selected registration before installing files or preferences. */
+export function preflightSelectedMcpConfigs(runtimes: readonly RuntimeId[], targetDir?: string): void {
+  for (const id of runtimes) {
+    const adapter = ADAPTERS[id];
+    if (!adapter) continue;
+    const detection = adapter.detect();
+    if (targetDir === undefined && !detection.installed) continue;
+    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined);
+    if (ctx) planMcp(adapter, ctx);
+  }
 }
 
 export function diffPlan(plan: FileAction[]): PlannedChange[] {
@@ -312,6 +327,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     return 1;
   }
 
+  const modelMap: ModelMap = opts.runtimes.length > 0 ? loadModelMap() : {};
+
+  try {
+    preflightSelectedMcpConfigs(opts.runtimes, opts.targetDir);
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
   let writingStyle: WritingStyleSnapshot;
   let preparedStyle: WritingStylePlan | undefined;
   try {
@@ -353,7 +377,6 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const effectivePlaywright = playwrightCapability?.effective;
   const plannedPlaywright = effectivePlaywright
     ?? (toolPlan !== null && toolPlan.actions.length > 0 ? false : undefined);
-  const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
   if (preparedStyle !== undefined) {
     try {
       p.log.info(`Estilo de escritura: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
@@ -434,7 +457,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     let diff = diffPlan(plan);
     let creates = diff.filter((d) => d.status === "create");
     let updates = diff.filter((d) => d.status === "update");
-    let changes = [...creates, ...updates];
+    let changes = diff.filter((change) => change.status !== "unchanged");
 
     // Huérfanos: archivos que una versión anterior instaló y el plan actual ya
     // no genera (skill renombrada/eliminada). Solo con manifest previo y visión
@@ -494,7 +517,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       diff = diffPlan(plan);
       creates = diff.filter((d) => d.status === "create");
       updates = diff.filter((d) => d.status === "update");
-      changes = [...creates, ...updates];
+      changes = diff.filter((change) => change.status !== "unchanged");
     }
 
     const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;

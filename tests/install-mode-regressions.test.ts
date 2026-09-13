@@ -12,6 +12,12 @@ const OPEN_CODE_MODELS = {
   cheap: { model: "provider/cheap" },
 };
 
+const CODEX_MODELS = {
+  strong: { model: "default", variant: "high" },
+  standard: { model: "default", variant: "medium" },
+  cheap: { model: "default", variant: "low" },
+};
+
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalAgents = loadCanonicalAgents(path.join(ROOT, "stack", "agents"));
 const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent")!;
@@ -360,6 +366,164 @@ describe("install-mode regressions", () => {
       if (originalAdapters.codex) install.ADAPTERS.codex = originalAdapters.codex;
       if (originalAdapters["claude-code"]) install.ADAPTERS["claude-code"] = originalAdapters["claude-code"];
       else delete install.ADAPTERS["claude-code"];
+    }
+  });
+});
+
+describe("Context7 install preflight regressions", () => {
+  it("persiste ownership después de crear el registro Context7 ausente", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-install-ownership-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const configFile = path.join(configDir, "opencode.json");
+    const ownershipFile = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+    writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
+
+    const install = await importInstallModule(homeDir);
+    const adapter = install.ADAPTERS.opencode!;
+    const originalDetect = adapter.detect;
+    adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+
+    try {
+      await expect(install.runInstall({
+        runtimes: ["opencode"],
+        dryRun: false,
+        yes: true,
+        mode: { mode: "human", subagentConcurrency: "serial" },
+      })).resolves.toBe(0);
+
+      const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as {
+        mcp?: Record<string, { type?: string; url?: string }>;
+      };
+      expect(config.mcp?.context7).toMatchObject({
+        type: "remote",
+        url: "https://mcp.context7.com/mcp",
+      });
+      expect(JSON.parse(fs.readFileSync(ownershipFile, "utf8"))).toMatchObject({
+        owned: { opencode: { context7: true } },
+      });
+    } finally {
+      adapter.detect = originalDetect;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("prevalida todos los registros MCP seleccionados antes de crear cualquier prompt", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-install-preflight-"));
+    const homeDir = path.join(tmp, "home");
+    const codexConfigDir = path.join(homeDir, ".codex");
+    const opencodeConfigDir = path.join(homeDir, ".config", "opencode");
+    const codexPrompt = path.join(codexConfigDir, "AGENTS.md");
+    const opencodeConfigFile = path.join(opencodeConfigDir, "opencode.json");
+    const previousEnv = {
+      CODEX_HOME: process.env.CODEX_HOME,
+      OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+    };
+    writeModelMap(homeDir, { codex: CODEX_MODELS, opencode: OPEN_CODE_MODELS });
+    fs.mkdirSync(opencodeConfigDir, { recursive: true });
+    fs.writeFileSync(opencodeConfigFile, JSON.stringify({
+      model: "user/model",
+      mcp: {
+        context7: {
+          type: "remote",
+          url: "https://mcp.context7.com/mcp",
+          enabled: false,
+        },
+      },
+    }, null, 2) + "\n");
+
+    process.env.CODEX_HOME = codexConfigDir;
+    process.env.OPENCODE_CONFIG_DIR = opencodeConfigDir;
+    const install = await importInstallModule(homeDir);
+    const codexAdapter = install.ADAPTERS.codex!;
+    const opencodeAdapter = install.ADAPTERS.opencode!;
+    const originalCodexDetect = codexAdapter.detect;
+    const originalOpencodeDetect = opencodeAdapter.detect;
+    codexAdapter.detect = () => ({ id: "codex", name: "Codex CLI", installed: true, binPath: null, configDir: codexConfigDir });
+    opencodeAdapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir: opencodeConfigDir });
+
+    try {
+      await expect(install.runInstall({
+        runtimes: ["codex", "opencode"],
+        dryRun: false,
+        yes: true,
+        mode: { mode: "human", subagentConcurrency: "serial" },
+      })).resolves.toBe(1);
+
+      expect(fs.existsSync(codexPrompt)).toBe(false);
+      expect(fs.existsSync(path.join(codexConfigDir, "config.toml"))).toBe(false);
+      expect(fs.existsSync(path.join(homeDir, ".jorgex-stack", "writing-style.md"))).toBe(false);
+      expect(fs.existsSync(path.join(homeDir, ".jorgex-stack", "manifest.json"))).toBe(false);
+      expect(fs.readFileSync(opencodeConfigFile, "utf8")).toContain('"enabled": false');
+    } finally {
+      codexAdapter.detect = originalCodexDetect;
+      opencodeAdapter.detect = originalOpencodeDetect;
+      if (previousEnv.CODEX_HOME === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousEnv.CODEX_HOME;
+      if (previousEnv.OPENCODE_CONFIG_DIR === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = previousEnv.OPENCODE_CONFIG_DIR;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("no publica un prompt nuevo antes de que falle la actualización del registro existente", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-install-order-"));
+    const homeDir = path.join(tmp, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const configFile = path.join(configDir, "opencode.json");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(configFile, JSON.stringify({ model: "user/model", userSetting: "preserve" }, null, 2) + "\n");
+    writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    const originalConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    const originalExitCode = process.exitCode;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+    process.env.OPENCODE_CONFIG_DIR = configDir;
+    process.exitCode = undefined;
+    vi.resetModules();
+    vi.doMock("../src/lib/fsx.js", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../src/lib/fsx.js")>();
+      return {
+        ...actual,
+        writeText(file: string, content: string, mode?: number) {
+          if (path.resolve(file) === path.resolve(configFile)) throw new Error("Context7 config update failed");
+          return actual.writeText(file, content, mode);
+        },
+      };
+    });
+
+    try {
+      const install = await import("../src/install.js");
+      const adapter = install.ADAPTERS.opencode!;
+      const originalDetect = adapter.detect;
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+        })).rejects.toThrow("Context7 config update failed");
+      } finally {
+        adapter.detect = originalDetect;
+      }
+
+      expect(fs.existsSync(path.join(configDir, "AGENTS.md"))).toBe(false);
+      expect(fs.readFileSync(configFile, "utf8")).toContain('"userSetting": "preserve"');
+    } finally {
+      vi.doUnmock("../src/lib/fsx.js");
+      vi.resetModules();
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      if (originalConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = originalConfigDir;
+      process.exitCode = originalExitCode;
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

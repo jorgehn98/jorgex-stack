@@ -234,7 +234,7 @@ function scanTomlLine(line: string, initial: MultilineDelimiter | null): Multili
  * multilínea, omite strings de una línea y pares barra+carácter en strings
  * básicas, y corta en comentarios fuera de una string.
  */
-function multilineStringMask(lines: string[]): boolean[] {
+export function multilineStringMask(lines: string[]): boolean[] {
   const mask: boolean[] = [];
   let inside: MultilineDelimiter | null = null;
   for (const line of lines) {
@@ -314,4 +314,11 @@ export function readTomlSection(existing: string | null, section: string): strin
   const found = findTomlSection(lines, section);
   if (found === null) return null;
   return lines.slice(found.start + 1, found.end).join("\n");
+}
+
+export function hasTomlChildSection(existing: string | null, section: string): boolean {
+  if (existing === null) return false;
+  const lines = existing.split(/\r?\n/);
+  const mask = multilineStringMask(lines);
+  return lines.some((line, index) => !mask[index] && headerName(line)?.startsWith(`${section}.`) === true);
 }
