@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
+import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../src/lib/hooks-format.js";
-import { loadCanonicalAgents, type CanonicalHooks } from "../src/lib/canonical.js";
+import { loadCanonicalAgents, loadCanonicalMcp, type CanonicalHooks } from "../src/lib/canonical.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
@@ -140,6 +140,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       engramBin: null,
       models: OPEN_CODE_MODELS,
       warnings: [],
+      ownedMcpServers: new Set(["context7"]),
       preserveEngram: true,
     };
     const actions = opencodeAdapter.planUnmerge(MCP_SIN_ENGRAM, HOOKS, ctx);
@@ -152,6 +153,143 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
     // dir; el ARCHIVO engram.ts lo protege preserveEngram en deleteTargets).
     expect(result.plugin).toEqual(["@usuario/su-plugin-npm"]);
 
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+describe("uninstall preserva una entrada Context7 owned que el usuario modificó", () => {
+  const HOOKS = { hooks: {} } as CanonicalHooks;
+
+  it("Claude Code conserva la definición completa y libera ownership", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-claude-"));
+    const configDir = path.join(tmp, ".claude");
+    const mainFile = path.join(tmp, ".claude.json");
+    const previous = {
+      mcpServers: {
+        context7: {
+          type: "http",
+          url: "https://mcp.context7.com/mcp",
+          userSetting: "preserve",
+        },
+      },
+    };
+    fs.writeFileSync(mainFile, JSON.stringify(previous, null, 2) + "\n");
+
+    const action = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+      ownedMcpServers: new Set(["context7"]),
+    }).find((candidate) => candidate.target === mainFile);
+
+    expect(action).toMatchObject({ kind: "write", mcpOwnership: [{ server: "context7", owned: false }] });
+    if (action?.kind !== "write") throw new Error("Expected a Claude Code Context7 unmerge");
+    expect(JSON.parse(action.content).mcpServers.context7).toEqual(previous.mcpServers.context7);
+
+    const unownedAction = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+    }).find((candidate) => candidate.target === mainFile);
+    expect(unownedAction).toMatchObject({ kind: "write" });
+    if (unownedAction?.kind !== "write") throw new Error("Expected an unowned Claude Code Context7 unmerge");
+    expect(JSON.parse(unownedAction.content).mcpServers.context7).toEqual(previous.mcpServers.context7);
+    expect(unownedAction).not.toHaveProperty("mcpOwnership");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("Codex conserva la definición completa y libera ownership", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-codex-"));
+    const configFile = path.join(tmp, "config.toml");
+    const previous = [
+      'model = "user/model"',
+      "model_context_window = 100",
+      "",
+      "[mcp_servers.context7]",
+      'url = "https://mcp.context7.com/mcp"',
+      'user_setting = "preserve"',
+      "",
+      "[mcp_servers.foreign]",
+      'command = "foreign-server"',
+      "",
+    ].join("\n");
+    fs.writeFileSync(configFile, previous);
+
+    const action = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+      ownedMcpServers: new Set(["context7"]),
+    }).find((candidate) => candidate.target === configFile);
+
+    expect(action).toMatchObject({ kind: "write", mcpOwnership: [{ server: "context7", owned: false }] });
+    if (action?.kind !== "write") throw new Error("Expected a Codex Context7 unmerge");
+    expect(readTomlSection(action.content, "mcp_servers.context7")).toContain('user_setting = "preserve"');
+    expect(readTomlSection(action.content, "mcp_servers.foreign")).toContain('command = "foreign-server"');
+
+    const unownedAction = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+    }).find((candidate) => candidate.target === configFile);
+    expect(unownedAction).toMatchObject({ kind: "write" });
+    if (unownedAction?.kind !== "write") throw new Error("Expected an unowned Codex Context7 unmerge");
+    expect(readTomlSection(unownedAction.content, "mcp_servers.context7")).toContain('user_setting = "preserve"');
+    expect(unownedAction).not.toHaveProperty("mcpOwnership");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("OpenCode conserva la definición completa y libera ownership", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-opencode-"));
+    const configFile = path.join(tmp, "opencode.json");
+    const previous = {
+      model: "user/model",
+      mcp: {
+        context7: {
+          type: "remote",
+          url: "https://mcp.context7.com/mcp",
+          userSetting: "preserve",
+        },
+        foreign: { type: "remote", url: "https://example.invalid/foreign" },
+      },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(previous, null, 2) + "\n");
+
+    const action = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+      ownedMcpServers: new Set(["context7"]),
+    }).find((candidate) => candidate.target === configFile);
+
+    expect(action).toMatchObject({ kind: "write", mcpOwnership: [{ server: "context7", owned: false }] });
+    if (action?.kind !== "write") throw new Error("Expected an OpenCode Context7 unmerge");
+    const result = JSON.parse(action.content);
+    expect(result.mcp.context7).toEqual(previous.mcp.context7);
+    expect(result.mcp.foreign).toEqual(previous.mcp.foreign);
+
+    const unownedAction = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+    }).find((candidate) => candidate.target === configFile);
+    expect(unownedAction).toMatchObject({ kind: "write" });
+    if (unownedAction?.kind !== "write") throw new Error("Expected an unowned OpenCode Context7 unmerge");
+    const unownedResult = JSON.parse(unownedAction.content);
+    expect(unownedResult.mcp.context7).toEqual(previous.mcp.context7);
+    expect(unownedAction).not.toHaveProperty("mcpOwnership");
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

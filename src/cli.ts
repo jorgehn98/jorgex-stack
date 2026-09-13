@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentConcurrency } from "./adapters/types.js";
-import { ADAPTERS, resolvePlaywrightToolPlan, runInstall } from "./install.js";
+import { ADAPTERS, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
@@ -721,6 +721,7 @@ async function main(): Promise<void> {
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
         assertSelectedPromptFiles(runtimes, flags.targetDir);
+        preflightSelectedMcpConfigs(fileRuntimes, flags.targetDir);
         const writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
         if (flags.targetDir === undefined) {
           const errors = browserPreferenceErrors();

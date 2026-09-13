@@ -25,6 +25,27 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
+function readMcpConfig(file: string): string | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    if (code === "ENOENT") return null;
+    throw new Error(`OpenCode: no se pudo leer la configuración MCP en ${file} (${code}).`);
+  }
+  if (content.trim() !== "") {
+    try {
+      if (objectValue(JSON.parse(content)) === null) throw new Error();
+    } catch {
+      throw new Error(`OpenCode: la configuración MCP en ${file} debe contener un objeto JSON válido.`);
+    }
+  }
+  return content;
+}
+
 function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], value: unknown): boolean {
   if (!server.optional || server.transport !== "stdio" || value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -52,6 +73,36 @@ function objectValue(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function isCompatibleContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  const current = objectValue(value);
+  if (server.transport !== "http" || typeof server.url !== "string" || current === null) return false;
+  return current.type === "remote" && current.url === server.url
+    && (current.enabled === undefined || current.enabled === true);
+}
+
+function canonicalContext7Server(server: CanonicalMcp["servers"][string]): Record<string, unknown> {
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(server.headers ?? {})) {
+    const envRef = /^\$\{(\w+)\}$/.exec(raw);
+    headers[key] = envRef ? `{env:${envRef[1]!}}` : raw;
+  }
+  return {
+    type: "remote",
+    url: server.url,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  return isCompatibleContext7Server(server, value) && isDeepStrictEqual(value, canonicalContext7Server(server));
+}
+
+function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value: unknown): void {
+  if (value !== undefined && !isCompatibleContext7Server(server, value)) {
+    throw new Error("OpenCode: MCP 'context7' entra en conflicto con una definición existente (endpoint, tipo o estado nativo incompatible). Conserva la configuración y corrige el conflicto antes de reintentar.");
+  }
 }
 
 function ensureObject(parent: Record<string, unknown>, key: string, fieldPath: string): Record<string, unknown> {
@@ -279,13 +330,21 @@ export const opencodeAdapter: Adapter = {
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "opencode.json");
     const { pluginsDir } = this.paths(ctx.configDir);
-    const original = readTextIfExists(file);
+    const original = readMcpConfig(file);
     const contentSource = original === null || original.trim() === "" ? null : original;
     const isFreshConfig = contentSource === null;
 
     const mcpOwnership: McpOwnershipChange[] = [];
     const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
     const content = upsertJson(contentSource, (root) => {
+      const rawMcp = root["mcp"];
+      if (rawMcp !== undefined && objectValue(rawMcp) === null) {
+        throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar sync.");
+      }
+      const existingMcp = rawMcp as Record<string, unknown> | undefined;
+      const context7 = canonical.servers.context7;
+      if (context7 !== undefined) assertCompatibleContext7(context7, existingMcp?.["context7"]);
+
       root["$schema"] ??= "https://opencode.ai/config.json";
       if (root[PRIMARY_MODEL_FIELD] === undefined) {
         root[PRIMARY_MODEL_FIELD] = PRIMARY_MODEL;
@@ -324,6 +383,15 @@ export const opencodeAdapter: Adapter = {
       for (const [name, server] of Object.entries(canonical.servers)) {
         const existing = mcp[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
+        if (name === "context7" && existing !== undefined) {
+          // Context7 es requerido, pero una entrada previa compatible puede
+          // pertenecer al usuario. Si el Stack la creó y el usuario la cambió,
+          // se conserva y se libera ownership para no tocarla en uninstall.
+          if (owned && !isCanonicalContext7Server(server, existing)) {
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
             if (isManagedOptionalStdioServer(server, existing)) delete mcp[name];
@@ -363,6 +431,9 @@ export const opencodeAdapter: Adapter = {
             url: server.url,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
           };
+          if (name === "context7" && existing === undefined && !owned) {
+            mcpOwnership.push({ server: name, owned: true });
+          }
         }
       }
 
@@ -409,7 +480,7 @@ export const opencodeAdapter: Adapter = {
     }
 
     const configFile = path.join(ctx.configDir, "opencode.json");
-    const config = readTextIfExists(configFile);
+    const config = readMcpConfig(configFile);
     if (config !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
       const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
@@ -448,9 +519,22 @@ export const opencodeAdapter: Adapter = {
           if (ctx.ownedPrimaryModelFields?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
         }
 
-        const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
-        if (mcpBlock) {
+        const rawMcpBlock = root["mcp"];
+        if (rawMcpBlock !== undefined && objectValue(rawMcpBlock) === null) {
+          throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar uninstall.");
+        }
+        const mcpBlock = rawMcpBlock as Record<string, unknown> | undefined;
+        if (mcpBlock !== undefined) {
           for (const [name, server] of Object.entries(mcp.servers)) {
+            if (name === "context7") {
+              const canonical = isCanonicalContext7Server(server, mcpBlock[name]);
+              const owned = ctx.ownedMcpServers?.has(name) === true;
+              if (owned) {
+                if (canonical) delete mcpBlock[name];
+                mcpOwnership.push({ server: name, owned: false });
+              }
+              continue;
+            }
             if (!server.optional) {
               delete mcpBlock[name];
               continue;

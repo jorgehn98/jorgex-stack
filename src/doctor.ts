@@ -260,7 +260,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       pending = diffPlan(buildPlan(adapter, ctx)).filter((d) => d.status !== "unchanged").length;
     } catch (err) {
       p.log.error(
-        `${adapter.name}: config ilegible en ${detection.configDir} — ${err instanceof Error ? err.message : err}`,
+        `${adapter.name}: configuración incompatible o ilegible en ${detection.configDir} — ${err instanceof Error ? err.message : err}`,
       );
       problems++;
       continue;
