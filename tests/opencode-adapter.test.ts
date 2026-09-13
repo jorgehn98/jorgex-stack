@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
-import { DESTRUCTIVE_GIT_DENY } from "../src/lib/git-guard.js";
 import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
 import type { RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
@@ -79,22 +79,20 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
     expect(cheap!.content).not.toContain("variant:");
   });
 
-  it("full-bash: '*' allow primero y luego los deny (última regla gana en OpenCode)", () => {
+  it("full-bash inherits the general policy without overriding its asks or denies", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ bash: "full" }), MODELS);
-    const content = out!.content;
-    expect(content).toContain('"*": allow');
-    for (const pattern of DESTRUCTIVE_GIT_DENY) {
-      expect(content).toContain(`"${pattern}": deny`);
-    }
-    // El catch-all debe ir ANTES que el primer deny (orden = precedencia).
-    expect(content.indexOf('"*": allow')).toBeLessThan(content.indexOf(`"${DESTRUCTIVE_GIT_DENY[0]}": deny`));
+    expect(out!.content).not.toMatch(/\n  (bash|edit):/);
+    expect(out!.content).not.toContain("permission:\n---");
   });
 
-  it("git-read no cambia: solo git diff/log allow, sin barrera destructiva", () => {
+  it("git-read denies arbitrary shell and disables Git options before variable arguments", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-    expect(out!.content).toContain('"git diff*": allow');
-    expect(out!.content).toContain('"git log*": allow');
-    expect(out!.content).not.toContain('"git reset*": deny');
+    expect(out!.content).toContain('"*": deny');
+    expect(out!.content).not.toContain('"git diff*": allow');
+    expect(out!.content).toContain("core.fsmonitor=false");
+    expect(out!.content).toContain("log.showSignature=false");
+    expect(out!.content).toContain('--no-ext-diff --no-textconv --end-of-options *": allow');
+    expect(out!.content).toContain("put refs and paths after --end-of-options");
   });
 
   it("none: bash denegado por completo", () => {
@@ -110,7 +108,8 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ readonly }), MODELS);
     const content = out!.content;
 
-    expect(content).toContain(`permission:\n  edit: ${edit}`);
+    if (readonly) expect(content).toContain(`permission:\n  edit: ${edit}`);
+    else expect(content).not.toMatch(/\n  edit:/);
     expect(content).not.toMatch(/^tools:/m);
   });
 
@@ -234,4 +233,24 @@ describe("opencodeAdapter primary Sol defaults", () => {
     expect(() => opencodeAdapter.planMainConfig(mcp, opencodeContext(malformedDir)))
       .toThrow("'model' debe ser un identificador provider/model no vacío");
   });
+});
+
+
+it("Git rejects executable and output options after every rendered read-only prefix", () => {
+  const root = tempConfigDir();
+  const env = { PATH: process.env.PATH, HOME: root, USERPROFILE: root, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1" };
+  execFileSync("git", ["init", "--quiet", root], { env });
+  const [out] = opencodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
+  const commands = out!.content.split("\n").filter((line) => /^    "git .*": allow$/.test(line))
+    .map((line) => JSON.parse(line.trim().slice(0, -": allow".length)) as string)
+    .filter((command) => !command.endsWith(" *"));
+  expect(commands.length).toBeGreaterThan(0);
+  for (const command of commands) {
+    for (const flag of ["--output=forbidden", "--out=forbidden", "--ext-diff", "--textconv", "--no-index", "--show-signature"]) {
+      const result = spawnSync("git", [...command.split(" ").slice(1), flag], { cwd: root, env, encoding: "utf8" });
+      expect(result.error).toBeUndefined();
+      expect([128, 129], `${command} ${flag}`).toContain(result.status);
+      expect(fs.existsSync(path.join(root, "forbidden"))).toBe(false);
+    }
+  }
 });
