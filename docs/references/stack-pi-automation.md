@@ -42,6 +42,8 @@ La adopción de `context7-http-v1` requiere además `--accept-context7-http`; si
 
 La adopción de `permissions-policy-v1` requiere además `--accept-permissions-policy`; sin esa opción se rechaza. El contrato base declara tres escrituras externas; con esta capability el delta añade tres nuevas y deja seis en total: la configuración, el receipt de lifecycle y los backups de la política, todos gestionados por Pi. Stack no reclama ownership ni reimpone la configuración. La siembra es solo para una configuración ausente y conserva el estado existente, inválido o concurrente. El preparador vuelve a comprobar contrato, bytes, hashes e inventario del artefacto publicado; el flag no es un bypass.
 
+La adopción de `experience-defaults-v1` requiere además `--accept-experience-defaults`; sin esa opción se rechaza. La transición exacta añade una escritura nueva (el receipt de lifecycle) y deja siete escrituras externas en total, conserva las seis rutas previas de paquete y permisos, y valida el módulo/binario de experiencia, contratos, bytes, hashes e inventario frente al productor publicado. Los defaults `theme=JorgeX`, `quietStartup=true` y `hideThinkingBlock=true` se siembran solo en la primera inicialización y en campos ausentes; cambios o borrados del usuario no se resembran. `hideThinkingBlock` afecta la presentación, no `defaultThinkingLevel` ni el razonamiento.
+
 ## Recuperación y rollback
 
 - **Notificación fallida:** corrige la causa y usa `workflow_dispatch` del coordinador, sin reejecutar el publisher mutable. El dispatch recupera notificaciones o reconcilia nuevas entradas; no recrea propuestas cerradas de la misma identidad, aunque elimines su rama.
