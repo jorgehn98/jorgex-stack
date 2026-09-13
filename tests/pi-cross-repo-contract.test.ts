@@ -241,7 +241,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expectArchiveInventory(tarball);
   }, 60_000);
 
-  it("executes Sol sync and ownership-safe cleanup from the exact published tarball", () => {
+  it("executes managed defaults and permission cleanup from the exact published tarball", () => {
     const tarball = path.resolve(registryTarball!);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-registry-lifecycle-"));
     temporaryPaths.push(root);
@@ -251,6 +251,8 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const settingsFile = path.join(agentDir, "settings.json");
     const modelsFile = path.join(agentDir, "models.json");
     const receiptFile = path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json");
+    const permissionsFile = path.join(agentDir, "extensions", "pi-permission-system", "config.json");
+    const permissionsReceipt = path.join(agentDir, "jorgex-pi", "permissions-lifecycle.v1.json");
     const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
     const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
     fs.mkdirSync(agentDir, { recursive: true });
@@ -270,9 +272,9 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       SystemRoot: process.env.SystemRoot,
     };
     fs.mkdirSync(environment.TEMP, { recursive: true });
-    const run = (command: "sync" | "cleanup") => spawnSync(process.execPath, [runner, command, "--json"], {
+    const run = (command: "sync" | "cleanup" | "doctor" | "status", codingAgentDir = agentDir) => spawnSync(process.execPath, [runner, command, "--json"], {
       encoding: "utf8",
-      env: environment,
+      env: { ...environment, PI_CODING_AGENT_DIR: codingAgentDir },
     });
 
     const sync = run("sync");
@@ -288,6 +290,13 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 872000 } } } },
     });
     expect(fs.existsSync(receiptFile)).toBe(true);
+    expect(fs.existsSync(permissionsFile)).toBe(true);
+    expect(readJson(permissionsFile)).toEqual(readJson(path.join(root, "package", "assets", "permissions", "defaults.json")));
+    const permissionBytes = fs.readFileSync(permissionsFile, "utf8");
+    const permissionReceiptBytes = fs.readFileSync(permissionsReceipt, "utf8");
+    expect(run("sync").status).toBe(0);
+    expect(fs.readFileSync(permissionsFile, "utf8")).toBe(permissionBytes);
+    expect(fs.readFileSync(permissionsReceipt, "utf8")).toBe(permissionReceiptBytes);
 
     const canonicalCleanup = run("cleanup");
     expect(canonicalCleanup.status).toBe(0);
@@ -295,6 +304,13 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
     expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
     expect(fs.existsSync(receiptFile)).toBe(false);
+    expect(fs.existsSync(permissionsFile)).toBe(false);
+    expect(fs.existsSync(permissionsReceipt)).toBe(false);
+    const permissionBackups = path.join(agentDir, "jorgex-pi", "permissions-backups");
+    const backupFiles = fs.readdirSync(permissionBackups, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(permissionBackups, entry.name, "config.json"));
+    expect(backupFiles.some((file) => fs.readFileSync(file, "utf8") === permissionBytes)).toBe(true);
 
     const resync = run("sync");
     expect(resync.status).toBe(0);
@@ -307,6 +323,10 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     models.providers["openai-codex"].modelOverrides["gpt-5.6-sol"].contextWindow = 900000;
     fs.writeFileSync(modelsFile, JSON.stringify(models));
 
+    const userPolicy = readJson(permissionsFile) as { permission: Record<string, unknown> };
+    userPolicy.permission.read = "ask";
+    const userPolicyBytes = JSON.stringify(userPolicy);
+    fs.writeFileSync(permissionsFile, userPolicyBytes);
     const cleanup = run("cleanup");
     expect(cleanup.status).toBe(0);
     expectRunnerOutput(cleanup, "cleanup", runner);
@@ -315,6 +335,31 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
     });
+    expect(fs.readFileSync(permissionsFile, "utf8")).toBe(userPolicyBytes);
+
+    const preexistingAgent = path.join(root, "preexisting-agent");
+    const preexistingPolicy = path.join(preexistingAgent, "extensions", "pi-permission-system", "config.json");
+    fs.mkdirSync(path.dirname(preexistingPolicy), { recursive: true });
+    fs.writeFileSync(preexistingPolicy, userPolicyBytes);
+    expect(run("sync", preexistingAgent).status).toBe(0);
+    expect(run("cleanup", preexistingAgent).status).toBe(0);
+    expect(fs.readFileSync(preexistingPolicy, "utf8")).toBe(userPolicyBytes);
+
+    const invalidAgent = path.join(root, "invalid-agent");
+    const invalidPolicy = path.join(invalidAgent, "extensions", "pi-permission-system", "config.json");
+    fs.mkdirSync(path.dirname(invalidPolicy), { recursive: true });
+    fs.writeFileSync(invalidPolicy, "invalid JSON");
+    const invalidSync = run("sync", invalidAgent);
+    expect(invalidSync.status).toBe(0);
+    expectRunnerOutput(invalidSync, "sync", runner);
+    expect(fs.readFileSync(invalidPolicy, "utf8")).toBe("invalid JSON");
+    expect(readJson(path.join(invalidAgent, "jorgex-pi", "permissions-lifecycle.v1.json"))).not.toHaveProperty("owned");
+    const status = run("status", invalidAgent);
+    expect(JSON.parse(status.stdout).result.permissions.state).toBe("invalid");
+    const doctor = run("doctor", invalidAgent);
+    expect(doctor.status).not.toBe(0);
+    expect(JSON.parse(doctor.stdout).result.checks).toContainEqual({ id: "permissions", status: "error" });
+
   }, 60_000);
 
   it("consumes Stack's Playwright handoff in the published Pi bootstrap and hides it after disable", () => {
