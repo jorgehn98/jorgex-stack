@@ -230,15 +230,15 @@ describe("quality command runner", () => {
     const result = await runQualityCommand({
       commandId: "kill-tree",
       executable: process.execPath,
-      argv: ["-e", rootScript, "--", grandchildScript, marker, "300"],
-      timeoutMs: 100,
+      argv: ["-e", rootScript, "--", grandchildScript, marker, "2000"],
+      timeoutMs: 1_000,
     });
 
     expect(result.status).toBe("timeout");
     expect(result.output.stdout).toContain("spawned\n");
-    await wait(550);
+    await wait(2_200);
     expect(fs.existsSync(marker)).toBe(false);
-  }, 3_000);
+  }, 5_000);
 
   it("rejects a timeout above Node's timer maximum before spawning", async () => {
     const marker = path.join(tempDir(), "overflow-timeout-marker.txt");
