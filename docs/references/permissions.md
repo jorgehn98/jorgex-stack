@@ -24,6 +24,8 @@ migra sus permisos, aunque la configuración coincida con un default anterior.
 | Claude Code  | `~/.claude/settings.json`        | `permissions`                                           |
 | Codex CLI    | `~/.codex/config.toml`           | `approval_policy` + `default_permissions` + perfil      |
 
+Pi mantiene una política separada en `PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json`, con receipt en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json` y backups en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-backups`. Pi solo posee la copia de configuración que creó y cuyo ownership registra en su receipt y backups; una configuración ajena no pasa a ser propiedad de Pi y Stack nunca la reclama. El módulo solo siembra una configuración ausente mediante publicación exclusiva; una configuración existente o un JSON legible pero inválido se conserva sin ownership y `doctor` lo marca como error. Un archivo ilegible o no regular bloquea la operación cerrada. `sync` no reimpone la política y `cleanup` solo retira una copia exacta que el receipt identifique como creada por Pi.
+
 Cada adapter escribe su bloque **solo** en config fresca o vacía (el
 archivo de usuario no existe o está vacío). Una config existente — sea
 custom o coincidente con el legacy exacto — se preserva tal cual; el
