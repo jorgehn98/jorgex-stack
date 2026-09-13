@@ -26,6 +26,92 @@ export const PI_RUNTIME_CANDIDATE = {
       "engram-runtime-tools-v1",
       "context7-http-v1",
       "permissions-policy-v1",
+      "experience-defaults-v1",
+      "chrome-devtools-handoff-v1",
+      "playwright-handoff-v1",
+      "runner-json-v1",
+      "tui-branding-v1",
+      "managed-primary-model-v1",
+      "quality-receipt-contract-v1",
+      "quality-capabilities-contract-v1",
+    ],
+    runner: {
+      bin: "jorgex-pi",
+      commands: ["status", "doctor", "models", "sync", "cleanup"],
+      schemaVersion: 1,
+      maxStdoutBytes: 65_536,
+    },
+    managedExternalWrites: [
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "settings.json",
+        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair plus first-visit theme=JorgeX, quietStartup=true, and hideThinkingBlock=true defaults; preserve foreign halves and existing experience values; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "models.json",
+        semantics: "merge missing providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow=872000; cleanup removes only receipt-owned exact values",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/sol-lifecycle.v1.json",
+        semantics: "record field, container, and file ownership; remove the receipt when empty",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "extensions/pi-permission-system/config.json",
+        semantics: "seed the generated permission policy only when absent; publish exclusively, preserve preexisting or invalid user state, and remove only an exact owned copy during cleanup",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/permissions-lifecycle.v1.json",
+        semantics: "record initialization and exact permission-config ownership without storing user configuration or credentials",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/permissions-backups",
+        semantics: "retain cleanup backups of exact owned permission policy bytes",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/experience-lifecycle.v1.json",
+        semantics: "record first initialization and exact ownership of missing theme, quietStartup, and hideThinkingBlock fields; preserve replacements and do not reseed after initialization",
+      },
+    ],
+  },
+} as const;
+
+/**
+ * Test-only context for the previously accepted Stack/Pi pin. It models the
+ * outgoing Stack context for rollback tests and is not a production candidate.
+ */
+export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
+  ...artifacts.previous,
+  pi: {
+    testedVersions: ["0.84.2", "0.85.1"],
+  },
+  contract: {
+    schemaVersion: 1,
+    capabilities: [
+      "foundation-contract-v1",
+      "stack-snapshot-v2",
+      "modular-system-prompts-v1",
+      "runtime-agents-v1",
+      "permission-gated-tools-v1",
+      "structured-questions-v1",
+      "web-access-v1",
+      "goal-continuation-v1",
+      "mcp-adapter-v1",
+      "engram-runtime-tools-v1",
+      "context7-http-v1",
+      "permissions-policy-v1",
       "chrome-devtools-handoff-v1",
       "playwright-handoff-v1",
       "runner-json-v1",
@@ -76,66 +162,6 @@ export const PI_RUNTIME_CANDIDATE = {
         root: "PI_CODING_AGENT_DIR",
         relativePath: "jorgex-pi/permissions-backups",
         semantics: "retain cleanup backups of exact owned permission policy bytes",
-      },
-    ],
-  },
-} as const;
-
-/**
- * Test-only context for the previously accepted Stack/Pi pin. It models the
- * outgoing Stack context for rollback tests and is not a production candidate.
- */
-export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
-  ...artifacts.previous,
-  pi: {
-    testedVersions: ["0.84.2", "0.85.1"],
-  },
-  contract: {
-    schemaVersion: 1,
-    capabilities: [
-      "foundation-contract-v1",
-      "stack-snapshot-v2",
-      "modular-system-prompts-v1",
-      "runtime-agents-v1",
-      "permission-gated-tools-v1",
-      "structured-questions-v1",
-      "web-access-v1",
-      "goal-continuation-v1",
-      "mcp-adapter-v1",
-      "engram-runtime-tools-v1",
-      "context7-http-v1",
-      "chrome-devtools-handoff-v1",
-      "playwright-handoff-v1",
-      "runner-json-v1",
-      "tui-branding-v1",
-      "managed-primary-model-v1",
-      "quality-receipt-contract-v1",
-      "quality-capabilities-contract-v1",
-    ],
-    runner: {
-      bin: "jorgex-pi",
-      commands: ["status", "doctor", "models", "sync", "cleanup"],
-      schemaVersion: 1,
-      maxStdoutBytes: 65_536,
-    },
-    managedExternalWrites: [
-      {
-        owner: "jorgex-pi",
-        root: "PI_CODING_AGENT_DIR",
-        relativePath: "settings.json",
-        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair; preserve foreign halves; cleanup removes only receipt-owned exact values",
-      },
-      {
-        owner: "jorgex-pi",
-        root: "PI_CODING_AGENT_DIR",
-        relativePath: "models.json",
-        semantics: "merge missing providers.openai-codex.modelOverrides.gpt-5.6-sol.contextWindow=872000; cleanup removes only receipt-owned exact values",
-      },
-      {
-        owner: "jorgex-pi",
-        root: "PI_CODING_AGENT_DIR",
-        relativePath: "jorgex-pi/sol-lifecycle.v1.json",
-        semantics: "record field, container, and file ownership; remove the receipt when empty",
       },
     ],
   },
