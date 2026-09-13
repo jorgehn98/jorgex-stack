@@ -37,6 +37,51 @@ const CONTEXT7_PRESERVED_STATE = {
   root: "PI_CODING_AGENT_DIR",
   relativePath: "mcp.json",
 };
+const PERMISSIONS_CAPABILITY = "permissions-policy-v1";
+const PERMISSIONS_SOURCE_PATH = "stack/config/defaults.json";
+const PERMISSIONS_TARGET_PATH = "assets/permissions/defaults.json";
+const PERMISSIONS_RESOURCE = "assets/permissions";
+const PERMISSIONS_MODULE = "extensions/permissions-lifecycle.mjs";
+const PERMISSIONS_RUNNER = {
+  config: "PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json",
+  receipt: "PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json",
+  defaults: "assets/permissions/defaults.json",
+  semantics: "sync seeds only an absent config through exclusive publication; existing, invalid, and concurrent user state is preserved; cleanup keeps an exact owned copy in a retained backup",
+  diagnostic: "permission state reports invalid or unreadable files without exposing their contents",
+};
+const PERMISSIONS_PRESERVED_STATE = {
+  owner: "@gotgenes/pi-permission-system",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "extensions/pi-permission-system/config.json",
+};
+const PERMISSIONS_MANAGED_WRITES = [
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "extensions/pi-permission-system/config.json",
+    semantics: "seed the generated permission policy only when absent; publish exclusively, preserve preexisting or invalid user state, and remove only an exact owned copy during cleanup",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/permissions-lifecycle.v1.json",
+    semantics: "record initialization and exact permission-config ownership without storing user configuration or credentials",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/permissions-backups",
+    semantics: "retain cleanup backups of exact owned permission policy bytes",
+  },
+];
+const PERMISSIONS_ACTIONS = [
+  "created:permissions.config",
+  "initialized:permissions",
+  "preserved:permissions.config",
+  "released:permissions.config",
+  "backup:permissions.config",
+  "removed:permissions.config",
+];
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -48,6 +93,23 @@ function assertPinData(pin) {
   assert.deepEqual(Object.keys(pin.package).sort(), ["name", "source", "version"]);
   assert.deepEqual(Object.keys(pin.provenance), ["commit"]);
   assert.deepEqual(Object.keys(pin.tarball).sort(), ["bytes", "sha256", "sha512"]);
+}
+
+function permissionParityMetadata(root, piDir, sourceCommit, producer, input) {
+  assert(input && typeof input === "object" && !Array.isArray(input), "Invalid permissions parity metadata");
+  assert.deepEqual(Object.keys(input).sort(), ["outputSha256", "sourcePath", "sourceSha256", "targetPath"], "Invalid permissions parity metadata");
+  assert.equal(input.sourcePath, PERMISSIONS_SOURCE_PATH, "Unexpected permissions parity source path");
+  assert.equal(input.targetPath, PERMISSIONS_TARGET_PATH, "Unexpected permissions parity target path");
+  const source = git(root, ["show", `${sourceCommit}:${PERMISSIONS_SOURCE_PATH}`]);
+  const output = git(piDir, ["show", `${producer}:${PERMISSIONS_TARGET_PATH}`]);
+  const expected = {
+    sourcePath: PERMISSIONS_SOURCE_PATH,
+    targetPath: PERMISSIONS_TARGET_PATH,
+    sourceSha256: createHash("sha256").update(source).digest("hex"),
+    outputSha256: createHash("sha256").update(output).digest("hex"),
+  };
+  assert.deepEqual(input, expected, "Permissions parity hashes do not match the canonical Git blobs");
+  return expected;
 }
 
 function git(root, args) {
@@ -197,10 +259,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -313,6 +375,75 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram"]);
     doctorChecks.items.properties.id.enum.push("context7");
   }
+  const permissionsEnabled = newContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY);
+  const permissionsMetadata = permissionsEnabled
+    ? permissionParityMetadata(root, piDir, sourceCommit, producer, newContracts[PARITY].permissions)
+    : undefined;
+  const permissionsTransition = acceptPermissionsPolicy
+    && !oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY)
+    && permissionsEnabled;
+  if (permissionsTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(PERMISSIONS_CAPABILITY), "Permissions policy capability must be new in this transition");
+    const context7Index = capabilities.indexOf(CONTEXT7_CAPABILITY);
+    assert(context7Index >= 0, "Permissions policy requires the existing Context7 HTTP capability");
+    capabilities.splice(context7Index + 1, 0, PERMISSIONS_CAPABILITY);
+
+    const assets = expectedContracts["contract/assets.v1.json"];
+    const resourceIndex = assets.resources.indexOf("assets/system-prompt");
+    assert(resourceIndex >= 0, "Permissions policy requires the existing system prompt assets");
+    assert(!assets.resources.includes(PERMISSIONS_RESOURCE), "Permissions policy resource must be new in this transition");
+    assets.resources.splice(resourceIndex, 0, PERMISSIONS_RESOURCE);
+    assert.equal(assets.managedExternalWrites.length, 3, "Permissions policy requires the original managed writes");
+    assert(!assets.managedExternalWrites.some((item) => PERMISSIONS_MANAGED_WRITES.some(({ relativePath }) => item.relativePath === relativePath)),
+      "Permissions policy managed writes must be new in this transition");
+    assets.managedExternalWrites.push(...structuredClone(PERMISSIONS_MANAGED_WRITES));
+    const preserved = assets.preservedExternalState;
+    const preservedMatches = preserved.filter((item) => item.owner === PERMISSIONS_PRESERVED_STATE.owner
+      && item.root === PERMISSIONS_PRESERVED_STATE.root && item.relativePath === PERMISSIONS_PRESERVED_STATE.relativePath);
+    assert.equal(preservedMatches.length, 1, "Permissions policy requires exactly one former preserved config");
+    assert.deepEqual(preservedMatches[0], PERMISSIONS_PRESERVED_STATE);
+    preserved.splice(preserved.indexOf(preservedMatches[0]), 1);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    assert.equal(runner.permissions, undefined, "Permissions policy runner metadata must be new in this transition");
+    runner.permissions = structuredClone(PERMISSIONS_RUNNER);
+    expectedContracts[PARITY].permissions = structuredClone(permissionsMetadata);
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    assert.equal(schema.$defs.permissions, undefined, "Permissions policy schema definition must be new in this transition");
+    schema.$defs.permissions = {
+      type: "object",
+      additionalProperties: false,
+      required: ["state", "path", "receiptPath", "initialized", "owned"],
+      properties: {
+        state: { enum: ["absent", "missing-owned", "managed", "preexisting", "invalid", "unreadable"] },
+        path: { type: "string" },
+        receiptPath: { type: "string" },
+        initialized: { type: "boolean" },
+        owned: { type: "boolean" },
+        reason: { type: "string" },
+      },
+    };
+    const statusResult = schema.$defs.statusResult;
+    assert.deepEqual(statusResult.required, ["installation", "engram", "context7"]);
+    statusResult.required.push("permissions");
+    assert.equal(statusResult.properties.permissions, undefined);
+    statusResult.properties.permissions = { $ref: "#/$defs/permissions" };
+    const doctorChecks = schema.$defs.doctorResult.properties.checks;
+    assert.equal(doctorChecks.minItems, 3);
+    assert.equal(doctorChecks.maxItems, 3);
+    doctorChecks.minItems = 4;
+    doctorChecks.maxItems = 4;
+    assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram", "context7"]);
+    doctorChecks.items.properties.id.enum.push("permissions");
+    const lifecycleResult = schema.$defs.lifecycleResult;
+    assert.equal(lifecycleResult.properties.actions.maxItems, 9);
+    lifecycleResult.properties.actions.maxItems = 32;
+    const lifecycleAction = schema.$defs.lifecycleAction;
+    assert(!PERMISSIONS_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Permissions policy lifecycle actions must be new in this transition");
+    lifecycleAction.enum.push(...PERMISSIONS_ACTIONS);
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -386,7 +517,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -419,9 +550,16 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
         assert(!previousEntries.includes(`package/${CONTEXT7_MODULE}`), "Context7 module must be absent from the previous archive");
         expectedEntries.push(`package/${CONTEXT7_MODULE}`);
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition"].filter(Boolean).join(" and ");
+      if (permissionsTransition) {
+        for (const member of [PERMISSIONS_TARGET_PATH, PERMISSIONS_MODULE]) {
+          assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", member]).trim(), "", `Permissions asset must be new in this transition: ${member}`);
+          assert(!previousEntries.includes(`package/${member}`), `Permissions asset must be absent from the previous archive: ${member}`);
+          expectedEntries.push(`package/${member}`);
+        }
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : "Context7"} archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : "Permissions policy"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
@@ -429,6 +567,12 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    }
+    if (permissionsEnabled) {
+      const permissionsDefaults = tarText(tarballFile, PERMISSIONS_TARGET_PATH);
+      assert.equal(permissionsDefaults, git(piDir, ["show", `${producer}:${PERMISSIONS_TARGET_PATH}`]), "Permissions defaults do not match producer");
+      assert.equal(createHash("sha256").update(permissionsDefaults).digest("hex"), permissionsMetadata.outputSha256, "Permissions defaults hash does not match parity");
+      assert.equal(tarText(tarballFile, PERMISSIONS_MODULE), git(piDir, ["show", `${producer}:${PERMISSIONS_MODULE}`]), "Permissions lifecycle module does not match producer");
     }
     for (const { metadata: { targetPath }, content } of promptModules) {
       assert.equal(tarText(tarballFile, targetPath), content, "Modular system prompt archive bytes differ from the reviewed source");
@@ -469,14 +613,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 12 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 13 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy]");
     process.exitCode = 1;
   }
 }
