@@ -24,6 +24,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "goal-continuation-v1",
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
+      "context7-http-v1",
       "chrome-devtools-handoff-v1",
       "playwright-handoff-v1",
       "runner-json-v1",
@@ -75,6 +76,7 @@ export const PI_RUNTIME_PREVIOUS_CANDIDATE = {
     capabilities: [
       "foundation-contract-v1",
       "stack-snapshot-v2",
+      "modular-system-prompts-v1",
       "runtime-agents-v1",
       "permission-gated-tools-v1",
       "structured-questions-v1",

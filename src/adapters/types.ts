@@ -65,7 +65,7 @@ export interface InstallContext {
   enabledMcpServers?: ReadonlySet<string>;
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
   playwrightCliEnabled?: boolean;
-  /** MCPs opcionales que una escritura previa del stack creó realmente. */
+  /** Registros MCP que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
   /** Campos del primary model que una escritura previa del stack creó. */
   ownedPrimaryModelFields?: ReadonlySet<string>;

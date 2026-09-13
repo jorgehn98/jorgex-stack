@@ -2,6 +2,21 @@
   "current": {
     "package": {
       "name": "jorgex-pi",
+      "version": "0.8.20",
+      "source": "npm:jorgex-pi@0.8.20"
+    },
+    "provenance": {
+      "commit": "c4d021382cd3b752eaa396044753ac7533b6645d"
+    },
+    "tarball": {
+      "bytes": 89127646,
+      "sha256": "c7bbb0dc587b10e8e04174589cc519ad7576d2cbbceb5d2d20614d313e1ee884",
+      "sha512": "189480a4d812048b65466156479d1d89f7fa7044471ff6a076b710c0014b0e50eaa0261d7a2a8381a5e71a598be61fe2ed714b6b1dacd5a5f955b59a412009c0"
+    }
+  },
+  "previous": {
+    "package": {
+      "name": "jorgex-pi",
       "version": "0.8.19",
       "source": "npm:jorgex-pi@0.8.19"
     },
@@ -14,23 +29,8 @@
       "sha512": "9939f27ff9fac8ec58c61585d977e92b20629a8fe75f71ab42e049cc271d1b4abb914c072aa37409c6c911c02d27a3c4bc9627d5cb9d3ee04a0dfc74a2ad01e6"
     }
   },
-  "previous": {
-    "package": {
-      "name": "jorgex-pi",
-      "version": "0.8.18",
-      "source": "npm:jorgex-pi@0.8.18"
-    },
-    "provenance": {
-      "commit": "61d676b300707d61840165616f0880d8c6588ce7"
-    },
-    "tarball": {
-      "bytes": 89122709,
-      "sha256": "02e5577d95d19ae28de55c170d4b6b48e682fbe741c8eec26cd79587da2f829e",
-      "sha512": "a9fa60be18b6a84dca6703bf38a1462482dd3ea00d9eb82aead06e9a86b3d92ce09b68da2968cb760d6b3ad8d5b2b36d53889bed227e7ea6791932ce25153220"
-    }
-  },
   "archive": {
-    "entries": 13397,
+    "entries": 13398,
     "parity": {
       "source": {
         "commit": "26692997245c9f1e8cf9d51a134032039f302186"

@@ -149,7 +149,9 @@ describe("Pi runtime wiring", () => {
     expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).toEqual([PI_RUNTIME_CANDIDATE]);
     expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).not.toContainEqual(PI_RUNTIME_PREVIOUS_CANDIDATE);
     expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("modular-system-prompts-v1");
-    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).not.toContain("modular-system-prompts-v1");
+    expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("context7-http-v1");
+    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).toContain("modular-system-prompts-v1");
+    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).not.toContain("context7-http-v1");
     expect(parseCliArgs(["install", "--agents", "pi,codex"]).flags.agents).toEqual(["pi", "codex"]);
     expect(ADAPTERS).not.toHaveProperty("pi");
     expect(DEFAULT_MODEL_MAP).not.toHaveProperty("pi");
