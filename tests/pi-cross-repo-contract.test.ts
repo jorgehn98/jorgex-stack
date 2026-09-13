@@ -353,6 +353,10 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const enabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
     expect(enabledPrompt).toContain(playwrightCommand);
+    expect(enabledPrompt).toContain("<!-- jorgex:playwright -->");
+    expect(enabledPrompt).not.toContain("<!-- jorgex:browser -->");
+    expect(enabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+    expect(enabledPrompt).not.toMatch(/Context7/i);
 
     expect(runPiProjectionLifecycleSystem({
       operation: "sync",
@@ -368,6 +372,9 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const disabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
     expect(disabledPrompt).not.toContain(playwrightCommand);
     expect(disabledPrompt).not.toMatch(/playwright-cli/i);
+    expect(disabledPrompt).not.toContain("<!-- jorgex:browser -->");
+    expect(disabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+    expect(disabledPrompt).not.toMatch(/Context7/i);
   }, 60_000);
 });
 
@@ -409,7 +416,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expectArchiveInventory(tarball);
   }, 60_000);
 
-  it("installs the packed checkout artifact with the checkout-local Pi, normalizes its source, validates doctor, and removes only the managed package", async () => {
+  it("installs the packed checkout artifact with the checkout-local Pi, normalizes its source while preserving Pi's registration shape, validates doctor, and removes only the managed package", async () => {
     const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js");
     const root = path.resolve(piDirectory!);
     const piManifest = readJson(path.join(root, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")) as {
@@ -544,7 +551,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       }),
     ]);
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({
-      packages: [foreignSource, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
+      packages: [foreignSource, PI_RUNTIME_CANDIDATE.package.source],
       foreignState,
     });
     expect(JSON.parse(fs.readFileSync(path.join(target, "backups", "settings.json"), "utf8"))).toEqual({
