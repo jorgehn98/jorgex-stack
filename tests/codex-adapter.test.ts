@@ -340,6 +340,107 @@ describe("codexAdapter Context7 registration safety", () => {
     expect(action).not.toHaveProperty("mcpOwnership");
   });
 
+  it("preserva la tabla Context7 y sus tablas hijas, liberando ownership explícito", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const previous = [
+      'model = "user/model"',
+      "model_context_window = 100",
+      "",
+      "[mcp_servers.context7]",
+      'url = "https://mcp.context7.com/mcp"',
+      'env_http_headers = { "CONTEXT7_API_KEY" = "CONTEXT7_API_KEY" }',
+      "",
+      "[mcp_servers.context7.http_headers]",
+      '"X-Workspace" = "workspace"',
+      "",
+      "[mcp_servers.foreign]",
+      'command = "foreign-server"',
+      "",
+    ].join("\n");
+    fs.writeFileSync(configFile, previous);
+    const mcp = loadCanonicalMcp(stackRoot());
+    const ownedContext = { ...codexContext(configDir), ownedMcpServers: new Set(["context7"]) };
+
+    const [syncAction] = codexAdapter.planMainConfig(mcp, ownedContext);
+    expect(syncAction).toMatchObject({
+      kind: "write",
+      mcpOwnership: [{ server: "context7", owned: false }],
+    });
+    if (syncAction?.kind !== "write") throw new Error("Expected a Context7 sync write");
+    expect(syncAction.content).toContain('[mcp_servers.context7]\n');
+    expect(syncAction.content).toContain('url = "https://mcp.context7.com/mcp"');
+    expect(syncAction.content).toContain('[mcp_servers.context7.http_headers]\n');
+    expect(syncAction.content).toContain('"X-Workspace" = "workspace"');
+
+    const uninstallAction = codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), ownedContext)
+      .find((candidate) => candidate.target === configFile);
+    expect(uninstallAction).toMatchObject({
+      kind: "write",
+      mcpOwnership: [{ server: "context7", owned: false }],
+    });
+    if (uninstallAction?.kind !== "write") throw new Error("Expected a Context7 uninstall write");
+    expect(uninstallAction.content).toContain('[mcp_servers.context7]\n');
+    expect(uninstallAction.content).toContain('url = "https://mcp.context7.com/mcp"');
+    expect(uninstallAction.content).toContain('[mcp_servers.context7.http_headers]\n');
+    expect(uninstallAction.content).toContain('"X-Workspace" = "workspace"');
+  });
+
+  it("bloquea una tabla hija Context7 sin su tabla padre", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const previous = [
+      'model = "user/model"',
+      "model_context_window = 100",
+      "",
+      "[mcp_servers.context7.http_headers]",
+      '"X-Workspace" = "workspace"',
+      "",
+    ].join("\n");
+    fs.writeFileSync(configFile, previous);
+
+    expect(() => codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), codexContext(configDir)))
+      .toThrow(/context7|parent|table|header|conflict/i);
+    expect(fs.readFileSync(configFile, "utf8")).toBe(previous);
+  });
+
+  it.each([
+    {
+      label: "sin URL real",
+      section: [
+        "[mcp_servers.context7]",
+        "note = '''",
+        'url = "https://mcp.context7.com/mcp"',
+        "'''",
+      ].join("\n"),
+    },
+    {
+      label: "URL falsa antes del endpoint incompatible",
+      section: [
+        "[mcp_servers.context7]",
+        "note = '''",
+        'url = "https://mcp.context7.com/mcp"',
+        "'''",
+        'url = "https://example.invalid/foreign-context7"',
+      ].join("\n"),
+    },
+  ])("no trata una URL en una nota multilínea como registro real ($label)", ({ section }) => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    const previous = [
+      'model = "user/model"',
+      "model_context_window = 100",
+      "",
+      section,
+      "",
+    ].join("\n");
+    fs.writeFileSync(configFile, previous);
+
+    expect(() => codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), codexContext(configDir)))
+      .toThrow(/context7|endpoint|url|conflict|collision/i);
+    expect(fs.readFileSync(configFile, "utf8")).toBe(previous);
+  });
+
   it.each([
     {
       label: "otro endpoint",

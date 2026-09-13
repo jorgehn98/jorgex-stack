@@ -10,6 +10,8 @@ import { HOME, samePath, stackRoot } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import {
   readTomlSection,
+  hasTomlChildSection,
+  multilineStringMask,
   hasTomlRootKey,
   removeMarkdownSection,
   removeTomlRootKeyIfExact,
@@ -98,8 +100,10 @@ const CODEX_HEADER = new RegExp(String.raw`^\[\s*(${CODEX_KEY}(?:\s*\.\s*${CODEX
 function tomlAssignment(section: string, key: string): { present: boolean; raw?: string } {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
-  for (const line of section.split(/\r?\n/)) {
-    if (!keyPattern.test(line)) continue;
+  const lines = section.split(/\r?\n/);
+  const mask = multilineStringMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (mask[index] || !keyPattern.test(line)) continue;
     const match = CODEX_ASSIGNMENT.exec(line);
     if (match) return { present: true, raw: match[2] };
     const equals = line.indexOf("=");
@@ -154,12 +158,14 @@ function isCompatibleContext7Server(server: CanonicalMcp["servers"][string], sec
     && (!enabled.present || enabled.raw?.trim() === "true");
 }
 
-function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], section: string | null): boolean {
-  return isCompatibleContext7Server(server, section) && section!.trim() === context7HttpSection(server);
+function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], section: string | null, config: string | null): boolean {
+  return isCompatibleContext7Server(server, section) && section!.trim() === context7HttpSection(server)
+    && !hasTomlChildSection(config, "mcp_servers.context7");
 }
 
-function assertCompatibleContext7(server: CanonicalMcp["servers"][string], section: string | null): void {
-  if (section !== null && !isCompatibleContext7Server(server, section)) {
+function assertCompatibleContext7(server: CanonicalMcp["servers"][string], section: string | null, config: string | null): void {
+  if ((section === null && hasTomlChildSection(config, "mcp_servers.context7"))
+    || (section !== null && !isCompatibleContext7Server(server, section))) {
     throw new Error("Codex: MCP 'context7' entra en conflicto con una definición existente (endpoint, tipo o estado nativo incompatible). Conserva la configuración y corrige el conflicto antes de reintentar.");
   }
 }
@@ -467,7 +473,7 @@ export const codexAdapter: Adapter = {
 
     const context7 = canonical.servers.context7;
     if (context7 !== undefined) {
-      assertCompatibleContext7(context7, readTomlSection(contentSource, "mcp_servers.context7"));
+      assertCompatibleContext7(context7, readTomlSection(contentSource, "mcp_servers.context7"), contentSource);
     }
 
     // Permisos por defecto: solo en config fresca o vacía. Una config
@@ -521,7 +527,7 @@ export const codexAdapter: Adapter = {
         // Una definición compatible previa es suficiente para Context7. Solo
         // se libera ownership si el usuario modificó la entrada creada por el
         // Stack; nunca se reemplazan sus headers ni campos adicionales.
-        if (owned && !isCanonicalContext7Server(server, existing)) {
+        if (owned && !isCanonicalContext7Server(server, existing, content)) {
           mcpOwnership.push({ server: name, owned: false });
         }
         continue;
@@ -627,7 +633,7 @@ export const codexAdapter: Adapter = {
         const section = `mcp_servers.${name}`;
         if (name === "context7") {
           const current = readTomlSection(content, section);
-          const canonical = isCanonicalContext7Server(server, current);
+          const canonical = isCanonicalContext7Server(server, current, content);
           const owned = ctx.ownedMcpServers?.has(name) === true;
           if (owned) {
             if (canonical) {
