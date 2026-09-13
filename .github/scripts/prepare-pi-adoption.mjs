@@ -82,6 +82,37 @@ const PERMISSIONS_ACTIONS = [
   "backup:permissions.config",
   "removed:permissions.config",
 ];
+const EXPERIENCE_CAPABILITY = "experience-defaults-v1";
+const EXPERIENCE_BIN = "bin/jorgex-pi.mjs";
+const EXPERIENCE_RUNNER = {
+  settings: "PI_CODING_AGENT_DIR/settings.json",
+  receipt: "PI_CODING_AGENT_DIR/jorgex-pi/experience-lifecycle.v1.json",
+  defaults: {
+    theme: "JorgeX",
+    quietStartup: true,
+    hideThinkingBlock: true,
+  },
+  initialization: "first sync only",
+  ownership: "missing fields only; cleanup removes exact package-owned values and preserves replacements",
+};
+const EXPERIENCE_RECEIPT_WRITE = {
+  owner: "jorgex-pi",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "jorgex-pi/experience-lifecycle.v1.json",
+  semantics: "record first initialization and exact ownership of missing theme, quietStartup, and hideThinkingBlock fields; preserve replacements and do not reseed after initialization",
+};
+const EXPERIENCE_SETTINGS_SEMANTICS = "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair plus first-visit theme=JorgeX, quietStartup=true, and hideThinkingBlock=true defaults; preserve foreign halves and existing experience values; cleanup removes only receipt-owned exact values";
+const EXPERIENCE_ACTIONS = [
+  "created:theme",
+  "created:quietStartup",
+  "created:hideThinkingBlock",
+  "released:theme",
+  "released:quietStartup",
+  "released:hideThinkingBlock",
+  "removed:theme",
+  "removed:quietStartup",
+  "removed:hideThinkingBlock",
+];
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -259,10 +290,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -444,6 +475,38 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert(!PERMISSIONS_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Permissions policy lifecycle actions must be new in this transition");
     lifecycleAction.enum.push(...PERMISSIONS_ACTIONS);
   }
+  const experienceEnabled = newContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY);
+  const experienceTransition = acceptExperienceDefaults
+    && !oldContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY)
+    && experienceEnabled;
+  if (experienceTransition) {
+    assert(oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY) && permissionsEnabled,
+      "Experience defaults require the permissions policy capability");
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(EXPERIENCE_CAPABILITY), "Experience defaults capability must be new in this transition");
+    const permissionsIndex = capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    assert(permissionsIndex >= 0, "Experience defaults require the existing permissions policy capability");
+    capabilities.splice(permissionsIndex + 1, 0, EXPERIENCE_CAPABILITY);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    assert.equal(runner.experience, undefined, "Experience defaults runner metadata must be new in this transition");
+    runner.experience = structuredClone(EXPERIENCE_RUNNER);
+
+    const assets = expectedContracts["contract/assets.v1.json"];
+    const settingsWrite = assets.managedExternalWrites.find((item) => item.relativePath === "settings.json");
+    assert(settingsWrite, "Experience defaults require the existing settings write");
+    settingsWrite.semantics = EXPERIENCE_SETTINGS_SEMANTICS;
+    assert(!assets.managedExternalWrites.some((item) => item.relativePath === EXPERIENCE_RECEIPT_WRITE.relativePath),
+      "Experience defaults receipt write must be new in this transition");
+    assets.managedExternalWrites.push(structuredClone(EXPERIENCE_RECEIPT_WRITE));
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    const lifecycleResult = schema.$defs.lifecycleResult;
+    assert.equal(lifecycleResult.properties.actions.maxItems, 32, "Experience defaults require the permissions lifecycle schema");
+    const lifecycleAction = schema.$defs.lifecycleAction;
+    assert(!EXPERIENCE_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Experience defaults lifecycle actions must be new in this transition");
+    lifecycleAction.enum.push(...EXPERIENCE_ACTIONS);
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -517,7 +580,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -557,14 +620,15 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
           expectedEntries.push(`package/${member}`);
         }
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions"].filter(Boolean).join(" and ");
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : "Permissions policy"} archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : "Experience defaults"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
       }
       if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
+      if (experienceTransition) assert.equal(entries.length, previousEntries.length, "Experience defaults must preserve the previous archive inventory");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
     }
@@ -574,6 +638,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       assert.equal(createHash("sha256").update(permissionsDefaults).digest("hex"), permissionsMetadata.outputSha256, "Permissions defaults hash does not match parity");
       assert.equal(tarText(tarballFile, PERMISSIONS_MODULE), git(piDir, ["show", `${producer}:${PERMISSIONS_MODULE}`]), "Permissions lifecycle module does not match producer");
     }
+    if (experienceEnabled) assert.equal(tarText(tarballFile, EXPERIENCE_BIN), git(piDir, ["show", `${producer}:${EXPERIENCE_BIN}`]), "Experience runner does not match producer");
     for (const { metadata: { targetPath }, content } of promptModules) {
       assert.equal(tarText(tarballFile, targetPath), content, "Modular system prompt archive bytes differ from the reviewed source");
     }
@@ -613,14 +678,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 13 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 14 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults]");
     process.exitCode = 1;
   }
 }
