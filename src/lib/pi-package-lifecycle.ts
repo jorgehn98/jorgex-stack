@@ -126,24 +126,32 @@ const ALLOWED_EXTERNAL_WRITES = new Set([
   "models.json",
   "jorgex-pi/sol-lifecycle.v1.json",
 ]);
+const PERMISSIONS_EXTERNAL_WRITES = new Set([
+  ...ALLOWED_EXTERNAL_WRITES,
+  "extensions/pi-permission-system/config.json",
+  "jorgex-pi/permissions-lifecycle.v1.json",
+  "jorgex-pi/permissions-backups",
+]);
 
 function sameRecord(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function managedExternalWritesAreSafe(writes: readonly ManagedExternalWrite[]): boolean {
-  if (writes.length !== ALLOWED_EXTERNAL_WRITES.size) return false;
+function managedExternalWritesAreSafe(writes: readonly ManagedExternalWrite[], capabilities: readonly string[]): boolean {
+  if (!Array.isArray(capabilities)) return false;
+  const allowed = capabilities.includes("permissions-policy-v1") ? PERMISSIONS_EXTERNAL_WRITES : ALLOWED_EXTERNAL_WRITES;
+  if (writes.length !== allowed.size) return false;
   const seen = new Set<string>();
   for (const write of writes) {
     if (write === null || typeof write !== "object" || Array.isArray(write)) return false;
     if (Object.keys(write).sort().join(",") !== "owner,relativePath,root,semantics") return false;
     if (write.owner !== "jorgex-pi" || write.root !== "PI_CODING_AGENT_DIR") return false;
-    if (typeof write.relativePath !== "string" || !ALLOWED_EXTERNAL_WRITES.has(write.relativePath)) return false;
+    if (typeof write.relativePath !== "string" || !allowed.has(write.relativePath)) return false;
     if (/^(?:[A-Za-z]:|[\\/])/.test(write.relativePath) || write.relativePath.split(/[\\/]/).includes("..")) return false;
     if (typeof write.semantics !== "string" || write.semantics.trim() === "" || seen.has(write.relativePath)) return false;
     seen.add(write.relativePath);
   }
-  return seen.size === ALLOWED_EXTERNAL_WRITES.size;
+  return seen.size === allowed.size;
 }
 
 function ownership(receipt: boolean): PiPackageLifecyclePlan["ownership"] {
@@ -318,7 +326,7 @@ function candidateIsValid(candidate: PiRuntimeCandidate, observed: CandidateTarb
     && candidate.contract.runner.schemaVersion === 1
     && candidate.contract.runner.bin === "jorgex-pi"
     && candidate.contract.runner.maxStdoutBytes === 65_536
-    && managedExternalWritesAreSafe(candidate.contract.managedExternalWrites)
+    && managedExternalWritesAreSafe(candidate.contract.managedExternalWrites, candidate.contract.capabilities)
     && [...REQUIRED_CAPABILITIES].every((capability) => candidate.contract.capabilities.includes(capability))
     && sameRecord(candidate.tarball, observed);
 }

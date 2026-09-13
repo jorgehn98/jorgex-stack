@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { PI_RUNTIME_CANDIDATE, type PiRuntimeCandidate } from "./fixtures/pi-runtime.js";
+import { PI_RUNTIME_CANDIDATE, PI_RUNTIME_PREVIOUS_CANDIDATE, type PiRuntimeCandidate } from "./fixtures/pi-runtime.js";
 
 type PiPackageReceipt = {
   schemaVersion: 1;
@@ -106,6 +106,88 @@ const MANAGED_PROJECTED_PACKAGE = {
 };
 const EXACT_SETTINGS = JSON.stringify({ packages: [MANAGED_PROJECTED_PACKAGE] });
 
+const PERMISSIONS_POLICY_CAPABILITY = "permissions-policy-v1";
+type ExternalWrite = {
+  readonly owner: "jorgex-pi";
+  readonly root: "PI_CODING_AGENT_DIR";
+  readonly relativePath: string;
+  readonly semantics: string;
+};
+
+const HISTORICAL_CAPABILITIES = [
+  "foundation-contract-v1",
+  "runner-json-v1",
+  "managed-primary-model-v1",
+] as const;
+
+const HISTORICAL_WRITES = [
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "settings.json",
+    semantics: "merge missing Pi defaults and preserve user changes",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "models.json",
+    semantics: "merge the managed model override and preserve user changes",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/sol-lifecycle.v1.json",
+    semantics: "record field, container, and file ownership",
+  },
+] as const;
+
+const PERMISSIONS_WRITES = [
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "extensions/pi-permission-system/config.json",
+    semantics: "merge the permission policy and preserve user changes",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/permissions-lifecycle.v1.json",
+    semantics: "record permission policy field ownership",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/permissions-backups",
+    semantics: "store permission policy backups",
+  },
+] as const;
+
+function candidateWithPermissions(
+  managedExternalWrites: readonly ExternalWrite[],
+  capabilities: readonly string[] = [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY],
+): PiRuntimeCandidate {
+  const baseline = historicalCandidate();
+  return {
+    ...baseline,
+    contract: {
+      ...baseline.contract,
+      capabilities,
+      managedExternalWrites,
+    },
+  } as unknown as PiRuntimeCandidate;
+}
+
+function historicalCandidate(): PiRuntimeCandidate {
+  return {
+    ...PI_RUNTIME_CANDIDATE,
+    contract: {
+      ...PI_RUNTIME_CANDIDATE.contract,
+      capabilities: HISTORICAL_CAPABILITIES,
+      managedExternalWrites: HISTORICAL_WRITES,
+    },
+  } as unknown as PiRuntimeCandidate;
+}
+
 function healthyInput(overrides: Partial<PiPackageLifecycleInput> = {}): PiPackageLifecycleInput {
   return {
     candidate: PI_RUNTIME_CANDIDATE,
@@ -195,6 +277,95 @@ describe("Pi package-managed lifecycle", () => {
     });
     expect(plan.invocation?.environment).not.toHaveProperty("PI_PACKAGE_DIR");
     expect(plan.invocation?.environment.ENGRAM_BIN).toMatch(/^\//);
+  });
+
+  it("keeps the previous candidate valid", async () => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const previous = planPiPackageLifecycle(healthyInput({
+      candidate: PI_RUNTIME_PREVIOUS_CANDIDATE as unknown as PiRuntimeCandidate,
+      observedTarball: PI_RUNTIME_PREVIOUS_CANDIDATE.tarball,
+      pi: {
+        ...healthyInput().pi,
+        packageRunner: `${CODING_AGENT_DIR}/packages/jorgex-pi-${PI_RUNTIME_PREVIOUS_CANDIDATE.package.version}/bin/jorgex-pi.mjs`,
+      },
+    }));
+    expect(previous).toMatchObject({
+      kind: "install",
+      ownership: { receipt: true, adapters: false, manifest: false, modelMap: false },
+    });
+  });
+
+  it("accepts exactly six managed external writes with permissions-policy-v1", async () => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const sixWriteCandidate = candidateWithPermissions([
+      ...HISTORICAL_WRITES,
+      ...PERMISSIONS_WRITES,
+    ]);
+    const expanded = planPiPackageLifecycle(healthyInput({ candidate: sixWriteCandidate }));
+    expect(expanded).toMatchObject({
+      kind: "install",
+      ownership: { receipt: true, adapters: false, manifest: false, modelMap: false },
+    });
+  });
+
+  it.each([
+    [
+      "six writes without the capability",
+      candidateWithPermissions([
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES,
+      ], HISTORICAL_CAPABILITIES),
+    ],
+    [
+      "three writes with the capability",
+      candidateWithPermissions(HISTORICAL_WRITES),
+    ],
+    [
+      "a missing permission write",
+      candidateWithPermissions([
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES.slice(0, 2),
+      ]),
+    ],
+    [
+      "a duplicate permission write",
+      candidateWithPermissions([
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES.slice(0, 2),
+        PERMISSIONS_WRITES[0],
+      ]),
+    ],
+    [
+      "an extra permission write",
+      candidateWithPermissions([
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES.slice(0, 2),
+        {
+          owner: "jorgex-pi",
+          root: "PI_CODING_AGENT_DIR",
+          relativePath: "jorgex-pi/unexpected.json",
+          semantics: "unexpected write",
+        },
+      ]),
+    ],
+    [
+      "an escaping permission write",
+      candidateWithPermissions([
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES.slice(0, 2),
+        {
+          owner: "jorgex-pi",
+          root: "PI_CODING_AGENT_DIR",
+          relativePath: "../permissions.json",
+          semantics: "escape",
+        },
+      ]),
+    ],
+  ] as const)("rejects %s from the managed external-write allowlist", async (_name, candidate) => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const plan = planPiPackageLifecycle(healthyInput({ candidate }));
+
+    expect(plan).toMatchObject({ kind: "blocked", reason: "tarball-integrity" });
   });
 
   it("preserves an exact manual install, but blocks corrupt, divergent, duplicate, partial, incompatible, or tampered state", async () => {
