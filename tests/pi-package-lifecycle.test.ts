@@ -162,6 +162,16 @@ const PERMISSIONS_WRITES = [
   },
 ] as const;
 
+const EXPERIENCE_DEFAULTS_CAPABILITY = "experience-defaults-v1";
+const EXPERIENCE_WRITES = [
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/experience-lifecycle.v1.json",
+    semantics: "record experience defaults field ownership",
+  },
+] as const;
+
 function candidateWithPermissions(
   managedExternalWrites: readonly ExternalWrite[],
   capabilities: readonly string[] = [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY],
@@ -364,6 +374,84 @@ describe("Pi package-managed lifecycle", () => {
   ] as const)("rejects %s from the managed external-write allowlist", async (_name, candidate) => {
     const { planPiPackageLifecycle } = await lifecycle();
     const plan = planPiPackageLifecycle(healthyInput({ candidate }));
+
+    expect(plan).toMatchObject({ kind: "blocked", reason: "tarball-integrity" });
+  });
+
+  it("accepts exactly seven managed external writes with experience-defaults-v1 and permissions-policy-v1", async () => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const candidate = candidateWithPermissions(
+      [...HISTORICAL_WRITES, ...PERMISSIONS_WRITES, ...EXPERIENCE_WRITES],
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY, EXPERIENCE_DEFAULTS_CAPABILITY],
+    );
+    const plan = planPiPackageLifecycle(healthyInput({ candidate }));
+
+    expect(plan).toMatchObject({
+      kind: "install",
+      ownership: { receipt: true, adapters: false, manifest: false, modelMap: false },
+    });
+  });
+
+  it.each([
+    [
+      "seven writes without experience-defaults-v1",
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY],
+      [...HISTORICAL_WRITES, ...PERMISSIONS_WRITES, ...EXPERIENCE_WRITES],
+    ],
+    [
+      "experience-defaults-v1 without permissions-policy-v1",
+      [...HISTORICAL_CAPABILITIES, EXPERIENCE_DEFAULTS_CAPABILITY],
+      [...HISTORICAL_WRITES, ...EXPERIENCE_WRITES],
+    ],
+    [
+      "six writes with experience-defaults-v1",
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY, EXPERIENCE_DEFAULTS_CAPABILITY],
+      [...HISTORICAL_WRITES, ...PERMISSIONS_WRITES],
+    ],
+    [
+      "an extra experience write",
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY, EXPERIENCE_DEFAULTS_CAPABILITY],
+      [
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES,
+        ...EXPERIENCE_WRITES,
+        {
+          owner: "jorgex-pi",
+          root: "PI_CODING_AGENT_DIR",
+          relativePath: "jorgex-pi/unexpected.json",
+          semantics: "unexpected write",
+        },
+      ],
+    ],
+    [
+      "a duplicate experience write",
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY, EXPERIENCE_DEFAULTS_CAPABILITY],
+      [...HISTORICAL_WRITES, ...PERMISSIONS_WRITES, ...EXPERIENCE_WRITES, EXPERIENCE_WRITES[0]],
+    ],
+    [
+      "a missing permission write with experience",
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY, EXPERIENCE_DEFAULTS_CAPABILITY],
+      [...HISTORICAL_WRITES, ...PERMISSIONS_WRITES.slice(0, 2), ...EXPERIENCE_WRITES],
+    ],
+    [
+      "an escaping experience write",
+      [...HISTORICAL_CAPABILITIES, PERMISSIONS_POLICY_CAPABILITY, EXPERIENCE_DEFAULTS_CAPABILITY],
+      [
+        ...HISTORICAL_WRITES,
+        ...PERMISSIONS_WRITES,
+        {
+          owner: "jorgex-pi",
+          root: "PI_CODING_AGENT_DIR",
+          relativePath: "../experience-lifecycle.v1.json",
+          semantics: "escape",
+        },
+      ],
+    ],
+  ] as const)("rejects %s from the experience allowlist", async (_name, capabilities, writes) => {
+    const { planPiPackageLifecycle } = await lifecycle();
+    const plan = planPiPackageLifecycle(healthyInput({
+      candidate: candidateWithPermissions(writes, capabilities),
+    }));
 
     expect(plan).toMatchObject({ kind: "blocked", reason: "tarball-integrity" });
   });

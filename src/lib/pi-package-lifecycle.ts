@@ -132,6 +132,10 @@ const PERMISSIONS_EXTERNAL_WRITES = new Set([
   "jorgex-pi/permissions-lifecycle.v1.json",
   "jorgex-pi/permissions-backups",
 ]);
+const EXPERIENCE_EXTERNAL_WRITES = new Set([
+  ...PERMISSIONS_EXTERNAL_WRITES,
+  "jorgex-pi/experience-lifecycle.v1.json",
+]);
 
 function sameRecord(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -139,7 +143,10 @@ function sameRecord(left: unknown, right: unknown): boolean {
 
 function managedExternalWritesAreSafe(writes: readonly ManagedExternalWrite[], capabilities: readonly string[]): boolean {
   if (!Array.isArray(capabilities)) return false;
-  const allowed = capabilities.includes("permissions-policy-v1") ? PERMISSIONS_EXTERNAL_WRITES : ALLOWED_EXTERNAL_WRITES;
+  const permissions = capabilities.includes("permissions-policy-v1");
+  const experience = capabilities.includes("experience-defaults-v1");
+  if (experience && !permissions) return false;
+  const allowed = experience ? EXPERIENCE_EXTERNAL_WRITES : permissions ? PERMISSIONS_EXTERNAL_WRITES : ALLOWED_EXTERNAL_WRITES;
   if (writes.length !== allowed.size) return false;
   const seen = new Set<string>();
   for (const write of writes) {

@@ -19,6 +19,7 @@ type PreparePiAdoption = (
     acceptModularSystemPrompts?: boolean;
     acceptContext7Http?: boolean;
     acceptPermissionsPolicy?: boolean;
+    acceptExperienceDefaults?: boolean;
     acceptPiVersion?: string;
   },
   dependencies?: {
@@ -157,6 +158,51 @@ const PERMISSIONS_ACTIONS = [
   "backup:permissions.config",
   "removed:permissions.config",
 ] as const;
+const EXPERIENCE_CAPABILITY = "experience-defaults-v1";
+const EXPERIENCE_BIN_CONTENT = "export const experienceDefaults = true;\n";
+const EXPERIENCE_RUNNER_CONTRACT = {
+  settings: "PI_CODING_AGENT_DIR/settings.json",
+  receipt: "PI_CODING_AGENT_DIR/jorgex-pi/experience-lifecycle.v1.json",
+  defaults: {
+    theme: "JorgeX",
+    quietStartup: true,
+    hideThinkingBlock: true,
+  },
+  initialization: "first sync only",
+  ownership: "missing fields only; cleanup removes exact package-owned values and preserves replacements",
+} as const;
+const EXPERIENCE_RECEIPT_WRITE = {
+  owner: "jorgex-pi",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "jorgex-pi/experience-lifecycle.v1.json",
+  semantics: "record first initialization and exact ownership of missing theme, quietStartup, and hideThinkingBlock fields; preserve replacements and do not reseed after initialization",
+} as const;
+const EXPERIENCE_SETTINGS_SEMANTICS = "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair plus first-visit theme=JorgeX, quietStartup=true, and hideThinkingBlock=true defaults; preserve foreign halves and existing experience values; cleanup removes only receipt-owned exact values";
+const EXPERIENCE_MANAGED_EXTERNAL_WRITES = [
+  { ...PERMISSIONS_MANAGED_EXTERNAL_WRITES[0], semantics: EXPERIENCE_SETTINGS_SEMANTICS },
+  ...PERMISSIONS_MANAGED_EXTERNAL_WRITES.slice(1),
+  EXPERIENCE_RECEIPT_WRITE,
+] as const;
+const EXPERIENCE_ACTIONS = [
+  "created:theme",
+  "created:quietStartup",
+  "created:hideThinkingBlock",
+  "released:theme",
+  "released:quietStartup",
+  "released:hideThinkingBlock",
+  "removed:theme",
+  "removed:quietStartup",
+  "removed:hideThinkingBlock",
+] as const;
+const EXPERIENCE_TRANSITION_FIXTURE = {
+  previousModularSystemPrompts: true,
+  modularSystemPrompts: true,
+  previousContext7Http: true,
+  context7Http: true,
+  previousPermissionsPolicy: true,
+  permissionsPolicy: true,
+  experienceDefaults: true,
+} as const;
 const BASE_LIFECYCLE_ACTIONS = [
   "created:settings.defaultProvider",
   "created:settings.defaultModel",
@@ -209,6 +255,7 @@ function runnerResponseSchema(
   context7SchemaMutation = false,
   permissionsPolicy = false,
   permissionsSchemaMutation = false,
+  experienceDefaults = false,
 ): Record<string, unknown> {
   const context7 = {
     type: "object",
@@ -293,7 +340,11 @@ function runnerResponseSchema(
     },
   };
   const lifecycleAction = {
-    enum: [...BASE_LIFECYCLE_ACTIONS, ...(permissionsPolicy ? PERMISSIONS_ACTIONS : [])],
+    enum: [
+      ...BASE_LIFECYCLE_ACTIONS,
+      ...(permissionsPolicy ? PERMISSIONS_ACTIONS : []),
+      ...(experienceDefaults ? EXPERIENCE_ACTIONS : []),
+    ],
   };
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -488,6 +539,8 @@ function writePiRelease(
     permissionsAssetsDuplicateMutation?: boolean;
     permissionsParityMutation?: boolean;
     permissionsSourceParityMutation?: boolean;
+    experienceDefaults?: boolean;
+    experienceRunnerMutation?: boolean;
     legacyBrowserExclusions?: boolean;
     extraSystemPromptModule?: {
       name: string;
@@ -512,6 +565,7 @@ function writePiRelease(
   const context7Http = options.context7Http ?? false;
   const permissionsPolicy = options.permissionsPolicy ?? false;
   const permissionsCapability = options.permissionsCapability ?? permissionsPolicy;
+  const experienceDefaults = options.experienceDefaults ?? false;
   const piVersionContract = options.piVersionContract ?? DEFAULT_PI_VERSION_CONTRACT;
   const playwrightSkillEnabled = options.playwrightSkill ?? false;
   const playwrightSkillTree = options.playwrightSkillTree ?? playwrightSkillEnabled;
@@ -528,6 +582,7 @@ function writePiRelease(
     "engram-runtime-tools-v1",
     ...(context7Http ? [CONTEXT7_CAPABILITY] : []),
     ...(permissionsCapability ? [PERMISSIONS_CAPABILITY] : []),
+    ...(experienceDefaults ? [EXPERIENCE_CAPABILITY] : []),
     ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
     ...(options.playwrightHandoff ? ["playwright-handoff-v1"] : []),
     "runner-json-v1",
@@ -547,7 +602,7 @@ function writePiRelease(
     dependencies: { "pi-web-access": "0.24.1" },
   });
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
-  fs.writeFileSync(path.join(root, "bin", "jorgex-pi.mjs"), "export {};\n", "utf8");
+  fs.writeFileSync(path.join(root, "bin", "jorgex-pi.mjs"), experienceDefaults ? EXPERIENCE_BIN_CONTENT : "export {};\n", "utf8");
   fs.mkdirSync(path.join(root, "agents"), { recursive: true });
   fs.writeFileSync(path.join(root, "agents", "tester.md"), "fixture agent\n", "utf8");
   fs.mkdirSync(path.join(root, "assets", "system-prompt"), { recursive: true });
@@ -640,9 +695,14 @@ function writePiRelease(
         ? { ...PERMISSIONS_RUNNER_CONTRACT, diagnostic: "mutated permission diagnostic" }
         : PERMISSIONS_RUNNER_CONTRACT,
     } : {}),
+    ...(experienceDefaults ? {
+      experience: options.experienceRunnerMutation
+        ? { ...EXPERIENCE_RUNNER_CONTRACT, initialization: "every sync" }
+        : EXPERIENCE_RUNNER_CONTRACT,
+    } : {}),
   });
   const managedExternalWrites: Array<{ owner: string; root: string; relativePath: string; semantics: string }> = permissionsPolicy
-    ? [...PERMISSIONS_MANAGED_EXTERNAL_WRITES]
+    ? experienceDefaults ? [...EXPERIENCE_MANAGED_EXTERNAL_WRITES] : [...PERMISSIONS_MANAGED_EXTERNAL_WRITES]
     : [...BASE_MANAGED_EXTERNAL_WRITES];
   if (permissionsPolicy && options.permissionsAssetsMutation) {
     managedExternalWrites.push({
@@ -677,7 +737,7 @@ function writePiRelease(
   writeJson(root, "contract/runtime-agents.v1.json", { schemaVersion: 1, agents: ["tester"] });
   for (const schema of ["runner-response", "quality-receipt", "quality-capabilities"]) {
     writeJson(root, `contract/schemas/${schema}.v1.schema.json`, schema === "runner-response"
-      ? runnerResponseSchema(context7Http, options.context7SchemaMutation, permissionsPolicy, options.permissionsSchemaMutation)
+      ? runnerResponseSchema(context7Http, options.context7SchemaMutation, permissionsPolicy, options.permissionsSchemaMutation, experienceDefaults)
       : { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" });
   }
   const paritySkills = options.persistentControlSkill
@@ -814,6 +874,9 @@ function createAdoptionFixture(options: {
   permissionsAssetsDuplicateMutation?: boolean;
   permissionsParityMutation?: boolean;
   permissionsSourceParityMutation?: boolean;
+  previousExperienceDefaults?: boolean;
+  experienceDefaults?: boolean;
+  experienceRunnerMutation?: boolean;
   extraSystemPromptModule?: {
     name: string;
     sourcePath: string;
@@ -878,6 +941,7 @@ function createAdoptionFixture(options: {
     modularSystemPrompts: options.previousModularSystemPrompts,
     context7Http: options.previousContext7Http,
     permissionsPolicy: options.previousPermissionsPolicy,
+    experienceDefaults: options.previousExperienceDefaults,
     devtoolsHandoff: options.previousDevtoolsHandoff,
     playwrightHandoff: options.previousPlaywrightHandoff,
     playwrightSkill: options.previousPlaywrightSkill,
@@ -925,6 +989,8 @@ function createAdoptionFixture(options: {
     permissionsAssetsDuplicateMutation: options.permissionsAssetsDuplicateMutation,
     permissionsParityMutation: options.permissionsParityMutation,
     permissionsSourceParityMutation: options.permissionsSourceParityMutation,
+    experienceDefaults: options.experienceDefaults,
+    experienceRunnerMutation: options.experienceRunnerMutation,
     extraSystemPromptModule: options.extraSystemPromptModule,
     playwrightHandoff: options.playwrightHandoff,
     playwrightSkill: options.playwrightSkill,
@@ -1580,6 +1646,173 @@ describe("preparePiAdoption", () => {
     expect(fixture.nextArchive.entries).toBe(previousEntries.length + 2);
   }, 15_000);
 
+  it("acepta la transición exacta de defaults de experiencia sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture(EXPERIENCE_TRANSITION_FIXTURE);
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptExperienceDefaults: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+      `https://registry.npmjs.org/jorgex-pi/${fixture.version}`,
+      tarballUrl(fixture.version),
+      tarballUrl(fixture.current.package.version),
+    ]);
+
+    const contract = readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json");
+    expect(contract.capabilities).toContain(EXPERIENCE_CAPABILITY);
+    const runner = readJson<{ experience: typeof EXPERIENCE_RUNNER_CONTRACT }>(fixture.piDir, "contract/runner.v1.json");
+    expect(runner.experience).toEqual(EXPERIENCE_RUNNER_CONTRACT);
+
+    const assets = readJson<{
+      managedExternalWrites: typeof EXPERIENCE_MANAGED_EXTERNAL_WRITES;
+      preservedExternalState: unknown[];
+    }>(fixture.piDir, "contract/assets.v1.json");
+    expect(assets.managedExternalWrites).toEqual(EXPERIENCE_MANAGED_EXTERNAL_WRITES);
+    expect(assets.preservedExternalState).toEqual([CONTEXT7_PRESERVED_MCP]);
+
+    const parity = readJson<Record<string, unknown>>(fixture.piDir, "contract/parity.v2.json");
+    expect(Object.hasOwn(parity, "experience")).toBe(false);
+
+    const schema = readJson<{
+      $defs: {
+        lifecycleResult: { properties: { actions: { maxItems: number } } };
+        lifecycleAction: { enum: string[] };
+      };
+    }>(fixture.piDir, "contract/schemas/runner-response.v1.schema.json");
+    expect(schema.$defs.lifecycleResult.properties.actions.maxItems).toBe(32);
+    expect(schema.$defs.lifecycleAction.enum).toEqual([
+      ...BASE_LIFECYCLE_ACTIONS,
+      ...PERMISSIONS_ACTIONS,
+      ...EXPERIENCE_ACTIONS,
+    ]);
+
+    const previousEntries = archiveEntryNames(path.dirname(fixture.root), fixture.previousTarball);
+    const nextEntries = archiveEntryNames(path.dirname(fixture.root), fixture.tarball);
+    expect(nextEntries).toEqual(previousEntries);
+    expect(fixture.nextArchive.entries).toBe(previousEntries.length);
+    expect(git(fixture.piDir, ["show", `${fixture.next.provenance.commit}:bin/jorgex-pi.mjs`], false)).toBe(EXPERIENCE_BIN_CONTENT);
+  }, 15_000);
+
+  it("rechaza una mutación ajena del contrato de experiencia aunque se confirme la transición", async () => {
+    const fixture = createAdoptionFixture({ ...EXPERIENCE_TRANSITION_FIXTURE, experienceRunnerMutation: true });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptExperienceDefaults: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review|contract\/runner/i);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza un archivo ajeno aunque se confirme la transición de experiencia", async () => {
+    const fixture = createAdoptionFixture({
+      ...EXPERIENCE_TRANSITION_FIXTURE,
+      extraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptExperienceDefaults: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*review/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza bytes de bin/jorgex-pi.mjs que no coinciden con el productor", async () => {
+    const fixture = createAdoptionFixture(EXPERIENCE_TRANSITION_FIXTURE);
+    const tamperedTarball = replaceArchiveMemberWithoutDirectories(
+      fixture.root,
+      fixture.tarball,
+      "package/bin/jorgex-pi.mjs",
+      "export const runner = false;\n",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: tamperedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptExperienceDefaults: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/runner|producer|bin/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un valor no booleano de acceptExperienceDefaults antes de consultar npm", async () => {
+    const fixture = createAdoptionFixture();
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptExperienceDefaults: "yes" as unknown as boolean,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Adoption options must be boolean/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
   it("rechaza las seis escrituras gestionadas de permisos si falta la capability", async () => {
     const fixture = createAdoptionFixture({ ...PERMISSIONS_TRANSITION_FIXTURE, permissionsCapability: false });
     const fetch = vi.fn();
@@ -1791,7 +2024,7 @@ describe("preparePiAdoption", () => {
     expect(rootState(fixture)).toEqual(before);
   });
 
-  it("expone --accept-permissions-policy en el contrato CLI del preparador", () => {
+  it.each(["--accept-permissions-policy", "--accept-experience-defaults"])("expone %s en el contrato CLI del preparador", (flag) => {
     const cliRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-cli-"));
     temporaryRoots.push(cliRoot);
     const scriptRoot = path.join(cliRoot, ".github", "scripts");
@@ -1819,7 +2052,7 @@ describe("preparePiAdoption", () => {
       cliRoot,
       "--version",
       "0.0.0",
-      "--accept-permissions-policy",
+      flag,
     ], { cwd: cliRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
     expect(result.error).toBeUndefined();

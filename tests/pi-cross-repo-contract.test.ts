@@ -253,10 +253,11 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const receiptFile = path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json");
     const permissionsFile = path.join(agentDir, "extensions", "pi-permission-system", "config.json");
     const permissionsReceipt = path.join(agentDir, "jorgex-pi", "permissions-lifecycle.v1.json");
+    const experienceReceipt = path.join(agentDir, "jorgex-pi", "experience-lifecycle.v1.json");
     const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
     const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
     fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(settingsFile, JSON.stringify({ foreign: { keep: true } }));
+    fs.writeFileSync(settingsFile, JSON.stringify({ foreign: { keep: true }, defaultThinkingLevel: "high" }));
     fs.writeFileSync(modelsFile, JSON.stringify({ foreign: { keep: true } }));
     fs.writeFileSync(engramBin, "placeholder");
 
@@ -284,6 +285,10 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       foreign: { keep: true },
       defaultProvider: "openai-codex",
       defaultModel: "gpt-5.6-sol",
+      theme: "JorgeX",
+      quietStartup: true,
+      hideThinkingBlock: true,
+      defaultThinkingLevel: "high",
     });
     expect(readJson(modelsFile)).toMatchObject({
       foreign: { keep: true },
@@ -294,18 +299,23 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expect(readJson(permissionsFile)).toEqual(readJson(path.join(root, "package", "assets", "permissions", "defaults.json")));
     const permissionBytes = fs.readFileSync(permissionsFile, "utf8");
     const permissionReceiptBytes = fs.readFileSync(permissionsReceipt, "utf8");
+    const experienceReceiptBytes = fs.readFileSync(experienceReceipt, "utf8");
+    const settingsBytes = fs.readFileSync(settingsFile, "utf8");
     expect(run("sync").status).toBe(0);
+    expect(fs.readFileSync(experienceReceipt, "utf8")).toBe(experienceReceiptBytes);
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe(settingsBytes);
     expect(fs.readFileSync(permissionsFile, "utf8")).toBe(permissionBytes);
     expect(fs.readFileSync(permissionsReceipt, "utf8")).toBe(permissionReceiptBytes);
 
     const canonicalCleanup = run("cleanup");
     expect(canonicalCleanup.status).toBe(0);
     expectRunnerOutput(canonicalCleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultThinkingLevel: "high" });
     expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
     expect(fs.existsSync(receiptFile)).toBe(false);
     expect(fs.existsSync(permissionsFile)).toBe(false);
     expect(fs.existsSync(permissionsReceipt)).toBe(false);
+    expect(fs.existsSync(experienceReceipt)).toBe(false);
     const permissionBackups = path.join(agentDir, "jorgex-pi", "permissions-backups");
     const backupFiles = fs.readdirSync(permissionBackups, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -318,7 +328,13 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const settings = readJson(settingsFile) as Record<string, unknown>;
     settings.defaultModel = "user-model";
+    settings.theme = "dark";
+    settings.hideThinkingBlock = false;
+    delete settings.quietStartup;
     fs.writeFileSync(settingsFile, JSON.stringify(settings));
+    expect(run("sync").status).toBe(0);
+    expect(readJson(settingsFile)).not.toHaveProperty("quietStartup");
+    expect(readJson(settingsFile)).toMatchObject({ theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
     const models = readJson(modelsFile) as Record<string, any>;
     models.providers["openai-codex"].modelOverrides["gpt-5.6-sol"].contextWindow = 900000;
     fs.writeFileSync(modelsFile, JSON.stringify(models));
@@ -330,7 +346,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const cleanup = run("cleanup");
     expect(cleanup.status).toBe(0);
     expectRunnerOutput(cleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model" });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model", theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
     expect(readJson(modelsFile)).toEqual({
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
@@ -341,9 +357,13 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const preexistingPolicy = path.join(preexistingAgent, "extensions", "pi-permission-system", "config.json");
     fs.mkdirSync(path.dirname(preexistingPolicy), { recursive: true });
     fs.writeFileSync(preexistingPolicy, userPolicyBytes);
+    const preexistingSettings = { theme: "JorgeX", quietStartup: false, hideThinkingBlock: true, defaultThinkingLevel: "high" };
+    const preexistingSettingsFile = path.join(preexistingAgent, "settings.json");
+    fs.writeFileSync(preexistingSettingsFile, JSON.stringify(preexistingSettings));
     expect(run("sync", preexistingAgent).status).toBe(0);
     expect(run("cleanup", preexistingAgent).status).toBe(0);
     expect(fs.readFileSync(preexistingPolicy, "utf8")).toBe(userPolicyBytes);
+    expect(readJson(preexistingSettingsFile)).toEqual(preexistingSettings);
 
     const invalidAgent = path.join(root, "invalid-agent");
     const invalidPolicy = path.join(invalidAgent, "extensions", "pi-permission-system", "config.json");
