@@ -23,6 +23,20 @@ const SYSTEM_PROMPT_MODULES = [
   { name: "playwright", file: "browser-playwright.md" },
   { name: "chrome-devtools", file: "browser-chrome-devtools.md" },
 ];
+const CONTEXT7_CAPABILITY = "context7-http-v1";
+const CONTEXT7_MODULE = "extensions/context7-config.mjs";
+const CONTEXT7_RUNNER = {
+  transport: "http",
+  registration: "isolated in-memory bridge at Pi bootstrap",
+  diagnostic: "available means configuration permits registration; no HTTP handshake is implied",
+  conflicts: "preserve existing MCP files; block managed Context7 activation",
+  cleanup: "no managed MCP configuration or credentials are written",
+};
+const CONTEXT7_PRESERVED_STATE = {
+  owner: "user",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "mcp.json",
+};
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -183,10 +197,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -249,6 +263,55 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       assert.deepEqual(matches[0], { kind: "runtime-specific-overlay", sourcePath });
       exclusions.splice(exclusions.indexOf(matches[0]), 1);
     }
+  }
+  const context7Transition = acceptContext7Http
+    && !oldContracts[rootContract].capabilities.includes(CONTEXT7_CAPABILITY)
+    && newContracts[rootContract].capabilities.includes(CONTEXT7_CAPABILITY);
+  if (context7Transition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(CONTEXT7_CAPABILITY), "Context7 HTTP capability must be new in this transition");
+    const engramIndex = capabilities.indexOf("engram-runtime-tools-v1");
+    assert(engramIndex >= 0, "Context7 HTTP requires the existing Engram runtime capability");
+    capabilities.splice(engramIndex + 1, 0, CONTEXT7_CAPABILITY);
+
+    const exclusions = expectedContracts[PARITY].exclusions;
+    const matches = exclusions.filter((item) => item.kind === "capability-integration" && item.id === "context7-mcp");
+    assert.equal(matches.length, 1, "Context7 HTTP requires exactly one former MCP exclusion");
+    exclusions.splice(exclusions.indexOf(matches[0]), 1);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    assert.equal(runner.context7, undefined, "Context7 HTTP runner metadata must be new in this transition");
+    runner.context7 = structuredClone(CONTEXT7_RUNNER);
+
+    const assets = expectedContracts["contract/assets.v1.json"];
+    assert(!assets.preservedExternalState.some((item) => item.owner === CONTEXT7_PRESERVED_STATE.owner
+      && item.root === CONTEXT7_PRESERVED_STATE.root && item.relativePath === CONTEXT7_PRESERVED_STATE.relativePath),
+    "Context7 HTTP preserved state must be new in this transition");
+    assets.preservedExternalState.push(structuredClone(CONTEXT7_PRESERVED_STATE));
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    assert.equal(schema.$defs.context7, undefined, "Context7 HTTP schema definition must be new in this transition");
+    schema.$defs.context7 = {
+      type: "object",
+      additionalProperties: false,
+      required: ["state"],
+      properties: {
+        state: { enum: ["available", "conflict", "invalid"] },
+        source: { type: "string" },
+        code: { type: "string" },
+      },
+    };
+    const statusResult = schema.$defs.statusResult;
+    assert.deepEqual(statusResult.required, ["installation", "engram"]);
+    statusResult.required.push("context7");
+    statusResult.properties.context7 = { $ref: "#/$defs/context7" };
+    const doctorChecks = schema.$defs.doctorResult.properties.checks;
+    assert.equal(doctorChecks.minItems, 2);
+    assert.equal(doctorChecks.maxItems, 2);
+    doctorChecks.minItems = 3;
+    doctorChecks.maxItems = 3;
+    assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram"]);
+    doctorChecks.items.properties.id.enum.push("context7");
   }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
@@ -323,7 +386,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -351,13 +414,19 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
           expectedEntries.push(`package/${targetPath}`);
         }
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions"].filter(Boolean).join(" and ");
+      if (context7Transition) {
+        assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", CONTEXT7_MODULE]).trim(), "", "Context7 module must be new in this transition");
+        assert(!previousEntries.includes(`package/${CONTEXT7_MODULE}`), "Context7 module must be absent from the previous archive");
+        expectedEntries.push(`package/${CONTEXT7_MODULE}`);
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${modularTransition ? "Modular system prompt" : "Playwright"} archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : "Context7"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
       }
+      if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
     }
@@ -400,14 +469,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 10 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 12 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http]");
     process.exitCode = 1;
   }
 }

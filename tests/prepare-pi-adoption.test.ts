@@ -17,6 +17,7 @@ type PreparePiAdoption = (
     acceptPlaywrightHandoff?: boolean;
     acceptPlaywrightSkillRemoval?: boolean;
     acceptModularSystemPrompts?: boolean;
+    acceptContext7Http?: boolean;
     acceptPiVersion?: string;
   },
   dependencies?: {
@@ -54,6 +55,29 @@ const MODULAR_SYSTEM_PROMPT_MODULES = [
   },
 ] as const;
 const MODULAR_CAPABILITY = "modular-system-prompts-v1";
+const CONTEXT7_CAPABILITY = "context7-http-v1";
+const CONTEXT7_RUNNER_CONTRACT = {
+  transport: "http",
+  registration: "isolated in-memory bridge at Pi bootstrap",
+  diagnostic: "available means configuration permits registration; no HTTP handshake is implied",
+  conflicts: "preserve existing MCP files; block managed Context7 activation",
+  cleanup: "no managed MCP configuration or credentials are written",
+} as const;
+const CONTEXT7_PRESERVED_MCP = {
+  owner: "user",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "mcp.json",
+} as const;
+const CONTEXT7_EXTENSION_CONTENT = "export const context7Http = true;\n";
+const CONTEXT7_TRANSITION_FIXTURE = {
+  previousModularSystemPrompts: true,
+  modularSystemPrompts: true,
+  previousDevtoolsHandoff: true,
+  devtoolsHandoff: true,
+  previousPlaywrightHandoff: true,
+  playwrightHandoff: true,
+  context7Http: true,
+} as const;
 const MODULAR_BASELINE_EXCLUSIONS = [
   { kind: "capability-integration", id: "context7-mcp" },
   { kind: "capability-integration", id: "post-pr-shell-hook-translation" },
@@ -72,6 +96,72 @@ function modularSystemPromptContent(sourcePath: string): string {
 
 function playwrightSkillContent(relativePath: string): string {
   return `legacy Playwright skill ${relativePath}\n`;
+}
+
+function runnerResponseSchema(context7Http: boolean, context7SchemaMutation = false): Record<string, unknown> {
+  const context7 = {
+    type: "object",
+    additionalProperties: false,
+    required: ["state"],
+    properties: {
+      state: { enum: ["available", "conflict", "invalid"] },
+      source: { type: "string" },
+      code: { type: "string" },
+    },
+  };
+  if (context7Http && context7SchemaMutation) (context7 as Record<string, unknown>).unexpected = true;
+  const statusResult = {
+    type: "object",
+    additionalProperties: false,
+    required: context7Http ? ["installation", "engram", "context7"] : ["installation", "engram"],
+    properties: {
+      installation: { $ref: "#/$defs/installation" },
+      engram: { $ref: "#/$defs/engram" },
+      ...(context7Http ? { context7: { $ref: "#/$defs/context7" } } : {}),
+    },
+  };
+  const doctorResult = {
+    type: "object",
+    additionalProperties: false,
+    required: ["healthy", "checks"],
+    properties: {
+      healthy: { type: "boolean" },
+      checks: {
+        type: "array",
+        minItems: context7Http ? 3 : 2,
+        maxItems: context7Http ? 3 : 2,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "status"],
+          properties: {
+            id: { enum: context7Http ? ["package", "engram", "context7"] : ["package", "engram"] },
+            status: { enum: ["ok", "error"] },
+          },
+        },
+      },
+    },
+  };
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "https://jorgex.dev/schemas/pi/runner-response.v1.schema.json",
+    type: "object",
+    additionalProperties: false,
+    required: ["schemaVersion", "command", "ok", "package", "result"],
+    properties: {
+      schemaVersion: { const: 1 },
+      command: { enum: ["status", "doctor", "models", "sync", "cleanup", "unknown"] },
+      ok: { type: "boolean" },
+      package: { $ref: "#/$defs/package" },
+      result: { type: "object" },
+      error: { $ref: "#/$defs/error" },
+    },
+    $defs: {
+      ...(context7Http ? { context7 } : {}),
+      statusResult,
+      doctorResult,
+    },
+  };
 }
 
 type Pin = {
@@ -188,11 +278,16 @@ function writePiRelease(
   version: string,
   sourceCommit: string,
   options: {
-    runnerCommands?: string[];
+    runnerCommands?: readonly string[];
     devtoolsHandoff?: boolean;
     devtoolsCapability?: boolean;
     devtoolsExclusion?: boolean;
     modularSystemPrompts?: boolean;
+    context7Http?: boolean;
+    context7RunnerMutation?: boolean;
+    context7SchemaMutation?: boolean;
+    context7AssetsMutation?: boolean;
+    context7ParityMutation?: boolean;
     legacyBrowserExclusions?: boolean;
     extraSystemPromptModule?: {
       name: string;
@@ -207,13 +302,14 @@ function writePiRelease(
     extraArchiveFile?: { path: string; content: string };
     removeArchiveFile?: string;
     rootContractMutation?: boolean;
-    extraCapabilities?: string[];
+    extraCapabilities?: readonly string[];
     piVersionContract?: PiVersionContract;
   } = {},
 ): void {
   const devtoolsCapability = options.devtoolsCapability ?? options.devtoolsHandoff ?? false;
   const devtoolsExclusion = options.devtoolsExclusion ?? !devtoolsCapability;
   const modularSystemPrompts = options.modularSystemPrompts ?? false;
+  const context7Http = options.context7Http ?? false;
   const piVersionContract = options.piVersionContract ?? DEFAULT_PI_VERSION_CONTRACT;
   const playwrightSkillEnabled = options.playwrightSkill ?? false;
   const playwrightSkillTree = options.playwrightSkillTree ?? playwrightSkillEnabled;
@@ -221,9 +317,21 @@ function writePiRelease(
     "foundation-contract-v1",
     "stack-snapshot-v2",
     ...(modularSystemPrompts ? [MODULAR_CAPABILITY] : []),
+    "runtime-agents-v1",
+    "permission-gated-tools-v1",
+    "structured-questions-v1",
+    "web-access-v1",
+    "goal-continuation-v1",
+    "mcp-adapter-v1",
+    "engram-runtime-tools-v1",
+    ...(context7Http ? [CONTEXT7_CAPABILITY] : []),
     ...(devtoolsCapability ? ["chrome-devtools-handoff-v1"] : []),
     ...(options.playwrightHandoff ? ["playwright-handoff-v1"] : []),
     "runner-json-v1",
+    "tui-branding-v1",
+    "managed-primary-model-v1",
+    "quality-receipt-contract-v1",
+    "quality-capabilities-contract-v1",
     ...(options.extraCapabilities ?? []),
   ];
   const packageIdentity = { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` };
@@ -253,6 +361,9 @@ function writePiRelease(
   fs.writeFileSync(path.join(root, "snapshot", "agents", "tester.md"), "fixture agent\n", "utf8");
   fs.mkdirSync(path.join(root, "extensions"), { recursive: true });
   fs.writeFileSync(path.join(root, "extensions", "bootstrap.ts"), "export const bootstrap = true;\n", "utf8");
+  const context7Extension = path.join(root, "extensions", "context7-config.mjs");
+  if (context7Http) fs.writeFileSync(context7Extension, CONTEXT7_EXTENSION_CONTENT, "utf8");
+  else if (fs.existsSync(context7Extension)) fs.unlinkSync(context7Extension);
   const playwrightExtension = path.join(root, "extensions", "playwright.ts");
   if (options.playwrightHandoff) fs.writeFileSync(playwrightExtension, "export const playwright = true;\n", "utf8");
   else if (fs.existsSync(playwrightExtension)) fs.unlinkSync(playwrightExtension);
@@ -308,6 +419,11 @@ function writePiRelease(
     exitCodes: { success: 0, unhealthy: 1, usage: 2, internal: 3 },
     stdout: { format: "json", records: 1, trailingNewline: true, maxBytes: 65_536 },
     responseSchema: "contract/schemas/runner-response.v1.schema.json",
+    ...(context7Http ? {
+      context7: options.context7RunnerMutation
+        ? { ...CONTEXT7_RUNNER_CONTRACT, transport: "sse" }
+        : CONTEXT7_RUNNER_CONTRACT,
+    } : {}),
   });
   writeJson(root, "contract/assets.v1.json", {
     schemaVersion: 1,
@@ -315,12 +431,16 @@ function writePiRelease(
     ownership: "package",
     resources: ["agents", "assets/system-prompt", "contract/parity.v2.json", "snapshot/agents"],
     managedExternalWrites: [],
-    preservedExternalState: [],
+    preservedExternalState: context7Http
+      ? [options.context7AssetsMutation ? { ...CONTEXT7_PRESERVED_MCP, unexpected: true } : CONTEXT7_PRESERVED_MCP]
+      : [],
   });
   writeJson(root, "contract/components.v1.json", { schemaVersion: 1, components: ["agents", "assets"] });
   writeJson(root, "contract/runtime-agents.v1.json", { schemaVersion: 1, agents: ["tester"] });
   for (const schema of ["runner-response", "quality-receipt", "quality-capabilities"]) {
-    writeJson(root, `contract/schemas/${schema}.v1.schema.json`, { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" });
+    writeJson(root, `contract/schemas/${schema}.v1.schema.json`, schema === "runner-response"
+      ? runnerResponseSchema(context7Http, options.context7SchemaMutation)
+      : { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" });
   }
   const paritySkills = options.persistentControlSkill
     ? [{
@@ -357,6 +477,11 @@ function writePiRelease(
       : devtoolsExclusion
         ? [{ kind: "capability-integration", id: "chrome-devtools-capability-handoff" }]
         : [];
+  if (context7Http) {
+    const context7Index = exclusions.findIndex((item) => item.kind === "capability-integration" && "id" in item && item.id === "context7-mcp");
+    if (context7Index >= 0) exclusions.splice(context7Index, 1);
+    if (options.context7ParityMutation) exclusions.push({ kind: "capability-integration", id: "context7-mcp" });
+  }
   writeJson(root, "contract/parity.v2.json", {
     schemaVersion: 2,
     source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: sourceCommit },
@@ -401,12 +526,18 @@ function replaceArchiveMember(root: string, tarball: Buffer, member: string, con
 }
 
 function createAdoptionFixture(options: {
-  runnerCommands?: string[];
+  runnerCommands?: readonly string[];
+  previousModularSystemPrompts?: boolean;
   previousDevtoolsHandoff?: boolean;
   devtoolsHandoff?: boolean;
   devtoolsCapability?: boolean;
   devtoolsExclusion?: boolean;
   modularSystemPrompts?: boolean;
+  context7Http?: boolean;
+  context7RunnerMutation?: boolean;
+  context7SchemaMutation?: boolean;
+  context7AssetsMutation?: boolean;
+  context7ParityMutation?: boolean;
   extraSystemPromptModule?: {
     name: string;
     sourcePath: string;
@@ -423,7 +554,7 @@ function createAdoptionFixture(options: {
   removeExtraArchiveFile?: string;
   extraArchiveFile?: { path: string; content: string };
   rootContractMutation?: boolean;
-  extraCapabilities?: string[];
+  extraCapabilities?: readonly string[];
   piVersionContract?: PiVersionContract;
 } = {}): AdoptionFixture {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-"));
@@ -462,10 +593,11 @@ function createAdoptionFixture(options: {
   fs.mkdirSync(piDir, { recursive: true });
   initializeGit(piDir);
   writePiRelease(piDir, "0.8.7", previousSourceCommit, {
+    modularSystemPrompts: options.previousModularSystemPrompts,
     devtoolsHandoff: options.previousDevtoolsHandoff,
     playwrightHandoff: options.previousPlaywrightHandoff,
     playwrightSkill: options.previousPlaywrightSkill,
-    legacyBrowserExclusions: options.modularSystemPrompts,
+    legacyBrowserExclusions: options.previousModularSystemPrompts === true ? false : options.modularSystemPrompts,
     persistentControlSkill: retainControlSkill,
     extraArchiveFile: options.previousExtraArchiveFile,
   });
@@ -495,6 +627,11 @@ function createAdoptionFixture(options: {
     devtoolsCapability: options.devtoolsCapability,
     devtoolsExclusion: options.devtoolsExclusion,
     modularSystemPrompts: options.modularSystemPrompts,
+    context7Http: options.context7Http,
+    context7RunnerMutation: options.context7RunnerMutation,
+    context7SchemaMutation: options.context7SchemaMutation,
+    context7AssetsMutation: options.context7AssetsMutation,
+    context7ParityMutation: options.context7ParityMutation,
     extraSystemPromptModule: options.extraSystemPromptModule,
     playwrightHandoff: options.playwrightHandoff,
     playwrightSkill: options.playwrightSkill,
@@ -839,6 +976,210 @@ describe("preparePiAdoption", () => {
     expect(parity.exclusions).not.toContainEqual(LEGACY_BROWSER_EXCLUSIONS[0]);
     expect(parity.exclusions).not.toContainEqual(LEGACY_BROWSER_EXCLUSIONS[1]);
   }, 15_000);
+
+  it("acepta la transición exacta de Context7 HTTP sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture(CONTEXT7_TRANSITION_FIXTURE);
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptContext7Http: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+
+    const contract = readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json");
+    expect(contract.capabilities).toContain(CONTEXT7_CAPABILITY);
+    const parity = readJson<{ exclusions: unknown[] }>(fixture.piDir, "contract/parity.v2.json");
+    expect(parity.exclusions).not.toContainEqual({ kind: "capability-integration", id: "context7-mcp" });
+
+    const runner = readJson<{ context7: typeof CONTEXT7_RUNNER_CONTRACT }>(fixture.piDir, "contract/runner.v1.json");
+    expect(runner.context7).toEqual(CONTEXT7_RUNNER_CONTRACT);
+    const assets = readJson<{ preservedExternalState: unknown[] }>(fixture.piDir, "contract/assets.v1.json");
+    expect(assets.preservedExternalState).toContainEqual(CONTEXT7_PRESERVED_MCP);
+
+    const schema = readJson<{
+      $defs: {
+        context7: Record<string, unknown>;
+        statusResult: { required: string[] };
+        doctorResult: { properties: { checks: { minItems: number; maxItems: number; items: { properties: { id: { enum: string[] } } } } } };
+      };
+    }>(fixture.piDir, "contract/schemas/runner-response.v1.schema.json");
+    expect(schema.$defs.context7).toEqual({
+      type: "object",
+      additionalProperties: false,
+      required: ["state"],
+      properties: {
+        state: { enum: ["available", "conflict", "invalid"] },
+        source: { type: "string" },
+        code: { type: "string" },
+      },
+    });
+    expect(schema.$defs.statusResult.required).toEqual(["installation", "engram", "context7"]);
+    expect(schema.$defs.doctorResult.properties.checks).toMatchObject({
+      minItems: 3,
+      maxItems: 3,
+      items: { properties: { id: { enum: ["package", "engram", "context7"] } } },
+    });
+    expect(fixture.nextArchive.entries).toBe(archiveEntries(path.dirname(fixture.root), fixture.previousTarball) + 1);
+  }, 15_000);
+
+  it("rechaza un archivo ajeno añadido al delta Context7 confirmado", async () => {
+    const fixture = createAdoptionFixture({
+      ...CONTEXT7_TRANSITION_FIXTURE,
+      extraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptContext7Http: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*reviewed.*module addition/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un renombrado con el mismo número esperado de entradas durante el delta Context7", async () => {
+    const fixture = createAdoptionFixture(CONTEXT7_TRANSITION_FIXTURE);
+    const renamedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/context7-config.mjs",
+      CONTEXT7_EXTENSION_CONTENT,
+      "package/extensions/context7-renamed.mjs",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: renamedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptContext7Http: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*reviewed.*module addition/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza bytes de context7-config.mjs que no coinciden con el productor Git", async () => {
+    const fixture = createAdoptionFixture(CONTEXT7_TRANSITION_FIXTURE);
+    const tamperedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      "package/extensions/context7-config.mjs",
+      "tampered Context7 module bytes\n",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: tamperedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptContext7Http: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Context7 module does not match producer/i);
+
+    expect(fetch).toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it.each([
+    ["unrelated capability", { extraCapabilities: ["unexpected-capability-v1"] }],
+    ["runner command", { runnerCommands: ["doctor", "sync", "cleanup"] }],
+    ["root contract", { rootContractMutation: true }],
+    ["Context7 runner metadata", { context7RunnerMutation: true }],
+    ["Context7 response schema", { context7SchemaMutation: true }],
+    ["Context7 preserved-state metadata", { context7AssetsMutation: true }],
+    ["Context7 parity exclusion", { context7ParityMutation: true }],
+  ] as const)("rechaza el cambio ajeno %s aunque se confirme Context7", async (_label, options) => {
+    const fixture = createAdoptionFixture({ ...CONTEXT7_TRANSITION_FIXTURE, ...options });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptContext7Http: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("mantiene la adopción ordinaria compatible aunque se confirme Context7", async () => {
+    const fixture = createAdoptionFixture();
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptContext7Http: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(rootState(fixture)).toEqual(before);
+  });
 
   it("rechaza un archivo ajeno añadido a la transición modular confirmada", async () => {
     const fixture = createAdoptionFixture({
