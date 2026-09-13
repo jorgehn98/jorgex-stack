@@ -13,11 +13,10 @@ import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/f
 import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
 import { HOME } from "./lib/paths.js";
 import {
-  detectPlaywrightCli,
-  isPlaywrightBrowserReady,
   type PlaywrightBrowserCacheState,
   type PlaywrightCliStatus,
 } from "./lib/external-tools.js";
+import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference, primaryModelOwnershipError } from "./lib/tool-preferences.js";
 
 function readDoctorTextIfExists(file: string): string | null {
@@ -39,6 +38,7 @@ export interface PlaywrightDoctorState {
   enabled: boolean | undefined;
   cli: { status: PlaywrightCliStatus };
   browserReady: boolean;
+  browserVerified?: boolean;
   browserCache?: PlaywrightBrowserCacheState;
 }
 
@@ -59,6 +59,7 @@ export function resolvePlaywrightDoctorState(input: PlaywrightDoctorState): Reso
   if (input.browserCache?.status === "unreadable") {
     return { status: "unreadable", path: input.browserCache.path, errorCode: input.browserCache.errorCode };
   }
+  if (input.browserVerified === false && input.browserCache?.status === "ready") return { status: "broken" };
   if (!input.browserReady) return { status: "missing", missing: "browser" };
   return { status: "healthy" };
 }
@@ -82,6 +83,9 @@ export interface DoctorOptions {
   mode?: InstallModePreference;
   targetDir?: string;
   runtimes?: SelectableRuntimeId[];
+  dryRun?: boolean;
+  /** Snapshot de capacidad compartida por el coordinador para este comando. */
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
 }
 
 function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mode: InstallModePreference): number {
@@ -181,21 +185,28 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     p.log.error(primaryOwnershipError);
     problems++;
   }
+  let effectivePlaywright: boolean | undefined;
   if (preferenceErrors.length > 0) {
     for (const error of preferenceErrors) p.log.error(error);
     problems += preferenceErrors.length;
+  } else if (options.dryRun) {
+    p.log.info("Playwright CLI: comprobación omitida en dry-run; no se evalúa el estado del paquete ni del navegador.");
   } else {
-    const browserCache = isPlaywrightBrowserReady();
+    const enabled = loadPlaywrightCliPreference();
+    const capability = options.playwrightCapability ?? (enabled === true ? inspectPlaywrightCapability() : undefined);
+    effectivePlaywright = capability?.effective;
+    const cli = capability?.cli ?? { status: "absent" as const };
     const playwright = resolvePlaywrightDoctorState({
-      enabled: loadPlaywrightCliPreference(),
-      cli: detectPlaywrightCli(),
-      browserReady: browserCache.status === "ready",
-      browserCache,
+      enabled,
+      cli,
+      browserReady: capability?.effective ?? false,
+      browserVerified: capability?.browserVerified,
+      browserCache: capability?.browserCache,
     });
     if (playwright.status === "disabled") {
       p.log.info("Playwright CLI: deshabilitado (opcional). Usa 'install --playwright' para instalarlo de forma explícita.");
     } else if (playwright.status === "healthy") {
-      p.log.success("Playwright CLI: paquete y caché de Chromium detectados (doctor no prueba el arranque).");
+      p.log.success("Playwright CLI: paquete y arranque de Chromium verificados.");
     } else if (playwright.status === "not-in-path") {
       p.log.warn("Playwright CLI: instalado en el directorio de pnpm, pero fuera del PATH de esta terminal. Abre una terminal nueva tras pnpm setup; no hace falta reinstalarlo.");
       problems++;
@@ -204,7 +215,10 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       p.log.warn(`Playwright CLI: habilitado, pero falta ${target} → ejecuta 'jorgex-stack install --playwright'.`);
       problems++;
     } else if (playwright.status === "broken") {
-      p.log.error("Playwright CLI: el binario detectado no responde correctamente → ejecuta 'jorgex-stack install --playwright'.");
+      const launchFailed = capability?.cli.status === "current"
+        && capability.browserCache.status === "ready"
+        && capability.browserVerified === false;
+      p.log.error(`Playwright CLI: ${launchFailed ? "Chromium no arranca" : "el binario detectado no responde correctamente"} → ejecuta 'jorgex-stack install --playwright'.`);
       problems++;
     } else if (playwright.status === "unreadable") {
       p.log.error(`Playwright CLI: no se puede leer la caché de navegadores en ${playwright.path} (${playwright.errorCode}) → revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
@@ -216,7 +230,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
   }
 
   const manifest = readManifest();
-  const current = collectAllCurrentTargets(modePreference);
+  const current = collectAllCurrentTargets(modePreference, effectivePlaywright);
 
   if (!current.complete || current.warnings.length > 0) {
     p.log.warn("Limpieza de huérfanos deshabilitada: no se pudo construir el plan completo de todos los runtimes.");
@@ -237,7 +251,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       .join(", ");
     p.log.info(`${adapter.name}: capabilities diagnostic (${capabilitySummary}); no certifica enforcement local.`);
 
-    const ctx = makeContext(adapter, detection.configDir, modePreference);
+    const ctx = makeContext(adapter, detection.configDir, modePreference, true, effectivePlaywright);
     if (!ctx) continue;
     ctx.writingStyle = writingStyle;
 
