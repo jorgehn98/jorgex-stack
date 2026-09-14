@@ -481,8 +481,16 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expectArchiveInventory(tarball);
   }, 60_000);
 
-  it("installs the packed checkout artifact with the checkout-local Pi, normalizes its source while preserving Pi's registration shape, validates doctor, and removes only the managed package", async () => {
+  it("coordinates install through the managed operation with the checkout-local Pi: normalizes source, initializes via sync, and removes only the managed package", async () => {
     const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js");
+    const { runManagedPiOperation } = await import("../src/lib/pi-managed-runtime.js") as unknown as {
+      runManagedPiOperation(operation: "install", deps: {
+        runPackage(operation: string): Promise<{ kind: string; reason?: string; receipt?: unknown }>;
+        runProjection(operation: string): Promise<unknown>;
+        prepareProjectionUninstall(): Promise<never>;
+        completeProjectionUninstall(): Promise<never>;
+      }): Promise<unknown>;
+    };
     const root = path.resolve(piDirectory!);
     const piManifest = readJson(path.join(root, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")) as {
       version?: unknown;
@@ -517,7 +525,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, process.platform === "win32" ? "placeholder" : "#!/bin/sh\nexit 0\n");
     if (process.platform !== "win32") fs.chmodSync(engramBin, 0o700);
-    fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: [foreignSource], foreignState })}\n`);
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: [foreignSource], foreignState, defaultThinkingLevel: "high" })}\n`);
 
     const invocations: Array<{ executable: string; args: string[]; environment: Record<string, string> }> = [];
     const runIsolated = (invocation: { executable: string; args: string[]; environment: Record<string, string> }) => {
@@ -562,49 +570,75 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       };
     };
 
-    const result = installPiFromVerifiedTarball({
-      targetDir: target,
-      piExecutable,
-      engramBin,
-      candidate: {
-        ...checkoutLifecycleFixture,
+    const trace: string[] = [];
+    const result = await runManagedPiOperation("install", {
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") {
+          return installPiFromVerifiedTarball({
+            targetDir: target,
+            piExecutable,
+            engramBin,
+            candidate: {
+              ...checkoutLifecycleFixture,
+            },
+          }, {
+            download(destination) {
+              expect(destination).toBe(downloadedTarball);
+              fs.mkdirSync(path.dirname(destination), { recursive: true });
+              fs.copyFileSync(sourceTarball, destination);
+              return {
+                path: destination,
+                bytes: fs.statSync(destination).size,
+                sha256: digest("sha256", destination),
+                sha512: digest("sha512", destination),
+              };
+            },
+            backupSettings() {
+              const backup = path.join(target, "backups", "settings.json");
+              fs.mkdirSync(path.dirname(backup), { recursive: true });
+              fs.copyFileSync(settingsPath, backup);
+            },
+            run: runIsolated,
+            readSettings: () => fs.readFileSync(settingsPath, "utf8"),
+            rewriteSettings: (content) => fs.writeFileSync(settingsPath, `${content}\n`),
+            writeReceiptAtomic: (content) => {
+              const receiptPath = path.join(target, "state", "pi-receipt.json");
+              fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+              fs.writeFileSync(receiptPath, content);
+            },
+          }) as unknown as { kind: string; reason?: string; receipt?: unknown };
+        }
+        if (next !== "sync") throw new Error(`unexpected package operation: ${next}`);
+        const sync = runIsolated({
+          executable: process.execPath,
+          args: [packageRunner, "sync", "--json"],
+          environment: invocations[0]!.environment,
+        });
+        expect(sync.exitCode).toBe(0);
+        expectRunnerOutput(sync, "sync", packageRunner);
+        return { kind: "synced" };
       },
-    }, {
-      download(destination) {
-        expect(destination).toBe(downloadedTarball);
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.copyFileSync(sourceTarball, destination);
-        return {
-          path: destination,
-          bytes: fs.statSync(destination).size,
-          sha256: digest("sha256", destination),
-          sha512: digest("sha512", destination),
-        };
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return runPiProjectionLifecycleSystem({
+          operation: next as "install",
+          targetDir: target,
+          packageSource: PI_RUNTIME_CANDIDATE.package.source,
+          engramBin,
+          playwrightCliEnabled: false,
+        }) as unknown;
       },
-      backupSettings() {
-        const backup = path.join(target, "backups", "settings.json");
-        fs.mkdirSync(path.dirname(backup), { recursive: true });
-        fs.copyFileSync(settingsPath, backup);
+      async prepareProjectionUninstall(): Promise<never> {
+        throw new Error("install must not prepare uninstall");
       },
-      run: runIsolated,
-      readSettings: () => fs.readFileSync(settingsPath, "utf8"),
-      rewriteSettings: (content) => fs.writeFileSync(settingsPath, `${content}\n`),
-      writeReceiptAtomic: (content) => {
-        const receiptPath = path.join(target, "state", "pi-receipt.json");
-        fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
-        fs.writeFileSync(receiptPath, content);
+      async completeProjectionUninstall(): Promise<never> {
+        throw new Error("install must not complete uninstall");
       },
     });
 
-    expect(result).toEqual(expect.objectContaining({
-      kind: "installed",
-      receipt: expect.objectContaining({
-        schemaVersion: 1,
-        state: "installed",
-        scope: { kind: "target-dir", codingAgentDir: agentDir },
-        engram: { binary: engramBin },
-      }),
-    }));
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(result).toEqual(expect.objectContaining({ kind: "installed" }));
     expect(invocations).toEqual([
       expect.objectContaining({
         executable: piExecutable,
@@ -614,16 +648,26 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
         executable: process.execPath,
         args: [packageRunner, "doctor", "--json"],
       }),
+      expect.objectContaining({
+        executable: process.execPath,
+        args: [packageRunner, "sync", "--json"],
+      }),
     ]);
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({
-      packages: [foreignSource, PI_RUNTIME_CANDIDATE.package.source],
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
+      packages: [foreignSource, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [], prompts: [] }],
       foreignState,
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.6-sol",
+      defaultThinkingLevel: "high",
     });
     expect(JSON.parse(fs.readFileSync(path.join(target, "backups", "settings.json"), "utf8"))).toEqual({
       packages: [foreignSource],
       foreignState,
+      defaultThinkingLevel: "high",
     });
     expect(fs.existsSync(packageRunner)).toBe(true);
+    expect(fs.existsSync(path.join(target, "state", "pi-receipt.json"))).toBe(true);
+    expect(fs.existsSync(path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json"))).toBe(true);
 
     const remove = runIsolated({
       executable: piExecutable,
@@ -631,7 +675,11 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       environment: invocations[0]!.environment,
     });
     expect(remove).toMatchObject({ exitCode: 0, stderr: "" });
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({ packages: [foreignSource], foreignState });
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
+      packages: [foreignSource],
+      foreignState,
+      defaultThinkingLevel: "high",
+    });
     expect(fs.existsSync(packageRoot)).toBe(false);
   }, 60_000);
 
