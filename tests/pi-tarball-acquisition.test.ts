@@ -239,3 +239,150 @@ describe("Pi tarball acquisition and portable scope", () => {
     }
   });
 });
+
+describe("Pi doctor initialization pending (initialization-diagnostics-v1)", () => {
+  const PENDING_MESSAGE = "Pi initialization is pending: run sync to complete first initialization.";
+  const PENDING_REMEDY = "Run jorgex-pi sync --json and retry.";
+  const PENDING_CHECKS = [
+    { id: "package", status: "ok" },
+    { id: "engram", status: "ok" },
+    { id: "context7", status: "ok" },
+    { id: "permissions", status: "error" },
+    { id: "experience", status: "error" },
+  ] as const;
+
+  function pendingDoctorJson(): string {
+    return `${JSON.stringify({
+      schemaVersion: 1,
+      command: "doctor",
+      ok: false,
+      package: { name: "jorgex-pi", version: PI_RUNTIME_CANDIDATE.package.version, root: path.dirname(path.dirname(packageRunner)) },
+      result: { healthy: false, checks: PENDING_CHECKS },
+      error: { phase: "initialization", code: "INITIALIZATION_REQUIRED", message: PENDING_MESSAGE, remedy: PENDING_REMEDY },
+    })}\n`;
+  }
+
+  function pendingDeps(events: string[], doctor: { exitCode: number; stdout: string; stderr: string }) {
+    const base = deps(events);
+    return {
+      ...base,
+      run(call: Invocation) {
+        events.push(`${call.executable}:${call.args.join(" ")}`);
+        expect(call.environment).toMatchObject(targetEnvironment);
+        if (call.args[0] === "install") return { exitCode: 0, stdout: "", stderr: "" };
+        return doctor;
+      },
+    };
+  }
+
+  it("accepts only the exact pending envelope as provisional install after validating schema/command/package/root/ordered checks/error", async () => {
+    const { installPiFromVerifiedTarball } = await acquisition();
+    const events: string[] = [];
+    const result = installPiFromVerifiedTarball({
+      targetDir: target,
+      piExecutable: "/opt/pi/bin/pi",
+      engramBin: targetEnvironment.ENGRAM_BIN,
+      candidate,
+    }, pendingDeps(events, { exitCode: 1, stdout: pendingDoctorJson(), stderr: "" }));
+
+    expect(result).toMatchObject({
+      kind: "installed",
+      receipt: {
+        schemaVersion: 1,
+        scope: { kind: "target-dir", codingAgentDir: path.resolve(codingAgentDir) },
+        engram: { binary: targetEnvironment.ENGRAM_BIN },
+      },
+    });
+    expect(events).toEqual([
+      `download:${tarball}`,
+      "backup-settings",
+      `receipt:installing:target-dir:${path.resolve(codingAgentDir)}`,
+      `/opt/pi/bin/pi:install npm:jorgex-pi@file:${tarball} --no-approve`,
+      "read-settings",
+      `settings:${JSON.stringify({ packages: ["npm:foreign@1.0.0", candidate.source] })}`,
+      `${process.execPath}:${packageRunner} doctor --json`,
+      `receipt:installed:target-dir:${path.resolve(codingAgentDir)}`,
+    ]);
+  });
+
+  it("remains blocked for malformed, wrong identity, wrong checks, or other unhealthy doctor output", async () => {
+    const { installPiFromVerifiedTarball } = await acquisition();
+    const exact = JSON.parse(pendingDoctorJson().slice(0, -1)) as Record<string, unknown>;
+    const packageValue = { ...(exact.package as Record<string, unknown>) };
+    const root = path.dirname(path.dirname(packageRunner));
+    const cases: Array<{ label: string; doctor: { exitCode: number; stdout: string; stderr: string } }> = [
+      { label: "malformed json", doctor: { exitCode: 1, stdout: "{not-json\n", stderr: "" } },
+      { label: "wrong schema", doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, schemaVersion: 2 })}\n`, stderr: "" } },
+      { label: "wrong command", doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, command: "status" })}\n`, stderr: "" } },
+      { label: "wrong package name", doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, package: { ...packageValue, name: "other-pi" } })}\n`, stderr: "" } },
+      { label: "wrong package version", doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, package: { ...packageValue, version: "0.0.0" } })}\n`, stderr: "" } },
+      { label: "wrong package root", doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, package: { ...packageValue, root: "/tmp/wrong-root" } })}\n`, stderr: "" } },
+      {
+        label: "wrong check order",
+        doctor: {
+          exitCode: 1,
+          stdout: `${JSON.stringify({ ...exact, result: { healthy: false, checks: [...PENDING_CHECKS].reverse() } })}\n`,
+          stderr: "",
+        },
+      },
+      {
+        label: "wrong check id",
+        doctor: {
+          exitCode: 1,
+          stdout: `${JSON.stringify({ ...exact, result: { healthy: false, checks: [...PENDING_CHECKS.slice(0, 4), { id: "other", status: "error" }] } })}\n`,
+          stderr: "",
+        },
+      },
+      {
+        label: "healthy checks with pending error",
+        doctor: {
+          exitCode: 1,
+          stdout: `${JSON.stringify({ ...exact, result: { healthy: true, checks: [{ id: "package", status: "ok" }, { id: "engram", status: "ok" }, { id: "context7", status: "ok" }, { id: "permissions", status: "ok" }, { id: "experience", status: "ok" }] } })}\n`,
+          stderr: "",
+        },
+      },
+      {
+        label: "other unhealthy without initialization code",
+        doctor: {
+          exitCode: 1,
+          stdout: `${JSON.stringify({
+            schemaVersion: 1,
+            command: "doctor",
+            ok: false,
+            package: { name: "jorgex-pi", version: PI_RUNTIME_CANDIDATE.package.version, root },
+            result: { healthy: false, checks: [{ id: "package", status: "ok" }, { id: "engram", status: "error" }, { id: "context7", status: "ok" }, { id: "permissions", status: "ok" }, { id: "experience", status: "ok" }] },
+            error: { phase: "doctor", code: "UNHEALTHY", message: "One or more required runtime checks failed.", remedy: "Set ENGRAM_BIN to the existing Engram executable and retry." },
+          })}\n`,
+          stderr: "",
+        },
+      },
+      {
+        label: "wrong error phase",
+        doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, error: { phase: "doctor", code: "INITIALIZATION_REQUIRED", message: PENDING_MESSAGE, remedy: PENDING_REMEDY } })}\n`, stderr: "" },
+      },
+      {
+        label: "wrong error code",
+        doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, error: { phase: "initialization", code: "UNHEALTHY", message: PENDING_MESSAGE, remedy: PENDING_REMEDY } })}\n`, stderr: "" },
+      },
+      {
+        label: "wrong remedy",
+        doctor: { exitCode: 1, stdout: `${JSON.stringify({ ...exact, error: { phase: "initialization", code: "INITIALIZATION_REQUIRED", message: PENDING_MESSAGE, remedy: "retry" } })}\n`, stderr: "" },
+      },
+      { label: "non-empty stderr", doctor: { exitCode: 1, stdout: pendingDoctorJson(), stderr: "warn" } },
+      { label: "missing trailing newline", doctor: { exitCode: 1, stdout: pendingDoctorJson().slice(0, -1), stderr: "" } },
+      { label: "success exit with pending body", doctor: { exitCode: 0, stdout: pendingDoctorJson(), stderr: "" } },
+    ];
+
+    for (const { label, doctor } of cases) {
+      const events: string[] = [];
+      const result = installPiFromVerifiedTarball({
+        targetDir: target,
+        piExecutable: "/opt/pi/bin/pi",
+        engramBin: targetEnvironment.ENGRAM_BIN,
+        candidate,
+      }, pendingDeps(events, doctor));
+      expect(result, label).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+      expect(events.filter((event) => event.startsWith("receipt:installed")), label).toHaveLength(0);
+    }
+  });
+});

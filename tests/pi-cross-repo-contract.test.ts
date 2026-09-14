@@ -683,4 +683,108 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(fs.existsSync(packageRoot)).toBe(false);
   }, 60_000);
 
+  it("exposes the exact Pi 0.8.23 initialization-diagnostics-v1 contract and provisional pending doctor", async () => {
+    const root = path.resolve(piDirectory!);
+    const manifest = readJson(path.join(root, "package.json")) as { name?: string; version?: string };
+    expect(manifest).toMatchObject({ name: "jorgex-pi", version: "0.8.23" });
+
+    const contract = readJson(path.join(root, "contract", "jorgex-pi.v1.json")) as { capabilities?: string[]; package?: { version?: string; source?: string } };
+    expect(contract.package).toEqual({ name: "jorgex-pi", version: "0.8.23", source: "npm:jorgex-pi@0.8.23" });
+    expect(contract.capabilities).toContain("initialization-diagnostics-v1");
+    expect(contract.capabilities?.at(-1)).toBe("initialization-diagnostics-v1");
+
+    const runner = readJson(path.join(root, "contract", "runner.v1.json")) as {
+      experience?: { diagnostic?: string };
+      permissions?: { diagnostic?: string };
+    };
+    expect(runner.experience?.diagnostic).toBe(
+      "status reports pending, initialized, invalid, or unreadable from the receipt only; pending means the receipt is absent and requires a registered package; invalid preserves INVALID_PATH, INVALID_RECEIPT, or RECEIPT_TOO_LARGE and unreadable preserves READ_FAILED; status and doctor are read-only and never lock, write, or delete state",
+    );
+    expect(runner.permissions?.diagnostic).toBe(
+      "permission state reports invalid or unreadable files without exposing their contents; a registered package also reports pending when the receipt is not initialized",
+    );
+
+    const schema = readJson(path.join(root, "contract", "schemas", "runner-response.v1.schema.json")) as {
+      $defs: {
+        statusResult: { required: string[]; properties: Record<string, unknown> };
+        doctorResult: { properties: { checks: { minItems: number; maxItems: number; prefixItems: Array<{ properties: { id: { const: string } } }>; items: unknown } } };
+        experience: unknown;
+      };
+    };
+    expect(schema.$defs.statusResult.required).toEqual(["installation", "engram", "context7", "permissions", "experience"]);
+    expect(schema.$defs.statusResult.properties.experience).toEqual({ $ref: "#/$defs/experience" });
+    expect(schema.$defs.doctorResult.properties.checks.minItems).toBe(5);
+    expect(schema.$defs.doctorResult.properties.checks.maxItems).toBe(5);
+    expect(schema.$defs.doctorResult.properties.checks.items).toBe(false);
+    expect(schema.$defs.doctorResult.properties.checks.prefixItems.map((item) => item.properties.id.const)).toEqual([
+      "package",
+      "engram",
+      "context7",
+      "permissions",
+      "experience",
+    ]);
+
+    const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js");
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-pending-cross-repo-"));
+    temporaryPaths.push(target);
+    const agentDir = path.join(target, "pi-agent");
+    const packageRunner = path.join(agentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
+    const packageRoot = path.dirname(path.dirname(packageRunner));
+    const pendingDoctor = `${JSON.stringify({
+      schemaVersion: 1,
+      command: "doctor",
+      ok: false,
+      package: { name: "jorgex-pi", version: "0.8.23", root: packageRoot },
+      result: {
+        healthy: false,
+        checks: [
+          { id: "package", status: "ok" },
+          { id: "engram", status: "ok" },
+          { id: "context7", status: "ok" },
+          { id: "permissions", status: "error" },
+          { id: "experience", status: "error" },
+        ],
+      },
+      error: {
+        phase: "initialization",
+        code: "INITIALIZATION_REQUIRED",
+        message: "Pi initialization is pending: run sync to complete first initialization.",
+        remedy: "Run jorgex-pi sync --json and retry.",
+      },
+    })}\n`;
+    const candidate = {
+      source: "npm:jorgex-pi@0.8.23",
+      bytes: 1,
+      sha256: "a".repeat(64),
+      sha512: "b".repeat(128),
+      package: { name: "jorgex-pi", version: "0.8.23", source: "npm:jorgex-pi@0.8.23" },
+    } as const;
+
+    let downloadDestination: string | null = null;
+    const result = installPiFromVerifiedTarball({
+      targetDir: target,
+      piExecutable: "/opt/pi/bin/pi",
+      engramBin: path.join(target, "bin", "engram"),
+      candidate,
+    }, {
+      download(destination: string) {
+        downloadDestination = destination;
+        return { path: destination, bytes: 1, sha256: "a".repeat(64), sha512: "b".repeat(128) };
+      },
+      backupSettings() {},
+      run(invocation: { executable: string; args: string[]; environment: Record<string, string> }) {
+        if (invocation.args[0] === "install") return { exitCode: 0, stdout: "", stderr: "" };
+        return { exitCode: 1, stdout: pendingDoctor, stderr: "" };
+      },
+      readSettings() {
+        expect(downloadDestination).not.toBeNull();
+        return JSON.stringify({ packages: [`npm:jorgex-pi@file:${downloadDestination}`] });
+      },
+      rewriteSettings() {},
+      writeReceiptAtomic() {},
+    });
+
+    expect(result).toEqual(expect.objectContaining({ kind: "installed" }));
+  }, 60_000);
+
 });

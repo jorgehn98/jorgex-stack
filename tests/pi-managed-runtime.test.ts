@@ -1064,3 +1064,95 @@ describe("Pi managed install post-projection initialization", () => {
     expect(result.kind).toBe("blocked");
   });
 });
+
+describe("Pi managed install with provisional initialization diagnostics", () => {
+  it("completes package install (pending) → projection → sync as the final success boundary", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js") as unknown as {
+      installPiFromVerifiedTarball(
+        input: { targetDir: string; piExecutable: string; engramBin: string; candidate: { source: string; bytes: number; sha256: string; sha512: string } },
+        deps: {
+          download(destination: string): { path: string; bytes: number; sha256: string; sha512: string };
+          backupSettings(): void;
+          run(invocation: { executable: string; args: string[]; environment: Record<string, string> }): { exitCode: number; stdout: string; stderr: string };
+          readSettings(): string;
+          rewriteSettings(content: string): void;
+          writeReceiptAtomic(content: string): void;
+        },
+      ): { kind: string };
+    };
+    const { PI_RUNTIME_CANDIDATE } = await import("./fixtures/pi-runtime.js");
+    const targetDir = "/tmp/jorgex-pi-managed-pending-target";
+    const codingAgentDir = `${targetDir}/pi-agent`;
+    const packageRunner = `${codingAgentDir}/npm/node_modules/jorgex-pi/bin/jorgex-pi.mjs`;
+    const packageRoot = `${codingAgentDir}/npm/node_modules/jorgex-pi`;
+    const pendingDoctor = `${JSON.stringify({
+      schemaVersion: 1,
+      command: "doctor",
+      ok: false,
+      package: { name: "jorgex-pi", version: PI_RUNTIME_CANDIDATE.package.version, root: packageRoot },
+      result: {
+        healthy: false,
+        checks: [
+          { id: "package", status: "ok" },
+          { id: "engram", status: "ok" },
+          { id: "context7", status: "ok" },
+          { id: "permissions", status: "error" },
+          { id: "experience", status: "error" },
+        ],
+      },
+      error: {
+        phase: "initialization",
+        code: "INITIALIZATION_REQUIRED",
+        message: "Pi initialization is pending: run sync to complete first initialization.",
+        remedy: "Run jorgex-pi sync --json and retry.",
+      },
+    })}\n`;
+    const trace: string[] = [];
+
+    const result = await runManagedPiOperation("install", {
+      async prepareProjectionUninstall() {
+        return { kind: "prepared", token: "pending-token" };
+      },
+      async completeProjectionUninstall() {
+        return { kind: "uninstalled" };
+      },
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") {
+          const installed = installPiFromVerifiedTarball({
+            targetDir,
+            piExecutable: "/opt/pi/bin/pi",
+            engramBin: `${targetDir}/bin/engram`,
+            candidate: { source: PI_RUNTIME_CANDIDATE.package.source, ...PI_RUNTIME_CANDIDATE.tarball },
+          }, {
+            download(destination: string) {
+              return { path: destination, ...PI_RUNTIME_CANDIDATE.tarball };
+            },
+            backupSettings() {},
+            run(invocation) {
+              if (invocation.args[0] === "install") return { exitCode: 0, stdout: "", stderr: "" };
+              return { exitCode: 1, stdout: pendingDoctor, stderr: "" };
+            },
+            readSettings() {
+              return JSON.stringify({ packages: [`npm:jorgex-pi@file:${targetDir}/downloads/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`] });
+            },
+            rewriteSettings() {},
+            writeReceiptAtomic() {},
+          });
+          expect(installed).toEqual(expect.objectContaining({ kind: "installed" }));
+          return { kind: "installed" };
+        }
+        if (next !== "sync") throw new Error(`unexpected package operation: ${next}`);
+        return { kind: "synced" };
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return projectionSuccess(next);
+      },
+    });
+
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(result).toEqual({ kind: "installed" });
+  });
+});
