@@ -46,6 +46,8 @@ La adopción de `experience-defaults-v1` requiere además `--accept-experience-d
 
 ## Recuperación y rollback
 
+Si el coordinador falla cerrado por un contrato no soportado y no crea una PR, no se debe reintentar a ciegas. Para esta adopción de `initialization-diagnostics-v1`, tras comprobar el estado de runs y PRs se requirió el preparador manual verificado con `--accept-initialization-diagnostics`, seguido de una PR manual con la base actual, review y gates.
+
 - **Notificación fallida:** corrige la causa y usa `workflow_dispatch` del coordinador, sin reejecutar el publisher mutable. El dispatch recupera notificaciones o reconcilia nuevas entradas; no recrea propuestas cerradas de la misma identidad, aunque elimines su rama.
 - **PR o rama ya existente:** inspecciona la propuesta y su estado; no la sobreescribas ni fuerces la referencia.
 - **Cierre sin merge o rechazo:** es terminal para la automatización de esa identidad; nunca sobrescribe el rechazo humano. La recuperación humana consiste en restaurar/reabrir la PR original cuando sea posible (volver a draft antes de cambiar código), o usar el preparador local verificado y abrir manualmente otra PR con base actual, review y gates.
