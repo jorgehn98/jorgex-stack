@@ -34,6 +34,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "managed-primary-model-v1",
       "quality-receipt-contract-v1",
       "quality-capabilities-contract-v1",
+      "initialization-diagnostics-v1",
     ],
     runner: {
       bin: "jorgex-pi",
