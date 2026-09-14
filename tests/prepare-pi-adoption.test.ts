@@ -20,6 +20,7 @@ type PreparePiAdoption = (
     acceptContext7Http?: boolean;
     acceptPermissionsPolicy?: boolean;
     acceptExperienceDefaults?: boolean;
+    acceptInitializationDiagnostics?: boolean;
     acceptPiVersion?: string;
   },
   dependencies?: {
@@ -3006,5 +3007,201 @@ describe("preparePiAdoption", () => {
 
     expect(fetch).not.toHaveBeenCalled();
     expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("acepta el delta exacto de initialization-diagnostics-v1 de Pi 0.8.23 sólo con confirmación explícita y conserva el inventario", async () => {
+    const base = {
+      previousModularSystemPrompts: true,
+      modularSystemPrompts: true,
+      previousContext7Http: true,
+      context7Http: true,
+      previousPermissionsPolicy: true,
+      permissionsPolicy: true,
+      previousExperienceDefaults: true,
+      experienceDefaults: true,
+      previousDevtoolsHandoff: true,
+      devtoolsHandoff: true,
+      previousPlaywrightHandoff: true,
+      playwrightHandoff: true,
+    } as const;
+    const fixture = createAdoptionFixture(base);
+    const INITIALIZATION_CAPABILITY = "initialization-diagnostics-v1";
+    const EXPERIENCE_DIAGNOSTIC =
+      "status reports pending, initialized, invalid, or unreadable from the receipt only; pending means the receipt is absent and requires a registered package; invalid preserves INVALID_PATH, INVALID_RECEIPT, or RECEIPT_TOO_LARGE and unreadable preserves READ_FAILED; status and doctor are read-only and never lock, write, or delete state";
+    const PERMISSIONS_DIAGNOSTIC =
+      "permission state reports invalid or unreadable files without exposing their contents; a registered package also reports pending when the receipt is not initialized";
+
+    const applyInitializationDelta = () => {
+      const contractPath = path.join(fixture.piDir, "contract", "jorgex-pi.v1.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf8")) as { capabilities: string[] };
+      expect(contract.capabilities).not.toContain(INITIALIZATION_CAPABILITY);
+      contract.capabilities.push(INITIALIZATION_CAPABILITY);
+      fs.writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
+
+      const runnerPath = path.join(fixture.piDir, "contract", "runner.v1.json");
+      const runner = JSON.parse(fs.readFileSync(runnerPath, "utf8")) as {
+        experience: Record<string, unknown>;
+        permissions: { diagnostic: string };
+      };
+      expect(runner.experience).not.toHaveProperty("diagnostic");
+      (runner.experience as Record<string, unknown>).diagnostic = EXPERIENCE_DIAGNOSTIC;
+      runner.permissions.diagnostic = PERMISSIONS_DIAGNOSTIC;
+      fs.writeFileSync(runnerPath, `${JSON.stringify(runner, null, 2)}\n`, "utf8");
+
+      const schemaPath = path.join(fixture.piDir, "contract", "schemas", "runner-response.v1.schema.json");
+      const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as {
+        $defs: {
+          statusResult: { required: string[]; properties: Record<string, unknown> };
+          doctorResult: { properties: { checks: { minItems: number; maxItems: number; items: unknown; prefixItems?: unknown } } };
+          experience?: unknown;
+        };
+      };
+      expect(schema.$defs.statusResult.required).toEqual(["installation", "engram", "context7", "permissions"]);
+      expect(schema.$defs.experience).toBeUndefined();
+      schema.$defs.experience = {
+        oneOf: [
+          { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized"], properties: { state: { const: "pending" }, receiptPath: { type: "string" }, initialized: { const: false } } },
+          { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized"], properties: { state: { const: "initialized" }, receiptPath: { type: "string" }, initialized: { const: true } } },
+          { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "invalid" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { enum: ["INVALID_PATH", "INVALID_RECEIPT", "RECEIPT_TOO_LARGE"] }, reason: { type: "string", minLength: 1 } } },
+          { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "unreadable" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { const: "READ_FAILED" }, reason: { type: "string", minLength: 1 } } },
+        ],
+      };
+      schema.$defs.statusResult.required.push("experience");
+      schema.$defs.statusResult.properties.experience = { $ref: "#/$defs/experience" };
+      const checks = schema.$defs.doctorResult.properties.checks as {
+        minItems: number; maxItems: number; items: { properties: { id: { enum: string[] } } }; prefixItems?: unknown;
+      };
+      expect(checks.minItems).toBe(4);
+      expect(checks.maxItems).toBe(4);
+      expect(checks.items.properties.id.enum).toEqual(["package", "engram", "context7", "permissions"]);
+      const prefixItems = (["package", "engram", "context7", "permissions", "experience"] as const).map((id) => ({
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "status"],
+        properties: { id: { const: id }, status: { enum: ["ok", "error"] } },
+      }));
+      (schema.$defs.doctorResult.properties.checks as unknown as Record<string, unknown>).prefixItems = prefixItems;
+      (schema.$defs.doctorResult.properties.checks as unknown as Record<string, unknown>).minItems = 5;
+      (schema.$defs.doctorResult.properties.checks as unknown as Record<string, unknown>).maxItems = 5;
+      (schema.$defs.doctorResult.properties.checks as unknown as Record<string, unknown>).items = false;
+      fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
+    };
+
+    applyInitializationDelta();
+    const nextProducer = commit(fixture.piDir, "pi: 0.8.8 initialization-diagnostics-v1");
+    git(fixture.piDir, ["tag", "-f", `v${fixture.version}`, nextProducer]);
+    git(fixture.piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
+    const tarball = gitArchive(fixture.piDir, nextProducer, true);
+    const next = pin(fixture.version, nextProducer, tarball);
+    (fixture as { next: Pin }).next = next;
+    (fixture as { tarball: Buffer }).tarball = tarball;
+    (fixture as { nextArchive: Artifacts["archive"] }).nextArchive = {
+      entries: archiveEntries(path.dirname(fixture.root), tarball),
+      parity: { source: { commit: fixture.sourceCommit } },
+    };
+
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, {
+      fetch: vi.fn() as unknown as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+    expect(rootState(fixture)).toEqual(before);
+
+    const fetch = registryFetch(fixture);
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptInitializationDiagnostics: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    const previousEntries = archiveEntryNames(path.dirname(fixture.root), fixture.previousTarball);
+    const nextEntries = archiveEntryNames(path.dirname(fixture.root), fixture.tarball);
+    expect(nextEntries).toEqual(previousEntries);
+    expect(readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json").capabilities).toContain(INITIALIZATION_CAPABILITY);
+  }, 15_000);
+
+  it("rechaza el delta de inicialización sin flag y con deltas ajenos aunque se confirme", async () => {
+    const fixture = createAdoptionFixture({
+      previousModularSystemPrompts: true,
+      modularSystemPrompts: true,
+      previousContext7Http: true,
+      context7Http: true,
+      previousPermissionsPolicy: true,
+      permissionsPolicy: true,
+      previousExperienceDefaults: true,
+      experienceDefaults: true,
+      extraCapabilities: ["unexpected-capability-v1"],
+    });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptInitializationDiagnostics: true,
+    }, {
+      fetch: vi.fn() as unknown as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("expone --accept-initialization-diagnostics en el contrato CLI del preparador", () => {
+    const cliRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-cli-init-"));
+    temporaryRoots.push(cliRoot);
+    const scriptRoot = path.join(cliRoot, ".github", "scripts");
+    fs.mkdirSync(scriptRoot, { recursive: true });
+    fs.cpSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "scripts"), scriptRoot, { recursive: true });
+    initializeGit(cliRoot);
+    writeJson(cliRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
+    const current: Pin = {
+      package: { name: "jorgex-pi", version: "0.0.0", source: "npm:jorgex-pi@0.0.0" },
+      provenance: { commit: "0".repeat(40) },
+      tarball: { bytes: 1, sha256: "0".repeat(64), sha512: "0".repeat(128) },
+    };
+    writeJson(cliRoot, PIN_PATH, current);
+    writeJson(cliRoot, ARTIFACTS_PATH, {
+      current,
+      previous: current,
+      archive: { entries: 1, parity: { source: { commit: "0".repeat(40) } } },
+    });
+    commit(cliRoot, "stack: cli parser fixture");
+    git(cliRoot, ["switch", "-c", "adoption-test"]);
+
+    const result = spawnSync(process.execPath, [
+      path.join(scriptRoot, "prepare-pi-adoption.mjs"),
+      "--pi-dir",
+      cliRoot,
+      "--version",
+      "0.0.0",
+      "--accept-initialization-diagnostics",
+    ], { cwd: cliRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+  });
+
+  it("la automatización pasa la aceptación explícita de diagnósticos de inicialización al preparador", async () => {
+    const automationPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "scripts", "stack-pi-automation.mjs");
+    const automationSource = fs.readFileSync(automationPath, "utf8");
+    expect(automationSource).toContain("acceptInitializationDiagnostics");
   });
 });

@@ -113,6 +113,17 @@ const EXPERIENCE_ACTIONS = [
   "removed:quietStartup",
   "removed:hideThinkingBlock",
 ];
+const INITIALIZATION_CAPABILITY = "initialization-diagnostics-v1";
+const INITIALIZATION_EXPERIENCE_DIAGNOSTIC = "status reports pending, initialized, invalid, or unreadable from the receipt only; pending means the receipt is absent and requires a registered package; invalid preserves INVALID_PATH, INVALID_RECEIPT, or RECEIPT_TOO_LARGE and unreadable preserves READ_FAILED; status and doctor are read-only and never lock, write, or delete state";
+const INITIALIZATION_PERMISSIONS_DIAGNOSTIC = "permission state reports invalid or unreadable files without exposing their contents; a registered package also reports pending when the receipt is not initialized";
+const INITIALIZATION_EXPERIENCE_SCHEMA = {
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized"], properties: { state: { const: "pending" }, receiptPath: { type: "string" }, initialized: { const: false } } },
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized"], properties: { state: { const: "initialized" }, receiptPath: { type: "string" }, initialized: { const: true } } },
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "invalid" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { enum: ["INVALID_PATH", "INVALID_RECEIPT", "RECEIPT_TOO_LARGE"] }, reason: { type: "string", minLength: 1 } } },
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "unreadable" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { const: "READ_FAILED" }, reason: { type: "string", minLength: 1 } } },
+  ],
+};
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -290,10 +301,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -507,6 +518,48 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert(!EXPERIENCE_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Experience defaults lifecycle actions must be new in this transition");
     lifecycleAction.enum.push(...EXPERIENCE_ACTIONS);
   }
+  const initializationEnabled = newContracts[rootContract].capabilities.includes(INITIALIZATION_CAPABILITY);
+  const initializationTransition = acceptInitializationDiagnostics
+    && !oldContracts[rootContract].capabilities.includes(INITIALIZATION_CAPABILITY)
+    && initializationEnabled;
+  if (initializationTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(INITIALIZATION_CAPABILITY), "Initialization diagnostics capability must be new in this transition");
+    capabilities.push(INITIALIZATION_CAPABILITY);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    const newRunner = newContracts["contract/runner.v1.json"];
+    assert.equal(runner.experience?.diagnostic, undefined, "Initialization experience diagnostic must be new in this transition");
+    assert.equal(newRunner.experience?.diagnostic, INITIALIZATION_EXPERIENCE_DIAGNOSTIC, "Initialization experience diagnostic differs from producer");
+    runner.experience.diagnostic = INITIALIZATION_EXPERIENCE_DIAGNOSTIC;
+    assert.equal(runner.permissions?.diagnostic, "permission state reports invalid or unreadable files without exposing their contents", "Initialization requires the previous permissions diagnostic");
+    assert.equal(newRunner.permissions?.diagnostic, INITIALIZATION_PERMISSIONS_DIAGNOSTIC, "Initialization permissions diagnostic differs from producer");
+    runner.permissions.diagnostic = INITIALIZATION_PERMISSIONS_DIAGNOSTIC;
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    const newSchema = newContracts["contract/schemas/runner-response.v1.schema.json"];
+    assert.equal(schema.$defs.experience, undefined, "Initialization experience schema must be new in this transition");
+    assert.deepEqual(newSchema.$defs.experience, INITIALIZATION_EXPERIENCE_SCHEMA, "Initialization experience schema differs from producer");
+    schema.$defs.experience = structuredClone(INITIALIZATION_EXPERIENCE_SCHEMA);
+    const statusResult = schema.$defs.statusResult;
+    assert.deepEqual(statusResult.required, ["installation", "engram", "context7", "permissions"]);
+    statusResult.required.push("experience");
+    assert.equal(statusResult.properties.experience, undefined);
+    statusResult.properties.experience = { $ref: "#/$defs/experience" };
+    const doctorChecks = schema.$defs.doctorResult.properties.checks;
+    assert.equal(doctorChecks.minItems, 4);
+    assert.equal(doctorChecks.maxItems, 4);
+    assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram", "context7", "permissions"]);
+    doctorChecks.prefixItems = ["package", "engram", "context7", "permissions", "experience"].map((id) => ({
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "status"],
+      properties: { id: { const: id }, status: { enum: ["ok", "error"] } },
+    }));
+    doctorChecks.minItems = 5;
+    doctorChecks.maxItems = 5;
+    doctorChecks.items = false;
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -580,7 +633,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -620,15 +673,16 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
           expectedEntries.push(`package/${member}`);
         }
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract"].filter(Boolean).join(" and ");
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : "Experience defaults"} archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : experienceTransition ? "Experience defaults" : "Initialization diagnostics"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
       }
       if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
       if (experienceTransition) assert.equal(entries.length, previousEntries.length, "Experience defaults must preserve the previous archive inventory");
+      if (initializationTransition) assert.equal(entries.length, previousEntries.length, "Initialization diagnostics must preserve the previous archive inventory");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
     }
@@ -679,13 +733,13 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       flags.splice(versionFlag, 2);
     }
     if (args.length < 4 || args.length > 14 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults"].includes(flag))) throw new Error("Invalid arguments");
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics]");
     process.exitCode = 1;
   }
 }

@@ -228,7 +228,7 @@ async function prepare(stackRoot, piRoot, output) {
       : await import(pathToFileURL(join(stackRoot, '.github/scripts/prepare-pi-adoption.mjs')).href);
     result = direction === 'snapshot'
       ? await helper.prepareStackSnapshot({ root: piRoot, stackDir: stackRoot, sourceCommit: sourceSha, apply: true })
-      : await helper.preparePiAdoption({ root: stackRoot, piDir: piRoot, version, apply: true });
+      : await helper.preparePiAdoption({ root: stackRoot, piDir: piRoot, version, apply: true, acceptInitializationDiagnostics: true });
   }
   let envelope = { status: result.status };
   if (result.status === 'prepared') {
