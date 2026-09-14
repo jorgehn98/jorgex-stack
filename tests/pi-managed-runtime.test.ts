@@ -111,9 +111,9 @@ describe("Pi managed package and projection coordination", () => {
     const devtoolsPreferenceFile = "/isolated/state/devtools-mcp.json";
     const loadDevtoolsMcpPreference = vi.fn(() => false);
     const saveDevtoolsMcpPreference = vi.fn();
-    const runPiRuntimeSystem = vi.fn(async (input: unknown): Promise<{ kind: string; reason?: string }> => {
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string; reason?: string }> => {
       packageInputs.push(input);
-      return { kind: "installed" };
+      return input.operation === "sync" ? { kind: "synced" } : { kind: "installed" };
     });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown): { kind: string; reason?: string } => {
       projectionInputs.push(input);
@@ -157,8 +157,11 @@ describe("Pi managed package and projection coordination", () => {
       expect(result).toEqual({ kind: "installed" });
       expect(packageInputs).toEqual([expect.objectContaining({
         operation: "install",
+      }), expect.objectContaining({
+        operation: "sync",
       })]);
       expect(packageInputs[0]).not.toHaveProperty("devtoolsMcpEnabled");
+      expect(packageInputs[1]).not.toHaveProperty("devtoolsMcpEnabled");
       expect(projectionInputs).toEqual([expect.objectContaining({
         operation: "install",
         devtoolsMcpEnabled: true,
@@ -213,9 +216,9 @@ describe("Pi managed package and projection coordination", () => {
       .mockReturnValueOnce({ status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" })
       .mockReturnValueOnce({ status: "not-in-path", binPath: "/isolated/pnpm/playwright-cli", detectedVersion: null })
       .mockReturnValueOnce({ status: "absent", binPath: null, detectedVersion: null });
-    const runPiRuntimeSystem = vi.fn(async (input: unknown): Promise<{ kind: string }> => {
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string }> => {
       packageInputs.push(input);
-      return { kind: "installed" };
+      return input.operation === "sync" ? { kind: "synced" } : { kind: "installed" };
     });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown): { kind: string; reason?: string } => {
       projectionInputs.push(input);
@@ -267,10 +270,10 @@ describe("Pi managed package and projection coordination", () => {
       };
       const verifiedInput = { ...input, playwrightCapability: capability };
       await expect(mod.runManagedPiSystem(verifiedInput)).resolves.toEqual({ kind: "installed" });
-      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toEqual({ kind: "installed" });
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toEqual({ kind: "synced" });
       await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "doctor", playwrightCapability: { ...capability, browserVerified: false, effective: false } })).resolves.toEqual({ kind: "installed" });
 
-      expect(packageInputs).toHaveLength(3);
+      expect(packageInputs).toHaveLength(4);
       expect(packageInputs[0]).not.toHaveProperty("playwrightCliEnabled");
       expect(projectionInputs).toEqual([
         expect.objectContaining({
@@ -312,7 +315,7 @@ describe("Pi managed package and projection coordination", () => {
       expect(savePlaywrightCliPreference).toHaveBeenCalledTimes(successfulSaveCount);
 
       await expect(mod.runManagedPiSystem({ ...input, operation: "sync", playwrightCliEnabled: false }))
-        .resolves.toEqual({ kind: "installed" });
+        .resolves.toEqual({ kind: "synced" });
       expect(projectionInputs.at(-1)).toEqual(expect.objectContaining({
         operation: "sync",
         playwrightCliEnabled: false,
@@ -341,9 +344,9 @@ describe("Pi managed package and projection coordination", () => {
       binPath: "/isolated/bin/playwright-cli",
       detectedVersion: "0.1.18",
     }));
-    const runPiRuntimeSystem = vi.fn(async (input: unknown): Promise<{ kind: string }> => {
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string }> => {
       packageInputs.push(input);
-      return { kind: "installed" };
+      return input.operation === "sync" ? { kind: "synced" } : { kind: "installed" };
     });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
       projectionInputs.push(input);
@@ -410,7 +413,10 @@ describe("Pi managed package and projection coordination", () => {
       throw new Error("target-dir must not read the host Playwright preference");
     });
     const savePlaywrightCliPreference = vi.fn();
-    const runPiRuntimeSystem = vi.fn(async () => ({ kind: "installed" as const }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation === "sync") return { kind: "synced" as const };
+      return { kind: "installed" as const };
+    });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
       projectionInputs.push(input);
       return { kind: "installed" as const };
@@ -571,6 +577,7 @@ describe("Pi managed package and projection coordination", () => {
     const result = await runManagedPiOperation(operation, withUninstallLifecycle({
       async runPackage(next) {
         trace.push(`package:${next}`);
+        if (next === "sync") return { kind: "synced" };
         return successfulResults[packageOperation];
       },
       async runProjection(next) {
@@ -582,7 +589,9 @@ describe("Pi managed package and projection coordination", () => {
     expect(result).toEqual(successfulResults[operation]);
     expect(trace).toEqual(projectionOperation === undefined
       ? [`package:${packageOperation}`]
-      : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
+      : operation === "install"
+        ? ["package:install", "projection:install", "package:sync"]
+        : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
   });
 
   it("blocks doctor on projection drift while preserving diagnostic paths and remedy", async () => {
@@ -918,4 +927,140 @@ it("package-only update checks do not compare unprobed Playwright projections", 
   } finally {
     vi.doUnmock("../src/lib/pi-runtime.js");vi.doUnmock("../src/lib/pi-projection-lifecycle.js");vi.resetModules();
   }
+});
+
+describe("Pi managed install post-projection initialization", () => {
+  it("does not initialize when projection install is blocked", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+
+    const result = await runManagedPiOperation("install", withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") return { kind: "installed" };
+        if (next === "sync") return { kind: "synced" };
+        throw new Error(`unexpected package operation: ${next}`);
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return { kind: "blocked", reason: "projection-backup-failed" };
+      },
+    }));
+
+    expect(result).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
+    expect(trace).toEqual(["package:install", "projection:install"]);
+  });
+
+  it("fails closed when initialization sync is blocked", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+
+    const result = await runManagedPiOperation("install", withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") return { kind: "installed" };
+        return { kind: "blocked", reason: "runner-unhealthy" };
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return projectionSuccess(next);
+      },
+    }));
+
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy", remedy: expect.stringContaining("sync --agents pi") });
+  });
+
+  it("requires preserving --target-dir when initialization sync is blocked under targetDir", async () => {
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation === "sync") return { kind: "blocked" as const, reason: "runner-unhealthy" };
+      return { kind: "installed" as const };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: [] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      const detected = { executable: "/opt/pi/bin/pi", version: "0.84.2" };
+      const engramBin = "/isolated/bin/engram";
+
+      const normal = await mod.runManagedPiSystem({
+        operation: "install",
+        detected,
+        engramBin,
+        writingStyle: FORWARDING_STYLE,
+      }) as { kind: string; remedy?: string };
+      expect(normal).toMatchObject({
+        kind: "blocked",
+        remedy: expect.stringContaining("sync --agents pi"),
+      });
+      expect(normal.remedy).not.toContain("--target-dir");
+
+      const isolated = await mod.runManagedPiSystem({
+        operation: "install",
+        targetDir: "/isolated/target",
+        detected,
+        engramBin,
+        writingStyle: FORWARDING_STYLE,
+      }) as { kind: string; remedy?: string };
+      expect(isolated).toMatchObject({ kind: "blocked" });
+      expect(isolated.remedy).toEqual(expect.stringContaining("--target-dir"));
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  it("fails closed when initialization sync returns an unexpected result", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+
+    const result = await runManagedPiOperation("install", withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") return { kind: "installed" };
+        return { kind: "installed" };
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return projectionSuccess(next);
+      },
+    }));
+
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(result.kind).toBe("blocked");
+  });
 });
