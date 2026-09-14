@@ -106,7 +106,7 @@ Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad 
 
 La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
 
-- `install` verifica el tarball, hace backup y ejecuta primero el paquete y después la proyección.
+- `install` verifica el tarball, hace backup y ejecuta la secuencia completa `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete. Si esa inicialización queda bloqueada o devuelve un resultado inesperado, `install` falla de forma segura y devuelve el remedio `sync --agents pi`.
 - `sync` repara drift del paquete o de la proyección sin duplicar recursos; dos pasadas consecutivas son idempotentes.
 - `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. El diagnóstico de Stack puede marcar el runner como no saludable de forma genérica; para el estado detallado de Context7 (`available`, `conflict` o `invalid`) consulta el `doctor` nativo de Pi. `available` no implica un handshake HTTP.
 - `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime.
@@ -155,7 +155,7 @@ Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership.
 
 | Comando Stack | Comportamiento Pi |
 | --- | --- |
-| `install --agents pi` | Verifica el tarball, instala y normaliza el paquete, proyecta recursos y escribe ambos receipts. |
+| `install --agents pi` | Verifica el tarball, instala y normaliza el paquete, proyecta recursos, ejecuta `sync` para inicializar Pi y escribe ambos receipts. |
 | `sync --agents pi` | Reconcilia paquete y proyección; no instala recursos globales ni duplica skills/prompts. |
 | `models --agents pi` | Devuelve routing heredado de la sesión; no escribe model map de Stack. |
 | `doctor --agents pi` | Comprueba package/projection receipts, scope, entradas y drift. |
@@ -180,5 +180,16 @@ Pi gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contex
 | `receipt-corrupt` / `receipt-untrusted` / `partial-state` | No borres el receipt a ciegas; inspecciona settings, proyección y scope, y usa el Stack publicado que reconoce ese pin para el rollback o la limpieza. |
 | `projection-cleanup-failed` | Corrige el estado o restaura el backup y reintenta `uninstall`; no fuerces la eliminación. |
 | `runner-output` / `runner-unhealthy` | Comprueba integridad, Engram y receipts antes de reinstalar. |
+
+### Instalaciones afectadas de Stack 1.9.44
+
+En una instalación gestionada con Stack `1.9.44`, `install` omitió invocar la sincronización de inicialización de Pi después de proyectar los recursos; por eso `doctor` podía seguir indicando un estado saludable aunque Pi no hubiera completado esa inicialización. Ejecuta la recuperación con esa versión exacta:
+
+```bash
+pnpm dlx jorgex-stack@1.9.44 sync --agents pi
+pnpm dlx jorgex-stack@1.9.44 doctor --agents pi
+```
+
+Después de que `doctor` confirme el estado esperado, abre una sesión nueva de Pi para que use la inicialización completada. Esta recuperación documenta el arreglo del lifecycle gestionado de Stack; no es una solución ni una descripción del issue Pi #56.
 
 La evidencia autoritativa de identidad e integridad del paquete es `src/lib/pi-runtime-pin.json`; el lifecycle es `src/lib/pi-runtime.ts`. La de la proyección es `src/lib/pi-projection-lifecycle.ts` junto con `src/adapters/pi.ts` y los componentes compartidos que proyecta.
