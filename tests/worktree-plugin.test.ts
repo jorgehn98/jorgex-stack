@@ -467,3 +467,183 @@ describe("WorktreePlugin", () => {
     expect(output.output).toContain(`${toSlashes(tmp).replace(/\/+$/, "")}/worktrees/outside-name`);
   });
 });
+
+describe("WorktreePlugin pre/post inventory guards (T01 RED)", () => {
+  const SESSION_ID = "sess-red-01";
+
+  const porcelainMain = (root: string) =>
+    `worktree ${toSlashes(root)}\nHEAD abc123\nbranch refs/heads/main\n\n`;
+
+  const porcelainWith = (root: string, relPath: string, branch: string) =>
+    `${porcelainMain(root)}worktree ${toSlashes(root)}/${relPath}\nHEAD def456\nbranch refs/heads/${branch}\n\n`;
+
+  const makeLifecyclePlugin = async (
+    root: string,
+    config: unknown = {},
+    spawn = vi.fn(),
+    spawnResult = {
+      stdout: "setup ok",
+      stderr: "",
+      exited: Promise.resolve(0),
+    },
+    gitRoot: string | Error = root,
+  ) => {
+    let currentPorcelain = porcelainMain(root);
+    const setPorcelain = (value: string) => {
+      currentPorcelain = value;
+    };
+    vi.stubGlobal("Bun", {
+      file: () => ({
+        text: async () => {
+          if (config === null) throw new Error("Config not found");
+          if (config instanceof Error) throw config;
+          if (typeof config === "string") return config;
+          return JSON.stringify({
+            setupScript: "setup.ps1",
+            pathContains: "worktrees/",
+            ...(config as Record<string, unknown>),
+          });
+        },
+      }),
+      spawn: spawn.mockReturnValue(spawnResult),
+    });
+    const $ = ((strings: TemplateStringsArray) => {
+      const raw = Array.isArray(strings) ? strings.join("") : String(strings);
+      const isPorcelain = raw.includes("worktree");
+      const r: any = {
+        text: async () => {
+          if (isPorcelain) return currentPorcelain;
+          if (gitRoot instanceof Error) throw gitRoot;
+          return `${gitRoot}\n`;
+        },
+      };
+      r.quiet = () => r;
+      return r;
+    }) as any;
+    const client = { app: { log: vi.fn() } };
+    const plugin = await WorktreePlugin({ $, client, directory: root } as any);
+    return { plugin, spawn, setPorcelain };
+  };
+
+  const runLifecycle = async (
+    plugin: any,
+    setPorcelain: (value: string) => void,
+    opts: {
+      command: string;
+      workdir: string;
+      callID: string;
+      pre: string;
+      post: string;
+      exit: number;
+    },
+  ) => {
+    const inputBase = {
+      tool: "bash",
+      sessionID: SESSION_ID,
+      callID: opts.callID,
+      args: { command: opts.command, workdir: opts.workdir },
+    };
+    setPorcelain(opts.pre);
+    if (typeof plugin["tool.execute.before"] === "function") {
+      await plugin["tool.execute.before"]({ ...inputBase }, {});
+    }
+    setPorcelain(opts.post);
+    const output: any = {
+      title: "git worktree add",
+      output: "",
+      metadata: {
+        output: "",
+        exit: opts.exit,
+        truncated: false,
+        description: "git worktree add",
+      },
+    };
+    await plugin["tool.execute.after"]({ ...inputBase }, output);
+    return output;
+  };
+
+  it("keeps full branch identity for canonical -b without false warning", async () => {
+    const branch = "codex/feature";
+    const rel = "worktrees/codex/feature";
+    const command = `git worktree add -b ${branch} ${rel}`;
+    const pre = porcelainMain(tmp);
+    const post = porcelainWith(tmp, rel, branch);
+    const { plugin, spawn, setPorcelain } = await makeLifecyclePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command,
+      workdir: tmp,
+      callID: "call-red-b-01",
+      pre,
+      post,
+      exit: 0,
+    });
+    const text = String(output.output ?? output.content ?? "");
+    expect(text).not.toContain("Worktree path is not canonical");
+    expect(spawn).toHaveBeenCalledOnce();
+    const [, options] = spawn.mock.calls[0]!;
+    const payload = JSON.parse(
+      await (options as { stdin: Response }).stdin.text(),
+    ) as Record<string, string>;
+    expect(payload.branchName).toBe(branch);
+    expect(payload.worktreePath).toBe(
+      `${toSlashes(tmp).replace(/\/+$/, "")}/${rel}`,
+    );
+    expect(
+      (options as { env: Record<string, string> }).env.OPENCODE_WORKTREE_PATH,
+    ).toBe(`${toSlashes(tmp).replace(/\/+$/, "")}/${rel}`);
+    expect(text).toContain("Worktree setup complete");
+  });
+
+  it("withholds setup/reminders/success when Bash exit is non-zero", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const command = "git worktree add ../worktrees/canonical-name";
+    const pre = porcelainMain(tmp);
+    const post = porcelainWith(tmp, "worktrees/canonical-name", "canonical-name");
+    const { plugin, spawn, setPorcelain } = await makeLifecyclePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command,
+      workdir: srcDir,
+      callID: "call-red-exit-01",
+      pre,
+      post,
+      exit: 1,
+    });
+    const text = String(output.output ?? output.content ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+  });
+
+  it("withholds setup/reminders/success without a single new worktree", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const command = "git worktree add ../worktrees/canonical-name";
+    const pre = porcelainMain(tmp);
+    const post = porcelainMain(tmp);
+    const { plugin, spawn, setPorcelain } = await makeLifecyclePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command,
+      workdir: srcDir,
+      callID: "call-red-ambiguous-01",
+      pre,
+      post,
+      exit: 0,
+    });
+    const text = String(output.output ?? output.content ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+  });
+});
