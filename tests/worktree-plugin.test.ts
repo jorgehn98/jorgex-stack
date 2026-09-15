@@ -45,7 +45,7 @@ const makePlugin = async (
   },
   appLog = vi.fn(),
   gitRoot: string | Error = root,
-  resolveCommonDir?: (cwd: string) => string | Error,
+  resolveCommonDir?: (cwd: string) => string | Error | Promise<string | Error>,
 ) => {
   let currentPorcelain: string | Error = porcelainMain(root);
   const setPorcelain = (value: string | Error) => {
@@ -95,7 +95,7 @@ const makePlugin = async (
         typeof values[0] === "string" && values[0] ? toSlashes(String(values[0])) : toSlashes(root);
       const r: any = {
         text: async () => {
-          const resolved = resolveCommon(cwd);
+          const resolved = await resolveCommon(cwd);
           if (resolved instanceof Error) throw resolved;
           return `${resolved}\n`;
         },
@@ -996,5 +996,210 @@ describe("WorktreePlugin", () => {
     expect(text).toMatch(/pre-(inventory|execution inventory)[\s\S]{0,80}(fail|could not|error)/i);
     expect(text).toContain(toSlashes(srcDir));
     expect(text).toMatch(/porcelain/i);
+  });
+
+  it("withholds all setup when a second call starts while the first still captures its repository identity", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const base = toSlashes(tmp).replace(/\/+$/, "");
+    const commonMain = `${base}/.git`;
+    const makeGate = () => {
+      let release!: (value: string) => void;
+      const promise = new Promise<string>((resolve) => {
+        release = resolve;
+      });
+      return { promise, release };
+    };
+    const gateA = makeGate();
+    const gateB = makeGate();
+    let commonCalls = 0;
+    const resolveInterleaved = () => {
+      commonCalls += 1;
+      if (commonCalls === 1) return gateA.promise;
+      if (commonCalls === 2) return gateB.promise;
+      return commonMain;
+    };
+    const { plugin, spawn, setPorcelain } = await makePlugin(
+      tmp,
+      {
+        setupScript: "setup.ps1",
+        pathContains: "worktrees/",
+        reminderLines: ["remember {branchName}"],
+      },
+      vi.fn(),
+      undefined,
+      vi.fn(),
+      tmp,
+      resolveInterleaved,
+    );
+    const command = "git worktree add ../worktrees/canonical-name";
+    const inputA = {
+      tool: "bash",
+      sessionID: SESSION_ID,
+      callID: "call-race-01",
+      args: { command, workdir: srcDir },
+    };
+    const inputB = {
+      tool: "bash",
+      sessionID: SESSION_ID,
+      callID: "call-race-02",
+      args: { command, workdir: srcDir },
+    };
+    setPorcelain(porcelainMain(tmp));
+    const beforeA = plugin["tool.execute.before"]({ ...inputA }, {});
+    const beforeB = plugin["tool.execute.before"]({ ...inputB }, {});
+    gateA.release(commonMain);
+    await beforeA;
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+    const outputA: any = {
+      title: "git worktree add",
+      output: "",
+      metadata: { output: "", exit: 0, truncated: false, description: "git worktree add" },
+    };
+    await plugin["tool.execute.after"]({ ...inputA }, outputA);
+    gateB.release(commonMain);
+    await beforeB;
+    const outputB: any = {
+      title: "git worktree add",
+      output: "",
+      metadata: { output: "", exit: 0, truncated: false, description: "git worktree add" },
+    };
+    await plugin["tool.execute.after"]({ ...inputB }, outputB);
+    const textA = String(outputA.output ?? "");
+    const textB = String(outputB.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(textA).not.toContain("Worktree setup complete");
+    expect(textB).not.toContain("Worktree setup complete");
+    expect(textA).not.toContain("remember");
+    expect(textB).not.toContain("remember");
+    expect(`${textA}\n${textB}`).toMatch(/ambiguous|cannot be attributed|overlapping/i);
+  });
+
+  it("surfaces a failed prior repository capture with cwd instead of succeeding when later identity reads work", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const base = toSlashes(tmp).replace(/\/+$/, "");
+    const commonMain = `${base}/.git`;
+    let commonCalls = 0;
+    const resolveFlaky = (): string => {
+      commonCalls += 1;
+      if (commonCalls === 1) throw new Error("common-dir offline");
+      return commonMain;
+    };
+    const { plugin, spawn, setPorcelain } = await makePlugin(
+      tmp,
+      {
+        setupScript: "setup.ps1",
+        pathContains: "worktrees/",
+        reminderLines: ["remember {branchName}"],
+      },
+      vi.fn(),
+      undefined,
+      vi.fn(),
+      tmp,
+      resolveFlaky,
+    );
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: "git worktree add ../worktrees/canonical-name",
+      workdir: srcDir,
+      callID: "call-priorcommon-01",
+      pre: porcelainMain(tmp),
+      post: porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"),
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+    expect(text).toMatch(/common-dir|identity/i);
+    expect(text).toContain(toSlashes(srcDir));
+    expect(text).toMatch(/porcelain/i);
+  });
+
+  it("treats an empty common-dir as a prior capture failure instead of a valid repository", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const resolveEmpty = () => "";
+    const { plugin, spawn, setPorcelain } = await makePlugin(
+      tmp,
+      {
+        setupScript: "setup.ps1",
+        pathContains: "worktrees/",
+        reminderLines: ["remember {branchName}"],
+      },
+      vi.fn(),
+      undefined,
+      vi.fn(),
+      tmp,
+      resolveEmpty,
+    );
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: "git worktree add ../worktrees/canonical-name",
+      workdir: srcDir,
+      callID: "call-emptycommon-01",
+      pre: porcelainMain(tmp),
+      post: porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"),
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+    expect(text).toMatch(/common-dir|identity/i);
+    expect(text).toContain(toSlashes(srcDir));
+    expect(text).toMatch(/porcelain/i);
+  });
+
+  it.each([
+    [
+      "a lost record separator",
+      "call-badsep-01",
+      () => porcelainMain(tmp),
+      () =>
+        porcelainWith(tmp, "worktrees/canonical-name", "canonical-name").replace(
+          `branch refs/heads/main${NUL}${NUL}worktree`,
+          `branch refs/heads/main${NUL}worktree`,
+        ),
+    ],
+    [
+      "a duplicate branch",
+      "call-dupbranch-01",
+      () => {
+        const base = toSlashes(tmp).replace(/\/+$/, "");
+        return (
+          `${porcelainMain(tmp)}` +
+          `worktree ${base}/stale-dup${NUL}HEAD sss111${NUL}branch refs/heads/dup-branch${NUL}${NUL}`
+        );
+      },
+      () => {
+        const base = toSlashes(tmp).replace(/\/+$/, "");
+        return (
+          `${porcelainMain(tmp)}` +
+          `worktree ${base}/stale-dup${NUL}HEAD sss111${NUL}branch refs/heads/dup-branch${NUL}${NUL}` +
+          `worktree ${base}/worktrees/dup-branch${NUL}HEAD ttt222${NUL}branch refs/heads/dup-branch${NUL}${NUL}`
+        );
+      },
+    ],
+  ])("treats porcelain with %s as unreadable without setup", async (_label, callID, buildPre, buildPost) => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    const { plugin, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: "git worktree add ../worktrees/canonical-name",
+      workdir: srcDir,
+      callID: String(callID),
+      pre: (buildPre as () => string)(),
+      post: (buildPost as () => string)(),
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+    expect(text).toMatch(/unreadable/i);
   });
 });
