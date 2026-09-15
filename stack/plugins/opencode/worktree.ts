@@ -284,18 +284,6 @@ const truncateMessage = (value: string, maxLength = 1200) => {
   return `${value.slice(0, maxLength)}\n...`;
 };
 
-const parseWorktreePath = (command: string) => {
-  const match = command.match(
-    /git\s+worktree\s+add\s+(?:-[^\s]+\s+)*(?:-b\s+[^\s]+\s+)?(?:"([^"]+)"|'([^']+)'|(\S+))/i,
-  );
-  return match?.[1] || match?.[2] || match?.[3] || null;
-};
-
-const getWorktreeName = (worktreePath: string) => {
-  const segments = toSlashes(worktreePath).split("/").filter(Boolean);
-  return segments[segments.length - 1] || null;
-};
-
 const normalizePath = (value: string) =>
   toSlashes(value).replace(/\/+$/, "");
 
@@ -327,6 +315,132 @@ const isMissingFileError = (error: unknown) => {
     (error instanceof Error && /not found|no such file/i.test(error.message))
   );
 };
+
+// Pre/post validation against real Git state. The Bash command is only a
+// cheap candidate filter; path, branch and detached state come from `git
+// worktree list --porcelain -z` (NUL-separated fields, NUL-terminated
+// records). Repository identity comes from `git rev-parse
+// --path-format=absolute --git-common-dir`, which is shared by every worktree
+// of one repository: it is the sufficient authority, so sibling linked
+// worktrees are admitted and foreign repositories are rejected.
+const isWorktreeAddCommand = (command: string) =>
+  /\bgit\b.*\bworktree\s+add\b/i.test(command);
+
+interface PorcelainWorktree {
+  path: string;
+  branch?: string;
+  detached: boolean;
+}
+
+const NUL = String.fromCharCode(0);
+
+const parsePorcelain = (raw: string): PorcelainWorktree[] => {
+  const text = String(raw);
+  if (!text) throw new Error("Empty porcelain inventory.");
+  if (!text.endsWith(NUL + NUL)) {
+    throw new Error("Truncated porcelain inventory: missing record terminator.");
+  }
+  const chunks = text.split(NUL + NUL);
+  chunks.pop();
+  const entries: PorcelainWorktree[] = [];
+  const seenBranches = new Set<string>();
+  for (const chunk of chunks) {
+    if (!chunk) throw new Error("Malformed porcelain inventory: empty record.");
+    const fields = chunk.split(NUL);
+    const first = fields[0];
+    if (typeof first !== "string" || !first.startsWith("worktree ")) {
+      throw new Error("Malformed porcelain inventory: record without worktree path.");
+    }
+    const worktreePath = first.slice("worktree ".length);
+    if (!worktreePath) {
+      throw new Error("Malformed porcelain inventory: empty worktree path.");
+    }
+    let head: string | undefined;
+    let branch: string | undefined;
+    let sawBranch = false;
+    let detached = false;
+    for (const field of fields.slice(1)) {
+      if (field.startsWith("worktree ")) {
+        throw new Error("Malformed porcelain inventory: nested worktree record.");
+      } else if (field.startsWith("HEAD ")) {
+        if (head !== undefined) {
+          throw new Error("Malformed porcelain inventory: duplicate HEAD.");
+        }
+        head = field;
+      } else if (field.startsWith("branch ")) {
+        if (sawBranch) {
+          throw new Error("Malformed porcelain inventory: duplicate branch.");
+        }
+        sawBranch = true;
+        const ref = field.slice("branch ".length).trim();
+        const prefix = "refs/heads/";
+        if (!ref.startsWith(prefix) || ref.length === prefix.length) {
+          throw new Error("Malformed porcelain inventory: malformed branch ref.");
+        }
+        branch = ref.slice(prefix.length);
+      } else if (field === "detached") {
+        if (detached) {
+          throw new Error("Malformed porcelain inventory: duplicate detached.");
+        }
+        detached = true;
+      }
+      // Any other legitimate optional Git field (bare, locked, prunable, ...)
+      // is accepted as-is.
+    }
+    if (head === undefined) {
+      throw new Error("Malformed porcelain inventory: record without HEAD.");
+    }
+    if (branch !== undefined && detached) {
+      throw new Error("Malformed porcelain inventory: branch with detached HEAD.");
+    }
+    if (branch !== undefined) {
+      if (seenBranches.has(branch)) {
+        throw new Error(`Malformed porcelain inventory: duplicate branch ${branch}.`);
+      }
+      seenBranches.add(branch);
+    }
+    entries.push({ path: toSlashes(worktreePath), branch, detached });
+  }
+  return entries;
+};
+
+const diffNewWorktrees = (
+  pre: PorcelainWorktree[],
+  post: PorcelainWorktree[],
+) => post.filter((postEntry) => !pre.some((preEntry) => samePath(preEntry.path, postEntry.path)));
+
+const getCallID = (input: any, output: any) => {
+  const value =
+    input?.callID ?? input?.callId ?? output?.callID ?? output?.callId;
+  return typeof value === "string" && value ? value : undefined;
+};
+
+const getToolArgs = (input: any, output: any): Record<string, unknown> => {
+  const args = input?.args ?? output?.args;
+  return isPlainObject(args) ? args : {};
+};
+
+interface PendingCapturing {
+  status: "capturing";
+  cwd: string;
+  ambiguous: boolean;
+}
+
+interface PendingReadyCapture {
+  status: "ready";
+  pre: string;
+  repo: string;
+  cwd: string;
+  ambiguous: boolean;
+}
+
+interface PendingFailedCapture {
+  status: "failed";
+  cwd: string;
+  error: string;
+}
+
+type PendingCapture = PendingCapturing | PendingReadyCapture | PendingFailedCapture;
 
 export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
   let config: WorktreePluginConfig = {
@@ -371,12 +485,74 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
     }
   }
 
+  const pending = new Map<string, PendingCapture>();
+
+  const readCommonDir = async (cwd: string) =>
+    toSlashes(
+      String(
+        await $`git -C ${cwd} rev-parse --path-format=absolute --git-common-dir`.quiet().text(),
+      ).trim(),
+    );
+
+  const failCapture = async (callID: string, cwd: string, cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    pending.set(callID, { status: "failed", cwd, error: truncateMessage(message) });
+    await logToOpenCode(client, "error", "Worktree pre-inventory failed", {
+      error: message,
+    });
+  };
+
   return {
+    "tool.execute.before": async (input: any, output: any) => {
+      try {
+        const tool = String(input?.tool || "").toLowerCase();
+        if (tool !== "bash") return;
+        const args = getToolArgs(input, output);
+        const command = args.command;
+        if (typeof command !== "string" || !isWorktreeAddCommand(command)) return;
+        const callID = getCallID(input, output);
+        if (!callID) return;
+        const commandCwd = getCommandCwd(args, directory);
+        const provisional: PendingCapturing = { status: "capturing", cwd: commandCwd, ambiguous: false };
+        for (const [id, cap] of pending) {
+          if (id !== callID) {
+            if (cap.status === "capturing" || cap.status === "ready") cap.ambiguous = true;
+            provisional.ambiguous = true;
+          }
+        }
+        pending.set(callID, provisional);
+        let preRaw: string;
+        try {
+          preRaw = String(
+            await $`git -C ${commandCwd} worktree list --porcelain -z`.quiet().text(),
+          );
+        } catch (error) {
+          await failCapture(callID, commandCwd, error);
+          return;
+        }
+        let repo: string;
+        try {
+          repo = await readCommonDir(commandCwd);
+          if (!isAbsolutePath(repo)) {
+            throw new Error(`empty repository identity (common-dir) for ${commandCwd}`);
+          }
+        } catch (error) {
+          await failCapture(callID, commandCwd, error);
+          return;
+        }
+        pending.set(callID, { status: "ready", pre: preRaw, repo, cwd: commandCwd, ambiguous: provisional.ambiguous });
+      } catch (error) {
+        await logToOpenCode(client, "error", "Worktree plugin execution failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
     "tool.execute.after": async (input: any, output: any) => {
       try {
-        const tool = (input.tool || "").toLowerCase();
-        const args = input.args || {};
-        const command = args.command || "";
+        const tool = ((input.tool || "") as string).toLowerCase();
+        const args = getToolArgs(input, output);
+        const command =
+          typeof args.command === "string" ? (args.command as string) : "";
 
         const payload = {
           event: "tool.execute.after",
@@ -413,107 +589,254 @@ export const WorktreePlugin: Plugin = async ({ $, client, directory }) => {
 
         if (tool !== "bash") return;
 
-        const commandLower = command.toLowerCase();
-        const pathContains = toSlashes(
-          config.pathContains || "worktrees/",
-        ).toLowerCase();
-
-        if (!commandLower.includes("git worktree add")) {
+        if (!isWorktreeAddCommand(command)) {
+          const stale = getCallID(input, output);
+          if (stale) pending.delete(stale);
           return;
         }
 
-        const parsedWorktreePath = parseWorktreePath(command);
-        if (!parsedWorktreePath) return;
-
-        const worktreeName = getWorktreeName(parsedWorktreePath);
-        if (!worktreeName) return;
-
-        const branchName = worktreeName;
-
-        // .quiet() suppresses stderr to prevent noisy TUI logs from git calls
-        const gitRoot = await $`git rev-parse --show-toplevel`.quiet().text();
-        const projectRoot = String(gitRoot).trim().replace(/\\/g, "/");
-        const commandCwd = getCommandCwd(args, directory);
-        const absoluteWorktreePath = resolvePath(commandCwd, parsedWorktreePath);
-        const expectedWorktreePath = joinProjectPath(
-          projectRoot,
-          `worktrees/${worktreeName}`,
-        );
-
-        const isCanonicalPath = samePath(
-          absoluteWorktreePath,
-          expectedWorktreePath,
-        );
-        if (!isCanonicalPath) {
+        const callID = getCallID(input, output);
+        const capture = callID ? pending.get(callID) : undefined;
+        if (!callID || !capture) {
           appendToolOutput(output, [
-            `Worktree path is not canonical: ${absoluteWorktreePath}`,
-            `Use the project-local path instead: ${expectedWorktreePath}`,
-            "Canonical rule: <project-root>/worktrees/<canonical-name> or <project-root>/worktrees/<canonical-name>-prNN.",
+            "Worktree creation is ambiguous: missing pre-execution inventory. Skipping setup.",
+            "Run `git worktree list --porcelain` to inspect the current inventory.",
           ]);
-        }
-
-        if (configError) {
-          appendToolOutput(output, [configError]);
           return;
         }
+        try {
+          if (capture.status === "failed") {
+            appendToolOutput(output, [
+              `Worktree pre-inventory capture failed for ${capture.cwd}; skipping worktree setup.`,
+              "Run `git worktree list --porcelain -z` from the project root and retry.",
+              "Run `git rev-parse --show-toplevel` from the project root and retry.",
+              ...(capture.error ? [`Details: ${capture.error}`] : []),
+            ]);
+            return;
+          }
 
-        if (!isCanonicalPath) {
-          return;
-        }
+          if (capture.status === "capturing") {
+            appendToolOutput(output, [
+              "Worktree creation is ambiguous: overlapping candidate commands in the same repository cannot be attributed to a single call. Skipping setup.",
+              "Run `git worktree list --porcelain` to inspect the current inventory.",
+            ]);
+            return;
+          }
 
-        if (!normalizePath(absoluteWorktreePath).toLowerCase().includes(pathContains)) {
-          return;
-        }
+          let preList: PorcelainWorktree[];
+          try {
+            preList = parsePorcelain(capture.pre);
+          } catch (error) {
+            appendToolOutput(output, [
+              "Worktree inventory is unreadable; skipping worktree setup.",
+              "Run `git worktree list --porcelain` from the project root and retry.",
+            ]);
+            await logToOpenCode(client, "error", "Worktree inventory parse failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
 
-        const setupScript = resolveProjectPath(directory, config.setupScript);
-        if (setupScript) {
-          const setupResult = await runScript(client, directory, setupScript, {
-            payload: {
-              ...payload,
-              worktreePath: absoluteWorktreePath,
-              worktreeName,
-              branchName,
-            },
-            commandArgs: ["-WorktreePath", absoluteWorktreePath],
-            activeWorktreePath: absoluteWorktreePath,
-          });
+          const exit = output?.metadata?.exit;
+          if (typeof exit !== "number" || exit !== 0) {
+            const ambiguous =
+              exit === undefined || exit === null
+                ? "Worktree command result is ambiguous (missing exit code); skipping worktree setup."
+                : `Worktree command did not succeed (exit ${String(exit)}); skipping worktree setup.`;
+            appendToolOutput(output, [ambiguous]);
+            return;
+          }
 
-          if (setupResult.exitCode !== 0) {
-            const setupErrorMessage = truncateMessage(
-              [setupResult.stderr.trim(), setupResult.stdout.trim()]
-                .filter(Boolean)
-                .join("\n\n"),
+          if (capture.ambiguous) {
+            appendToolOutput(output, [
+              "Worktree creation is ambiguous: overlapping candidate commands in the same repository cannot be attributed to a single call. Skipping setup.",
+              "Run `git worktree list --porcelain` to inspect the current inventory.",
+            ]);
+            return;
+          }
+
+          const commandCwd = getCommandCwd(args, directory);
+          let postRaw: string;
+          let gitRoot: string;
+          let commonCwd: string;
+          let commonDir: string;
+          try {
+            postRaw = String(
+              await $`git -C ${commandCwd} worktree list --porcelain -z`.quiet().text(),
+            );
+            gitRoot = String(
+              await $`git -C ${commandCwd} rev-parse --show-toplevel`.quiet().text(),
+            )
+              .trim()
+              .replace(/\\/g, "/");
+            commonCwd = await readCommonDir(commandCwd);
+            commonDir = await readCommonDir(directory);
+          } catch (error) {
+            const details = truncateMessage(
+              error instanceof Error ? error.message : String(error),
             );
             appendToolOutput(output, [
-              `Worktree setup failed for ${worktreeName}.`,
-              setupErrorMessage || "No additional details from setup script.",
+              "Worktree plugin could not process this worktree command.",
+              "Run `git rev-parse --show-toplevel` from the project root and retry.",
+              ...(details ? [`Details: ${details}`] : []),
             ]);
-          } else {
+            await logToOpenCode(client, "error", "Worktree plugin execution failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+
+          // A concurrent candidate may have started while the post reads above
+          // were in flight and flagged this capture: re-check after every await
+          // and right before attributing effects.
+          if (capture.ambiguous) {
             appendToolOutput(output, [
-              `Worktree setup complete: ${worktreeName}`,
+              "Worktree creation is ambiguous: overlapping candidate commands in the same repository cannot be attributed to a single call. Skipping setup.",
+              "Run `git worktree list --porcelain` to inspect the current inventory.",
+            ]);
+            return;
+          }
+
+          if (!samePath(commonCwd, capture.repo)) {
+            appendToolOutput(output, [
+              "Worktree creation is ambiguous: repository identity changed between pre- and post-execution inventory. Skipping setup.",
+              "Run `git worktree list --porcelain` to inspect the current inventory.",
+            ]);
+            return;
+          }
+
+          const toplevel = toSlashes(gitRoot).replace(/\/+$/, "");
+          if (!samePath(commonCwd, commonDir)) {
+            appendToolOutput(output, [
+              `Worktree command targets a foreign repository: ${toplevel}. Skipping setup.`,
+              `The plugin directory belongs to a different repository (${normalizePath(directory)}). Run the command inside the project repository.`,
+            ]);
+            return;
+          }
+
+          let postList: PorcelainWorktree[];
+          try {
+            postList = parsePorcelain(postRaw);
+          } catch (error) {
+            appendToolOutput(output, [
+              "Worktree inventory is unreadable; skipping worktree setup.",
+              "Run `git worktree list --porcelain` from the project root and retry.",
+            ]);
+            await logToOpenCode(client, "error", "Worktree inventory parse failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+
+          const added = diffNewWorktrees(preList, postList);
+          if (added.length !== 1) {
+            appendToolOutput(output, [
+              `Worktree creation is ambiguous: expected 1 new worktree, found ${added.length}. Skipping setup.`,
+              "Run `git worktree list --porcelain` to inspect the current inventory.",
+            ]);
+            return;
+          }
+
+          const created = added[0] as PorcelainWorktree;
+          const branchName = created.detached ? undefined : created.branch;
+          if (!branchName) {
+            appendToolOutput(output, [
+              created.detached
+                ? "Worktree is detached; skipping setup. Use a branch worktree under <project-root>/worktrees/<branch>."
+                : "Worktree branch could not be determined from Git; skipping setup.",
+              "Run `git worktree list --porcelain` to inspect the current inventory.",
+            ]);
+            return;
+          }
+
+          const absoluteWorktreePath = toSlashes(created.path);
+          const projectRoot = toplevel;
+          const expectedWorktreePath = resolvePath(
+            projectRoot,
+            `worktrees/${branchName}`,
+          );
+          const pathContains = toSlashes(
+            config.pathContains || "worktrees/",
+          ).toLowerCase();
+
+          const isCanonicalPath = samePath(
+            absoluteWorktreePath,
+            expectedWorktreePath,
+          );
+          if (!isCanonicalPath) {
+            appendToolOutput(output, [
+              `Worktree path is not canonical: ${absoluteWorktreePath}`,
+              `Use the project-local path instead: ${expectedWorktreePath}`,
+              "Canonical rule: <project-root>/worktrees/<canonical-name> or <project-root>/worktrees/<canonical-name>-prNN.",
             ]);
           }
-        }
 
-        const reminderLines = (config.reminderLines || []).map((line) =>
-          replaceToken(
+          if (configError) {
+            appendToolOutput(output, [configError]);
+            return;
+          }
+
+          if (!isCanonicalPath) {
+            return;
+          }
+
+          if (!normalizePath(absoluteWorktreePath).toLowerCase().includes(pathContains)) {
+            return;
+          }
+
+          const setupScript = resolveProjectPath(directory, config.setupScript);
+          if (setupScript) {
+            const setupResult = await runScript(client, directory, setupScript, {
+              payload: {
+                ...payload,
+                worktreePath: absoluteWorktreePath,
+                worktreeName: branchName,
+                branchName,
+              },
+              commandArgs: ["-WorktreePath", absoluteWorktreePath],
+              activeWorktreePath: absoluteWorktreePath,
+            });
+
+            if (setupResult.exitCode !== 0) {
+              const setupErrorMessage = truncateMessage(
+                [setupResult.stderr.trim(), setupResult.stdout.trim()]
+                  .filter(Boolean)
+                  .join("\n\n"),
+              );
+              appendToolOutput(output, [
+                `Worktree setup failed for ${branchName}.`,
+                setupErrorMessage || "No additional details from setup script.",
+              ]);
+            } else {
+              appendToolOutput(output, [
+                `Worktree setup complete: ${branchName}`,
+              ]);
+            }
+          }
+
+          const reminderLines = (config.reminderLines || []).map((line) =>
             replaceToken(
-              replaceToken(line, "{worktreeName}", worktreeName),
-              "{worktreePath}",
-              absoluteWorktreePath,
+              replaceToken(
+                replaceToken(line, "{worktreeName}", branchName),
+                "{worktreePath}",
+                absoluteWorktreePath,
+              ),
+              "{branchName}",
+              branchName,
             ),
-            "{branchName}",
-            branchName,
-          ),
-        );
+          );
 
-        if (reminderLines.length > 0) {
-          const banner = [
-            "--------------------------------------------------",
-            ...reminderLines,
-            "--------------------------------------------------",
-          ].join("\n");
-          appendToolOutput(output, [banner]);
+          if (reminderLines.length > 0) {
+            const banner = [
+              "--------------------------------------------------",
+              ...reminderLines,
+              "--------------------------------------------------",
+            ].join("\n");
+            appendToolOutput(output, [banner]);
+          }
+          return;
+        } finally {
+          if (pending.get(callID) === capture) pending.delete(callID);
         }
       } catch (error) {
         const details = truncateMessage(
