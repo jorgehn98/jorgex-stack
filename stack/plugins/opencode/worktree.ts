@@ -317,8 +317,9 @@ const isMissingFileError = (error: unknown) => {
 };
 
 // Pre/post validation against real Git state. The Bash command is only a
-// conservative filter; route, branch and detached come from `git worktree
-// list --porcelain -z` (NUL-separated fields, NUL-terminated records).
+// cheap candidate filter; path, branch and detached state come from `git
+// worktree list --porcelain -z` (NUL-separated fields, with an extra NUL
+// between records).
 const isWorktreeAddCommand = (command: string) =>
   /\bgit\b.*\bworktree\s+add\b/i.test(command);
 
