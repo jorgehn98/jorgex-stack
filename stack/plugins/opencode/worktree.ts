@@ -318,11 +318,11 @@ const isMissingFileError = (error: unknown) => {
 
 // Pre/post validation against real Git state. The Bash command is only a
 // cheap candidate filter; path, branch and detached state come from `git
-// worktree list --porcelain -z` (NUL-separated fields, NUL-terminated
-// records). Repository identity comes from `git rev-parse
-// --path-format=absolute --git-common-dir`, which is shared by every worktree
-// of one repository: it is sufficient authority, so sibling linked worktrees
-// are admitted and foreign repositories are rejected.
+// worktree list --porcelain -z` (NUL-terminated fields, with an extra NUL
+// ending each record). Repository identity comes from `git rev-parse
+// --path-format=absolute --git-common-dir`, which is shared by linked
+// worktrees of one repository and therefore admits siblings while rejecting
+// foreign repositories.
 const isWorktreeAddCommand = (command: string) =>
   /\bgit\b.*\bworktree\s+add\b/i.test(command);
 
