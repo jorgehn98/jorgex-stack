@@ -135,7 +135,7 @@ const runLifecycle = async (
     callID: string;
     pre: string;
     post: string;
-    exit?: number;
+    exit?: number | null;
   },
 ) => {
   const inputBase = {
@@ -633,6 +633,30 @@ describe("WorktreePlugin", () => {
     const text = String(output.output ?? "");
     expect(spawn).not.toHaveBeenCalled();
     expect(text).toMatch(/missing exit code/i);
+    expect(text).toMatch(/skipping worktree setup/i);
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+  });
+
+  it("withholds setup when Bash times out with a null exit despite an apparent new worktree", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: "git worktree add ../worktrees/canonical-name",
+      workdir: srcDir,
+      callID: "call-timeout-null-01",
+      pre: porcelainMain(tmp),
+      post: porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"),
+      exit: null,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).toMatch(/missing exit code|ambiguous|did not succeed/i);
     expect(text).toMatch(/skipping worktree setup/i);
     expect(text).not.toContain("Worktree setup complete");
     expect(text).not.toContain("remember");
