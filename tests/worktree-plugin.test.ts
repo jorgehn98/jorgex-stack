@@ -45,9 +45,10 @@ const makePlugin = async (
   },
   appLog = vi.fn(),
   gitRoot: string | Error = root,
+  resolveCommonDir?: (cwd: string) => string | Error,
 ) => {
-  let currentPorcelain = porcelainMain(root);
-  const setPorcelain = (value: string) => {
+  let currentPorcelain: string | Error = porcelainMain(root);
+  const setPorcelain = (value: string | Error) => {
     currentPorcelain = value;
   };
   vi.stubGlobal("Bun", {
@@ -66,16 +67,38 @@ const makePlugin = async (
     }),
     spawn: spawn.mockReturnValue(spawnResult),
   });
-  const $ = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+  const defaultCommonDir = (): string | Error => {
+    if (gitRoot instanceof Error) return gitRoot;
+    return `${toSlashes(gitRoot).replace(/\/+$/, "")}/.git`;
+  };
+  const resolveCommon = resolveCommonDir ?? defaultCommonDir;
+  const $ = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const raw = Array.isArray(strings) ? strings.join("") : String(strings);
     const isPorcelainQuery = raw.includes("worktree list");
+    const isCommonDirQuery = raw.includes("--git-common-dir");
     const isRevParseQuery = raw.includes("rev-parse");
     if (isPorcelainQuery) {
       if (!raw.includes("--porcelain -z")) {
         throw new Error(`expected --porcelain -z query, got: ${raw}`);
       }
       const r: any = {
-        text: async () => currentPorcelain,
+        text: async () => {
+          if (currentPorcelain instanceof Error) throw currentPorcelain;
+          return currentPorcelain;
+        },
+      };
+      r.quiet = () => r;
+      return r;
+    }
+    if (isCommonDirQuery) {
+      const cwd =
+        typeof values[0] === "string" && values[0] ? toSlashes(String(values[0])) : toSlashes(root);
+      const r: any = {
+        text: async () => {
+          const resolved = resolveCommon(cwd);
+          if (resolved instanceof Error) throw resolved;
+          return `${resolved}\n`;
+        },
       };
       r.quiet = () => r;
       return r;
@@ -756,5 +779,222 @@ describe("WorktreePlugin", () => {
     expect(payload.worktreePath).toBe(`${base}/${rel}`);
     expect(options.env.OPENCODE_WORKTREE_PATH).toBe(`${base}/${rel}`);
     expect(text).toContain(`Worktree setup complete: ${branch}`);
+  });
+
+  it("diagnoses a foreign repository without setup or reminders when workdir points outside the plugin directory", async () => {
+    const repoA = path.join(tmp, "repo-a");
+    const repoB = path.join(tmp, "repo-b");
+    fs.mkdirSync(repoA, { recursive: true });
+    fs.mkdirSync(repoB, { recursive: true });
+    const branch = "foreign-branch";
+    const rel = `worktrees/${branch}`;
+    const baseA = toSlashes(repoA).replace(/\/+$/, "");
+    const baseB = toSlashes(repoB).replace(/\/+$/, "");
+    const resolveForeignCommon = (cwd: string) =>
+      toSlashes(cwd).replace(/\/+$/, "").startsWith(baseB) ? `${baseB}/.git` : `${baseA}/.git`;
+    const { plugin, spawn, setPorcelain } = await makePlugin(
+      repoA,
+      {
+        setupScript: "setup.ps1",
+        pathContains: "worktrees/",
+        reminderLines: ["remember {branchName}"],
+      },
+      vi.fn(),
+      undefined,
+      vi.fn(),
+      repoB,
+      resolveForeignCommon,
+    );
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: `git worktree add ${rel}`,
+      workdir: repoB,
+      callID: "call-foreign-01",
+      pre: porcelainMain(repoB),
+      post: porcelainWith(repoB, rel, branch),
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+    expect(text).toMatch(/foreign|different repository|ajeno/i);
+  });
+
+  it("withholds all setup when two overlapping calls share the same pre-inventory", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { plugin, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const command = "git worktree add ../worktrees/canonical-name";
+    const input1 = {
+      tool: "bash",
+      sessionID: SESSION_ID,
+      callID: "call-overlap-01",
+      args: { command, workdir: srcDir },
+    };
+    const input2 = {
+      tool: "bash",
+      sessionID: SESSION_ID,
+      callID: "call-overlap-02",
+      args: { command, workdir: srcDir },
+    };
+    setPorcelain(porcelainMain(tmp));
+    await plugin["tool.execute.before"]({ ...input1 }, {});
+    await plugin["tool.execute.before"]({ ...input2 }, {});
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+    const output1: any = {
+      title: "git worktree add",
+      output: "",
+      metadata: { output: "", exit: 0, truncated: false, description: "git worktree add" },
+    };
+    const output2: any = {
+      title: "git worktree add",
+      output: "",
+      metadata: { output: "", exit: 0, truncated: false, description: "git worktree add" },
+    };
+    await plugin["tool.execute.after"]({ ...input1 }, output1);
+    await plugin["tool.execute.after"]({ ...input2 }, output2);
+    const text1 = String(output1.output ?? "");
+    const text2 = String(output2.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text1).not.toContain("Worktree setup complete");
+    expect(text2).not.toContain("Worktree setup complete");
+    expect(`${text1}\n${text2}`).toMatch(/ambiguous|cannot be attributed|overlapping/i);
+  });
+
+  it("diagnoses unreadable pre-inventory without setup when pre porcelain is truncated", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const base = toSlashes(tmp).replace(/\/+$/, "");
+    const malformedPre = `worktree ${base}${NUL}HEAD abc123`;
+    const { plugin, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: "git worktree add ../worktrees/canonical-name",
+      workdir: srcDir,
+      callID: "call-malformed-pre-01",
+      pre: malformedPre,
+      post: porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"),
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+    expect(text).toMatch(/unreadable/i);
+  });
+
+  it("rejects a worktrees-evil prefix collision as non-canonical without setup", async () => {
+    const branch = "canonical-name";
+    const evilRel = "worktrees-evil/canonical-name";
+    const { plugin, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+      reminderLines: ["remember {branchName}"],
+    });
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: `git worktree add "${path.join(tmp, evilRel)}"`,
+      workdir: tmp,
+      callID: "call-evil-01",
+      pre: porcelainMain(tmp),
+      post: porcelainWith(tmp, evilRel, branch),
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).toContain("Worktree path is not canonical");
+    expect(text).toContain(canonicalExpected(tmp, branch));
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+  });
+
+  it("allows setup from the main checkout when the plugin directory is a sibling linked worktree of the same repository", async () => {
+    const main = path.join(tmp, "main");
+    const sibling = path.join(tmp, "sibling");
+    fs.mkdirSync(main, { recursive: true });
+    fs.mkdirSync(sibling, { recursive: true });
+    const baseMain = toSlashes(main).replace(/\/+$/, "");
+    const baseSibling = toSlashes(sibling).replace(/\/+$/, "");
+    const commonMain = `${baseMain}/.git`;
+    const branch = "shared-branch";
+    const rel = `worktrees/${branch}`;
+    const pre =
+      `worktree ${baseMain}${NUL}HEAD aaa111${NUL}branch refs/heads/main${NUL}${NUL}` +
+      `worktree ${baseSibling}${NUL}HEAD bbb222${NUL}branch refs/heads/sibling${NUL}${NUL}`;
+    const post =
+      `${pre}worktree ${baseMain}/${rel}${NUL}HEAD ccc333${NUL}branch refs/heads/${branch}${NUL}${NUL}`;
+    const resolveSameCommon = () => commonMain;
+    const { plugin, spawn, setPorcelain } = await makePlugin(
+      sibling,
+      { setupScript: "setup.ps1", pathContains: "worktrees/" },
+      vi.fn(),
+      undefined,
+      vi.fn(),
+      main,
+      resolveSameCommon,
+    );
+    const output = await runLifecycle(plugin, setPorcelain, {
+      command: `git worktree add ${rel}`,
+      workdir: main,
+      callID: "call-sibling-samerepo-01",
+      pre,
+      post,
+      exit: 0,
+    });
+    const text = String(output.output ?? "");
+    expect(text).not.toMatch(/foreign|different repository|ajeno/i);
+    expect(spawn).toHaveBeenCalledOnce();
+    const { options, payload } = await readPayload(spawn);
+    expect(payload.branchName).toBe(branch);
+    expect(payload.worktreePath).toBe(`${baseMain}/${rel}`);
+    expect(options.env.OPENCODE_WORKTREE_PATH).toBe(`${baseMain}/${rel}`);
+    expect(text).toContain(`Worktree setup complete: ${branch}`);
+  });
+
+  it("distinguishes a failed pre-inventory capture instead of reducing it to missing pre-execution inventory", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const appLog = vi.fn().mockRejectedValue(new Error("OpenCode log unavailable"));
+    const { plugin, spawn, setPorcelain } = await makePlugin(
+      tmp,
+      {
+        setupScript: "setup.ps1",
+        pathContains: "worktrees/",
+        reminderLines: ["remember {branchName}"],
+      },
+      vi.fn(),
+      undefined,
+      appLog,
+    );
+    const command = "git worktree add ../worktrees/canonical-name";
+    const input = {
+      tool: "bash",
+      sessionID: SESSION_ID,
+      callID: "call-prefail-01",
+      args: { command, workdir: srcDir },
+    };
+    setPorcelain(new Error("git offline"));
+    await plugin["tool.execute.before"]({ ...input }, {});
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+    const output: any = {
+      title: "git worktree add",
+      output: "",
+      metadata: { output: "", exit: 0, truncated: false, description: "git worktree add" },
+    };
+    await plugin["tool.execute.after"]({ ...input }, output);
+    const text = String(output.output ?? "");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).not.toContain("Worktree setup complete");
+    expect(text).not.toContain("remember");
+    expect(text).not.toMatch(/missing pre-execution inventory/i);
+    expect(text).toMatch(/pre-(inventory|execution inventory)[\s\S]{0,80}(fail|could not|error)/i);
+    expect(text).toContain(toSlashes(srcDir));
+    expect(text).toMatch(/porcelain/i);
   });
 });
