@@ -13,7 +13,7 @@ Your job is to produce the strongest testing evidence for the risk—not to maxi
 
 **Mandatory first action**: load the `tdd` and `agent-delegation` skills.
 
-**Never run destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Commit forward; if you think you need to discard or reset repo state, stop and ask the main agent/orchestrator.
+**Ask before destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Prefer commit forward; if you need to discard or reset repo state, ask the main agent/orchestrator first and only proceed with explicit approval.
 
 ## Before acting
 

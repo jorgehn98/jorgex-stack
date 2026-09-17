@@ -17,15 +17,17 @@ descubrir como si fueran fallos. Revisados y aceptados el 2026-06-19.
 de permiso que cace `--force` en cualquier posición.
 
 **Mitigación existente.**
-- En los subagentes full-bash (`implementer`, `tester`, `translator`),
-  `stack/scripts/block-destructive-git.cjs` (hook `PreToolUse`, exit 2) sí detecta
-  `--force` / `-f` / refspec `+` en cualquier posición y tras opciones globales de git.
+- El `ask` genérico de `Bash` cubre esas formas como pregunta: `git -C .
+  push`, `git -c ... push` o `push` con `--force` al final piden aprobación
+  aunque la regla específica no los case.
 - El agente principal lo pilota el humano, y la branch protection de GitHub rechaza el
   force-push a ramas protegidas (donde está el daño real: reescribir la historia).
 
 **Por qué se deja así.** No se puede arreglar con permisos (matching posicional). Un hook
 `PreToolUse` global para el agente principal contradice el diseño del stack —el agente
-principal no se restringe— y el daño irreversible ya lo cubre GitHub.
+principal no se restringe— y el daño irreversible ya lo cubre GitHub. Los subagentes
+tampoco llevan hook de bloqueo desde la decisión #153 (2026-09-17): el git destructivo
+pide aprobación en vez de bloquearse.
 
 ---
 
@@ -59,8 +61,8 @@ correcto, y rompería la abstracción canónica multi-runtime.
 ## 3. Los hooks se renderizan en shell-form en Windows
 
 **Qué.** Los hooks se escriben como `command: "node \"<ruta>\""` (shell-form), no en
-exec-form (`command: "node"`, `args: [...]`). Aplica tanto al hook de `settings.json`
-(lifecycle de PR) como al hook `PreToolUse` del frontmatter de los subagentes (git-guard).
+exec-form (`command: "node"`, `args: [...]`). Aplica al hook de `settings.json`
+(lifecycle de PR).
 
 **Por qué.** Es el formato canónico único que comparten los tres runtimes (Claude Code,
 Codex, OpenCode); ver `src/lib/hooks-format.ts`.

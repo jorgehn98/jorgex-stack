@@ -10,7 +10,6 @@ import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
-import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
 
@@ -209,20 +208,10 @@ export const claudeCodeAdapter: Adapter = {
     if (tools !== null) lines.push(`tools: ${tools}`);
     lines.push(`model: ${resolveAgentModel(models, agent.name, agent.tier).model}`);
 
-    // Claude Code no tiene deny de comandos por-subagente; un hook PreToolUse en
-    // el frontmatter del subagente es el mecanismo documentado para bloquear git
-    // destructivo solo en los full-bash, sin tocar al agente principal.
-    // {{SCRIPTS_DIR}} lo resuelve planAgents a la ruta de scripts instalada.
-    if (agent.bash === "full") {
-      lines.push(
-        "hooks:",
-        "  PreToolUse:",
-        '    - matcher: "Bash|PowerShell"',
-        "      hooks:",
-        "        - type: command",
-        `          command: "node \\"{{SCRIPTS_DIR}}/${GIT_GUARD_SCRIPT}\\""`,
-      );
-    }
+    // Sin bloqueos por-subagente: el git destructivo (reset/clean/checkout con
+    // descarte/restore/push --force) cae en el `ask` global de `Bash` y pide
+    // aprobación explícita — decisión #153 (2026-09-17): ask con vía de escape,
+    // no bloqueo. El primary hereda el global sin más.
 
     return [
       {
