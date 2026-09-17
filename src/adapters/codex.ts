@@ -1,3 +1,4 @@
+import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
@@ -9,6 +10,8 @@ import { HOME, samePath, stackRoot } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import {
   readTomlSection,
+  hasTomlChildSection,
+  multilineStringMask,
   hasTomlRootKey,
   removeMarkdownSection,
   removeTomlRootKeyIfExact,
@@ -22,6 +25,18 @@ import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/q
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function readMcpConfig(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    if (code === "ENOENT") return null;
+    throw new Error(`Codex: no se pudo leer la configuración MCP en ${file} (${code}).`);
+  }
 }
 
 const PRIMARY_MODEL = '"gpt-5.6-sol"';
@@ -81,6 +96,79 @@ const CODEX_JSON_STRING_ARRAY = String.raw`\[(?:\s*${CODEX_JSON_STRING}(?:\s*,\s
 const CODEX_KEY = String.raw`(?:[A-Za-z0-9_-]+|${CODEX_JSON_STRING})`;
 const CODEX_ASSIGNMENT = new RegExp(String.raw`^\s*(${CODEX_KEY})\s*=\s*(${CODEX_JSON_STRING_ARRAY}|${CODEX_JSON_VALUE})\s*(?:#.*)?$`);
 const CODEX_HEADER = new RegExp(String.raw`^\[\s*(${CODEX_KEY}(?:\s*\.\s*${CODEX_KEY})*)\s*\]\s*(?:#.*)?$`);
+
+function tomlAssignment(section: string, key: string): { present: boolean; raw?: string } {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
+  const lines = section.split(/\r?\n/);
+  const mask = multilineStringMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (mask[index] || !keyPattern.test(line)) continue;
+    const match = CODEX_ASSIGNMENT.exec(line);
+    if (match) return { present: true, raw: match[2] };
+    const equals = line.indexOf("=");
+    const raw = equals === -1 ? undefined : line.slice(equals + 1).trim().replace(/\s+#.*$/, "");
+    return { present: true, ...(raw?.startsWith("'") && raw.endsWith("'") ? { raw } : {}) };
+  }
+  return { present: false };
+}
+
+function parseTomlString(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const value = raw.trim();
+  if (value.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return typeof parsed === "string" ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1);
+  }
+  return undefined;
+}
+
+function context7HttpSection(server: CanonicalMcp["servers"][string]): string {
+  const body = [`url = ${tomlString(server.url!)}`];
+  const envHeaders: string[] = [];
+  const literalHeaders: string[] = [];
+  for (const [key, raw] of Object.entries(server.headers ?? {})) {
+    const envRef = /^\$\{(\w+)\}$/.exec(raw);
+    if (envRef) envHeaders.push(`${tomlString(key)} = ${tomlString(envRef[1]!)}`);
+    else literalHeaders.push(`${tomlString(key)} = ${tomlString(raw)}`);
+  }
+  if (literalHeaders.length > 0) body.push(`http_headers = { ${literalHeaders.join(", ")} }`);
+  if (envHeaders.length > 0) body.push(`env_http_headers = { ${envHeaders.join(", ")} }`);
+  return body.join("\n");
+}
+
+function isCompatibleContext7Server(server: CanonicalMcp["servers"][string], section: string | null): boolean {
+  if (server.transport !== "http" || typeof server.url !== "string" || section === null) return false;
+  const url = tomlAssignment(section, "url");
+  const command = tomlAssignment(section, "command");
+  const type = tomlAssignment(section, "type");
+  const enabled = tomlAssignment(section, "enabled");
+  const declaredType = type.present ? parseTomlString(type.raw) : "http";
+  return url.present
+    && parseTomlString(url.raw) === server.url
+    && !command.present
+    && declaredType === "http"
+    && (!enabled.present || enabled.raw?.trim() === "true");
+}
+
+function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], section: string | null, config: string | null): boolean {
+  return isCompatibleContext7Server(server, section) && section!.trim() === context7HttpSection(server)
+    && !hasTomlChildSection(config, "mcp_servers.context7");
+}
+
+function assertCompatibleContext7(server: CanonicalMcp["servers"][string], section: string | null, config: string | null): void {
+  if ((section === null && hasTomlChildSection(config, "mcp_servers.context7"))
+    || (section !== null && !isCompatibleContext7Server(server, section))) {
+    throw new Error("Codex: MCP 'context7' entra en conflicto con una definición existente (endpoint, tipo o estado nativo incompatible). Conserva la configuración y corrige el conflicto antes de reintentar.");
+  }
+}
 
 const CODEX_PERMISSION_HEADERS = {
   base: "permissions.jorgex-read-anywhere",
@@ -377,11 +465,16 @@ export const codexAdapter: Adapter = {
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "config.toml");
-    const original = readTextIfExists(file);
+    const original = readMcpConfig(file);
     const contentSource = original === null || original.trim() === "" ? null : original;
     let content = contentSource;
     const mcpOwnership: McpOwnershipChange[] = [];
     const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
+
+    const context7 = canonical.servers.context7;
+    if (context7 !== undefined) {
+      assertCompatibleContext7(context7, readTomlSection(contentSource, "mcp_servers.context7"), contentSource);
+    }
 
     // Permisos por defecto: solo en config fresca o vacía. Una config
     // existente no se auto-expande jamás.
@@ -430,6 +523,15 @@ export const codexAdapter: Adapter = {
       const section = `mcp_servers.${name}`;
       const existing = readTomlSection(content, section);
       const owned = ctx.ownedMcpServers?.has(name) === true;
+      if (name === "context7" && existing !== null) {
+        // Una definición compatible previa es suficiente para Context7. Solo
+        // se libera ownership si el usuario modificó la entrada creada por el
+        // Stack; nunca se reemplazan sus headers ni campos adicionales.
+        if (owned && !isCanonicalContext7Server(server, existing, content)) {
+          mcpOwnership.push({ server: name, owned: false });
+        }
+        continue;
+      }
       if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
         if (owned) {
           if (isManagedOptionalStdioServer(server, existing)) content = removeTomlSection(content!, section);
@@ -486,6 +588,9 @@ export const codexAdapter: Adapter = {
         if (literalPairs.length > 0) body.push(`http_headers = { ${literalPairs.join(", ")} }`);
         if (refPairs.length > 0) body.push(`env_http_headers = { ${refPairs.join(", ")} }`);
         content = upsertTomlSection(content, section, body.join("\n"));
+        if (name === "context7" && existing === null && !owned) {
+          mcpOwnership.push({ server: name, owned: true });
+        }
       }
     }
 
@@ -506,15 +611,12 @@ export const codexAdapter: Adapter = {
 
     const prompt = readTextIfExists(systemPromptFile);
     if (prompt !== null) {
-      let content = removeMarkdownSection(prompt, "system-prompt");
-      content = removeMarkdownSection(content, "engram-protocol");
-      content = removeMarkdownSection(content, "browser");
-      content = removeMarkdownSection(content, "writing-style");
+      const content = removeSystemPromptSections(prompt);
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 
     const configFile = path.join(ctx.configDir, "config.toml");
-    const config = readTextIfExists(configFile);
+    const config = readMcpConfig(configFile);
     if (config !== null) {
       let content = config;
       const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
@@ -529,6 +631,18 @@ export const codexAdapter: Adapter = {
       const mcpOwnership: McpOwnershipChange[] = [];
       for (const [name, server] of Object.entries(mcp.servers)) {
         const section = `mcp_servers.${name}`;
+        if (name === "context7") {
+          const current = readTomlSection(content, section);
+          const canonical = isCanonicalContext7Server(server, current, content);
+          const owned = ctx.ownedMcpServers?.has(name) === true;
+          if (owned) {
+            if (canonical) {
+              content = removeTomlSection(content, section);
+            }
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
         if (!server.optional) {
           content = removeTomlSection(content, section);
           continue;

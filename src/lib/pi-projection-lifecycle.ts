@@ -3,13 +3,13 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { WritingStyleSnapshot } from "./writing-style.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalMcp } from "./canonical.js";
-import { piAdapter } from "../adapters/pi.js";
+import { piAdapter, piSystemPromptFile } from "../adapters/pi.js";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
 import { planCommands } from "../components/commands.js";
 import { planSkills } from "../components/skills.js";
 import { planSystemPrompt } from "../components/system-prompt.js";
 import { createBackup } from "./backup.js";
-import { removeMarkdownSection } from "./filemerge.js";
+import { assertSystemPromptFile, assertSystemPromptMarkers, removeSystemPromptSections } from "./system-prompt-sections.js";
 import { copyFile, pruneEmptyDirs, writeText } from "./fsx.js";
 import { readManifest } from "./manifest.js";
 import { DEFAULT_MODEL_MAP } from "./model-map.js";
@@ -73,6 +73,7 @@ export type PiProjectionBlockedReason =
   | "projection-cleanup-failed"
   | "projection-receipt-invalid"
   | "projection-receipt-unreadable"
+  | "projection-prompt-markers"
   | "projection-write-failed";
 
 export interface PiProjectionBlocked {
@@ -160,7 +161,7 @@ function projectedPiAdapter(scope: ProjectionScope): SharedProjectionAdapter {
   };
 }
 
-function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScope): FileAction[] {
+function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScope, includePrompt = true): FileAction[] {
   const ctx: InstallContext = {
     writingStyle: input.writingStyle,
     stackDir: input.stackDir,
@@ -173,7 +174,7 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
   };
   const adapter = projectedPiAdapter(scope);
   const actions: FileAction[] = [
-    ...planSystemPrompt(adapter, ctx),
+    ...(includePrompt ? planSystemPrompt(adapter, ctx) : []),
     ...planSkills(adapter, ctx),
     ...planCommands(adapter, ctx),
   ];
@@ -320,7 +321,8 @@ function expectedProjectionReceipt(
   input: PiProjectionLifecycleInput,
   scope: ProjectionScope,
 ): PiProjectionReceipt {
-  const plan = projectionPlan(input, scope);
+  // El prompt compartido no pertenece al inventario owned del receipt.
+  const plan = projectionPlan(input, scope, false);
   assertPlanContained(plan, scope);
   return receiptFor(plan, scope);
 }
@@ -329,7 +331,7 @@ function realPiProjectionScope(): PiProjectionScope {
   return {
     kind: "real",
     home: HOME,
-    codingAgentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent"),
+    codingAgentDir: path.dirname(piSystemPromptFile()),
     receiptFile: path.join(dataDir(), "pi-projection-receipt.json"),
   };
 }
@@ -386,8 +388,7 @@ function manifestOwned(manifest: PiProjectionManifest): Set<string> {
 }
 
 function withoutManagedPromptSections(content: string): string {
-  return ["system-prompt", "engram-protocol", "browser", "writing-style"]
-    .reduce((current, section) => removeMarkdownSection(current, section), content);
+  return removeSystemPromptSections(content);
 }
 
 function uniquePaths(paths: string[]): string[] {
@@ -529,6 +530,10 @@ export function preparePiProjectionUninstall(
   } catch {
     return cleanupFailure([prompt]);
   }
+  try { assertSystemPromptMarkers(existingPrompt, prompt); }
+  catch (error) {
+    return blocked("projection-prompt-markers", [prompt], error instanceof Error ? error.message : String(error));
+  }
   const promptContent = existingPrompt === null ? null : withoutManagedPromptSections(existingPrompt);
   const promptUpdate = promptContent === null || promptContent === existingPrompt
     ? null
@@ -641,6 +646,12 @@ export function runPiProjectionLifecycle(
       : completePiProjectionUninstall(prepared.plan, deps);
   }
 
+  const prompt = path.join(scope.codingAgentDir, "AGENTS.md");
+  try { assertSystemPromptMarkers(deps.readText(prompt), prompt); }
+  catch (error) {
+    return blocked("projection-prompt-markers", [prompt], error instanceof Error ? error.message : String(error));
+  }
+
   if (input.devtoolsMcpEnabled && (!input.pnpmBin || !path.isAbsolute(input.pnpmBin))) {
     return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere un ejecutable pnpm absoluto disponible en PATH.");
   }
@@ -749,7 +760,7 @@ function systemProjectionLifecycle(
     : {
         kind: "target-dir",
         home: path.join(targetRoot, "home"),
-        codingAgentDir: path.join(targetRoot, "pi-agent"),
+        codingAgentDir: path.dirname(piSystemPromptFile(targetRoot)),
         receiptFile: path.join(targetRoot, "state", "pi-projection-receipt.json"),
       };
 
@@ -791,6 +802,8 @@ function systemProjectionLifecycle(
 export function preparePiProjectionUninstallSystem(
   input: PiProjectionLifecycleSystemInput,
 ): PiProjectionUninstallPrepareResult {
+  const error = systemPromptPreflight(input.targetDir);
+  if (error) return error;
   const lifecycle = systemProjectionLifecycle(input);
   return preparePiProjectionUninstall(lifecycle.input, lifecycle.deps);
 }
@@ -808,6 +821,16 @@ export function completePiProjectionUninstallSystem(
 export function runPiProjectionLifecycleSystem(
   input: PiProjectionLifecycleSystemInput,
 ): PiProjectionLifecycleResult {
+  const error = systemPromptPreflight(input.targetDir);
+  if (error) return error;
   const lifecycle = systemProjectionLifecycle(input);
   return runPiProjectionLifecycle(lifecycle.input, lifecycle.deps);
+}
+
+function systemPromptPreflight(targetDir?: string): PiProjectionBlocked | undefined {
+  const target = piSystemPromptFile(targetDir);
+  try { assertSystemPromptFile(target, targetDir); }
+  catch (error) {
+    return blocked("projection-prompt-markers", [target], error instanceof Error ? error.message : String(error));
+  }
 }

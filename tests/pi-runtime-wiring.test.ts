@@ -38,6 +38,9 @@ type PiRuntimeModule = {
       source: typeof PI_RUNTIME_CANDIDATE.package.source;
       tarball: { sha256: string; sha512: string; bytes: number };
       pi: { testedVersions: readonly string[] };
+      candidate: {
+        contract: { capabilities: readonly string[] };
+      };
       acceptedCandidates?: readonly unknown[];
     };
   };
@@ -145,6 +148,14 @@ describe("Pi runtime wiring", () => {
     });
     expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).toEqual([PI_RUNTIME_CANDIDATE]);
     expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).not.toContainEqual(PI_RUNTIME_PREVIOUS_CANDIDATE);
+    expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("modular-system-prompts-v1");
+    expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("context7-http-v1");
+    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).toContain("modular-system-prompts-v1");
+    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).toContain("context7-http-v1");
+    expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("permissions-policy-v1");
+    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).toContain("permissions-policy-v1");
+    expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("experience-defaults-v1");
+    expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).not.toContain("experience-defaults-v1");
     expect(parseCliArgs(["install", "--agents", "pi,codex"]).flags.agents).toEqual(["pi", "codex"]);
     expect(ADAPTERS).not.toHaveProperty("pi");
     expect(DEFAULT_MODEL_MAP).not.toHaveProperty("pi");

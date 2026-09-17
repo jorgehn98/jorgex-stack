@@ -15,6 +15,7 @@ import { createBackup } from "./lib/backup.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
+import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import { planAgents } from "./components/agents.js";
 import { planSkills } from "./components/skills.js";
 import { planCommands } from "./components/commands.js";
@@ -22,9 +23,7 @@ import { planHooks } from "./components/hooks.js";
 import { planMcp } from "./components/mcp.js";
 import { planPlugins } from "./components/plugins.js";
 import {
-  detectPlaywrightCli,
   executePlaywrightToolAction as executeExternalPlaywrightToolAction,
-  isPlaywrightBrowserReady,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
   setupPnpmGlobal,
@@ -33,6 +32,11 @@ import {
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
+import {
+  inspectPlaywrightCapability,
+  type PlaywrightCapabilitySnapshot,
+  type VerifiedPlaywrightCapabilitySnapshot,
+} from "./lib/playwright-capability.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -68,12 +72,44 @@ export interface InstallOptions {
   playwrightToolConsent?: PlaywrightToolConsent;
   /** Seams para verificar el flujo sin ejecutar instalaciones globales. */
   playwrightToolDeps?: PlaywrightToolPlanDeps;
+  /** Snapshot de capacidad compartida por el coordinador para este comando. */
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
+  /** Entrega al coordinador la snapshot posterior a un setup verificado. */
+  onPlaywrightCapability?: (snapshot: VerifiedPlaywrightCapabilitySnapshot) => void;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
   engramBin?: string | null;
   /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
   showSummary?: boolean;
+  /** Nombre del comando para el resumen por runtime ("install" por defecto). */
+  command?: "install" | "sync";
+  /** Recibe el resultado por runtime (ok/failed/skipped/preview) para el resumen coordinado. */
+  onRuntimeStatus?: (runtime: string, status: RuntimeSyncStatus) => void;
+}
+
+/** Estado por runtime para el resumen final de install/sync. */
+export type RuntimeSyncStatus = "ok" | "failed" | "skipped" | "preview";
+
+const RUNTIME_STATUS_LABEL: Record<RuntimeSyncStatus, string> = {
+  ok: "al día",
+  failed: "falló",
+  skipped: "omitido",
+  preview: "revisado",
+};
+
+/** Una línea de resumen por runtime; solo presentación, no cambia exit codes. */
+export function formatRuntimeSummary(
+  command: "install" | "sync",
+  statuses: ReadonlyArray<{ name: string; status: RuntimeSyncStatus }>,
+): string {
+  if (statuses.length === 0) return `Resumen ${command}: sin runtimes.`;
+  const failed = statuses.filter((s) => s.status === "failed").map((s) => s.name);
+  const rest = statuses
+    .filter((s) => s.status !== "failed")
+    .map((s) => `${s.name} ${RUNTIME_STATUS_LABEL[s.status]}`);
+  const head = `Resumen ${command}: ${rest.length > 0 ? rest.join(", ") : "ningún runtime al día"}`;
+  return failed.length > 0 ? `${head}; falló en ${failed.join(", ")} — revisa arriba.` : `${head}.`;
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
@@ -172,7 +208,7 @@ function enabledMcpServers(
 function ownedMcpServers(runtime: RuntimeId, useBrowserPreferences = true): ReadonlySet<string> {
   if (!useBrowserPreferences) return new Set();
   const file = devtoolsMcpPreferenceFile();
-  return loadDevtoolsMcpOwnership(file, runtime, DEVTOOLS_MCP_SERVER) ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
+  return new Set([DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server)));
 }
 
 /** El estado de ownership solo avanza tras observar la entrada escrita o ausente. */
@@ -196,6 +232,7 @@ export function makeContext(
   configDir: string,
   mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
   useBrowserPreferences = true,
+  playwrightCapability?: boolean,
 ): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
@@ -208,7 +245,9 @@ export function makeContext(
     models,
     warnings: [],
     enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
-    playwrightCliEnabled: useBrowserPreferences && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true,
+    playwrightCliEnabled: useBrowserPreferences
+      && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true
+      && (playwrightCapability ?? true),
     ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
     ownedPrimaryModelFields: useBrowserPreferences
       ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
@@ -216,16 +255,31 @@ export function makeContext(
   };
 }
 
-export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
+export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   return [
     ...planSystemPrompt(adapter, ctx),
     ...planAgents(adapter, ctx),
     ...planSkills(adapter, ctx),
     ...planCommands(adapter, ctx),
     ...planHooks(adapter, ctx),
-    ...planMcp(adapter, ctx),
     ...planPlugins(adapter, ctx),
   ];
+}
+
+export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
+  return [...planMcp(adapter, ctx), ...buildContentPlan(adapter, ctx)];
+}
+
+/** Validate every selected registration before installing files or preferences. */
+export function preflightSelectedMcpConfigs(runtimes: readonly RuntimeId[], targetDir?: string): void {
+  for (const id of runtimes) {
+    const adapter = ADAPTERS[id];
+    if (!adapter) continue;
+    const detection = adapter.detect();
+    if (targetDir === undefined && !detection.installed) continue;
+    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined);
+    if (ctx) planMcp(adapter, ctx);
+  }
 }
 
 export function diffPlan(plan: FileAction[]): PlannedChange[] {
@@ -258,6 +312,7 @@ function applyChanges(changes: PlannedChange[], onOwnershipWritten?: (action: Fi
  */
 export function collectAllCurrentTargets(
   mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
+  playwrightCapability?: boolean,
 ): { targets: Set<string>; complete: boolean; warnings: string[] } {
   const targets = new Set<string>();
   let complete = true;
@@ -265,7 +320,7 @@ export function collectAllCurrentTargets(
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) continue;
-    const ctx = makeContext(adapter, detection.configDir, mode);
+    const ctx = makeContext(adapter, detection.configDir, mode, true, playwrightCapability);
     if (!ctx) {
       complete = false;
       warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
@@ -286,6 +341,28 @@ export function collectAllCurrentTargets(
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
+
+  try {
+    for (const id of opts.runtimes) {
+      const adapter = ADAPTERS[id];
+      if (!adapter) continue;
+      const detection = adapter.detect();
+      if (opts.targetDir === undefined && !detection.installed) continue;
+      assertSystemPromptFile(adapter.paths(opts.targetDir ?? detection.configDir).systemPromptFile, opts.targetDir);
+    }
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
+  const modelMap: ModelMap = opts.runtimes.length > 0 ? loadModelMap() : {};
+
+  try {
+    preflightSelectedMcpConfigs(opts.runtimes, opts.targetDir);
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
 
   let writingStyle: WritingStyleSnapshot;
   let preparedStyle: WritingStylePlan | undefined;
@@ -318,7 +395,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     });
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
-  const modelMap: ModelMap = hasFileRuntimes ? loadModelMap() : {};
+  const shouldInspectPlaywright = useManifest
+    && !opts.dryRun
+    && (toolPlan === null || toolPlan.actions.length === 0)
+    && loadPlaywrightCliPreference() === true;
+  const playwrightCapability = opts.dryRun || !useManifest
+    ? undefined
+    : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectPlaywrightCapability() : undefined);
+  const effectivePlaywright = playwrightCapability?.effective;
+  const plannedPlaywright = effectivePlaywright
+    ?? (toolPlan !== null && toolPlan.actions.length > 0 ? false : undefined);
   if (preparedStyle !== undefined) {
     try {
       p.log.info(`Estilo de escritura: ${preparedStyle.sourcePath}${opts.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
@@ -334,7 +420,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
   // El manifest solo aplica a instalaciones reales; --target-dir es de pruebas.
   const current = hasFileRuntimes && useManifest
-    ? collectAllCurrentTargets(modePreference)
+    ? collectAllCurrentTargets(modePreference, plannedPlaywright)
     : { targets: new Set<string>(), complete: false, warnings: [] as string[] };
   const canOrphan = hasFileRuntimes && useManifest && current.complete;
   const canonicalMcp = loadCanonicalMcp(stackDir);
@@ -348,10 +434,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   let exitCode = 0;
   let successfulRuns = 0;
   const successfulContexts: { adapter: Adapter; ctx: InstallContext }[] = [];
+  const runtimeStatuses: { name: string; status: RuntimeSyncStatus }[] = [];
+  const reportStatus = (name: string, status: RuntimeSyncStatus): void => {
+    runtimeStatuses.push({ name, status });
+    opts.onRuntimeStatus?.(name, status);
+  };
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
       p.log.warn(`${id}: adapter pendiente (F3/F4) — omitido.`);
+      reportStatus(id, "skipped");
       continue;
     }
 
@@ -359,12 +451,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const configDir = opts.targetDir ?? detection.configDir;
     if (!detection.installed && opts.targetDir === undefined) {
       p.log.warn(`${adapter.name} no detectado en esta máquina — omitido.`);
+      reportStatus(adapter.name, "skipped");
       continue;
     }
     const models = modelMap[id];
     if (!models) {
       p.log.error(`${adapter.name}: sin modelos seleccionados — ejecuta 'jorgex-stack models --agents ${id}'.`);
       exitCode = 1;
+      reportStatus(adapter.name, "failed");
       continue;
     }
 
@@ -380,7 +474,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
       playwrightCliEnabled: projectPlaywrightPrompt
         ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
-        : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true),
+        : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true
+          && (plannedPlaywright ?? true)),
       ownedMcpServers: ownedMcpServers(id, useManifest),
       ownedPrimaryModelFields: useManifest
         ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir)
@@ -398,7 +493,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     let diff = diffPlan(plan);
     let creates = diff.filter((d) => d.status === "create");
     let updates = diff.filter((d) => d.status === "update");
-    let changes = [...creates, ...updates];
+    let changes = diff.filter((change) => change.status !== "unchanged");
 
     // Huérfanos: archivos que una versión anterior instaló y el plan actual ya
     // no genera (skill renombrada/eliminada). Solo con manifest previo y visión
@@ -422,6 +517,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       for (const c of preview) p.log.message(`  ${c.status === "create" ? "+" : "~"} ${c.action.target}`);
       if (changes.length > preview.length) p.log.message(`  … y ${changes.length - preview.length} más`);
       for (const o of orphans) p.log.message(`  - ${o}`);
+      reportStatus(adapter.name, "preview");
       continue;
     }
 
@@ -442,6 +538,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
+      reportStatus(adapter.name, "ok");
       continue;
     }
 
@@ -450,6 +547,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const ok = await p.confirm({ message: `¿Aplicar ${changes.length} cambios en ${adapter.name}?${orphanNote}` });
       if (p.isCancel(ok) || !ok) {
         p.log.warn(`${adapter.name}: omitido por el usuario.`);
+        reportStatus(adapter.name, "skipped");
         continue;
       }
       // La confirmación puede quedar abierta un buen rato: re-planificar para
@@ -458,7 +556,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       diff = diffPlan(plan);
       creates = diff.filter((d) => d.status === "create");
       updates = diff.filter((d) => d.status === "update");
-      changes = [...creates, ...updates];
+      changes = diff.filter((change) => change.status !== "unchanged");
     }
 
     const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
@@ -478,6 +576,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.error(`${adapter.name}: verificación de idempotencia FALLÓ (${dirty.length} acciones inestables).`);
       for (const d of dirty.slice(0, 10)) p.log.message(`  ! ${d.action.target}`);
       exitCode = 1;
+      reportStatus(adapter.name, "failed");
     } else {
       writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
@@ -485,6 +584,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
+      reportStatus(adapter.name, "ok");
     }
   }
 
@@ -575,21 +675,26 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           exitCode = 1;
           p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
         } else {
+          const verified = preparedEnv === undefined
+            ? inspectPlaywrightCapability({ browserVerified: true })
+            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv });
+          if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
+            && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
+            opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
+          }
           p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
         }
       }
     }
-  } else if (useManifest && opts.playwrightToolConsent?.command === "sync" && loadPlaywrightCliPreference() === true) {
-    const cli = detectPlaywrightCli();
-    if (cli.status !== "current") {
+  } else if (playwrightCapability !== undefined && !playwrightCapability.effective) {
+    if (playwrightCapability.cli.status !== "current") {
       p.log.warn("Playwright CLI sigue habilitado, pero el paquete no está listo; sync no instala herramientas. Ejecuta 'jorgex-stack install --playwright'.");
+    } else if (playwrightCapability.browserCache.status === "unreadable") {
+      p.log.warn(`Playwright CLI sigue habilitado, pero no se puede leer la caché de navegadores en ${playwrightCapability.browserCache.path} (${playwrightCapability.browserCache.errorCode}). Revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
+    } else if (playwrightCapability.browserCache.status === "missing") {
+      p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
     } else {
-      const browserCache = isPlaywrightBrowserReady();
-      if (browserCache.status === "unreadable") {
-        p.log.warn(`Playwright CLI sigue habilitado, pero no se puede leer la caché de navegadores en ${browserCache.path} (${browserCache.errorCode}). Revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
-      } else if (browserCache.status === "missing") {
-        p.log.warn("Playwright CLI sigue habilitado, pero falta el navegador; sync no descarga navegadores. Ejecuta 'jorgex-stack install --playwright'.");
-      }
+      p.log.warn("Playwright CLI sigue habilitado, pero Chromium no arranca; se ha retirado la guía. Ejecuta 'jorgex-stack install --playwright' para repararlo.");
     }
   }
 
@@ -598,6 +703,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
 
   if (showSummary) {
+    p.log.message(formatRuntimeSummary(opts.command ?? "install", runtimeStatuses));
     p.outro(opts.dryRun
       ? exitCode === 0
         ? "Dry-run: no se ha escrito nada."

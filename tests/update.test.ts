@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveEngramRollback, type EngramRollbackAction } from "../src/update.js";
+import {
+  complementsToScan,
+  resolveComplementUpdateCheck,
+  resolveEngramRollback,
+  type EngramRollbackAction,
+  type Upstreams,
+} from "../src/update.js";
 import { resolvePlaywrightCliState, type PlaywrightCliState } from "../src/lib/external-tools.js";
 
 // Rutas usadas en los tests — constantes para poder verificar que aparecen en mensajes.
@@ -228,5 +234,74 @@ describe("resolvePlaywrightUpdateCheck", () => {
     expect(stale?.message).toContain("0.1.16");
     expect(stale?.message).toContain("0.1.18");
     expect(stale?.message).toContain("pin aprobado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveComplementUpdateCheck + complementsToScan — pins con revisión visible
+// ---------------------------------------------------------------------------
+
+describe("resolveComplementUpdateCheck", () => {
+  it("sin pin (null o ausente) → warn que pide fijar la versión revisada", () => {
+    for (const info of [
+      { source: "npm:pi-mcp-adapter", version: null },
+      { source: "npm:pi-mcp-adapter" },
+    ]) {
+      const report = resolveComplementUpdateCheck("pi-mcp-adapter", info, "0.2.0");
+      expect(report.level).toBe("warn");
+      expect(report.message).toContain("sin pin");
+    }
+  });
+
+  it("upstream inalcanzable → info con el pin, sin warn", () => {
+    const report = resolveComplementUpdateCheck(
+      "chrome-devtools-mcp",
+      { source: "npm:chrome-devtools-mcp", version: "1.6.0" },
+      null,
+    );
+    expect(report).toMatchObject({ level: "info" });
+    expect(report.message).toContain("1.6.0");
+  });
+
+  it("pin igual al upstream → success", () => {
+    const report = resolveComplementUpdateCheck(
+      "gentle-engram",
+      { source: "npm:gentle-engram", version: "0.1.13" },
+      "0.1.13",
+    );
+    expect(report).toMatchObject({ level: "success" });
+    expect(report.message).toContain("0.1.13");
+  });
+
+  it("upstream distinto (nuevo o anterior) → warn con pin y versión observada, sin auto-update", () => {
+    const report = resolveComplementUpdateCheck(
+      "gentle-engram",
+      { source: "npm:gentle-engram", version: "0.1.13" },
+      "0.2.0",
+    );
+    expect(report.level).toBe("warn");
+    expect(report.message).toContain("0.1.13");
+    expect(report.message).toContain("0.2.0");
+    expect(report.message).toContain("re-pinea");
+    expect(report.message).not.toMatch(/instal/i);
+  });
+});
+
+describe("complementsToScan", () => {
+  const base = { tools: {}, skills: {} } as Upstreams;
+
+  it("devuelve [] sin complements", () => {
+    expect(complementsToScan(base)).toEqual([]);
+  });
+
+  it("filtra las claves $comment y conserva los complementos", () => {
+    const upstreams = {
+      ...base,
+      complements: {
+        $comment: "comentario",
+        "gentle-engram": { source: "npm:gentle-engram", version: "0.1.13" },
+      },
+    } as unknown as Upstreams;
+    expect(complementsToScan(upstreams)).toEqual(["gentle-engram"]);
   });
 });

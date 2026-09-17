@@ -2,10 +2,10 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
-import { removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
+import { describe, expect, it, vi } from "vitest";
+import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../src/lib/hooks-format.js";
-import { loadCanonicalAgents, type CanonicalHooks } from "../src/lib/canonical.js";
+import { loadCanonicalAgents, loadCanonicalMcp, type CanonicalHooks } from "../src/lib/canonical.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
@@ -140,6 +140,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       engramBin: null,
       models: OPEN_CODE_MODELS,
       warnings: [],
+      ownedMcpServers: new Set(["context7"]),
       preserveEngram: true,
     };
     const actions = opencodeAdapter.planUnmerge(MCP_SIN_ENGRAM, HOOKS, ctx);
@@ -153,6 +154,218 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
     expect(result.plugin).toEqual(["@usuario/su-plugin-npm"]);
 
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+describe("uninstall preserva una entrada Context7 owned que el usuario modificó", () => {
+  const HOOKS = { hooks: {} } as CanonicalHooks;
+
+  it("Claude Code conserva la definición completa y libera ownership", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-claude-"));
+    const configDir = path.join(tmp, ".claude");
+    const mainFile = path.join(tmp, ".claude.json");
+    const previous = {
+      mcpServers: {
+        context7: {
+          type: "http",
+          url: "https://mcp.context7.com/mcp",
+          userSetting: "preserve",
+        },
+      },
+    };
+    fs.writeFileSync(mainFile, JSON.stringify(previous, null, 2) + "\n");
+
+    const action = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+      ownedMcpServers: new Set(["context7"]),
+    }).find((candidate) => candidate.target === mainFile);
+
+    expect(action).toMatchObject({ kind: "write", mcpOwnership: [{ server: "context7", owned: false }] });
+    if (action?.kind !== "write") throw new Error("Expected a Claude Code Context7 unmerge");
+    expect(JSON.parse(action.content).mcpServers.context7).toEqual(previous.mcpServers.context7);
+
+    const unownedAction = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+    }).find((candidate) => candidate.target === mainFile);
+    expect(unownedAction).toMatchObject({ kind: "write" });
+    if (unownedAction?.kind !== "write") throw new Error("Expected an unowned Claude Code Context7 unmerge");
+    expect(JSON.parse(unownedAction.content).mcpServers.context7).toEqual(previous.mcpServers.context7);
+    expect(unownedAction).not.toHaveProperty("mcpOwnership");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("Codex conserva la definición completa y libera ownership", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-codex-"));
+    const configFile = path.join(tmp, "config.toml");
+    const previous = [
+      'model = "user/model"',
+      "model_context_window = 100",
+      "",
+      "[mcp_servers.context7]",
+      'url = "https://mcp.context7.com/mcp"',
+      'user_setting = "preserve"',
+      "",
+      "[mcp_servers.foreign]",
+      'command = "foreign-server"',
+      "",
+    ].join("\n");
+    fs.writeFileSync(configFile, previous);
+
+    const action = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+      ownedMcpServers: new Set(["context7"]),
+    }).find((candidate) => candidate.target === configFile);
+
+    expect(action).toMatchObject({ kind: "write", mcpOwnership: [{ server: "context7", owned: false }] });
+    if (action?.kind !== "write") throw new Error("Expected a Codex Context7 unmerge");
+    expect(readTomlSection(action.content, "mcp_servers.context7")).toContain('user_setting = "preserve"');
+    expect(readTomlSection(action.content, "mcp_servers.foreign")).toContain('command = "foreign-server"');
+
+    const unownedAction = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+    }).find((candidate) => candidate.target === configFile);
+    expect(unownedAction).toMatchObject({ kind: "write" });
+    if (unownedAction?.kind !== "write") throw new Error("Expected an unowned Codex Context7 unmerge");
+    expect(readTomlSection(unownedAction.content, "mcp_servers.context7")).toContain('user_setting = "preserve"');
+    expect(unownedAction).not.toHaveProperty("mcpOwnership");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("OpenCode conserva la definición completa y libera ownership", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-opencode-"));
+    const configFile = path.join(tmp, "opencode.json");
+    const previous = {
+      model: "user/model",
+      mcp: {
+        context7: {
+          type: "remote",
+          url: "https://mcp.context7.com/mcp",
+          userSetting: "preserve",
+        },
+        foreign: { type: "remote", url: "https://example.invalid/foreign" },
+      },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(previous, null, 2) + "\n");
+
+    const action = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+      ownedMcpServers: new Set(["context7"]),
+    }).find((candidate) => candidate.target === configFile);
+
+    expect(action).toMatchObject({ kind: "write", mcpOwnership: [{ server: "context7", owned: false }] });
+    if (action?.kind !== "write") throw new Error("Expected an OpenCode Context7 unmerge");
+    const result = JSON.parse(action.content);
+    expect(result.mcp.context7).toEqual(previous.mcp.context7);
+    expect(result.mcp.foreign).toEqual(previous.mcp.foreign);
+
+    const unownedAction = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+      stackDir: stackRoot(),
+      configDir: tmp,
+      engramBin: null,
+      models: OPEN_CODE_MODELS,
+      warnings: [],
+    }).find((candidate) => candidate.target === configFile);
+    expect(unownedAction).toMatchObject({ kind: "write" });
+    if (unownedAction?.kind !== "write") throw new Error("Expected an unowned OpenCode Context7 unmerge");
+    const unownedResult = JSON.parse(unownedAction.content);
+    expect(unownedResult.mcp.context7).toEqual(previous.mcp.context7);
+    expect(unownedAction).not.toHaveProperty("mcpOwnership");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+describe("uninstall preflight de prompts", () => {
+  it("valida todos los runtimes antes de borrar o crear backups", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-uninstall-prompt-preflight-"));
+    const home = path.join(root, "home");
+    const codexHome = path.join(home, ".codex");
+    const opencodeConfig = path.join(home, ".config", "opencode");
+    const codexPrompt = path.join(codexHome, "AGENTS.md");
+    const opencodePrompt = path.join(opencodeConfig, "AGENTS.md");
+    const codexManagedAgent = path.join(codexHome, "agents", "test-analyzer.toml");
+    const modelMap = path.join(home, ".jorgex-stack", "model-map.json");
+    const validCodexPrompt = upsertMarkdownSection("# Codex user text\n", "system-prompt", "Managed base.");
+    const ambiguousOpenCodePrompt = "# OpenCode user text\n\n<!-- jorgex:browser -->\nBroken legacy marker.\n";
+    const modelMapContent = JSON.stringify({
+      codex: {
+        strong: { model: "provider/strong" },
+        standard: { model: "provider/standard" },
+        cheap: { model: "provider/cheap" },
+      },
+      opencode: OPEN_CODE_MODELS,
+    }, null, 2) + "\n";
+    const previousEnv = {
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      CODEX_HOME: process.env.CODEX_HOME,
+      OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+      PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+    };
+
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.mkdirSync(opencodeConfig, { recursive: true });
+    fs.mkdirSync(path.dirname(codexManagedAgent), { recursive: true });
+    fs.mkdirSync(path.dirname(modelMap), { recursive: true });
+    fs.writeFileSync(codexPrompt, validCodexPrompt);
+    fs.writeFileSync(opencodePrompt, ambiguousOpenCodePrompt);
+    fs.writeFileSync(codexManagedAgent, "managed codex agent\n");
+    fs.writeFileSync(modelMap, modelMapContent);
+
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.CODEX_HOME = codexHome;
+    process.env.OPENCODE_CONFIG_DIR = opencodeConfig;
+    process.env.PI_CODING_AGENT_DIR = path.join(home, ".pi", "agent");
+    vi.resetModules();
+    try {
+      const { runUninstall } = await import("../src/uninstall.js");
+      await expect(runUninstall({
+        runtimes: ["codex", "opencode"],
+        dryRun: false,
+        yes: true,
+        removeEngram: false,
+        removePlaywright: false,
+      })).resolves.toBe(1);
+
+      expect(fs.readFileSync(codexPrompt, "utf8")).toBe(validCodexPrompt);
+      expect(fs.readFileSync(opencodePrompt, "utf8")).toBe(ambiguousOpenCodePrompt);
+      expect(fs.readFileSync(codexManagedAgent, "utf8")).toBe("managed codex agent\n");
+      expect(fs.readFileSync(modelMap, "utf8")).toBe(modelMapContent);
+      expect(fs.existsSync(path.join(home, ".jorgex-stack", "backups"))).toBe(false);
+    } finally {
+      if (previousEnv.HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = previousEnv.HOME;
+      if (previousEnv.USERPROFILE === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousEnv.USERPROFILE;
+      if (previousEnv.CODEX_HOME === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousEnv.CODEX_HOME;
+      if (previousEnv.OPENCODE_CONFIG_DIR === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = previousEnv.OPENCODE_CONFIG_DIR;
+      if (previousEnv.PI_CODING_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousEnv.PI_CODING_AGENT_DIR;
+      vi.resetModules();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -261,32 +261,33 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
   });
   const mcp = () => loadCanonicalMcp(stackRoot());
 
-  it("opencode: la config fresca abre lectura externa y reglas read/env, pero no write-anywhere", () => {
+  it("opencode: la config fresca permite trabajo ordinario y conserva protección de secretos y destrucción", () => {
     const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
     const fresh = JSON.parse((action as { content: string }).content);
     expect(fresh.permission).toMatchObject({
       external_directory: { "*": "allow" },
       read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
-      webfetch: "ask",
-      websearch: "ask",
+      webfetch: "allow",
+      websearch: "allow",
       bash: {
-        "*": "ask",
-        "git diff*": "ask",
+        "*": "allow",
         "rm *": "ask",
         "del *": "ask",
         "rmdir *": "ask",
-        "git push --force*": "ask",
+        "git *push*": "ask",
         "format *": "deny",
         "mkfs *": "deny",
         "dd *": "deny",
         "shred *": "deny",
       },
     });
-    expect(fresh.permission.edit).not.toBe("allow");
-    expect(fresh.permission.bash["*"]).not.toBe("allow");
-    expect(fresh.permission.bash["git diff*"]).not.toBe("allow");
-    expect(fresh.permission.webfetch).not.toBe("allow");
-    expect(fresh.permission.websearch).not.toBe("allow");
+    expect(fresh.permission.edit).toMatchObject({ "*": "allow", "*.env": "deny" });
+    expect(fresh.permission.bash["git *reset*"]).toBe("ask");
+    expect(fresh.permission.bash["git *restore*"]).toBe("ask");
+    expect(fresh.permission.bash["git *checkout*--*"]).toBe("ask");
+    expect(fresh.permission.bash["git *switch*--discard-changes*"]).toBe("ask");
+    expect(fresh.permission.bash["git *rebase*"]).toBe("ask");
+    expect(fresh.permission.bash["rm * /"]).toBe("deny");
   });
 
   it("opencode: una config no vacía sin permission no recibe permission", () => {
@@ -321,7 +322,7 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
         "*.key",
       ]),
     );
-    expect(ctx.warnings.join("\n")).toMatch(/read-anywhere|broad/i);
+    expect(ctx.warnings.join("\n")).toMatch(/ordinary|sensitive/i);
   });
 
   it("opencode: deja intacta la config custom y no auto-migra el legacy exacto", () => {
@@ -977,11 +978,17 @@ describe("work backlog mutation contract", () => {
     for (const relativePath of [
       "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
-      "system-prompt/AGENTS.md",
       "system-prompt/engram-protocol.md",
     ]) {
       expectFragments(readStackFile(relativePath), fragments);
     }
+
+    const basePrompt = readStackFile("system-prompt/AGENTS.md");
+    expectFragments(basePrompt, ["work-lifecycle", "single writer", "project backlog"]);
+    expect(basePrompt).not.toMatch(/mem_(?:save|get_observation|update)|Context7|Engram/i);
+
+    const context7Prompt = readStackFile("system-prompt/context7.md");
+    expect(context7Prompt).toContain("Use Context7");
 
     expectFragments(fs.readFileSync(path.join(stackRoot(), "..", "AGENTS.md"), "utf8"), [
       "único escritor",
@@ -1162,8 +1169,9 @@ describe("subagent uncertainty escalation contract", () => {
   it.each(DESTRUCTIVE_GIT_ESCALATION_CASES)("%s routea la duda sobre destructive git al main agent/orchestrator", (_name, relativePath) => {
     const content = readStackFile(relativePath);
 
-    expectFragmentsInOrder(content, ["Never run destructive git", "main agent/orchestrator"]);
-    expect(content).not.toMatch(/Never run destructive git[\s\S]{0,220}ask the user/i);
+    expectFragmentsInOrder(content, ["Ask before destructive git", "main agent/orchestrator"]);
+    expect(content).toMatch(/explicit approval/i);
+    expect(content).not.toMatch(/Never run destructive git/i);
   });
 });
 

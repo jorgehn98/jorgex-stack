@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   runInstall: vi.fn().mockResolvedValue(0),
+  runInteractiveUpdate: vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false }),
   runManagedPiSystem: vi.fn().mockResolvedValue({ kind: "healthy" }),
   detectPiRuntime: vi.fn().mockReturnValue({
     id: "pi",
@@ -40,6 +41,11 @@ vi.mock("@clack/prompts", () => mocks.prompts);
 vi.mock("../src/install.js", async () => {
   const actual = await vi.importActual<typeof import("../src/install.js")>("../src/install.js");
   return { ...actual, runInstall: mocks.runInstall };
+});
+
+vi.mock("../src/update.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/update.js")>("../src/update.js");
+  return { ...actual, runInteractiveUpdate: mocks.runInteractiveUpdate };
 });
 
 vi.mock("../src/lib/pi-managed-runtime.js", () => ({
@@ -111,6 +117,7 @@ async function runCli(args: string[], homeDir: string): Promise<typeof process.e
 afterEach(() => {
   vi.clearAllMocks();
   mocks.runInstall.mockResolvedValue(0);
+  mocks.runInteractiveUpdate.mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   mocks.runManagedPiSystem.mockResolvedValue({ kind: "healthy" });
   mocks.detectPiRuntime.mockReturnValue({
     id: "pi",
@@ -125,6 +132,51 @@ afterEach(() => {
 });
 
 describe("preflight de estilo antes del coordinador de runtimes", () => {
+  it.each([
+    { name: "modo explícito", args: ["--mode", "human"] as const },
+    { name: "sin modo guardado", args: [] as const },
+  ])("bloquea update desde el CLI ante un prompt browser ambiguo antes de estilo y update flow ($name)", async ({ args }) => {
+    const home = tempRoot();
+    const codexHome = path.join(home, ".codex");
+    const prompt = path.join(codexHome, "AGENTS.md");
+    const style = path.join(home, ".jorgex-stack", "writing-style.md");
+    const ambiguous = "# User prompt\n\n<!-- jorgex:browser -->\nLegacy content without a closing marker.\n";
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(prompt, ambiguous);
+
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      await expect(runCli(["update", "--agents", "codex", ...args, "--yes"], home)).resolves.toBe(1);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    }
+
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runInteractiveUpdate).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(fs.readFileSync(prompt, "utf8")).toBe(ambiguous);
+    expect(fs.existsSync(style)).toBe(false);
+    expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/browser|marcador|marker|ambig/i));
+  });
+
+  it("bloquea desde el CLI un prompt browser ambiguo antes de preparar estilo o ejecutar runtimes", async () => {
+    const home = tempRoot();
+    const targetDir = path.join(home, "target");
+    const prompt = path.join(targetDir, "AGENTS.md");
+    const ambiguous = "# User prompt\n\n<!-- jorgex:browser -->\nLegacy content without a closing marker.\n";
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(prompt, ambiguous);
+
+    await expect(runCli(["install", "--agents", "codex", "--target-dir", targetDir, "--yes"], home)).resolves.toBe(1);
+
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(fs.readFileSync(prompt, "utf8")).toBe(ambiguous);
+    expect(fs.readdirSync(targetDir)).toEqual(["AGENTS.md"]);
+    expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/browser|marcador|marker|ambig/i));
+  });
+
   it("instala el estilo canónico en la fuente local en un install nuevo", async () => {
     const home = tempRoot();
     const source = path.join(home, ".jorgex-stack", "writing-style.md");

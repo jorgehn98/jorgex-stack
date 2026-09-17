@@ -18,6 +18,112 @@ const CONTRACTS = [
   "contract/schemas/runner-response.v1.schema.json", "contract/schemas/quality-receipt.v1.schema.json",
   "contract/schemas/quality-capabilities.v1.schema.json",
 ];
+const SYSTEM_PROMPT_MODULES = [
+  { name: "context7", file: "context7.md" },
+  { name: "playwright", file: "browser-playwright.md" },
+  { name: "chrome-devtools", file: "browser-chrome-devtools.md" },
+];
+const CONTEXT7_CAPABILITY = "context7-http-v1";
+const CONTEXT7_MODULE = "extensions/context7-config.mjs";
+const CONTEXT7_RUNNER = {
+  transport: "http",
+  registration: "isolated in-memory bridge at Pi bootstrap",
+  diagnostic: "available means configuration permits registration; no HTTP handshake is implied",
+  conflicts: "preserve existing MCP files; block managed Context7 activation",
+  cleanup: "no managed MCP configuration or credentials are written",
+};
+const CONTEXT7_PRESERVED_STATE = {
+  owner: "user",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "mcp.json",
+};
+const PERMISSIONS_CAPABILITY = "permissions-policy-v1";
+const PERMISSIONS_SOURCE_PATH = "stack/config/defaults.json";
+const PERMISSIONS_TARGET_PATH = "assets/permissions/defaults.json";
+const PERMISSIONS_RESOURCE = "assets/permissions";
+const PERMISSIONS_MODULE = "extensions/permissions-lifecycle.mjs";
+const PERMISSIONS_RUNNER = {
+  config: "PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json",
+  receipt: "PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json",
+  defaults: "assets/permissions/defaults.json",
+  semantics: "sync seeds only an absent config through exclusive publication; existing, invalid, and concurrent user state is preserved; cleanup keeps an exact owned copy in a retained backup",
+  diagnostic: "permission state reports invalid or unreadable files without exposing their contents",
+};
+const PERMISSIONS_PRESERVED_STATE = {
+  owner: "@gotgenes/pi-permission-system",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "extensions/pi-permission-system/config.json",
+};
+const PERMISSIONS_MANAGED_WRITES = [
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "extensions/pi-permission-system/config.json",
+    semantics: "seed the generated permission policy only when absent; publish exclusively, preserve preexisting or invalid user state, and remove only an exact owned copy during cleanup",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/permissions-lifecycle.v1.json",
+    semantics: "record initialization and exact permission-config ownership without storing user configuration or credentials",
+  },
+  {
+    owner: "jorgex-pi",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "jorgex-pi/permissions-backups",
+    semantics: "retain cleanup backups of exact owned permission policy bytes",
+  },
+];
+const PERMISSIONS_ACTIONS = [
+  "created:permissions.config",
+  "initialized:permissions",
+  "preserved:permissions.config",
+  "released:permissions.config",
+  "backup:permissions.config",
+  "removed:permissions.config",
+];
+const EXPERIENCE_CAPABILITY = "experience-defaults-v1";
+const EXPERIENCE_BIN = "bin/jorgex-pi.mjs";
+const EXPERIENCE_RUNNER = {
+  settings: "PI_CODING_AGENT_DIR/settings.json",
+  receipt: "PI_CODING_AGENT_DIR/jorgex-pi/experience-lifecycle.v1.json",
+  defaults: {
+    theme: "JorgeX",
+    quietStartup: true,
+    hideThinkingBlock: true,
+  },
+  initialization: "first sync only",
+  ownership: "missing fields only; cleanup removes exact package-owned values and preserves replacements",
+};
+const EXPERIENCE_RECEIPT_WRITE = {
+  owner: "jorgex-pi",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "jorgex-pi/experience-lifecycle.v1.json",
+  semantics: "record first initialization and exact ownership of missing theme, quietStartup, and hideThinkingBlock fields; preserve replacements and do not reseed after initialization",
+};
+const EXPERIENCE_SETTINGS_SEMANTICS = "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair plus first-visit theme=JorgeX, quietStartup=true, and hideThinkingBlock=true defaults; preserve foreign halves and existing experience values; cleanup removes only receipt-owned exact values";
+const EXPERIENCE_ACTIONS = [
+  "created:theme",
+  "created:quietStartup",
+  "created:hideThinkingBlock",
+  "released:theme",
+  "released:quietStartup",
+  "released:hideThinkingBlock",
+  "removed:theme",
+  "removed:quietStartup",
+  "removed:hideThinkingBlock",
+];
+const INITIALIZATION_CAPABILITY = "initialization-diagnostics-v1";
+const INITIALIZATION_EXPERIENCE_DIAGNOSTIC = "status reports pending, initialized, invalid, or unreadable from the receipt only; pending means the receipt is absent and requires a registered package; invalid preserves INVALID_PATH, INVALID_RECEIPT, or RECEIPT_TOO_LARGE and unreadable preserves READ_FAILED; status and doctor are read-only and never lock, write, or delete state";
+const INITIALIZATION_PERMISSIONS_DIAGNOSTIC = "permission state reports invalid or unreadable files without exposing their contents; a registered package also reports pending when the receipt is not initialized";
+const INITIALIZATION_EXPERIENCE_SCHEMA = {
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized"], properties: { state: { const: "pending" }, receiptPath: { type: "string" }, initialized: { const: false } } },
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized"], properties: { state: { const: "initialized" }, receiptPath: { type: "string" }, initialized: { const: true } } },
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "invalid" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { enum: ["INVALID_PATH", "INVALID_RECEIPT", "RECEIPT_TOO_LARGE"] }, reason: { type: "string", minLength: 1 } } },
+    { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "unreadable" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { const: "READ_FAILED" }, reason: { type: "string", minLength: 1 } } },
+  ],
+};
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -29,6 +135,23 @@ function assertPinData(pin) {
   assert.deepEqual(Object.keys(pin.package).sort(), ["name", "source", "version"]);
   assert.deepEqual(Object.keys(pin.provenance), ["commit"]);
   assert.deepEqual(Object.keys(pin.tarball).sort(), ["bytes", "sha256", "sha512"]);
+}
+
+function permissionParityMetadata(root, piDir, sourceCommit, producer, input) {
+  assert(input && typeof input === "object" && !Array.isArray(input), "Invalid permissions parity metadata");
+  assert.deepEqual(Object.keys(input).sort(), ["outputSha256", "sourcePath", "sourceSha256", "targetPath"], "Invalid permissions parity metadata");
+  assert.equal(input.sourcePath, PERMISSIONS_SOURCE_PATH, "Unexpected permissions parity source path");
+  assert.equal(input.targetPath, PERMISSIONS_TARGET_PATH, "Unexpected permissions parity target path");
+  const source = git(root, ["show", `${sourceCommit}:${PERMISSIONS_SOURCE_PATH}`]);
+  const output = git(piDir, ["show", `${producer}:${PERMISSIONS_TARGET_PATH}`]);
+  const expected = {
+    sourcePath: PERMISSIONS_SOURCE_PATH,
+    targetPath: PERMISSIONS_TARGET_PATH,
+    sourceSha256: createHash("sha256").update(source).digest("hex"),
+    outputSha256: createHash("sha256").update(output).digest("hex"),
+  };
+  assert.deepEqual(input, expected, "Permissions parity hashes do not match the canonical Git blobs");
+  return expected;
 }
 
 function git(root, args) {
@@ -148,7 +271,7 @@ function comparable(member, input) {
         else strip(item[key]);
       }
     };
-    for (const key of ["agents", "skills", "policy", "engramProtocol", "commands"]) strip(value[key]);
+    for (const key of ["agents", "skills", "policy", "engramProtocol", "systemPromptModules", "commands"]) strip(value[key]);
   }
   return value;
 }
@@ -178,10 +301,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -211,6 +334,232 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
   if (!fullSha(sourceCommit) || newContracts[PARITY].source.repository !== "https://github.com/jorgehn98/jorgex-stack") throw new Error("Invalid Stack parity source");
   const expectedContracts = structuredClone(oldContracts);
   const rootContract = "contract/jorgex-pi.v1.json";
+  const modularCapability = "modular-system-prompts-v1";
+  const hasModularPrompts = newContracts[rootContract].capabilities.includes(modularCapability);
+  const modularTransition = acceptModularSystemPrompts
+    && !oldContracts[rootContract].capabilities.includes(modularCapability) && hasModularPrompts;
+  const promptModules = hasModularPrompts ? SYSTEM_PROMPT_MODULES.map(({ name, file }) => {
+    const sourcePath = `stack/system-prompt/${file}`;
+    const targetPath = `assets/system-prompt/${file}`;
+    const content = git(root, ["show", `${sourceCommit}:${sourcePath}`]);
+    const digest = createHash("sha256").update(content).digest("hex");
+    assert.equal(git(piDir, ["show", `${producer}:${targetPath}`]), content,
+      "Modular system prompt does not match the canonical source");
+    return { metadata: { name, sourcePath, targetPath, sourceSha256: digest, outputSha256: digest }, content };
+  }) : [];
+  if (hasModularPrompts) {
+    assert.deepEqual(newContracts[PARITY].systemPromptModules, promptModules.map(({ metadata }) => metadata),
+      `${PARITY} compatibility requires manual review (modular system prompt metadata)`);
+  }
+  if (modularTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    const snapshotIndex = capabilities.indexOf("stack-snapshot-v2");
+    assert(snapshotIndex >= 0, "Modular prompts require the existing Stack snapshot");
+    capabilities.splice(snapshotIndex + 1, 0, modularCapability);
+    expectedContracts[PARITY].systemPromptModules = promptModules.map(({ metadata }) => metadata);
+    const exclusions = expectedContracts[PARITY].exclusions;
+    assert.equal(exclusions.filter((item) => item.kind === "capability-integration" && item.id === "context7-mcp").length, 1,
+      "Modular prompts must retain the Context7 MCP exclusion");
+    for (const { file } of SYSTEM_PROMPT_MODULES.filter(({ name }) => name !== "context7")) {
+      const sourcePath = `stack/system-prompt/${file}`;
+      const matches = exclusions.filter((item) => item.kind === "runtime-specific-overlay" && item.sourcePath === sourcePath);
+      assert.equal(matches.length, 1, "Modular browser prompt requires exactly one former exclusion");
+      assert.deepEqual(matches[0], { kind: "runtime-specific-overlay", sourcePath });
+      exclusions.splice(exclusions.indexOf(matches[0]), 1);
+    }
+  }
+  const context7Transition = acceptContext7Http
+    && !oldContracts[rootContract].capabilities.includes(CONTEXT7_CAPABILITY)
+    && newContracts[rootContract].capabilities.includes(CONTEXT7_CAPABILITY);
+  if (context7Transition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(CONTEXT7_CAPABILITY), "Context7 HTTP capability must be new in this transition");
+    const engramIndex = capabilities.indexOf("engram-runtime-tools-v1");
+    assert(engramIndex >= 0, "Context7 HTTP requires the existing Engram runtime capability");
+    capabilities.splice(engramIndex + 1, 0, CONTEXT7_CAPABILITY);
+
+    const exclusions = expectedContracts[PARITY].exclusions;
+    const matches = exclusions.filter((item) => item.kind === "capability-integration" && item.id === "context7-mcp");
+    assert.equal(matches.length, 1, "Context7 HTTP requires exactly one former MCP exclusion");
+    exclusions.splice(exclusions.indexOf(matches[0]), 1);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    assert.equal(runner.context7, undefined, "Context7 HTTP runner metadata must be new in this transition");
+    runner.context7 = structuredClone(CONTEXT7_RUNNER);
+
+    const assets = expectedContracts["contract/assets.v1.json"];
+    assert(!assets.preservedExternalState.some((item) => item.owner === CONTEXT7_PRESERVED_STATE.owner
+      && item.root === CONTEXT7_PRESERVED_STATE.root && item.relativePath === CONTEXT7_PRESERVED_STATE.relativePath),
+    "Context7 HTTP preserved state must be new in this transition");
+    assets.preservedExternalState.push(structuredClone(CONTEXT7_PRESERVED_STATE));
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    assert.equal(schema.$defs.context7, undefined, "Context7 HTTP schema definition must be new in this transition");
+    schema.$defs.context7 = {
+      type: "object",
+      additionalProperties: false,
+      required: ["state"],
+      properties: {
+        state: { enum: ["available", "conflict", "invalid"] },
+        source: { type: "string" },
+        code: { type: "string" },
+      },
+    };
+    const statusResult = schema.$defs.statusResult;
+    assert.deepEqual(statusResult.required, ["installation", "engram"]);
+    statusResult.required.push("context7");
+    statusResult.properties.context7 = { $ref: "#/$defs/context7" };
+    const doctorChecks = schema.$defs.doctorResult.properties.checks;
+    assert.equal(doctorChecks.minItems, 2);
+    assert.equal(doctorChecks.maxItems, 2);
+    doctorChecks.minItems = 3;
+    doctorChecks.maxItems = 3;
+    assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram"]);
+    doctorChecks.items.properties.id.enum.push("context7");
+  }
+  const permissionsEnabled = newContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY);
+  const permissionsMetadata = permissionsEnabled
+    ? permissionParityMetadata(root, piDir, sourceCommit, producer, newContracts[PARITY].permissions)
+    : undefined;
+  const permissionsTransition = acceptPermissionsPolicy
+    && !oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY)
+    && permissionsEnabled;
+  if (permissionsTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(PERMISSIONS_CAPABILITY), "Permissions policy capability must be new in this transition");
+    const context7Index = capabilities.indexOf(CONTEXT7_CAPABILITY);
+    assert(context7Index >= 0, "Permissions policy requires the existing Context7 HTTP capability");
+    capabilities.splice(context7Index + 1, 0, PERMISSIONS_CAPABILITY);
+
+    const assets = expectedContracts["contract/assets.v1.json"];
+    const resourceIndex = assets.resources.indexOf("assets/system-prompt");
+    assert(resourceIndex >= 0, "Permissions policy requires the existing system prompt assets");
+    assert(!assets.resources.includes(PERMISSIONS_RESOURCE), "Permissions policy resource must be new in this transition");
+    assets.resources.splice(resourceIndex, 0, PERMISSIONS_RESOURCE);
+    assert.equal(assets.managedExternalWrites.length, 3, "Permissions policy requires the original managed writes");
+    assert(!assets.managedExternalWrites.some((item) => PERMISSIONS_MANAGED_WRITES.some(({ relativePath }) => item.relativePath === relativePath)),
+      "Permissions policy managed writes must be new in this transition");
+    assets.managedExternalWrites.push(...structuredClone(PERMISSIONS_MANAGED_WRITES));
+    const preserved = assets.preservedExternalState;
+    const preservedMatches = preserved.filter((item) => item.owner === PERMISSIONS_PRESERVED_STATE.owner
+      && item.root === PERMISSIONS_PRESERVED_STATE.root && item.relativePath === PERMISSIONS_PRESERVED_STATE.relativePath);
+    assert.equal(preservedMatches.length, 1, "Permissions policy requires exactly one former preserved config");
+    assert.deepEqual(preservedMatches[0], PERMISSIONS_PRESERVED_STATE);
+    preserved.splice(preserved.indexOf(preservedMatches[0]), 1);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    assert.equal(runner.permissions, undefined, "Permissions policy runner metadata must be new in this transition");
+    runner.permissions = structuredClone(PERMISSIONS_RUNNER);
+    expectedContracts[PARITY].permissions = structuredClone(permissionsMetadata);
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    assert.equal(schema.$defs.permissions, undefined, "Permissions policy schema definition must be new in this transition");
+    schema.$defs.permissions = {
+      type: "object",
+      additionalProperties: false,
+      required: ["state", "path", "receiptPath", "initialized", "owned"],
+      properties: {
+        state: { enum: ["absent", "missing-owned", "managed", "preexisting", "invalid", "unreadable"] },
+        path: { type: "string" },
+        receiptPath: { type: "string" },
+        initialized: { type: "boolean" },
+        owned: { type: "boolean" },
+        reason: { type: "string" },
+      },
+    };
+    const statusResult = schema.$defs.statusResult;
+    assert.deepEqual(statusResult.required, ["installation", "engram", "context7"]);
+    statusResult.required.push("permissions");
+    assert.equal(statusResult.properties.permissions, undefined);
+    statusResult.properties.permissions = { $ref: "#/$defs/permissions" };
+    const doctorChecks = schema.$defs.doctorResult.properties.checks;
+    assert.equal(doctorChecks.minItems, 3);
+    assert.equal(doctorChecks.maxItems, 3);
+    doctorChecks.minItems = 4;
+    doctorChecks.maxItems = 4;
+    assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram", "context7"]);
+    doctorChecks.items.properties.id.enum.push("permissions");
+    const lifecycleResult = schema.$defs.lifecycleResult;
+    assert.equal(lifecycleResult.properties.actions.maxItems, 9);
+    lifecycleResult.properties.actions.maxItems = 32;
+    const lifecycleAction = schema.$defs.lifecycleAction;
+    assert(!PERMISSIONS_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Permissions policy lifecycle actions must be new in this transition");
+    lifecycleAction.enum.push(...PERMISSIONS_ACTIONS);
+  }
+  const experienceEnabled = newContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY);
+  const experienceTransition = acceptExperienceDefaults
+    && !oldContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY)
+    && experienceEnabled;
+  if (experienceTransition) {
+    assert(oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY) && permissionsEnabled,
+      "Experience defaults require the permissions policy capability");
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(EXPERIENCE_CAPABILITY), "Experience defaults capability must be new in this transition");
+    const permissionsIndex = capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    assert(permissionsIndex >= 0, "Experience defaults require the existing permissions policy capability");
+    capabilities.splice(permissionsIndex + 1, 0, EXPERIENCE_CAPABILITY);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    assert.equal(runner.experience, undefined, "Experience defaults runner metadata must be new in this transition");
+    runner.experience = structuredClone(EXPERIENCE_RUNNER);
+
+    const assets = expectedContracts["contract/assets.v1.json"];
+    const settingsWrite = assets.managedExternalWrites.find((item) => item.relativePath === "settings.json");
+    assert(settingsWrite, "Experience defaults require the existing settings write");
+    settingsWrite.semantics = EXPERIENCE_SETTINGS_SEMANTICS;
+    assert(!assets.managedExternalWrites.some((item) => item.relativePath === EXPERIENCE_RECEIPT_WRITE.relativePath),
+      "Experience defaults receipt write must be new in this transition");
+    assets.managedExternalWrites.push(structuredClone(EXPERIENCE_RECEIPT_WRITE));
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    const lifecycleResult = schema.$defs.lifecycleResult;
+    assert.equal(lifecycleResult.properties.actions.maxItems, 32, "Experience defaults require the permissions lifecycle schema");
+    const lifecycleAction = schema.$defs.lifecycleAction;
+    assert(!EXPERIENCE_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Experience defaults lifecycle actions must be new in this transition");
+    lifecycleAction.enum.push(...EXPERIENCE_ACTIONS);
+  }
+  const initializationEnabled = newContracts[rootContract].capabilities.includes(INITIALIZATION_CAPABILITY);
+  const initializationTransition = acceptInitializationDiagnostics
+    && !oldContracts[rootContract].capabilities.includes(INITIALIZATION_CAPABILITY)
+    && initializationEnabled;
+  if (initializationTransition) {
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(INITIALIZATION_CAPABILITY), "Initialization diagnostics capability must be new in this transition");
+    capabilities.push(INITIALIZATION_CAPABILITY);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    const newRunner = newContracts["contract/runner.v1.json"];
+    assert.equal(runner.experience?.diagnostic, undefined, "Initialization experience diagnostic must be new in this transition");
+    assert.equal(newRunner.experience?.diagnostic, INITIALIZATION_EXPERIENCE_DIAGNOSTIC, "Initialization experience diagnostic differs from producer");
+    runner.experience.diagnostic = INITIALIZATION_EXPERIENCE_DIAGNOSTIC;
+    assert.equal(runner.permissions?.diagnostic, "permission state reports invalid or unreadable files without exposing their contents", "Initialization requires the previous permissions diagnostic");
+    assert.equal(newRunner.permissions?.diagnostic, INITIALIZATION_PERMISSIONS_DIAGNOSTIC, "Initialization permissions diagnostic differs from producer");
+    runner.permissions.diagnostic = INITIALIZATION_PERMISSIONS_DIAGNOSTIC;
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    const newSchema = newContracts["contract/schemas/runner-response.v1.schema.json"];
+    assert.equal(schema.$defs.experience, undefined, "Initialization experience schema must be new in this transition");
+    assert.deepEqual(newSchema.$defs.experience, INITIALIZATION_EXPERIENCE_SCHEMA, "Initialization experience schema differs from producer");
+    schema.$defs.experience = structuredClone(INITIALIZATION_EXPERIENCE_SCHEMA);
+    const statusResult = schema.$defs.statusResult;
+    assert.deepEqual(statusResult.required, ["installation", "engram", "context7", "permissions"]);
+    statusResult.required.push("experience");
+    assert.equal(statusResult.properties.experience, undefined);
+    statusResult.properties.experience = { $ref: "#/$defs/experience" };
+    const doctorChecks = schema.$defs.doctorResult.properties.checks;
+    assert.equal(doctorChecks.minItems, 4);
+    assert.equal(doctorChecks.maxItems, 4);
+    assert.deepEqual(doctorChecks.items.properties.id.enum, ["package", "engram", "context7", "permissions"]);
+    doctorChecks.prefixItems = ["package", "engram", "context7", "permissions", "experience"].map((id) => ({
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "status"],
+      properties: { id: { const: id }, status: { enum: ["ok", "error"] } },
+    }));
+    doctorChecks.minItems = 5;
+    doctorChecks.maxItems = 5;
+    doctorChecks.items = false;
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -284,7 +633,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -304,15 +653,48 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
         assert(!previousEntries.includes(`package/${module}`), "Playwright module must be absent from the previous archive");
         expectedEntries.push(`package/${module}`);
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal"].filter(Boolean).join(" and ");
+      if (modularTransition) {
+        for (const { metadata: { targetPath } } of promptModules) {
+          assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", targetPath]).trim(), "",
+            "Modular system prompt asset must be new in this transition");
+          assert(!previousEntries.includes(`package/${targetPath}`), "Modular system prompt asset must be absent from the previous archive");
+          expectedEntries.push(`package/${targetPath}`);
+        }
+      }
+      if (context7Transition) {
+        assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", CONTEXT7_MODULE]).trim(), "", "Context7 module must be new in this transition");
+        assert(!previousEntries.includes(`package/${CONTEXT7_MODULE}`), "Context7 module must be absent from the previous archive");
+        expectedEntries.push(`package/${CONTEXT7_MODULE}`);
+      }
+      if (permissionsTransition) {
+        for (const member of [PERMISSIONS_TARGET_PATH, PERMISSIONS_MODULE]) {
+          assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", member]).trim(), "", `Permissions asset must be new in this transition: ${member}`);
+          assert(!previousEntries.includes(`package/${member}`), `Permissions asset must be absent from the previous archive: ${member}`);
+          expectedEntries.push(`package/${member}`);
+        }
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `Playwright archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : experienceTransition ? "Experience defaults" : "Initialization diagnostics"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
       }
+      if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
+      if (experienceTransition) assert.equal(entries.length, previousEntries.length, "Experience defaults must preserve the previous archive inventory");
+      if (initializationTransition) assert.equal(entries.length, previousEntries.length, "Initialization diagnostics must preserve the previous archive inventory");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
+    }
+    if (permissionsEnabled) {
+      const permissionsDefaults = tarText(tarballFile, PERMISSIONS_TARGET_PATH);
+      assert.equal(permissionsDefaults, git(piDir, ["show", `${producer}:${PERMISSIONS_TARGET_PATH}`]), "Permissions defaults do not match producer");
+      assert.equal(createHash("sha256").update(permissionsDefaults).digest("hex"), permissionsMetadata.outputSha256, "Permissions defaults hash does not match parity");
+      assert.equal(tarText(tarballFile, PERMISSIONS_MODULE), git(piDir, ["show", `${producer}:${PERMISSIONS_MODULE}`]), "Permissions lifecycle module does not match producer");
+    }
+    if (experienceEnabled) assert.equal(tarText(tarballFile, EXPERIENCE_BIN), git(piDir, ["show", `${producer}:${EXPERIENCE_BIN}`]), "Experience runner does not match producer");
+    for (const { metadata: { targetPath }, content } of promptModules) {
+      assert.equal(tarText(tarballFile, targetPath), content, "Modular system prompt archive bytes differ from the reviewed source");
     }
     for (const member of CONTRACTS) {
       const packed = tarJson(tarballFile, member), expected = structuredClone(newContracts[member]);
@@ -350,14 +732,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 10 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 14 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics]");
     process.exitCode = 1;
   }
 }

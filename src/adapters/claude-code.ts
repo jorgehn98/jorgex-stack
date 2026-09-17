@@ -1,3 +1,4 @@
+import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -7,9 +8,8 @@ import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canoni
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
+import { upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
-import { GIT_GUARD_SCRIPT } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
 
@@ -38,6 +38,54 @@ const ENGRAM_AGENT_TOOLS = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readMcpConfig(file: string): string | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    if (code === "ENOENT") return null;
+    throw new Error(`Claude Code: no se pudo leer la configuración MCP en ${file} (${code}).`);
+  }
+  if (content.trim() !== "") {
+    try {
+      if (!isRecord(JSON.parse(content))) throw new Error();
+    } catch {
+      throw new Error(`Claude Code: la configuración MCP en ${file} debe contener un objeto JSON válido.`);
+    }
+  }
+  return content;
+}
+
+function isCompatibleContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  if (server.transport !== "http" || typeof server.url !== "string" || !isRecord(value)) return false;
+  return value.type === "http" && value.url === server.url;
+}
+
+function canonicalContext7Server(server: CanonicalMcp["servers"][string]): Record<string, unknown> {
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(server.headers ?? {})) {
+    headers[key] = /^\$\{(\w+)\}$/.test(raw) ? "" : raw;
+  }
+  return {
+    type: "http",
+    url: server.url,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  return isCompatibleContext7Server(server, value) && isDeepStrictEqual(value, canonicalContext7Server(server));
+}
+
+function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value: unknown): void {
+  if (value !== undefined && !isCompatibleContext7Server(server, value)) {
+    throw new Error("Claude Code: MCP 'context7' entra en conflicto con una definición existente (endpoint o tipo incompatible). Conserva la configuración y corrige el conflicto antes de reintentar.");
+  }
 }
 
 function hasClaudeManualApproval(configDir: string): boolean {
@@ -160,20 +208,10 @@ export const claudeCodeAdapter: Adapter = {
     if (tools !== null) lines.push(`tools: ${tools}`);
     lines.push(`model: ${resolveAgentModel(models, agent.name, agent.tier).model}`);
 
-    // Claude Code no tiene deny de comandos por-subagente; un hook PreToolUse en
-    // el frontmatter del subagente es el mecanismo documentado para bloquear git
-    // destructivo solo en los full-bash, sin tocar al agente principal.
-    // {{SCRIPTS_DIR}} lo resuelve planAgents a la ruta de scripts instalada.
-    if (agent.bash === "full") {
-      lines.push(
-        "hooks:",
-        "  PreToolUse:",
-        '    - matcher: "Bash|PowerShell"',
-        "      hooks:",
-        "        - type: command",
-        `          command: "node \\"{{SCRIPTS_DIR}}/${GIT_GUARD_SCRIPT}\\""`,
-      );
-    }
+    // Sin bloqueos por-subagente: el git destructivo (reset/clean/checkout con
+    // descarte/restore/push --force) cae en el `ask` global de `Bash` y pide
+    // aprobación explícita — decisión #153 (2026-09-17): ask con vía de escape,
+    // no bloqueo. El primary hereda el global sin más.
 
     return [
       {
@@ -230,11 +268,28 @@ export const claudeCodeAdapter: Adapter = {
     const file = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
 
     const mcpOwnership: McpOwnershipChange[] = [];
-    const content = upsertJson(readTextIfExists(file), (root) => {
+    const content = upsertJson(readMcpConfig(file), (root) => {
+      const rawServers = root["mcpServers"];
+      if (rawServers !== undefined && !isRecord(rawServers)) {
+        throw new Error("Claude Code: la clave 'mcpServers' debe ser un objeto; corrígela antes de reintentar sync.");
+      }
+      const existingServers = rawServers as Record<string, unknown> | undefined;
+      const context7 = canonical.servers.context7;
+      if (context7 !== undefined) assertCompatibleContext7(context7, existingServers?.["context7"]);
+
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
         const existing = servers[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
+        if (name === "context7" && existing !== undefined) {
+          // Context7 es requerido, pero una entrada previa compatible puede
+          // pertenecer al usuario. Si el Stack la creó y el usuario la cambió,
+          // se conserva y se libera ownership para no tocarla en uninstall.
+          if (owned && !isCanonicalContext7Server(server, existing)) {
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
             if (isManagedOptionalStdioServer(server, existing)) delete servers[name];
@@ -287,6 +342,9 @@ export const claudeCodeAdapter: Adapter = {
             url: server.url,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
           };
+          if (name === "context7" && existing === undefined && !owned) {
+            mcpOwnership.push({ server: name, owned: true });
+          }
         }
       }
     });
@@ -300,10 +358,7 @@ export const claudeCodeAdapter: Adapter = {
 
     const prompt = readTextIfExists(systemPromptFile);
     if (prompt !== null) {
-      let content = removeMarkdownSection(prompt, "system-prompt");
-      content = removeMarkdownSection(content, "engram-protocol");
-      content = removeMarkdownSection(content, "browser");
-      content = removeMarkdownSection(content, "writing-style");
+      const content = removeSystemPromptSections(prompt);
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 
@@ -317,13 +372,26 @@ export const claudeCodeAdapter: Adapter = {
     }
 
     const mainFile = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
-    const main = readTextIfExists(mainFile);
+    const main = readMcpConfig(mainFile);
     if (main !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
       const content = upsertJson(main, (root) => {
-        const servers = root["mcpServers"] as Record<string, unknown> | undefined;
-        if (!servers) return;
+        const rawServers = root["mcpServers"];
+        if (rawServers === undefined) return;
+        if (!isRecord(rawServers)) {
+          throw new Error("Claude Code: la clave 'mcpServers' debe ser un objeto; corrígela antes de reintentar uninstall.");
+        }
+        const servers = rawServers;
         for (const [name, server] of Object.entries(mcp.servers)) {
+          if (name === "context7") {
+            const canonical = isCanonicalContext7Server(server, servers[name]);
+            const owned = ctx.ownedMcpServers?.has(name) === true;
+            if (owned) {
+              if (canonical) delete servers[name];
+              mcpOwnership.push({ server: name, owned: false });
+            }
+            continue;
+          }
           if (!server.optional) {
             delete servers[name];
             continue;

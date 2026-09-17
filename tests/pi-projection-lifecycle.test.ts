@@ -1036,7 +1036,11 @@ describe("Pi shared projection lifecycle", () => {
       });
       const installedPrompt = fs.readFileSync(agentsFile, "utf8");
       expect(installedPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      expect(installedPrompt).not.toContain("<!-- jorgex:context7 -->");
+      expect(installedPrompt).not.toContain("Use Context7 whenever you need current documentation");
       expect(installedPrompt).not.toContain("<!-- jorgex:browser -->");
+      expect(installedPrompt).not.toContain("<!-- jorgex:playwright -->");
+      expect(installedPrompt).not.toContain("<!-- jorgex:chrome-devtools -->");
       expect(fs.readFileSync(target.strictReceipt, "utf8")).toBe(strictReceiptBefore);
       expect(fs.existsSync(target.projectionReceipt)).toBe(true);
       expect(JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8"))).toMatchObject({
@@ -1073,9 +1077,13 @@ describe("Pi shared projection lifecycle", () => {
       expectBackupsBeforeMutation(events, [agentsFile, target.settings, leanAudit, codexRetainedSkill]);
       const browserEnabledPrompt = fs.readFileSync(agentsFile, "utf8");
       expect(browserEnabledPrompt).toContain(target.userPrompt.trim());
-      expect(browserEnabledPrompt.match(/<!-- jorgex:browser -->/g)).toHaveLength(1);
+      expect(browserEnabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+      expect(browserEnabledPrompt.match(/<!-- jorgex:playwright -->/g)).toHaveLength(1);
       expect(browserEnabledPrompt).toContain("Playwright CLI");
       expect(browserEnabledPrompt).not.toContain("Chrome DevTools MCP");
+      expect(browserEnabledPrompt).not.toContain("Use Context7 whenever you need current documentation");
+      expect(browserEnabledPrompt).not.toContain("<!-- jorgex:browser -->");
+      expect(browserEnabledPrompt).not.toContain("<!-- jorgex:chrome-devtools -->");
       expect(browserEnabledPrompt).toContain("<!-- jorgex:engram-protocol -->");
 
       events.length = 0;
@@ -1100,7 +1108,10 @@ describe("Pi shared projection lifecycle", () => {
       const browserDisabledPrompt = fs.readFileSync(agentsFile, "utf8");
       expect(browserDisabledPrompt).toContain(target.userPrompt.trim());
       expect(browserDisabledPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      expect(browserDisabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+      expect(browserDisabledPrompt).not.toContain("Use Context7 whenever you need current documentation");
       expect(browserDisabledPrompt).not.toContain("<!-- jorgex:browser -->");
+      expect(browserDisabledPrompt).not.toContain("<!-- jorgex:playwright -->");
 
       events.length = 0;
       expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });

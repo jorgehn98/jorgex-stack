@@ -17,8 +17,8 @@
 //
 // Cross-agent (Claude Code / Codex / OpenCode) y cross-platform: node puro, sin deps.
 // Idempotente, INDEPENDIENTE del cwd de escritura (opera con --file sobre rutas absolutas),
-// fail-open y exit 0 SIEMPRE (un guardian nunca debe bloquear una tool). Como el guardian
-// hermano (block-destructive-git.cjs), un fail-open deja rastro en stderr para ser diagnosticable.
+// fail-open y exit 0 SIEMPRE (un guardian nunca debe bloquear una tool): un
+// fail-open deja rastro en stderr para ser diagnosticable.
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");

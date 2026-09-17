@@ -1,3 +1,4 @@
+import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -9,15 +10,40 @@ import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { removeMarkdownSection, upsertJson } from "../lib/filemerge.js";
+import { upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
-import { DESTRUCTIVE_GIT_DENY } from "../lib/git-guard.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
+
+const gitReadPrefix = "git --no-pager -c core.fsmonitor=false -c log.showSignature=false";
+const gitReadCommands = [
+  "diff", "diff --stat", "diff --name-only", "diff --cached", "log", "log --oneline -10",
+].map((action) => `${gitReadPrefix} ${action} --no-ext-diff --no-textconv --end-of-options`);
 
 /** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
 function yamlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function readMcpConfig(file: string): string | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    if (code === "ENOENT") return null;
+    throw new Error(`OpenCode: no se pudo leer la configuración MCP en ${file} (${code}).`);
+  }
+  if (content.trim() !== "") {
+    try {
+      if (objectValue(JSON.parse(content)) === null) throw new Error();
+    } catch {
+      throw new Error(`OpenCode: la configuración MCP en ${file} debe contener un objeto JSON válido.`);
+    }
+  }
+  return content;
 }
 
 function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], value: unknown): boolean {
@@ -47,6 +73,36 @@ function objectValue(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function isCompatibleContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  const current = objectValue(value);
+  if (server.transport !== "http" || typeof server.url !== "string" || current === null) return false;
+  return current.type === "remote" && current.url === server.url
+    && (current.enabled === undefined || current.enabled === true);
+}
+
+function canonicalContext7Server(server: CanonicalMcp["servers"][string]): Record<string, unknown> {
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(server.headers ?? {})) {
+    const envRef = /^\$\{(\w+)\}$/.exec(raw);
+    headers[key] = envRef ? `{env:${envRef[1]!}}` : raw;
+  }
+  return {
+    type: "remote",
+    url: server.url,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+function isCanonicalContext7Server(server: CanonicalMcp["servers"][string], value: unknown): boolean {
+  return isCompatibleContext7Server(server, value) && isDeepStrictEqual(value, canonicalContext7Server(server));
+}
+
+function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value: unknown): void {
+  if (value !== undefined && !isCompatibleContext7Server(server, value)) {
+    throw new Error("OpenCode: MCP 'context7' entra en conflicto con una definición existente (endpoint, tipo o estado nativo incompatible). Conserva la configuración y corrige el conflicto antes de reintentar.");
+  }
 }
 
 function ensureObject(parent: Record<string, unknown>, key: string, fieldPath: string): Record<string, unknown> {
@@ -154,15 +210,20 @@ export const opencodeAdapter: Adapter = {
       lines.push(`model: ${tierModel.model}`);
       if (tierModel.variant) lines.push(`variant: ${tierModel.variant}`);
 
-      lines.push("permission:");
-      lines.push(`  edit: ${agent.readonly ? "deny" : "allow"}`);
+      if (agent.readonly || agent.bash !== "full" || !agent.spawn) lines.push("permission:");
+      if (agent.readonly) lines.push("  edit: deny");
       if (agent.bash === "none") lines.push("  bash: deny");
-      else if (agent.bash === "git-read") lines.push('  bash:\n    "git diff*": allow\n    "git log*": allow');
-      else {
-        // full-bash: todo permitido EXCEPTO git destructivo. OpenCode evalúa por
-        // orden (última regla que matchea gana), así que "*" allow va primero.
-        const deny = DESTRUCTIVE_GIT_DENY.map((p) => `    ${yamlString(p)}: deny`).join("\n");
-        lines.push(`  bash:\n    "*": allow\n${deny}`);
+      else if (agent.bash === "git-read") {
+        lines.push('  bash:\n    "*": deny');
+        for (const command of gitReadCommands) {
+          lines.push(`    ${yamlString(command)}: allow`, `    ${yamlString(`${command} *`)}: allow`);
+        }
+        const permission = objectValue(loadCanonicalDefaults(stackRoot())["opencode"]?.permission);
+        const bash = objectValue(permission?.bash);
+        if (bash === null) throw new Error("OpenCode: canonical Bash policy is required for git-read agents.");
+        for (const [pattern, decision] of Object.entries(bash)) {
+          if (decision === "deny") lines.push(`    ${yamlString(pattern)}: deny`);
+        }
       }
       if (!agent.spawn) lines.push("  task: deny");
     }
@@ -172,7 +233,7 @@ export const opencodeAdapter: Adapter = {
     return [
       {
         file: `${agent.name}.md`,
-        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
+        content: `---\n${lines.join("\n")}\n---\n${agent.body}${agent.bash === "git-read" ? `\n\nUse only these read-only Git command prefixes; put refs and paths after --end-of-options:\n${gitReadCommands.map((command) => `- \`${command}\``).join("\n")}\n` : ""}`,
         kind: "agent" as const,
       },
     ];
@@ -269,13 +330,21 @@ export const opencodeAdapter: Adapter = {
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "opencode.json");
     const { pluginsDir } = this.paths(ctx.configDir);
-    const original = readTextIfExists(file);
+    const original = readMcpConfig(file);
     const contentSource = original === null || original.trim() === "" ? null : original;
     const isFreshConfig = contentSource === null;
 
     const mcpOwnership: McpOwnershipChange[] = [];
     const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
     const content = upsertJson(contentSource, (root) => {
+      const rawMcp = root["mcp"];
+      if (rawMcp !== undefined && objectValue(rawMcp) === null) {
+        throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar sync.");
+      }
+      const existingMcp = rawMcp as Record<string, unknown> | undefined;
+      const context7 = canonical.servers.context7;
+      if (context7 !== undefined) assertCompatibleContext7(context7, existingMcp?.["context7"]);
+
       root["$schema"] ??= "https://opencode.ai/config.json";
       if (root[PRIMARY_MODEL_FIELD] === undefined) {
         root[PRIMARY_MODEL_FIELD] = PRIMARY_MODEL;
@@ -306,7 +375,7 @@ export const opencodeAdapter: Adapter = {
       if (isFreshConfig && defaults?.["permission"] !== undefined) {
         root["permission"] = defaults["permission"];
         ctx.warnings.push(
-          "OpenCode: fresh config enables read-anywhere via external_directory:*; edits, web egress and arbitrary bash remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+          "OpenCode: fresh config allows ordinary reads, edits, web access and Bash; sensitive operations ask, while protected paths and obvious destruction are denied. Native matching is not a universal filesystem sandbox.",
         );
       }
 
@@ -314,6 +383,15 @@ export const opencodeAdapter: Adapter = {
       for (const [name, server] of Object.entries(canonical.servers)) {
         const existing = mcp[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
+        if (name === "context7" && existing !== undefined) {
+          // Context7 es requerido, pero una entrada previa compatible puede
+          // pertenecer al usuario. Si el Stack la creó y el usuario la cambió,
+          // se conserva y se libera ownership para no tocarla en uninstall.
+          if (owned && !isCanonicalContext7Server(server, existing)) {
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          continue;
+        }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
             if (isManagedOptionalStdioServer(server, existing)) delete mcp[name];
@@ -353,6 +431,9 @@ export const opencodeAdapter: Adapter = {
             url: server.url,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
           };
+          if (name === "context7" && existing === undefined && !owned) {
+            mcpOwnership.push({ server: name, owned: true });
+          }
         }
       }
 
@@ -394,15 +475,12 @@ export const opencodeAdapter: Adapter = {
 
     const prompt = readTextIfExists(systemPromptFile);
     if (prompt !== null) {
-      let content = removeMarkdownSection(prompt, "system-prompt");
-      content = removeMarkdownSection(content, "engram-protocol");
-      content = removeMarkdownSection(content, "browser");
-      content = removeMarkdownSection(content, "writing-style");
+      const content = removeSystemPromptSections(prompt);
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 
     const configFile = path.join(ctx.configDir, "opencode.json");
-    const config = readTextIfExists(configFile);
+    const config = readMcpConfig(configFile);
     if (config !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
       const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
@@ -441,9 +519,22 @@ export const opencodeAdapter: Adapter = {
           if (ctx.ownedPrimaryModelFields?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
         }
 
-        const mcpBlock = root["mcp"] as Record<string, unknown> | undefined;
-        if (mcpBlock) {
+        const rawMcpBlock = root["mcp"];
+        if (rawMcpBlock !== undefined && objectValue(rawMcpBlock) === null) {
+          throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar uninstall.");
+        }
+        const mcpBlock = rawMcpBlock as Record<string, unknown> | undefined;
+        if (mcpBlock !== undefined) {
           for (const [name, server] of Object.entries(mcp.servers)) {
+            if (name === "context7") {
+              const canonical = isCanonicalContext7Server(server, mcpBlock[name]);
+              const owned = ctx.ownedMcpServers?.has(name) === true;
+              if (owned) {
+                if (canonical) delete mcpBlock[name];
+                mcpOwnership.push({ server: name, owned: false });
+              }
+              continue;
+            }
             if (!server.optional) {
               delete mcpBlock[name];
               continue;

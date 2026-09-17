@@ -24,12 +24,22 @@ function rateLimitHint(prefix: string): string {
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
 import { detectPlaywrightCli, PLAYWRIGHT_CLI, resolvePnpmFailureRemedy, type PlaywrightCliState } from "./lib/external-tools.js";
+import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
 
 export interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
   skills: Record<string, SkillUpstreamInfo>;
+  complements?: Record<string, ComplementUpstreamInfo>;
+}
+
+export interface ComplementUpstreamInfo {
+  source: string;
+  version?: string | null;
+  reviewed?: string;
+  status?: string;
+  note?: string;
 }
 
 function loadUpstreams(): Upstreams {
@@ -71,6 +81,75 @@ async function querySkillHeads(skillNames: string[], upstreams: Upstreams): Prom
     const info = upstreams.skills[name]!;
     const repo = info.source.replace(/^github:/, "");
     return { name, repo, info, head: heads.get(repo) ?? null };
+  });
+}
+
+/**
+ * Complementos oficiales externos que `update --check` debe revisar. A
+ * diferencia de las skills vendorizadas (pineadas con el stack), estos se
+ * instalan desde su upstream en cada máquina — el aviso interesa también al
+ * usuario final. Las claves `$...` son comentarios, no complementos.
+ */
+export function complementsToScan(upstreams: Upstreams): string[] {
+  return Object.keys(upstreams.complements ?? {}).filter((name) => !name.startsWith("$"));
+}
+
+export interface ComplementUpdateCheckReport {
+  level: "success" | "warn" | "info";
+  message: string;
+}
+
+/** Compara el pin aceptado de un complemento contra el upstream observado, sin red. */
+export function resolveComplementUpdateCheck(
+  name: string,
+  info: ComplementUpstreamInfo,
+  upstream: string | null,
+): ComplementUpdateCheckReport {
+  const pinned = info.version ?? null;
+  if (!pinned)
+    return {
+      level: "warn",
+      message: `${name}: sin pin en upstreams.json — fija la versión revisada antes de instalar.`,
+    };
+  if (upstream === null)
+    return { level: "info", message: `${name}: pin ${pinned} (no se pudo consultar el upstream).` };
+  if (upstream === pinned)
+    return { level: "success", message: `${name}: al día con el pin ${pinned}.` };
+  return {
+    level: "warn",
+    message:
+      `${name}: difiere del upstream (pin ${pinned}, upstream ${upstream}). ` +
+      "Revisa el cambio y, si lo aceptas, re-pinea en upstreams.json — nunca auto-update.",
+  };
+}
+
+/**
+ * Observa el upstream de cada complemento (versión npm o release de GitHub).
+ * Una consulta por paquete/repo único (varios complementos comparten repo);
+ * el pin sigue siendo propiedad de cada complemento. Los pins de GitHub se
+ * guardan sin la `v` inicial porque latestGithubRelease la pela.
+ */
+async function queryComplementUpstreams(
+  names: string[],
+  upstreams: Upstreams,
+): Promise<{ name: string; upstream: string | null }[]> {
+  const requests = new Map<string, Promise<string | null>>();
+  const keyOf = (source: string): string | null => {
+    if (source.startsWith("npm:")) return `npm:${source.slice(4)}`;
+    if (source.startsWith("github:")) return `github:${source.slice("github:".length).split("#")[0]}`;
+    return null;
+  };
+  for (const name of names) {
+    const key = keyOf(upstreams.complements![name]!.source);
+    if (key && !requests.has(key)) {
+      requests.set(key, key.startsWith("npm:") ? latestNpmVersion(key.slice("npm:".length)) : latestGithubRelease(key.slice("github:".length)));
+    }
+  }
+  const observed = new Map<string, string | null>();
+  await Promise.all([...requests.entries()].map(async ([key, request]) => observed.set(key, await request)));
+  return names.map((name) => {
+    const key = keyOf(upstreams.complements![name]!.source);
+    return { name, upstream: key ? (observed.get(key) ?? null) : null };
   });
 }
 
@@ -202,6 +281,25 @@ export async function runUpdateCheck(localVersion: string, includeBrowserState =
     }
     if (moved === 0 && skillQueries.every(({ head }) => head !== null)) {
       p.log.info("Skills de terceros: ningún upstream se ha movido respecto a su pin.");
+    }
+  }
+
+  // 5. Complementos oficiales externos: se instalan desde su upstream en cada
+  // máquina, así que el aviso interesa también al usuario final. Discovery-only:
+  // informa, nunca auto-actualiza ni ejecuta instaladores ajenos.
+  const complementNames = complementsToScan(upstreams);
+  if (complementNames.length > 0) {
+    const complementQueries = await queryComplementUpstreams(complementNames, upstreams);
+    let movedComplement = false;
+    let unknownComplement = false;
+    for (const { name, upstream } of complementQueries) {
+      const report = resolveComplementUpdateCheck(name, upstreams.complements![name]!, upstream);
+      p.log[report.level](report.message);
+      if (report.level === "warn") movedComplement = true;
+      if (report.level === "info") unknownComplement = true;
+    }
+    if (!movedComplement && !unknownComplement) {
+      p.log.success("Complementos oficiales: al día con sus pins.");
     }
   }
 
@@ -667,6 +765,8 @@ export interface InteractiveUpdateResult {
   appliedUpdates: boolean;
   /** true solo si la actualización cambió los archivos que los runtimes consumen. */
   syncRequired: boolean;
+  /** Snapshot verificada tras actualizar Playwright y superar el smoke de arranque de Chromium. */
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
 }
 
 /** Los binarios globales no cambian los artefactos instalados en los runtimes. */
@@ -703,6 +803,7 @@ export async function runInteractiveUpdate(
   let exitCode = 0;
   let appliedUpdates = false;
   const updated: string[] = [];
+  let playwrightCapability: PlaywrightCapabilitySnapshot | undefined;
 
   // Las skills de terceros solo se revisan/actualizan desde el clon del repo
   // (mantenedor): ahí los cambios persisten y se commitean/publican. En el
@@ -985,6 +1086,7 @@ export async function runInteractiveUpdate(
         p.log.success("Playwright CLI actualizado al pin aprobado.");
         appliedUpdates = true;
         updated.push("playwright-cli");
+        playwrightCapability = inspectPlaywrightCapability({ browserVerified: true });
       } else {
         const failedResult = packageResult.ok ? browserResult : packageResult;
         const pnpmRemedy = failedResult && !failedResult.ok
@@ -1029,5 +1131,10 @@ export async function runInteractiveUpdate(
   }
 
   p.outro(exitCode === 0 ? "Update completado." : "Update completado con errores (revisa arriba).");
-  return { exitCode, appliedUpdates, syncRequired: resolveUpdateSyncRequired(updated) };
+  return {
+    exitCode,
+    appliedUpdates,
+    syncRequired: resolveUpdateSyncRequired(updated),
+    ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+  };
 }

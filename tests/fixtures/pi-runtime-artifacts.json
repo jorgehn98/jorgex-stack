@@ -2,38 +2,38 @@
   "current": {
     "package": {
       "name": "jorgex-pi",
-      "version": "0.8.18",
-      "source": "npm:jorgex-pi@0.8.18"
+      "version": "0.8.24",
+      "source": "npm:jorgex-pi@0.8.24"
     },
     "provenance": {
-      "commit": "61d676b300707d61840165616f0880d8c6588ce7"
+      "commit": "652d7e445e6f184c4543593c115026aa2f71e761"
     },
     "tarball": {
-      "bytes": 89122709,
-      "sha256": "02e5577d95d19ae28de55c170d4b6b48e682fbe741c8eec26cd79587da2f829e",
-      "sha512": "a9fa60be18b6a84dca6703bf38a1462482dd3ea00d9eb82aead06e9a86b3d92ce09b68da2968cb760d6b3ad8d5b2b36d53889bed227e7ea6791932ce25153220"
+      "bytes": 89140631,
+      "sha256": "6f67e546c86f21f9b5ff139f429551e696be4a8389ce4a6262e137dcce923a5f",
+      "sha512": "1ce4bfc316f1635c5e498af7134ae16f430a4f6a3d2c99c7aa6fc31b76ce18684759c6480f506b5de45aa5b5b682e03f68d10fc77c83ae1679006dab679d9aa4"
     }
   },
   "previous": {
     "package": {
       "name": "jorgex-pi",
-      "version": "0.8.17",
-      "source": "npm:jorgex-pi@0.8.17"
+      "version": "0.8.23",
+      "source": "npm:jorgex-pi@0.8.23"
     },
     "provenance": {
-      "commit": "53717b51dac13a460cd1c8c3ae4b6a3052fe70c2"
+      "commit": "ebb5e6e18e8e9297ffbf7bd53cf6785b952474b9"
     },
     "tarball": {
-      "bytes": 89122677,
-      "sha256": "07e8c36b237aac074c62a993cb2a89b45609e2d55cfab7f5f4dc33f5203d7750",
-      "sha512": "3bf7ffa62a992bf1a73f42821301b400f8ebe52d595cb4cb188e764bfeff8b0f3dd7247eda49990a97310728c6bd9699ffd03299b26641b8f17994b178763720"
+      "bytes": 89140657,
+      "sha256": "cbe75c7975353c6ed3123a9bd9c3395e18263a49f33f80a607123392ba27a8fd",
+      "sha512": "bb6dd4075a25818f301ed73d6b7b1432beca635fb6c130c0b0543844d086475640c41fa1e1e68035f3df97ad3cee52e5de8917b05fe01d7483875ae934e3374d"
     }
   },
   "archive": {
-    "entries": 13394,
+    "entries": 13400,
     "parity": {
       "source": {
-        "commit": "b8f3c36c81ef4a3766cb35bacf00776cc4f368da"
+        "commit": "715a935a52242103487464c610bd8f35cb8dd1e1"
       }
     }
   }

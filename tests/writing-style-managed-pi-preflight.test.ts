@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  runPackage: vi.fn().mockResolvedValue({ kind: "installed" }),
+  runPackage: vi.fn(async (input: { operation: string }) =>
+    input.operation === "sync" ? { kind: "synced" } : { kind: "installed" },
+  ),
   runProjection: vi.fn().mockReturnValue({ kind: "installed" }),
   prepareProjectionUninstall: vi.fn(),
   completeProjectionUninstall: vi.fn(),
@@ -47,13 +49,41 @@ async function managedPi(): Promise<typeof import("../src/lib/pi-managed-runtime
 
 afterEach(() => {
   vi.clearAllMocks();
-  mocks.runPackage.mockResolvedValue({ kind: "installed" });
+  mocks.runPackage.mockImplementation(async (input: { operation: string }) =>
+    input.operation === "sync" ? { kind: "synced" } : { kind: "installed" },
+  );
   mocks.runProjection.mockReturnValue({ kind: "installed" });
   mocks.prepareProjectionUninstall.mockReset();
   mocks.completeProjectionUninstall.mockReset();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 describe("preflight de estilo en el coordinador de Pi", () => {
+  it("rechaza un prompt browser ambiguo antes de preparar estilo o ejecutar el paquete Pi", async () => {
+    const targetDir = tempRoot();
+    const prompt = path.join(targetDir, "pi-agent", "AGENTS.md");
+    const ambiguous = "# User prompt\n\n<!-- jorgex:browser -->\nLegacy content without a closing marker.\n";
+    fs.mkdirSync(path.dirname(prompt), { recursive: true });
+    fs.writeFileSync(prompt, ambiguous);
+    const mod = await managedPi();
+
+    const result = await mod.runManagedPiSystem({
+      operation: "install",
+      targetDir,
+      detected: { executable: "/isolated/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    });
+
+    expect(result).toMatchObject({
+      kind: "blocked",
+      reason: "projection-prompt-markers",
+      remedy: expect.stringMatching(/browser|marcador|marker|ambig/i),
+    });
+    expect(mocks.runPackage).not.toHaveBeenCalled();
+    expect(mocks.runProjection).not.toHaveBeenCalled();
+    expect(fs.readFileSync(prompt, "utf8")).toBe(ambiguous);
+    expect(fs.existsSync(path.join(targetDir, "writing-style.md"))).toBe(false);
+  });
+
   it("no ejecuta el paquete ni la proyección si la fuente target-dir es inválida", async () => {
     const targetDir = tempRoot();
     fs.writeFileSync(path.join(targetDir, "writing-style.md"), Buffer.from([0xc3, 0x28]));
@@ -86,6 +116,9 @@ describe("preflight de estilo en el coordinador de Pi", () => {
 
     expect(mocks.runPackage).toHaveBeenCalledWith(expect.objectContaining({ operation: "install" }));
     expect(mocks.runPackage.mock.calls[0]?.[0]).not.toHaveProperty("writingStyle");
+    expect(mocks.runPackage).toHaveBeenCalledTimes(2);
+    expect(mocks.runPackage).toHaveBeenNthCalledWith(1, expect.objectContaining({ operation: "install" }));
+    expect(mocks.runPackage).toHaveBeenNthCalledWith(2, expect.objectContaining({ operation: "sync" }));
     expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
       writingStyle: { sourcePath: style.sourcePath, content: null },
     }));
@@ -106,6 +139,9 @@ describe("preflight de estilo en el coordinador de Pi", () => {
     const installed = fs.readFileSync(source, "utf8");
     expect(installed).toContain("<!-- jorgex:writing-style-default -->");
     expect(installed).toContain("# Writing style");
+    expect(mocks.runPackage).toHaveBeenCalledTimes(2);
+    expect(mocks.runPackage).toHaveBeenNthCalledWith(1, expect.objectContaining({ operation: "install" }));
+    expect(mocks.runPackage).toHaveBeenNthCalledWith(2, expect.objectContaining({ operation: "sync" }));
     expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
       writingStyle: expect.objectContaining({
         sourcePath: source,
@@ -127,6 +163,9 @@ describe("preflight de estilo en el coordinador de Pi", () => {
     })).resolves.toEqual({ kind: "installed" });
 
     expect(fs.readFileSync(path.join(targetDir, "writing-style.md"), "utf8")).toContain("# Writing style");
+    expect(mocks.runPackage).toHaveBeenCalledTimes(2);
+    expect(mocks.runPackage).toHaveBeenNthCalledWith(1, expect.objectContaining({ operation: "install" }));
+    expect(mocks.runPackage).toHaveBeenNthCalledWith(2, expect.objectContaining({ operation: "sync" }));
     expect(mocks.runProjection).toHaveBeenCalledWith(expect.objectContaining({
       writingStyle: expect.objectContaining({ sourcePath: path.join(targetDir, "writing-style.md"), content: null }),
     }));

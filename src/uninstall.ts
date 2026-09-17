@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
-import type { RuntimeId } from "./adapters/types.js";
-import { ADAPTERS, buildPlan, makeContext } from "./install.js";
+import type { FileAction, RuntimeId } from "./adapters/types.js";
+import { ADAPTERS, buildContentPlan, makeContext } from "./install.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
@@ -11,6 +11,7 @@ import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
 import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
+import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
@@ -50,6 +51,18 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
  */
 export async function runUninstall(opts: UninstallOptions): Promise<number> {
   p.intro(`jorgex-stack ${opts.dryRun ? "uninstall (dry-run)" : "uninstall"}`);
+  try {
+    for (const id of opts.runtimes) {
+      const adapter = ADAPTERS[id];
+      if (!adapter) continue;
+      const detection = adapter.detect();
+      if (opts.targetDir === undefined && !detection.installed) continue;
+      assertSystemPromptFile(adapter.paths(opts.targetDir ?? detection.configDir).systemPromptFile, opts.targetDir);
+    }
+  } catch (error) {
+    p.log.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
   const useBrowserPreferences = opts.targetDir === undefined;
   const preferenceErrors = useBrowserPreferences
     ? [...browserPreferenceErrors(), primaryModelOwnershipError()].filter((error): error is string => error !== null)
@@ -116,7 +129,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       if (!detection.installed) continue;
       const keepCtx = makeContext(keep, detection.configDir);
       if (!keepCtx) continue;
-      for (const action of buildPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
+      for (const action of buildContentPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
     }
   }
 
@@ -136,7 +149,14 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
 
-    const unmerge = adapter.planUnmerge(mcpForUnmerge, hooks, ctx);
+    let unmerge: FileAction[];
+    try {
+      unmerge = adapter.planUnmerge(mcpForUnmerge, hooks, ctx);
+    } catch (error) {
+      p.log.error(`${adapter.name}: no se pudo planificar la limpieza en ${configDir} — ${error instanceof Error ? error.message : String(error)}.`);
+      exitCode = 1;
+      continue;
+    }
     const mergedTargets = new Set(unmerge.map((a) => path.resolve(a.target)));
     // Lo instalado = plan actual ∪ manifest (cubre archivos que versiones
     // anteriores instalaron y el plan actual ya no genera).
@@ -147,7 +167,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     // frontera se borra, aunque el manifest (estado local editable) lo liste.
     const pruneRoot = usingRealConfig ? HOME : path.dirname(configDir);
     const planTargets = [
-      ...new Set([...buildPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
+      ...new Set([...buildContentPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
     ].filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
     const deleteTargets = planTargets.filter(
       (t) => !retained.has(t) && !(ctx.preserveEngram && path.basename(t) === "engram.ts") && isContainedIn(t, pruneRoot),

@@ -55,6 +55,12 @@ En cada checkpoint ready verificado, conserva la metadata existente de la PR —
 
 Esta política no garantiza exhaustividad ni calidad del modelo, ni promete ahorro de cuota. La continuación encadenada se rige por el trabajo aprobado, las capacidades disponibles, las reglas del proyecto, el orden registrado y el merge humano explícito. Goal Mode de OpenCode está retirado y no forma parte de este contrato; la continuidad usa el lifecycle normal y no migra su historial. PiGoal conserva su propio lifecycle.
 
+### Lifecycle del plugin OpenCode para worktrees
+
+El plugin no reconstruye la ruta ni la rama a partir del comando Bash. Para una llamada candidata, captura el inventario `git worktree list --porcelain -z` antes y después, y solo atribuye la operación si la metadata de la llamada informa `exit === 0` y existe una única alta nueva. La identidad del repositorio se comprueba con `git-common-dir`; la rama completa procede del inventario de Git y debe estar asociada a un worktree no detached. La ruta registrada debe coincidir exactamente con `<project-root>/worktrees/<branch-completa>` —incluidos los prefijos de rama—, no solo contener ese texto.
+
+Si falta `callID` o metadata de salida, falla una captura, el inventario es ilegible, hay solapamiento entre llamadas, cambia el repositorio, aparecen cero o varias altas, el worktree está detached o la ruta no es canónica, el plugin falla cerrado: omite setup, reminders y mensajes de éxito, y añade un diagnóstico accionable para revisar el inventario, el root/cwd o la ruta esperada. `setupScript` sigue siendo opt-in mediante la configuración existente del proyecto; no se ejecuta por el mero hecho de que el comando contenga `git worktree add`. Esta lógica pertenece al plugin de Stack y esta referencia no atribuye ese consumidor a Pi.
+
 ### Progreso, retrabajo y efectos externos
 
 Para asignaciones costosas o inciertas, acuerda el siguiente resultado observable y una ventana proporcional al trabajo. El silencio o no editar archivos no prueba bloqueo: al vencer la ventana, pide un estado acotado, conserva el trabajo seguro y resuelve o reasigna sólo ante falta de progreso o impedimento concreto, comprobando ownership y el estado detenido del worker anterior. No conviertas el check-in en polling continuo ni inventes capacidades del arnés.

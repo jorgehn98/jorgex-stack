@@ -8,7 +8,10 @@ import {
 } from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
 import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
-import { detectPlaywrightCli, resolvePnpmBin } from "./external-tools.js";
+import { resolvePnpmBin } from "./external-tools.js";
+import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
+import { piSystemPromptFile } from "../adapters/pi.js";
+import { assertSystemPromptFile } from "./system-prompt-sections.js";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -47,6 +50,7 @@ export interface PiManagedRuntimeDeps {
   runProjection(operation: PiProjectionOperation): Promise<PiManagedProjectionResult>;
   prepareProjectionUninstall(): Promise<PiManagedProjectionUninstallPreparation>;
   completeProjectionUninstall(token: unknown): Promise<PiManagedProjectionUninstallCompletion>;
+  installInitRemedy?: string;
 }
 
 function projectionOperation(operation: Exclude<PiManagedOperation, "models">): PiProjectionOperation {
@@ -76,6 +80,34 @@ async function completeProjection(
   return projectionResult.kind === "blocked" ? projectionResult : packageResult;
 }
 
+const INSTALL_INIT_REMEDY = "Corrige la causa y ejecuta sync --agents pi para completar la inicialización.";
+
+const INSTALL_INIT_TARGET_REMEDY =
+  "Corrige la causa y ejecuta sync --agents pi con el mismo --target-dir para completar la inicialización.";
+
+function withInstallInitRemedy(
+  result: Extract<PiManagedPackageResult, { kind: "blocked" }>,
+  fallbackRemedy: string,
+): PiManagedOperationResult {
+  return result.remedy === undefined
+    ? { kind: "blocked", reason: result.reason, remedy: fallbackRemedy }
+    : result;
+}
+
+async function completeInstallWithInitialization(
+  packageResult: PiManagedPackageOutcome,
+  deps: PiManagedRuntimeDeps,
+): Promise<PiManagedOperationResult> {
+  const projected = await completeProjection("install", packageResult, deps);
+  if (projected.kind === "blocked") return projected;
+  const fallbackRemedy = deps.installInitRemedy ?? INSTALL_INIT_REMEDY;
+  const initResult = await deps.runPackage("sync");
+  if (initResult.kind === "synced") return packageResult;
+  if (initResult.kind === "manual-existing") return manualExistingResult(initResult);
+  if (initResult.kind === "blocked") return withInstallInitRemedy(initResult, fallbackRemedy);
+  return { kind: "blocked", reason: "runner-unhealthy", remedy: fallbackRemedy };
+}
+
 export async function runManagedPiOperation(
   operation: PiManagedOperation,
   deps: PiManagedRuntimeDeps,
@@ -93,6 +125,10 @@ export async function runManagedPiOperation(
   const packageResult = await deps.runPackage(operation);
   if (packageResult.kind === "manual-existing") return manualExistingResult(packageResult);
   if (operation === "models") return packageResult;
+
+  if (operation === "install" && packageResult.kind !== "blocked") {
+    return completeInstallWithInitialization(packageResult, deps);
+  }
 
   const nextProjectionOperation = projectionOperation(operation);
   if (packageResult.kind !== "blocked") {
@@ -132,6 +168,8 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   writingStyle?: WritingStyleSnapshot;
   writingStyleMode?: InstallMode;
   playwrightCliEnabled?: boolean;
+  playwrightCapability?: PlaywrightCapabilitySnapshot;
+  packageOnly?: boolean;
 }): Promise<PiManagedOperationResult> {
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
   if (!supportedVersions.includes(input.detected.version)) {
@@ -144,11 +182,23 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const {
     devtoolsMcpEnabled: explicitDevtools,
     playwrightCliEnabled: explicitPlaywright,
+    playwrightCapability,
+    packageOnly,
     writingStyle: suppliedStyle,
     writingStyleMode,
     ...runtimeInput
   } = input;
+  if (input.operation === "doctor" && packageOnly) {
+    const result = managedPackageResult(await runPiRuntimeSystem(runtimeInput));
+    return result.kind === "manual-existing" ? manualExistingResult(result) : result;
+  }
   const readsStyle = input.operation !== "uninstall" && input.operation !== "models";
+  if (input.operation !== "models") {
+    try { assertSystemPromptFile(piSystemPromptFile(input.targetDir), input.targetDir); }
+    catch (error) {
+      return { kind: "blocked", reason: "projection-prompt-markers", remedy: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const preparedStyle = readsStyle && suppliedStyle === undefined
     ? prepareWritingStyle(resolveWritingStyleFile({ targetDir: input.targetDir }), { rootDir: input.targetDir })
     : undefined;
@@ -160,10 +210,17 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const devtoolsMcpEnabled = explicitDevtools
     ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
   const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  const persistedPlaywright = input.targetDir === undefined
+    && loadPlaywrightCliPreference(undefined, "pi") === true;
+  const selectedPlaywright = explicitPlaywright
+    ?? persistedPlaywright;
+  const playwrightCapabilityEffective = playwrightCapability?.effective === true;
   const playwrightCliEnabled = input.targetDir === undefined && supportsPlaywright
-    && (explicitPlaywright ?? loadPlaywrightCliPreference(undefined, "pi") === true);
+    && selectedPlaywright
+    && playwrightCapabilityEffective;
   const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
-    ? detectPlaywrightCli().binPath : null;
+    ? playwrightCapability?.cli.binPath ?? null
+    : null;
   const projectionInput = {
     writingStyle,
     targetDir: input.targetDir,
@@ -177,6 +234,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   };
   if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
   const result = await runManagedPiOperation(input.operation, {
+    installInitRemedy: input.targetDir === undefined ? undefined : INSTALL_INIT_TARGET_REMEDY,
     async runPackage(operation) {
       return managedPackageResult(await runPiRuntimeSystem({ ...runtimeInput, operation }));
     },

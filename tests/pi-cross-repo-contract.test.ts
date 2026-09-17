@@ -241,7 +241,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     expectArchiveInventory(tarball);
   }, 60_000);
 
-  it("executes Sol sync and ownership-safe cleanup from the exact published tarball", () => {
+  it("executes managed defaults and permission cleanup from the exact published tarball", () => {
     const tarball = path.resolve(registryTarball!);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-registry-lifecycle-"));
     temporaryPaths.push(root);
@@ -251,10 +251,13 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const settingsFile = path.join(agentDir, "settings.json");
     const modelsFile = path.join(agentDir, "models.json");
     const receiptFile = path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json");
+    const permissionsFile = path.join(agentDir, "extensions", "pi-permission-system", "config.json");
+    const permissionsReceipt = path.join(agentDir, "jorgex-pi", "permissions-lifecycle.v1.json");
+    const experienceReceipt = path.join(agentDir, "jorgex-pi", "experience-lifecycle.v1.json");
     const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
     const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
     fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(settingsFile, JSON.stringify({ foreign: { keep: true } }));
+    fs.writeFileSync(settingsFile, JSON.stringify({ foreign: { keep: true }, defaultThinkingLevel: "high" }));
     fs.writeFileSync(modelsFile, JSON.stringify({ foreign: { keep: true } }));
     fs.writeFileSync(engramBin, "placeholder");
 
@@ -270,9 +273,9 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       SystemRoot: process.env.SystemRoot,
     };
     fs.mkdirSync(environment.TEMP, { recursive: true });
-    const run = (command: "sync" | "cleanup") => spawnSync(process.execPath, [runner, command, "--json"], {
+    const run = (command: "sync" | "cleanup" | "doctor" | "status", codingAgentDir = agentDir) => spawnSync(process.execPath, [runner, command, "--json"], {
       encoding: "utf8",
-      env: environment,
+      env: { ...environment, PI_CODING_AGENT_DIR: codingAgentDir },
     });
 
     const sync = run("sync");
@@ -282,19 +285,42 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       foreign: { keep: true },
       defaultProvider: "openai-codex",
       defaultModel: "gpt-5.6-sol",
+      theme: "JorgeX",
+      quietStartup: true,
+      hideThinkingBlock: true,
+      defaultThinkingLevel: "high",
     });
     expect(readJson(modelsFile)).toMatchObject({
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 872000 } } } },
     });
     expect(fs.existsSync(receiptFile)).toBe(true);
+    expect(fs.existsSync(permissionsFile)).toBe(true);
+    expect(readJson(permissionsFile)).toEqual(readJson(path.join(root, "package", "assets", "permissions", "defaults.json")));
+    const permissionBytes = fs.readFileSync(permissionsFile, "utf8");
+    const permissionReceiptBytes = fs.readFileSync(permissionsReceipt, "utf8");
+    const experienceReceiptBytes = fs.readFileSync(experienceReceipt, "utf8");
+    const settingsBytes = fs.readFileSync(settingsFile, "utf8");
+    expect(run("sync").status).toBe(0);
+    expect(fs.readFileSync(experienceReceipt, "utf8")).toBe(experienceReceiptBytes);
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe(settingsBytes);
+    expect(fs.readFileSync(permissionsFile, "utf8")).toBe(permissionBytes);
+    expect(fs.readFileSync(permissionsReceipt, "utf8")).toBe(permissionReceiptBytes);
 
     const canonicalCleanup = run("cleanup");
     expect(canonicalCleanup.status).toBe(0);
     expectRunnerOutput(canonicalCleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true } });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultThinkingLevel: "high" });
     expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
     expect(fs.existsSync(receiptFile)).toBe(false);
+    expect(fs.existsSync(permissionsFile)).toBe(false);
+    expect(fs.existsSync(permissionsReceipt)).toBe(false);
+    expect(fs.existsSync(experienceReceipt)).toBe(false);
+    const permissionBackups = path.join(agentDir, "jorgex-pi", "permissions-backups");
+    const backupFiles = fs.readdirSync(permissionBackups, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(permissionBackups, entry.name, "config.json"));
+    expect(backupFiles.some((file) => fs.readFileSync(file, "utf8") === permissionBytes)).toBe(true);
 
     const resync = run("sync");
     expect(resync.status).toBe(0);
@@ -302,19 +328,58 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const settings = readJson(settingsFile) as Record<string, unknown>;
     settings.defaultModel = "user-model";
+    settings.theme = "dark";
+    settings.hideThinkingBlock = false;
+    delete settings.quietStartup;
     fs.writeFileSync(settingsFile, JSON.stringify(settings));
+    expect(run("sync").status).toBe(0);
+    expect(readJson(settingsFile)).not.toHaveProperty("quietStartup");
+    expect(readJson(settingsFile)).toMatchObject({ theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
     const models = readJson(modelsFile) as Record<string, any>;
     models.providers["openai-codex"].modelOverrides["gpt-5.6-sol"].contextWindow = 900000;
     fs.writeFileSync(modelsFile, JSON.stringify(models));
 
+    const userPolicy = readJson(permissionsFile) as { permission: Record<string, unknown> };
+    userPolicy.permission.read = "ask";
+    const userPolicyBytes = JSON.stringify(userPolicy);
+    fs.writeFileSync(permissionsFile, userPolicyBytes);
     const cleanup = run("cleanup");
     expect(cleanup.status).toBe(0);
     expectRunnerOutput(cleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model" });
+    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model", theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
     expect(readJson(modelsFile)).toEqual({
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
     });
+    expect(fs.readFileSync(permissionsFile, "utf8")).toBe(userPolicyBytes);
+
+    const preexistingAgent = path.join(root, "preexisting-agent");
+    const preexistingPolicy = path.join(preexistingAgent, "extensions", "pi-permission-system", "config.json");
+    fs.mkdirSync(path.dirname(preexistingPolicy), { recursive: true });
+    fs.writeFileSync(preexistingPolicy, userPolicyBytes);
+    const preexistingSettings = { theme: "JorgeX", quietStartup: false, hideThinkingBlock: true, defaultThinkingLevel: "high" };
+    const preexistingSettingsFile = path.join(preexistingAgent, "settings.json");
+    fs.writeFileSync(preexistingSettingsFile, JSON.stringify(preexistingSettings));
+    expect(run("sync", preexistingAgent).status).toBe(0);
+    expect(run("cleanup", preexistingAgent).status).toBe(0);
+    expect(fs.readFileSync(preexistingPolicy, "utf8")).toBe(userPolicyBytes);
+    expect(readJson(preexistingSettingsFile)).toEqual(preexistingSettings);
+
+    const invalidAgent = path.join(root, "invalid-agent");
+    const invalidPolicy = path.join(invalidAgent, "extensions", "pi-permission-system", "config.json");
+    fs.mkdirSync(path.dirname(invalidPolicy), { recursive: true });
+    fs.writeFileSync(invalidPolicy, "invalid JSON");
+    const invalidSync = run("sync", invalidAgent);
+    expect(invalidSync.status).toBe(0);
+    expectRunnerOutput(invalidSync, "sync", runner);
+    expect(fs.readFileSync(invalidPolicy, "utf8")).toBe("invalid JSON");
+    expect(readJson(path.join(invalidAgent, "jorgex-pi", "permissions-lifecycle.v1.json"))).not.toHaveProperty("owned");
+    const status = run("status", invalidAgent);
+    expect(JSON.parse(status.stdout).result.permissions.state).toBe("invalid");
+    const doctor = run("doctor", invalidAgent);
+    expect(doctor.status).not.toBe(0);
+    expect(JSON.parse(doctor.stdout).result.checks).toContainEqual({ id: "permissions", status: "error" });
+
   }, 60_000);
 
   it("consumes Stack's Playwright handoff in the published Pi bootstrap and hides it after disable", () => {
@@ -353,6 +418,10 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
 
     const enabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
     expect(enabledPrompt).toContain(playwrightCommand);
+    expect(enabledPrompt).toContain("<!-- jorgex:playwright -->");
+    expect(enabledPrompt).not.toContain("<!-- jorgex:browser -->");
+    expect(enabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+    expect(enabledPrompt).not.toMatch(/Context7/i);
 
     expect(runPiProjectionLifecycleSystem({
       operation: "sync",
@@ -368,6 +437,9 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const disabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
     expect(disabledPrompt).not.toContain(playwrightCommand);
     expect(disabledPrompt).not.toMatch(/playwright-cli/i);
+    expect(disabledPrompt).not.toContain("<!-- jorgex:browser -->");
+    expect(disabledPrompt).not.toContain("<!-- jorgex:context7 -->");
+    expect(disabledPrompt).not.toMatch(/Context7/i);
   }, 60_000);
 });
 
@@ -409,8 +481,16 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expectArchiveInventory(tarball);
   }, 60_000);
 
-  it("installs the packed checkout artifact with the checkout-local Pi, normalizes its source, validates doctor, and removes only the managed package", async () => {
+  it("coordinates install through the managed operation with the checkout-local Pi: normalizes source, initializes via sync, and removes only the managed package", async () => {
     const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js");
+    const { runManagedPiOperation } = await import("../src/lib/pi-managed-runtime.js") as unknown as {
+      runManagedPiOperation(operation: "install", deps: {
+        runPackage(operation: string): Promise<{ kind: string; reason?: string; receipt?: unknown }>;
+        runProjection(operation: string): Promise<unknown>;
+        prepareProjectionUninstall(): Promise<never>;
+        completeProjectionUninstall(): Promise<never>;
+      }): Promise<unknown>;
+    };
     const root = path.resolve(piDirectory!);
     const piManifest = readJson(path.join(root, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")) as {
       version?: unknown;
@@ -445,7 +525,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, process.platform === "win32" ? "placeholder" : "#!/bin/sh\nexit 0\n");
     if (process.platform !== "win32") fs.chmodSync(engramBin, 0o700);
-    fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: [foreignSource], foreignState })}\n`);
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: [foreignSource], foreignState, defaultThinkingLevel: "high" })}\n`);
 
     const invocations: Array<{ executable: string; args: string[]; environment: Record<string, string> }> = [];
     const runIsolated = (invocation: { executable: string; args: string[]; environment: Record<string, string> }) => {
@@ -490,49 +570,75 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       };
     };
 
-    const result = installPiFromVerifiedTarball({
-      targetDir: target,
-      piExecutable,
-      engramBin,
-      candidate: {
-        ...checkoutLifecycleFixture,
+    const trace: string[] = [];
+    const result = await runManagedPiOperation("install", {
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") {
+          return installPiFromVerifiedTarball({
+            targetDir: target,
+            piExecutable,
+            engramBin,
+            candidate: {
+              ...checkoutLifecycleFixture,
+            },
+          }, {
+            download(destination) {
+              expect(destination).toBe(downloadedTarball);
+              fs.mkdirSync(path.dirname(destination), { recursive: true });
+              fs.copyFileSync(sourceTarball, destination);
+              return {
+                path: destination,
+                bytes: fs.statSync(destination).size,
+                sha256: digest("sha256", destination),
+                sha512: digest("sha512", destination),
+              };
+            },
+            backupSettings() {
+              const backup = path.join(target, "backups", "settings.json");
+              fs.mkdirSync(path.dirname(backup), { recursive: true });
+              fs.copyFileSync(settingsPath, backup);
+            },
+            run: runIsolated,
+            readSettings: () => fs.readFileSync(settingsPath, "utf8"),
+            rewriteSettings: (content) => fs.writeFileSync(settingsPath, `${content}\n`),
+            writeReceiptAtomic: (content) => {
+              const receiptPath = path.join(target, "state", "pi-receipt.json");
+              fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+              fs.writeFileSync(receiptPath, content);
+            },
+          }) as unknown as { kind: string; reason?: string; receipt?: unknown };
+        }
+        if (next !== "sync") throw new Error(`unexpected package operation: ${next}`);
+        const sync = runIsolated({
+          executable: process.execPath,
+          args: [packageRunner, "sync", "--json"],
+          environment: invocations[0]!.environment,
+        });
+        expect(sync.exitCode).toBe(0);
+        expectRunnerOutput(sync, "sync", packageRunner);
+        return { kind: "synced" };
       },
-    }, {
-      download(destination) {
-        expect(destination).toBe(downloadedTarball);
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.copyFileSync(sourceTarball, destination);
-        return {
-          path: destination,
-          bytes: fs.statSync(destination).size,
-          sha256: digest("sha256", destination),
-          sha512: digest("sha512", destination),
-        };
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        return runPiProjectionLifecycleSystem({
+          operation: next as "install",
+          targetDir: target,
+          packageSource: PI_RUNTIME_CANDIDATE.package.source,
+          engramBin,
+          playwrightCliEnabled: false,
+        }) as unknown;
       },
-      backupSettings() {
-        const backup = path.join(target, "backups", "settings.json");
-        fs.mkdirSync(path.dirname(backup), { recursive: true });
-        fs.copyFileSync(settingsPath, backup);
+      async prepareProjectionUninstall(): Promise<never> {
+        throw new Error("install must not prepare uninstall");
       },
-      run: runIsolated,
-      readSettings: () => fs.readFileSync(settingsPath, "utf8"),
-      rewriteSettings: (content) => fs.writeFileSync(settingsPath, `${content}\n`),
-      writeReceiptAtomic: (content) => {
-        const receiptPath = path.join(target, "state", "pi-receipt.json");
-        fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
-        fs.writeFileSync(receiptPath, content);
+      async completeProjectionUninstall(): Promise<never> {
+        throw new Error("install must not complete uninstall");
       },
     });
 
-    expect(result).toEqual(expect.objectContaining({
-      kind: "installed",
-      receipt: expect.objectContaining({
-        schemaVersion: 1,
-        state: "installed",
-        scope: { kind: "target-dir", codingAgentDir: agentDir },
-        engram: { binary: engramBin },
-      }),
-    }));
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(result).toEqual(expect.objectContaining({ kind: "installed" }));
     expect(invocations).toEqual([
       expect.objectContaining({
         executable: piExecutable,
@@ -542,16 +648,26 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
         executable: process.execPath,
         args: [packageRunner, "doctor", "--json"],
       }),
+      expect.objectContaining({
+        executable: process.execPath,
+        args: [packageRunner, "sync", "--json"],
+      }),
     ]);
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({
-      packages: [foreignSource, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [] }],
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
+      packages: [foreignSource, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [], prompts: [] }],
       foreignState,
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.6-sol",
+      defaultThinkingLevel: "high",
     });
     expect(JSON.parse(fs.readFileSync(path.join(target, "backups", "settings.json"), "utf8"))).toEqual({
       packages: [foreignSource],
       foreignState,
+      defaultThinkingLevel: "high",
     });
     expect(fs.existsSync(packageRunner)).toBe(true);
+    expect(fs.existsSync(path.join(target, "state", "pi-receipt.json"))).toBe(true);
+    expect(fs.existsSync(path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json"))).toBe(true);
 
     const remove = runIsolated({
       executable: piExecutable,
@@ -559,8 +675,116 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       environment: invocations[0]!.environment,
     });
     expect(remove).toMatchObject({ exitCode: 0, stderr: "" });
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({ packages: [foreignSource], foreignState });
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
+      packages: [foreignSource],
+      foreignState,
+      defaultThinkingLevel: "high",
+    });
     expect(fs.existsSync(packageRoot)).toBe(false);
+  }, 60_000);
+
+  it("exposes the exact Pi 0.8.23 initialization-diagnostics-v1 contract and provisional pending doctor", async () => {
+    const root = path.resolve(piDirectory!);
+    const manifest = readJson(path.join(root, "package.json")) as { name?: string; version?: string };
+    expect(manifest).toMatchObject({ name: "jorgex-pi", version: "0.8.23" });
+
+    const contract = readJson(path.join(root, "contract", "jorgex-pi.v1.json")) as { capabilities?: string[]; package?: { version?: string; source?: string } };
+    expect(contract.package).toEqual({ name: "jorgex-pi", version: "0.8.23", source: "npm:jorgex-pi@0.8.23" });
+    expect(contract.capabilities).toContain("initialization-diagnostics-v1");
+    expect(contract.capabilities?.at(-1)).toBe("initialization-diagnostics-v1");
+
+    const runner = readJson(path.join(root, "contract", "runner.v1.json")) as {
+      experience?: { diagnostic?: string };
+      permissions?: { diagnostic?: string };
+    };
+    expect(runner.experience?.diagnostic).toBe(
+      "status reports pending, initialized, invalid, or unreadable from the receipt only; pending means the receipt is absent and requires a registered package; invalid preserves INVALID_PATH, INVALID_RECEIPT, or RECEIPT_TOO_LARGE and unreadable preserves READ_FAILED; status and doctor are read-only and never lock, write, or delete state",
+    );
+    expect(runner.permissions?.diagnostic).toBe(
+      "permission state reports invalid or unreadable files without exposing their contents; a registered package also reports pending when the receipt is not initialized",
+    );
+
+    const schema = readJson(path.join(root, "contract", "schemas", "runner-response.v1.schema.json")) as {
+      $defs: {
+        statusResult: { required: string[]; properties: Record<string, unknown> };
+        doctorResult: { properties: { checks: { minItems: number; maxItems: number; prefixItems: Array<{ properties: { id: { const: string } } }>; items: unknown } } };
+        experience: unknown;
+      };
+    };
+    expect(schema.$defs.statusResult.required).toEqual(["installation", "engram", "context7", "permissions", "experience"]);
+    expect(schema.$defs.statusResult.properties.experience).toEqual({ $ref: "#/$defs/experience" });
+    expect(schema.$defs.doctorResult.properties.checks.minItems).toBe(5);
+    expect(schema.$defs.doctorResult.properties.checks.maxItems).toBe(5);
+    expect(schema.$defs.doctorResult.properties.checks.items).toBe(false);
+    expect(schema.$defs.doctorResult.properties.checks.prefixItems.map((item) => item.properties.id.const)).toEqual([
+      "package",
+      "engram",
+      "context7",
+      "permissions",
+      "experience",
+    ]);
+
+    const { installPiFromVerifiedTarball } = await import("../src/lib/pi-runtime.js");
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-pending-cross-repo-"));
+    temporaryPaths.push(target);
+    const agentDir = path.join(target, "pi-agent");
+    const packageRunner = path.join(agentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
+    const packageRoot = path.dirname(path.dirname(packageRunner));
+    const pendingDoctor = `${JSON.stringify({
+      schemaVersion: 1,
+      command: "doctor",
+      ok: false,
+      package: { name: "jorgex-pi", version: "0.8.23", root: packageRoot },
+      result: {
+        healthy: false,
+        checks: [
+          { id: "package", status: "ok" },
+          { id: "engram", status: "ok" },
+          { id: "context7", status: "ok" },
+          { id: "permissions", status: "error" },
+          { id: "experience", status: "error" },
+        ],
+      },
+      error: {
+        phase: "initialization",
+        code: "INITIALIZATION_REQUIRED",
+        message: "Pi initialization is pending: run sync to complete first initialization.",
+        remedy: "Run jorgex-pi sync --json and retry.",
+      },
+    })}\n`;
+    const candidate = {
+      source: "npm:jorgex-pi@0.8.23",
+      bytes: 1,
+      sha256: "a".repeat(64),
+      sha512: "b".repeat(128),
+      package: { name: "jorgex-pi", version: "0.8.23", source: "npm:jorgex-pi@0.8.23" },
+    } as const;
+
+    let downloadDestination: string | null = null;
+    const result = installPiFromVerifiedTarball({
+      targetDir: target,
+      piExecutable: "/opt/pi/bin/pi",
+      engramBin: path.join(target, "bin", "engram"),
+      candidate,
+    }, {
+      download(destination: string) {
+        downloadDestination = destination;
+        return { path: destination, bytes: 1, sha256: "a".repeat(64), sha512: "b".repeat(128) };
+      },
+      backupSettings() {},
+      run(invocation: { executable: string; args: string[]; environment: Record<string, string> }) {
+        if (invocation.args[0] === "install") return { exitCode: 0, stdout: "", stderr: "" };
+        return { exitCode: 1, stdout: pendingDoctor, stderr: "" };
+      },
+      readSettings() {
+        expect(downloadDestination).not.toBeNull();
+        return JSON.stringify({ packages: [`npm:jorgex-pi@file:${downloadDestination}`] });
+      },
+      rewriteSettings() {},
+      writeReceiptAtomic() {},
+    });
+
+    expect(result).toEqual(expect.objectContaining({ kind: "installed" }));
   }, 60_000);
 
 });

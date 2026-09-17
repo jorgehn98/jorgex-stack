@@ -26,6 +26,7 @@ export const PI_RUNTIME_CANDIDATE = {
     capabilities: [
       "foundation-contract-v1",
       "stack-snapshot-v2",
+      "modular-system-prompts-v1",
       "runtime-agents-v1",
       "permission-gated-tools-v1",
       "structured-questions-v1",
@@ -33,6 +34,9 @@ export const PI_RUNTIME_CANDIDATE = {
       "goal-continuation-v1",
       "mcp-adapter-v1",
       "engram-runtime-tools-v1",
+      "context7-http-v1",
+      "permissions-policy-v1",
+      "experience-defaults-v1",
       "chrome-devtools-handoff-v1",
       "playwright-handoff-v1",
       "runner-json-v1",
@@ -40,6 +44,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "managed-primary-model-v1",
       "quality-receipt-contract-v1",
       "quality-capabilities-contract-v1",
+      "initialization-diagnostics-v1",
     ],
     runner: {
       bin: "jorgex-pi",
@@ -52,7 +57,7 @@ export const PI_RUNTIME_CANDIDATE = {
         owner: "jorgex-pi",
         root: "PI_CODING_AGENT_DIR",
         relativePath: "settings.json",
-        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair; preserve foreign halves; cleanup removes only receipt-owned exact values",
+        semantics: "merge a missing or matching partial defaultProvider=openai-codex and defaultModel=gpt-5.6-sol pair plus first-visit theme=JorgeX, quietStartup=true, and hideThinkingBlock=true defaults; preserve foreign halves and existing experience values; cleanup removes only receipt-owned exact values",
       },
       {
         owner: "jorgex-pi",
@@ -65,6 +70,30 @@ export const PI_RUNTIME_CANDIDATE = {
         root: "PI_CODING_AGENT_DIR",
         relativePath: "jorgex-pi/sol-lifecycle.v1.json",
         semantics: "record field, container, and file ownership; remove the receipt when empty",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "extensions/pi-permission-system/config.json",
+        semantics: "seed the generated permission policy only when absent; publish exclusively, preserve preexisting or invalid user state, and remove only an exact owned copy during cleanup",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/permissions-lifecycle.v1.json",
+        semantics: "record initialization and exact permission-config ownership without storing user configuration or credentials",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/permissions-backups",
+        semantics: "retain cleanup backups of exact owned permission policy bytes",
+      },
+      {
+        owner: "jorgex-pi",
+        root: "PI_CODING_AGENT_DIR",
+        relativePath: "jorgex-pi/experience-lifecycle.v1.json",
+        semantics: "record first initialization and exact ownership of missing theme, quietStartup, and hideThinkingBlock fields; preserve replacements and do not reseed after initialization",
       },
     ],
   },
@@ -179,6 +208,7 @@ interface FlatPiCandidate {
   sha512: string;
   package?: PiRuntimeCandidate["package"];
   provenance?: PiRuntimeCandidate["provenance"];
+  capabilities?: readonly string[];
 }
 
 type VerifiedInstallResult =
@@ -263,6 +293,53 @@ function healthyDoctor(stdout: string, stderr: string, packageRunner: string, ca
   }
 }
 
+function provisionalPendingDoctor(exitCode: number, stdout: string, stderr: string, packageRunner: string, candidate: FlatPiCandidate): boolean {
+  const capabilities = candidate.capabilities ?? PI_RUNTIME_CANDIDATE.contract.capabilities;
+  if (!capabilities.includes("initialization-diagnostics-v1")) return false;
+  if (exitCode !== 1 || stderr !== "" || !stdout.endsWith("\n") || stdout.slice(0, -1).includes("\n")) return false;
+  try {
+    const record: unknown = JSON.parse(stdout.slice(0, -1));
+    if (record === null || typeof record !== "object" || Array.isArray(record)) return false;
+    if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(["command", "error", "ok", "package", "result", "schemaVersion"])) return false;
+    if (Reflect.get(record, "schemaVersion") !== 1) return false;
+    if (Reflect.get(record, "command") !== "doctor") return false;
+    if (Reflect.get(record, "ok") !== false) return false;
+    const packageValue = Reflect.get(record, "package");
+    if (packageValue === null || typeof packageValue !== "object" || Array.isArray(packageValue)) return false;
+    if (JSON.stringify(Object.keys(packageValue).sort()) !== JSON.stringify(["name", "root", "version"])) return false;
+    if (Reflect.get(packageValue, "name") !== "jorgex-pi") return false;
+    if (Reflect.get(packageValue, "version") !== (candidate.package?.version ?? /^npm:jorgex-pi@([^\s]+)$/.exec(candidate.source)?.[1])) return false;
+    if (path.resolve(packageRunner) !== path.resolve(String(Reflect.get(packageValue, "root")), "bin", "jorgex-pi.mjs")) return false;
+    const result = Reflect.get(record, "result");
+    if (result === null || typeof result !== "object" || Array.isArray(result)) return false;
+    if (JSON.stringify(Object.keys(result).sort()) !== JSON.stringify(["checks", "healthy"])) return false;
+    if (Reflect.get(result, "healthy") !== false) return false;
+    const checks = Reflect.get(result, "checks");
+    if (!Array.isArray(checks) || checks.length !== 5) return false;
+    const expectedIds = ["package", "engram", "context7", "permissions", "experience"];
+    for (let index = 0; index < 5; index++) {
+      const check = checks[index];
+      if (check === null || typeof check !== "object" || Array.isArray(check)) return false;
+      if (JSON.stringify(Object.keys(check).sort()) !== JSON.stringify(["id", "status"])) return false;
+      if (Reflect.get(check, "id") !== expectedIds[index]) return false;
+      const status = Reflect.get(check, "status");
+      if (index < 3) {
+        if (status !== "ok") return false;
+      } else if (status !== "ok" && status !== "error") return false;
+    }
+    if (Reflect.get(checks[3], "status") === "ok" && Reflect.get(checks[4], "status") === "ok") return false;
+    const errorValue = Reflect.get(record, "error");
+    if (errorValue === null || typeof errorValue !== "object" || Array.isArray(errorValue)) return false;
+    if (JSON.stringify(Object.keys(errorValue).sort()) !== JSON.stringify(["code", "message", "phase", "remedy"])) return false;
+    return Reflect.get(errorValue, "phase") === "initialization"
+      && Reflect.get(errorValue, "code") === "INITIALIZATION_REQUIRED"
+      && Reflect.get(errorValue, "message") === "Pi initialization is pending: run sync to complete first initialization."
+      && Reflect.get(errorValue, "remedy") === "Run jorgex-pi sync --json and retry.";
+  } catch {
+    return false;
+  }
+}
+
 export function installPiFromVerifiedTarball(
   input: {
     targetDir?: string;
@@ -306,7 +383,9 @@ export function installPiFromVerifiedTarball(
     args: [paths.packageRunner, "doctor", "--json"],
     environment: paths.environment,
   });
-  if (doctor.exitCode !== 0 || !healthyDoctor(doctor.stdout, doctor.stderr, paths.packageRunner, input.candidate)) {
+  const healthy = doctor.exitCode === 0 && healthyDoctor(doctor.stdout, doctor.stderr, paths.packageRunner, input.candidate);
+  const pending = provisionalPendingDoctor(doctor.exitCode, doctor.stdout, doctor.stderr, paths.packageRunner, input.candidate);
+  if (!healthy && !pending) {
     return { kind: "blocked", reason: "runner-unhealthy" };
   }
   const receipt = flatCandidateReceipt(input.candidate, scope, "installed", input.engramBin);
@@ -655,6 +734,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         ...PI_RUNTIME_CANDIDATE.tarball,
         package: PI_RUNTIME_CANDIDATE.package,
         provenance: PI_RUNTIME_CANDIDATE.provenance,
+        capabilities: PI_RUNTIME_CANDIDATE.contract.capabilities,
       },
     }, {
       download: () => artifact,

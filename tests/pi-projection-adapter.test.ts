@@ -105,4 +105,46 @@ describe("Pi managed shared projection", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps Pi 0.8.19 system prompt modules independent and does not advertise a Context7 registration", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-modular-prompt-"));
+    const configDir = path.join(root, "pi-agent");
+    const promptFile = path.join(configDir, "AGENTS.md");
+    const userPrompt = "# User-owned Pi policy\n\nKeep this instruction.\n";
+
+    try {
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(promptFile, userPrompt);
+
+      const adapter = await loadPiAdapter();
+      const ctx: InstallContext = {
+        stackDir: stackRoot(),
+        configDir,
+        mode: "human",
+        engramBin: path.join(root, "bin", "engram"),
+        models: DEFAULT_MODEL_MAP.codex,
+        warnings: [],
+        playwrightCliEnabled: true,
+        enabledMcpServers: new Set(["chrome-devtools"]),
+      };
+      const [action] = planSystemPrompt(adapter, ctx);
+      expect(action).toMatchObject({ kind: "write", target: promptFile });
+      if (action?.kind !== "write") throw new Error("Expected a modular Pi system prompt write");
+
+      expect(action.content).toContain(userPrompt.trim());
+      expect(action.content.match(/<!-- jorgex:system-prompt -->/g)).toHaveLength(1);
+      expect(action.content.match(/<!-- jorgex:engram-protocol -->/g)).toHaveLength(1);
+      expect(action.content).not.toContain("<!-- jorgex:context7 -->");
+      expect(action.content.match(/<!-- jorgex:playwright -->/g)).toHaveLength(1);
+      expect(action.content.match(/<!-- jorgex:chrome-devtools -->/g)).toHaveLength(1);
+      expect(action.content).not.toContain("<!-- jorgex:browser -->");
+      expect(action.content).not.toMatch(/Use Context7/i);
+
+      fs.writeFileSync(promptFile, action.content);
+      const second = planSystemPrompt(adapter, ctx);
+      expect(second).toEqual([action]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -2,9 +2,17 @@ import path from "node:path";
 import type { SelectableRuntimeId, SharedProjectionAdapter } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 
+export function piSystemPromptFile(targetDir?: string): string {
+  const configDir = targetDir === undefined
+    ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
+    : path.join(path.resolve(targetDir), "pi-agent");
+  return path.join(configDir, "AGENTS.md");
+}
+
 /**
  * Proyección mínima de los recursos compartidos que Pi consume fuera de su
- * paquete nativo. El registro completo del runtime llegará en otro slice.
+ * paquete nativo; el registro gestionado del runtime se mantiene en su
+ * lifecycle nativo.
  */
 export const piAdapter: SharedProjectionAdapter & {
   readonly id: Extract<SelectableRuntimeId, "pi">;
@@ -12,7 +20,7 @@ export const piAdapter: SharedProjectionAdapter & {
   id: "pi",
 
   paths(configDir) {
-    const piConfigDir = process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent");
+    const piConfigDir = path.dirname(piSystemPromptFile());
     const agentsHome = samePath(configDir, piConfigDir) ? HOME : path.join(path.dirname(configDir), "home");
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
@@ -32,5 +40,12 @@ export const piAdapter: SharedProjectionAdapter & {
 
   injectEngramProtocol() {
     return true;
+  },
+
+  // La guía Context7 se habilita al adoptar su registro HTTP en Pi.
+  adaptSystemPromptSections(sections) {
+    const modular = { ...sections };
+    delete modular.context7;
+    return modular;
   },
 };
