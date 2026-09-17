@@ -139,6 +139,63 @@ describe("doctor de estilo global", () => {
     }
   });
 
+  it("cierra con veredicto de alcance cuando el estilo recortado está sano", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-verdict-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    const plan = installCanonicalStyle(targetDir, "nota privada");
+    writeProjection(targetDir, plan.content);
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(0);
+      expect(outputText).toContain("Doctor (alcance: estilo): todo sano.");
+      expect(outputText).not.toContain("Diagnóstico limitado al estilo");
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cierra con recuento de problemas cuando el estilo recortado falla", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-verdict-problems-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      vi.resetModules();
+      const doctor = await import("../src/doctor.js") as unknown as DoctorModule;
+      const exitCode = await doctor.runDoctor({ targetDir, runtimes: ["codex"] });
+      const outputText = output();
+
+      expect(exitCode).toBe(1);
+      expect(outputText).toContain("Doctor (alcance: estilo):");
+      expect(outputText).toContain("problema(s)");
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("marca como desactualizada una proyección que no coincide con el canon local", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-writing-style-doctor-outdated-"));
     const home = path.join(root, "home");
