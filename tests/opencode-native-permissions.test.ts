@@ -22,6 +22,9 @@ describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 nativ
     ["FOO=bar rm -rf .env", "deny"], ["git status", "allow"], ["git diff", "allow"], ["git log -10", "allow"],
     ["rm -rf ordinary", "ask"], ["rm -rf /", "deny"], ["rm -rf /tmp/ordinary", "ask"], ["sudo rm -rf /", "deny"], ["rm -rf /etc/ordinary", "deny"], ["git reset --hard", "ask"], ["/usr/bin/git reset --hard", "ask"], ["/usr/bin/git push --force origin main", "ask"], ["git clean -fd", "ask"],
     ["git push --force-with-lease origin main", "ask"], ["git push origin main -f", "ask"], ["sudo printf ordinary", "ask"],
+    ["git checkout main", "allow"], ["git switch main", "allow"], ["git commit -m ordinary", "allow"], ["docker run ordinary", "allow"],
+    ["git checkout -- ordinary", "ask"], ["git checkout -f main", "ask"], ["git restore ordinary", "ask"],
+    ["git switch --discard-changes main", "ask"], ["git rebase main", "ask"], ["cd ordinary && git restore ordinary", "ask"],
     ["dd if=ordinary of=output", "deny"], ["mkfs.ext4 ordinary", "deny"], ["shred ordinary", "deny"],
     ["cat .env", "deny"], ["cat ~/.ssh/id_ed25519", "deny"], ["printf ordinary; rm -rf ordinary", "ask"],
   ] as const)("%s → %s", async (command, expected) => {

@@ -145,6 +145,11 @@ comandos sin argumentos y rutas de sistema:
     "git *reset*": "ask",
     "git *clean*": "ask",
     "git *push*": "ask",
+    "git *checkout*--*": "ask",
+    "git *checkout* -f*": "ask",
+    "git *restore*": "ask",
+    "git *switch*--discard-changes*": "ask",
+    "git *rebase*": "ask",
     "git -c *": "ask",
     "git * -c *": "ask",
     "git --config-env*": "ask",
@@ -243,9 +248,12 @@ Bloque escrito bajo la clave `permissions` **solo en config fresca o vacía**:
   son la capa best-effort complementaria — ver §6.
 - **`Bash(git push --force:*)` sigue siendo `ask` y sigue siendo
   posicional**. Ver `docs/references/claude-code-limits.md` §1: no captura
-  `git push origin main --force` con `--force` al final. La cobertura real
-  para los subagentes full-bash es el hook `PreToolUse`
-  `stack/scripts/block-destructive-git.cjs`.
+  `git push origin main --force` con `--force` al final. Esos casos caen en
+  el `ask` genérico de `Bash`, que sí los cubre como pregunta. Desde la
+  decisión #153 (2026-09-17) los subagentes full-bash ya no llevan el hook
+  `PreToolUse` de bloqueo: el git destructivo pide aprobación explícita en
+  vez de bloquearse, con el prompt del subagente como refuerzo ("ask
+  before destructive git").
 
 **Restricción de matching — distinta por herramienta.**
 - Las reglas de `Bash` casan por **prefijo posicional**
@@ -409,7 +417,7 @@ añadidas en T17/T20:
   las denies no van a impedir que el modelo proponga acciones que ya estén
   permitidas. El riesgo real es el **daño**, no la lectura: la lectura está
   permitida por diseño. Las capas que mitigan el daño son los prompts para
-  egress web/shell/escritura, los hooks/bloqueos de `Bash` destructivo, el
+  egress web/shell/escritura, los `ask` de `Bash` destructivo, el
   sandbox de Codex y la rama protegida de GitHub.
 - **Secretos fuera del filesystem.** Variables de entorno con secrets
   pueden terminar en respuestas del modelo si una shell las expande dentro

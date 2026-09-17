@@ -78,12 +78,10 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(out!.content).not.toContain("Bash");
   });
 
-  it("subagente full-bash: hook PreToolUse que bloquea git destructivo (placeholder SCRIPTS_DIR)", () => {
+  it("subagente full-bash: sin hook de bloqueo — el git destructivo cae al ask global de Bash", () => {
     const [out] = claudeCodeAdapter.renderAgent(agent({ name: "implementer", bash: "full" }), MODELS);
-    expect(out!.content).toContain("hooks:");
-    expect(out!.content).toContain("PreToolUse:");
-    expect(out!.content).toContain('matcher: "Bash|PowerShell"');
-    expect(out!.content).toContain('command: "node \\"{{SCRIPTS_DIR}}/block-destructive-git.cjs\\""');
+    expect(out!.content).not.toContain("PreToolUse");
+    expect(out!.content).not.toContain("block-destructive-git");
   });
 
   it("subagente que no es full-bash NO recibe el hook guard", () => {

@@ -13,7 +13,7 @@ You handle translations, multi-language text and integration with the project's 
 
 **Mandatory first action**: load the `agent-delegation` skill.
 
-**Never run destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Commit forward; if you think you need to discard or reset repo state, stop and ask the main agent/orchestrator.
+**Ask before destructive git** (`reset`, `clean`, `checkout --`, `restore`, `push --force`) — it can discard work or rewrite history. Prefer commit forward; if you need to discard or reset repo state, ask the main agent/orchestrator first and only proceed with explicit approval.
 
 **Final output, last of all**: your final report (ending with the Result contract) must be the very last thing you emit. If you need to save anything to memory, do it BEFORE that output — never after.
 

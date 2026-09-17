@@ -184,7 +184,7 @@ function expectDeliveryAgentContract(adapter: Adapter, ctx: InstallContext, file
     } else {
       expect(header).not.toMatch(/^tools:/m);
     }
-    expect(header).toContain(agent.bash === "full" ? "PreToolUse:" : `model: `);
+    expect(header).toContain(`model: `);
   } else {
     expect(content).toMatch(new RegExp(`(?:^|\\n)name = "${name}"(?:\\n|$)`));
     expect(content).toContain(`sandbox_mode = "${agent.readonly ? "read-only" : "workspace-write"}"`);
