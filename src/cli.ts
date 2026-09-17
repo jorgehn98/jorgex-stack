@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentConcurrency } from "./adapters/types.js";
-import { ADAPTERS, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall } from "./install.js";
+import { ADAPTERS, formatRuntimeSummary, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall, type RuntimeSyncStatus } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
@@ -718,6 +718,8 @@ async function main(): Promise<void> {
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       let exitCode = 0;
       let completed = false;
+      const runtimeStatuses: { name: string; status: RuntimeSyncStatus }[] = [];
+      let piStatus: RuntimeSyncStatus | null = null;
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
         assertSelectedPromptFiles(runtimes, flags.targetDir);
@@ -759,6 +761,8 @@ async function main(): Promise<void> {
         if (fileRuntimes.length > 0) {
           exitCode = await runInstall({
             runtimes: fileRuntimes,
+            command,
+            onRuntimeStatus: (name, status) => runtimeStatuses.push({ name, status }),
             writingStyle,
             targetDir: flags.targetDir,
             dryRun: flags.dryRun,
@@ -790,8 +794,10 @@ async function main(): Promise<void> {
           }
         }
         if (runtimes.includes("pi") && piCanRun) {
-          if (flags.dryRun) p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
-          else {
+          if (flags.dryRun) {
+            p.log.info(`Pi: ${command} previsto; dry-run no ejecuta subprocess ni escribe receipt.`);
+            piStatus = "preview";
+          } else {
             const piExitCode = await runSelectedPi({
               operation: command,
               targetDir: flags.targetDir,
@@ -805,8 +811,12 @@ async function main(): Promise<void> {
               playwrightCapability,
             });
             exitCode = Math.max(exitCode, piExitCode);
+            piStatus = piExitCode === 0 ? "ok" : "failed";
           }
+        } else if (runtimes.includes("pi")) {
+          piStatus = "skipped";
         }
+        if (piStatus !== null) runtimeStatuses.push({ name: "Pi", status: piStatus });
         if (runtimes.includes("pi")) persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, exitCode);
         completed = true;
       } catch (error) {
@@ -815,6 +825,7 @@ async function main(): Promise<void> {
       } finally {
         if (process.exitCode === 1) exitCode = 1;
         process.exitCode = exitCode;
+        if (runtimeStatuses.length > 0) p.log.message(formatRuntimeSummary(command, runtimeStatuses));
         p.outro(exitCode !== 0
           ? `${command} completado con errores (revisa arriba).`
           : !completed ? `${command} cancelado.`

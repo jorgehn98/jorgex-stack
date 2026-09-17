@@ -82,6 +82,34 @@ export interface InstallOptions {
   engramBin?: string | null;
   /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
   showSummary?: boolean;
+  /** Nombre del comando para el resumen por runtime ("install" por defecto). */
+  command?: "install" | "sync";
+  /** Recibe el resultado por runtime (ok/failed/skipped/preview) para el resumen coordinado. */
+  onRuntimeStatus?: (runtime: string, status: RuntimeSyncStatus) => void;
+}
+
+/** Estado por runtime para el resumen final de install/sync. */
+export type RuntimeSyncStatus = "ok" | "failed" | "skipped" | "preview";
+
+const RUNTIME_STATUS_LABEL: Record<RuntimeSyncStatus, string> = {
+  ok: "al día",
+  failed: "falló",
+  skipped: "omitido",
+  preview: "revisado",
+};
+
+/** Una línea de resumen por runtime; solo presentación, no cambia exit codes. */
+export function formatRuntimeSummary(
+  command: "install" | "sync",
+  statuses: ReadonlyArray<{ name: string; status: RuntimeSyncStatus }>,
+): string {
+  if (statuses.length === 0) return `Resumen ${command}: sin runtimes.`;
+  const failed = statuses.filter((s) => s.status === "failed").map((s) => s.name);
+  const rest = statuses
+    .filter((s) => s.status !== "failed")
+    .map((s) => `${s.name} ${RUNTIME_STATUS_LABEL[s.status]}`);
+  const head = `Resumen ${command}: ${rest.length > 0 ? rest.join(", ") : "ningún runtime al día"}`;
+  return failed.length > 0 ? `${head}; falló en ${failed.join(", ")} — revisa arriba.` : `${head}.`;
 }
 
 export type PlaywrightToolAction = Extract<PlaywrightCliAction, "install" | "install-browser" | "remove">;
@@ -406,10 +434,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   let exitCode = 0;
   let successfulRuns = 0;
   const successfulContexts: { adapter: Adapter; ctx: InstallContext }[] = [];
+  const runtimeStatuses: { name: string; status: RuntimeSyncStatus }[] = [];
+  const reportStatus = (name: string, status: RuntimeSyncStatus): void => {
+    runtimeStatuses.push({ name, status });
+    opts.onRuntimeStatus?.(name, status);
+  };
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
       p.log.warn(`${id}: adapter pendiente (F3/F4) — omitido.`);
+      reportStatus(id, "skipped");
       continue;
     }
 
@@ -417,12 +451,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const configDir = opts.targetDir ?? detection.configDir;
     if (!detection.installed && opts.targetDir === undefined) {
       p.log.warn(`${adapter.name} no detectado en esta máquina — omitido.`);
+      reportStatus(adapter.name, "skipped");
       continue;
     }
     const models = modelMap[id];
     if (!models) {
       p.log.error(`${adapter.name}: sin modelos seleccionados — ejecuta 'jorgex-stack models --agents ${id}'.`);
       exitCode = 1;
+      reportStatus(adapter.name, "failed");
       continue;
     }
 
@@ -481,6 +517,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       for (const c of preview) p.log.message(`  ${c.status === "create" ? "+" : "~"} ${c.action.target}`);
       if (changes.length > preview.length) p.log.message(`  … y ${changes.length - preview.length} más`);
       for (const o of orphans) p.log.message(`  - ${o}`);
+      reportStatus(adapter.name, "preview");
       continue;
     }
 
@@ -501,6 +538,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
+      reportStatus(adapter.name, "ok");
       continue;
     }
 
@@ -509,6 +547,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const ok = await p.confirm({ message: `¿Aplicar ${changes.length} cambios en ${adapter.name}?${orphanNote}` });
       if (p.isCancel(ok) || !ok) {
         p.log.warn(`${adapter.name}: omitido por el usuario.`);
+        reportStatus(adapter.name, "skipped");
         continue;
       }
       // La confirmación puede quedar abierta un buen rato: re-planificar para
@@ -537,6 +576,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.error(`${adapter.name}: verificación de idempotencia FALLÓ (${dirty.length} acciones inestables).`);
       for (const d of dirty.slice(0, 10)) p.log.message(`  ! ${d.action.target}`);
       exitCode = 1;
+      reportStatus(adapter.name, "failed");
     } else {
       writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
@@ -544,6 +584,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
+      reportStatus(adapter.name, "ok");
     }
   }
 
@@ -662,6 +703,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
 
   if (showSummary) {
+    p.log.message(formatRuntimeSummary(opts.command ?? "install", runtimeStatuses));
     p.outro(opts.dryRun
       ? exitCode === 0
         ? "Dry-run: no se ha escrito nada."

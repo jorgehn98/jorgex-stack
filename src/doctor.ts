@@ -152,7 +152,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
   }
   let problems = reportWritingStyle(options, writingStyle, modePreference);
   if (options.targetDir !== undefined || (options.runtimes !== undefined && options.runtimes.length > 0 && options.runtimes.every((id) => id === "pi"))) {
-    p.outro("Diagnóstico limitado al estilo; no se han ejecutado las comprobaciones globales del sistema.");
+    p.outro(problems > 0
+      ? `Doctor (alcance: estilo): ${problems} problema(s) — revisa arriba.`
+      : "Doctor (alcance: estilo): todo sano.");
     return problems > 0 ? 1 : 0;
   }
 
@@ -287,6 +289,6 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     if (key === false) p.log.info(`${adapter.name}: context7 sin key (opcional — conéctala cuando quieras).`);
   }
 
-  p.outro(problems === 0 ? "Todo sano." : `${problems} avisos — revisa arriba.`);
+  p.outro(problems === 0 ? "Doctor: todo sano." : `Doctor: ${problems} aviso(s) — revisa arriba.`);
   return problems > 0 ? 1 : 0;
 }
