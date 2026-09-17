@@ -283,6 +283,10 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     });
     expect(fresh.permission.edit).toMatchObject({ "*": "allow", "*.env": "deny" });
     expect(fresh.permission.bash["git *reset*"]).toBe("ask");
+    expect(fresh.permission.bash["git *restore*"]).toBe("ask");
+    expect(fresh.permission.bash["git *checkout*--*"]).toBe("ask");
+    expect(fresh.permission.bash["git *switch*--discard-changes*"]).toBe("ask");
+    expect(fresh.permission.bash["git *rebase*"]).toBe("ask");
     expect(fresh.permission.bash["rm * /"]).toBe("deny");
   });
 
@@ -1165,8 +1169,9 @@ describe("subagent uncertainty escalation contract", () => {
   it.each(DESTRUCTIVE_GIT_ESCALATION_CASES)("%s routea la duda sobre destructive git al main agent/orchestrator", (_name, relativePath) => {
     const content = readStackFile(relativePath);
 
-    expectFragmentsInOrder(content, ["Never run destructive git", "main agent/orchestrator"]);
-    expect(content).not.toMatch(/Never run destructive git[\s\S]{0,220}ask the user/i);
+    expectFragmentsInOrder(content, ["Ask before destructive git", "main agent/orchestrator"]);
+    expect(content).toMatch(/explicit approval/i);
+    expect(content).not.toMatch(/Never run destructive git/i);
   });
 });
 
