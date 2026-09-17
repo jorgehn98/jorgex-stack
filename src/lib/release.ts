@@ -10,6 +10,12 @@ const GIT_TAG_NOT_FOUND_PATTERN = /unknown revision|ambiguous argument|needed a 
 const ZERO_SHA_PATTERN = /^0+$/;
 const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
+// Los mensajes de error de git están localizados (p. ej. "revisión desconocida"
+// con LANG=es_ES) pero los patrones de arriba solo casan inglés. Fijar LC_ALL y
+// LANGUAGE a C en cada invocación hace el matching determinista sin
+// tentar un regex por idioma.
+const GIT_LOCALE_ENV = { LC_ALL: "C", LANGUAGE: "C" } as const;
+
 // Solo manifiestos/config que afectan al paquete publicado.
 // Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
 // Exportadas para que un test asegure que la copia inline del clasificador en
@@ -110,7 +116,7 @@ export function assertRecoveryReleaseSha(releaseSha: string, originMainSha: stri
   }
 
   try {
-    execFileSync("git", ["merge-base", "--is-ancestor", recoverySha, originMain], { stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", ["merge-base", "--is-ancestor", recoverySha, originMain], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...GIT_LOCALE_ENV } });
   } catch (error) {
     if (typeof (error as { status?: unknown }).status === "number" && (error as { status?: number }).status === 1) {
       throw new Error(`La SHA de recuperación ${recoverySha} no pertenece a main. Reejecuta workflow_dispatch con release_sha=${recoverySha}.`);
@@ -298,7 +304,7 @@ export function resolveEventDiffBase(before: string, head: string): string {
 
   if (trimmed === "") {
     try {
-      return execFileSync("git", ["rev-parse", `${head}^`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      return execFileSync("git", ["rev-parse", `${head}^`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...GIT_LOCALE_ENV } }).trim();
     } catch (error) {
       const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`;
       if (/unknown revision|ambiguous argument|needed a single revision|does not have any parents/i.test(message)) {
@@ -348,7 +354,7 @@ export function resolveRecoveryDiffBase(
 
 function resolveLatestReachableTag(ref: string): string | null {
   try {
-    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", "--first-parent", "--match", "v[0-9]*.[0-9]*.[0-9]*", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", "--first-parent", "--match", "v[0-9]*.[0-9]*.[0-9]*", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...GIT_LOCALE_ENV } }).trim();
     return tag === "" ? null : tag;
   } catch (error) {
     const message = `${(error as { message?: string }).message ?? ""}\n${String((error as { stderr?: unknown }).stderr ?? "")}`.trim();
@@ -362,7 +368,7 @@ function resolveLatestReachableTag(ref: string): string | null {
 
 export function resolveGitTagSha(tagRef: string): string | null {
   try {
-    const sha = execFileSync("git", ["rev-list", "-n", "1", tagRef], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().toLowerCase();
+    const sha = execFileSync("git", ["rev-list", "-n", "1", tagRef], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...GIT_LOCALE_ENV } }).trim().toLowerCase();
     return sha === "" ? null : sha;
   } catch (error) {
     const status = (error as { status?: unknown }).status;
