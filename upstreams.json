@@ -8,6 +8,53 @@
       "policy": "respect-existing — D7: si hay un Engram instalado (binario o DB), no se toca; update del binario solo con confirmación explícita y la DB jamás"
     }
   },
+  "complements": {
+    "$comment": "Complementos oficiales externos (ejecutan código en el runtime): pin exacto al instalar, nunca latest ni rangos flotantes. `reviewed` = última revisión aceptada; `update --check` es discovery-only y avisa si el upstream se movió; la adopción es re-pin deliberado con verificación, nunca auto-update.",
+    "gentle-engram": {
+      "source": "npm:gentle-engram",
+      "version": "0.1.12",
+      "reviewed": "2026-09-17",
+      "status": "pendiente-adopcion",
+      "note": "última publicada en npm (dist-tag latest); el setup oficial en main referencia 0.1.13 aún no publicada — re-pinear al salir. Incluye auto-cierre en session_shutdown. Issue: #155"
+    },
+    "pi-mcp-adapter": {
+      "source": "npm:pi-mcp-adapter",
+      "version": null,
+      "reviewed": "2026-09-17",
+      "status": "pendiente-pin",
+      "note": "upstream lo referencia sin versión (setup.go main): exigir pin exacto antes de adoptar. Issue: #155"
+    },
+    "engram-claude-plugin": {
+      "source": "github:Gentleman-Programming/engram#plugin/claude-code",
+      "version": "1.20.0",
+      "reviewed": "2026-09-17",
+      "note": "autocierre vía hook Stop (v1.20.0) / SessionEnd (main). Stack convive (detección + allowlists duales); falta instalación/verificación por Stack. Issue: #155"
+    },
+    "engram-codex-plugin": {
+      "source": "github:Gentleman-Programming/engram#plugin/codex",
+      "version": "1.20.0",
+      "reviewed": "2026-09-17",
+      "note": "autocierre vía hook Stop. Stack convive; falta instalación/verificación por Stack. Issue: #155"
+    },
+    "engram-opencode-plugin": {
+      "source": "github:Gentleman-Programming/engram#plugin/opencode",
+      "version": "1.20.0",
+      "reviewed": "2026-09-17",
+      "note": "auto-cierre (endSessionInEngram) solo en main; la copia vendorizada de Stack no lo tiene — migrar con transferencia de ownership de plugins/engram.ts. Issue: #155"
+    },
+    "chrome-devtools-mcp": {
+      "source": "npm:chrome-devtools-mcp",
+      "version": "1.6.0",
+      "reviewed": "2026-09-17",
+      "note": "opt-in, default-off; flags --isolated --redact-network-headers --no-performance-crux --no-usage-statistics"
+    },
+    "playwright-cli": {
+      "source": "npm:@playwright/cli",
+      "version": "0.1.18",
+      "reviewed": "2026-09-17",
+      "note": "CLI global compartido por la máquina; camino recomendado opt-in"
+    }
+  },
   "skills": {
     "deploy-to-vercel": {
       "source": "github:vercel-labs/agent-skills",
