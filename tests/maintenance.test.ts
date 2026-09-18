@@ -267,27 +267,67 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(fresh.permission).toMatchObject({
       external_directory: { "*": "allow" },
       read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+      edit: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+      glob: "allow",
+      grep: "allow",
+      lsp: "allow",
       webfetch: "allow",
       websearch: "allow",
+      task: "allow",
+      skill: "allow",
+      todowrite: "allow",
+      question: "allow",
       bash: {
         "*": "allow",
-        "rm *": "ask",
-        "del *": "ask",
-        "rmdir *": "ask",
-        "git *push*": "ask",
+        "git rebase": "ask",
+        "git rebase *": "ask",
+        "git reset --hard": "ask",
+        "git reset --hard *": "ask",
+        "ssh": "ask",
+        "ssh *": "ask",
+        "scp": "ask",
+        "scp *": "ask",
+        "sftp": "ask",
+        "sftp *": "ask",
+        "rsync": "ask",
+        "rsync *": "ask",
+        "format": "deny",
         "format *": "deny",
+        "*/format": "deny",
+        "*/format *": "deny",
+        "mkfs": "deny",
         "mkfs *": "deny",
+        "*/mkfs": "deny",
+        "*/mkfs *": "deny",
+        "mkfs.*": "deny",
+        "*/mkfs.*": "deny",
+        "dd": "deny",
         "dd *": "deny",
+        "*/dd": "deny",
+        "*/dd *": "deny",
+        "shred": "deny",
         "shred *": "deny",
+        "*/shred": "deny",
+        "*/shred *": "deny",
       },
     });
-    expect(fresh.permission.edit).toMatchObject({ "*": "allow", "*.env": "deny" });
-    expect(fresh.permission.bash["git *reset*"]).toBe("ask");
-    expect(fresh.permission.bash["git *restore*"]).toBe("ask");
-    expect(fresh.permission.bash["git *checkout*--*"]).toBe("ask");
-    expect(fresh.permission.bash["git *switch*--discard-changes*"]).toBe("ask");
-    expect(fresh.permission.bash["git *rebase*"]).toBe("ask");
-    expect(fresh.permission.bash["rm * /"]).toBe("deny");
+    // Sin fricción para trabajo ordinario: ni ask global ni reglas de push/rm/lenguajes.
+    expect(fresh.permission["*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *push*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *reset*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *restore*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *rebase*"]).toBeUndefined();
+    expect(fresh.permission.bash["rm *"]).toBeUndefined();
+    expect(fresh.permission.bash["rm * /"]).toBeUndefined();
+    expect(fresh.permission.bash["node *"]).toBeUndefined();
+    expect(fresh.permission.bash["python *"]).toBeUndefined();
+    expect(fresh.permission.bash["sudo *"]).toBeUndefined();
+    expect(fresh.permission.bash["pnpm dlx*"]).toBeUndefined();
+    // Sin claves muertas ni allowlist por herramienta MCP.
+    expect(fresh.permission.list).toBeUndefined();
+    expect(fresh.permission.todoread).toBeUndefined();
+    expect(fresh.permission["engram_*"]).toBeUndefined();
+    expect(fresh.permission["context7_*"]).toBeUndefined();
   });
 
   it("opencode: una config no vacía sin permission no recibe permission", () => {

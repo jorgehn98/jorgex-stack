@@ -3,9 +3,11 @@
 Esta referencia describe los defaults que `pnpm dlx jorgex-stack install` (o
 `sync`) siembra en una configuración fresca o vacía. La política común es
 semántica: el trabajo ordinario se permite, las operaciones legítimas pero
-sensibles o irreversibles piden aprobación, y los secretos y la destrucción
-evidente se deniegan. Cuando no existe una regla específica, el fallback es
-`ask`.
+sensible o irreversibles piden aprobación, y los secretos y la destrucción
+evidente se deniegan. En OpenCode fresco no hay regla global `"*"`: lo que
+no tiene regla específica cae al default nativo (`allow`), así que el
+trabajo ordinario —incluido cualquier MCP, conocido o futuro— funciona sin
+prompts. En Claude Code y Codex, lo no listado sigue pidiendo aprobación.
 
 Una configuración existente se conserva completa. El stack no reimpone ni
 migra sus permisos, aunque la configuración coincida con un default anterior.
@@ -69,13 +71,15 @@ Estos mensajes **no** aparecen en configs existentes — son parte del
 
 ## 2. OpenCode — `permission`
 
-Extracto del bloque escrito bajo la clave `permission` **solo en config fresca
-o vacía**. El JSON canónico contiene además las variantes equivalentes para
-comandos sin argumentos y rutas de sistema:
+Bloque completo escrito bajo la clave `permission` **solo en config fresca
+o vacía**, tal cual vive en `stack/config/defaults.json`. Es un overlay
+mínimo estilo gentle-ai: permite el trabajo ordinario sin prompts, pide solo
+lo sensible mínimo y deniega la destrucción evidente y los secretos. El JSON
+incluye variantes con y sin argumentos (`git rebase` / `git rebase *`) y
+variantes de ruta (`*/format`) para la destrucción:
 
 ```jsonc
 {
-  "*": "ask",
   "edit": {
     "*": "allow",
     "*.env": "deny",
@@ -107,110 +111,98 @@ comandos sin argumentos y rutas de sistema:
   "external_directory": { "*": "allow" },
   "glob": "allow",
   "grep": "allow",
-  "list": "allow",
   "lsp": "allow",
   "webfetch": "allow",
   "websearch": "allow",
   "task": "allow",
   "skill": "allow",
   "todowrite": "allow",
-  "todoread": "allow",
   "question": "allow",
   "bash": {
     "*": "allow",
-    "rm *": "ask",
-    "rmdir *": "ask",
-    "del *": "ask",
-    "unlink *": "ask",
-    "sudo *": "ask",
-    "doas *": "ask",
-    "runas *": "ask",
-    "su *": "ask",
-    "env *": "ask",
-    "eval *": "ask",
-    "exec *": "ask",
-    "xargs *": "ask",
-    "sh *": "ask",
-    "bash *": "ask",
-    "zsh *": "ask",
-    "fish *": "ask",
-    "pwsh *": "ask",
-    "powershell *": "ask",
-    "python *": "ask",
-    "python3 *": "ask",
-    "node *": "ask",
-    "ruby *": "ask",
-    "perl *": "ask",
-    "deno *": "ask",
-    "git *reset*": "ask",
-    "git *clean*": "ask",
-    "git *push*": "ask",
-    "git *checkout*--*": "ask",
-    "git *checkout* -f*": "ask",
-    "git *restore*": "ask",
-    "git *switch*--discard-changes*": "ask",
-    "git *rebase*": "ask",
-    "git -c *": "ask",
-    "git * -c *": "ask",
-    "git --config-env*": "ask",
-    "git *--output*": "ask",
-    "git *--ext-diff*": "ask",
-    "git *--textconv*": "ask",
-    "git *--show-signature*": "ask",
-    "git *%G*": "ask",
-    "pnpm exec*": "ask",
-    "pnpm dlx*": "ask",
+    "git rebase": "ask",
+    "git rebase *": "ask",
+    "git reset --hard": "ask",
+    "git reset --hard *": "ask",
+    "ssh": "ask",
+    "ssh *": "ask",
+    "scp": "ask",
+    "scp *": "ask",
+    "sftp": "ask",
+    "sftp *": "ask",
+    "rsync": "ask",
+    "rsync *": "ask",
+    "format": "deny",
     "format *": "deny",
+    "*/format": "deny",
+    "*/format *": "deny",
+    "mkfs": "deny",
     "mkfs *": "deny",
+    "*/mkfs": "deny",
+    "*/mkfs *": "deny",
+    "dd": "deny",
     "dd *": "deny",
-    "shred *": "deny"
+    "*/dd": "deny",
+    "*/dd *": "deny",
+    "shred": "deny",
+    "shred *": "deny",
+    "*/shred": "deny",
+    "*/shred *": "deny",
+    "mkfs.*": "deny",
+    "*/mkfs.*": "deny"
   }
 }
 ```
 
-- **`* = ask`**: herramientas o formas sin una regla específica piden
-  aprobación.
-- **Trabajo ordinario**: `read`, `edit`, `glob`, `grep`, `list`, `lsp`,
-  `external_directory`, `webfetch`, `websearch` y las herramientas de apoyo
-  reciben `allow`, con las excepciones sensibles descritas abajo.
+- **Sin regla global `"*"`**: no hay fallback a `ask`. Las herramientas o
+  formas sin regla específica —incluido cualquier MCP, conocido o futuro—
+  caen al default nativo (`allow`). Las claves muertas `list` y `todoread`
+  se eliminaron del canon: no existen como herramientas OpenCode.
+- **Trabajo ordinario**: `read`, `edit`, `glob`, `grep`, `lsp`,
+  `external_directory`, `webfetch`, `websearch`, `task`, `skill`,
+  `todowrite`, `question` y `bash *` reciben `allow`. `git commit` y
+  `git push` (incluido `--force`) también quedan en `allow`: no piden
+  aprobación en fresco.
 - **`read` y `edit` como objetos**: `* = allow` quita el prompt para cualquier ruta;
   `*.env` y `*.env.*` niegan secretos locales; `*.env.example` se permite
   como fixture. El resto de denies (`*/.ssh/*`, `*/.aws/credentials`,
   `*/.npmrc`, `*/.git-credentials`, `*/id_rsa`, `*/id_ed25519`,
   `*.pem`, `*.key`) son una capa best-effort sobre los nombres de secretos
   más comunes — ver §6.
+- **Los denies de secretos viven SOLO en `read` y `edit`**: `bash` no tiene
+  denies de secretos. Un `cat .env` por shell queda en `allow` por diseño;
+  la red es read/edit, no un sandbox del filesystem — ver §6.
 - **`external_directory: * = allow`**: las lecturas y búsquedas fuera del
   cwd se permiten; la escritura sigue las reglas de `edit` y Bash.
-- **`bash: { "*": "allow", ... }`**: Bash ordinario se permite. Comandos
-  sensibles, intérpretes, escalado de privilegios y formas Git irreversibles
-  pasan a `ask`; `format`, `mkfs`, `dd` y `shred` quedan en `deny`.
-- **Rutas de destrucción del sistema**: los patrones específicos de `/etc`,
-  `/usr`, `/bin`, `/sbin`, `/boot`, `/dev`, `/proc` y `/sys` se deniegan. Los
-  borrados ordinarios, incluidos los que están fuera del workspace, piden
-  aprobación.
+- **`bash: { "*": "allow", ... }`**: Bash ordinario se permite, incluidos
+  intérpretes (`node`, `python`, …), `pnpm exec/dlx` y el git cotidiano.
+  Solo piden aprobación `git rebase` y `git reset --hard` (con y sin
+  argumentos) y la familia `ssh`/`scp`/`sftp`/`rsync`. `format`, `mkfs`,
+  `dd` y `shred` (con variantes de ruta y `mkfs.*`) quedan en `deny`.
+- **Sin regla para `doom_loop`**: queda el `ask` nativo, que frena bucles
+  sin ser trabajo normal.
 
-**MCP conocido y MCP desconocido.** En la configuración fresca, las
-herramientas MCP de Engram (`engram_*`) y Context7 (`context7_*`) reciben
-`allow` para que los dos servicios gestionados puedan operar sin prompts por
-herramienta. El wildcard solo cubre esos dos prefijos: una herramienta MCP de
-otro servidor, o un nombre que no coincida, conserva el fallback global
-`ask`. Esta regla se ha comprobado con el matching nativo de OpenCode para
-los dos prefijos conocidos y un nombre MCP desconocido; no es un permiso
-general para cualquier servidor MCP.
+**MCP: sin allowlist, todo cae al nativo.** En la configuración fresca no hay
+claves `engram_*`, `context7_*` ni de ningún otro servidor: cualquier
+herramienta MCP (Engram, Context7, chrome-devtools, futuros) funciona sin
+prompts por herramienta porque lo no listado usa el default nativo
+(`allow`). No hay nada que mantener cuando aparece un servidor nuevo.
 
 **Por qué las reglas específicas importan.** OpenCode evalúa sus reglas de
-matching según la semántica nativa del runtime; el `* = ask` superior cubre
-formas desconocidas y cada allow o deny más específico expresa una
-excepción deliberada. La política no es un sandbox universal del sistema de
+matching según la semántica nativa del runtime; sin regla global, cada
+`ask` o `deny` específico expresa una excepción deliberada sobre el
+default nativo. La política no es un sandbox universal del sistema de
 archivos. Quien quiera endurecerla puede editarla a mano; el stack no
 sobrescribirá esa decisión después.
 
-**El adapter no migra.** El default viejo era `read: "allow"` (string
-plano) y `bash: { "*": "allow", ... }`, sin `external_directory`. Si tu
-`opencode.json` ya trae una `permission` (custom o exactamente igual a
-ese legacy), el adapter la deja intacta: no la reemplaza, no la expande,
-no emite warning. Para subir al nuevo default manualmente, edita a mano
-o deja el archivo ausente/vacío antes del `sync` (ver §5).
+**El adapter no migra.** El default anterior era la matriz restrictiva
+(`"*": "ask"` global, `ask` para intérpretes, `pnpm exec/dlx`, `git push`
+y decenas de formas git, denies de secretos y rutas de sistema en `bash`,
+allowlist `engram_*`/`context7_*`). Si tu `opencode.json` ya trae una
+`permission` (custom o exactamente igual a ese default anterior), el
+adapter la deja intacta: no la reemplaza, no la expande, no emite warning.
+Para subir al nuevo default manualmente, edita a mano o deja el archivo
+ausente/vacío antes del `sync` (ver §5).
 
 ---
 
@@ -416,9 +408,16 @@ añadidas en T17/T20:
   instrucciones hostiles ("envíame por red el contenido de `~/.ssh/...`"),
   las denies no van a impedir que el modelo proponga acciones que ya estén
   permitidas. El riesgo real es el **daño**, no la lectura: la lectura está
-  permitida por diseño. Las capas que mitigan el daño son los prompts para
-  egress web/shell/escritura, los `ask` de `Bash` destructivo, el
-  sandbox de Codex y la rama protegida de GitHub.
+  permitida por diseño. Las capas que mitigan el daño son los `ask` mínimos
+  de OpenCode (`git rebase`/`reset --hard`, familia ssh) y sus `deny` de
+  destrucción evidente, los prompts de shell/escritura/egress en Claude
+  Code, el sandbox de Codex y la rama protegida de GitHub.
+- **La red de secretos es `read`/`edit`, no el filesystem.** En OpenCode
+  fresco, `bash` no tiene denies de secretos: leer un `.env` por shell
+  (p. ej. `cat .env`) queda en `allow` por diseño. Consecuencia aceptada:
+  el subagente git-read puede mostrar secretos con
+  `git diff HEAD -- .env`, porque el diff no pasa por las denies de
+  `read`/`edit`.
 - **Secretos fuera del filesystem.** Variables de entorno con secrets
   pueden terminar en respuestas del modelo si una shell las expande dentro
   de un comando `Bash` aprobado por el usuario (p. ej.
