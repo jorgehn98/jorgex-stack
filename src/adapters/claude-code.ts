@@ -237,15 +237,32 @@ export const claudeCodeAdapter: Adapter = {
     const settingsFile = path.join(ctx.configDir, "settings.json");
     let content = upsertNativeHooks(contentSource, canonical, scriptsDir);
 
-    // Permisos por defecto: solo en config fresca o vacía. Una config
-    // existente no se auto-expande jamás.
+    // Permisos por defecto: se siembran en config fresca o vacía (vía este
+    // hooks-path en settings.json, nunca vía main-config). Una config
+    // existente se preserva byte a byte y solo avisa cuando el bloque
+    // difiere del default; con --upgrade-permissions se reemplaza el bloque
+    // entero (el pipeline hace backup antes de escribir).
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
-    if (contentSource === null && defaults?.["permissions"] !== undefined) {
+    const canonicalPermissions = defaults?.["permissions"];
+    if (contentSource === null) {
+      if (canonicalPermissions !== undefined) {
+        content = upsertJson(content, (root) => {
+          if (root["permissions"] === undefined) {
+            root["permissions"] = canonicalPermissions;
+            ctx.warnings.push(
+              "Claude Code: fresh config enables read-anywhere via Read/Grep/Glob allow rules; shell, writes and web egress remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+            );
+          }
+        });
+      }
+    } else if (canonicalPermissions !== undefined) {
       content = upsertJson(content, (root) => {
-        if (root["permissions"] === undefined) {
-          root["permissions"] = defaults["permissions"];
+        if (isDeepStrictEqual(root["permissions"], canonicalPermissions)) return;
+        if (ctx.upgradePermissions === true) {
+          root["permissions"] = canonicalPermissions;
+        } else {
           ctx.warnings.push(
-            "Claude Code: fresh config enables read-anywhere via Read/Grep/Glob allow rules; shell, writes and web egress remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
+            "Claude Code: permissions block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.",
           );
         }
       });

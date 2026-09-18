@@ -78,6 +78,8 @@ export interface InstallOptions {
   onPlaywrightCapability?: (snapshot: VerifiedPlaywrightCapabilitySnapshot) => void;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
+  /** Opt-in para re-aplicar el bloque de permisos gestionados sobre config existente (reemplazo entero con backup; sin flag solo se avisa). */
+  upgradePermissions?: boolean;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
   engramBin?: string | null;
   /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
@@ -471,6 +473,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       engramBin,
       models,
       warnings: [],
+      upgradePermissions: opts.upgradePermissions === true,
       enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
       playwrightCliEnabled: projectPlaywrightPrompt
         ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)

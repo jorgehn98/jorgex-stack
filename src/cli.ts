@@ -60,6 +60,7 @@ export interface Flags {
   removePlaywright: boolean;
   devtools: boolean;
   noDevtools: boolean;
+  upgradePermissions: boolean;
   receipt?: string;
   positional: string[];
   unknownFlags: string[];
@@ -124,6 +125,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     removePlaywright: false,
     devtools: false,
     noDevtools: false,
+    upgradePermissions: false,
     receipt: undefined,
     positional: [],
     unknownFlags: [],
@@ -200,6 +202,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     else if (arg === "--remove-playwright") flags.removePlaywright = true;
     else if (arg === "--devtools") flags.devtools = true;
     else if (arg === "--no-devtools") flags.noDevtools = true;
+    else if (arg === "--upgrade-permissions") flags.upgradePermissions = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
   }
@@ -605,6 +608,7 @@ Opciones:
   --engram              (install) autoriza instalar el binario Engram si falta
   --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
+  --upgrade-permissions (install/sync) re-aplica permisos gestionados sobre config existente (opt-in)
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
                         memorias y binario quedan intactos igualmente
   --playwright-runtimes <csv>  Activa su guía sólo en estos runtimes de --agents (con --playwright)
@@ -675,9 +679,10 @@ async function main(): Promise<void> {
         || flags.engram
         || flags.playwright
         || flags.removePlaywright
-        || flags.devtools
-        || flags.noDevtools
-      ) {
+            || flags.devtools
+            || flags.noDevtools
+            || flags.upgradePermissions
+          ) {
         console.error("quality solo admite <plan.json> y, opcionalmente, --receipt <path>.");
         process.exitCode = 1;
         return;
@@ -771,6 +776,7 @@ async function main(): Promise<void> {
             playwrightToolConsent,
             devtoolsMcpSelection,
             engramBin,
+            upgradePermissions: flags.upgradePermissions,
             ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
             ...(playwrightToolPlan.actions.length === 0 ? {} : { onPlaywrightCapability: capturePlaywrightCapability }),
             showSummary: false,
