@@ -90,6 +90,7 @@ describe("CLI argument parsing", () => {
     ["--remove-playwright"],
     ["--devtools"],
     ["--no-devtools"],
+    ["--upgrade-permissions"],
   ] as const)("rechaza %j en quality como flag de otro comando sin convertir su operando en plan", (...args) => {
     const [flag, operand] = args;
     const parsed = parseCliArgs(["quality", "plan.json", flag, ...(operand === undefined ? [] : [operand])]);
@@ -151,6 +152,23 @@ describe("CLI argument parsing", () => {
 
     expect(parsed.action).toBe("run");
     expect(parsed.flags[property]).toBe(true);
+    expect(parsed.flags.unknownFlags).toEqual([]);
+  });
+
+  it.each(["install", "sync"] as const)("off por defecto: %s no activa --upgrade-permissions", (command) => {
+    const parsed = parseCliArgs([command]);
+
+    expect(parsed.action).toBe("run");
+    expect(parsed.flags.upgradePermissions).toBe(false);
+    expect(parsed.flags.unknownFlags).toEqual([]);
+  });
+
+  it.each(["install", "sync"] as const)("acepta --upgrade-permissions en %s sin flags desconocidos", (command) => {
+    const parsed = parseCliArgs([command, "--upgrade-permissions"]);
+
+    expect(parsed.action).toBe("run");
+    expect(parsed.command).toBe(command);
+    expect(parsed.flags.upgradePermissions).toBe(true);
     expect(parsed.flags.unknownFlags).toEqual([]);
   });
 });
