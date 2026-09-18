@@ -13,7 +13,7 @@ La regla fresh-only sigue siendo el default: una configuración existente
 se conserva completa y el stack no reimpone ni migra sus permisos solo. La
 única excepción es el opt-in explícito `install`/`sync
 --upgrade-permissions`, que reemplaza el bloque gestionado entero cuando
-difiere del default, con backup automático previo. Sin ese flag, una config
+difiere del default, con backup automático previo en instalaciones reales. Sin ese flag, una config
 existente que difiera solo avisa (warn-only-by-default); una config al día
 queda en silencio.
 
@@ -93,9 +93,9 @@ el canon (OpenCode: clave `permission`; Claude Code: clave
 `permissions` vía el hooks-path, nunca vía main-config; Codex: claves
 root `approval_policy` + `default_permissions` y secciones del perfil,
 dejando intactos `sandbox_mode`, `model`, MCP y secciones ajenas),
-preservando el resto del archivo; el pipeline crea el backup automático
-antes de escribir (`restore --list` / `restore <id>` para revertir). En
-`--dry-run` no se escribe nada ni se crean backups. `doctor` reemite el
+preservando el resto del archivo; en instalaciones reales el pipeline crea
+el backup automático antes de escribir (`restore --list` / `restore <id>`
+para revertir). En `--dry-run` no se escribe nada ni se crean backups. `doctor` reemite el
 mismo aviso stale sin volcar el bloque y con el remedio exacto:
 `jorgex-stack sync --upgrade-permissions --dry-run` para previsualizar.
 
@@ -414,20 +414,22 @@ nuevo default, las opciones son:
    recomendada).** Reemplaza entero cualquier bloque gestionado que
    difiera del canon, preservando el resto del archivo (claves ajenas en
    OpenCode/Claude; `sandbox_mode`, `model`, MCP y secciones ajenas en
-   Codex). El pipeline crea el backup automático antes de escribir;
-   revísalo con `restore --list` y revierte con `restore <id>` si hace
-   falta. El aviso stale nunca vuelca el contenido del bloque. Para
-   previsualizar sin escribir: `jorgex-stack sync --upgrade-permissions
-   --dry-run` (no escribe ni crea backups). `doctor` apunta a ese mismo
-   comando cuando detecta el bloque stale. También disponible en
-   `install --upgrade-permissions`.
+   Codex). En instalaciones reales el pipeline crea el backup automático
+   antes de escribir; revísalo con `restore --list` y revierte con
+   `restore <id>` si hace falta. El aviso stale nunca vuelca el contenido
+   del bloque. Para previsualizar sin escribir: `jorgex-stack sync
+   --upgrade-permissions --dry-run` (no escribe ni crea backups). `doctor`
+   apunta a ese mismo comando cuando detecta el bloque stale. También
+   disponible en `install --upgrade-permissions`.
 3. **Dejar el archivo ausente o vacío antes del `sync`.** Esto solo es
    razonable en una migración puntual (no en una sesión de trabajo):
    vacía el archivo (p. ej. redirige `> ~/.claude/settings.json`),
    ejecuta `sync`, restaura lo tuyo desde el backup automático que
-   `sync` deja en `~/.jorgex-stack/backups/`. Cada `sync` ya hace
+   `sync` deja en `~/.jorgex-stack/backups/`. Cada `sync` real ya hace
    backup automático de los archivos que toca; `uninstall` también
-   restaura desde backup (ver README §Usage).
+   restaura desde backup (ver README §Usage). Excepción: las corridas
+   aisladas con `--target-dir` escriben sin manifest ni backup por diseño
+   preexistente, no como regresión.
 
 > Importante: fuera de la opción 2 no hay otro flujo automático
 > (`jorgex-stack upgrade`, etc.). La decisión de sobrescribir tu config
