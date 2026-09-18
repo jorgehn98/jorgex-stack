@@ -11,6 +11,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import {
   readTomlSection,
   hasTomlChildSection,
+  headerName as tomlHeaderName,
   multilineStringMask,
   hasTomlRootKey,
   removeMarkdownSection,
@@ -218,6 +219,76 @@ function renderCodexPermissionEntries(
   quoteKeys: boolean,
 ): string {
   return entries.map(([key, value]) => `${quoteKeys ? JSON.stringify(key) : key} = ${JSON.stringify(value)}`).join("\n");
+}
+
+const CODEX_STALE_PERMISSIONS_WARNING =
+  "Codex: permission profile differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand.";
+
+/** Header normalizado (segmentos sin comillas) para comparar/leer secciones. */
+function codexNormalizedHeader(header: string): string {
+  return tomlHeaderName(`[${header}]`) ?? header;
+}
+
+/** Valor string de una clave escalar del root TOML (ignora comentarios); undefined si ausente o no escalar. */
+function readCodexRootValue(config: string, key: string): string | undefined {
+  const lines = config.replace(/\r\n/g, "\n").split("\n");
+  const mask = multilineStringMask(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
+  for (const [index, line] of lines.entries()) {
+    if (mask[index]) continue;
+    if (line.trim().startsWith("[")) break;
+    if (!keyPattern.test(line)) continue;
+    const match = CODEX_ASSIGNMENT.exec(line.trim());
+    return match === null ? undefined : parseTomlString(match[2]);
+  }
+  return undefined;
+}
+
+/** Fija una clave escalar del root TOML en su sitio (conserva indentación y comentario); la añade si falta. */
+function setCodexRootKey(config: string, key: string, value: string): string {
+  const eol = config.includes("\r\n") ? "\r\n" : "\n";
+  const lines = config.replace(/\r\n/g, "\n").split("\n");
+  const mask = multilineStringMask(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
+  const assignment = new RegExp(
+    `^(\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=\\s*)(${CODEX_JSON_STRING_ARRAY}|${CODEX_JSON_VALUE})(\\s*(?:#.*)?)$`,
+  );
+  for (const [index, line] of lines.entries()) {
+    if (mask[index]) continue;
+    if (line.trim().startsWith("[")) break;
+    if (!keyPattern.test(line)) continue;
+    const match = assignment.exec(line);
+    lines[index] = match === null ? `${key} = ${value}` : `${match[1]}${value}${match[3]}`;
+    return lines.join(eol);
+  }
+  return upsertTomlRootKeyIfMissing(config, key, value);
+}
+
+function isCodexPermissionBlockCurrent(config: string, defaults: Record<string, unknown>): boolean {
+  const expectedApproval = defaults["approval_policy"];
+  const expectedDefault = defaults["default_permissions"];
+  if (typeof expectedApproval !== "string" || typeof expectedDefault !== "string") return true;
+  if (readCodexRootValue(config, "approval_policy") !== expectedApproval) return false;
+  if (readCodexRootValue(config, "default_permissions") !== expectedDefault) return false;
+  return CODEX_PERMISSION_SECTIONS.every(({ header, entries, quoteKeys }) =>
+    (readTomlSection(config, codexNormalizedHeader(header)) ?? "").trim()
+      === renderCodexPermissionEntries(entries, quoteKeys).trim(),
+  );
+}
+
+/**
+ * Reemplazo entero del bloque gestionado (claves root + secciones del
+ * perfil). Nunca toca sandbox_mode, model, MCP ni secciones ajenas.
+ */
+function reseedCodexPermissionBlock(config: string, defaults: Record<string, unknown>): string {
+  let out = setCodexRootKey(config, "approval_policy", tomlString(String(defaults["approval_policy"])));
+  out = setCodexRootKey(out, "default_permissions", tomlString(String(defaults["default_permissions"])));
+  for (const { header, entries, quoteKeys } of CODEX_PERMISSION_SECTIONS) {
+    out = upsertTomlSection(out, header, renderCodexPermissionEntries(entries, quoteKeys));
+  }
+  return out;
 }
 
 function parseCodexKey(raw: string): string | null {
@@ -504,6 +575,22 @@ export const codexAdapter: Adapter = {
         renderCodexPermissionEntries(CODEX_PERMISSION_PROFILE.workspaceRoots, true),
         "",
       ].join("\n");
+    }
+
+    // Config existente: el bloque gestionado se compara contra el default
+    // canónico. Sin flag se preserva byte a byte y solo se avisa cuando
+    // difiere; con --upgrade-permissions se reemplaza entero (claves root +
+    // secciones del perfil; sandbox_mode y el resto intactos). El pipeline
+    // hace backup antes de escribir.
+    if (contentSource !== null) {
+      const codexDefaults = loadCanonicalDefaults(ctx.stackDir)["codex"];
+      if (codexDefaults !== undefined && !isCodexPermissionBlockCurrent(contentSource, codexDefaults)) {
+        if (ctx.upgradePermissions === true) {
+          content = reseedCodexPermissionBlock(content!, codexDefaults);
+        } else {
+          ctx.warnings.push(CODEX_STALE_PERMISSIONS_WARNING);
+        }
+      }
     }
 
     if (!hasTomlRootKey(content, PRIMARY_MODEL_FIELD)) {

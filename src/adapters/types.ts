@@ -70,6 +70,14 @@ export interface InstallContext {
   /** Campos del primary model que una escritura previa del stack creó. */
   ownedPrimaryModelFields?: ReadonlySet<string>;
   /**
+   * Opt-in para re-aplicar el bloque de permisos gestionados sobre una
+   * config existente: sin flag se preserva byte a byte y solo se avisa
+   * cuando difiere; con flag se reemplaza el bloque entero (con backup
+   * previo en el pipeline). Nunca default — lo fija runInstall desde
+   * InstallOptions.
+   */
+  upgradePermissions?: boolean;
+  /**
    * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,
    * plugin engram.ts, entrada en configs). Es el default — desregistrar
    * Engram exige el sí explícito del usuario. Las memorias (~/.engram) y el

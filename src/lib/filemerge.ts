@@ -148,7 +148,7 @@ export function removeTomlRootKeyIfExact(existing: string, key: string, value: s
  * `[ mcp_servers."engram" ] # nota` → `mcp_servers.engram`. Devuelve null si
  * la línea no es un header.
  */
-function headerName(line: string): string | null {
+export function headerName(line: string): string | null {
   const match = /^\s*\[\s*([^\]]+?)\s*\]\s*(#.*)?$/.exec(line);
   if (!match) return null;
   return match[1]!
@@ -262,6 +262,10 @@ function findTomlSection(lines: string[], section: string): { start: number; end
  */
 export function upsertTomlSection(existing: string | null, section: string, body: string): string {
   const header = `[${section}]`;
+  // Casa por nombre normalizado (igual que los headers del archivo): un
+  // segmento entrecomillado con puntos (Codex `[….":workspace_roots"]`)
+  // debe encontrar su sección. Sin comillas es identidad.
+  const target = headerName(header) ?? section;
   const block = `${header}\n${body.trim()}\n`;
   if (existing === null || existing.trim() === "") return block;
 
@@ -276,7 +280,7 @@ export function upsertTomlSection(existing: string | null, section: string, body
     offset += rawLines[index]!.length;
     if (index < rawLines.length - 1) offset++;
   }
-  const found = findTomlSection(lines, section);
+  const found = findTomlSection(lines, target);
 
   if (found === null) {
     const sep = existing.endsWith("\n") ? "\n" : "\n\n";

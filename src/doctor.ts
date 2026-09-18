@@ -28,6 +28,60 @@ function readDoctorTextIfExists(file: string): string | null {
   }
 }
 
+/**
+ * Marca compartida de los avisos stale de T02 (OpenCode/Claude/Codex): el
+ * bloque gestionado difiere del canon y se preservó byte a byte. Doctor la
+ * reutiliza como señal (no duplica comparadores): el diff no ve el stale
+ * porque el plan sin flag no toca el archivo.
+ */
+const STALE_PERMISSIONS_MARKER = "differs from the stack default and was left untouched";
+
+const UPGRADE_PERMISSIONS_REMEDY = "jorgex-stack sync --upgrade-permissions --dry-run";
+
+/** Resuelve el dir de Pi igual que la proyección de estilo (global o target-dir). */
+function piAgentDir(targetDir?: string): string {
+  return targetDir === undefined
+    ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
+    : path.join(targetDir, "pi-agent");
+}
+
+/**
+ * Diagnóstico Pi solo-lectura (v1): Stack jamás escribe, retira ni reimpone
+ * estado Pi. Sin config → silencio (el paquete siembra en sync); config
+ * válida con receipt → silencio (gestionado por el paquete); config válida
+ * sin receipt → aviso (sin ownership, nunca reclamado por Stack); config
+ * ilegible o inválida → error (semántica actual: el doctor del paquete lo
+ * marca como error, aquí no se convierte en aviso ni se toca).
+ */
+function reportPiPermissions(targetDir?: string): number {
+  const agentDir = piAgentDir(targetDir);
+  const configFile = path.join(agentDir, "extensions", "pi-permission-system", "config.json");
+  const receiptFile = path.join(agentDir, "jorgex-pi", "permissions-lifecycle.v1.json");
+  let config: string | null;
+  let receipt: string | null;
+  try {
+    config = readDoctorTextIfExists(configFile);
+    receipt = readDoctorTextIfExists(receiptFile);
+  } catch {
+    p.log.error(`Pi: cannot read permission state in ${agentDir}; check files and permissions.`);
+    return 1;
+  }
+  if (config === null) return 0;
+  try {
+    JSON.parse(config);
+  } catch {
+    p.log.error(`Pi: permission policy at ${configFile} is not valid JSON and was left untouched; the Pi package doctor reports it as an error.`);
+    return 1;
+  }
+  if (receipt !== null) return 0;
+  p.log.warn(
+    `Pi: permission policy present without package ownership (${configFile}) and left untouched; ` +
+      "Stack never rewrites Pi state — align it by hand or remove it so a later " +
+      "'jorgex-stack sync --agents pi' can seed the package default.",
+  );
+  return 1;
+}
+
 export function engramVersion(bin: string): string | null {
   const out = runDetectedBin(bin, ["--version"], 5_000);
   if (out === null) return null;
@@ -151,6 +205,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     return 1;
   }
   let problems = reportWritingStyle(options, writingStyle, modePreference);
+  if (options.runtimes === undefined || options.runtimes.includes("pi")) {
+    problems += reportPiPermissions(options.targetDir);
+  }
   if (options.targetDir !== undefined || (options.runtimes !== undefined && options.runtimes.length > 0 && options.runtimes.every((id) => id === "pi"))) {
     p.outro(problems > 0
       ? `Doctor (alcance: estilo): ${problems} problema(s) — revisa arriba.`
@@ -258,8 +315,11 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     ctx.writingStyle = writingStyle;
 
     let pending: number;
+    let stalePermissions = false;
     try {
-      pending = diffPlan(buildPlan(adapter, ctx)).filter((d) => d.status !== "unchanged").length;
+      const plan = buildPlan(adapter, ctx);
+      pending = diffPlan(plan).filter((d) => d.status !== "unchanged").length;
+      stalePermissions = ctx.warnings.some((warning) => warning.includes(STALE_PERMISSIONS_MARKER));
     } catch (err) {
       p.log.error(
         `${adapter.name}: configuración incompatible o ilegible en ${detection.configDir} — ${err instanceof Error ? err.message : err}`,
@@ -267,10 +327,17 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       problems++;
       continue;
     }
+    if (stalePermissions) {
+      p.log.warn(
+        `${adapter.name}: permission block differs from the stack default and was left untouched; ` +
+          `preview the upgrade with '${UPGRADE_PERMISSIONS_REMEDY}'.`,
+      );
+      problems++;
+    }
     if (pending > 0) {
       p.log.warn(`${adapter.name}: ${pending} archivos gestionados desactualizados o ausentes → ejecuta 'sync'.`);
       problems++;
-    } else {
+    } else if (!stalePermissions) {
       p.log.success(`${adapter.name}: config del stack al día (${detection.configDir}).`);
     }
 

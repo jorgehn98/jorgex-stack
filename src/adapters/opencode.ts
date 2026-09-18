@@ -369,14 +369,27 @@ export const opencodeAdapter: Adapter = {
         }
       }
 
-      // Permisos por defecto: solo en config fresca o vacía. Una config
-      // existente no se auto-expande jamás.
+      // Permisos por defecto: se siembran en config fresca o vacía. Una
+      // config existente se preserva byte a byte y solo avisa cuando el
+      // bloque difiere del default; con --upgrade-permissions se reemplaza
+      // el bloque entero (el pipeline hace backup antes de escribir).
       const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
-      if (isFreshConfig && defaults?.["permission"] !== undefined) {
-        root["permission"] = defaults["permission"];
-        ctx.warnings.push(
-          "OpenCode: fresh config allows ordinary reads, edits, web access and Bash; sensitive operations ask, while protected paths and obvious destruction are denied. Native matching is not a universal filesystem sandbox.",
-        );
+      const canonicalPermission = defaults?.["permission"];
+      if (isFreshConfig) {
+        if (canonicalPermission !== undefined) {
+          root["permission"] = canonicalPermission;
+          ctx.warnings.push(
+            "OpenCode: fresh config allows ordinary reads, edits, web access and Bash; sensitive operations ask, while protected paths and obvious destruction are denied. Native matching is not a universal filesystem sandbox.",
+          );
+        }
+      } else if (canonicalPermission !== undefined && !isDeepStrictEqual(root["permission"], canonicalPermission)) {
+        if (ctx.upgradePermissions === true) {
+          root["permission"] = canonicalPermission;
+        } else {
+          ctx.warnings.push(
+            "OpenCode: permission block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand.",
+          );
+        }
       }
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
