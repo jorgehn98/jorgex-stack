@@ -21,6 +21,7 @@ type PreparePiAdoption = (
     acceptPermissionsPolicy?: boolean;
     acceptExperienceDefaults?: boolean;
     acceptInitializationDiagnostics?: boolean;
+    acceptPermissionsUpgrade?: boolean;
     acceptPiVersion?: string;
   },
   dependencies?: {
@@ -1887,6 +1888,140 @@ describe("preparePiAdoption", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(rootState(fixture)).toEqual(before);
   });
+
+  it("acepta el delta exacto de permissions-upgrade-v1 sólo con confirmación explícita y conserva el inventario", async () => {
+    const fixture = createAdoptionFixture({
+      ...PERMISSIONS_TRANSITION_FIXTURE,
+      previousPermissionsPolicy: true,
+    });
+    const UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+
+    const contractPath = path.join(fixture.piDir, "contract", "jorgex-pi.v1.json");
+    const contract = readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json");
+    expect(contract.capabilities).toContain(PERMISSIONS_CAPABILITY);
+    expect(contract.capabilities).not.toContain(UPGRADE_CAPABILITY);
+    const permissionsIndex = contract.capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    contract.capabilities.splice(permissionsIndex + 1, 0, UPGRADE_CAPABILITY);
+    fs.writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
+
+    const runnerPath = path.join(fixture.piDir, "contract", "runner.v1.json");
+    const runner = readJson<{ commands: string[] }>(fixture.piDir, "contract/runner.v1.json");
+    expect(runner.commands).not.toContain("upgrade");
+    runner.commands.push("upgrade");
+    fs.writeFileSync(runnerPath, `${JSON.stringify(runner, null, 2)}\n`, "utf8");
+
+    const schemaPath = path.join(fixture.piDir, "contract", "schemas", "runner-response.v1.schema.json");
+    const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as { properties: { command: { enum: string[] } } };
+    expect(schema.properties.command.enum).not.toContain("upgrade");
+    schema.properties.command.enum.push("upgrade");
+    fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
+
+    const nextProducer = commit(fixture.piDir, "pi: 0.8.8 permissions-upgrade-v1");
+    git(fixture.piDir, ["tag", "-f", `v${fixture.version}`, nextProducer]);
+    git(fixture.piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
+    const tarball = gitArchive(fixture.piDir, nextProducer, true);
+    const next = pin(fixture.version, nextProducer, tarball);
+    (fixture as { next: Pin }).next = next;
+    (fixture as { tarball: Buffer }).tarball = tarball;
+    (fixture as { nextArchive: Artifacts["archive"] }).nextArchive = {
+      entries: archiveEntries(path.dirname(fixture.root), tarball),
+      parity: { source: { commit: fixture.sourceCommit } },
+    };
+
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, {
+      fetch: vi.fn() as unknown as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+    expect(rootState(fixture)).toEqual(before);
+
+    const fetch = registryFetch(fixture);
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPermissionsUpgrade: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    expect(readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json").capabilities).toContain(UPGRADE_CAPABILITY);
+    expect(readJson<{ commands: string[] }>(fixture.piDir, "contract/runner.v1.json").commands).toContain("upgrade");
+    const previousEntries = archiveEntryNames(path.dirname(fixture.root), fixture.previousTarball);
+    const nextEntries = archiveEntryNames(path.dirname(fixture.root), fixture.tarball);
+    expect(nextEntries).toEqual(previousEntries);
+    expect(fixture.nextArchive.entries).toBe(previousEntries.length);
+  }, 15_000);
+
+  it("acepta la deriva de contenido de permissions con capability presente sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({
+      ...PERMISSIONS_TRANSITION_FIXTURE,
+      previousPermissionsPolicy: true,
+    });
+    const driftedOutput = "{\n  \"permission\": {\n    \"*\": \"allow\"\n  }\n}\n";
+    expect(driftedOutput).not.toBe(PERMISSIONS_DEFAULTS_OUTPUT);
+    fs.writeFileSync(path.join(fixture.piDir, PERMISSIONS_TARGET_PATH), driftedOutput, "utf8");
+    const parity = readJson<{ permissions: { outputSha256: string } }>(fixture.piDir, "contract/parity.v2.json");
+    parity.permissions.outputSha256 = sha256(Buffer.from(driftedOutput, "utf8"));
+    writeJson(fixture.piDir, "contract/parity.v2.json", parity);
+
+    const nextProducer = commit(fixture.piDir, "pi: 0.8.8 permissions drift");
+    git(fixture.piDir, ["tag", "-f", `v${fixture.version}`, nextProducer]);
+    git(fixture.piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
+    const tarball = gitArchive(fixture.piDir, nextProducer, true);
+    const next = pin(fixture.version, nextProducer, tarball);
+    (fixture as { next: Pin }).next = next;
+    (fixture as { tarball: Buffer }).tarball = tarball;
+    (fixture as { nextArchive: Artifacts["archive"] }).nextArchive = {
+      entries: archiveEntries(path.dirname(fixture.root), tarball),
+      parity: { source: { commit: fixture.sourceCommit } },
+    };
+
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, {
+      fetch: vi.fn() as unknown as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/permissions content drift/);
+    expect(rootState(fixture)).toEqual(before);
+
+    const fetch = registryFetch(fixture);
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPermissionsPolicy: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+  }, 15_000);
 
   it("rechaza un archivo ajeno añadido al delta de permisos confirmado", async () => {
     const fixture = createAdoptionFixture({

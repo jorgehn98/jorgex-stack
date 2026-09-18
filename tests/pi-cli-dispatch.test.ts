@@ -828,4 +828,16 @@ describe("CLI Pi package-runtime dispatch", () => {
       error.mockRestore();
     }
   });
+
+  it("no ofrece upgrade sin capability: --upgrade-permissions en paquete incapaz sigue seed-only", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-upgrade-gated-"));
+
+    const exitCode = await runCli(["sync", "--agents", "pi", "--yes", "--upgrade-permissions"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+    const forwarded = mocks.runManagedPiSystem.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("upgradePermissions");
+    expect(mocks.prompts.log.info).toHaveBeenCalledWith(expect.stringMatching(/permissions-upgrade-v1|seed-only/));
+  });
 });

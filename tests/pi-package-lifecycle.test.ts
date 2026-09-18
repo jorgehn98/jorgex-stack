@@ -66,7 +66,7 @@ type PiPackageLifecyclePlan = {
 };
 
 type PiPackageSyncResult =
-  | { kind: "synced"; actions: unknown[] }
+  | { kind: "synced"; actions: unknown[]; upgraded?: boolean; policySha256?: string }
   | { kind: "blocked"; reason: "runner-output" | "runner-unhealthy" };
 
 type PiPackageLifecycleModule = {
@@ -78,6 +78,7 @@ type PiPackageLifecycleModule = {
       candidate: PiRuntimeCandidate;
       packageRunner: string;
       environment: PiPackageEnvironment;
+      upgradePermissions?: boolean;
     },
     deps: {
       writeReceipt(receipt: PiPackageReceipt): void;
@@ -248,6 +249,52 @@ function syncRunnerJson(result: unknown): string {
       root: PACKAGE_ROOT,
     },
     result,
+  })}\n`;
+}
+
+const PERMISSIONS_UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+const UPGRADE_POLICY_SHA256 = "0123456789abcdef".repeat(4);
+
+function upgradeCapableCandidate(): PiRuntimeCandidate {
+  return {
+    ...PI_RUNTIME_CANDIDATE,
+    contract: {
+      ...PI_RUNTIME_CANDIDATE.contract,
+      capabilities: [...PI_RUNTIME_CANDIDATE.contract.capabilities, PERMISSIONS_UPGRADE_CAPABILITY],
+      runner: {
+        ...PI_RUNTIME_CANDIDATE.contract.runner,
+        commands: [...PI_RUNTIME_CANDIDATE.contract.runner.commands, "upgrade"],
+      },
+    },
+  } as unknown as PiRuntimeCandidate;
+}
+
+function upgradeRunnerJson(result: unknown): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    command: "upgrade",
+    ok: true,
+    package: {
+      name: PI_RUNTIME_CANDIDATE.package.name,
+      version: PI_RUNTIME_CANDIDATE.package.version,
+      root: PACKAGE_ROOT,
+    },
+    result,
+  })}\n`;
+}
+
+function configLockedRunnerJson(errorCode = "CONFIG_LOCKED"): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    command: "upgrade",
+    ok: false,
+    package: {
+      name: PI_RUNTIME_CANDIDATE.package.name,
+      version: PI_RUNTIME_CANDIDATE.package.version,
+      root: PACKAGE_ROOT,
+    },
+    result: null,
+    error: { code: errorCode, message: "upgrade already in progress" },
   })}\n`;
 }
 
@@ -636,5 +683,222 @@ describe("Pi package-managed lifecycle", () => {
       reason: "receipt-upgrade-required",
       ownership: { receipt: true },
     });
+  });
+
+  it("orders upgrade --json only with the flag and the upgrade capability, otherwise stays seed-only", async () => {
+    const { executePiPackageLifecycle } = await lifecycle();
+    const syncActions = [{ kind: "write", target: "/tmp/pi-agent/AGENTS.md" }];
+    const upgradeActions = [{ kind: "upgraded", target: "extensions/pi-permission-system/config.json" }];
+    const packageRunner = `${PACKAGE_ROOT}/bin/jorgex-pi.mjs`;
+    const environment = healthyInput().scope.environment;
+
+    const runWith = (
+      candidate: PiRuntimeCandidate,
+      upgradePermissions: boolean | undefined,
+      upgradeResult: unknown = { changed: true, actions: upgradeActions, policySha256: UPGRADE_POLICY_SHA256 },
+    ) => {
+      const calls: string[] = [];
+      const result = executePiPackageLifecycle({
+        operation: "sync",
+        plan: { kind: "ready" },
+        candidate,
+        packageRunner,
+        environment,
+        ...(upgradePermissions === undefined ? {} : { upgradePermissions }),
+      }, {
+        writeReceipt: () => {
+          throw new Error("sync must not rewrite the receipt");
+        },
+        run: (invocation) => {
+          calls.push(invocation.args[0]!);
+          if (invocation.args[0] === "sync") {
+            expect(invocation).toEqual({ executable: packageRunner, args: ["sync", "--json"], environment });
+            return { exitCode: 0, stdout: syncRunnerJson({ changed: false, actions: syncActions }), stderr: "" };
+          }
+          expect(invocation).toEqual({ executable: packageRunner, args: ["upgrade", "--json"], environment });
+          return { exitCode: 0, stdout: upgradeRunnerJson(upgradeResult), stderr: "" };
+        },
+      });
+      return { calls, result };
+    };
+
+    const capable = upgradeCapableCandidate();
+
+    const optedIn = runWith(capable, true);
+    expect(optedIn.calls).toEqual(["sync", "upgrade"]);
+    expect(optedIn.result).toEqual({
+      kind: "synced",
+      actions: [...syncActions, ...upgradeActions],
+      upgraded: true,
+      policySha256: UPGRADE_POLICY_SHA256,
+    });
+
+    const withoutFlag = runWith(capable, undefined);
+    expect(withoutFlag.calls).toEqual(["sync"]);
+    expect(withoutFlag.result).toEqual({ kind: "synced", actions: syncActions });
+    expect(withoutFlag.result).not.toHaveProperty("upgraded");
+    expect(withoutFlag.result).not.toHaveProperty("policySha256");
+
+    const incapableWithFlag = runWith(PI_RUNTIME_CANDIDATE, true);
+    expect(incapableWithFlag.calls).toEqual(["sync"]);
+    expect(incapableWithFlag.result).toEqual({ kind: "synced", actions: syncActions });
+    expect(incapableWithFlag.result).not.toHaveProperty("upgraded");
+  });
+
+  it.each([
+    ["changed with a valid 64-hex hash merges actions", { changed: true, actions: [{ kind: "upgraded" }], policySha256: UPGRADE_POLICY_SHA256 }, { kind: "synced", upgraded: true }],
+    ["unchanged without a hash merges actions", { changed: false, actions: [{ kind: "noop" }] }, { kind: "synced", upgraded: false }],
+    ["changed without a hash is rejected", { changed: true, actions: [] }, { kind: "blocked", reason: "runner-output" }],
+    ["changed with a non-hex hash is rejected", { changed: true, actions: [], policySha256: "ZZZ" }, { kind: "blocked", reason: "runner-output" }],
+    ["changed with a short hash is rejected", { changed: true, actions: [], policySha256: "a".repeat(63) }, { kind: "blocked", reason: "runner-output" }],
+    ["a policy dump is rejected without exposing contents", { changed: true, actions: [], policySha256: UPGRADE_POLICY_SHA256, policy: "{\"permission\":{}}" }, { kind: "blocked", reason: "runner-output" }],
+    ["a config dump is rejected without exposing contents", { changed: false, actions: [], config: "{\"permission\":{}}" }, { kind: "blocked", reason: "runner-output" }],
+    ["a non-boolean changed is rejected", { changed: "yes", actions: [] }, { kind: "blocked", reason: "runner-unhealthy" }],
+    ["a non-array actions list is rejected", { changed: false, actions: { kind: "write" } }, { kind: "blocked", reason: "runner-unhealthy" }],
+  ] as const)("validates the upgrade envelope for %s", async (_name, upgradeResult, expected) => {
+    const { executePiPackageLifecycle } = await lifecycle();
+    const syncActions = [{ kind: "write", target: "/tmp/pi-agent/AGENTS.md" }];
+    const packageRunner = `${PACKAGE_ROOT}/bin/jorgex-pi.mjs`;
+    const environment = healthyInput().scope.environment;
+
+    const result = executePiPackageLifecycle({
+      operation: "sync",
+      plan: { kind: "ready" },
+      candidate: upgradeCapableCandidate(),
+      packageRunner,
+      environment,
+      upgradePermissions: true,
+    }, {
+      writeReceipt: () => {
+        throw new Error("sync must not rewrite the receipt");
+      },
+      run: (invocation) => {
+        if (invocation.args[0] === "sync") {
+          return { exitCode: 0, stdout: syncRunnerJson({ changed: false, actions: syncActions }), stderr: "" };
+        }
+        return { exitCode: 0, stdout: upgradeRunnerJson(upgradeResult), stderr: "" };
+      },
+    });
+
+    expect(result).toMatchObject(expected);
+    if (expected.kind === "synced" && "upgraded" in expected && expected.upgraded === true) {
+      expect(result).toMatchObject({ policySha256: UPGRADE_POLICY_SHA256 });
+    }
+    if (expected.kind === "blocked") {
+      expect(JSON.stringify(result)).not.toContain("{\"permission\"");
+    }
+  });
+
+  it("retries the upgrade order on CONFIG_LOCKED then merges on success", async () => {
+    const { executePiPackageLifecycle } = await lifecycle();
+    const syncActions = [{ kind: "write", target: "/tmp/pi-agent/AGENTS.md" }];
+    const upgradeActions = [{ kind: "upgraded", target: "extensions/pi-permission-system/config.json" }];
+    const packageRunner = `${PACKAGE_ROOT}/bin/jorgex-pi.mjs`;
+    const environment = healthyInput().scope.environment;
+    const calls: string[] = [];
+    let upgrades = 0;
+
+    const result = executePiPackageLifecycle({
+      operation: "sync",
+      plan: { kind: "ready" },
+      candidate: upgradeCapableCandidate(),
+      packageRunner,
+      environment,
+      upgradePermissions: true,
+    }, {
+      writeReceipt: () => {
+        throw new Error("sync must not rewrite the receipt");
+      },
+      run: (invocation) => {
+        calls.push(invocation.args[0]!);
+        if (invocation.args[0] === "sync") {
+          return { exitCode: 0, stdout: syncRunnerJson({ changed: false, actions: syncActions }), stderr: "" };
+        }
+        upgrades += 1;
+        if (upgrades === 1) {
+          return { exitCode: 1, stdout: configLockedRunnerJson(), stderr: "" };
+        }
+        return {
+          exitCode: 0,
+          stdout: upgradeRunnerJson({ changed: true, actions: upgradeActions, policySha256: UPGRADE_POLICY_SHA256 }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(calls).toEqual(["sync", "upgrade", "upgrade"]);
+    expect(result).toEqual({
+      kind: "synced",
+      actions: [...syncActions, ...upgradeActions],
+      upgraded: true,
+      policySha256: UPGRADE_POLICY_SHA256,
+    });
+  });
+
+  it("fails visibly after exhausting CONFIG_LOCKED retries", async () => {
+    const { executePiPackageLifecycle } = await lifecycle();
+    const syncActions = [{ kind: "write", target: "/tmp/pi-agent/AGENTS.md" }];
+    const packageRunner = `${PACKAGE_ROOT}/bin/jorgex-pi.mjs`;
+    const environment = healthyInput().scope.environment;
+    const calls: string[] = [];
+
+    const result = executePiPackageLifecycle({
+      operation: "sync",
+      plan: { kind: "ready" },
+      candidate: upgradeCapableCandidate(),
+      packageRunner,
+      environment,
+      upgradePermissions: true,
+    }, {
+      writeReceipt: () => {
+        throw new Error("sync must not rewrite the receipt");
+      },
+      run: (invocation) => {
+        calls.push(invocation.args[0]!);
+        if (invocation.args[0] === "sync") {
+          return { exitCode: 0, stdout: syncRunnerJson({ changed: false, actions: syncActions }), stderr: "" };
+        }
+        return { exitCode: 1, stdout: configLockedRunnerJson(), stderr: "" };
+      },
+    });
+
+    expect(calls).toEqual(["sync", "upgrade", "upgrade", "upgrade"]);
+    expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+  });
+
+  it.each([
+    ["a non-lock exit 1 without the signal", { exitCode: 1, stdout: "", stderr: "boom" }],
+    ["a lock signal on a different exit code", { exitCode: 2, stdout: configLockedRunnerJson(), stderr: "" }],
+    ["an unrelated error code on exit 1", { exitCode: 1, stdout: configLockedRunnerJson("UPGRADE_FAILED"), stderr: "" }],
+    ["plain-text lock text without the JSON envelope", { exitCode: 1, stdout: "CONFIG_LOCKED: upgrade already in progress\n", stderr: "" }],
+  ])("stays fail-fast on %s: no upgrade retry", async (_name, upgradeFailure) => {
+    const { executePiPackageLifecycle } = await lifecycle();
+    const syncActions = [{ kind: "write", target: "/tmp/pi-agent/AGENTS.md" }];
+    const packageRunner = `${PACKAGE_ROOT}/bin/jorgex-pi.mjs`;
+    const environment = healthyInput().scope.environment;
+    const calls: string[] = [];
+
+    const result = executePiPackageLifecycle({
+      operation: "sync",
+      plan: { kind: "ready" },
+      candidate: upgradeCapableCandidate(),
+      packageRunner,
+      environment,
+      upgradePermissions: true,
+    }, {
+      writeReceipt: () => {
+        throw new Error("sync must not rewrite the receipt");
+      },
+      run: (invocation) => {
+        calls.push(invocation.args[0]!);
+        if (invocation.args[0] === "sync") {
+          return { exitCode: 0, stdout: syncRunnerJson({ changed: false, actions: syncActions }), stderr: "" };
+        }
+        return upgradeFailure;
+      },
+    });
+
+    expect(calls).toEqual(["sync", "upgrade"]);
+    expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
   });
 });
