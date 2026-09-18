@@ -84,6 +84,19 @@ const PERMISSIONS_ACTIONS = [
 ];
 const UPGRADE_CAPABILITY = "permissions-upgrade-v1";
 const UPGRADE_RUNNER_COMMAND = "upgrade";
+const UPGRADE_LIFECYCLE_ACTION = "upgraded:permissions.config";
+const UPGRADE_POLICY_SHA256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const UPGRADE_ONEOF_ENTRIES = [
+  {
+    properties: { command: { const: "upgrade" }, ok: { const: true }, result: { $ref: "#/$defs/lifecycleResult" } },
+    not: { required: ["error"] },
+  },
+  {
+    properties: { command: { const: "upgrade" }, ok: { const: false }, result: { $ref: "#/$defs/lifecycleResult" } },
+    required: ["error"],
+  },
+];
+const UPGRADE_PERMISSIONS_SEMANTICS = "sync seeds only an absent config through exclusive publication; an explicit upgrade rewrites an absent or owned-stale config with a prior byte-exact backup, exclusive publication, and a versioned receipt; existing, invalid, and concurrent user state is preserved; cleanup keeps an exact owned copy in a retained backup";
 const EXPERIENCE_CAPABILITY = "experience-defaults-v1";
 const EXPERIENCE_BIN = "bin/jorgex-pi.mjs";
 const EXPERIENCE_RUNNER = {
@@ -519,6 +532,12 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       "Permissions upgrade runner commands require exactly the reviewed upgrade addition");
     runner.commands = structuredClone(newRunner.commands);
 
+    assert.equal(runner.permissions?.semantics, PERMISSIONS_RUNNER.semantics,
+      "Permissions upgrade requires the previous permissions semantics");
+    assert.equal(newRunner.permissions?.semantics, UPGRADE_PERMISSIONS_SEMANTICS,
+      "Permissions upgrade runner semantics differs from producer");
+    runner.permissions.semantics = UPGRADE_PERMISSIONS_SEMANTICS;
+
     const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
     const newSchema = newContracts["contract/schemas/runner-response.v1.schema.json"];
     const oldCommands = schema.properties?.command?.enum;
@@ -528,6 +547,36 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       assert.deepEqual([...newCommands].sort(), [...oldCommands, UPGRADE_RUNNER_COMMAND].sort(),
         "Permissions upgrade runner schema requires exactly the reviewed upgrade addition");
       schema.properties.command.enum = structuredClone(newCommands);
+    }
+    const oldOneOf = schema.oneOf;
+    const newOneOf = newSchema.oneOf;
+    if (Array.isArray(oldOneOf) && Array.isArray(newOneOf) && !oldOneOf.some((entry) => entry?.properties?.command?.const === UPGRADE_RUNNER_COMMAND)) {
+      const upgradeEntries = newOneOf.filter((entry) => entry?.properties?.command?.const === UPGRADE_RUNNER_COMMAND);
+      assert.deepEqual(upgradeEntries, UPGRADE_ONEOF_ENTRIES,
+        "Permissions upgrade runner schema oneOf differs from producer");
+      assert.deepEqual(newOneOf.filter((entry) => entry?.properties?.command?.const !== UPGRADE_RUNNER_COMMAND), oldOneOf,
+        "Permissions upgrade runner schema oneOf requires exactly the reviewed upgrade addition");
+      schema.oneOf = structuredClone(newOneOf);
+    }
+    const lifecycleResult = schema.$defs?.lifecycleResult;
+    const newLifecycleResult = newSchema.$defs?.lifecycleResult;
+    if (lifecycleResult && newLifecycleResult && !("policySha256" in (lifecycleResult.properties ?? {}))) {
+      assert.deepEqual(newLifecycleResult.properties?.policySha256, UPGRADE_POLICY_SHA256,
+        "Permissions upgrade policy hash schema differs from producer");
+      const restNew = structuredClone(newLifecycleResult);
+      delete restNew.properties.policySha256;
+      assert.deepEqual(restNew, lifecycleResult,
+        "Permissions upgrade lifecycle result requires exactly the reviewed policy hash addition");
+      lifecycleResult.properties.policySha256 = structuredClone(UPGRADE_POLICY_SHA256);
+    }
+    const lifecycleAction = schema.$defs?.lifecycleAction;
+    const newLifecycleAction = newSchema.$defs?.lifecycleAction;
+    if (lifecycleAction && newLifecycleAction && !lifecycleAction.enum?.includes(UPGRADE_LIFECYCLE_ACTION)) {
+      assert(newLifecycleAction.enum?.includes(UPGRADE_LIFECYCLE_ACTION),
+        "Permissions upgrade lifecycle action differs from producer");
+      assert.deepEqual([...newLifecycleAction.enum].sort(), [...lifecycleAction.enum, UPGRADE_LIFECYCLE_ACTION].sort(),
+        "Permissions upgrade lifecycle actions require exactly the reviewed upgrade addition");
+      lifecycleAction.enum = structuredClone(newLifecycleAction.enum);
     }
   }
   const experienceEnabled = newContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY);
