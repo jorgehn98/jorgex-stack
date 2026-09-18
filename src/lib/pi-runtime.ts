@@ -175,6 +175,8 @@ export interface PiRuntimeInput {
   detected: { executable: string; version: string };
   engramBin: string | null;
   verifiedArtifact?: { bytes: number; sha256: string; sha512: string };
+  /** Explicit opt-in to rewrite owned/absent Pi policy. Seed-only unless true with the upgrade capability. */
+  upgradePermissions?: boolean;
 }
 
 type RuntimeResult = {
@@ -504,6 +506,7 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
       candidate: PI_RUNTIME_CANDIDATE,
       packageRunner: paths.packageRunner,
       environment: paths.environment,
+      ...(input.upgradePermissions === true ? { upgradePermissions: true as const } : {}),
     });
     persistReturnedReceipt(result, paths, deps);
     return result;

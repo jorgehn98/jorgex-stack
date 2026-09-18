@@ -82,6 +82,8 @@ const PERMISSIONS_ACTIONS = [
   "backup:permissions.config",
   "removed:permissions.config",
 ];
+const UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+const UPGRADE_RUNNER_COMMAND = "upgrade";
 const EXPERIENCE_CAPABILITY = "experience-defaults-v1";
 const EXPERIENCE_BIN = "bin/jorgex-pi.mjs";
 const EXPERIENCE_RUNNER = {
@@ -301,10 +303,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPermissionsUpgrade = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean" || typeof acceptPermissionsUpgrade !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -486,6 +488,48 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert(!PERMISSIONS_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Permissions policy lifecycle actions must be new in this transition");
     lifecycleAction.enum.push(...PERMISSIONS_ACTIONS);
   }
+  const oldHasPermissions = oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY);
+  if (oldHasPermissions && permissionsEnabled && !permissionsTransition) {
+    const oldPermissions = oldContracts[PARITY].permissions;
+    assert(oldPermissions && typeof oldPermissions === "object", "Permissions parity metadata must exist when the capability is already present");
+    assert(permissionsMetadata && typeof permissionsMetadata === "object", "Permissions parity metadata must exist in the producer");
+    if (JSON.stringify(oldPermissions) !== JSON.stringify(permissionsMetadata)) {
+      assert.equal(acceptPermissionsPolicy, true, `${PARITY} compatibility requires manual review (permissions content drift)`);
+      expectedContracts[PARITY].permissions = structuredClone(permissionsMetadata);
+    }
+  }
+  const upgradeEnabled = newContracts[rootContract].capabilities.includes(UPGRADE_CAPABILITY);
+  const upgradeTransition = acceptPermissionsUpgrade
+    && !oldContracts[rootContract].capabilities.includes(UPGRADE_CAPABILITY)
+    && upgradeEnabled;
+  if (upgradeTransition) {
+    assert(oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY) && permissionsEnabled,
+      "Permissions upgrade requires the permissions policy capability");
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(UPGRADE_CAPABILITY), "Permissions upgrade capability must be new in this transition");
+    const permissionsIndex = capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    assert(permissionsIndex >= 0, "Permissions upgrade requires the existing permissions policy capability");
+    capabilities.splice(permissionsIndex + 1, 0, UPGRADE_CAPABILITY);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    const newRunner = newContracts["contract/runner.v1.json"];
+    assert(!runner.commands.includes(UPGRADE_RUNNER_COMMAND), "Permissions upgrade command must be new in this transition");
+    assert(newRunner.commands.includes(UPGRADE_RUNNER_COMMAND), "Permissions upgrade command differs from producer");
+    assert.deepEqual([...newRunner.commands].sort(), [...runner.commands, UPGRADE_RUNNER_COMMAND].sort(),
+      "Permissions upgrade runner commands require exactly the reviewed upgrade addition");
+    runner.commands = structuredClone(newRunner.commands);
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    const newSchema = newContracts["contract/schemas/runner-response.v1.schema.json"];
+    const oldCommands = schema.properties?.command?.enum;
+    const newCommands = newSchema.properties?.command?.enum;
+    if (Array.isArray(oldCommands) && Array.isArray(newCommands) && !oldCommands.includes(UPGRADE_RUNNER_COMMAND)) {
+      assert(newCommands.includes(UPGRADE_RUNNER_COMMAND), "Permissions upgrade runner schema differs from producer");
+      assert.deepEqual([...newCommands].sort(), [...oldCommands, UPGRADE_RUNNER_COMMAND].sort(),
+        "Permissions upgrade runner schema requires exactly the reviewed upgrade addition");
+      schema.properties.command.enum = structuredClone(newCommands);
+    }
+  }
   const experienceEnabled = newContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY);
   const experienceTransition = acceptExperienceDefaults
     && !oldContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY)
@@ -633,7 +677,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition || upgradeTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -673,9 +717,9 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
           expectedEntries.push(`package/${member}`);
         }
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract"].filter(Boolean).join(" and ");
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract", upgradeTransition && "permissions upgrade contract"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : experienceTransition ? "Experience defaults" : "Initialization diagnostics"} archive inventory requires exactly the reviewed ${changes}`);
+        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : experienceTransition ? "Experience defaults" : upgradeTransition ? "Permissions upgrade" : "Initialization diagnostics"} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
@@ -683,6 +727,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
       if (experienceTransition) assert.equal(entries.length, previousEntries.length, "Experience defaults must preserve the previous archive inventory");
       if (initializationTransition) assert.equal(entries.length, previousEntries.length, "Initialization diagnostics must preserve the previous archive inventory");
+      if (upgradeTransition) assert.equal(entries.length, previousEntries.length, "Permissions upgrade must preserve the previous archive inventory");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
     }
@@ -732,14 +777,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 14 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 15 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics", "--accept-permissions-upgrade"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics"), acceptPermissionsUpgrade: flags.includes("--accept-permissions-upgrade") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics] [--accept-permissions-upgrade]");
     process.exitCode = 1;
   }
 }
