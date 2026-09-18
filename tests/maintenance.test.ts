@@ -293,15 +293,21 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
         "rsync *": "ask",
         "format": "deny",
         "format *": "deny",
+        "*/format": "deny",
         "*/format *": "deny",
         "mkfs": "deny",
         "mkfs *": "deny",
+        "*/mkfs": "deny",
+        "*/mkfs *": "deny",
         "mkfs.*": "deny",
+        "*/mkfs.*": "deny",
         "dd": "deny",
         "dd *": "deny",
+        "*/dd": "deny",
         "*/dd *": "deny",
         "shred": "deny",
         "shred *": "deny",
+        "*/shred": "deny",
         "*/shred *": "deny",
       },
     });
@@ -313,6 +319,10 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(fresh.permission.bash["git *rebase*"]).toBeUndefined();
     expect(fresh.permission.bash["rm *"]).toBeUndefined();
     expect(fresh.permission.bash["rm * /"]).toBeUndefined();
+    expect(fresh.permission.bash["node *"]).toBeUndefined();
+    expect(fresh.permission.bash["python *"]).toBeUndefined();
+    expect(fresh.permission.bash["sudo *"]).toBeUndefined();
+    expect(fresh.permission.bash["pnpm dlx*"]).toBeUndefined();
     // Sin claves muertas ni allowlist por herramienta MCP.
     expect(fresh.permission.list).toBeUndefined();
     expect(fresh.permission.todoread).toBeUndefined();

@@ -148,7 +148,8 @@ variantes de ruta (`*/format`) para la destrucción:
     "shred *": "deny",
     "*/shred": "deny",
     "*/shred *": "deny",
-    "mkfs.*": "deny"
+    "mkfs.*": "deny",
+    "*/mkfs.*": "deny"
   }
 }
 ```
