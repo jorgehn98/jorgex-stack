@@ -36,6 +36,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "engram-runtime-tools-v1",
       "context7-http-v1",
       "permissions-policy-v1",
+      "permissions-upgrade-v1",
       "experience-defaults-v1",
       "chrome-devtools-handoff-v1",
       "playwright-handoff-v1",
@@ -48,7 +49,7 @@ export const PI_RUNTIME_CANDIDATE = {
     ],
     runner: {
       bin: "jorgex-pi",
-      commands: ["status", "doctor", "models", "sync", "cleanup"],
+      commands: ["status", "doctor", "models", "sync", "upgrade", "cleanup"],
       schemaVersion: 1,
       maxStdoutBytes: 65_536,
     },

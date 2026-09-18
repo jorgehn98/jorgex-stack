@@ -256,14 +256,36 @@ const PERMISSIONS_UPGRADE_CAPABILITY = "permissions-upgrade-v1";
 const UPGRADE_POLICY_SHA256 = "0123456789abcdef".repeat(4);
 
 function upgradeCapableCandidate(): PiRuntimeCandidate {
+  const capabilities = PI_RUNTIME_CANDIDATE.contract.capabilities.includes(PERMISSIONS_UPGRADE_CAPABILITY)
+    ? [...PI_RUNTIME_CANDIDATE.contract.capabilities]
+    : [...PI_RUNTIME_CANDIDATE.contract.capabilities, PERMISSIONS_UPGRADE_CAPABILITY];
+  const commands = PI_RUNTIME_CANDIDATE.contract.runner.commands.includes("upgrade")
+    ? [...PI_RUNTIME_CANDIDATE.contract.runner.commands]
+    : [...PI_RUNTIME_CANDIDATE.contract.runner.commands, "upgrade"];
   return {
     ...PI_RUNTIME_CANDIDATE,
     contract: {
       ...PI_RUNTIME_CANDIDATE.contract,
-      capabilities: [...PI_RUNTIME_CANDIDATE.contract.capabilities, PERMISSIONS_UPGRADE_CAPABILITY],
+      capabilities,
       runner: {
         ...PI_RUNTIME_CANDIDATE.contract.runner,
-        commands: [...PI_RUNTIME_CANDIDATE.contract.runner.commands, "upgrade"],
+        commands,
+      },
+    },
+  } as unknown as PiRuntimeCandidate;
+}
+
+function upgradeIncapableCandidate(): PiRuntimeCandidate {
+  return {
+    ...PI_RUNTIME_CANDIDATE,
+    contract: {
+      ...PI_RUNTIME_CANDIDATE.contract,
+      capabilities: PI_RUNTIME_CANDIDATE.contract.capabilities.filter(
+        (capability) => capability !== PERMISSIONS_UPGRADE_CAPABILITY,
+      ),
+      runner: {
+        ...PI_RUNTIME_CANDIDATE.contract.runner,
+        commands: PI_RUNTIME_CANDIDATE.contract.runner.commands.filter((command) => command !== "upgrade"),
       },
     },
   } as unknown as PiRuntimeCandidate;
@@ -739,7 +761,7 @@ describe("Pi package-managed lifecycle", () => {
     expect(withoutFlag.result).not.toHaveProperty("upgraded");
     expect(withoutFlag.result).not.toHaveProperty("policySha256");
 
-    const incapableWithFlag = runWith(PI_RUNTIME_CANDIDATE, true);
+    const incapableWithFlag = runWith(upgradeIncapableCandidate(), true);
     expect(incapableWithFlag.calls).toEqual(["sync"]);
     expect(incapableWithFlag.result).toEqual({ kind: "synced", actions: syncActions });
     expect(incapableWithFlag.result).not.toHaveProperty("upgraded");
