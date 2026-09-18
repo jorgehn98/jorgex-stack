@@ -170,6 +170,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
   packageOnly?: boolean;
+  upgradePermissions?: boolean;
 }): Promise<PiManagedOperationResult> {
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
   if (!supportedVersions.includes(input.detected.version)) {
@@ -186,8 +187,11 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     packageOnly,
     writingStyle: suppliedStyle,
     writingStyleMode,
+    upgradePermissions: requestedUpgrade,
     ...runtimeInput
   } = input;
+  const supportsPermissionsUpgrade = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("permissions-upgrade-v1");
+  const upgradePermissions = requestedUpgrade === true && supportsPermissionsUpgrade;
   if (input.operation === "doctor" && packageOnly) {
     const result = managedPackageResult(await runPiRuntimeSystem(runtimeInput));
     return result.kind === "manual-existing" ? manualExistingResult(result) : result;
@@ -236,7 +240,11 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const result = await runManagedPiOperation(input.operation, {
     installInitRemedy: input.targetDir === undefined ? undefined : INSTALL_INIT_TARGET_REMEDY,
     async runPackage(operation) {
-      return managedPackageResult(await runPiRuntimeSystem({ ...runtimeInput, operation }));
+      return managedPackageResult(await runPiRuntimeSystem({
+        ...runtimeInput,
+        operation,
+        ...(upgradePermissions ? { upgradePermissions: true as const } : {}),
+      }));
     },
     runProjection(operation) {
       const result = runPiProjectionLifecycleSystem({

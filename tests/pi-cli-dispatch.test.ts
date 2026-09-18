@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
     runPiRuntimeSystem: vi.fn().mockReturnValue({ kind: "healthy" }),
     runManagedPiSystem: vi.fn().mockResolvedValue({ kind: "healthy" }),
     forceFileAdaptersAbsent: false,
+    simulateUpgradeCapable: false,
   };
 });
 
@@ -112,7 +113,21 @@ vi.mock("../src/lib/pi-runtime.js", async () => {
       ...actual.PI_RUNTIME_CANDIDATE,
       contract: {
         ...actual.PI_RUNTIME_CANDIDATE.contract,
-        capabilities: [...actual.PI_RUNTIME_CANDIDATE.contract.capabilities, "playwright-handoff-v1"],
+        // By default simulate a package without the upgrade capability so the
+        // seed-only gating path stays exercised even though the adopted
+        // candidate is capable. Tests opt into the capable path via
+        // mocks.simulateUpgradeCapable. Read lazily so the toggle applies
+        // even though the mocked module is created once per file.
+        get capabilities() {
+          const base = actual.PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[];
+          if (mocks.simulateUpgradeCapable) {
+            return [...new Set([...base, "permissions-upgrade-v1", "playwright-handoff-v1"])];
+          }
+          return [
+            ...base.filter((capability) => capability !== "permissions-upgrade-v1"),
+            "playwright-handoff-v1",
+          ];
+        },
       },
     },
     detectPiRuntime: mocks.detectPiRuntime,
@@ -195,6 +210,7 @@ afterEach(() => {
   mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
   mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
   mocks.forceFileAdaptersAbsent = false;
+  mocks.simulateUpgradeCapable = false;
 });
 
 describe("CLI Pi package-runtime dispatch", () => {
@@ -828,4 +844,39 @@ describe("CLI Pi package-runtime dispatch", () => {
       error.mockRestore();
     }
   });
+
+  it("no ofrece upgrade sin capability: --upgrade-permissions en paquete incapaz sigue seed-only", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-upgrade-gated-"));
+
+    const exitCode = await runCli(["sync", "--agents", "pi", "--yes", "--upgrade-permissions"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+    const forwarded = mocks.runManagedPiSystem.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("upgradePermissions");
+    expect(mocks.prompts.log.info).toHaveBeenCalledWith(expect.stringMatching(/permissions-upgrade-v1|seed-only/));
+  });
+
+  it.each(["install", "sync"] as const)(
+    "propaga --upgrade-permissions al runner ante paquete capaz en %s",
+    async (operation) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-upgrade-capable-${operation}-`));
+      mocks.simulateUpgradeCapable = true;
+
+      try {
+        const exitCode = await runCli([operation, "--agents", "pi", "--yes", "--upgrade-permissions"], home);
+
+        expect(exitCode).toBe(0);
+        expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+          operation,
+          upgradePermissions: true,
+        }));
+        expect(mocks.prompts.log.info).not.toHaveBeenCalledWith(
+          expect.stringMatching(/seed-only|requiere un paquete/),
+        );
+      } finally {
+        mocks.simulateUpgradeCapable = false;
+      }
+    },
+  );
 });

@@ -36,6 +36,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "engram-runtime-tools-v1",
       "context7-http-v1",
       "permissions-policy-v1",
+      "permissions-upgrade-v1",
       "experience-defaults-v1",
       "chrome-devtools-handoff-v1",
       "playwright-handoff-v1",
@@ -48,7 +49,7 @@ export const PI_RUNTIME_CANDIDATE = {
     ],
     runner: {
       bin: "jorgex-pi",
-      commands: ["status", "doctor", "models", "sync", "cleanup"],
+      commands: ["status", "doctor", "models", "sync", "upgrade", "cleanup"],
       schemaVersion: 1,
       maxStdoutBytes: 65_536,
     },
@@ -175,6 +176,8 @@ export interface PiRuntimeInput {
   detected: { executable: string; version: string };
   engramBin: string | null;
   verifiedArtifact?: { bytes: number; sha256: string; sha512: string };
+  /** Explicit opt-in to rewrite owned/absent Pi policy. Seed-only unless true with the upgrade capability. */
+  upgradePermissions?: boolean;
 }
 
 type RuntimeResult = {
@@ -504,6 +507,7 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
       candidate: PI_RUNTIME_CANDIDATE,
       packageRunner: paths.packageRunner,
       environment: paths.environment,
+      ...(input.upgradePermissions === true ? { upgradePermissions: true as const } : {}),
     });
     persistReturnedReceipt(result, paths, deps);
     return result;

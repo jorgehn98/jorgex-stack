@@ -121,6 +121,12 @@ const REQUIRED_CAPABILITIES = new Set([
   "runner-json-v1",
   "managed-primary-model-v1",
 ]);
+/** Opt-in permissions upgrade: rewrites owned/absent policy via the package runner. Never default; seed-only without flag or capability. */
+export const PERMISSIONS_UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+
+export function supportsPermissionsUpgrade(capabilities: readonly string[]): boolean {
+  return Array.isArray(capabilities) && capabilities.includes(PERMISSIONS_UPGRADE_CAPABILITY);
+}
 const ALLOWED_EXTERNAL_WRITES = new Set([
   "settings.json",
   "models.json",
@@ -146,6 +152,7 @@ function managedExternalWritesAreSafe(writes: readonly ManagedExternalWrite[], c
   const permissions = capabilities.includes("permissions-policy-v1");
   const experience = capabilities.includes("experience-defaults-v1");
   if (experience && !permissions) return false;
+  if (supportsPermissionsUpgrade(capabilities) && !permissions) return false;
   const allowed = experience ? EXPERIENCE_EXTERNAL_WRITES : permissions ? PERMISSIONS_EXTERNAL_WRITES : ALLOWED_EXTERNAL_WRITES;
   if (writes.length !== allowed.size) return false;
   const seen = new Set<string>();
@@ -409,7 +416,7 @@ export type PiPackageOperation = "install" | "sync" | "models";
 
 export type PiPackageExecutorResult =
   | { kind: "installed"; receipt: PiPackageReceipt }
-  | { kind: "synced"; actions: unknown[] }
+  | { kind: "synced"; actions: unknown[]; upgraded?: boolean; policySha256?: string }
   | { kind: "models"; models: { mode: "inherit-session"; tiers: ["strong", "standard", "cheap"] } }
   | { kind: "manual-existing" }
   | { kind: "blocked"; reason: "pi-install-failed" | "runner-output" | "runner-unhealthy" };
@@ -420,6 +427,8 @@ export interface PiPackageExecutorInput {
   candidate: PiRuntimeCandidate;
   packageRunner: string;
   environment: PiPackageEnvironment;
+  /** Explicit opt-in to rewrite owned/absent Pi policy via the runner upgrade command. Seed-only unless true with the upgrade capability. */
+  upgradePermissions?: boolean;
 }
 
 export interface PiPackageExecutorDeps {
@@ -431,7 +440,7 @@ export interface PiPackageExecutorDeps {
   }): { exitCode: number; stdout: string; stderr: string };
 }
 
-type RunnerCommand = Exclude<PiPackageOperation, "install"> | "doctor" | "cleanup" | "status";
+type RunnerCommand = Exclude<PiPackageOperation, "install"> | "doctor" | "cleanup" | "status" | "upgrade";
 
 interface RunnerRecord {
   schemaVersion: number;
@@ -490,6 +499,53 @@ function runPackageCommand(
     ?? { kind: "blocked", reason: "runner-output" };
 }
 
+/** Retryable race-loser signal from the Pi runner: exit 1 with stdout JSON error.code CONFIG_LOCKED. Only this signal is retried. */
+const CONFIG_LOCKED_SIGNAL = "CONFIG_LOCKED";
+/** Bounded upgrade retries on the lock signal before failing visibly. No unbounded loops. */
+const UPGRADE_LOCK_RETRIES = 2;
+
+function stdoutHasConfigLockedSignal(stdout: string): boolean {
+  const body = stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
+  if (body === "" || body.includes("\n") || body.includes("\r")) return false;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const error = Reflect.get(parsed, "error");
+    if (error === null || typeof error !== "object" || Array.isArray(error)) return false;
+    return Reflect.get(error, "code") === CONFIG_LOCKED_SIGNAL;
+  } catch {
+    return false;
+  }
+}
+
+function isConfigLockedFailure(result: { exitCode: number; stdout: string; stderr: string }): boolean {
+  if (result.exitCode !== 1) return false;
+  return stdoutHasConfigLockedSignal(result.stdout) || result.stderr.includes(CONFIG_LOCKED_SIGNAL);
+}
+
+function runUpgradeWithLockRetry(
+  input: PiPackageExecutorInput,
+  deps: PiPackageExecutorDeps,
+): RunnerRecord | PiPackageExecutorResult {
+  let retries = 0;
+  for (;;) {
+    const raw = deps.run({
+      executable: input.packageRunner,
+      args: ["upgrade", "--json"],
+      environment: input.environment,
+    });
+    if (raw.exitCode !== 0) {
+      if (isConfigLockedFailure(raw) && retries < UPGRADE_LOCK_RETRIES) {
+        retries += 1;
+        continue;
+      }
+      return { kind: "blocked", reason: "runner-unhealthy" };
+    }
+    return parseRunnerRecord(raw.stdout, raw.stderr, "upgrade", input.candidate, input.packageRunner)
+      ?? { kind: "blocked", reason: "runner-output" };
+  }
+}
+
 function isBlockedResult(value: RunnerRecord | PiPackageExecutorResult): value is PiPackageExecutorResult {
   return "kind" in value;
 }
@@ -532,7 +588,32 @@ export function executePiPackageLifecycle(
       || !Array.isArray(Reflect.get(result, "actions"))) {
       return { kind: "blocked", reason: "runner-unhealthy" };
     }
-    return { kind: "synced", actions: Reflect.get(result, "actions") };
+    const syncActions = Reflect.get(result, "actions") as unknown[];
+    if (input.upgradePermissions !== true || !supportsPermissionsUpgrade(input.candidate.contract.capabilities)) {
+      return { kind: "synced", actions: syncActions };
+    }
+    const upgrade = runUpgradeWithLockRetry(input, deps);
+    if (isBlockedResult(upgrade)) return upgrade;
+    const upgraded = upgrade.result;
+    if (upgraded === null || typeof upgraded !== "object" || Array.isArray(upgraded)) {
+      return { kind: "blocked", reason: "runner-output" };
+    }
+    const changed = Reflect.get(upgraded, "changed");
+    const actions = Reflect.get(upgraded, "actions");
+    if ((changed !== true && changed !== false) || !Array.isArray(actions)) {
+      return { kind: "blocked", reason: "runner-unhealthy" };
+    }
+    if (typeof Reflect.get(upgraded, "policy") === "string" || typeof Reflect.get(upgraded, "config") === "string") {
+      return { kind: "blocked", reason: "runner-output" };
+    }
+    if (changed === true) {
+      const policySha256 = Reflect.get(upgraded, "policySha256");
+      if (typeof policySha256 !== "string" || !/^[a-f0-9]{64}$/.test(policySha256)) {
+        return { kind: "blocked", reason: "runner-output" };
+      }
+      return { kind: "synced", actions: [...syncActions, ...actions], upgraded: true, policySha256 };
+    }
+    return { kind: "synced", actions: [...syncActions, ...actions], upgraded: false };
   }
 
   const models = command.result;

@@ -485,6 +485,7 @@ interface RunSelectedPiOptions {
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
   packageOnly?: boolean;
+  upgradePermissions?: boolean;
 }
 
 async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
@@ -559,6 +560,15 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
     ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
     ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+    ...(() => {
+      if (options.upgradePermissions !== true) return {};
+      const supports = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("permissions-upgrade-v1");
+      if (!supports) {
+        p.log.info("Pi: --upgrade-permissions requiere un paquete con permissions-upgrade-v1; se continúa en modo seed-only.");
+        return {};
+      }
+      return { upgradePermissions: true as const };
+    })(),
   });
   if (result.kind === "blocked") {
     const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
@@ -815,6 +825,7 @@ async function main(): Promise<void> {
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
               playwrightCapability,
+              ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
             });
             exitCode = Math.max(exitCode, piExitCode);
             piStatus = piExitCode === 0 ? "ok" : "failed";
