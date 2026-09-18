@@ -106,6 +106,20 @@ const PERMISSIONS_RUNNER_CONTRACT = {
   semantics: "sync seeds only an absent config through exclusive publication; existing, invalid, and concurrent user state is preserved; cleanup keeps an exact owned copy in a retained backup",
   diagnostic: "permission state reports invalid or unreadable files without exposing their contents",
 } as const;
+const UPGRADE_PERMISSIONS_SEMANTICS =
+  "sync seeds only an absent config through exclusive publication; an explicit upgrade rewrites an absent or owned-stale config with a prior byte-exact backup, exclusive publication, and a versioned receipt; existing, invalid, and concurrent user state is preserved; cleanup keeps an exact owned copy in a retained backup";
+const UPGRADE_LIFECYCLE_ACTION = "upgraded:permissions.config";
+const UPGRADE_POLICY_SHA256 = { type: "string", pattern: "^[a-f0-9]{64}$" } as const;
+const UPGRADE_ONEOF_ENTRIES = [
+  {
+    properties: { command: { const: "upgrade" }, ok: { const: true }, result: { $ref: "#/$defs/lifecycleResult" } },
+    not: { required: ["error"] },
+  },
+  {
+    properties: { command: { const: "upgrade" }, ok: { const: false }, result: { $ref: "#/$defs/lifecycleResult" } },
+    required: ["error"],
+  },
+] as const;
 const PERMISSIONS_PRESERVED_STATE = {
   owner: "@gotgenes/pi-permission-system",
   root: "PI_CODING_AGENT_DIR",
@@ -259,6 +273,21 @@ function runnerResponseSchema(
   permissionsSchemaMutation = false,
   experienceDefaults = false,
 ): Record<string, unknown> {
+  const oneOf = [
+    { command: "status", ok: true, result: "#/$defs/statusResult", error: false },
+    { command: "status", ok: false, result: "#/$defs/statusResult", error: true },
+    { command: "doctor", ok: true, result: "#/$defs/doctorResult", error: false },
+    { command: "doctor", ok: false, result: "#/$defs/doctorResult", error: true },
+    { command: "models", ok: true, result: "#/$defs/modelsResult", error: false },
+    { command: "sync", ok: true, result: "#/$defs/lifecycleResult", error: false },
+    { command: "sync", ok: false, result: "#/$defs/lifecycleResult", error: true },
+    { command: "cleanup", ok: true, result: "#/$defs/lifecycleResult", error: false },
+    { command: "cleanup", ok: false, result: "#/$defs/lifecycleResult", error: true },
+    { command: "unknown", ok: false, result: "#/$defs/emptyResult", error: true },
+  ].map(({ command, ok, result, error }) => ({
+    properties: { command: { const: command }, ok: { const: ok }, result: { $ref: result } },
+    ...(error ? { required: ["error"] } : { not: { required: ["error"] } }),
+  }));
   const context7 = {
     type: "object",
     additionalProperties: false,
@@ -370,6 +399,7 @@ function runnerResponseSchema(
       lifecycleResult,
       lifecycleAction,
     },
+    oneOf,
   };
 }
 
@@ -1905,15 +1935,34 @@ describe("preparePiAdoption", () => {
     fs.writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
 
     const runnerPath = path.join(fixture.piDir, "contract", "runner.v1.json");
-    const runner = readJson<{ commands: string[] }>(fixture.piDir, "contract/runner.v1.json");
+    const runner = readJson<{ commands: string[]; permissions: { semantics: string } }>(fixture.piDir, "contract/runner.v1.json");
     expect(runner.commands).not.toContain("upgrade");
     runner.commands.push("upgrade");
+    expect(runner.permissions.semantics).toBe(PERMISSIONS_RUNNER_CONTRACT.semantics);
+    runner.permissions.semantics = UPGRADE_PERMISSIONS_SEMANTICS;
     fs.writeFileSync(runnerPath, `${JSON.stringify(runner, null, 2)}\n`, "utf8");
 
     const schemaPath = path.join(fixture.piDir, "contract", "schemas", "runner-response.v1.schema.json");
-    const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as { properties: { command: { enum: string[] } } };
+    const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as {
+      properties: { command: { enum: string[] } };
+      oneOf: Array<{ properties?: { command?: { const?: string } } }>;
+      $defs: {
+        lifecycleResult: { properties: Record<string, unknown> };
+        lifecycleAction: { enum: string[] };
+      };
+    };
     expect(schema.properties.command.enum).not.toContain("upgrade");
     schema.properties.command.enum.push("upgrade");
+    expect(schema.oneOf.some((entry) => entry.properties?.command?.const === "upgrade")).toBe(false);
+    schema.oneOf.splice(schema.oneOf.length - 1, 0, ...structuredClone(UPGRADE_ONEOF_ENTRIES));
+    expect(schema.$defs.lifecycleResult.properties.policySha256).toBeUndefined();
+    schema.$defs.lifecycleResult.properties.policySha256 = structuredClone(UPGRADE_POLICY_SHA256);
+    expect(schema.$defs.lifecycleAction.enum).not.toContain(UPGRADE_LIFECYCLE_ACTION);
+    schema.$defs.lifecycleAction.enum.splice(
+      schema.$defs.lifecycleAction.enum.indexOf("released:permissions.config") + 1,
+      0,
+      UPGRADE_LIFECYCLE_ACTION,
+    );
     fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
 
     const nextProducer = commit(fixture.piDir, "pi: 0.8.8 permissions-upgrade-v1");
@@ -1963,6 +2012,134 @@ describe("preparePiAdoption", () => {
     const nextEntries = archiveEntryNames(path.dirname(fixture.root), fixture.tarball);
     expect(nextEntries).toEqual(previousEntries);
     expect(fixture.nextArchive.entries).toBe(previousEntries.length);
+  }, 15_000);
+
+  it("rechaza una semántica de upgrade no revisada aunque se confirme permissions-upgrade-v1", async () => {
+    const fixture = createAdoptionFixture({
+      ...PERMISSIONS_TRANSITION_FIXTURE,
+      previousPermissionsPolicy: true,
+    });
+    const UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+
+    const contractPath = path.join(fixture.piDir, "contract", "jorgex-pi.v1.json");
+    const contract = readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json");
+    const permissionsIndex = contract.capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    contract.capabilities.splice(permissionsIndex + 1, 0, UPGRADE_CAPABILITY);
+    fs.writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
+
+    const runnerPath = path.join(fixture.piDir, "contract", "runner.v1.json");
+    const runner = readJson<{ commands: string[]; permissions: { semantics: string } }>(fixture.piDir, "contract/runner.v1.json");
+    runner.commands.push("upgrade");
+    runner.permissions.semantics = `${UPGRADE_PERMISSIONS_SEMANTICS} (unreviewed suffix)`;
+    fs.writeFileSync(runnerPath, `${JSON.stringify(runner, null, 2)}\n`, "utf8");
+
+    const schemaPath = path.join(fixture.piDir, "contract", "schemas", "runner-response.v1.schema.json");
+    const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as { properties: { command: { enum: string[] } } };
+    schema.properties.command.enum.push("upgrade");
+    fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
+
+    const nextProducer = commit(fixture.piDir, "pi: 0.8.8 permissions-upgrade-v1 unreviewed semantics");
+    git(fixture.piDir, ["tag", "-f", `v${fixture.version}`, nextProducer]);
+    git(fixture.piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
+    const tarball = gitArchive(fixture.piDir, nextProducer, true);
+    (fixture as { next: Pin }).next = pin(fixture.version, nextProducer, tarball);
+    (fixture as { tarball: Buffer }).tarball = tarball;
+
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+    const fetch = registryFetch(fixture);
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPermissionsUpgrade: true,
+    }, dependencies)).rejects.toThrow(/runner semantics differs from producer|compatibility requires manual review/);
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it.each([
+    ["una entrada oneOf de upgrade con resultado ajeno", (schema: {
+      oneOf: Array<{ properties?: { command?: { const?: string }; result?: unknown } }>;
+      $defs: { lifecycleResult: { properties: Record<string, unknown> }; lifecycleAction: { enum: string[] } };
+    }) => {
+      schema.oneOf.push({
+        properties: { command: { const: "upgrade" }, result: { $ref: "#/$defs/emptyResult" } },
+      });
+    }],
+    ["un patrón policySha256 no revisado", (schema: {
+      oneOf: Array<{ properties?: { command?: { const?: string } } }>;
+      $defs: { lifecycleResult: { properties: Record<string, unknown> }; lifecycleAction: { enum: string[] } };
+    }) => {
+      schema.$defs.lifecycleResult.properties.policySha256 = { type: "string", pattern: "^[a-f0-9]{32}$" };
+    }],
+    ["una acción de lifecycle no revisada junto a la revisada", (schema: {
+      oneOf: Array<{ properties?: { command?: { const?: string } } }>;
+      $defs: { lifecycleResult: { properties: Record<string, unknown> }; lifecycleAction: { enum: string[] } };
+    }) => {
+      schema.$defs.lifecycleAction.enum.push("upgraded:permissions.config.v2");
+    }],
+  ] as const)("rechaza %s aunque se confirme permissions-upgrade-v1", async (_case, mutate) => {
+    const fixture = createAdoptionFixture({
+      ...PERMISSIONS_TRANSITION_FIXTURE,
+      previousPermissionsPolicy: true,
+    });
+    const UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+
+    const contractPath = path.join(fixture.piDir, "contract", "jorgex-pi.v1.json");
+    const contract = readJson<{ capabilities: string[] }>(fixture.piDir, "contract/jorgex-pi.v1.json");
+    const permissionsIndex = contract.capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    contract.capabilities.splice(permissionsIndex + 1, 0, UPGRADE_CAPABILITY);
+    fs.writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`, "utf8");
+
+    const runnerPath = path.join(fixture.piDir, "contract", "runner.v1.json");
+    const runner = readJson<{ commands: string[]; permissions: { semantics: string } }>(fixture.piDir, "contract/runner.v1.json");
+    runner.commands.push("upgrade");
+    runner.permissions.semantics = UPGRADE_PERMISSIONS_SEMANTICS;
+    fs.writeFileSync(runnerPath, `${JSON.stringify(runner, null, 2)}\n`, "utf8");
+
+    const schemaPath = path.join(fixture.piDir, "contract", "schemas", "runner-response.v1.schema.json");
+    const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as {
+      properties: { command: { enum: string[] } };
+      oneOf: Array<{ properties?: { command?: { const?: string }; result?: unknown } }>;
+      $defs: {
+        lifecycleResult: { properties: Record<string, unknown> };
+        lifecycleAction: { enum: string[] };
+      };
+    };
+    schema.properties.command.enum.push("upgrade");
+    schema.oneOf.splice(schema.oneOf.length - 1, 0, ...structuredClone(UPGRADE_ONEOF_ENTRIES));
+    schema.$defs.lifecycleResult.properties.policySha256 = structuredClone(UPGRADE_POLICY_SHA256);
+    schema.$defs.lifecycleAction.enum.splice(
+      schema.$defs.lifecycleAction.enum.indexOf("released:permissions.config") + 1,
+      0,
+      UPGRADE_LIFECYCLE_ACTION,
+    );
+    mutate(schema);
+    fs.writeFileSync(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
+
+    const nextProducer = commit(fixture.piDir, `pi: 0.8.8 permissions-upgrade-v1 unreviewed ${_case}`);
+    git(fixture.piDir, ["tag", "-f", `v${fixture.version}`, nextProducer]);
+    git(fixture.piDir, ["update-ref", "refs/remotes/origin/main", nextProducer]);
+    const tarball = gitArchive(fixture.piDir, nextProducer, true);
+    (fixture as { next: Pin }).next = pin(fixture.version, nextProducer, tarball);
+    (fixture as { tarball: Buffer }).tarball = tarball;
+
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+    const fetch = registryFetch(fixture);
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptPermissionsUpgrade: true,
+    }, dependencies)).rejects.toThrow(/Permissions upgrade.*(differs from producer|requires? exactly)|compatibility requires manual review/);
+    expect(rootState(fixture)).toEqual(before);
   }, 15_000);
 
   it("acepta la deriva de contenido de permissions con capability presente sólo con confirmación explícita", async () => {
