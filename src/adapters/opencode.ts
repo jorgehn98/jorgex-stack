@@ -387,7 +387,7 @@ export const opencodeAdapter: Adapter = {
           root["permission"] = canonicalPermission;
         } else {
           ctx.warnings.push(
-            "OpenCode: permission block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand.",
+            "OpenCode: permission block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.",
           );
         }
       }

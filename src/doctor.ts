@@ -330,7 +330,8 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     if (stalePermissions) {
       p.log.warn(
         `${adapter.name}: permission block differs from the stack default and was left untouched; ` +
-          `preview the upgrade with '${UPGRADE_PERMISSIONS_REMEDY}'.`,
+          `preview the upgrade with '${UPGRADE_PERMISSIONS_REMEDY}'. ` +
+          `Overwriting discards your own permission changes, including any extra hardenings.`,
       );
       problems++;
     }

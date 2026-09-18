@@ -35,7 +35,7 @@ type DoctorModule = {
   }): Promise<number>;
 };
 
-const STALE_FRAGMENTS = ["differs from the stack default", "--upgrade-permissions"];
+const STALE_FRAGMENTS = ["differs from the stack default", "--upgrade-permissions", "discards your own permission changes"];
 const REMEDY_COMMAND = "jorgex-stack sync --upgrade-permissions --dry-run";
 
 function output(): string {

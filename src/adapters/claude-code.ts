@@ -262,7 +262,7 @@ export const claudeCodeAdapter: Adapter = {
           root["permissions"] = canonicalPermissions;
         } else {
           ctx.warnings.push(
-            "Claude Code: permissions block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand.",
+            "Claude Code: permissions block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.",
           );
         }
       });

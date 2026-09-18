@@ -173,6 +173,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     const warnings = ctx.warnings.join("\n");
     expect(warnings).toMatch(/--upgrade-permissions/);
     expect(warnings).toMatch(/backup/i);
+    expect(warnings).toMatch(/discards your own permission changes/i);
     expect(warnings).not.toContain(JSON.stringify(canonicalOpencodePermission()).slice(0, 80));
     expect(warnings).not.toContain('"external_directory"');
   });
@@ -240,6 +241,7 @@ describe("permissions-upgrade: claude-code planHooks (nunca main-config)", () =>
     const warnings = ctx.warnings.join("\n");
     expect(warnings).toMatch(/--upgrade-permissions/);
     expect(warnings).toMatch(/backup/i);
+    expect(warnings).toMatch(/discards your own permission changes/i);
     expect(warnings).not.toContain("Read(//**/.ssh/**)");
   });
 
@@ -310,6 +312,7 @@ describe("permissions-upgrade: codex planMainConfig (perfil TOML)", () => {
     const warnings = ctx.warnings.join("\n");
     expect(warnings).toMatch(/--upgrade-permissions/);
     expect(warnings).toMatch(/backup/i);
+    expect(warnings).toMatch(/discards your own permission changes/i);
     expect(warnings).not.toContain('extends = ":workspace"');
   });
 

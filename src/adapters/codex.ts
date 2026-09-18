@@ -222,7 +222,7 @@ function renderCodexPermissionEntries(
 }
 
 const CODEX_STALE_PERMISSIONS_WARNING =
-  "Codex: permission profile differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand.";
+  "Codex: permission profile differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.";
 
 /** Header normalizado (segmentos sin comillas) para comparar/leer secciones. */
 function codexNormalizedHeader(header: string): string {

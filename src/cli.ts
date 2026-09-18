@@ -485,8 +485,6 @@ interface RunSelectedPiOptions {
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
   packageOnly?: boolean;
-  /** Opt-in para re-aplicar el bloque de permisos gestionados sobre config existente (reemplazo entero con backup; sin flag solo se avisa). */
-  upgradePermissions?: boolean;
 }
 
 async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
@@ -814,7 +812,6 @@ async function main(): Promise<void> {
               devtoolsMcpEnabled: devtoolsMcpSelection.pi,
               writingStyle,
               modePreference: mode,
-              upgradePermissions: flags.upgradePermissions,
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
               playwrightCapability,
