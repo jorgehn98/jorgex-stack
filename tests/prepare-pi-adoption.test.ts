@@ -22,6 +22,7 @@ type PreparePiAdoption = (
     acceptExperienceDefaults?: boolean;
     acceptInitializationDiagnostics?: boolean;
     acceptPermissionsUpgrade?: boolean;
+    acceptEngramChildOnly?: boolean;
     acceptPiVersion?: string;
   },
   dependencies?: {
@@ -253,6 +254,12 @@ const LEGACY_BROWSER_EXCLUSIONS = [
   { kind: "runtime-specific-overlay", sourcePath: "stack/system-prompt/browser-chrome-devtools.md" },
   { kind: "runtime-specific-overlay", sourcePath: "stack/system-prompt/browser-playwright.md" },
 ] as const;
+const ENGRAM_CHILD_MEMBER = "extensions/engram-child.ts";
+const ENGRAM_CHILD_ROUTE = "../extensions/engram-child.ts";
+const ENGRAM_CHILD_CONTENT = "export const engramChild = true;\n";
+const ENGRAM_BASELINE_TOOLS = ["mem_context", "mem_search", "mem_get_observation"] as const;
+const ENGRAM_BASELINE_CAPABILITY = "engram-runtime-tools-v1";
+const ENGRAM_BASELINE_MAX_DEPTH = 1;
 
 function modularSystemPromptContent(sourcePath: string): string {
   return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", sourcePath), "utf8");
@@ -573,6 +580,12 @@ function writePiRelease(
     permissionsSourceParityMutation?: boolean;
     experienceDefaults?: boolean;
     experienceRunnerMutation?: boolean;
+    engramBaseline?: boolean;
+    engramChild?: boolean;
+    engramChildRoute?: string;
+    engramChildExtra?: boolean;
+    engramToolsMutation?: boolean;
+    engramOtherAgentMutation?: boolean;
     legacyBrowserExclusions?: boolean;
     extraSystemPromptModule?: {
       name: string;
@@ -665,6 +678,34 @@ function writePiRelease(
   const playwrightExtension = path.join(root, "extensions", "playwright.ts");
   if (options.playwrightHandoff) fs.writeFileSync(playwrightExtension, "export const playwright = true;\n", "utf8");
   else if (fs.existsSync(playwrightExtension)) fs.unlinkSync(playwrightExtension);
+  const needsEngramBaseline = Boolean(
+    options.engramBaseline
+      || options.engramChild
+      || options.engramChildRoute !== undefined
+      || options.engramChildExtra
+      || options.engramToolsMutation
+      || options.engramOtherAgentMutation,
+  );
+  const hasEngramChild = Boolean(
+    options.engramChild
+      || options.engramChildRoute !== undefined
+      || options.engramChildExtra
+      || options.engramToolsMutation
+      || options.engramOtherAgentMutation,
+  );
+  if (hasEngramChild) {
+    const member = options.engramChildRoute !== undefined
+      ? options.engramChildRoute.replace(/^\.\.\//, "")
+      : ENGRAM_CHILD_MEMBER;
+    const file = path.join(root, member);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, ENGRAM_CHILD_CONTENT, "utf8");
+  } else {
+    fs.rmSync(path.join(root, ENGRAM_CHILD_MEMBER), { force: true });
+    if (options.engramChildRoute !== undefined) {
+      fs.rmSync(path.join(root, options.engramChildRoute.replace(/^\.\.\//, "")), { force: true });
+    }
+  }
   const playwrightSkillRoot = path.join(root, "skills", "playwright-cli");
   if (playwrightSkillTree) {
     for (const relativePath of PLAYWRIGHT_SKILL_FILES) {
@@ -766,7 +807,29 @@ function writePiRelease(
     preservedExternalState,
   });
   writeJson(root, "contract/components.v1.json", { schemaVersion: 1, components: ["agents", "assets"] });
-  writeJson(root, "contract/runtime-agents.v1.json", { schemaVersion: 1, agents: ["tester"] });
+  if (needsEngramBaseline) {
+    const route = options.engramChildRoute ?? ENGRAM_CHILD_ROUTE;
+    const subagentOnlyExtensions = options.engramChildExtra
+      ? [ENGRAM_CHILD_ROUTE, "../extensions/extra.ts"]
+      : hasEngramChild
+        ? [route]
+        : undefined;
+    const engramAgent: Record<string, unknown> = {
+      name: "engram",
+      tools: options.engramToolsMutation
+        ? [...ENGRAM_BASELINE_TOOLS, "extra_tool"]
+        : [...ENGRAM_BASELINE_TOOLS],
+      requiredCapability: ENGRAM_BASELINE_CAPABILITY,
+      maxDepth: ENGRAM_BASELINE_MAX_DEPTH,
+      ...(subagentOnlyExtensions === undefined ? {} : { subagentOnlyExtensions }),
+    };
+    const testerAgent: Record<string, unknown> = options.engramOtherAgentMutation
+      ? { name: "tester", extra: true }
+      : { name: "tester" };
+    writeJson(root, "contract/runtime-agents.v1.json", { schemaVersion: 1, agents: [engramAgent, testerAgent] });
+  } else {
+    writeJson(root, "contract/runtime-agents.v1.json", { schemaVersion: 1, agents: ["tester"] });
+  }
   for (const schema of ["runner-response", "quality-receipt", "quality-capabilities"]) {
     writeJson(root, `contract/schemas/${schema}.v1.schema.json`, schema === "runner-response"
       ? runnerResponseSchema(context7Http, options.context7SchemaMutation, permissionsPolicy, options.permissionsSchemaMutation, experienceDefaults)
@@ -921,6 +984,13 @@ function createAdoptionFixture(options: {
   playwrightSkill?: boolean;
   producerPlaywrightSkillTree?: boolean;
   sourcePlaywrightSkill?: boolean;
+  engramBaseline?: boolean;
+  engramChild?: boolean;
+  previousEngramChild?: boolean;
+  engramChildRoute?: string;
+  engramChildExtra?: boolean;
+  engramToolsMutation?: boolean;
+  engramOtherAgentMutation?: boolean;
   previousExtraArchiveFile?: { path: string; content: string };
   removeExtraArchiveFile?: string;
   extraArchiveFile?: { path: string; content: string };
@@ -969,6 +1039,15 @@ function createAdoptionFixture(options: {
   fs.mkdirSync(piDir, { recursive: true });
   initializeGit(piDir);
   const npmArchive = options.previousPermissionsPolicy === true || options.permissionsPolicy === true;
+  const needsOldEngramBaseline = Boolean(
+    options.engramBaseline
+      || options.engramChild
+      || options.previousEngramChild
+      || options.engramChildRoute !== undefined
+      || options.engramChildExtra
+      || options.engramToolsMutation
+      || options.engramOtherAgentMutation,
+  );
   writePiRelease(piDir, "0.8.7", previousSourceCommit, {
     modularSystemPrompts: options.previousModularSystemPrompts,
     context7Http: options.previousContext7Http,
@@ -977,6 +1056,8 @@ function createAdoptionFixture(options: {
     devtoolsHandoff: options.previousDevtoolsHandoff,
     playwrightHandoff: options.previousPlaywrightHandoff,
     playwrightSkill: options.previousPlaywrightSkill,
+    engramBaseline: needsOldEngramBaseline,
+    engramChild: options.previousEngramChild,
     legacyBrowserExclusions: options.previousModularSystemPrompts === true ? false : options.modularSystemPrompts,
     persistentControlSkill: retainControlSkill,
     extraArchiveFile: options.previousExtraArchiveFile,
@@ -1027,6 +1108,12 @@ function createAdoptionFixture(options: {
     playwrightHandoff: options.playwrightHandoff,
     playwrightSkill: options.playwrightSkill,
     playwrightSkillTree: options.producerPlaywrightSkillTree,
+    engramBaseline: options.engramBaseline,
+    engramChild: options.engramChild,
+    engramChildRoute: options.engramChildRoute,
+    engramChildExtra: options.engramChildExtra,
+    engramToolsMutation: options.engramToolsMutation,
+    engramOtherAgentMutation: options.engramOtherAgentMutation,
     persistentControlSkill: retainControlSkill,
     extraArchiveFile: options.extraArchiveFile,
     removeArchiveFile: options.removeExtraArchiveFile,
@@ -3515,5 +3602,296 @@ describe("preparePiAdoption", () => {
     const automationPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "scripts", "stack-pi-automation.mjs");
     const automationSource = fs.readFileSync(automationPath, "utf8");
     expect(automationSource).toContain("acceptInitializationDiagnostics");
+  });
+
+  it("rechaza el delta Engram child-only sin aceptación explícita", async () => {
+    const fixture = createAdoptionFixture({ engramChild: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/runtime-agents\.v1\.json compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: false,
+      acceptInitializationDiagnostics: true,
+    }, dependencies)).rejects.toThrow(/contract\/runtime-agents\.v1\.json compatibility requires manual review/);
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("acepta el delta exacto Engram child-only sólo con confirmación explícita", async () => {
+    const fixture = createAdoptionFixture({ engramChild: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({ root: fixture.root, piDir: fixture.piDir, version: fixture.version }, dependencies))
+      .rejects.toThrow(/contract\/runtime-agents\.v1\.json compatibility requires manual review/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+
+    const runtimeAgents = readJson<{
+      schemaVersion: number;
+      agents: Array<{ name: string; tools?: unknown; requiredCapability?: unknown; maxDepth?: unknown; subagentOnlyExtensions?: unknown }>;
+    }>(fixture.piDir, "contract/runtime-agents.v1.json");
+    expect(runtimeAgents.schemaVersion).toBe(1);
+    expect(runtimeAgents.agents).toHaveLength(2);
+    const engram = runtimeAgents.agents.find((agent) => agent.name === "engram");
+    const tester = runtimeAgents.agents.find((agent) => agent.name === "tester");
+    expect(engram).toEqual({
+      name: "engram",
+      tools: [...ENGRAM_BASELINE_TOOLS],
+      requiredCapability: ENGRAM_BASELINE_CAPABILITY,
+      maxDepth: ENGRAM_BASELINE_MAX_DEPTH,
+      subagentOnlyExtensions: [ENGRAM_CHILD_ROUTE],
+    });
+    expect(tester).toEqual({ name: "tester" });
+
+    const previousEntries = archiveEntryNames(path.dirname(fixture.root), fixture.previousTarball);
+    const nextEntries = archiveEntryNames(path.dirname(fixture.root), fixture.tarball);
+    expect(previousEntries).not.toContain(`package/${ENGRAM_CHILD_MEMBER}`);
+    expect(nextEntries).toContain(`package/${ENGRAM_CHILD_MEMBER}`);
+    expect(nextEntries.filter((entry) => !previousEntries.includes(entry)).sort()).toEqual([`package/${ENGRAM_CHILD_MEMBER}`]);
+    expect(fixture.nextArchive.entries).toBe(previousEntries.length + 1);
+    const producerBytes = git(fixture.piDir, ["show", `${fixture.next.provenance.commit}:${ENGRAM_CHILD_MEMBER}`], false);
+    expect(producerBytes).toBe(ENGRAM_CHILD_CONTENT);
+  }, 15_000);
+
+  it.each([
+    ["ruta distinta", { engramChildRoute: "../extensions/other.ts" }],
+    ["array con entrada extra", { engramChildExtra: true }],
+    ["tools del agente", { engramToolsMutation: true }],
+    ["otro agente", { engramOtherAgentMutation: true }],
+  ] as const)("rechaza %s aunque se confirme Engram child-only", async (_label, options) => {
+    const fixture = createAdoptionFixture({ ...options });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza una capability ajena junto a la transición Engram válida aunque se confirme", async () => {
+    const fixture = createAdoptionFixture({ engramChild: true, extraCapabilities: ["unexpected-capability-v1"] });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("rechaza un archivo ajeno añadido al delta Engram child-only confirmado", async () => {
+    const fixture = createAdoptionFixture({
+      engramChild: true,
+      extraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
+    });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review|archive inventory/i);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza bytes de engram-child.ts que no coinciden con el productor Git", async () => {
+    const fixture = createAdoptionFixture({ engramChild: true });
+    const tamperedTarball = replaceArchiveMember(
+      fixture.root,
+      fixture.tarball,
+      `package/${ENGRAM_CHILD_MEMBER}`,
+      "tampered Engram child bytes\n",
+    );
+    const fetch = registryFetch(fixture, { nextTarballBytes: tamperedTarball });
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/compatibility requires manual review|does not match producer|producer/i);
+
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  it("rechaza un valor no booleano de acceptEngramChildOnly antes de consultar npm", async () => {
+    const fixture = createAdoptionFixture({ engramChild: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptEngramChildOnly: "yes" as unknown as boolean,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/Adoption options must be boolean/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
+  it("permite una adopción posterior con Engram child-only ya presente aunque el flag persista", async () => {
+    const fixture = createAdoptionFixture({ previousEngramChild: true, engramChild: true });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const dependencies = { fetch: fetch as typeof globalThis.fetch, now: () => 0, sleep: async () => undefined };
+
+    const expectedEngram = {
+      name: "engram",
+      tools: [...ENGRAM_BASELINE_TOOLS],
+      requiredCapability: ENGRAM_BASELINE_CAPABILITY,
+      maxDepth: ENGRAM_BASELINE_MAX_DEPTH,
+      subagentOnlyExtensions: [ENGRAM_CHILD_ROUTE],
+    };
+    const oldAgents = JSON.parse(git(fixture.piDir, ["show", `${fixture.current.provenance.commit}:contract/runtime-agents.v1.json`], false)) as {
+      agents: Array<Record<string, unknown>>;
+    };
+    const newAgents = JSON.parse(git(fixture.piDir, ["show", `${fixture.next.provenance.commit}:contract/runtime-agents.v1.json`], false)) as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(oldAgents.agents.find((agent) => agent.name === "engram")).toEqual(expectedEngram);
+    expect(newAgents.agents.find((agent) => agent.name === "engram")).toEqual(expectedEngram);
+    expect(git(fixture.piDir, ["show", `${fixture.current.provenance.commit}:${ENGRAM_CHILD_MEMBER}`], false)).toBe(ENGRAM_CHILD_CONTENT);
+    expect(git(fixture.piDir, ["show", `${fixture.next.provenance.commit}:${ENGRAM_CHILD_MEMBER}`], false)).toBe(ENGRAM_CHILD_CONTENT);
+    const previousEntries = archiveEntryNames(path.dirname(fixture.root), fixture.previousTarball);
+    const nextEntries = archiveEntryNames(path.dirname(fixture.root), fixture.tarball);
+    expect(previousEntries).toContain(`package/${ENGRAM_CHILD_MEMBER}`);
+    expect(nextEntries).toContain(`package/${ENGRAM_CHILD_MEMBER}`);
+    expect([...nextEntries].sort()).toEqual([...previousEntries].sort());
+    expect(fixture.nextArchive.entries).toBe(previousEntries.length);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, dependencies)).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+    expect(readJson<Pin>(fixture.root, PIN_PATH)).toEqual(fixture.next);
+    expect(readJson<Artifacts>(fixture.root, ARTIFACTS_PATH)).toEqual({
+      current: fixture.next,
+      previous: fixture.current,
+      archive: fixture.nextArchive,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  }, 15_000);
+
+  it("la automatización pasa la aceptación explícita Engram child-only al preparador", async () => {
+    const automationPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "scripts", "stack-pi-automation.mjs");
+    const automationSource = fs.readFileSync(automationPath, "utf8");
+    expect(automationSource).toContain("acceptEngramChildOnly");
+  });
+
+  it("expone --accept-engram-child-only en el contrato CLI del preparador", () => {
+    const cliRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-adoption-cli-engram-"));
+    temporaryRoots.push(cliRoot);
+    const scriptRoot = path.join(cliRoot, ".github", "scripts");
+    fs.mkdirSync(scriptRoot, { recursive: true });
+    fs.cpSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "scripts"), scriptRoot, { recursive: true });
+    initializeGit(cliRoot);
+    writeJson(cliRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
+    const current: Pin = {
+      package: { name: "jorgex-pi", version: "0.0.0", source: "npm:jorgex-pi@0.0.0" },
+      provenance: { commit: "0".repeat(40) },
+      tarball: { bytes: 1, sha256: "0".repeat(64), sha512: "0".repeat(128) },
+    };
+    writeJson(cliRoot, PIN_PATH, current);
+    writeJson(cliRoot, ARTIFACTS_PATH, {
+      current,
+      previous: current,
+      archive: { entries: 1, parity: { source: { commit: "0".repeat(40) } } },
+    });
+    commit(cliRoot, "stack: cli parser fixture");
+    git(cliRoot, ["switch", "-c", "adoption-test"]);
+
+    const result = spawnSync(process.execPath, [
+      path.join(scriptRoot, "prepare-pi-adoption.mjs"),
+      "--pi-dir",
+      cliRoot,
+      "--version",
+      "0.0.0",
+      "--accept-engram-child-only",
+    ], { cwd: cliRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
   });
 });
