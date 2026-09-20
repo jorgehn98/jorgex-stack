@@ -3710,6 +3710,28 @@ describe("preparePiAdoption", () => {
     expect(rootState(fixture)).toEqual(before);
   });
 
+  it("rechaza una capability ajena junto a la transición Engram válida aunque se confirme", async () => {
+    const fixture = createAdoptionFixture({ engramChild: true, extraCapabilities: ["unexpected-capability-v1"] });
+    const fetch = vi.fn();
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramChildOnly: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/contract\/jorgex-pi\.v1\.json compatibility requires manual review/);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(rootState(fixture)).toEqual(before);
+  });
+
   it("rechaza un archivo ajeno añadido al delta Engram child-only confirmado", async () => {
     const fixture = createAdoptionFixture({
       engramChild: true,
