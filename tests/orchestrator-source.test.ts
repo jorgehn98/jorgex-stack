@@ -345,8 +345,13 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(lifecycle).toMatch(/\[coverage revalidation\]\(\.\.\/xreview\/SKILL\.md#7-revalidate-coverage-and-stop\).+not an automatic repeated panel/is);
     expect(lifecycle).toMatch(/integration assumptions, including the effective base/i);
 
+    // OpenCode ya no recibe el protocolo vía el plugin legacy del Stack; lo
+    // provee `engram setup opencode` y el plan no incluye ese plugin.
+    if (adapter.id === "opencode") {
+      expect(actions.some((action) => action.target.endsWith("engram.ts"))).toBe(false);
+    }
     const protocolPayload = adapter.id === "opencode"
-      ? plannedContent(actions, path.join(runtimePaths.pluginsDir!, "engram.ts"))
+      ? fs.readFileSync(path.join(stackDir, "system-prompt", "engram-protocol.md"), "utf8")
       : sectionBetween(prompt, "<!-- jorgex:engram-protocol -->", "<!-- /jorgex:engram-protocol -->");
     expect(protocolPayload).toMatch(/Spec as read-only/i);
     expect(protocolPayload).toMatch(/separate outcome topic_key/i);

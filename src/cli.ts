@@ -1112,7 +1112,19 @@ async function main(): Promise<void> {
         if (!flags.list) console.log("\nUsa: jorgex-stack restore <id>");
         return;
       }
-      const restored = restoreBackup(flags.positional[0]!);
+      const targetId = flags.positional[0]!;
+      // Compara el tamaño del manifest con las escrituras aceptadas; restoreBackup
+      // omite entradas inseguras o que ya no tienen datos almacenados.
+      const expected = listBackups().find((b) => b.id === targetId)?.files.length;
+      const restored = restoreBackup(targetId);
+      if (expected !== undefined && restored < expected) {
+        console.error(
+          `Restore incompleto del backup ${targetId}: restaurados ${restored}/${expected} archivos ` +
+            `(omisiones de seguridad: symlinks, fuera de HOME o ilegibles). Revisa arriba y restaura a mano lo que falte.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
       console.log(`Restaurados ${restored} archivos.`);
       return;
     }

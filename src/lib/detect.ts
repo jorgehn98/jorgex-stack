@@ -81,7 +81,7 @@ export function detectOpenCode(): RuntimeDetection {
 }
 
 export function detectClaudeCode(): RuntimeDetection {
-  const configDir = path.join(HOME, ".claude");
+  const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude");
   const binPath = lookPath("claude");
   return {
     id: "claude-code",
@@ -122,4 +122,15 @@ export function detectEngram(): string | null {
   ];
   for (const c of candidates) if (existsSync(c)) return c;
   return null;
+}
+
+/**
+ * Versión del binario Engram (`--version`, solo ejecución local sin shell).
+ * Ayudante compartido sin estado personal ni red; devuelve null si el binario
+ * no responde. Vive aquí para evitar ciclos entre doctor y detect.
+ */
+export function engramVersion(bin: string): string | null {
+  const out = runDetectedBin(bin, ["--version"], 5_000);
+  if (out === null) return null;
+  return /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(out)?.[1] ?? out.trim().split("\n")[0] ?? null;
 }

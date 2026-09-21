@@ -7,11 +7,20 @@ import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
 import { HOME, stackRoot } from "./lib/paths.js";
-import { detectEngram } from "./lib/detect.js";
+import { detectEngram, engramVersion } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
+import {
+  resolveOfficialSetupArgv,
+  runOfficialSetup,
+  runOfficialSetupIfNeeded,
+  shouldRunOfficialSetup,
+  validateOfficialSetupDestination,
+  type OfficialSetupIfNeededResult,
+} from "./lib/official-engram-setup.js";
+import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
@@ -53,6 +62,9 @@ import {
   savePlaywrightCliPreference,
   savePrimaryModelOwnership,
 } from "./lib/tool-preferences.js";
+
+/** Coordinador setup oficial re-exportado para el contrato de instalación. */
+export { resolveOfficialSetupArgv, shouldRunOfficialSetup, runOfficialSetup };
 
 export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
   opencode: opencodeAdapter,
@@ -340,6 +352,61 @@ export function collectAllCurrentTargets(
   return { targets, complete, warnings };
 }
 
+/** Ruta legacy OpenCode que el setup oficial reemplaza en la misma ruta. */
+function legacyOpencodePluginPath(configDir: string): string {
+  return path.resolve(path.join(configDir, "plugins", "engram.ts"));
+}
+
+/** Centraliza el setup oficial y conserva el estado de recuperación del rollback. */
+async function runOfficialSetupForInstall(args: {
+  runtime: RuntimeId;
+  configDir: string;
+  engramBin: string | null;
+  command?: "install" | "sync";
+  dryRun: boolean;
+  targetDir?: string;
+}): Promise<OfficialSetupIfNeededResult> {
+  // Solo Claude necesita la comprobación de versión; Codex/OpenCode son
+  // gestionados por el proveedor. Ejecuta `--version` localmente, sin red ni
+  // estado personal; un resultado nulo/ilegible falla cerrado en el preflight
+  // Claude (binario intacto, antes de targets/backup/spawn).
+  let detectedVersion: string | null = null;
+  if (args.runtime === "claude-code" && typeof args.engramBin === "string" && args.engramBin !== "") {
+    try {
+      detectedVersion = engramVersion(args.engramBin);
+    } catch {
+      detectedVersion = null;
+    }
+  }
+  return runOfficialSetupIfNeeded(args.runtime, {
+    command: args.command,
+    dryRun: args.dryRun,
+    targetDir: args.targetDir,
+    engramBin: args.engramBin,
+    configDir: args.configDir,
+    homeDir: HOME,
+    engramVersion: detectedVersion,
+    ...(args.runtime === "claude-code"
+      ? { isExplicitClaudeConfigDir: process.env.CLAUDE_CONFIG_DIR !== undefined }
+      : {}),
+  });
+}
+
+function formatOfficialFailure(
+  adapterName: string,
+  official: Extract<OfficialSetupIfNeededResult, { ran: true }>,
+): string {
+  const detail = official.stderr ?? official.reason ?? "sin detalle";
+  if (official.ok) return `${adapterName}: setup oficial Engram ok.`;
+  if (official.incompleteRecovery === true) {
+    return `${adapterName}: setup oficial Engram falló (${detail}). Recuperación incompleta — revisa el backup ${official.backupId ?? "previo"}.`;
+  }
+  if (official.recovery === "complete") {
+    return `${adapterName}: setup oficial Engram falló (${detail}). Se restauró el backup previo.`;
+  }
+  return `${adapterName}: setup oficial Engram falló (${detail}).`;
+}
+
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
@@ -464,6 +531,19 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       continue;
     }
 
+    // Preflight del destino antes de construir/aplicar planes: una config
+    // Codex custom falla aquí sin escrituras ni setup/verifier. Los skips
+    // intencionales de sync/dry-run/target-dir no llegan a esta puerta.
+    if (shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
+      const destinationError = validateOfficialSetupDestination(id, configDir, HOME);
+      if (destinationError !== null) {
+        p.log.error(`${adapter.name}: ${destinationError}`);
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        continue;
+      }
+    }
+
     const ctx: InstallContext = {
       writingStyle,
       stackDir,
@@ -524,20 +604,92 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       continue;
     }
 
-    const writeManifest = (): void => {
+    const writeManifest = async (
+      official?: OfficialSetupIfNeededResult,
+      opts?: { keepPendingOrphans?: string[] },
+    ): Promise<void> => {
       if (!useManifest) return;
       const unmergeTargets = new Set(adapter.planUnmerge(canonicalMcp, canonicalHooks, ctx).map((a) => path.resolve(a.target)));
       const keepTarget = (target: string): boolean => !unmergeTargets.has(target);
       const liveOwned = plan.map((a) => path.resolve(a.target)).filter(keepTarget);
       const previousOwned = (prevManifest?.owned ?? []).map((target) => path.resolve(target)).filter(keepTarget);
-      const owned = canOrphan ? liveOwned : [...new Set([...previousOwned, ...liveOwned])];
-      writeRuntimeManifest(id, { configDir, owned, updatedAt: new Date().toISOString() });
+      const officialFailed = official?.ran === true && !official.ok;
+      let owned: string[];
+      let pendingOrphans: string[];
+      if (!canOrphan) {
+        owned = [...new Set([...previousOwned, ...liveOwned])];
+        pendingOrphans = [];
+      } else if (officialFailed) {
+        // Setup fallido: esta pasada no poda huérfanos; se conserva todo lo
+        // previo junto a lo vivo y se deja el borrado para una pasada futura.
+        owned = [...new Set([...previousOwned, ...liveOwned])];
+        pendingOrphans = [...orphans];
+      } else {
+        const keepPending = (opts?.keepPendingOrphans ?? []).map((t) => path.resolve(t));
+        owned = [...liveOwned];
+        // Legacy OpenCode: nunca huérfano ni ownership drop sin reemplazo
+        // oficial verificado. sync/dry-run/target-dir nunca hacen setup y
+        // preservan; en install real solo se retira tras transferencia
+        // verificada (el archivo oficial queda en disco).
+        if (id === "opencode") {
+          const legacy = legacyOpencodePluginPath(configDir);
+          if (previousOwned.includes(legacy)) {
+            // existsSync no distingue ausencia de ilegible: statSync sí.
+            // ENOENT = ausente (sin ownership que retener); otro error =
+            // desconocido → fail-closed, se retiene.
+            let state: "present" | "absent" | "unknown" = "unknown";
+            try {
+              fs.statSync(legacy);
+              state = "present";
+            } catch (error) {
+              const code = error instanceof Error && "code" in error
+                ? (error as NodeJS.ErrnoException).code
+                : undefined;
+              state = code === "ENOENT" ? "absent" : "unknown";
+            }
+            if (state !== "absent") {
+              let retire = false;
+              if (state === "present" && official?.ran === true && official.ok && official.ownershipTransferred) {
+                try {
+                  retire = (await shouldRetireLegacyEngram({ configDir })).retire;
+                } catch {
+                  retire = false;
+                }
+              }
+              if (!retire && !owned.includes(legacy)) owned.push(legacy);
+            }
+          }
+        }
+        for (const pending of keepPending) {
+          if (!owned.includes(pending)) owned.push(pending);
+        }
+        owned = [...new Set(owned)];
+        pendingOrphans = [...keepPending];
+      }
+      writeRuntimeManifest(id, { configDir, owned, pendingOrphans, updatedAt: new Date().toISOString() });
     };
 
     if (changes.length === 0 && orphans.length === 0) {
-      writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
+      // El setup oficial solo corre en install real; skips intencionales
+      // (sync/dry-run/target-dir) preservan legacy.
+      const official = await runOfficialSetupForInstall({
+        runtime: id,
+        configDir,
+        engramBin,
+        command: opts.command,
+        dryRun: opts.dryRun,
+        targetDir: opts.targetDir,
+      });
+      if (official.ran && !official.ok) {
+        await writeManifest(official);
+        p.log.error(formatOfficialFailure(adapter.name, official));
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        continue;
+      }
+      await writeManifest(official.ran ? official : undefined);
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
@@ -566,13 +718,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
 
     applyChanges(changes, useManifest ? (action) => persistConfigurationOwnershipChanges(id, configDir, [action]) : undefined);
-    const pruneRoot = useManifest ? HOME : path.dirname(configDir);
-    for (const orphan of orphans) {
-      fs.rmSync(orphan, { force: true });
-      pruneEmptyDirs(orphan, pruneRoot);
-    }
 
     // Verificación de idempotencia: re-planificar debe dar cero cambios.
+    // Huérfanos diferidos hasta verificación oficial (nada irreversible
+    // antes del setup).
     const verifyCtx: InstallContext = { ...ctx, warnings: [] };
     const dirty = diffPlan(buildPlan(adapter, verifyCtx)).filter((d) => d.status !== "unchanged");
     if (dirty.length > 0) {
@@ -581,13 +730,56 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       exitCode = 1;
       reportStatus(adapter.name, "failed");
     } else {
-      writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
-      p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
-      successfulRuns++;
-      successfulContexts.push({ adapter, ctx });
-      reportStatus(adapter.name, "ok");
+      // El setup oficial corre tras los archivos Stack (backup post-Stack; el
+      // restore conserva lo escrito por el Stack). Skips intencionales
+      // preservan legacy.
+      const official = await runOfficialSetupForInstall({
+        runtime: id,
+        configDir,
+        engramBin,
+        command: opts.command,
+        dryRun: opts.dryRun,
+        targetDir: opts.targetDir,
+      });
+      if (official.ran && !official.ok) {
+        await writeManifest(official);
+        p.log.error(formatOfficialFailure(adapter.name, official));
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+      } else {
+        const pruneRoot = useManifest ? HOME : path.dirname(configDir);
+        let orphanFailed: string | null = null;
+        let failedIndex: number | null = null;
+        for (let index = 0; index < orphans.length; index++) {
+          const orphan = orphans[index]!;
+          if (path.basename(orphan) === "engram.ts") continue;
+          try {
+            fs.rmSync(orphan, { force: true });
+            pruneEmptyDirs(orphan, pruneRoot);
+          } catch (error) {
+            orphanFailed = `${orphan} (${error instanceof Error ? error.message : String(error)})`;
+            failedIndex = index;
+            break;
+          }
+        }
+        if (orphanFailed !== null) {
+          // Solo lo borrado con éxito sale de pendientes; el fallido y los
+          // posteriores se conservan en owned y pendingOrphans.
+          const keepPending = failedIndex === null ? [...orphans] : orphans.slice(failedIndex);
+          await writeManifest(official.ran ? official : undefined, { keepPendingOrphans: keepPending });
+          p.log.error(`${adapter.name}: no se pudo eliminar huérfano ${orphanFailed} — se conserva y no se reporta éxito.`);
+          exitCode = 1;
+          reportStatus(adapter.name, "failed");
+        } else {
+          await writeManifest(official.ran ? official : undefined);
+          p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
+          successfulRuns++;
+          successfulContexts.push({ adapter, ctx });
+          reportStatus(adapter.name, "ok");
+        }
+      }
     }
   }
 

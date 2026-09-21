@@ -12,7 +12,7 @@ type PiEngramRequirement = {
       detectHost(): string | null;
       detectTarget(targetDir: string): string | null;
       confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-      installNative(input: { version: "1.20.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
+      installNative(input: { version: "2.0.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
     },
   ): Promise<EngramDecision>;
 };
@@ -49,7 +49,7 @@ function deps(overrides: Partial<{
         expect(input.message).toMatch(/engram/i);
         return overrides.accepted ?? false;
       },
-      async installNative(input: { version: "1.20.0"; channels: ["brew", "go", "url"] }) {
+      async installNative(input: { version: "2.0.0"; channels: ["brew", "go", "url"] }) {
         events.push(`install:${input.version}:${input.channels.join(",")}`);
         return overrides.installed ?? true;
       },
@@ -120,7 +120,7 @@ describe("Pi Engram requirement", () => {
     expect(accepted.events).toEqual([
       "detect-host",
       "confirm:false",
-      "install:1.20.0:brew,go,url",
+      "install:2.0.0:brew,go,url",
       "detect-host",
     ]);
   });

@@ -493,3 +493,81 @@ describe("codexAdapter Context7 registration safety", () => {
     expect(fs.readFileSync(configFile, "utf8")).toBe(previous);
   });
 });
+
+describe("codexAdapter official Engram MCP preservation", () => {
+  const ENGRAM_BIN = "/opt/engram";
+
+  function writeOfficialConfig(configFile: string, engramSection: string | null): void {
+    // Plugin oficial activo ([plugins."engram@main"] sin enabled=false) +
+    // bloque ajeno que debe preservarse. El plugin NO trae MCP bundled:
+    // `engram setup codex` registra un MCP user separado.
+    const parts = [
+      'model = "user/model"',
+      "model_context_window = 100",
+      "",
+      '[plugins."engram@main"]',
+      "",
+    ];
+    if (engramSection !== null) {
+      parts.push("[mcp_servers.engram]", engramSection, "");
+    }
+    parts.push('[mcp_servers.ajeno]', 'command = "x"', "");
+    fs.writeFileSync(configFile, parts.join("\n"));
+  }
+
+  function officialCtx(configDir: string, owned: string[] = []) {
+    return {
+      ...codexContext(configDir),
+      engramBin: ENGRAM_BIN,
+      ownedMcpServers: new Set(owned),
+    };
+  }
+
+  it("con plugin activo y MCP oficial exacto preserva sección y libera ownership (idempotente)", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    writeOfficialConfig(configFile, `command = ${JSON.stringify(ENGRAM_BIN)}\nargs = ["mcp", "--tools=agent"]`);
+
+    const [action] = codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), officialCtx(configDir, ["engram"]));
+    if (action?.kind !== "write") throw new Error("Expected a config write");
+    const section = readTomlSection(action.content, "mcp_servers.engram");
+    // Preserva, no borra; libera el ownership previo del Stack.
+    expect(section).not.toBeNull();
+    expect(section).toContain(JSON.stringify(ENGRAM_BIN));
+    expect(section).toContain('"mcp"');
+    expect(section).toContain('"--tools=agent"');
+    expect(readTomlSection(action.content, "mcp_servers.ajeno")).toContain('command = "x"');
+    expect(action.mcpOwnership).toEqual(expect.arrayContaining([{ server: "engram", owned: false }]));
+
+    // Idempotente tras el setup oficial real: el siguiente sync no muta.
+    fs.writeFileSync(configFile, action.content);
+    const [action2] = codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), officialCtx(configDir, []));
+    if (action2?.kind !== "write") throw new Error("Expected a config write");
+    expect(action2.content).toBe(action.content);
+    expect(readTomlSection(action2.content, "mcp_servers.engram")).toContain(JSON.stringify(ENGRAM_BIN));
+  });
+
+  it("con plugin activo y MCP ausente no lo recrea (setup incompleto lo cubre doctor/install)", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    writeOfficialConfig(configFile, null);
+
+    const [action] = codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), officialCtx(configDir, []));
+    if (action?.kind !== "write") throw new Error("Expected a config write");
+    expect(readTomlSection(action.content, "mcp_servers.engram")).toBeNull();
+    expect(readTomlSection(action.content, "mcp_servers.ajeno")).toContain('command = "x"');
+  });
+
+  it("con plugin activo y MCP foráneo lo preserva", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "config.toml");
+    writeOfficialConfig(configFile, 'command = "/foreign/bin"\nargs = ["mcp", "--tools=agent"]');
+
+    const [action] = codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), officialCtx(configDir, ["engram"]));
+    if (action?.kind !== "write") throw new Error("Expected a config write");
+    const section = readTomlSection(action.content, "mcp_servers.engram");
+    expect(section).not.toBeNull();
+    expect(section).toContain('"/foreign/bin"');
+    expect(readTomlSection(action.content, "mcp_servers.ajeno")).toContain('command = "x"');
+  });
+});

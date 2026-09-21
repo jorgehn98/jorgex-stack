@@ -84,16 +84,53 @@ export function listBackups(root = backupsRoot()): BackupInfo[] {
   return infos.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** Restaura un backup por id. Devuelve cuántos archivos se restauraron. */
+/**
+ * Restaura un backup por id. Devuelve cuántos archivos se restauraron.
+ * Nunca escribe a través de symlinks: un `original` que sea symlink o tenga
+ * un ancestro symlink (lstat, sin seguir) se omite. El conteo resultante
+ * permite al setup oficial detectar una restauración incompleta.
+ */
 export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME): number {
   const info = listBackups(root).find((b) => b.id === id);
   if (!info) throw new Error(`Backup no encontrado: ${id}`);
+  const boundaryResolved = path.resolve(boundary);
+  const hasSymlinkAncestor = (file: string): boolean => {
+    let dir = path.dirname(path.resolve(file));
+    while (dir !== boundaryResolved && isContainedIn(dir, boundaryResolved)) {
+      try {
+        if (fs.lstatSync(dir).isSymbolicLink()) return true;
+      } catch (error) {
+        const code = error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+          ? (error as NodeJS.ErrnoException).code
+          : "UNKNOWN";
+        // Ilegible distinto de ausente: no se puede descartar alias.
+        if (code !== "ENOENT") return true;
+        // Intermedio ausente: seguir ascendiendo hacia un posible symlink
+        // superior en lugar de dar por limpio el árbol.
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return false;
+  };
   let restored = 0;
   for (const { original, stored } of info.files) {
     if (!fs.existsSync(stored)) continue;
     // El manifest del backup es estado local editable: nunca puede dirigir
     // una escritura fuera de la frontera (HOME en uso real).
     if (!isContainedIn(original, boundary)) continue;
+    try {
+      if (fs.lstatSync(original).isSymbolicLink()) continue;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+        ? (error as NodeJS.ErrnoException).code
+        : "UNKNOWN";
+      // Ausente: recrear es seguro si los ancestros están limpios. Ilegible:
+      // omitir (no se puede descartar alias).
+      if (code !== "ENOENT") continue;
+    }
+    if (hasSymlinkAncestor(original)) continue;
     ensureDir(path.dirname(original));
     fs.copyFileSync(stored, original);
     restored++;

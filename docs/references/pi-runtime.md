@@ -157,7 +157,9 @@ La instalación o consumo del paquete Pi queda disponible tras la publicación y
 
 ## Engram
 
-Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. `install` resuelve o instala antes de configurar cualquier runtime el binario oficial fijado en v1.20.0, bajo `~/.local/bin/engram` (o el equivalente de la plataforma), verificando tamaño y SHA-256; el instalador de release no requiere Brew ni Go. En una ejecución interactiva se pide confirmación; `--engram` autoriza la descarga en flujos no interactivos. `sync`, dry-run y `--target-dir` no descargan Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
+Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, se conserva. `install` resuelve o instala antes de configurar cualquier runtime el binario oficial fijado en v2.0.0, bajo `~/.local/bin/engram` (o el equivalente de la plataforma), verificando tamaño y SHA-256; el instalador de release no requiere Brew ni Go. En una ejecución interactiva se pide confirmación; `--engram` autoriza la descarga en flujos no interactivos. `sync`, dry-run y `--target-dir` no descargan Engram. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
+
+Un binario existente anterior a la versión estable 2.0.0 haría que Claude escribiera el archivo obsoleto `mcp/engram.json`; por eso el preflight de Claude lo bloquea antes del setup y recomienda actualizar a Engram 2.0.0+ y repetir `install`. Stack nunca reemplaza automáticamente un binario existente. El plugin oficial de Claude aporta hooks y skill; `engram setup claude-code` registra aparte el MCP del usuario y no implica un MCP incluido en Stack ni un smoke autenticado de modelo-herramienta.
 
 ## Comandos
 

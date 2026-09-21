@@ -12,14 +12,21 @@ import { listFilesRecursive } from "../lib/fsx.js";
  * - "{{ENGRAM_BIN}}" → binario detectado (D7), por si engram no está en PATH.
  * - "{{ENGRAM_PROTOCOL}}" → contenido de system-prompt/engram-protocol.md
  *   (única fuente del protocolo, alineada con el resto de runtimes).
+ *
+ * `plugins/opencode/engram.ts` legacy ya no se empaqueta ni despliega;
+ * `engram setup opencode` es la única fuente (misma ruta, contenido oficial).
+ * Se excluye del plan para que sync no lo recree; `hooks.ts`/`worktree.ts`
+ * siguen Stack-owned.
  */
 export function planPlugins(adapter: Adapter, ctx: InstallContext): FileAction[] {
   const { pluginsDir } = adapter.paths(ctx.configDir);
   if (pluginsDir === null) return [];
   const source = path.join(ctx.stackDir, "plugins", adapter.id);
   if (!fs.existsSync(source)) return [];
+  const excluded = new Set(adapter.excludedPluginBasenames ?? []);
   return listFilesRecursive(source)
     .filter((f) => f.endsWith(".ts"))
+    .filter((f) => !excluded.has(path.basename(f)))
     .map((sourceFile): FileAction => {
       const target = path.join(pluginsDir, path.relative(source, sourceFile));
       const raw = fs.readFileSync(sourceFile, "utf8");
