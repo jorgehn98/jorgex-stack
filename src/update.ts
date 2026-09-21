@@ -3,9 +3,8 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import * as p from "@clack/prompts";
-import { detectEngram, lookPath, runDetectedBin } from "./lib/detect.js";
+import { detectEngram, engramVersion, lookPath, runDetectedBin } from "./lib/detect.js";
 import { stackRoot, dataDir, HOME } from "./lib/paths.js";
-import { engramVersion } from "./doctor.js";
 import {
   latestGithubRelease,
   latestGithubCommit,

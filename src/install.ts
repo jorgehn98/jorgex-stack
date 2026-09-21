@@ -7,7 +7,7 @@ import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
 import { HOME, stackRoot } from "./lib/paths.js";
-import { detectEngram } from "./lib/detect.js";
+import { detectEngram, engramVersion } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
@@ -365,6 +365,18 @@ async function runOfficialSetupForInstall(args: {
   dryRun: boolean;
   targetDir?: string;
 }): Promise<OfficialSetupIfNeededResult> {
+  // Solo Claude necesita la comprobación de versión; Codex/OpenCode son
+  // gestionados por el proveedor. Ejecuta `--version` localmente, sin red ni
+  // estado personal; un resultado nulo o ilegible omite la comprobación
+  // (preserva el comportamiento existente).
+  let detectedVersion: string | null = null;
+  if (args.runtime === "claude-code" && typeof args.engramBin === "string" && args.engramBin !== "") {
+    try {
+      detectedVersion = engramVersion(args.engramBin);
+    } catch {
+      detectedVersion = null;
+    }
+  }
   return runOfficialSetupIfNeeded(args.runtime, {
     command: args.command,
     dryRun: args.dryRun,
@@ -372,6 +384,7 @@ async function runOfficialSetupForInstall(args: {
     engramBin: args.engramBin,
     configDir: args.configDir,
     homeDir: HOME,
+    engramVersion: detectedVersion,
   });
 }
 

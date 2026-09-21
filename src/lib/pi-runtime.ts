@@ -125,7 +125,7 @@ export async function resolvePiEngramRequirement(
     detectHost(): string | null;
     detectTarget(targetDir: string): string | null;
     confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-    installNative(input: { version: "1.20.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
+    installNative(input: { version: "2.0.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
   },
 ): Promise<PiEngramDecision> {
   if (input.targetDir !== undefined) {
@@ -152,7 +152,7 @@ export async function resolvePiEngramRequirement(
     initialValue: false,
   });
   if (!accepted) return { kind: "offer", accepted: false };
-  const installed = await deps.installNative({ version: "1.20.0", channels: ["brew", "go", "url"] });
+  const installed = await deps.installNative({ version: "2.0.0", channels: ["brew", "go", "url"] });
   if (!installed) {
     return {
       kind: "blocked",

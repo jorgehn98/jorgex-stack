@@ -280,7 +280,7 @@ La retirada de la antigua skill vendorizada `playwright-cli` usa la misma protec
 | `--target-dir` parece "ver" el binario real de Playwright o mover `~/.jorgex-stack/devtools-mcp.json` | Comportamiento esperado, no bug | `--target-dir` no llama a `detectPlaywrightCli()`, no valida preferencias, no persiste ownership de MCP ni ejecuta planes pnpm globales. Las pruebas que cubren este aislamiento viven en `tests/browser-preferences-safety.test.ts`. |
 | `uninstall` retiró Playwright sin haberlo pedido | No es lo que ocurre por defecto | El paquete y los datos se conservan siempre que no se pase `--remove-playwright`. Si fue un error, restaura con `restore --list`. Si `--remove-playwright` falla, `uninstall` reporta el error en el `outro` en lugar de "Hecho" — no se trata como éxito silencioso. |
 | `agent-browser` viejo en `~/.agents/skills/` | Migración ownership-safe (solo manifest) | Si está en el manifest, desapareció; si no, sigue intacto. Verifica con el manifest en `~/.jorgex-stack/manifest.json`. No hay warning automático para residuo unowned. |
-| Claude Code no arranca DevTools MCP aunque `~/.claude.json` lo liste | El plugin oficial de Engram ya provee el MCP — `engram` se retira del `~/.claude.json` para no duplicar tools; pero DevTools MCP no tiene esa duplicación. Comprueba que la entrada `mcpServers.chrome-devtools` existe y que Chrome está instalado. |
+| Claude Code no arranca DevTools MCP aunque `~/.claude.json` lo liste | El plugin oficial de Engram aporta hooks y skill, pero el setup registra el MCP de Engram por separado en la configuración de usuario; no es un MCP incluido en Stack. Comprueba que la entrada `mcpServers.chrome-devtools` existe y que Chrome está instalado. |
 
 ---
 

@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createBackup, restoreBackup } from "./backup.js";
 import { isContainedIn } from "./fsx.js";
+import { HOME } from "./paths.js";
 
 /**
  * Coordinador común de `engram setup` oficial.
@@ -423,6 +424,8 @@ export async function runOfficialSetup(
 export type OfficialSetupVerifyFn = (args: {
   configDir: string;
   engramBin: string;
+  /** HOME efectivo: el verificador Claude elige el MCP exacto según el modo. */
+  homeDir?: string;
 }) => Promise<OfficialSetupVerifyResult>;
 
 /** Verificadores por runtime; cada adapter los registra al cargarse. */
@@ -437,9 +440,9 @@ export function registerOfficialSetupVerifier(runtime: OfficialSetupRuntime, fn:
  * respaldan; `createBackup` ignora ausentes y devuelve null si no hay nada).
  * No incluye `~/.engram` ni el binario.
  *
- * Claude usa el sibling `~/.claude.json` con el configDir default
- * (`<home>/.claude`); con un configDir custom (CLAUDE_CONFIG_DIR) el setup
- * oficial escribe `configDir/.claude.json`.
+ * Claude usa el archivo hermano `~/.claude.json` con el configDir
+ * predeterminado (`<home>/.claude`); con un configDir personalizado
+ * (CLAUDE_CONFIG_DIR), el setup oficial escribe `configDir/.claude.json`.
  */
 export function collectOfficialSetupBackupTargets(
   runtime: OfficialSetupRuntime,
@@ -451,26 +454,34 @@ export function collectOfficialSetupBackupTargets(
       const isDefault = homeDir !== undefined
         ? path.resolve(configDir) === path.resolve(path.join(homeDir, ".claude"))
         : path.basename(path.resolve(configDir)) === ".claude";
+      const nested = path.join(configDir, ".claude.json");
+      const sibling = path.join(path.dirname(configDir), ".claude.json");
       const targets = [
         path.join(configDir, "settings.json"),
-        isDefault
-          ? path.join(path.dirname(configDir), ".claude.json")
-          : path.join(configDir, ".claude.json"),
         path.join(configDir, "plugins", "installed_plugins.json"),
+        path.join(configDir, "plugins", "known_marketplaces.json"),
         path.join(configDir, "plugins", "marketplaces", "engram"),
+        path.join(configDir, "plugins", "cache", "engram"),
+        path.join(configDir, "mcp", "engram.json"),
+        // El MCP exacto puede estar en el archivo hermano (modo predeterminado)
+        // o en la ruta anidada (modo personalizado); se respaldan ambas ubicaciones.
+        nested,
+        // En el modo predeterminado se añade el archivo hermano efectivo
+        // (`HOME/.claude.json`).
+        ...(isDefault && path.resolve(sibling) !== path.resolve(nested) ? [sibling] : []),
       ];
-      // Config custom dentro de HOME: el provider también puede mutar el
-      // sibling default (`~/.claude.json`, estado MCP de scope user con
-      // evidencia en el propio adapter). Se cubren ambas ubicaciones para que
-      // un run custom nunca deje el default sin rollback. Sin homeDir no hay
-      // default evidenciable; sin ampliar a DB ni binario.
+      // Configuración personalizada dentro de HOME: el proveedor también puede
+      // mutar el archivo hermano predeterminado (`~/.claude.json`). Se cubren
+      // ambas ubicaciones para que una ejecución personalizada no deje el
+      // predeterminado sin reversión. Sin homeDir no hay predeterminado
+      // demostrable; no se amplía a la base de datos ni al binario.
       if (homeDir !== undefined && !isDefault) {
         const fallback = path.join(path.resolve(homeDir), ".claude.json");
         if (!targets.map((t) => path.resolve(t)).includes(path.resolve(fallback))) {
           targets.push(fallback);
         }
       }
-      return targets;
+      return [...new Set(targets)];
     }
     case "codex":
       return [
@@ -494,14 +505,26 @@ export function collectOfficialSetupBackupTargets(
 /**
  * Selector de config por runtime para el subprocess oficial.
  * Un solo configDir efectivo para backup, subprocess, verify y rollback.
+ *
+ * Claude depende del HOME efectivo (diagnóstico comprobado en Claude 2.1.267
+ * y Engram 2.0.0): con el configDir predeterminado (`<home>/.claude`) NO se
+ * fuerza CLAUDE_CONFIG_DIR para que el proveedor y el runtime usen el archivo
+ * hermano `<home>/.claude.json`; con un configDir personalizado se pasa
+ * `CLAUDE_CONFIG_DIR=<custom>` y ambos usan el anidado `configDir/.claude.json`.
+ * El resto de variables de entorno se preserva (el proceso combina sobre
+ * process.env).
  */
 export function resolveOfficialSetupEnv(
   runtime: OfficialSetupRuntime,
   configDir: string,
+  homeDir?: string,
 ): NodeJS.ProcessEnv {
   switch (runtime) {
-    case "claude-code":
+    case "claude-code": {
+      const home = homeDir ?? HOME;
+      if (path.resolve(configDir) === path.resolve(path.join(home, ".claude"))) return {};
       return { CLAUDE_CONFIG_DIR: configDir };
+    }
     case "codex":
       return { CODEX_HOME: configDir };
     case "opencode":
@@ -556,11 +579,36 @@ export type OfficialSetupIfNeededResult =
   };
 
 /**
- * Wiring real para `runInstall`: gate install-only + binario absoluto +
- * verificador registrado. Skips intencionales (sync/dry-run/target-dir)
- * siguen siendo `{ran:false}`. En install real, runtime desconocido,
- * verificador ausente o binario no absoluto devuelven fallo explícito
- * (`ran:true, ok:false`), nunca skip silencioso.
+ * Versión mínima de Engram que registra el MCP exacto en Claude
+ * (diagnóstico comprobado: 1.20.0 y 2.0.0-rc.11 escriben el obsoleto
+ * `<config>/mcp/engram.json`, que el CLI ignora; 2.0.0 escribe la ubicación
+ * efectiva). La comprobación rechaza cualquier versión con guion, como
+ * `2.0.0-rc.11`, y cualquier versión extraída anterior a 2.0.0; los textos
+ * vacíos o sin una secuencia numérica se aceptan para conservar el
+ * comportamiento no bloqueante ante una versión ilegible.
+ */
+export function isClaudeEngramVersionSupported(version: string): boolean {
+  const trimmed = version.trim();
+  if (trimmed === "") return true;
+  if (trimmed.includes("-")) return false;
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(trimmed);
+  if (!match) return true;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return true;
+  if (major > 2) return true;
+  if (major < 2) return false;
+  return minor >= 0;
+}
+
+/**
+ * Integración real para `runInstall`: comprobación solo en install + binario
+ * absoluto + verificador registrado + comprobación previa de versión para
+ * Claude. Los saltos intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
+ * En install real, runtime desconocido, verificador ausente o binario no
+ * absoluto devuelven fallo explícito (`ran:true, ok:false`), nunca skip
+ * silencioso. Codex/OpenCode son gestionados por el proveedor: nunca bloqueados por
+ * versión. El binario existente jamás se modifica.
  */
 export async function runOfficialSetupIfNeeded(
   runtime: string,
@@ -571,6 +619,8 @@ export async function runOfficialSetupIfNeeded(
     engramBin?: string | null;
     configDir: string;
     homeDir: string;
+    /** Versión proporcionada por las pruebas o la integración; undefined/null omite la comprobación. */
+    engramVersion?: string | null;
   },
 ): Promise<OfficialSetupIfNeededResult> {
   if (!shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
@@ -594,6 +644,25 @@ export async function runOfficialSetupIfNeeded(
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
   }
 
+  // Comprobación previa solo para Claude antes de objetivos/copia/spawn: Engram <2.0.0
+  // estable o prerelease (p.ej. 2.0.0-rc.11) enmascara el setup como éxito.
+  // Codex/OpenCode son gestionados por el proveedor y nunca se bloquean por versión.
+  if (runtime === "claude-code" && typeof opts.engramVersion === "string" && opts.engramVersion.trim() !== "") {
+    const provided = opts.engramVersion.trim();
+    if (!isClaudeEngramVersionSupported(provided)) {
+      const detail = `runOfficialSetupIfNeeded: Engram ${provided} no registra el MCP de Claude Code; update to Engram 2.0.0+ and rerun install; existing binary was not replaced.`;
+      return {
+        ran: true,
+        ok: false,
+        ownershipTransferred: false,
+        stderr: detail,
+        reason: detail,
+        recovery: "none",
+        backupId: null,
+      };
+    }
+  }
+
   const engramBin = opts.engramBin;
   const configDir = opts.configDir;
   if (runtime === "opencode" && path.basename(path.resolve(configDir)) !== "opencode") {
@@ -601,7 +670,7 @@ export async function runOfficialSetupIfNeeded(
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
   }
   const targets = collectOfficialSetupBackupTargets(runtime, configDir, opts.homeDir);
-  const setupEnv = resolveOfficialSetupEnv(runtime, configDir);
+  const setupEnv = resolveOfficialSetupEnv(runtime, configDir, opts.homeDir);
   let backupId: string | null = null;
   let expectedBackupFiles = 0;
   const expandBackupTargets = (files: string[]): string[] => {
@@ -647,7 +716,7 @@ export async function runOfficialSetupIfNeeded(
       return { id: backupId ?? "no-backup" };
     },
     spawn: async (bin, argv) => spawnOfficialSetupBin(bin, argv, setupEnv),
-    verify: async () => verify({ configDir, engramBin }),
+    verify: async () => verify({ configDir, engramBin, homeDir: opts.homeDir }),
     restore: async () => {
       if (backupId === null) return { restored: false };
       const restored = restoreBackup(backupId);

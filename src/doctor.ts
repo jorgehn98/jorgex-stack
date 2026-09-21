@@ -3,7 +3,7 @@ import fs from "node:fs";
 import * as p from "@clack/prompts";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, collectAllCurrentTargets, diffPlan, makeContext } from "./install.js";
-import { detectEngram, runDetectedBin } from "./lib/detect.js";
+import { detectEngram, engramVersion } from "./lib/detect.js";
 import { readTextIfExists } from "./lib/fsx.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, loadInstallModePreference } from "./lib/install-mode.js";
 import { findOrphans, readManifest } from "./lib/manifest.js";
@@ -80,12 +80,6 @@ function reportPiPermissions(targetDir?: string): number {
       "'jorgex-stack sync --agents pi' can seed the package default.",
   );
   return 1;
-}
-
-export function engramVersion(bin: string): string | null {
-  const out = runDetectedBin(bin, ["--version"], 5_000);
-  if (out === null) return null;
-  return /(\d+\.\d+\.\d+)/.exec(out)?.[1] ?? out.trim().split("\n")[0] ?? null;
 }
 
 export interface PlaywrightDoctorState {
@@ -233,10 +227,11 @@ async function verifyOfficialForRuntime(
   runtime: "claude-code" | "codex" | "opencode",
   configDir: string,
   engramBin: string,
+  homeDir?: string,
 ): Promise<{ ok: boolean; layers: string[] }> {
   if (runtime === "claude-code") {
     const { verifyOfficialSetup } = await import("./adapters/claude-code.js");
-    const report = await verifyOfficialSetup({ configDir, engramBin });
+    const report = await verifyOfficialSetup({ configDir, engramBin, homeDir });
     return { ok: report.ok, layers: report.layers };
   }
   if (runtime === "codex") {
@@ -253,7 +248,7 @@ async function doctorHasClaudeSetup(
   homeDir: string,
   engramBin: string,
 ): Promise<{ ok: boolean; layers: string[] }> {
-  return verifyOfficialForRuntime("claude-code", path.join(homeDir, ".claude"), engramBin);
+  return verifyOfficialForRuntime("claude-code", path.join(homeDir, ".claude"), engramBin, homeDir);
 }
 
 async function doctorHasCodexSetup(
@@ -496,7 +491,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     // disponible el verificador falla cerrado; este loop solo cuenta runtimes
     // instalados con adapter.
     try {
-      const setup = await verifyOfficialForRuntime(adapter.id, detection.configDir, engramBin ?? "");
+      // El HOME efectivo ancla el modo del verificador Claude (default →
+      // archivo hermano, CLAUDE_CONFIG_DIR personalizado → anidado).
+      const setup = await verifyOfficialForRuntime(adapter.id, detection.configDir, engramBin ?? "", HOME);
       const exposed = setup.layers.includes("mcp") && engramBinAvailable;
       officialResults.push({ runtime: adapter.id, ok: setup.ok, layers: setup.layers, exposed });
       if (!setup.ok) {

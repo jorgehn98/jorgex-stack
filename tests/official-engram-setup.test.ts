@@ -41,7 +41,7 @@ function fakeSpawnCapture() {
 }
 
 // ---------------------------------------------------------------------------
-// Huellas oficiales realistas (paths/formats que el adapter actual reconoce)
+// Huellas oficiales realistas (rutas y formatos que reconoce el adapter actual)
 // ---------------------------------------------------------------------------
 
 /** Contenido oficial simulado de `engram setup opencode` en la MISMA ruta. */
@@ -59,21 +59,26 @@ function seedClaudeOfficial(home: string): {
   configDir: string;
   mainFile: string;
   settingsFile: string;
-  pluginDir: string;
+  installPath: string;
   engramBin: string;
 } {
   const configDir = path.join(home, ".claude");
   const engramBin = path.join(home, ".local", "bin", "engram");
-  // Registry marketplace enabled (sin enabled=false): huella que
-  // hasEngramPlugin reconoce por clave exacta "engram@engram".
-  const pluginDir = path.join(configDir, "plugins", "marketplaces", "engram");
-  fs.mkdirSync(pluginDir, { recursive: true });
+  // Engram 2.0: registry v2 con alcance user e installPath bajo
+  // plugins/cache/engram/engram/0.1.3; activación mediante enabledPlugins.
+  const installPath = path.join(configDir, "plugins", "cache", "engram", "engram", "0.1.3");
+  fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
   fs.writeFileSync(
     path.join(configDir, "plugins", "installed_plugins.json"),
-    JSON.stringify({ version: 2, plugins: { "engram@engram": [{ version: "1.20.0" }] } }),
+    JSON.stringify({
+      version: 2,
+      plugins: {
+        "engram@engram": [{ scope: "user", version: "0.1.3", installPath, gitCommitSha: "abc1234" }],
+      },
+    }),
   );
   // Hooks OFICIALES del plugin (única fuente de la capa `hooks`): installPath
-  // temporal con hooks/hooks.json + scripts oficiales. Los hooks JorgeX de
+  // con hooks/hooks.json + scripts oficiales. Los hooks JorgeX de
   // settings.json NO acreditan esta capa (ver control de preservación).
   const officialHooks = {
     hooks: {
@@ -82,9 +87,9 @@ function seedClaudeOfficial(home: string): {
       SubagentStop: [{ hooks: [{ type: "command", command: "subagent-stop.sh" }] }],
     },
   };
-  fs.mkdirSync(path.join(pluginDir, "hooks"), { recursive: true });
-  fs.mkdirSync(path.join(pluginDir, "scripts"), { recursive: true });
-  fs.writeFileSync(path.join(pluginDir, "hooks", "hooks.json"), JSON.stringify(officialHooks));
+  fs.mkdirSync(path.join(installPath, "hooks"), { recursive: true });
+  fs.mkdirSync(path.join(installPath, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(installPath, "hooks", "hooks.json"), JSON.stringify(officialHooks));
   for (const script of [
     "session-start.sh",
     "post-compaction.sh",
@@ -92,22 +97,30 @@ function seedClaudeOfficial(home: string): {
     "subagent-stop.sh",
     "session-end.sh",
   ]) {
-    fs.writeFileSync(path.join(pluginDir, "scripts", script), "#!/bin/sh\n");
+    fs.writeFileSync(path.join(installPath, "scripts", script), "#!/bin/sh\n");
   }
-  // MCP de scope user exacto: ~/.claude.json hermano del configDir, formato
-  // stdio que planMainConfig entiende (type/command/args).
+  // MCP exacto de Engram 2.0 según el modo (diagnóstico comprobado en Claude 2.1.267):
+  // - predeterminado (CLAUDE_CONFIG_DIR ausente): archivo hermano `$HOME/.claude.json`;
+  //   el anidado `<config>/.claude.json` está ausente; `claude mcp list`
+  //   muestra Connected desde el archivo hermano.
+  // - personalizado (CLAUDE_CONFIG_DIR=custom): anidado
+  //   `$CLAUDE_CONFIG_DIR/.claude.json`.
+  // El obsoleto `mcp/engram.json` nunca es evidencia (solo reversión).
+  // Este escenario cubre el modo predeterminado: archivo hermano exacto y
+  // archivo anidado ausente.
   const mainFile = path.join(home, ".claude.json");
   fs.writeFileSync(
     mainFile,
     JSON.stringify({
       mcpServers: {
-        engram: { type: "stdio", command: engramBin, args: ["mcp", "--tools=agent"] },
+        engram: { type: "stdio", command: engramBin, args: ["mcp", "--tools=agent"], env: {} },
         ajeno: { type: "http", url: "https://ajeno.invalid" },
       },
     }),
   );
-  // Hooks JorgeX en settings.json: existen y deben preservarse, pero NO
-  // acreditan la capa oficial `hooks`.
+  expect(fs.existsSync(path.join(configDir, ".claude.json"))).toBe(false);
+  // settings.json: enabledPlugins acredita el plugin + hooks JorgeX que
+  // existen y deben preservarse, pero NO acreditan la capa oficial `hooks`.
   const scriptsDir = path.join(configDir, "scripts");
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.writeFileSync(path.join(scriptsDir, "post-pr-review.cjs"), "module.exports = 1;\n");
@@ -116,6 +129,7 @@ function seedClaudeOfficial(home: string): {
   fs.writeFileSync(
     settingsFile,
     JSON.stringify({
+      enabledPlugins: { "engram@engram": true },
       hooks: {
         PostToolUse: [
           {
@@ -126,7 +140,59 @@ function seedClaudeOfficial(home: string): {
       },
     }),
   );
-  return { configDir, mainFile, settingsFile, pluginDir, engramBin };
+  return { configDir, mainFile, settingsFile, installPath, engramBin };
+}
+
+/** Modo personalizado (CLAUDE_CONFIG_DIR): MCP exacto anidado `configDir/.claude.json`. */
+function seedClaudeCustom(home: string): {
+  configDir: string;
+  mainFile: string;
+  settingsFile: string;
+  installPath: string;
+  engramBin: string;
+} {
+  const configDir = path.join(home, "custom-claude");
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  const installPath = path.join(configDir, "plugins", "cache", "engram", "engram", "0.1.3");
+  fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, "plugins", "installed_plugins.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: {
+        "engram@engram": [{ scope: "user", version: "0.1.3", installPath, gitCommitSha: "abc1234" }],
+      },
+    }),
+  );
+  const officialHooks = {
+    hooks: {
+      SessionStart: [{ hooks: [{ type: "command", command: "session-start.sh" }] }],
+      SessionEnd: [{ hooks: [{ type: "command", command: "session-end.sh" }] }],
+      SubagentStop: [{ hooks: [{ type: "command", command: "subagent-stop.sh" }] }],
+    },
+  };
+  fs.mkdirSync(path.join(installPath, "hooks"), { recursive: true });
+  fs.mkdirSync(path.join(installPath, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(installPath, "hooks", "hooks.json"), JSON.stringify(officialHooks));
+  for (const script of ["session-start.sh", "session-end.sh"]) {
+    fs.writeFileSync(path.join(installPath, "scripts", script), "#!/bin/sh\n");
+  }
+  const mainFile = path.join(configDir, ".claude.json");
+  fs.writeFileSync(
+    mainFile,
+    JSON.stringify({
+      mcpServers: {
+        engram: { type: "stdio", command: engramBin, args: ["mcp", "--tools=agent"], env: {} },
+        ajeno: { type: "http", url: "https://ajeno.invalid" },
+      },
+    }),
+  );
+  // En modo personalizado el archivo hermano predeterminado no lleva el MCP
+  // para mantener aislados ambos modos.
+  expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  const settingsFile = path.join(configDir, "settings.json");
+  fs.writeFileSync(settingsFile, JSON.stringify({ enabledPlugins: { "engram@engram": true } }));
+  return { configDir, mainFile, settingsFile, installPath, engramBin };
 }
 
 function seedCodexOfficial(home: string): {
@@ -537,12 +603,16 @@ describe("[T12] backup targets esperados por runtime (sin DB ni binario)", () =>
 // ---------------------------------------------------------------------------
 
 describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
-  it("control: la huella Claude es reconocida por el adapter actual", async () => {
+  it("control: la huella Claude predeterminada usa el archivo hermano $HOME/.claude.json (anidado ausente)", async () => {
     const home = tempHome("jx-t10-t13-claude-control-");
-    const { configDir, mainFile, pluginDir, engramBin } = seedClaudeOfficial(home);
+    const { configDir, mainFile, installPath, engramBin } = seedClaudeOfficial(home);
     const { claudeCodeAdapter } = (await import("../src/adapters/claude-code.js")) as any;
 
     expect(claudeCodeAdapter.injectEngramProtocol({ configDir } as any)).toBe(false);
+    // Diagnóstico comprobado: CLAUDE_CONFIG_DIR ausente → archivo hermano;
+    // anidado ausente.
+    expect(mainFile).toBe(path.join(home, ".claude.json"));
+    expect(fs.existsSync(path.join(configDir, ".claude.json"))).toBe(false);
     const main = JSON.parse(fs.readFileSync(mainFile, "utf8")) as any;
     expect(main.mcpServers.engram).toMatchObject({
       type: "stdio",
@@ -550,8 +620,24 @@ describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
       args: ["mcp", "--tools=agent"],
     });
     expect(main.mcpServers.ajeno).toBeDefined();
-    expect(fs.existsSync(path.join(pluginDir, "hooks", "hooks.json"))).toBe(true);
-    expect(fs.existsSync(path.join(pluginDir, "scripts", "session-start.sh"))).toBe(true);
+    expect(installPath).toBe(path.join(configDir, "plugins", "cache", "engram", "engram", "0.1.3"));
+    expect(fs.existsSync(path.join(installPath, "hooks", "hooks.json"))).toBe(true);
+    expect(fs.existsSync(path.join(installPath, "scripts", "session-start.sh"))).toBe(true);
+  });
+
+  it("control: la huella Claude custom usa el anidado $CLAUDE_CONFIG_DIR/.claude.json", async () => {
+    const home = tempHome("jx-t10-t13-claude-custom-ctrl-");
+    const { configDir, mainFile, installPath, engramBin } = seedClaudeCustom(home);
+    expect(mainFile).toBe(path.join(configDir, ".claude.json"));
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+    const main = JSON.parse(fs.readFileSync(mainFile, "utf8")) as any;
+    expect(main.mcpServers.engram).toMatchObject({
+      type: "stdio",
+      command: engramBin,
+      args: ["mcp", "--tools=agent"],
+    });
+    expect(installPath).toBe(path.join(configDir, "plugins", "cache", "engram", "engram", "0.1.3"));
+    expect(fs.existsSync(path.join(installPath, "hooks", "hooks.json"))).toBe(true);
   });
 
   it("control: hooks JorgeX se preservan por separado y no acreditan capa oficial", async () => {
@@ -563,7 +649,7 @@ describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
     expect(before).not.toContain("session-start.sh");
   });
 
-  it("Claude verifica plugin + MCP exacto + hooks oficiales inspeccionando filesystem, sin duplicar", async () => {
+  it("Claude predeterminado verifica archivo hermano + plugin + hooks (homeDir explícito), sin duplicar", async () => {
     const home = tempHome("jx-t10-t13-claude-");
     const { configDir, engramBin } = seedClaudeOfficial(home);
     const mod = (await import("../src/adapters/claude-code.js")) as any;
@@ -571,8 +657,9 @@ describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
     expect(typeof verify, "falta verificador Claude por capas (T13)").toBe("function");
 
     // Sin booleanos declarativos: el verificador debe leer plugin/MCP/hooks
-    // oficiales desde el filesystem (installPath temporal + sibling MCP).
-    const report = await verify({ configDir, engramBin });
+    // oficiales desde el filesystem (installPath + archivo hermano exacto en el
+    // modo predeterminado).
+    const report = await (verify as any)({ configDir, engramBin, homeDir: home });
     expect(report.ok).toBe(true);
     expect(report.layers).toEqual(expect.arrayContaining(["plugin", "mcp", "hooks"]));
     expect(report.duplicates).toBe(false);
@@ -580,18 +667,27 @@ describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
     expect(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).toContain("ajeno");
   });
 
+  it("Claude custom verifica anidado + plugin + hooks (homeDir explícito)", async () => {
+    const home = tempHome("jx-t10-t13-claude-custom-");
+    const { configDir, engramBin } = seedClaudeCustom(home);
+    const mod = (await import("../src/adapters/claude-code.js")) as any;
+    const report = await (mod.verifyOfficialSetup as any)({ configDir, engramBin, homeDir: home });
+    expect(report.ok).toBe(true);
+    expect(report.layers).toEqual(expect.arrayContaining(["plugin", "mcp", "hooks"]));
+  });
+
   it("Claude negativo: hooks oficiales ausentes no pasa aunque queden hooks JorgeX", async () => {
     const home = tempHome("jx-t10-t13-claude-neg-");
-    const { configDir, pluginDir, settingsFile, engramBin } = seedClaudeOfficial(home);
-    // Rompe solo la capa oficial: el plugin registry, el MCP y los hooks
-    // JorgeX siguen presentes.
-    fs.rmSync(path.join(pluginDir, "hooks", "hooks.json"), { force: true });
+    const { configDir, installPath, settingsFile, engramBin } = seedClaudeOfficial(home);
+    // Rompe solo la capa oficial: el registro del plugin, el MCP del archivo hermano y los
+    // hooks JorgeX siguen presentes.
+    fs.rmSync(path.join(installPath, "hooks", "hooks.json"), { force: true });
     expect(fs.readFileSync(settingsFile, "utf8")).toContain("post-pr-review.cjs");
     const mod = (await import("../src/adapters/claude-code.js")) as any;
     const verify = mod.verifyOfficialSetup;
     expect(typeof verify, "falta verificador Claude por capas (T13)").toBe("function");
 
-    const report = await verify({ configDir, engramBin });
+    const report = await (verify as any)({ configDir, engramBin, homeDir: home });
     expect(report.ok).toBe(false);
     expect(JSON.stringify(report)).toMatch(/hook/i);
   });
