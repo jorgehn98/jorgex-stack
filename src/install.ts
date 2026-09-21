@@ -574,16 +574,28 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       continue;
     }
 
-    const writeManifest = async (official?: OfficialSetupIfNeededResult): Promise<void> => {
+    const writeManifest = async (
+      official?: OfficialSetupIfNeededResult,
+      opts?: { keepPendingOrphans?: string[] },
+    ): Promise<void> => {
       if (!useManifest) return;
       const unmergeTargets = new Set(adapter.planUnmerge(canonicalMcp, canonicalHooks, ctx).map((a) => path.resolve(a.target)));
       const keepTarget = (target: string): boolean => !unmergeTargets.has(target);
       const liveOwned = plan.map((a) => path.resolve(a.target)).filter(keepTarget);
       const previousOwned = (prevManifest?.owned ?? []).map((target) => path.resolve(target)).filter(keepTarget);
+      const officialFailed = official?.ran === true && !official.ok;
       let owned: string[];
+      let pendingOrphans: string[];
       if (!canOrphan) {
         owned = [...new Set([...previousOwned, ...liveOwned])];
+        pendingOrphans = [];
+      } else if (officialFailed) {
+        // Setup fallido: esta pasada no poda huérfanos; se conserva todo lo
+        // previo junto a lo vivo y se deja el borrado para una pasada futura.
+        owned = [...new Set([...previousOwned, ...liveOwned])];
+        pendingOrphans = [...orphans];
       } else {
+        const keepPending = (opts?.keepPendingOrphans ?? []).map((t) => path.resolve(t));
         owned = [...liveOwned];
         // Legacy OpenCode: nunca huérfano ni ownership drop sin reemplazo
         // oficial verificado. sync/dry-run/target-dir nunca hacen setup y
@@ -618,9 +630,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             }
           }
         }
+        for (const pending of keepPending) {
+          if (!owned.includes(pending)) owned.push(pending);
+        }
         owned = [...new Set(owned)];
+        pendingOrphans = [...keepPending];
       }
-      writeRuntimeManifest(id, { configDir, owned, updatedAt: new Date().toISOString() });
+      writeRuntimeManifest(id, { configDir, owned, pendingOrphans, updatedAt: new Date().toISOString() });
     };
 
     if (changes.length === 0 && orphans.length === 0) {
@@ -705,18 +721,24 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       } else {
         const pruneRoot = useManifest ? HOME : path.dirname(configDir);
         let orphanFailed: string | null = null;
-        for (const orphan of orphans) {
+        let failedIndex: number | null = null;
+        for (let index = 0; index < orphans.length; index++) {
+          const orphan = orphans[index]!;
           if (path.basename(orphan) === "engram.ts") continue;
           try {
             fs.rmSync(orphan, { force: true });
             pruneEmptyDirs(orphan, pruneRoot);
           } catch (error) {
             orphanFailed = `${orphan} (${error instanceof Error ? error.message : String(error)})`;
+            failedIndex = index;
             break;
           }
         }
         if (orphanFailed !== null) {
-          await writeManifest(official.ran ? official : undefined);
+          // Solo lo borrado con éxito sale de pendientes; el fallido y los
+          // posteriores se conservan en owned y pendingOrphans.
+          const keepPending = failedIndex === null ? [...orphans] : orphans.slice(failedIndex);
+          await writeManifest(official.ran ? official : undefined, { keepPendingOrphans: keepPending });
           p.log.error(`${adapter.name}: no se pudo eliminar huérfano ${orphanFailed} — se conserva y no se reporta éxito.`);
           exitCode = 1;
           reportStatus(adapter.name, "failed");

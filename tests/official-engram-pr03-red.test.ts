@@ -502,8 +502,8 @@ describe("[PR03-RED-6] real install requiring setup never silently skips", () =>
   });
 });
 
-describe("[PR03-RED-7] custom config selectors are passed through or fail before spawn", () => {
-  it("custom Codex config outside HOME either blocks spawn or exposes unrestorable rollback", async () => {
+describe("[PR03-RED-7] custom config outside HOME is blocked before backup/spawn (tightened; superseded by followup-boundary)", () => {
+  it("custom Codex config outside HOME blocks before backup mutation", async () => {
     const root = tempDir("jx-pr03-red7-");
     const home = path.join(root, "home");
     const customDir = path.join(root, "custom-codex");
@@ -516,12 +516,14 @@ describe("[PR03-RED-7] custom config selectors are passed through or fail before
     const { createBackup, restoreBackup } = await import("../src/lib/backup.js");
     const mod = await import("../src/lib/official-engram-setup.js");
     let backupId: string | null = null;
+    let backupCalls = 0;
     let spawnCalls = 0;
     const result = await mod.runOfficialSetup("codex", {
       homeDir: home,
       engramBin: path.join(home, ".local", "bin", "engram"),
       targets: [customFile],
       backup: async () => {
+        backupCalls++;
         const backup = createBackup([customFile], "pr03-red7", backupRoot);
         backupId = backup?.id ?? null;
         return { id: backupId ?? "no-backup" };
@@ -539,9 +541,12 @@ describe("[PR03-RED-7] custom config selectors are passed through or fail before
       },
     });
     expect(result.ok).toBe(false);
-    const exposed = (result as unknown as Record<string, unknown>).incompleteRecovery === true;
-    const blockedBeforeSpawn = spawnCalls === 0;
-    const restored = fs.readFileSync(customFile, "utf8") === original;
-    expect(blockedBeforeSpawn || exposed || restored).toBe(true);
+    // Strict fail-closed contract (no OR): outside-HOME must block before any
+    // backup mutation or spawn, matching [followup-boundary]. The previous
+    // `blocked || exposed || restored` OR accepted silent unrestorable runs.
+    expect(backupCalls).toBe(0);
+    expect(spawnCalls).toBe(0);
+    expect(result.recovery).toBe("none");
+    expect(fs.readFileSync(customFile, "utf8")).toBe(original);
   });
 });

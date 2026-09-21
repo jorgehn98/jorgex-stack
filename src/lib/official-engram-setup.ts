@@ -101,6 +101,91 @@ function snapshotDirEntries(dir: string): Set<string> | null {
   }
 }
 
+function errnoCode(error: unknown): string {
+  return error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+    ? (error as NodeJS.ErrnoException).code as string
+    : "UNKNOWN";
+}
+
+/**
+ * Recorre un árbol existente sin seguir symlinks (lstat en cada entrada).
+ * Devuelve la primera entrada symlink/ilegible, o null si está limpio.
+ * Best-effort contra TOCTOU: solo reduce la ventana, no la elimina; el
+ * resultado se revalida antes de restore/cleanup y todo fallo es incompleto.
+ */
+function findSymlinkInTree(root: string): string | null {
+  const stack: string[] = [path.resolve(root)];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true }) as fs.Dirent[];
+    } catch (error) {
+      if (errnoCode(error) === "ENOENT") continue;
+      return `${current}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(full);
+      } catch (error) {
+        if (errnoCode(error) === "ENOENT") continue;
+        return `${full}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+      }
+      if (st.isSymbolicLink()) return `${full}: es un symlink (no se sigue ni se copia)`;
+      if (st.isDirectory()) stack.push(full);
+    }
+  }
+  return null;
+}
+
+/**
+ * Valida que ningún target, ancestro existente ni entrada de árbol sea un
+ * symlink (lstat, sin seguir) antes de mutar. Rechaza también lo ilegible
+ * (no se puede descartar alias hacia fuera de HOME o ~/.engram). Devuelve la
+ * primera violación o null si está limpio. La puerta léxica HOME se conserva
+ * aparte; esto la complementa, no la sustituye.
+ */
+function findSetupSymlinkViolation(targets: string[], homeDir: string): string | null {
+  const homeResolved = path.resolve(homeDir);
+  for (const target of targets) {
+    const resolved = path.resolve(target);
+    try {
+      if (fs.lstatSync(resolved).isSymbolicLink()) {
+        return `${resolved}: el target es un symlink (no se respalda ni se ejecuta setup)`;
+      }
+    } catch (error) {
+      if (errnoCode(error) !== "ENOENT") {
+        return `${resolved}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+      }
+    }
+    let dir = path.dirname(resolved);
+    while (dir !== homeResolved && isContainedIn(dir, homeResolved)) {
+      try {
+        if (fs.lstatSync(dir).isSymbolicLink()) {
+          return `${dir}: ancestro existente es un symlink (no se atraviesa)`;
+        }
+      } catch (error) {
+        if (errnoCode(error) === "ENOENT") break;
+        return `${dir}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    try {
+      if (fs.statSync(resolved).isDirectory()) {
+        const bad = findSymlinkInTree(resolved);
+        if (bad !== null) return bad;
+      }
+    } catch {
+      // Ausente o ilegible: el lstat previo ya dictaminó; sin árbol que mirar.
+    }
+  }
+  return null;
+}
+
 export type OfficialSetupRecovery = "complete" | "incomplete" | "none";
 
 export interface OfficialSetupResult {
@@ -147,6 +232,22 @@ export async function runOfficialSetup(
   );
   if (outside.length > 0) {
     const detail = `runOfficialSetup: target fuera de la frontera de restore (${homeResolved}): ${outside[0]}. Bloqueado antes del setup.`;
+    return {
+      ok: false,
+      ownershipTransferred: false,
+      stderr: detail,
+      reason: detail,
+      recovery: "none",
+      backupId: null,
+    };
+  }
+
+  // Seguridad symlink (lstat, sin seguir): ni el target, ni un ancestro, ni
+  // una entrada del árbol pueden ser alias hacia fuera de HOME o ~/.engram.
+  // Bloquea antes del backup: no se respalda ni se ejecuta nada con alias.
+  const preViolation = findSetupSymlinkViolation(preciseTargets, homeResolved);
+  if (preViolation !== null) {
+    const detail = `runOfficialSetup: symlink rechazado antes del setup (${preViolation}). Bloqueado antes del backup.`;
     return {
       ok: false,
       ownershipTransferred: false,
@@ -227,19 +328,37 @@ export async function runOfficialSetup(
     };
   }
 
+  // Revalidación post-spawn: si el setup reemplazó un preexistente por un
+  // symlink (o plantó alias en un árbol), no se invoca restore ni se limpia
+  // ese target (ambas operaciones podrían atravesar el enlace). Es best
+  // effort contra TOCTOU, con estado incompleto explícito; el backupId
+  // orienta la recuperación manual y el target exterior queda intacto.
+  const postViolation = findSetupSymlinkViolation(preciseTargets, homeResolved);
+  const tainted = new Set<string>();
+  if (postViolation !== null) {
+    for (const t of preciseTargets) {
+      if (findSetupSymlinkViolation([t], homeResolved) !== null) tainted.add(t);
+    }
+  }
   let restoreError: string | undefined;
   let restoreFailed = false;
-  try {
-    await deps.restore?.();
-  } catch (error) {
+  if (postViolation !== null) {
     restoreFailed = true;
-    restoreError = error instanceof Error ? error.message : String(error);
+    restoreError = `symlink post-setup (${postViolation}); restore omitido para no escribir a través del enlace`;
+  } else {
+    try {
+      await deps.restore?.();
+    } catch (error) {
+      restoreFailed = true;
+      restoreError = error instanceof Error ? error.message : String(error);
+    }
   }
   // Rollback: recomponer preexistentes mediante restore cuando sea posible y
   // eliminar solo lo creado por el setup. En directorios ya existentes, solo
   // se eliminan descendientes nuevos (post-order), preservando preexistentes.
-  let cleanupFailed = false;
+  let cleanupFailed = tainted.size > 0;
   for (const t of preciseTargets) {
+    if (tainted.has(t)) continue;
     try {
       if (!existedBefore.has(t)) {
         if (fs.existsSync(t)) fs.rmSync(t, { recursive: true, force: true });
@@ -328,7 +447,7 @@ export function collectOfficialSetupBackupTargets(
       const isDefault = homeDir !== undefined
         ? path.resolve(configDir) === path.resolve(path.join(homeDir, ".claude"))
         : path.basename(path.resolve(configDir)) === ".claude";
-      return [
+      const targets = [
         path.join(configDir, "settings.json"),
         isDefault
           ? path.join(path.dirname(configDir), ".claude.json")
@@ -336,6 +455,18 @@ export function collectOfficialSetupBackupTargets(
         path.join(configDir, "plugins", "installed_plugins.json"),
         path.join(configDir, "plugins", "marketplaces", "engram"),
       ];
+      // Config custom dentro de HOME: el provider también puede mutar el
+      // sibling default (`~/.claude.json`, estado MCP de scope user con
+      // evidencia en el propio adapter). Se cubren ambas ubicaciones para que
+      // un run custom nunca deje el default sin rollback. Sin homeDir no hay
+      // default evidenciable; sin ampliar a DB ni binario.
+      if (homeDir !== undefined && !isDefault) {
+        const fallback = path.join(path.resolve(homeDir), ".claude.json");
+        if (!targets.map((t) => path.resolve(t)).includes(path.resolve(fallback))) {
+          targets.push(fallback);
+        }
+      }
+      return targets;
     }
     case "codex":
       return [
@@ -473,12 +604,22 @@ export async function runOfficialSetupIfNeeded(
     const out: string[] = [];
     for (const file of files) {
       try {
-        const stat = fs.statSync(file);
+        // lstat: jamás atravesar ni copiar alias (el pre-chequeo del núcleo
+        // ya bloqueó árboles con symlinks; esto es defensa en profundidad).
+        const stat = fs.lstatSync(file);
+        if (stat.isSymbolicLink()) continue;
         if (stat.isDirectory()) {
           const walk = (dir: string): void => {
             for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
               const full = path.join(dir, entry.name);
-              if (entry.isDirectory()) walk(full);
+              let entryStat: fs.Stats;
+              try {
+                entryStat = fs.lstatSync(full);
+              } catch {
+                continue;
+              }
+              if (entryStat.isSymbolicLink()) continue;
+              if (entryStat.isDirectory()) walk(full);
               else out.push(full);
             }
           };

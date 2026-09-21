@@ -7,7 +7,7 @@ import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
-import { isOfficialOpencodePluginContent } from "./adapters/opencode.js";
+import { inspectOpencodePluginFile } from "./adapters/opencode.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
@@ -46,23 +46,15 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
 }
 
 /**
- * Contenido oficial (`engram setup opencode`, misma ruta que el legacy): se
- * conserva siempre en uninstall. Solo legacy aún propio puede retirarse con
- * --remove-engram. Reutiliza el único predicado oficial; ante lectura
- * desconocida se preserva (fail closed), ausencia (ENOENT) no es oficial.
+ * Chequeo de preservación (`engram setup opencode`, misma ruta que el legacy):
+ * se conserva en uninstall tanto el contenido oficial como una lectura
+ * desconocida (fail closed). Solo el legacy aún propio puede retirarse con
+ * --remove-engram. Usa la clasificación compartida; `unknown` jamás se
+ * clasifica como legacy.
  */
 export function isOfficialEngramPluginFile(file: string): boolean {
-  let content: string;
-  try {
-    content = fs.readFileSync(file, "utf8");
-  } catch (error) {
-    const code = error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
-      ? (error as NodeJS.ErrnoException).code
-      : "UNKNOWN";
-    if (code === "ENOENT") return false;
-    return true;
-  }
-  return isOfficialOpencodePluginContent(content);
+  const state = inspectOpencodePluginFile(file);
+  return state === "official" || state === "unknown";
 }
 
 /**
@@ -196,7 +188,10 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     const deleteTargets = planTargets.filter((t) => {
       if (retained.has(t) || !isContainedIn(t, pruneRoot)) return false;
       if (path.basename(t) !== "engram.ts") return true;
-      if (isOfficialEngramPluginFile(t)) return false;
+      // Tri-estado: official y unknown se preservan; legacy-or-foreign y
+      // absent solo se retiran con --remove-engram (unknown no es legacy).
+      const state = inspectOpencodePluginFile(t);
+      if (state === "official" || state === "unknown") return false;
       return !ctx.preserveEngram;
     });
     const sharedKept = planTargets.length - deleteTargets.length;

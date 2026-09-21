@@ -395,18 +395,23 @@ export const opencodeAdapter: Adapter = {
       }
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
-      const officialPluginPresent = hasOfficialEngramPlugin(ctx.configDir);
+      const pluginState = inspectOpencodeEngramPlugin(ctx.configDir);
+      const officialPluginPresent = pluginState === "official";
+      const pluginUnknown = pluginState === "unknown";
       for (const [name, server] of Object.entries(canonical.servers)) {
         const existing = mcp[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
         // Oficial preservado: con plugin oficial (`engram setup opencode`) el
         // MCP es oficial, no legacy del Stack. No se reclama ownership ni se
         // reescribe; el setup oficial es la única fuente. Usa el desinstalador
-        // oficial para lo oficial.
-        if (name === "engram" && officialPluginPresent) {
-          if (owned) mcpOwnership.push({ server: name, owned: false });
+        // oficial para lo oficial. Ilegible (unknown) también se preserva sin
+        // tocar ownership: no se puede probar legacy.
+        if (name === "engram" && (officialPluginPresent || pluginUnknown)) {
+          if (officialPluginPresent && owned) mcpOwnership.push({ server: name, owned: false });
           ctx.warnings.push(
-            "OpenCode: Engram ya está integrado vía plugin oficial — no se registra el MCP para no duplicar ni reclamar ownership.",
+            officialPluginPresent
+              ? "OpenCode: Engram ya está integrado vía plugin oficial — no se registra el MCP para no duplicar ni reclamar ownership."
+              : "OpenCode: plugin engram.ts ilegible — se conserva el MCP sin reclamar ownership hasta poder verificarlo.",
           );
           continue;
         }
@@ -552,15 +557,21 @@ export const opencodeAdapter: Adapter = {
         }
         const mcpBlock = rawMcpBlock as Record<string, unknown> | undefined;
         if (mcpBlock !== undefined) {
-          const officialPluginPresent = hasOfficialEngramPlugin(ctx.configDir);
+          const pluginState = inspectOpencodeEngramPlugin(ctx.configDir);
+          const officialPluginPresent = pluginState === "official";
+          const pluginUnknown = pluginState === "unknown";
           for (const [name, server] of Object.entries(mcp.servers)) {
             // Oficial preservado: con plugin oficial el MCP es oficial
             // (`engram setup opencode`), no legacy del Stack. Uninstall lo
             // conserva incluso con --remove-engram; ese flag solo retira
             // legacy aún propio. Usa el desinstalador oficial para lo oficial.
-            if (name === "engram" && officialPluginPresent) {
+            // Ilegible (unknown) jamás se clasifica como legacy: también se
+            // conserva el MCP y su ownership/estado.
+            if (name === "engram" && (officialPluginPresent || pluginUnknown)) {
               ctx.warnings.push(
-                "OpenCode: MCP 'engram' oficial (plugin) se conserva; usa el desinstalador oficial de Engram para retirarlo.",
+                officialPluginPresent
+                  ? "OpenCode: MCP 'engram' oficial (plugin) se conserva; usa el desinstalador oficial de Engram para retirarlo."
+                  : "OpenCode: plugin engram.ts ilegible — MCP 'engram' y su estado se conservan sin verificar.",
               );
               continue;
             }
@@ -663,6 +674,32 @@ export function isOfficialOpencodePluginContent(content: string): boolean {
   );
 }
 
+/**
+ * Clasificación del plugin en la ruta compartida: `official` acredita el
+ * setup oficial; `legacy-or-foreign` y `absent` no lo acreditan; `unknown`
+ * indica que no se pudo leer. Solo `unknown` fuerza la preservación
+ * fail-closed: nunca se clasifica como legacy ni se muta.
+ */
+export type OpencodePluginState = "official" | "legacy-or-foreign" | "absent" | "unknown";
+
+export function inspectOpencodePluginFile(file: string): OpencodePluginState {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+      ? (error as NodeJS.ErrnoException).code
+      : "UNKNOWN";
+    if (code === "ENOENT") return "absent";
+    return "unknown";
+  }
+  return isOfficialOpencodePluginContent(content) ? "official" : "legacy-or-foreign";
+}
+
+export function inspectOpencodeEngramPlugin(configDir: string): OpencodePluginState {
+  return inspectOpencodePluginFile(path.join(configDir, "plugins", "engram.ts"));
+}
+
 /** Legacy Stack: placeholders del canon o helpers propios tras install. */
 function isStackLegacyOpencodePluginContent(content: string): boolean {
   if (content.includes("{{ENGRAM_BIN}}") || content.includes("{{ENGRAM_PROTOCOL}}")) return true;
@@ -691,22 +728,68 @@ function hasOfficialEngramPlugin(configDir: string): boolean {
   return content !== null && isOfficialOpencodePluginContent(content);
 }
 
-function readExistingOpencodeConfigs(configDir: string): Array<{ file: string; raw: string }> {
-  const out: Array<{ file: string; raw: string }> = [];
+/**
+ * Lectura estructural estricta (JSON válido, sin dependencias ni regex):
+ * distingue ausente (ENOENT, se ignora) de ilegible/malformado/no-objeto.
+ * Un archivo existente no verificable bloquea la verificación aunque otro
+ * aporte capas: no se puede descartar conflicto ni duplicado oculto.
+ */
+export type OpencodeConfigRead =
+  | { file: string; status: "absent" }
+  | { file: string; status: "ok"; parsed: Record<string, unknown> }
+  | { file: string; status: "unverifiable"; reason: string };
+
+export function readOpencodeConfigFile(file: string): OpencodeConfigRead {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+      ? (error as NodeJS.ErrnoException).code
+      : "UNKNOWN";
+    if (code === "ENOENT") return { file, status: "absent" };
+    return { file, status: "unverifiable", reason: `${file}: ilegible (${code})` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return { file, status: "unverifiable", reason: `${file}: JSON malformado` };
+  }
+  const root = objectValue(parsed);
+  if (root === null) return { file, status: "unverifiable", reason: `${file}: no es un objeto JSON` };
+  return { file, status: "ok", parsed: root };
+}
+
+function readExistingOpencodeConfigs(configDir: string): Array<Extract<OpencodeConfigRead, { status: "ok" }>> {
+  const out: Array<Extract<OpencodeConfigRead, { status: "ok" }>> = [];
   for (const name of ["opencode.json", "opencode.jsonc"]) {
-    const raw = readTextIfExists(path.join(configDir, name));
-    if (raw !== null) out.push({ file: path.join(configDir, name), raw });
+    const read = readOpencodeConfigFile(path.join(configDir, name));
+    if (read.status === "ok") out.push(read);
   }
   return out;
 }
 
-function readExistingTuiConfigs(configDir: string): Array<{ file: string; raw: string }> {
-  const out: Array<{ file: string; raw: string }> = [];
+function readExistingTuiConfigs(configDir: string): Array<Extract<OpencodeConfigRead, { status: "ok" }>> {
+  const out: Array<Extract<OpencodeConfigRead, { status: "ok" }>> = [];
   for (const name of ["tui.json", "tui.jsonc"]) {
-    const raw = readTextIfExists(path.join(configDir, name));
-    if (raw !== null) out.push({ file: path.join(configDir, name), raw });
+    const read = readOpencodeConfigFile(path.join(configDir, name));
+    if (read.status === "ok") out.push(read);
   }
   return out;
+}
+
+/**
+ * Razones unverifiable de los cuatro archivos inspeccionados. Cualquier
+ * archivo existente no verificable estructuralmente bloquea el setup oficial.
+ */
+export function collectUnverifiableOpencodeConfigs(configDir: string): string[] {
+  const reasons: string[] = [];
+  for (const name of ["opencode.json", "opencode.jsonc", "tui.json", "tui.jsonc"]) {
+    const read = readOpencodeConfigFile(path.join(configDir, name));
+    if (read.status === "unverifiable") reasons.push(read.reason);
+  }
+  return reasons;
 }
 
 function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): boolean {
@@ -717,7 +800,10 @@ function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): bool
   if (!Array.isArray(command) || command.length !== 3) return false;
   if (command[1] !== "mcp" || command[2] !== "--tools=agent") return false;
   if (typeof command[0] !== "string") return false;
-  if (engramBin !== undefined && engramBin !== "") return command[0] === engramBin;
+  // Bin vacío nunca acredita (paridad Claude/Codex fail-closed); se exige
+  // ruta exacta. Sin bin (chequeos internos de retiro) vale substring.
+  if (engramBin === "") return false;
+  if (engramBin !== undefined) return command[0] === engramBin;
   return (command[0] as string).includes("engram");
 }
 
@@ -727,15 +813,8 @@ function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): bool
  * fragmentos sueltos en JSONC ilegible fallan cerrados (sin regex).
  */
 export function checkOpencodeOfficialMcp(configDir: string, engramBin?: string): boolean {
-  for (const { raw } of readExistingOpencodeConfigs(configDir)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      continue;
-    }
-    const root = objectValue(parsed);
-    const mcp = root !== null ? objectValue(root["mcp"]) : null;
+  for (const { parsed } of readExistingOpencodeConfigs(configDir)) {
+    const mcp = objectValue(parsed["mcp"]);
     if (mcp !== null && isExactOpencodeEngramMcpValue(mcp["engram"], engramBin)) return true;
   }
   return false;
@@ -747,29 +826,15 @@ export function checkOpencodeOfficialMcp(configDir: string, engramBin?: string):
  * Solo JSON estructural válido acredita; JSONC ilegible falla cerrado.
  */
 export function checkOpencodeOfficialStatusline(configDir: string): boolean {
-  for (const { raw } of readExistingOpencodeConfigs(configDir)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      continue;
-    }
-    const root = objectValue(parsed);
-    const statusline = root !== null ? objectValue(root["statusline"]) : null;
+  for (const { parsed } of readExistingOpencodeConfigs(configDir)) {
+    const statusline = objectValue(parsed["statusline"]);
     if (statusline !== null) {
       const command = statusline["command"];
       if (typeof command === "string" && command.includes("engram")) return true;
     }
   }
-  for (const { raw } of readExistingTuiConfigs(configDir)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      continue;
-    }
-    const root = objectValue(parsed);
-    const plugin = root !== null ? root["plugin"] : undefined;
+  for (const { parsed } of readExistingTuiConfigs(configDir)) {
+    const plugin = parsed["plugin"];
     if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /statusline/i.test(entry))) {
       return true;
     }
@@ -778,16 +843,8 @@ export function checkOpencodeOfficialStatusline(configDir: string): boolean {
 }
 
 export function checkOpencodeDuplicates(configDir: string): boolean {
-  for (const { raw } of readExistingOpencodeConfigs(configDir)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      // JSONC ilegible: no se afirma duplicado sin evidencia parseable.
-      continue;
-    }
-    const root = objectValue(parsed);
-    const plugin = root !== null ? root["plugin"] : undefined;
+  for (const { parsed } of readExistingOpencodeConfigs(configDir)) {
+    const plugin = parsed["plugin"];
     if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /engram/i.test(entry))) {
       return true;
     }
@@ -811,6 +868,7 @@ export async function verifyOfficialSetup(args: { configDir: string; engramBin: 
   const hasMcp = checkOpencodeOfficialMcp(args.configDir, args.engramBin);
   const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
   const duplicates = checkOpencodeDuplicates(args.configDir);
+  const unverifiable = collectUnverifiableOpencodeConfigs(args.configDir);
   const passed: string[] = [];
   const missing: string[] = [];
   if (hasPlugin) passed.push("plugin");
@@ -820,12 +878,15 @@ export async function verifyOfficialSetup(args: { configDir: string; engramBin: 
   if (hasStatusline) passed.push("statusline");
   else missing.push("statusline:missing");
   if (duplicates) missing.push("duplicates:detected");
+  if (unverifiable.length > 0) missing.push("config:unverifiable");
   if (missing.length === 0) {
     return { ok: true, layers: passed, duplicates: false };
   }
-  const reason = duplicates
+  const reason = duplicates && unverifiable.length === 0
     ? `OpenCode: setup oficial Engram con plugin Engram duplicado; se conserva sin reclamar.`
-    : `OpenCode: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`;
+    : unverifiable.length > 0
+      ? `OpenCode: setup oficial Engram no verificable (${unverifiable.join("; ")}).`
+      : `OpenCode: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`;
   return {
     ok: false,
     layers: [...passed, ...missing],
@@ -850,6 +911,10 @@ export async function shouldRetireLegacyEngram(args: { configDir: string }): Pro
     return { retire: false, reason: "ambiguous: plugins/engram.ts ausente, sin reemplazo oficial verificable" };
   }
   if (isOfficialOpencodePluginContent(plugin)) {
+    const unverifiable = collectUnverifiableOpencodeConfigs(args.configDir);
+    if (unverifiable.length > 0) {
+      return { retire: false, reason: `ambiguous: config no verificable (${unverifiable.join("; ")}), se conserva` };
+    }
     const hasMcp = checkOpencodeOfficialMcp(args.configDir);
     const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
     if (hasMcp && hasStatusline) {
@@ -900,6 +965,18 @@ export async function transferEngramOwnership(args: { configDir: string }): Prom
       preserveOfficialOnUninstall: true,
       layers: [],
       reason: `OpenCode: transferencia bloqueada (${detail}); se conserva el archivo.`,
+    };
+  }
+  const unverifiable = collectUnverifiableOpencodeConfigs(args.configDir);
+  if (unverifiable.length > 0) {
+    return {
+      ownershipRetired: false,
+      retired: false,
+      kept,
+      recreateOnSync: false,
+      preserveOfficialOnUninstall: true,
+      layers: ["plugin", "config:unverifiable"],
+      reason: `OpenCode: transferencia bloqueada (config no verificable: ${unverifiable.join("; ")}); se conserva el archivo oficial.`,
     };
   }
   const hasMcp = checkOpencodeOfficialMcp(args.configDir);
