@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createBackup, restoreBackup } from "./backup.js";
 
 /**
- * T12 — Coordinador común de `engram setup` oficial.
+ * Coordinador común de `engram setup` oficial.
  *
  * Solo install real ejecuta setup (nunca sync/dry-run/target-dir/uninstall/
  * doctor). Secuencia por runtime independiente: backup → setup → verifier;
@@ -13,9 +13,9 @@ import { createBackup, restoreBackup } from "./backup.js";
  * único intento y stdout/stderr capturados. Nunca toca `~/.engram` ni el
  * binario existente.
  *
- * Los verificadores específicos por runtime (T13 Claude/Codex, T14 OpenCode)
- * se registran vía `registerOfficialSetupVerifier`; sin verificador, el flujo
- * real omite el setup (no finge éxito) hasta que T13/T14 lo aporten.
+ * Los verificadores específicos por runtime se registran vía
+ * `registerOfficialSetupVerifier`; sin verificador, el flujo real omite el
+ * setup (no finge éxito).
  */
 
 export type OfficialSetupRuntime = "claude-code" | "codex" | "opencode";
@@ -177,7 +177,7 @@ export type OfficialSetupVerifyFn = (args: {
   engramBin: string;
 }) => Promise<OfficialSetupVerifyResult>;
 
-/** Verificadores por runtime (T13/T14). Vacío hasta que se registren. */
+/** Verificadores por runtime; cada adapter los registra al cargarse. */
 export const officialSetupVerifiers: Partial<Record<OfficialSetupRuntime, OfficialSetupVerifyFn>> = {};
 
 export function registerOfficialSetupVerifier(runtime: OfficialSetupRuntime, fn: OfficialSetupVerifyFn): void {
@@ -263,8 +263,8 @@ export type OfficialSetupIfNeededResult =
 
 /**
  * Wiring real para `runInstall`: gate install-only + binario absoluto +
- * verificador registrado. Sin verificador (T13/T14 pendientes) no se ejecuta
- * nada (ran:false): no finge éxito ni rompe el flujo Stack existente. Con
+ * verificador registrado. Sin verificador no se ejecuta nada (ran:false): no
+ * finge éxito ni rompe el flujo Stack existente. Con
  * verificador usa backup/restore reales y rollback preciso por targets (sin
  * recorrer HOME).
  */

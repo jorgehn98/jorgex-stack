@@ -9,14 +9,8 @@ import {
 import { createBackup, restoreBackup } from "../src/lib/backup.js";
 
 /**
- * T10 RED: migración oficial Engram — política rolling y lifecycle seguro.
- *
- * - Solo subprocess/filesystem inyectados y HOME temporales; ningún setup
- *   real se ejecuta aquí (el smoke real aislado es T16 tras implementación).
- * - Cada describe agrupa fallos intencionales por owner T11–T14 + doctor.
- * - RED válido: fallos por ausencia de estrategia/setup/transfer, no por
- *   fixtures incorrectos. Los controles con el adapter actual demuestran que
- *   las huellas son realistas (pasan en verde antes del GREEN).
+ * Verifica la integración oficial de Engram con subprocess/filesystem
+ * inyectados y HOME temporales; ningún setup real se ejecuta aquí.
  */
 
 const tempRoots: string[] = [];
@@ -190,9 +184,8 @@ function seedOpencodeLegacy(home: string): {
   const pluginsDir = path.join(configDir, "plugins");
   const engramBin = path.join(home, ".local", "bin", "engram");
   fs.mkdirSync(pluginsDir, { recursive: true });
-  // Contenido legacy autoritativo (T14: canon retirado, fixture embebida con
-  // marcadores Stack; no solo el nombre). El setup oficial sobrescribe esta
-  // misma ruta con contenido oficial.
+  // Contenido legacy identificable por marcadores Stack, no solo por el nombre.
+  // El setup oficial sobrescribe esta misma ruta con contenido oficial.
   const legacyStackContent = [
     "// jorgex-stack legacy engram plugin (retirado en T14; `engram setup opencode` lo reemplaza)",
     'declare const Bun: { which?: (bin: string) => string | null };',
@@ -230,7 +223,7 @@ function simulateOpencodeSetup(seed: {
 }
 
 // ---------------------------------------------------------------------------
-// T11 — Relajar pins universalmente (owner: policy/update)
+// Estrategias exact y provider-managed.
 // ---------------------------------------------------------------------------
 
 describe("[T11] complements strategy exact vs provider-managed", () => {
@@ -268,8 +261,7 @@ describe("[T11] complements strategy exact vs provider-managed", () => {
     } as any;
     const report = resolveComplementUpdateCheck("gentle-engram", info, "0.1.12") as any;
 
-    // El contrato nuevo exige fallo visible para exact sin pin: nivel error
-    // o excepción. El warn genérico actual no es suficiente.
+    // La ausencia de pin en una integración exact debe producir un fallo visible.
     expect(["error", "fail", "fatal"]).toContain(report.level);
   });
 
@@ -289,7 +281,7 @@ describe("[T11] complements strategy exact vs provider-managed", () => {
 });
 
 // ---------------------------------------------------------------------------
-// T12 — Ejecutar setup con seguridad (owner: CLI/install + módulo src/lib/)
+// Ejecución segura del setup oficial.
 // ---------------------------------------------------------------------------
 
 describe("[T12] coordinador install-only con argv exacto", () => {
@@ -537,7 +529,7 @@ describe("[T12] backup targets esperados por runtime (sin DB ni binario)", () =>
 });
 
 // ---------------------------------------------------------------------------
-// T13 — Delegar Claude Code y Codex (owner: adapters + verificadores)
+// Verificación de Claude Code y Codex.
 // ---------------------------------------------------------------------------
 
 describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
@@ -650,7 +642,7 @@ describe("[T13] Codex verifica MCP + instructions + plugin main en filesystem", 
 });
 
 // ---------------------------------------------------------------------------
-// T14 — Transferir ownership OpenCode (owner: adapter/component + manifest)
+// Transferencia de ownership de OpenCode.
 // ---------------------------------------------------------------------------
 
 describe("[T14] OpenCode retira legacy solo tras setup verificado en filesystem", () => {

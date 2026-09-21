@@ -60,7 +60,7 @@ import {
   savePrimaryModelOwnership,
 } from "./lib/tool-preferences.js";
 
-/** T12: coordinador setup oficial (implementación en lib; aquí re-exportado para el contrato install). */
+/** Coordinador setup oficial re-exportado para el contrato de instalación. */
 export { resolveOfficialSetupArgv, shouldRunOfficialSetup, runOfficialSetup };
 
 export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
@@ -547,8 +547,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
-      // T12: setup oficial solo en install real con verificador registrado
-      // (T13/T14); sin verificador no se ejecuta nada (ran:false).
+      // El setup oficial solo corre en install real con verificador registrado;
+      // sin verificador no se ejecuta nada (ran:false).
       const official = await runOfficialSetupIfNeeded(id, {
         command: opts.command,
         dryRun: opts.dryRun,
@@ -609,8 +609,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
-      // T12: setup oficial tras archivos Stack (backup post-Stack; el restore
-      // conserva lo escrito por el Stack). Sin verificador no se ejecuta.
+      // El setup oficial corre tras los archivos Stack (backup post-Stack; el
+      // restore conserva lo escrito por el Stack). Sin verificador no se ejecuta.
       const official = await runOfficialSetupIfNeeded(id, {
         command: opts.command,
         dryRun: opts.dryRun,

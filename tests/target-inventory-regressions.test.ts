@@ -177,7 +177,7 @@ describe("target inventory regressions", () => {
             runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
           })).resolves.toBe(0);
 
-          // T14: legacy engram.ts ya no se despliega (lo provee `engram setup
+          // El plugin legacy ya no se despliega (lo provee `engram setup
           // opencode`); hooks/worktree siguen Stack-owned.
           expect(fs.existsSync(path.join(configDir, "plugins", "engram.ts"))).toBe(false);
           expect(fs.existsSync(path.join(configDir, "plugins", "hooks.ts"))).toBe(true);
@@ -268,8 +268,8 @@ describe("target inventory regressions", () => {
           }
           expect(fs.readFileSync(foreignGoalModule, "utf8")).toBe("// foreign nested plugin\n");
           expect(fs.readFileSync(foreignPlugin, "utf8")).toBe("// foreign plugin\n");
-          // T14: Stack ya no gestiona plugins/engram.ts (oficial vía setup);
-          // el legacy preexistente se preserva byte a byte, sin reescribir.
+          // Stack ya no gestiona plugins/engram.ts (oficial vía setup); el
+          // legacy preexistente se preserva byte a byte, sin reescribir.
           expect(fs.readFileSync(engramPlugin, "utf8")).toBe("// legacy Engram placeholder\n");
           expect(fs.readFileSync(engramPlaceholder, "utf8")).toBe("Engram placeholder\n");
           expect(fs.readFileSync(goalDatabase, "utf8")).toBe("not a real SQLite database\n");

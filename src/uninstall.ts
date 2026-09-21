@@ -191,9 +191,9 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     const planTargets = [
       ...new Set([...buildContentPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
     ].filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
-    // T14: el plugin oficial (`engram setup opencode`, misma ruta) se conserva
+    // El plugin oficial (`engram setup opencode`, misma ruta) se conserva
     // siempre — incluso con --remove-engram; ese flag solo retira legacy aún
-    // propio. D7 intacto: binario/DB/memorias jamás se tocan (no son targets).
+    // propio. El binario, la DB y las memorias jamás se tocan (no son targets).
     const deleteTargets = planTargets.filter((t) => {
       if (retained.has(t) || !isContainedIn(t, pruneRoot)) return false;
       if (path.basename(t) !== "engram.ts") return true;

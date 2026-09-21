@@ -598,7 +598,7 @@ describe("planPlugins: placeholders resueltos", () => {
       warnings: [],
     };
     const actions = planPlugins(opencodeAdapter, ctx);
-    // El legacy retirado no se empaqueta ni despliega: sync no lo recrea.
+    // El plugin legacy no se empaqueta ni despliega: sync no lo recrea.
     expect(actions.some((a) => a.target.endsWith("engram.ts"))).toBe(false);
     // hooks.ts/worktree.ts siguen Stack-owned y se siguen desplegando.
     expect(actions.some((a) => a.target.endsWith("hooks.ts"))).toBe(true);

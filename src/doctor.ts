@@ -193,8 +193,8 @@ function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mod
 }
 
 /**
- * T14/doctor — Estado oficial Engram por capas (solo lectura, sin claims de
- * generación futura).
+ * Estado oficial Engram por capas (solo lectura, sin claims de generación
+ * futura).
  *
  * Inspecciona filesystem/config real bajo `homeDir`:
  * - bin: binario Engram (candidatos bajo homeDir + detección global).

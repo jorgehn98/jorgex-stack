@@ -774,7 +774,7 @@ export const codexAdapter: Adapter = {
 };
 
 /**
- * T13 — Verificador oficial Codex por capas (solo lectura).
+ * Verificador oficial Codex por capas (solo lectura).
  *
  * Lee filesystem/config real, sin refs declarativas:
  * - plugin: header `[plugins."engram@<ref>"]` sin `enabled = false`. La ref

@@ -173,8 +173,8 @@ export const opencodeAdapter: Adapter = {
   },
 
   injectEngramProtocol() {
-    // El plugin engram.ts (que este mismo install despliega) inyecta el
-    // protocolo en runtime — única fuente, sin sección duplicada en AGENTS.md.
+    // La integración oficial de Engram aporta el protocolo en runtime; Stack no
+    // duplica esa sección en AGENTS.md ni vuelve a desplegar el plugin legacy.
     return false;
   },
 
@@ -475,8 +475,8 @@ export const opencodeAdapter: Adapter = {
           const kept = plugin.filter((url) => !url.startsWith(pluginsDirPrefix));
           if (kept.length === 0) delete root["plugin"];
           else root["plugin"] = kept;
-          // Si el usuario usa OTRA integración de engram (paquete npm), la
-          // copia local engram.ts del stack duplicaría protocolo y eventos.
+          // Si el usuario usa otra integración de Engram (paquete npm), un
+          // plugin legacy local podría duplicar el protocolo y los eventos.
           if (kept.some((u) => /engram/i.test(u))) {
             ctx.warnings.push(
               "OpenCode: hay un plugin de Engram registrado como paquete — revisa que no conviva con el engram.ts del stack (duplicaría la integración).",
@@ -587,7 +587,8 @@ export const opencodeAdapter: Adapter = {
         if (Array.isArray(plugin) && pluginsDir !== null) {
           // Registros file:// bajo nuestro pluginsDir: residuos de versiones
           // antiguas (los locales se auto-cargan del dir). Quitarlos no toca
-          // los archivos — engram.ts se conserva en disco vía preserveEngram.
+          // los archivos — el plugin oficial o legacy se conserva en disco;
+          // el manifest determina qué ownership puede retirarse.
           const pluginsDirPrefix = pathToFileURL(pluginsDir).href + "/";
           const kept = plugin.filter((url) => !url.startsWith(pluginsDirPrefix));
           if (kept.length === 0) delete root["plugin"];
@@ -630,7 +631,7 @@ export const opencodeAdapter: Adapter = {
 };
 
 /**
- * T14 — Transferencia de ownership OpenCode al plugin oficial.
+ * Transferencia de ownership OpenCode al plugin oficial.
  *
  * `engram setup opencode` reemplaza el contenido en la MISMA ruta
  * `plugins/engram.ts` (no es un archivo nuevo) + registra MCP exacto y

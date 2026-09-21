@@ -13,7 +13,7 @@ import { listFilesRecursive } from "../lib/fsx.js";
  * - "{{ENGRAM_PROTOCOL}}" → contenido de system-prompt/engram-protocol.md
  *   (única fuente del protocolo, alineada con el resto de runtimes).
  *
- * T14: `plugins/opencode/engram.ts` legacy ya no se empaqueta ni despliega;
+ * `plugins/opencode/engram.ts` legacy ya no se empaqueta ni despliega;
  * `engram setup opencode` es la única fuente (misma ruta, contenido oficial).
  * Se excluye del plan para que sync no lo recree; `hooks.ts`/`worktree.ts`
  * siguen Stack-owned.
