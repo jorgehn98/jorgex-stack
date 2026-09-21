@@ -880,3 +880,37 @@ describe("CLI Pi package-runtime dispatch", () => {
     },
   );
 });
+
+describe("[T17-RED] Pi usa un único installer compartido sin versión ni canales", () => {
+  it("el requirement Pi y su wiring CLI no hardcodean versión ni canales y usan el installer compartido", async () => {
+    const piRuntimeSource = fs.readFileSync(path.join(ROOT, "src", "lib", "pi-runtime.ts"), "utf8");
+    expect(piRuntimeSource).not.toMatch(/installNative/);
+    expect(piRuntimeSource).not.toMatch(/2\.0\.0/);
+    expect(piRuntimeSource).not.toMatch(/channels/);
+    expect(piRuntimeSource).not.toMatch(/brew.*go.*url/s);
+    expect(piRuntimeSource).toMatch(/installShared/);
+
+    const cliSource = fs.readFileSync(path.join(ROOT, "src", "cli.ts"), "utf8");
+    // El wiring Pi no debe pasar versión ni canales ni llamar al canal nativo versionado.
+    expect(cliSource).not.toMatch(/installNative\s*:\s*async\s*\(\s*\{\s*version/s);
+    expect(cliSource).not.toMatch(/channels\s*:\s*\[/);
+    // Pi debe resolverse con el instalador compartido sin versión (installMissingEngram/installShared).
+    expect(cliSource).toMatch(/installShared|installMissingEngram/);
+  });
+
+  it("control: dry-run/target-dir/no-consent siguen sin descargar (guardas preservadas)", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-t17-controls-"));
+    mocks.resolvePiEngramBin.mockReturnValue(null);
+
+    expect(await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "human",
+      "--yes",
+    ], home)).toBe(1);
+    expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+  });
+});

@@ -12,15 +12,15 @@ type PiEngramRequirement = {
       detectHost(): string | null;
       detectTarget(targetDir: string): string | null;
       confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-      installNative(input: { version: "2.0.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
+      installShared(): Promise<boolean>;
     },
   ): Promise<EngramDecision>;
 };
 
 async function requirement(): Promise<PiEngramRequirement> {
-  const mod = await import("../src/lib/pi-runtime.js") as Partial<PiEngramRequirement>;
+  const mod = await import("../src/lib/pi-runtime.js") as unknown as Partial<PiEngramRequirement>;
   expect(mod.resolvePiEngramRequirement).toBeTypeOf("function");
-  return mod as PiEngramRequirement;
+  return mod as unknown as PiEngramRequirement;
 }
 
 function deps(overrides: Partial<{
@@ -49,8 +49,9 @@ function deps(overrides: Partial<{
         expect(input.message).toMatch(/engram/i);
         return overrides.accepted ?? false;
       },
-      async installNative(input: { version: "2.0.0"; channels: ["brew", "go", "url"] }) {
-        events.push(`install:${input.version}:${input.channels.join(",")}`);
+      async installShared(...args: unknown[]) {
+        events.push("install-shared");
+        expect(args).toEqual([]);
         return overrides.installed ?? true;
       },
     },
@@ -105,13 +106,16 @@ describe("Pi Engram requirement", () => {
     }
   });
 
-  it("offers native installation only to an interactive user, defaults to No, and re-detects once after acceptance", async () => {
+  it("offers the single shared versionless installation only to an interactive user, defaults to No, and re-detects once after acceptance", async () => {
     const { resolvePiEngramRequirement } = await requirement();
     const declined = deps();
+    expect(declined.api).not.toHaveProperty("installNative");
+    expect("version" in declined.api).toBe(false);
     await expect(resolvePiEngramRequirement({ interactive: true, yes: false }, declined.api)).resolves.toEqual({ kind: "offer", accepted: false });
     expect(declined.events).toEqual(["detect-host", "confirm:false"]);
 
     const accepted = deps({ accepted: true, installed: true, redetected: "/opt/engram/bin/engram" });
+    expect(accepted.api).not.toHaveProperty("installNative");
     await expect(resolvePiEngramRequirement({ interactive: true, yes: false }, accepted.api)).resolves.toEqual({
       kind: "existing",
       bin: "/opt/engram/bin/engram",
@@ -120,7 +124,7 @@ describe("Pi Engram requirement", () => {
     expect(accepted.events).toEqual([
       "detect-host",
       "confirm:false",
-      "install:2.0.0:brew,go,url",
+      "install-shared",
       "detect-host",
     ]);
   });

@@ -125,7 +125,8 @@ export async function resolvePiEngramRequirement(
     detectHost(): string | null;
     detectTarget(targetDir: string): string | null;
     confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-    installNative(input: { version: "2.0.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
+    /** Reuses Stack's verified latest-stable installer without a Pi-specific version or channel. */
+    installShared(): Promise<boolean>;
   },
 ): Promise<PiEngramDecision> {
   if (input.targetDir !== undefined) {
@@ -148,11 +149,11 @@ export async function resolvePiEngramRequirement(
     };
   }
   const accepted = await deps.confirm({
-    message: "Engram es obligatorio para JorgeX Pi. ¿Instalar ahora el binario mediante el canal nativo?",
+    message: "Engram es obligatorio para JorgeX Pi. ¿Instalar ahora el binario oficial verificado?",
     initialValue: false,
   });
   if (!accepted) return { kind: "offer", accepted: false };
-  const installed = await deps.installNative({ version: "2.0.0", channels: ["brew", "go", "url"] });
+  const installed = await deps.installShared();
   if (!installed) {
     return {
       kind: "blocked",

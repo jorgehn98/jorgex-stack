@@ -5,7 +5,7 @@ import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentCon
 import { ADAPTERS, formatRuntimeSummary, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall, type RuntimeSyncStatus } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
-import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
+import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
@@ -539,7 +539,10 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
         const answer = await p.confirm({ message, initialValue });
         return !p.isCancel(answer) && answer;
       },
-      installNative: async ({ version }) => updateEngram("Gentleman-Programming/engram", version),
+      installShared: async () => {
+        const result = await installMissingEngram();
+        return result.ok;
+      },
     });
     if (requirement.kind !== "existing") {
       console.error(requirement.kind === "offer"
