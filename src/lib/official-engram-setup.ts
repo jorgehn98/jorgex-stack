@@ -167,8 +167,11 @@ function findSetupSymlinkViolation(targets: string[], homeDir: string): string |
           return `${dir}: ancestro existente es un symlink (no se atraviesa)`;
         }
       } catch (error) {
-        if (errnoCode(error) === "ENOENT") break;
-        return `${dir}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+        if (errnoCode(error) !== "ENOENT") {
+          return `${dir}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+        }
+        // Intermedio ausente: seguir ascendiendo; un symlink superior
+        // existente debe detectarse igualmente.
       }
       const parent = path.dirname(dir);
       if (parent === dir) break;
@@ -315,7 +318,17 @@ export async function runOfficialSetup(
     verifyResult = { ok: false, reason: detail };
   }
 
-  const ok = spawnResult.ok === true && verifyResult.ok === true;
+  // Revalidación post-spawn antes de declarar éxito: si queda un symlink en un
+  // target o en sus ancestros, el run no puede declararse ok aunque spawn y
+  // verify lo indiquen. Es una comprobación best effort contra TOCTOU.
+  const postViolation = findSetupSymlinkViolation(preciseTargets, homeResolved);
+  const tainted = new Set<string>();
+  if (postViolation !== null) {
+    for (const t of preciseTargets) {
+      if (findSetupSymlinkViolation([t], homeResolved) !== null) tainted.add(t);
+    }
+  }
+  const ok = spawnResult.ok === true && verifyResult.ok === true && postViolation === null;
   if (ok) {
     return {
       ok: true,
@@ -328,18 +341,9 @@ export async function runOfficialSetup(
     };
   }
 
-  // Revalidación post-spawn: si el setup reemplazó un preexistente por un
-  // symlink (o plantó alias en un árbol), no se invoca restore ni se limpia
-  // ese target (ambas operaciones podrían atravesar el enlace). Es best
-  // effort contra TOCTOU, con estado incompleto explícito; el backupId
-  // orienta la recuperación manual y el target exterior queda intacto.
-  const postViolation = findSetupSymlinkViolation(preciseTargets, homeResolved);
-  const tainted = new Set<string>();
-  if (postViolation !== null) {
-    for (const t of preciseTargets) {
-      if (findSetupSymlinkViolation([t], homeResolved) !== null) tainted.add(t);
-    }
-  }
+  // Con una violación post-setup, se omiten restore y cleanup para ese target:
+  // ambas operaciones podrían atravesar el enlace. El backupId orienta la
+  // recuperación manual y el target exterior queda intacto.
   let restoreError: string | undefined;
   let restoreFailed = false;
   if (postViolation !== null) {

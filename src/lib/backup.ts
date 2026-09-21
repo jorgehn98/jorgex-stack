@@ -105,7 +105,8 @@ export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME)
           : "UNKNOWN";
         // Ilegible distinto de ausente: no se puede descartar alias.
         if (code !== "ENOENT") return true;
-        break;
+        // Intermedio ausente: seguir ascendiendo hacia un posible symlink
+        // superior en lugar de dar por limpio el árbol.
       }
       const parent = path.dirname(dir);
       if (parent === dir) break;
