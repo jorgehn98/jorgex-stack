@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { EngramInstallResult } from "../src/lib/engram-install.js";
 
 type EngramDecision =
   | { kind: "existing"; bin: string; scope: "host" | "target-dir" }
@@ -12,7 +13,7 @@ type PiEngramRequirement = {
       detectHost(): string | null;
       detectTarget(targetDir: string): string | null;
       confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-      installShared(): Promise<boolean>;
+      installShared(): Promise<EngramInstallResult>;
     },
   ): Promise<EngramDecision>;
 };
@@ -27,7 +28,7 @@ function deps(overrides: Partial<{
   host: string | null;
   target: string | null;
   accepted: boolean;
-  installed: boolean;
+  installResult: EngramInstallResult;
   redetected: string | null;
 }> = {}) {
   const events: string[] = [];
@@ -52,7 +53,7 @@ function deps(overrides: Partial<{
       async installShared(...args: unknown[]) {
         events.push("install-shared");
         expect(args).toEqual([]);
-        return overrides.installed ?? true;
+        return overrides.installResult ?? { ok: true, bin: "/opt/engram/bin/engram" };
       },
     },
   };
@@ -114,7 +115,11 @@ describe("Pi Engram requirement", () => {
     await expect(resolvePiEngramRequirement({ interactive: true, yes: false }, declined.api)).resolves.toEqual({ kind: "offer", accepted: false });
     expect(declined.events).toEqual(["detect-host", "confirm:false"]);
 
-    const accepted = deps({ accepted: true, installed: true, redetected: "/opt/engram/bin/engram" });
+    const accepted = deps({
+      accepted: true,
+      installResult: { ok: true, bin: "/opt/engram/bin/engram" },
+      redetected: "/opt/engram/bin/engram",
+    });
     expect(accepted.api).not.toHaveProperty("installNative");
     await expect(resolvePiEngramRequirement({ interactive: true, yes: false }, accepted.api)).resolves.toEqual({
       kind: "existing",
@@ -127,5 +132,23 @@ describe("Pi Engram requirement", () => {
       "install-shared",
       "detect-host",
     ]);
+  });
+
+  it("carries a structured installer failure reason into the blocked remedy", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const detail = "simulated installer boom: ECONNRESET";
+    const failed = deps({
+      accepted: true,
+      installResult: { ok: false, reason: detail },
+      redetected: null,
+    });
+    await expect(
+      resolvePiEngramRequirement({ interactive: true, yes: false }, failed.api),
+    ).resolves.toMatchObject({
+      kind: "blocked",
+      reason: "engram-install-failed",
+      remedy: expect.stringContaining(detail),
+    });
+    expect(failed.events).toEqual(["detect-host", "confirm:false", "install-shared"]);
   });
 });

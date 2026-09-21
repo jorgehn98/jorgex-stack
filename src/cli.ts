@@ -467,7 +467,10 @@ async function resolveHostEngramForInstall(
 
   try {
     const result = await installMissingEngram();
-    if (result.ok) return { ok: true, bin: result.bin };
+    if (result.ok) {
+      if (result.warning) p.log.warn(result.warning);
+      return { ok: true, bin: result.bin };
+    }
     return { ok: false, message: `Engram: ${result.reason}` };
   } catch (error) {
     return { ok: false, message: `Engram: ${error instanceof Error ? error.message : String(error)}` };
@@ -541,7 +544,8 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
       },
       installShared: async () => {
         const result = await installMissingEngram();
-        return result.ok;
+        if (result.ok && result.warning) p.log.warn(result.warning);
+        return result;
       },
     });
     if (requirement.kind !== "existing") {

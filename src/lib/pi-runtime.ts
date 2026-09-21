@@ -8,6 +8,7 @@ import { dataDir } from "./paths.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { detectEngram, lookPath, planDetectedBinCommand } from "./detect.js";
+import type { EngramInstallResult } from "./engram-install.js";
 import {
   executePiPackageLifecycle,
   planPiPackageLifecycle,
@@ -125,8 +126,8 @@ export async function resolvePiEngramRequirement(
     detectHost(): string | null;
     detectTarget(targetDir: string): string | null;
     confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-    /** Reuses Stack's verified latest-stable installer without a Pi-specific version or channel. */
-    installShared(): Promise<boolean>;
+    /** Reuses Stack's verified latest-stable installer and returns its structured outcome. */
+    installShared(): Promise<EngramInstallResult>;
   },
 ): Promise<PiEngramDecision> {
   if (input.targetDir !== undefined) {
@@ -154,11 +155,11 @@ export async function resolvePiEngramRequirement(
   });
   if (!accepted) return { kind: "offer", accepted: false };
   const installed = await deps.installShared();
-  if (!installed) {
+  if (!installed.ok) {
     return {
       kind: "blocked",
       reason: "engram-install-failed",
-      remedy: "Instala Engram manualmente o configura ENGRAM_BIN antes de reintentar.",
+      remedy: `La instalación de Engram falló: ${installed.reason} Instala Engram manualmente o configura ENGRAM_BIN antes de reintentar.`,
     };
   }
   const detected = deps.detectHost();

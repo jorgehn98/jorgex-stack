@@ -20,6 +20,7 @@ vi.mock("../src/lib/detect.js", async (importOriginal) => {
 });
 
 import {
+  fetchLatestGithubRelease,
   latestGithubRelease,
   latestGithubCommit,
   downloadRepoTarball,
@@ -749,5 +750,89 @@ describe("downloadRepoTarball: tarball malicioso — invariante de seguridad", (
         expect(contents).toHaveLength(0);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchLatestGithubRelease — direct contract (PR04 final-review 1)
+// Injected fetchFn only; no global fetch, no network, no HOME.
+// Locks: exact URL, Accept/User-Agent, 10s AbortSignal timeout,
+// 403/429 rate-limit flag, network-throw propagation (unlike the
+// latestGithubRelease wrapper, which maps throws to null).
+// ---------------------------------------------------------------------------
+
+describe("fetchLatestGithubRelease: direct contract", () => {
+  it("calls the exact releases/latest URL once", async () => {
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
+    await fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(String(mockFetch.mock.calls[0]?.[0])).toBe(
+      "https://api.github.com/repos/owner/repo/releases/latest",
+    );
+  });
+
+  it("sends Accept application/vnd.github+json and User-Agent jorgex-stack", async () => {
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
+    await fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch);
+    const headers = mockFetch.mock.calls[0]?.[1]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Accept"]).toBe("application/vnd.github+json");
+    expect(headers?.["User-Agent"]).toBe("jorgex-stack");
+  });
+
+  it("uses AbortSignal.timeout(10_000) for the metadata query", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const mockFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
+    try {
+      await fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch);
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+      const signal = mockFetch.mock.calls[0]?.[1]?.signal as AbortSignal | undefined;
+      expect(signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it("403 marks githubRateLimited() true and returns the response", async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response("", { status: 403 }),
+    );
+    const res = await fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch);
+    expect(res.status).toBe(403);
+    expect(githubRateLimited()).toBe(true);
+  });
+
+  it("429 marks githubRateLimited() true and returns the response", async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response("", { status: 429 }),
+    );
+    const res = await fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch);
+    expect(res.status).toBe(429);
+    expect(githubRateLimited()).toBe(true);
+  });
+
+  it("control: 200 does not mark rate-limited", async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ tag_name: "v1.0.0" }), { status: 200 }),
+    );
+    const res = await fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch);
+    expect(res.ok).toBe(true);
+    expect(githubRateLimited()).toBe(false);
+  });
+
+  it("network throw propagates (does not map to null at this seam)", async () => {
+    const mockFetch = vi.fn(async () => {
+      throw new Error("boom-transport");
+    });
+    await expect(fetchLatestGithubRelease("owner/repo", mockFetch as typeof fetch)).rejects.toThrow(
+      "boom-transport",
+    );
+    // Direct seam never sets the flag on transport failure.
+    expect(githubRateLimited()).toBe(false);
   });
 });
