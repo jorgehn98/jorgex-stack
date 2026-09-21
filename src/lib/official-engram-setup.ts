@@ -20,6 +20,15 @@ import { HOME } from "./paths.js";
  * cerrado y los modos que no mutan siguen omitiendo el setup.
  */
 
+/**
+ * Parche de entorno para el subprocess oficial.
+ *
+ * Una clave presente con valor `undefined` se elimina del entorno hijo;
+ * `spawnOfficialSetupBin` aplica esta semántica en lugar de serializarla como
+ * `"undefined"`.
+ */
+export type OfficialSetupEnvPatch = Record<string, string | undefined>;
+
 export type OfficialSetupRuntime = "claude-code" | "codex" | "opencode";
 
 export const OFFICIAL_SETUP_RUNTIMES: readonly OfficialSetupRuntime[] = [
@@ -73,7 +82,7 @@ export interface OfficialSetupDeps {
   homeDir: string;
   engramBin: string;
   backup: () => Promise<{ id: string }>;
-  spawn: (bin: string, argv: string[], options: { shell: false; env?: NodeJS.ProcessEnv }) => Promise<OfficialSetupSpawnResult>;
+  spawn: (bin: string, argv: string[], options: { shell: false; env?: OfficialSetupEnvPatch }) => Promise<OfficialSetupSpawnResult>;
   verify: () => Promise<OfficialSetupVerifyResult>;
   restore?: () => Promise<unknown>;
   /** Ficheros que el setup puede crear/modificar. Obligatorio y no vacío. */
@@ -536,24 +545,30 @@ export function collectOfficialSetupBackupTargets(
  * proveedor y el runtime usen el archivo hermano `<home>/.claude.json`.
  * Con la variable explícita se usa el anidado `configDir/.claude.json`,
  * incluso si su valor coincide con `<home>/.claude`.
- * El resto de variables de entorno se preserva (el proceso combina sobre
- * process.env).
+ * El resto de variables se preserva: `spawnOfficialSetupBin` combina el
+ * parche sobre `process.env`.
+ *
+ * En el modo Claude predeterminado (`isExplicit=false` o variable ausente con
+ * path `<home>/.claude`), devuelve `{ CLAUDE_CONFIG_DIR: undefined }` para
+ * impedir que el hijo herede un valor paterno ajeno.
  */
 export function resolveOfficialSetupEnv(
   runtime: OfficialSetupRuntime,
   configDir: string,
   homeDir?: string,
   isExplicitClaudeConfigDir?: boolean,
-): NodeJS.ProcessEnv {
+): OfficialSetupEnvPatch {
   switch (runtime) {
     case "claude-code": {
       const home = homeDir ?? HOME;
       const explicit = isExplicitClaudeConfigDirEnv(isExplicitClaudeConfigDir);
-      // Explícito siempre usa semántica custom/anidada, aunque el path sea
-      // igual al predeterminado. Por defecto (env ausente + path default)
-      // no se fuerza la variable para usar el hermano.
+      // Explícito siempre usa el config anidado, aunque el path sea el
+      // predeterminado. En el modo predeterminado se elimina la variable para
+      // usar el archivo hermano.
       if (explicit) return { CLAUDE_CONFIG_DIR: configDir };
-      if (path.resolve(configDir) === path.resolve(path.join(home, ".claude"))) return {};
+      if (path.resolve(configDir) === path.resolve(path.join(home, ".claude"))) {
+        return { CLAUDE_CONFIG_DIR: undefined };
+      }
       return { CLAUDE_CONFIG_DIR: configDir };
     }
     case "codex":
@@ -570,15 +585,25 @@ export function resolveOfficialSetupEnv(
 export async function spawnOfficialSetupBin(
   bin: string,
   argv: string[],
-  env?: NodeJS.ProcessEnv,
+  env?: OfficialSetupEnvPatch,
 ): Promise<OfficialSetupSpawnResult> {
   try {
+    let childEnv: NodeJS.ProcessEnv | undefined;
+    if (env !== undefined) {
+      // Se parte de process.env; `undefined` elimina la clave y los valores
+      // definidos del parche prevalecen.
+      childEnv = { ...process.env };
+      for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) delete childEnv[key];
+        else childEnv[key] = value;
+      }
+    }
     const stdout = execFileSync(bin, argv, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
       shell: false,
-      ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+      ...(childEnv === undefined ? {} : { env: childEnv }),
     });
     return { ok: true, stdout: stdout ?? "", stderr: "" };
   } catch (error) {
