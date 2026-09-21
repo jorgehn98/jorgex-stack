@@ -64,20 +64,57 @@ function githubHeaders(): Record<string, string> {
   };
 }
 
+/** Repo oficial del binario Engram. */
+export const ENGRAM_REPO = "Gentleman-Programming/engram";
+
+/** Endpoint `latest`: GitHub excludes drafts and prereleases; the caller validates the tag format. */
+export const ENGRAM_RELEASES_LATEST_URL = `https://api.github.com/repos/${ENGRAM_REPO}/releases/latest`;
+
+/** Prefijo oficial de descargas del release Engram. */
+export const ENGRAM_DOWNLOAD_PREFIX = `https://github.com/${ENGRAM_REPO}/releases/download/`;
+
 /**
- * Devuelve la versión del último release publicado en un repo de GitHub,
- * sin el prefijo "v". Retorna null si falla la red o el repo no tiene releases.
+ * Nombre exacto del asset Engram para versión + plataforma + arquitectura.
+ * Retorna null ante plataforma o arquitectura no soportada.
+ */
+export function expectedEngramAssetName(
+  version: string,
+  platform: NodeJS.Platform,
+  arch: string,
+): string | null {
+  const osPart =
+    platform === "win32" ? "windows" : platform === "linux" ? "linux" : platform === "darwin" ? "darwin" : null;
+  const archPart = arch === "x64" ? "amd64" : arch === "arm64" ? "arm64" : null;
+  if (osPart === null || archPart === null) return null;
+  const ext = osPart === "windows" ? "zip" : "tar.gz";
+  return `engram_${version}_${osPart}_${archPart}.${ext}`;
+}
+
+/**
+ * Obtiene el `releases/latest` de un repo con las cabeceras GitHub del CLI.
+ * GitHub excluye drafts y prereleases de este endpoint.
+ * Marks rate limits on 403/429 and lets network errors reach the caller.
+ */
+export async function fetchLatestGithubRelease(
+  repo: string,
+  fetchFn: typeof globalThis.fetch = globalThis.fetch,
+): Promise<Response> {
+  const res = await fetchFn(`https://api.github.com/repos/${repo}/releases/latest`, {
+    headers: githubHeaders(),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok && (res.status === 403 || res.status === 429)) rateLimitHit = true;
+  return res;
+}
+
+/**
+ * Devuelve la versión del release que GitHub expone como `latest`, sin el
+ * prefijo "v". Retorna null si falla la red o el repo no tiene releases.
  */
 export async function latestGithubRelease(repo: string): Promise<string | null> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-      headers: githubHeaders(),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      if (res.status === 403 || res.status === 429) rateLimitHit = true;
-      return null;
-    }
+    const res = await fetchLatestGithubRelease(repo);
+    if (!res.ok) return null;
     const data = (await res.json()) as { tag_name?: string };
     return data.tag_name?.replace(/^v/, "") ?? null;
   } catch {

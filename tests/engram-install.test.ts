@@ -5,18 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const pinFixture = vi.hoisted(() => ({
-  version: "1.20.0",
-  assets: {
-    linux_x64: {
-      name: "engram_1.20.0_linux_amd64.tar.gz",
-      size: 0,
-      sha256: "",
-    },
-  },
-}));
+const LATEST_URL = "https://api.github.com/repos/Gentleman-Programming/engram/releases/latest";
+const OFFICIAL_PREFIX = "https://github.com/Gentleman-Programming/engram/releases/download/";
 
-vi.mock("../src/lib/engram-release.json", () => ({ default: pinFixture }));
+const liveFixture = {
+  version: "1.20.0",
+  tag: "v1.20.0",
+  name: "engram_1.20.0_linux_amd64.tar.gz",
+  size: 0,
+  sha256: "",
+};
 
 type InstallResult =
   | { ok: true; bin: string }
@@ -48,13 +46,39 @@ function temporaryHome(): string {
   return home;
 }
 
+function assetUrl(): string {
+  return `${OFFICIAL_PREFIX}${liveFixture.tag}/${liveFixture.name}`;
+}
+
+function releasePayload(): { tag_name: string; assets: unknown[] } {
+  return {
+    tag_name: liveFixture.tag,
+    assets: [
+      {
+        name: liveFixture.name,
+        size: liveFixture.size,
+        state: "uploaded",
+        browser_download_url: assetUrl(),
+        digest: `sha256:${liveFixture.sha256}`,
+      },
+    ],
+  };
+}
+
 function fixtureFetch(bytes = archiveBytes): {
   fetch: typeof globalThis.fetch;
   calls: string[];
 } {
   const calls: string[] = [];
   const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-    calls.push(String(input));
+    const url = String(input);
+    calls.push(url);
+    if (url === LATEST_URL) {
+      return new Response(JSON.stringify(releasePayload()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     return new Response(new Uint8Array(bytes), { status: 200 });
   });
   return { fetch: fetch as typeof globalThis.fetch, calls };
@@ -72,11 +96,6 @@ function failingFetch(message: string): {
   return { fetch: fetch as typeof globalThis.fetch, calls };
 }
 
-function expectedReleaseUrl(): string {
-  const asset = pinFixture.assets.linux_x64;
-  return `https://github.com/Gentleman-Programming/engram/releases/download/v${pinFixture.version}/${asset.name}`;
-}
-
 beforeAll(() => {
   fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-engram-install-fixture-"));
   binaryBytes = Buffer.from("#!/bin/sh\nprintf 'fixture engram\\n'\n");
@@ -84,17 +103,17 @@ beforeAll(() => {
   fs.writeFileSync(binaryPath, binaryBytes, { mode: 0o755 });
   fs.chmodSync(binaryPath, 0o755);
 
-  const archivePath = path.join(fixtureRoot, pinFixture.assets.linux_x64.name);
+  const archivePath = path.join(fixtureRoot, liveFixture.name);
   execFileSync("tar", ["-czf", archivePath, "-C", fixtureRoot, "engram"], { stdio: "pipe" });
   archiveBytes = fs.readFileSync(archivePath);
   fixtureSha256 = crypto.createHash("sha256").update(archiveBytes).digest("hex");
-  pinFixture.assets.linux_x64.size = archiveBytes.byteLength;
-  pinFixture.assets.linux_x64.sha256 = fixtureSha256;
+  liveFixture.size = archiveBytes.byteLength;
+  liveFixture.sha256 = fixtureSha256;
 });
 
 beforeEach(() => {
   vi.resetModules();
-  pinFixture.assets.linux_x64.sha256 = fixtureSha256;
+  liveFixture.sha256 = fixtureSha256;
 });
 
 afterEach(() => {
@@ -129,8 +148,8 @@ describe("installMissingEngram", () => {
   it("rechaza un artefacto cuyo SHA-256 no coincide y no publica el binario", async () => {
     const homeDir = temporaryHome();
     const bin = path.join(homeDir, ".local", "bin", "engram");
+    liveFixture.sha256 = "0".repeat(64);
     const network = fixtureFetch();
-    pinFixture.assets.linux_x64.sha256 = "0".repeat(64);
 
     const result = await (await installMissingEngram())({
       homeDir,
@@ -140,7 +159,7 @@ describe("installMissingEngram", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/hash|integrity/i) });
-    expect(network.calls).toEqual([expectedReleaseUrl()]);
+    expect(network.calls).toEqual([LATEST_URL, assetUrl()]);
     expect(fs.existsSync(bin)).toBe(false);
   });
 
@@ -157,7 +176,7 @@ describe("installMissingEngram", () => {
     });
 
     expect(result).toEqual({ ok: true, bin });
-    expect(network.calls).toEqual([expectedReleaseUrl()]);
+    expect(network.calls).toEqual([LATEST_URL, assetUrl()]);
     expect(fs.readFileSync(bin)).toEqual(binaryBytes);
     expect(fs.statSync(bin).mode & 0o111).not.toBe(0);
   });
@@ -175,7 +194,7 @@ describe("installMissingEngram", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/tamaño|size|supera|approved/i) });
-    expect(network.calls).toEqual([expectedReleaseUrl()]);
+    expect(network.calls).toEqual([LATEST_URL, assetUrl()]);
     expect(fs.existsSync(bin)).toBe(false);
   });
 
@@ -192,7 +211,7 @@ describe("installMissingEngram", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("network unavailable") });
-    expect(network.calls).toEqual([expectedReleaseUrl()]);
+    expect(network.calls).toEqual([LATEST_URL]);
     expect(fs.existsSync(bin)).toBe(false);
   });
 
@@ -239,7 +258,14 @@ describe("installMissingEngram", () => {
     const existingBytes = Buffer.from("another installer won the race");
     const calls: string[] = [];
     const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      calls.push(String(input));
+      const url = String(input);
+      calls.push(url);
+      if (url === LATEST_URL) {
+        return new Response(JSON.stringify(releasePayload()), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       fs.mkdirSync(path.dirname(bin), { recursive: true });
       fs.writeFileSync(bin, existingBytes, { mode: 0o755 });
       return new Response(new Uint8Array(archiveBytes), { status: 200 });
@@ -253,7 +279,7 @@ describe("installMissingEngram", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/exist|EEXIST/i) });
-    expect(calls).toEqual([expectedReleaseUrl()]);
+    expect(calls).toEqual([LATEST_URL, assetUrl()]);
     expect(fs.readFileSync(bin)).toEqual(existingBytes);
   });
 });

@@ -5,7 +5,7 @@ import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentCon
 import { ADAPTERS, formatRuntimeSummary, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall, type RuntimeSyncStatus } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
-import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
+import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
@@ -467,7 +467,10 @@ async function resolveHostEngramForInstall(
 
   try {
     const result = await installMissingEngram();
-    if (result.ok) return { ok: true, bin: result.bin };
+    if (result.ok) {
+      if (result.warning) p.log.warn(result.warning);
+      return { ok: true, bin: result.bin };
+    }
     return { ok: false, message: `Engram: ${result.reason}` };
   } catch (error) {
     return { ok: false, message: `Engram: ${error instanceof Error ? error.message : String(error)}` };
@@ -539,7 +542,11 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
         const answer = await p.confirm({ message, initialValue });
         return !p.isCancel(answer) && answer;
       },
-      installNative: async ({ version }) => updateEngram("Gentleman-Programming/engram", version),
+      installShared: async () => {
+        const result = await installMissingEngram();
+        if (result.ok && result.warning) p.log.warn(result.warning);
+        return result;
+      },
     });
     if (requirement.kind !== "existing") {
       console.error(requirement.kind === "offer"
