@@ -12,6 +12,7 @@ import { upsertJson } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
+import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -409,6 +410,16 @@ export const claudeCodeAdapter: Adapter = {
             }
             continue;
           }
+          // Oficial preservado: con plugin Engram presente el MCP es oficial
+          // (setup `engram setup claude-code`), no legacy del Stack. Uninstall
+          // lo conserva incluso con --remove-engram; ese flag solo retira
+          // legacy aún propio. Usa el desinstalador oficial para lo oficial.
+          if (name === "engram" && hasEngramPlugin(ctx.configDir)) {
+            ctx.warnings.push(
+              "Claude Code: MCP 'engram' oficial (plugin) se conserva; usa el desinstalador oficial de Engram para retirarlo.",
+            );
+            continue;
+          }
           if (!server.optional) {
             delete servers[name];
             continue;
@@ -428,3 +439,109 @@ export const claudeCodeAdapter: Adapter = {
     return actions;
   },
 };
+
+/**
+ * T13 — Verificador oficial Claude Code por capas (solo lectura).
+ *
+ * Lee filesystem/config real, sin booleanos declarativos:
+ * - plugin: dir `plugins/marketplaces/engram` o clave exacta en
+ *   `plugins/installed_plugins.json` (`engram` o `engram@*`).
+ * - mcp: entrada exacta en el sibling `~/.claude.json` (o
+ *   `configDir/.claude.json` con CLAUDE_CONFIG_DIR custom): type stdio,
+ *   command == engramBin, args == ["mcp","--tools=agent"].
+ * - hooks: `hooks/hooks.json` oficial en el installPath del plugin con objeto
+ *   `hooks` no vacío + al menos un script en `scripts/`. Los hooks JorgeX de
+ *   settings.json se preservan pero NO acreditan esta capa.
+ *
+ * No escribe ni reclama nada; la config ajena queda intacta.
+ */
+function resolveClaudeMcpCandidates(configDir: string): string[] {
+  const sibling = path.join(path.dirname(configDir), `${path.basename(configDir)}.json`);
+  const nested = path.join(configDir, ".claude.json");
+  return [...new Set([sibling, nested])];
+}
+
+function isExactClaudeEngramMcp(value: unknown, engramBin: string): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    value["type"] === "stdio" &&
+    value["command"] === engramBin &&
+    Array.isArray(value["args"]) &&
+    (value["args"] as unknown[]).length === 2 &&
+    (value["args"] as unknown[])[0] === "mcp" &&
+    (value["args"] as unknown[])[1] === "--tools=agent"
+  );
+}
+
+function checkClaudeOfficialMcp(configDir: string, engramBin: string): boolean {
+  for (const file of resolveClaudeMcpCandidates(configDir)) {
+    let content: string;
+    try {
+      content = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(content) as unknown;
+      if (!isRecord(parsed)) continue;
+      const servers = parsed["mcpServers"];
+      if (!isRecord(servers)) continue;
+      if (isExactClaudeEngramMcp(servers["engram"], engramBin)) return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+function checkClaudeOfficialHooks(configDir: string): boolean {
+  const pluginDir = path.join(configDir, "plugins", "marketplaces", "engram");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(pluginDir, "hooks", "hooks.json"), "utf8")) as unknown;
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) return false;
+  const hooks = parsed["hooks"];
+  if (!isRecord(hooks) || Object.keys(hooks).length === 0) return false;
+  try {
+    const entries = fs.readdirSync(path.join(pluginDir, "scripts"));
+    if (!entries.some((entry) => entry.endsWith(".sh"))) return false;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+export async function verifyOfficialSetup(args: { configDir: string; engramBin: string }): Promise<{
+  ok: boolean;
+  layers: string[];
+  duplicates: boolean;
+  reason?: string;
+}> {
+  const hasPlugin = hasEngramPlugin(args.configDir);
+  const hasMcp = typeof args.engramBin === "string" && args.engramBin !== ""
+    ? checkClaudeOfficialMcp(args.configDir, args.engramBin)
+    : false;
+  const hasHooks = checkClaudeOfficialHooks(args.configDir);
+  const passed: string[] = [];
+  const missing: string[] = [];
+  if (hasPlugin) passed.push("plugin");
+  else missing.push("plugin:missing");
+  if (hasMcp) passed.push("mcp");
+  else missing.push("mcp:missing");
+  if (hasHooks) passed.push("hooks");
+  else missing.push("hooks:missing");
+  if (missing.length === 0) {
+    return { ok: true, layers: passed, duplicates: false };
+  }
+  return {
+    ok: false,
+    layers: [...passed, ...missing],
+    duplicates: false,
+    reason: `Claude Code: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`,
+  };
+}
+
+registerOfficialSetupVerifier("claude-code", verifyOfficialSetup);

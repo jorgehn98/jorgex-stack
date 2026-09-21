@@ -34,9 +34,12 @@ export interface Upstreams {
   complements?: Record<string, ComplementUpstreamInfo>;
 }
 
+export type ComplementStrategy = "exact" | "provider-managed";
+
 export interface ComplementUpstreamInfo {
   source: string;
   version?: string | null;
+  strategy?: ComplementStrategy;
   reviewed?: string;
   status?: string;
   note?: string;
@@ -95,22 +98,61 @@ export function complementsToScan(upstreams: Upstreams): string[] {
 }
 
 export interface ComplementUpdateCheckReport {
-  level: "success" | "warn" | "info";
+  level: "success" | "warn" | "info" | "error";
   message: string;
 }
 
-/** Compara el pin aceptado de un complemento contra el upstream observado, sin red. */
+/**
+ * Compara el pin aceptado de un complemento contra el upstream observado, sin red.
+ * `exact` exige pin (ausencia = error visible); `provider-managed` acepta
+ * rolling (null/main/latest) sin warning por ausencia de pin e informa la
+ * versión observada/drift como info, sin bloquear ni prometer reproducibilidad.
+ * Sin `strategy` se conserva el aviso legacy `sin pin` (warn) para no romper
+ * consumers existentes; el éxito con pin igual se mantiene en ambas estrategias.
+ */
 export function resolveComplementUpdateCheck(
   name: string,
   info: ComplementUpstreamInfo,
   upstream: string | null,
 ): ComplementUpdateCheckReport {
   const pinned = info.version ?? null;
-  if (!pinned)
+  const strategy = info.strategy;
+
+  if (strategy === "provider-managed") {
+    if (!pinned) {
+      if (upstream === null)
+        return {
+          level: "info",
+          message: `${name}: provider-managed sin versión fijada (rolling aceptado; no se pudo consultar el upstream).`,
+        };
+      return {
+        level: "info",
+        message: `${name}: provider-managed ${upstream} (rolling aceptado; el provider gestiona la versión).`,
+      };
+    }
+    if (upstream === null)
+      return { level: "info", message: `${name}: provider-managed ${pinned} (no se pudo consultar el upstream).` };
+    if (upstream === pinned)
+      return { level: "success", message: `${name}: al día con ${pinned} (provider-managed).` };
+    return {
+      level: "info",
+      message:
+        `${name}: provider-managed (referencia ${pinned}, upstream observado ${upstream}; ` +
+        "el provider gestiona la versión, sin re-pin requerido).",
+    };
+  }
+
+  if (!pinned) {
+    if (strategy === "exact")
+      return {
+        level: "error",
+        message: `${name}: estrategia exact sin pin en upstreams.json — fija la versión revisada antes de instalar.`,
+      };
     return {
       level: "warn",
       message: `${name}: sin pin en upstreams.json — fija la versión revisada antes de instalar.`,
     };
+  }
   if (upstream === null)
     return { level: "info", message: `${name}: pin ${pinned} (no se pudo consultar el upstream).` };
   if (upstream === pinned)
@@ -286,7 +328,8 @@ export async function runUpdateCheck(localVersion: string, includeBrowserState =
 
   // 5. Complementos oficiales externos: se instalan desde su upstream en cada
   // máquina, así que el aviso interesa también al usuario final. Discovery-only:
-  // informa, nunca auto-actualiza ni ejecuta instaladores ajenos.
+  // informa, nunca auto-actualiza ni ejecuta instaladores ajenos. `exact` sin
+  // pin es error visible; `provider-managed` informa drift sin bloquear.
   const complementNames = complementsToScan(upstreams);
   if (complementNames.length > 0) {
     const complementQueries = await queryComplementUpstreams(complementNames, upstreams);
@@ -295,7 +338,7 @@ export async function runUpdateCheck(localVersion: string, includeBrowserState =
     for (const { name, upstream } of complementQueries) {
       const report = resolveComplementUpdateCheck(name, upstreams.complements![name]!, upstream);
       p.log[report.level](report.message);
-      if (report.level === "warn") movedComplement = true;
+      if (report.level === "warn" || report.level === "error") movedComplement = true;
       if (report.level === "info") unknownComplement = true;
     }
     if (!movedComplement && !unknownComplement) {

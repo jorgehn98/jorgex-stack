@@ -589,7 +589,7 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
 });
 
 describe("planPlugins: placeholders resueltos", () => {
-  it("engram.ts recibe el protocolo canónico y el binario, sin placeholders", async () => {
+  it("T14: engram.ts legacy no se despliega (oficial vía setup); hooks/worktree siguen Stack-owned", async () => {
     const ctx = {
       stackDir: stackRoot(),
       configDir: tmp,
@@ -598,13 +598,11 @@ describe("planPlugins: placeholders resueltos", () => {
       warnings: [],
     };
     const actions = planPlugins(opencodeAdapter, ctx);
-    const engram = actions.find((a) => a.target.endsWith("engram.ts"))!;
-    expect(engram.kind).toBe("write");
-    const content = (engram as { content: string }).content;
-    expect(content).toContain("Engram Memory Protocol"); // protocolo canónico inyectado
-    expect(content).toContain("engram.exe");
-    expect(content).not.toContain("{{ENGRAM_PROTOCOL}}");
-    expect(content).not.toContain("{{ENGRAM_BIN}}");
+    // El legacy retirado no se empaqueta ni despliega: sync no lo recrea.
+    expect(actions.some((a) => a.target.endsWith("engram.ts"))).toBe(false);
+    // hooks.ts/worktree.ts siguen Stack-owned y se siguen desplegando.
+    expect(actions.some((a) => a.target.endsWith("hooks.ts"))).toBe(true);
+    expect(actions.some((a) => a.target.endsWith("worktree.ts"))).toBe(true);
   });
 });
 

@@ -12,6 +12,12 @@ import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText 
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
+import {
+  resolveOfficialSetupArgv,
+  runOfficialSetup,
+  runOfficialSetupIfNeeded,
+  shouldRunOfficialSetup,
+} from "./lib/official-engram-setup.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
@@ -53,6 +59,9 @@ import {
   savePlaywrightCliPreference,
   savePrimaryModelOwnership,
 } from "./lib/tool-preferences.js";
+
+/** T12: coordinador setup oficial (implementación en lib; aquí re-exportado para el contrato install). */
+export { resolveOfficialSetupArgv, shouldRunOfficialSetup, runOfficialSetup };
 
 export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
   opencode: opencodeAdapter,
@@ -538,6 +547,22 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
+      // T12: setup oficial solo en install real con verificador registrado
+      // (T13/T14); sin verificador no se ejecuta nada (ran:false).
+      const official = await runOfficialSetupIfNeeded(id, {
+        command: opts.command,
+        dryRun: opts.dryRun,
+        targetDir: opts.targetDir,
+        engramBin,
+        configDir,
+        homeDir: HOME,
+      });
+      if (official.ran && !official.ok) {
+        p.log.error(`${adapter.name}: setup oficial Engram falló (${official.stderr ?? official.reason ?? "sin detalle"}). Se restauró el backup previo.`);
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        continue;
+      }
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
@@ -584,10 +609,26 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writeManifest();
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
-      p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
-      successfulRuns++;
-      successfulContexts.push({ adapter, ctx });
-      reportStatus(adapter.name, "ok");
+      // T12: setup oficial tras archivos Stack (backup post-Stack; el restore
+      // conserva lo escrito por el Stack). Sin verificador no se ejecuta.
+      const official = await runOfficialSetupIfNeeded(id, {
+        command: opts.command,
+        dryRun: opts.dryRun,
+        targetDir: opts.targetDir,
+        engramBin,
+        configDir,
+        homeDir: HOME,
+      });
+      if (official.ran && !official.ok) {
+        p.log.error(`${adapter.name}: setup oficial Engram falló (${official.stderr ?? official.reason ?? "sin detalle"}). Se restauró el backup previo.`);
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+      } else {
+        p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
+        successfulRuns++;
+        successfulContexts.push({ adapter, ctx });
+        reportStatus(adapter.name, "ok");
+      }
     }
   }
 

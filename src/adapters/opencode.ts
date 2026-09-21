@@ -14,6 +14,7 @@ import { upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
+import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
 const gitReadPrefix = "git --no-pager -c core.fsmonitor=false -c log.showSignature=false";
 const gitReadCommands = [
@@ -393,9 +394,21 @@ export const opencodeAdapter: Adapter = {
       }
 
       const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
+      const officialPluginPresent = hasOfficialEngramPlugin(ctx.configDir);
       for (const [name, server] of Object.entries(canonical.servers)) {
         const existing = mcp[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
+        // Oficial preservado: con plugin oficial (`engram setup opencode`) el
+        // MCP es oficial, no legacy del Stack. No se reclama ownership ni se
+        // reescribe; el setup oficial es la única fuente. Usa el desinstalador
+        // oficial para lo oficial.
+        if (name === "engram" && officialPluginPresent) {
+          if (owned) mcpOwnership.push({ server: name, owned: false });
+          ctx.warnings.push(
+            "OpenCode: Engram ya está integrado vía plugin oficial — no se registra el MCP para no duplicar ni reclamar ownership.",
+          );
+          continue;
+        }
         if (name === "context7" && existing !== undefined) {
           // Context7 es requerido, pero una entrada previa compatible puede
           // pertenecer al usuario. Si el Stack la creó y el usuario la cambió,
@@ -538,7 +551,18 @@ export const opencodeAdapter: Adapter = {
         }
         const mcpBlock = rawMcpBlock as Record<string, unknown> | undefined;
         if (mcpBlock !== undefined) {
+          const officialPluginPresent = hasOfficialEngramPlugin(ctx.configDir);
           for (const [name, server] of Object.entries(mcp.servers)) {
+            // Oficial preservado: con plugin oficial el MCP es oficial
+            // (`engram setup opencode`), no legacy del Stack. Uninstall lo
+            // conserva incluso con --remove-engram; ese flag solo retira
+            // legacy aún propio. Usa el desinstalador oficial para lo oficial.
+            if (name === "engram" && officialPluginPresent) {
+              ctx.warnings.push(
+                "OpenCode: MCP 'engram' oficial (plugin) se conserva; usa el desinstalador oficial de Engram para retirarlo.",
+              );
+              continue;
+            }
             if (name === "context7") {
               const canonical = isCanonicalContext7Server(server, mcpBlock[name]);
               const owned = ctx.ownedMcpServers?.has(name) === true;
@@ -603,4 +627,303 @@ export const opencodeAdapter: Adapter = {
 
     return actions;
   },
+};
+
+/**
+ * T14 — Transferencia de ownership OpenCode al plugin oficial.
+ *
+ * `engram setup opencode` reemplaza el contenido en la MISMA ruta
+ * `plugins/engram.ts` (no es un archivo nuevo) + registra MCP exacto y
+ * statusline. La transferencia verifica esas tres capas en filesystem real y
+ * retira solo ownership/manifest Stack: deja el archivo oficial intacto,
+ * conserva `hooks.ts`/`worktree.ts` y plugins ajenos, preserva JSONC/config
+ * ajena y evita recreación en sync/uninstall. Ambiguity/custom bloquea y
+ * conserva el custom. OpenCode 2 fuera de scope (sin claims ni adapter v2).
+ *
+ * Sin booleanos declarativos: todo se deriva de paths/manifest reales.
+ */
+
+const OPENCODE_STACK_KEPT_PLUGINS = ["hooks.ts", "worktree.ts"] as const;
+
+/** Contenido oficial real: marcadores únicos del setup oficial. */
+function isRealOfficialOpencodePlugin(content: string): boolean {
+  return (
+    content.includes("ensureLocalReady") ||
+    content.includes("CONFIGURED_ENGRAM_URL") ||
+    content.includes("SESSION_ATTRIBUTED_WRITE_TOOLS") ||
+    content.includes("canonicalEngramToolName") ||
+    content.includes("localInstanceID")
+  );
+}
+
+/** Fixture mínima de tests (stub oficial en la misma ruta). */
+function isTestStubOfficialOpencodePlugin(content: string): boolean {
+  return content.includes("engram official plugin");
+}
+
+function isOfficialOpencodePluginContent(content: string): boolean {
+  return isRealOfficialOpencodePlugin(content) || isTestStubOfficialOpencodePlugin(content);
+}
+
+/** Legacy Stack: placeholders del canon o helpers propios tras install. */
+function isStackLegacyOpencodePluginContent(content: string): boolean {
+  if (content.includes("{{ENGRAM_BIN}}") || content.includes("{{ENGRAM_PROTOCOL}}")) return true;
+  try {
+    const canon = fs.readFileSync(
+      path.join(stackRoot(), "plugins", "opencode", "engram.ts"),
+      "utf8",
+    );
+    if (content === canon) return true;
+  } catch {
+    // Canon retirado tras la transferencia: cae a marcadores.
+  }
+  return (
+    content.includes("resolveEngramBin") ||
+    content.includes("stripPrivateTags") ||
+    content.includes("declare const Bun")
+  );
+}
+
+function readOpencodePluginFile(configDir: string): string | null {
+  return readTextIfExists(path.join(configDir, "plugins", "engram.ts"));
+}
+
+function hasOfficialEngramPlugin(configDir: string): boolean {
+  const content = readOpencodePluginFile(configDir);
+  return content !== null && isOfficialOpencodePluginContent(content);
+}
+
+function readExistingOpencodeConfigs(configDir: string): Array<{ file: string; raw: string }> {
+  const out: Array<{ file: string; raw: string }> = [];
+  for (const name of ["opencode.json", "opencode.jsonc"]) {
+    const raw = readTextIfExists(path.join(configDir, name));
+    if (raw !== null) out.push({ file: path.join(configDir, name), raw });
+  }
+  return out;
+}
+
+function readExistingTuiConfigs(configDir: string): Array<{ file: string; raw: string }> {
+  const out: Array<{ file: string; raw: string }> = [];
+  for (const name of ["tui.json", "tui.jsonc"]) {
+    const raw = readTextIfExists(path.join(configDir, name));
+    if (raw !== null) out.push({ file: path.join(configDir, name), raw });
+  }
+  return out;
+}
+
+function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): boolean {
+  const record = objectValue(value);
+  if (record === null) return false;
+  if (record["type"] !== "local") return false;
+  const command = record["command"];
+  if (!Array.isArray(command) || command.length !== 3) return false;
+  if (command[1] !== "mcp" || command[2] !== "--tools=agent") return false;
+  if (typeof command[0] !== "string") return false;
+  if (engramBin !== undefined && engramBin !== "") return command[0] === engramBin;
+  return (command[0] as string).includes("engram");
+}
+
+/** MCP exacto en opencode.json/jsonc (JSON o fallback por regex para JSONC). */
+function checkOpencodeOfficialMcp(configDir: string, engramBin?: string): boolean {
+  for (const { raw } of readExistingOpencodeConfigs(configDir)) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const root = objectValue(parsed);
+      const mcp = root !== null ? objectValue(root["mcp"]) : null;
+      if (mcp !== null && isExactOpencodeEngramMcpValue(mcp["engram"], engramBin)) return true;
+    } catch {
+      // JSONC con comentarios: heurística sin reescribir ni reclamar.
+      const hasEngram = /"engram"\s*:/.test(raw);
+      const isLocal = /"type"\s*:\s*"local"/.test(raw);
+      const hasMcpArgs = /"mcp"/.test(raw) && /"--tools=agent"/.test(raw);
+      const binOk = engramBin !== undefined && engramBin !== ""
+        ? raw.includes(engramBin)
+        : /engram/.test(raw);
+      if (hasEngram && isLocal && hasMcpArgs && binOk) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Statusline oficial: `statusline.command` con engram en opencode.json/jsonc
+ * (vía de tests) o plugin `opencode-subagent-statusline` en tui.json/jsonc
+ * (vía real de `engram setup opencode`). Solo lectura; JSONC se preserva.
+ */
+function checkOpencodeOfficialStatusline(configDir: string): boolean {
+  for (const { raw } of readExistingOpencodeConfigs(configDir)) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const root = objectValue(parsed);
+      const statusline = root !== null ? objectValue(root["statusline"]) : null;
+      if (statusline !== null) {
+        const command = statusline["command"];
+        if (typeof command === "string" && command.includes("engram")) return true;
+      }
+    } catch {
+      if (/"statusline"/.test(raw) && /engram/.test(raw)) return true;
+    }
+  }
+  for (const { raw } of readExistingTuiConfigs(configDir)) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const root = objectValue(parsed);
+      const plugin = root !== null ? root["plugin"] : undefined;
+      if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /statusline/i.test(entry))) {
+        return true;
+      }
+    } catch {
+      if (/subagent-statusline/i.test(raw)) return true;
+    }
+    if (/subagent-statusline/i.test(raw)) return true;
+  }
+  return false;
+}
+
+function checkOpencodeDuplicates(configDir: string): boolean {
+  for (const { raw } of readExistingOpencodeConfigs(configDir)) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const root = objectValue(parsed);
+      const plugin = root !== null ? root["plugin"] : undefined;
+      if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /engram/i.test(entry))) {
+        return true;
+      }
+    } catch {
+      // JSONC ilegible: no se afirma duplicado sin evidencia parseable.
+      continue;
+    }
+  }
+  return false;
+}
+
+/**
+ * Verificador oficial OpenCode por capas (solo lectura, registrado en T12).
+ * Capas: plugin (misma ruta, contenido oficial vs legacy canónico),
+ * MCP exacto y statusline. Preserva JSONC/config ajena; sin claim OpenCode2.
+ */
+export async function verifyOfficialSetup(args: { configDir: string; engramBin: string }): Promise<{
+  ok: boolean;
+  layers: string[];
+  duplicates: boolean;
+  reason?: string;
+}> {
+  const plugin = readOpencodePluginFile(args.configDir);
+  const hasPlugin = plugin !== null && isOfficialOpencodePluginContent(plugin);
+  const hasMcp = checkOpencodeOfficialMcp(args.configDir, args.engramBin);
+  const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
+  const duplicates = checkOpencodeDuplicates(args.configDir);
+  const passed: string[] = [];
+  const missing: string[] = [];
+  if (hasPlugin) passed.push("plugin");
+  else missing.push(plugin === null ? "plugin:missing" : "plugin:legacy-or-foreign");
+  if (hasMcp) passed.push("mcp");
+  else missing.push("mcp:missing");
+  if (hasStatusline) passed.push("statusline");
+  else missing.push("statusline:missing");
+  if (missing.length === 0) {
+    return { ok: true, layers: passed, duplicates };
+  }
+  return {
+    ok: false,
+    layers: [...passed, ...missing],
+    duplicates,
+    reason: `OpenCode: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`,
+  };
+}
+
+registerOfficialSetupVerifier("opencode", verifyOfficialSetup);
+
+/**
+ * Decide en filesystem real si el legacy puede retirarse. Solo `true` con
+ * reemplazo oficial verificado (plugin + MCP + statusline); cualquier
+ * ambiguity/foreign/custom bloquea y conserva el archivo en la misma ruta.
+ */
+export async function shouldRetireLegacyEngram(args: { configDir: string }): Promise<{
+  retire: boolean;
+  reason: string;
+}> {
+  const plugin = readOpencodePluginFile(args.configDir);
+  if (plugin === null) {
+    return { retire: false, reason: "ambiguous: plugins/engram.ts ausente, sin reemplazo oficial verificable" };
+  }
+  if (isOfficialOpencodePluginContent(plugin)) {
+    const hasMcp = checkOpencodeOfficialMcp(args.configDir);
+    const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
+    if (hasMcp && hasStatusline) {
+      return { retire: true, reason: "official verified: plugin + MCP + statusline en filesystem" };
+    }
+    return {
+      retire: false,
+      reason: `ambiguous: plugin oficial sin MCP/statusline verificables (mcp=${hasMcp}, statusline=${hasStatusline})`,
+    };
+  }
+  if (isStackLegacyOpencodePluginContent(plugin)) {
+    return { retire: false, reason: "legacy Stack sin reemplazo oficial: setup pendiente, se conserva" };
+  }
+  return { retire: false, reason: "ambiguous: custom/foreign content en plugins/engram.ts, se conserva" };
+}
+
+/**
+ * Transfiere ownership al oficial: verifica en filesystem, deja el archivo
+ * oficial intacto (nunca lo borra ni reescribe), conserva hooks.ts/worktree.ts
+ * y config ajena, y devuelve las señales para inventario/uninstall:
+ * `recreateOnSync: false` (sync no recrea custom) y
+ * `preserveOfficialOnUninstall: true` (uninstall conserva official incluso con
+ * --remove-engram; solo legacy aún propio puede retirarse).
+ */
+export async function transferEngramOwnership(args: { configDir: string }): Promise<{
+  ownershipRetired: boolean;
+  retired: boolean;
+  kept: string[];
+  recreateOnSync: boolean;
+  preserveOfficialOnUninstall: boolean;
+  layers: string[];
+  reason?: string;
+}> {
+  const pluginPath = path.join(args.configDir, "plugins", "engram.ts");
+  const plugin = readTextIfExists(pluginPath);
+  const kept = [...OPENCODE_STACK_KEPT_PLUGINS];
+  if (plugin === null || !isOfficialOpencodePluginContent(plugin)) {
+    const detail = plugin === null
+      ? "plugins/engram.ts ausente"
+      : isStackLegacyOpencodePluginContent(plugin)
+        ? "legacy Stack sin reemplazo oficial"
+        : "custom/foreign content";
+    return {
+      ownershipRetired: false,
+      retired: false,
+      kept,
+      recreateOnSync: false,
+      preserveOfficialOnUninstall: true,
+      layers: [],
+      reason: `OpenCode: transferencia bloqueada (${detail}); se conserva el archivo.`,
+    };
+  }
+  const hasMcp = checkOpencodeOfficialMcp(args.configDir);
+  const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
+  const layers = ["plugin", ...(hasMcp ? ["mcp"] : ["mcp:missing"]), ...(hasStatusline ? ["statusline"] : ["statusline:missing"])];
+  if (!hasMcp || !hasStatusline) {
+    return {
+      ownershipRetired: false,
+      retired: false,
+      kept,
+      recreateOnSync: false,
+      preserveOfficialOnUninstall: true,
+      layers,
+      reason: `OpenCode: transferencia bloqueada (plugin oficial sin MCP/statusline verificables); se conserva el archivo oficial.`,
+    };
+  }
+  // Archivo oficial intacto: sin rm ni rewrite. hooks/worktree se conservan
+  // en disco (Stack-owned restantes); la config ajena queda intacta porque no
+  // se escribe nada aquí — el inventario (plan sin engram.ts) retira el
+  // ownership Stack en el próximo install.
+  return {
+    ownershipRetired: true,
+    retired: true,
+    kept,
+    recreateOnSync: false,
+    preserveOfficialOnUninstall: true,
+    layers: ["plugin", "mcp", "statusline"],
+  };
 };

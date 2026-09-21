@@ -22,6 +22,7 @@ import {
 } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
+import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
@@ -730,6 +731,15 @@ export const codexAdapter: Adapter = {
           }
           continue;
         }
+        // Oficial preservado: con plugin Engram activo el MCP es oficial
+        // (`engram setup codex`), no legacy del Stack. Uninstall lo conserva
+        // incluso con --remove-engram; ese flag solo retira legacy aún propio.
+        if (name === "engram" && hasActiveEngramPlugin(ctx.configDir)) {
+          ctx.warnings.push(
+            "Codex: MCP 'engram' oficial (plugin) se conserva; usa el desinstalador oficial de Engram para retirarlo.",
+          );
+          continue;
+        }
         if (!server.optional) {
           content = removeTomlSection(content, section);
           continue;
@@ -762,3 +772,114 @@ export const codexAdapter: Adapter = {
     return actions;
   },
 };
+
+/**
+ * T13 — Verificador oficial Codex por capas (solo lectura).
+ *
+ * Lee filesystem/config real, sin refs declarativas:
+ * - plugin: header `[plugins."engram@<ref>"]` sin `enabled = false`. La ref
+ *   rolling `main` es la vía oficial aprobada; se deriva de config.toml y se
+ *   devuelve como `acceptedRef`.
+ * - mcp: sección `[mcp_servers.engram]` exacta (command == engramBin,
+ *   args == ["mcp","--tools=agent"]). Un MCP que apunta a otro binario es
+ *   conflicto: falla sin reescribir y preserva bloques ajenos.
+ * - instructions/compact: archivos de `model_instructions_file` y
+ *   `experimental_compact_prompt_file` (o defaults `engram-instructions.md` /
+ *   `engram-compact-prompt.md`) existentes y no vacíos.
+ *
+ * No escribe ni reclama nada; `[mcp_servers.ajeno]` y resto ajeno intactos.
+ */
+function parseCodexEngramPluginRef(config: string): string | null {
+  const header = /\[plugins\."engram@([^"]+)"\]/.exec(config);
+  if (header === null) return null;
+  const block = /\[plugins\."engram@[^"]*"\]([^[]*)/.exec(config);
+  if (block !== null && /enabled\s*=\s*false/.test(block[1]!)) return null;
+  return header[1]!;
+}
+
+function isExactCodexEngramMcp(section: string | null, engramBin: string): boolean {
+  if (section === null) return false;
+  const command = parseTomlString(tomlAssignment(section, "command").raw);
+  if (command !== engramBin) return false;
+  const argsRaw = tomlAssignment(section, "args").raw;
+  if (argsRaw === undefined) return false;
+  try {
+    const args = JSON.parse(argsRaw) as unknown;
+    return Array.isArray(args) && args.length === 2 && args[0] === "mcp" && args[1] === "--tools=agent";
+  } catch {
+    return false;
+  }
+}
+
+function resolveCodexInstructionPath(
+  config: string | null,
+  configDir: string,
+  key: string,
+  fallback: string,
+): string {
+  const ref = config !== null ? readCodexRootValue(config, key) : undefined;
+  const rel = typeof ref === "string" && ref.trim() !== "" ? ref.trim() : fallback;
+  return path.isAbsolute(rel) ? rel : path.join(configDir, rel);
+}
+
+function isNonEmptyFile(file: string): boolean {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size === 0) return false;
+    return fs.readFileSync(file, "utf8").trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyOfficialSetup(args: { configDir: string; engramBin: string }): Promise<{
+  ok: boolean;
+  layers: string[];
+  acceptedRef?: string;
+  duplicates: boolean;
+  reason?: string;
+}> {
+  const config = readTextIfExists(path.join(args.configDir, "config.toml"));
+  const pluginRef = config !== null ? parseCodexEngramPluginRef(config) : null;
+  const mcpSection = config !== null ? readTomlSection(config, "mcp_servers.engram") : null;
+  const hasMcp = mcpSection !== null && typeof args.engramBin === "string" && args.engramBin !== ""
+    ? isExactCodexEngramMcp(mcpSection, args.engramBin)
+    : false;
+  const mcpPresentButForeign = mcpSection !== null && !hasMcp;
+  const instructionsFile = resolveCodexInstructionPath(config, args.configDir, "model_instructions_file", "engram-instructions.md");
+  const compactFile = resolveCodexInstructionPath(
+    config,
+    args.configDir,
+    "experimental_compact_prompt_file",
+    "engram-compact-prompt.md",
+  );
+  const hasInstructions = isNonEmptyFile(instructionsFile);
+  const hasCompact = isNonEmptyFile(compactFile);
+
+  const passed: string[] = [];
+  const missing: string[] = [];
+  if (pluginRef !== null) passed.push("plugin");
+  else missing.push("plugin:missing");
+  if (hasMcp) passed.push("mcp");
+  else missing.push(mcpPresentButForeign ? "mcp:conflict" : "mcp:missing");
+  if (hasInstructions) passed.push("instructions");
+  else missing.push("instructions:missing");
+  if (hasCompact) passed.push("compact");
+  else missing.push("compact:missing");
+
+  if (missing.length === 0) {
+    return { ok: true, layers: passed, acceptedRef: pluginRef!, duplicates: false };
+  }
+  const detail = mcpPresentButForeign
+    ? `MCP 'engram' en conflicto (no apunta al binario oficial ${args.engramBin}); se preserva la config ajena sin reescribir.`
+    : `Codex: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`;
+  return {
+    ok: false,
+    layers: [...passed, ...missing],
+    ...(pluginRef !== null ? { acceptedRef: pluginRef } : {}),
+    duplicates: false,
+    reason: detail,
+  };
+}
+
+registerOfficialSetupVerifier("codex", verifyOfficialSetup);

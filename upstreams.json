@@ -9,48 +9,55 @@
     }
   },
   "complements": {
-    "$comment": "Complementos oficiales externos (ejecutan código en el runtime): pin exacto al instalar, nunca latest ni rangos flotantes. `reviewed` = última revisión aceptada; `update --check` es discovery-only y avisa si el upstream se movió; la adopción es re-pin deliberado con verificación, nunca auto-update.",
+    "$comment": "Complementos oficiales externos (ejecutan código en el runtime): `strategy` distingue `exact` (pin obligatorio, ausencia es error; al instalar se usa el pin, nunca latest ni rangos) de `provider-managed` (el provider gestiona la versión: rolling/null/main/latest aceptados sin warning por ausencia de pin; update --check informa la versión observada/drift sin bloquear). `reviewed` = última revisión aceptada; `update --check` es discovery-only, nunca auto-update; la adopción exact es re-pin deliberado con verificación.",
     "gentle-engram": {
       "source": "npm:gentle-engram",
-      "version": "0.1.12",
-      "reviewed": "2026-09-17",
+      "version": "0.1.14",
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-20",
       "status": "pendiente-adopcion",
-      "note": "última publicada en npm (dist-tag latest); el setup oficial en main referencia 0.1.13 aún no publicada — re-pinear al salir. Incluye auto-cierre en session_shutdown. Issue: #155"
+      "note": "publicado/latest en npm y usado por el setup oficial en main: provider gestiona la versión. Incluye auto-cierre en session_shutdown. Issue: #155"
     },
     "pi-mcp-adapter": {
       "source": "npm:pi-mcp-adapter",
       "version": null,
-      "reviewed": "2026-09-17",
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-20",
       "status": "pendiente-pin",
-      "note": "upstream lo referencia sin versión (setup.go main): exigir pin exacto antes de adoptar. Issue: #155"
+      "note": "provider-managed: upstream lo referencia sin versión (setup.go main); rolling aceptado, sin warning por ausencia de pin. Último observado latest 2.34.0 como referencia informativa, sin fijarlo. Issue: #155"
     },
     "engram-claude-plugin": {
       "source": "github:Gentleman-Programming/engram#plugin/claude-code",
       "version": "1.20.0",
-      "reviewed": "2026-09-17",
-      "note": "autocierre vía hook Stop (v1.20.0) / SessionEnd (main). Stack convive (detección + allowlists duales); falta instalación/verificación por Stack. Issue: #155"
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-20",
+      "note": "provider setup según upstream (1.20.0 solo referencia observada, no pin de instalación); autocierre vía hook Stop (v1.20.0) / SessionEnd (main). Stack convive (detección + allowlists duales); falta instalación/verificación por Stack. Issue: #155"
     },
     "engram-codex-plugin": {
       "source": "github:Gentleman-Programming/engram#plugin/codex",
-      "version": "1.20.0",
-      "reviewed": "2026-09-17",
-      "note": "autocierre vía hook Stop. Stack convive; falta instalación/verificación por Stack. Issue: #155"
+      "version": "main",
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-20",
+      "note": "main rolling aprobado (provider-managed): autocierre vía hook Stop. Stack convive; falta instalación/verificación por Stack. Issue: #155"
     },
     "engram-opencode-plugin": {
       "source": "github:Gentleman-Programming/engram#plugin/opencode",
       "version": "1.20.0",
-      "reviewed": "2026-09-17",
-      "note": "auto-cierre (endSessionInEngram) solo en main; la copia vendorizada de Stack no lo tiene — migrar con transferencia de ownership de plugins/engram.ts. Issue: #155"
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-20",
+      "note": "provider setup según upstream (1.20.0 solo referencia observada, no pin de instalación); auto-cierre (endSessionInEngram) solo en main; la copia vendorizada de Stack no lo tiene — migrar con transferencia de ownership de plugins/engram.ts. Issue: #155"
     },
     "chrome-devtools-mcp": {
       "source": "npm:chrome-devtools-mcp",
       "version": "1.6.0",
+      "strategy": "exact",
       "reviewed": "2026-09-17",
       "note": "opt-in, default-off; flags --isolated --redact-network-headers --no-performance-crux --no-usage-statistics"
     },
     "playwright-cli": {
       "source": "npm:@playwright/cli",
       "version": "0.1.18",
+      "strategy": "exact",
       "reviewed": "2026-09-17",
       "note": "CLI global compartido por la máquina; camino recomendado opt-in"
     }

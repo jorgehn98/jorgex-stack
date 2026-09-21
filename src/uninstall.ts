@@ -45,6 +45,28 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
 }
 
 /**
+ * Contenido oficial (`engram setup opencode`, misma ruta que el legacy): se
+ * conserva siempre en uninstall. Solo legacy aún propio puede retirarse con
+ * --remove-engram. Solo lectura; ante duda se preserva.
+ */
+function isOfficialEngramPluginFile(file: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, "utf8");
+  } catch {
+    return false;
+  }
+  return (
+    content.includes("ensureLocalReady") ||
+    content.includes("CONFIGURED_ENGRAM_URL") ||
+    content.includes("SESSION_ATTRIBUTED_WRITE_TOOLS") ||
+    content.includes("canonicalEngramToolName") ||
+    content.includes("localInstanceID") ||
+    content.includes("engram official plugin")
+  );
+}
+
+/**
  * Retira SOLO lo gestionado por el stack (criterio de aceptación 6 del PRD):
  * borra los archivos enteramente nuestros y reescribe los compartidos sin
  * nuestras secciones/claves. Backup automático antes de tocar nada.
@@ -169,9 +191,15 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     const planTargets = [
       ...new Set([...buildContentPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
     ].filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
-    const deleteTargets = planTargets.filter(
-      (t) => !retained.has(t) && !(ctx.preserveEngram && path.basename(t) === "engram.ts") && isContainedIn(t, pruneRoot),
-    );
+    // T14: el plugin oficial (`engram setup opencode`, misma ruta) se conserva
+    // siempre — incluso con --remove-engram; ese flag solo retira legacy aún
+    // propio. D7 intacto: binario/DB/memorias jamás se tocan (no son targets).
+    const deleteTargets = planTargets.filter((t) => {
+      if (retained.has(t) || !isContainedIn(t, pruneRoot)) return false;
+      if (path.basename(t) !== "engram.ts") return true;
+      if (isOfficialEngramPluginFile(t)) return false;
+      return !ctx.preserveEngram;
+    });
     const sharedKept = planTargets.length - deleteTargets.length;
 
     p.log.step(`${adapter.name} → ${configDir}`);
