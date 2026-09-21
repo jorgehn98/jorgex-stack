@@ -118,6 +118,8 @@ export interface SharedProjectionAdapter {
 export interface Adapter extends SharedProjectionAdapter {
   id: RuntimeId;
   name: string;
+  /** Basenames de plugins que este runtime excluye del plan Stack (p.ej. legacy retirado). */
+  excludedPluginBasenames?: readonly string[];
   detect(): RuntimeDetection;
   /** Diagnóstico local de capabilities; nunca certifica enforcement del runtime. */
   reportCapabilities(configDir: string): LocalQualityCapabilityReport;

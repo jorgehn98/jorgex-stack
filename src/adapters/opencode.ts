@@ -148,6 +148,7 @@ function hasOpenCodeManualApproval(configDir: string): boolean {
 export const opencodeAdapter: Adapter = {
   id: "opencode",
   name: "OpenCode",
+  excludedPluginBasenames: ["engram.ts"],
   detect: detectOpenCode,
 
   reportCapabilities(configDir) {
@@ -646,8 +647,13 @@ export const opencodeAdapter: Adapter = {
 
 const OPENCODE_STACK_KEPT_PLUGINS = ["hooks.ts", "worktree.ts"] as const;
 
-/** Contenido oficial real: marcadores únicos del setup oficial. */
-function isRealOfficialOpencodePlugin(content: string): boolean {
+/**
+ * Único predicado oficial OpenCode (real, sin stubs de test).
+ * Marcadores únicos del setup oficial en la misma ruta.
+ * Compartido por adapter/doctor/uninstall para no duplicar ni aceptar
+ * el marcador de test `engram official plugin`.
+ */
+export function isOfficialOpencodePluginContent(content: string): boolean {
   return (
     content.includes("ensureLocalReady") ||
     content.includes("CONFIGURED_ENGRAM_URL") ||
@@ -655,15 +661,6 @@ function isRealOfficialOpencodePlugin(content: string): boolean {
     content.includes("canonicalEngramToolName") ||
     content.includes("localInstanceID")
   );
-}
-
-/** Fixture mínima de tests (stub oficial en la misma ruta). */
-function isTestStubOfficialOpencodePlugin(content: string): boolean {
-  return content.includes("engram official plugin");
-}
-
-function isOfficialOpencodePluginContent(content: string): boolean {
-  return isRealOfficialOpencodePlugin(content) || isTestStubOfficialOpencodePlugin(content);
 }
 
 /** Legacy Stack: placeholders del canon o helpers propios tras install. */
@@ -724,75 +721,75 @@ function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): bool
   return (command[0] as string).includes("engram");
 }
 
-/** MCP exacto en opencode.json/jsonc (JSON o fallback por regex para JSONC). */
-function checkOpencodeOfficialMcp(configDir: string, engramBin?: string): boolean {
+/**
+ * MCP exacto en opencode.json/jsonc.
+ * Solo JSON estructural válido acredita; JSON truncado/malformado o
+ * fragmentos sueltos en JSONC ilegible fallan cerrados (sin regex).
+ */
+export function checkOpencodeOfficialMcp(configDir: string, engramBin?: string): boolean {
   for (const { raw } of readExistingOpencodeConfigs(configDir)) {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      const root = objectValue(parsed);
-      const mcp = root !== null ? objectValue(root["mcp"]) : null;
-      if (mcp !== null && isExactOpencodeEngramMcpValue(mcp["engram"], engramBin)) return true;
+      parsed = JSON.parse(raw) as unknown;
     } catch {
-      // JSONC con comentarios: heurística sin reescribir ni reclamar.
-      const hasEngram = /"engram"\s*:/.test(raw);
-      const isLocal = /"type"\s*:\s*"local"/.test(raw);
-      const hasMcpArgs = /"mcp"/.test(raw) && /"--tools=agent"/.test(raw);
-      const binOk = engramBin !== undefined && engramBin !== ""
-        ? raw.includes(engramBin)
-        : /engram/.test(raw);
-      if (hasEngram && isLocal && hasMcpArgs && binOk) return true;
+      continue;
     }
+    const root = objectValue(parsed);
+    const mcp = root !== null ? objectValue(root["mcp"]) : null;
+    if (mcp !== null && isExactOpencodeEngramMcpValue(mcp["engram"], engramBin)) return true;
   }
   return false;
 }
 
 /**
  * Statusline oficial: `statusline.command` con engram en opencode.json/jsonc
- * (vía de tests) o plugin `opencode-subagent-statusline` en tui.json/jsonc
- * (vía real de `engram setup opencode`). Solo lectura; JSONC se preserva.
+ * o plugin `opencode-subagent-statusline` en tui.json/jsonc.
+ * Solo JSON estructural válido acredita; JSONC ilegible falla cerrado.
  */
-function checkOpencodeOfficialStatusline(configDir: string): boolean {
+export function checkOpencodeOfficialStatusline(configDir: string): boolean {
   for (const { raw } of readExistingOpencodeConfigs(configDir)) {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      const root = objectValue(parsed);
-      const statusline = root !== null ? objectValue(root["statusline"]) : null;
-      if (statusline !== null) {
-        const command = statusline["command"];
-        if (typeof command === "string" && command.includes("engram")) return true;
-      }
+      parsed = JSON.parse(raw) as unknown;
     } catch {
-      if (/"statusline"/.test(raw) && /engram/.test(raw)) return true;
+      continue;
+    }
+    const root = objectValue(parsed);
+    const statusline = root !== null ? objectValue(root["statusline"]) : null;
+    if (statusline !== null) {
+      const command = statusline["command"];
+      if (typeof command === "string" && command.includes("engram")) return true;
     }
   }
   for (const { raw } of readExistingTuiConfigs(configDir)) {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      const root = objectValue(parsed);
-      const plugin = root !== null ? root["plugin"] : undefined;
-      if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /statusline/i.test(entry))) {
-        return true;
-      }
+      parsed = JSON.parse(raw) as unknown;
     } catch {
-      if (/subagent-statusline/i.test(raw)) return true;
+      continue;
     }
-    if (/subagent-statusline/i.test(raw)) return true;
+    const root = objectValue(parsed);
+    const plugin = root !== null ? root["plugin"] : undefined;
+    if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /statusline/i.test(entry))) {
+      return true;
+    }
   }
   return false;
 }
 
-function checkOpencodeDuplicates(configDir: string): boolean {
+export function checkOpencodeDuplicates(configDir: string): boolean {
   for (const { raw } of readExistingOpencodeConfigs(configDir)) {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      const root = objectValue(parsed);
-      const plugin = root !== null ? root["plugin"] : undefined;
-      if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /engram/i.test(entry))) {
-        return true;
-      }
+      parsed = JSON.parse(raw) as unknown;
     } catch {
       // JSONC ilegible: no se afirma duplicado sin evidencia parseable.
       continue;
+    }
+    const root = objectValue(parsed);
+    const plugin = root !== null ? root["plugin"] : undefined;
+    if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /engram/i.test(entry))) {
+      return true;
     }
   }
   return false;
@@ -822,14 +819,18 @@ export async function verifyOfficialSetup(args: { configDir: string; engramBin: 
   else missing.push("mcp:missing");
   if (hasStatusline) passed.push("statusline");
   else missing.push("statusline:missing");
+  if (duplicates) missing.push("duplicates:detected");
   if (missing.length === 0) {
-    return { ok: true, layers: passed, duplicates };
+    return { ok: true, layers: passed, duplicates: false };
   }
+  const reason = duplicates
+    ? `OpenCode: setup oficial Engram con plugin Engram duplicado; se conserva sin reclamar.`
+    : `OpenCode: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`;
   return {
     ok: false,
     layers: [...passed, ...missing],
     duplicates,
-    reason: `OpenCode: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`,
+    reason,
   };
 }
 

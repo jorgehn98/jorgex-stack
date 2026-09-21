@@ -7,6 +7,7 @@ import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
+import { isOfficialOpencodePluginContent } from "./adapters/opencode.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
 import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
@@ -47,23 +48,21 @@ export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }
 /**
  * Contenido oficial (`engram setup opencode`, misma ruta que el legacy): se
  * conserva siempre en uninstall. Solo legacy aún propio puede retirarse con
- * --remove-engram. Solo lectura; ante duda se preserva.
+ * --remove-engram. Reutiliza el único predicado oficial; ante lectura
+ * desconocida se preserva (fail closed), ausencia (ENOENT) no es oficial.
  */
-function isOfficialEngramPluginFile(file: string): boolean {
+export function isOfficialEngramPluginFile(file: string): boolean {
   let content: string;
   try {
     content = fs.readFileSync(file, "utf8");
-  } catch {
-    return false;
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+      ? (error as NodeJS.ErrnoException).code
+      : "UNKNOWN";
+    if (code === "ENOENT") return false;
+    return true;
   }
-  return (
-    content.includes("ensureLocalReady") ||
-    content.includes("CONFIGURED_ENGRAM_URL") ||
-    content.includes("SESSION_ATTRIBUTED_WRITE_TOOLS") ||
-    content.includes("canonicalEngramToolName") ||
-    content.includes("localInstanceID") ||
-    content.includes("engram official plugin")
-  );
+  return isOfficialOpencodePluginContent(content);
 }
 
 /**

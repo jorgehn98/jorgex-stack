@@ -23,9 +23,10 @@ export function planPlugins(adapter: Adapter, ctx: InstallContext): FileAction[]
   if (pluginsDir === null) return [];
   const source = path.join(ctx.stackDir, "plugins", adapter.id);
   if (!fs.existsSync(source)) return [];
+  const excluded = new Set(adapter.excludedPluginBasenames ?? []);
   return listFilesRecursive(source)
     .filter((f) => f.endsWith(".ts"))
-    .filter((f) => !(adapter.id === "opencode" && path.basename(f) === "engram.ts"))
+    .filter((f) => !excluded.has(path.basename(f)))
     .map((sourceFile): FileAction => {
       const target = path.join(pluginsDir, path.relative(source, sourceFile));
       const raw = fs.readFileSync(sourceFile, "utf8");

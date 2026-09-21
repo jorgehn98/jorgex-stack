@@ -223,156 +223,51 @@ export interface EngramOfficialState {
   exposure: EngramOfficialExposureState;
 }
 
-function doctorReadJson(raw: string | null): Record<string, unknown> | null {
-  if (raw === null) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
+/**
+ * Helper único de verificación oficial para doctor (reutilizado por el
+ * estado global HOME y por el loop con `detection.configDir` real, incluidos
+ * los directorios personalizados. Solo lectura: registro exacto en filesystem
+ * y binario disponible, sin certificar la carga en runtime.
+ */
+async function verifyOfficialForRuntime(
+  runtime: "claude-code" | "codex" | "opencode",
+  configDir: string,
+  engramBin: string,
+): Promise<{ ok: boolean; layers: string[] }> {
+  if (runtime === "claude-code") {
+    const { verifyOfficialSetup } = await import("./adapters/claude-code.js");
+    const report = await verifyOfficialSetup({ configDir, engramBin });
+    return { ok: report.ok, layers: report.layers };
   }
+  if (runtime === "codex") {
+    const { verifyOfficialSetup } = await import("./adapters/codex.js");
+    const report = await verifyOfficialSetup({ configDir, engramBin });
+    return { ok: report.ok, layers: report.layers };
+  }
+  const { verifyOfficialSetup } = await import("./adapters/opencode.js");
+  const report = await verifyOfficialSetup({ configDir, engramBin });
+  return { ok: report.ok, layers: report.layers };
 }
 
-function doctorHasClaudeSetup(homeDir: string): { ok: boolean; layers: string[] } {
-  const configDir = path.join(homeDir, ".claude");
-  const layers: string[] = [];
-  const missing: string[] = [];
-  let hasPlugin = false;
-  try {
-    if (fs.existsSync(path.join(configDir, "plugins", "marketplaces", "engram"))) hasPlugin = true;
-    else {
-      const registry = readTextIfExists(path.join(configDir, "plugins", "installed_plugins.json"));
-      if (registry !== null) {
-        try {
-          const parsed = JSON.parse(registry) as Record<string, unknown>;
-          const keys = [...Object.keys(parsed), ...Object.keys((parsed["plugins"] as object | undefined) ?? {})];
-          hasPlugin = keys.some((k) => k === "engram" || k.startsWith("engram@"));
-        } catch {
-          hasPlugin = false;
-        }
-      }
-    }
-  } catch {
-    hasPlugin = false;
-  }
-  if (hasPlugin) layers.push("plugin");
-  else missing.push("plugin:missing");
-  let hasMcp = false;
-  for (const file of [
-    path.join(homeDir, ".claude.json"),
-    path.join(configDir, ".claude.json"),
-  ]) {
-    const root = doctorReadJson(readTextIfExists(file));
-    const servers = root !== null ? root["mcpServers"] : undefined;
-    if (servers !== null && typeof servers === "object" && !Array.isArray(servers)) {
-      const engram = (servers as Record<string, unknown>)["engram"] as Record<string, unknown> | undefined;
-      if (
-        engram !== undefined && engram !== null && typeof engram === "object" &&
-        (engram as Record<string, unknown>)["type"] === "stdio" &&
-        Array.isArray((engram as Record<string, unknown>)["args"])
-      ) {
-        hasMcp = true;
-        break;
-      }
-    }
-  }
-  if (hasMcp) layers.push("mcp");
-  else missing.push("mcp:missing");
-  let hasHooks = false;
-  try {
-    const raw = readTextIfExists(path.join(configDir, "plugins", "marketplaces", "engram", "hooks", "hooks.json"));
-    if (raw !== null) {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const hooks = parsed["hooks"];
-      hasHooks = hooks !== null && typeof hooks === "object" && Object.keys(hooks as object).length > 0;
-    }
-  } catch {
-    hasHooks = false;
-  }
-  if (hasHooks) layers.push("hooks");
-  else missing.push("hooks:missing");
-  return missing.length === 0 ? { ok: true, layers } : { ok: false, layers: [...layers, ...missing] };
+async function doctorHasClaudeSetup(
+  homeDir: string,
+  engramBin: string,
+): Promise<{ ok: boolean; layers: string[] }> {
+  return verifyOfficialForRuntime("claude-code", path.join(homeDir, ".claude"), engramBin);
 }
 
-function doctorHasCodexSetup(homeDir: string): { ok: boolean; layers: string[] } {
-  const configDir = path.join(homeDir, ".codex");
-  const raw = readTextIfExists(path.join(configDir, "config.toml"));
-  const layers: string[] = [];
-  const missing: string[] = [];
-  const hasPlugin = raw !== null && /\[plugins\."engram@[^"]+"\]/.test(raw) && !/\[plugins\."engram@[^"]+"[^\[]*enabled\s*=\s*false/.test(raw);
-  if (hasPlugin) layers.push("plugin");
-  else missing.push("plugin:missing");
-  const hasMcp = raw !== null && /\[mcp_servers\.engram\]/.test(raw);
-  if (hasMcp) layers.push("mcp");
-  else missing.push("mcp:missing");
-  const hasInstructions = raw !== null && (/engram-instructions\.md/.test(raw) || fs.existsSync(path.join(configDir, "engram-instructions.md")));
-  if (hasInstructions) layers.push("instructions");
-  else missing.push("instructions:missing");
-  return missing.length === 0 ? { ok: true, layers } : { ok: false, layers: [...layers, ...missing] };
+async function doctorHasCodexSetup(
+  homeDir: string,
+  engramBin: string,
+): Promise<{ ok: boolean; layers: string[] }> {
+  return verifyOfficialForRuntime("codex", path.join(homeDir, ".codex"), engramBin);
 }
 
-function doctorHasOpencodeSetup(homeDir: string): { ok: boolean; layers: string[] } {
-  const configDir = path.join(homeDir, ".config", "opencode");
-  const layers: string[] = [];
-  const missing: string[] = [];
-  const plugin = readTextIfExists(path.join(configDir, "plugins", "engram.ts"));
-  const hasPlugin = plugin !== null && (
-    plugin.includes("ensureLocalReady") ||
-    plugin.includes("CONFIGURED_ENGRAM_URL") ||
-    plugin.includes("SESSION_ATTRIBUTED_WRITE_TOOLS") ||
-    plugin.includes("canonicalEngramToolName") ||
-    plugin.includes("localInstanceID") ||
-    plugin.includes("engram official plugin")
-  );
-  if (hasPlugin) layers.push("plugin");
-  else missing.push(plugin === null ? "plugin:missing" : "plugin:legacy-or-foreign");
-  let hasMcp = false;
-  for (const name of ["opencode.json", "opencode.jsonc"]) {
-    const raw = readTextIfExists(path.join(configDir, name));
-    if (raw === null) continue;
-    const root = doctorReadJson(raw);
-    if (root !== null) {
-      const mcp = root["mcp"];
-      if (mcp !== null && typeof mcp === "object" && !Array.isArray(mcp)) {
-        const engram = (mcp as Record<string, unknown>)["engram"] as Record<string, unknown> | undefined;
-        if (
-          engram !== undefined && engram !== null && typeof engram === "object" &&
-          (engram as Record<string, unknown>)["type"] === "local" &&
-          Array.isArray((engram as Record<string, unknown>)["command"])
-        ) {
-          hasMcp = true;
-          break;
-        }
-      }
-    } else if (/"engram"/.test(raw) && /"type"\s*:\s*"local"/.test(raw) && /"mcp"/.test(raw)) {
-      hasMcp = true;
-      break;
-    }
-  }
-  if (hasMcp) layers.push("mcp");
-  else missing.push("mcp:missing");
-  let hasStatusline = false;
-  for (const name of ["opencode.json", "opencode.jsonc"]) {
-    const raw = readTextIfExists(path.join(configDir, name));
-    if (raw !== null && /"statusline"/.test(raw) && /engram/.test(raw)) {
-      hasStatusline = true;
-      break;
-    }
-  }
-  if (!hasStatusline) {
-    for (const name of ["tui.json", "tui.jsonc"]) {
-      const raw = readTextIfExists(path.join(configDir, name));
-      if (raw !== null && /subagent-statusline/i.test(raw)) {
-        hasStatusline = true;
-        break;
-      }
-    }
-  }
-  if (hasStatusline) layers.push("statusline");
-  else missing.push("statusline:missing");
-  return missing.length === 0 ? { ok: true, layers } : { ok: false, layers: [...layers, ...missing] };
+async function doctorHasOpencodeSetup(
+  homeDir: string,
+  engramBin: string,
+): Promise<{ ok: boolean; layers: string[] }> {
+  return verifyOfficialForRuntime("opencode", path.join(homeDir, ".config", "opencode"), engramBin);
 }
 
 export async function resolveEngramOfficialState(args: { homeDir: string }): Promise<EngramOfficialState> {
@@ -403,9 +298,12 @@ export async function resolveEngramOfficialState(args: { homeDir: string }): Pro
     path: binPath,
     version,
   };
-  const claude = doctorHasClaudeSetup(homeDir);
-  const codex = doctorHasCodexSetup(homeDir);
-  const opencode = doctorHasOpencodeSetup(homeDir);
+  const effectiveBin = binPath ?? "";
+  const [claude, codex, opencode] = await Promise.all([
+    doctorHasClaudeSetup(homeDir, effectiveBin),
+    doctorHasCodexSetup(homeDir, effectiveBin),
+    doctorHasOpencodeSetup(homeDir, effectiveBin),
+  ]);
   const setup: EngramOfficialSetupState = {
     runtimes: { "claude-code": claude, codex, opencode },
   };
@@ -450,6 +348,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
 
   // Engram (D7): se informa, jamás se toca.
   const engramBin = detectEngram();
+  let engramBinAvailable = false;
   if (engramBin === null) {
     p.log.warn("Engram: NO detectado. El protocolo de memoria no funcionará — instálalo: github.com/Gentleman-Programming/engram");
     problems++;
@@ -460,6 +359,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       problems++;
     } else {
       p.log.success(`Engram: ${version} (${engramBin})`);
+      engramBinAvailable = true;
     }
   }
   const engramDataDir = process.env.ENGRAM_DATA_DIR ?? path.join(HOME, ".engram");
@@ -468,6 +368,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     const sizeMb = (fs.statSync(engramDb).size / 1024 / 1024).toFixed(1);
     p.log.info(`Engram DB: ${engramDb} (${sizeMb} MB de memorias — el stack no la toca JAMÁS).`);
   }
+  // Verificación oficial contra el configDir detectado; el resumen se emite
+  // también cuando no hay runtimes seleccionados.
+  const officialResults: Array<{ runtime: string; ok: boolean; layers: string[]; exposed: boolean }> = [];
 
   if (!fs.existsSync(modelMapFile())) p.log.info("model-map: aún no creado (se crea en el primer install o con 'models').");
 
@@ -588,6 +491,40 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
 
     const key = context7KeyConfigured(adapter.id, detection.configDir);
     if (key === false) p.log.info(`${adapter.name}: context7 sin key (opcional — conéctala cuando quieras).`);
+
+    // Setup/exposure oficial exacto contra el configDir detectado. Sin bin
+    // disponible el verificador falla cerrado; este loop solo cuenta runtimes
+    // instalados con adapter.
+    try {
+      const setup = await verifyOfficialForRuntime(adapter.id, detection.configDir, engramBin ?? "");
+      const exposed = setup.layers.includes("mcp") && engramBinAvailable;
+      officialResults.push({ runtime: adapter.id, ok: setup.ok, layers: setup.layers, exposed });
+      if (!setup.ok) {
+        p.log.warn(
+          `${adapter.name}: setup oficial Engram incompleto (${setup.layers.join(", ")}) → ejecuta install.`,
+        );
+        problems++;
+      }
+    } catch (error) {
+      p.log.warn(
+        `${adapter.name}: setup oficial Engram no verificable (${error instanceof Error ? error.message : String(error)}).`,
+      );
+      problems++;
+    }
+  }
+
+  if (officialResults.length === 0) {
+    p.log.info("Engram official setup: no hay runtimes instalados seleccionados para verificar.");
+    p.log.info("Engram official exposure: no verificado (sin runtimes instalados seleccionados).");
+  } else {
+    const setupSummary = officialResults
+      .map((r) => `${r.runtime}=${r.ok ? "ok" : "missing"} (${r.layers.join(",")})`)
+      .join("; ");
+    const exposureSummary = officialResults
+      .map((r) => `${r.runtime}=${r.exposed ? "exposed" : "not-exposed"}`)
+      .join("; ");
+    p.log.info(`Engram official setup: ${setupSummary}.`);
+    p.log.info(`Engram official exposure: ${exposureSummary} (MCP registrado y binario disponible; sin certificar carga en runtime).`);
   }
 
   p.outro(problems === 0 ? "Doctor: todo sano." : `Doctor: ${problems} aviso(s) — revisa arriba.`);

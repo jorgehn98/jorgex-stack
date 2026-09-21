@@ -2,20 +2,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createBackup, restoreBackup } from "./backup.js";
+import { isContainedIn } from "./fsx.js";
 
 /**
  * Coordinador común de `engram setup` oficial.
  *
  * Solo install real ejecuta setup (nunca sync/dry-run/target-dir/uninstall/
  * doctor). Secuencia por runtime independiente: backup → setup → verifier;
- * un fallo restaura los preexistentes, elimina los targets creados por el
- * setup y no transfiere ownership. Subprocess con argv fijo, sin shell, un
- * único intento y stdout/stderr capturados. Nunca toca `~/.engram` ni el
- * binario existente.
+ * un fallo intenta restaurar los preexistentes, elimina los targets creados
+ * por el setup y no transfiere ownership; si no puede recomponer todo, lo
+ * informa. Subprocess con argv fijo, sin shell, un único intento y
+ * stdout/stderr capturados. Nunca toca `~/.engram` ni el binario existente.
  *
  * Los verificadores específicos por runtime se registran vía
- * `registerOfficialSetupVerifier`; sin verificador, el flujo real omite el
- * setup (no finge éxito).
+ * `registerOfficialSetupVerifier`; sin verificador, un install real falla
+ * cerrado y los modos que no mutan siguen omitiendo el setup.
  */
 
 export type OfficialSetupRuntime = "claude-code" | "codex" | "opencode";
@@ -46,9 +47,9 @@ export function resolveOfficialSetupArgv(runtime: string): string[] {
 
 /** Gate install-only: solo install real (sin dry-run ni target-dir). */
 export function shouldRunOfficialSetup(opts: {
-  command?: unknown;
-  dryRun?: unknown;
-  targetDir?: unknown;
+  command?: string;
+  dryRun?: boolean;
+  targetDir?: string | undefined;
 }): boolean {
   return opts.command === "install" && opts.dryRun === false && opts.targetDir === undefined;
 }
@@ -71,12 +72,36 @@ export interface OfficialSetupDeps {
   homeDir: string;
   engramBin: string;
   backup: () => Promise<{ id: string }>;
-  spawn: (bin: string, argv: string[], options: { shell: false }) => Promise<OfficialSetupSpawnResult>;
+  spawn: (bin: string, argv: string[], options: { shell: false; env?: NodeJS.ProcessEnv }) => Promise<OfficialSetupSpawnResult>;
   verify: () => Promise<OfficialSetupVerifyResult>;
   restore?: () => Promise<unknown>;
   /** Ficheros que el setup puede crear/modificar. Obligatorio y no vacío. */
   targets: string[];
 }
+
+/**
+ * Snapshot recursivo de un directorio target (solo descendientes, rutas
+ * absolutas). Devuelve null si el árbol no puede leerse (desconocido,
+ * fail-closed: no borrar a ciegas).
+ */
+function snapshotDirEntries(dir: string): Set<string> | null {
+  const out = new Set<string>();
+  try {
+    const walk = (current: string): void => {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const full = path.resolve(path.join(current, entry.name));
+        out.add(full);
+        if (entry.isDirectory()) walk(full);
+      }
+    };
+    walk(path.resolve(dir));
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+export type OfficialSetupRecovery = "complete" | "incomplete" | "none";
 
 export interface OfficialSetupResult {
   ok: boolean;
@@ -85,13 +110,20 @@ export interface OfficialSetupResult {
   stderr?: string;
   reason?: string;
   layers?: string[];
+  /** true solo cuando el rollback no pudo recomponer todo lo mutado. */
+  incompleteRecovery?: boolean;
+  recovery?: OfficialSetupRecovery;
+  backupId?: string | null;
+  backupError?: string;
+  restoreError?: string;
 }
 
 /**
  * Núcleo inyectable: backup → spawn (un intento, shell false) → verify.
  * Verify siempre se ejecuta tras el spawn (aunque el spawn falle) para
- * diagnosticar por capas; cualquier fallo restaura preexistentes, elimina los
- * targets explícitos creados por el setup y no transfiere ownership.
+ * diagnosticar por capas; cualquier fallo intenta restaurar preexistentes,
+ * elimina los targets explícitos creados por el setup y no transfiere
+ * ownership.
  */
 export async function runOfficialSetup(
   runtime: string,
@@ -105,16 +137,66 @@ export async function runOfficialSetup(
     throw new Error(`runOfficialSetup: targets explícitos no vacíos requeridos (runtime ${runtime}).`);
   }
   const preciseTargets = [...new Set(deps.targets.map((t) => path.resolve(t)))];
+  const homeResolved = path.resolve(deps.homeDir);
 
+  // Frontera de restore: ningún target fuera de homeDir puede recomponerse
+  // con el restore acotado a HOME. Bloquear antes de cualquier mutación
+  // (backup o spawn).
+  const outside = preciseTargets.filter(
+    (t) => path.resolve(t) !== homeResolved && !isContainedIn(t, homeResolved),
+  );
+  if (outside.length > 0) {
+    const detail = `runOfficialSetup: target fuera de la frontera de restore (${homeResolved}): ${outside[0]}. Bloqueado antes del setup.`;
+    return {
+      ok: false,
+      ownershipTransferred: false,
+      stderr: detail,
+      reason: detail,
+      recovery: "none",
+      backupId: null,
+    };
+  }
+
+  let backupId: string | null = null;
   try {
-    await deps.backup();
+    const backup = await deps.backup();
+    backupId = (backup as { id?: unknown } | null)?.id !== undefined
+      ? String((backup as { id: unknown }).id)
+      : null;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return { ok: false, ownershipTransferred: false, stderr: detail, reason: detail };
+    return {
+      ok: false,
+      ownershipTransferred: false,
+      stderr: detail,
+      reason: detail,
+      recovery: "none",
+      backupId: null,
+      backupError: detail,
+    };
   }
 
   // Existencia previa capturada tras el backup y antes del spawn.
-  const existedBefore = new Set(preciseTargets.filter((t) => fs.existsSync(t)));
+  const existedBefore = new Set(preciseTargets.filter((t) => {
+    try {
+      return fs.existsSync(t);
+    } catch {
+      return false;
+    }
+  }));
+  // Snapshot recursivo pre-spawn para directorios ya existentes (p.ej.
+  // Claude `plugins/marketplaces/engram`): en fallo solo se eliminan los
+  // descendientes nuevos, preservando/restaurando preexistentes.
+  const dirSnapshots = new Map<string, Set<string> | null>();
+  for (const t of preciseTargets) {
+    if (!existedBefore.has(t)) continue;
+    try {
+      if (fs.statSync(t).isDirectory()) dirSnapshots.set(t, snapshotDirEntries(t));
+    } catch {
+      // stat ilegible: no snapshot; el cleanup marcará incompleto sin borrar.
+      dirSnapshots.set(t, null);
+    }
+  }
 
   let spawnResult: OfficialSetupSpawnResult;
   try {
@@ -140,35 +222,78 @@ export async function runOfficialSetup(
       stdout: spawnResult.stdout,
       stderr: spawnResult.stderr,
       ...(verifyResult.layers === undefined ? {} : { layers: verifyResult.layers }),
+      recovery: "none",
+      backupId,
     };
   }
 
+  let restoreError: string | undefined;
+  let restoreFailed = false;
   try {
     await deps.restore?.();
-  } catch {
-    // El fallo original manda; un restore fallido no lo oculta.
+  } catch (error) {
+    restoreFailed = true;
+    restoreError = error instanceof Error ? error.message : String(error);
   }
-  // Rollback: preexistentes ya recompuestos vía restore; eliminar solo los
-  // targets explícitos que no existían antes. Best-effort por objetivo.
+  // Rollback: recomponer preexistentes mediante restore cuando sea posible y
+  // eliminar solo lo creado por el setup. En directorios ya existentes, solo
+  // se eliminan descendientes nuevos (post-order), preservando preexistentes.
+  let cleanupFailed = false;
   for (const t of preciseTargets) {
     try {
-      if (!existedBefore.has(t) && fs.existsSync(t)) fs.rmSync(t, { recursive: true, force: true });
+      if (!existedBefore.has(t)) {
+        if (fs.existsSync(t)) fs.rmSync(t, { recursive: true, force: true });
+        continue;
+      }
+      if (!dirSnapshots.has(t)) continue;
+      const before = dirSnapshots.get(t);
+      if (before === null || before === undefined) {
+        cleanupFailed = true;
+        continue;
+      }
+      const after = snapshotDirEntries(t);
+      if (after === null) {
+        cleanupFailed = true;
+        continue;
+      }
+      const created = [...after].filter((p) => !before.has(p));
+      created.sort((a, b) => {
+        const depthA = a.split(path.sep).length;
+        const depthB = b.split(path.sep).length;
+        if (depthA !== depthB) return depthB - depthA;
+        return b.length - a.length;
+      });
+      for (const p of created) {
+        try {
+          if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+        } catch {
+          cleanupFailed = true;
+        }
+      }
     } catch {
-      // best-effort por objetivo
+      cleanupFailed = true;
     }
   }
+  const incomplete = restoreFailed || cleanupFailed;
   const detail =
     [spawnResult.stderr, verifyResult.stderr, verifyResult.reason, (verifyResult.layers ?? []).join(", ")]
       .map((part) => (part ?? "").trim())
       .filter((part) => part !== "")
       .join("; ") || "setup oficial falló";
+  const recoveryDetail = incomplete
+    ? `${detail}; recuperación incompleta${restoreError !== undefined ? `: ${restoreError}` : ""}`
+    : detail;
   return {
     ok: false,
     ownershipTransferred: false,
     stdout: spawnResult.stdout,
-    stderr: detail,
-    reason: detail,
+    stderr: recoveryDetail,
+    reason: recoveryDetail,
     ...(verifyResult.layers === undefined ? {} : { layers: verifyResult.layers }),
+    ...(incomplete ? { incompleteRecovery: true as const } : {}),
+    recovery: incomplete ? "incomplete" : "complete",
+    backupId,
+    ...(restoreError === undefined ? {} : { restoreError }),
   };
 }
 
@@ -209,6 +334,7 @@ export function collectOfficialSetupBackupTargets(
           ? path.join(path.dirname(configDir), ".claude.json")
           : path.join(configDir, ".claude.json"),
         path.join(configDir, "plugins", "installed_plugins.json"),
+        path.join(configDir, "plugins", "marketplaces", "engram"),
       ];
     }
     case "codex":
@@ -230,10 +356,32 @@ export function collectOfficialSetupBackupTargets(
   }
 }
 
+/**
+ * Selector de config por runtime para el subprocess oficial.
+ * Un solo configDir efectivo para backup, subprocess, verify y rollback.
+ */
+export function resolveOfficialSetupEnv(
+  runtime: OfficialSetupRuntime,
+  configDir: string,
+): NodeJS.ProcessEnv {
+  switch (runtime) {
+    case "claude-code":
+      return { CLAUDE_CONFIG_DIR: configDir };
+    case "codex":
+      return { CODEX_HOME: configDir };
+    case "opencode":
+      // Smoke real: `engram setup opencode` honra XDG_CONFIG_HOME sobre
+      // OPENCODE_CONFIG_DIR. Se fijan ambos para que el config efectivo sea
+      // <parent>/opencode, donde miran backup, verify y rollback.
+      return { OPENCODE_CONFIG_DIR: configDir, XDG_CONFIG_HOME: path.dirname(configDir) };
+  }
+}
+
 /** Spawn real: argv fijo, sin shell, un intento, stdout/stderr capturados. */
 export async function spawnOfficialSetupBin(
   bin: string,
   argv: string[],
+  env?: NodeJS.ProcessEnv,
 ): Promise<OfficialSetupSpawnResult> {
   try {
     const stdout = execFileSync(bin, argv, {
@@ -241,6 +389,7 @@ export async function spawnOfficialSetupBin(
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
       shell: false,
+      ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
     });
     return { ok: true, stdout: stdout ?? "", stderr: "" };
   } catch (error) {
@@ -259,21 +408,31 @@ export async function spawnOfficialSetupBin(
 
 export type OfficialSetupIfNeededResult =
   | { ran: false }
-  | { ran: true; ok: boolean; ownershipTransferred: boolean; stderr?: string; reason?: string };
+  | {
+    ran: true;
+    ok: boolean;
+    ownershipTransferred: boolean;
+    stderr?: string;
+    reason?: string;
+    incompleteRecovery?: boolean;
+    recovery?: OfficialSetupRecovery;
+    backupId?: string | null;
+    restoreError?: string;
+  };
 
 /**
  * Wiring real para `runInstall`: gate install-only + binario absoluto +
- * verificador registrado. Sin verificador no se ejecuta nada (ran:false): no
- * finge éxito ni rompe el flujo Stack existente. Con
- * verificador usa backup/restore reales y rollback preciso por targets (sin
- * recorrer HOME).
+ * verificador registrado. Skips intencionales (sync/dry-run/target-dir)
+ * siguen siendo `{ran:false}`. En install real, runtime desconocido,
+ * verificador ausente o binario no absoluto devuelven fallo explícito
+ * (`ran:true, ok:false`), nunca skip silencioso.
  */
 export async function runOfficialSetupIfNeeded(
   runtime: string,
   opts: {
-    command?: unknown;
-    dryRun?: unknown;
-    targetDir?: unknown;
+    command?: string;
+    dryRun?: boolean;
+    targetDir?: string | undefined;
     engramBin?: string | null;
     configDir: string;
     homeDir: string;
@@ -282,28 +441,77 @@ export async function runOfficialSetupIfNeeded(
   if (!shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
     return { ran: false };
   }
-  if (typeof opts.engramBin !== "string" || !path.isAbsolute(opts.engramBin)) return { ran: false };
-  if (!isOfficialSetupRuntime(runtime)) return { ran: false };
+  // Pi es future (PR04): nunca setup oficial; skip intencional, no fallo.
+  if (runtime === "pi") {
+    return { ran: false };
+  }
+  if (!isOfficialSetupRuntime(runtime)) {
+    const detail = `runOfficialSetupIfNeeded: runtime desconocido en install real: ${runtime}.`;
+    return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
+  }
+  if (typeof opts.engramBin !== "string" || !path.isAbsolute(opts.engramBin)) {
+    const detail = `runOfficialSetupIfNeeded: engramBin absoluto requerido en install real (runtime ${runtime}).`;
+    return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
+  }
   const verify = officialSetupVerifiers[runtime];
-  if (!verify) return { ran: false };
+  if (!verify) {
+    const detail = `runOfficialSetupIfNeeded: sin verificador registrado en install real (runtime ${runtime}).`;
+    return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
+  }
 
   const engramBin = opts.engramBin;
   const configDir = opts.configDir;
+  if (runtime === "opencode" && path.basename(path.resolve(configDir)) !== "opencode") {
+    const detail = `runOfficialSetupIfNeeded: configDir OpenCode incompatible (${configDir}); el provider solo alinea <parent>/opencode vía XDG_CONFIG_HOME.`;
+    return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
+  }
   const targets = collectOfficialSetupBackupTargets(runtime, configDir, opts.homeDir);
+  const setupEnv = resolveOfficialSetupEnv(runtime, configDir);
   let backupId: string | null = null;
+  let expectedBackupFiles = 0;
+  const expandBackupTargets = (files: string[]): string[] => {
+    const out: string[] = [];
+    for (const file of files) {
+      try {
+        const stat = fs.statSync(file);
+        if (stat.isDirectory()) {
+          const walk = (dir: string): void => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else out.push(full);
+            }
+          };
+          walk(file);
+          continue;
+        }
+      } catch {
+        // Ausente o ilegible: createBackup lo ignora; se conserva el path.
+      }
+      out.push(file);
+    }
+    return out;
+  };
   const result = await runOfficialSetup(runtime, {
     homeDir: opts.homeDir,
     engramBin,
     backup: async () => {
-      const backup = createBackup(targets, `official-engram-setup-${runtime}`);
+      const backup = createBackup(expandBackupTargets(targets), `official-engram-setup-${runtime}`);
       backupId = backup?.id ?? null;
+      expectedBackupFiles = backup?.files.length ?? 0;
       return { id: backupId ?? "no-backup" };
     },
-    spawn: async (bin, argv) => spawnOfficialSetupBin(bin, argv),
+    spawn: async (bin, argv) => spawnOfficialSetupBin(bin, argv, setupEnv),
     verify: async () => verify({ configDir, engramBin }),
     restore: async () => {
-      if (backupId !== null) restoreBackup(backupId);
-      return { restored: backupId !== null };
+      if (backupId === null) return { restored: false };
+      const restored = restoreBackup(backupId);
+      if (restored !== expectedBackupFiles) {
+        throw new Error(
+          `restore incompleto: ${restored}/${expectedBackupFiles} archivos (backup ${backupId}).`,
+        );
+      }
+      return { restored: true };
     },
     targets,
   });
@@ -313,5 +521,9 @@ export async function runOfficialSetupIfNeeded(
     ownershipTransferred: result.ownershipTransferred,
     ...(result.stderr === undefined ? {} : { stderr: result.stderr }),
     ...(result.reason === undefined ? {} : { reason: result.reason }),
+    ...(result.incompleteRecovery === undefined ? {} : { incompleteRecovery: result.incompleteRecovery }),
+    ...(result.recovery === undefined ? {} : { recovery: result.recovery }),
+    ...(result.backupId === undefined ? {} : { backupId: result.backupId }),
+    ...(result.restoreError === undefined ? {} : { restoreError: result.restoreError }),
   };
 }

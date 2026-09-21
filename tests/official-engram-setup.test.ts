@@ -46,8 +46,12 @@ function fakeSpawnCapture() {
 
 /** Contenido oficial simulado de `engram setup opencode` en la MISMA ruta. */
 const OFFICIAL_ENGRAM_TS = [
-  "// engram official plugin (engram setup opencode reemplaza legacy en la misma ruta)",
-  "export const Engram = {};",
+  "// official engram setup opencode (same path, real markers)",
+  "const url = CONFIGURED_ENGRAM_URL;",
+  "async function ensureLocalReady() { return true; }",
+  "const tools = SESSION_ATTRIBUTED_WRITE_TOOLS;",
+  "function canonicalEngramToolName() { return 'engram'; }",
+  "const id = localInstanceID;",
   "",
 ].join("\n");
 

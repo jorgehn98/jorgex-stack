@@ -437,7 +437,9 @@ describe("target inventory regressions", () => {
         ).resolves.toBe(0);
 
         const { runDoctor } = await import("../src/doctor.js");
-        await expect(runDoctor()).resolves.toBe(0);
+        // Contrato oficial (PR03): setup oficial incompleto (sin `engram setup`,
+        // solo Stack) cuenta como problema en doctor aunque no haya drift.
+        await expect(runDoctor()).resolves.toBe(1);
         expect(mocks.prompts.log.warn).not.toHaveBeenCalledWith(
           expect.stringMatching(/OpenCode: .*desactualizados o ausentes/i),
         );
