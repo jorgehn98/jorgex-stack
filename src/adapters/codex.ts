@@ -183,16 +183,10 @@ const CODEX_PERMISSION_PROFILE = {
   base: [["extends", ":workspace"]],
   filesystem: [
     [":root", "read"],
-    ["*.env", "deny"],
-    ["*.env.*", "deny"],
     ["~/.ssh/**", "deny"],
     ["~/.aws/credentials", "deny"],
     ["~/.npmrc", "deny"],
     ["~/.git-credentials", "deny"],
-    ["**/id_rsa", "deny"],
-    ["**/id_ed25519", "deny"],
-    ["**/*.pem", "deny"],
-    ["**/*.key", "deny"],
   ],
   workspaceRoots: [
     [".", "write"],
