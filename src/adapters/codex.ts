@@ -68,9 +68,11 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], s
 }
 
 /**
- * Plugin de marketplace engram ACTIVO: provee las MCP tools, así que registrar
- * el MCP además duplicaría. Un plugin presente pero `enabled = false` NO
- * cuenta: en ese caso el MCP manual es la integración real y debe conservarse.
+ * Plugin de marketplace engram ACTIVO: sus hooks y skill de memoria son la
+ * integración del plugin; el setup oficial registra aparte un MCP user
+ * (`engram setup codex`) que Stack no posee ni muta. Un plugin presente pero
+ * `enabled = false` NO cuenta: en ese caso el MCP manual es la integración
+ * real y debe conservarse.
  */
 function hasActiveEngramPlugin(configDir: string): boolean {
   const config = readTextIfExists(path.join(configDir, "config.toml"));
@@ -80,10 +82,11 @@ function hasActiveEngramPlugin(configDir: string): boolean {
 }
 
 /**
- * Protocolo de memoria ya presente por otra vía: plugin activo, o un
- * engram-instructions.md de `engram setup codex` (en configDir o referenciado
- * como model_instructions_file en config.toml). En ese caso no se inyecta la
- * sección engram-protocol en AGENTS.md para no duplicarlo.
+ * Protocolo de memoria ya presente por otra vía: hooks y skill del plugin
+ * activo, o un engram-instructions.md de `engram setup codex` (en configDir o
+ * referenciado como model_instructions_file en config.toml). En ese caso no
+ * se inyecta la sección engram-protocol en AGENTS.md para no duplicarla; el
+ * MCP user separado se conserva y se gestiona por otro flujo.
  */
 function hasEngramProtocol(configDir: string): boolean {
   if (hasActiveEngramPlugin(configDir)) return true;
@@ -602,6 +605,19 @@ export const codexAdapter: Adapter = {
     }
 
     for (const [name, server] of Object.entries(canonical.servers)) {
+      // Plugin oficial activo: sus hooks y skill no incluyen este MCP; el
+      // setup (`engram setup codex`) registra un MCP user separado.
+      // Preservar cualquier `engram` existente (oficial o ajeno), liberar
+      // ownership previo del Stack si lo tiene y no recrearlo si falta.
+      if (name === "engram" && hasActiveEngramPlugin(ctx.configDir)) {
+        if (ctx.ownedMcpServers?.has(name) === true) {
+          mcpOwnership.push({ server: name, owned: false });
+        }
+        ctx.warnings.push(
+          "Codex: plugin oficial de Engram activo — sus hooks y skill no incluyen el MCP; el setup registra un MCP user separado que Stack no posee ni muta.",
+        );
+        continue;
+      }
       const section = `mcp_servers.${name}`;
       const existing = readTomlSection(content, section);
       const owned = ctx.ownedMcpServers?.has(name) === true;
@@ -629,15 +645,6 @@ export const codexAdapter: Adapter = {
         }
       }
       if (server.transport === "stdio") {
-        // Con el plugin de marketplace ACTIVO, el MCP duplicaría las tools.
-        // Si un sync anterior (pre-plugin) lo registró, se retira.
-        if (server.command === "{{ENGRAM_BIN}}" && hasActiveEngramPlugin(ctx.configDir)) {
-          if (content !== null) content = removeTomlSection(content, section);
-          ctx.warnings.push(
-            "Codex: Engram ya está integrado vía plugin de marketplace — no se registra el MCP para no duplicar las tools de memoria.",
-          );
-          continue;
-        }
         if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
           ctx.warnings.push(
             "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",

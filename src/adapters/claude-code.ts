@@ -120,7 +120,7 @@ function toolsFor(agent: CanonicalAgent): string | null {
   return tools.join(", ");
 }
 
-/** Engram integrado vía su plugin oficial de marketplace (claude plugin install engram). */
+/** Engram integrado por el plugin oficial de marketplace; sus hooks y skill de memoria no sustituyen al MCP user separado que registra el setup oficial y que Stack no posee ni muta. */
 function hasEngramPlugin(configDir: string): boolean {
   if (fs.existsSync(path.join(configDir, "plugins", "marketplaces", "engram"))) return true;
   const registry = readTextIfExists(path.join(configDir, "plugins", "installed_plugins.json"));
@@ -178,7 +178,8 @@ export const claudeCodeAdapter: Adapter = {
   },
 
   injectEngramProtocol(ctx) {
-    // El plugin oficial ya inyecta el protocolo (hooks + skill memory).
+    // El plugin oficial ya inyecta el protocolo mediante sus hooks y skill de
+    // memoria; el MCP user separado se gestiona aparte y no se inyecta aquí.
     return !hasEngramPlugin(ctx.configDir);
   },
 
@@ -297,6 +298,19 @@ export const claudeCodeAdapter: Adapter = {
 
       const servers = (root["mcpServers"] ??= {}) as Record<string, Record<string, unknown>>;
       for (const [name, server] of Object.entries(canonical.servers)) {
+        // Plugin oficial activo: sus hooks y skill no incluyen este MCP; el
+        // setup (`engram setup claude-code`) registra un MCP user separado.
+        // Preservar cualquier `engram` existente (oficial o ajeno), liberar
+        // ownership previo del Stack si lo tiene y no recrearlo si falta.
+        if (name === "engram" && hasEngramPlugin(ctx.configDir)) {
+          if (ctx.ownedMcpServers?.has(name) === true) {
+            mcpOwnership.push({ server: name, owned: false });
+          }
+          ctx.warnings.push(
+            "Claude Code: plugin oficial de Engram activo — sus hooks y skill no incluyen el MCP; el setup registra un MCP user separado que Stack no posee ni muta.",
+          );
+          continue;
+        }
         const existing = servers[name];
         const owned = ctx.ownedMcpServers?.has(name) === true;
         if (name === "context7" && existing !== undefined) {
@@ -323,15 +337,6 @@ export const claudeCodeAdapter: Adapter = {
           }
         }
         if (server.transport === "stdio") {
-          // El plugin oficial ya provee el MCP: registrarlo duplicaría las
-          // tools. Si un sync anterior (pre-plugin) lo registró, se retira.
-          if (server.command === "{{ENGRAM_BIN}}" && hasEngramPlugin(ctx.configDir)) {
-            if (name in servers) delete servers[name];
-            ctx.warnings.push(
-              "Claude Code: Engram ya está integrado vía plugin — no se registra el MCP para no duplicar las tools de memoria.",
-            );
-            continue;
-          }
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
               "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
