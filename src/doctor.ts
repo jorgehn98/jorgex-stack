@@ -221,34 +221,50 @@ export interface EngramOfficialState {
  * Helper único de verificación oficial para doctor (reutilizado por el
  * estado global HOME y por el loop con `detection.configDir` real, incluidos
  * los directorios personalizados. Solo lectura: registro exacto en filesystem
- * y binario disponible, sin certificar la carga en runtime.
+ * y binario disponible, sin certificar la carga en runtime. Devuelve también
+ * la razón diagnóstica del verificador cuando está disponible.
  */
 async function verifyOfficialForRuntime(
   runtime: "claude-code" | "codex" | "opencode",
   configDir: string,
   engramBin: string,
   homeDir?: string,
-): Promise<{ ok: boolean; layers: string[] }> {
+  isExplicitClaudeConfigDir?: boolean,
+): Promise<{ ok: boolean; layers: string[]; reason?: string }> {
   if (runtime === "claude-code") {
     const { verifyOfficialSetup } = await import("./adapters/claude-code.js");
-    const report = await verifyOfficialSetup({ configDir, engramBin, homeDir });
-    return { ok: report.ok, layers: report.layers };
+    const explicit = isExplicitClaudeConfigDir ?? (process.env.CLAUDE_CONFIG_DIR !== undefined);
+    const report = await verifyOfficialSetup({ configDir, engramBin, homeDir, isExplicitClaudeConfigDir: explicit });
+    return {
+      ok: report.ok,
+      layers: report.layers,
+      ...(report.reason === undefined ? {} : { reason: report.reason }),
+    };
   }
   if (runtime === "codex") {
     const { verifyOfficialSetup } = await import("./adapters/codex.js");
     const report = await verifyOfficialSetup({ configDir, engramBin });
-    return { ok: report.ok, layers: report.layers };
+    return {
+      ok: report.ok,
+      layers: report.layers,
+      ...(report.reason === undefined ? {} : { reason: report.reason }),
+    };
   }
   const { verifyOfficialSetup } = await import("./adapters/opencode.js");
   const report = await verifyOfficialSetup({ configDir, engramBin });
-  return { ok: report.ok, layers: report.layers };
+  return {
+    ok: report.ok,
+    layers: report.layers,
+    ...(report.reason === undefined ? {} : { reason: report.reason }),
+  };
 }
 
 async function doctorHasClaudeSetup(
   homeDir: string,
   engramBin: string,
 ): Promise<{ ok: boolean; layers: string[] }> {
-  return verifyOfficialForRuntime("claude-code", path.join(homeDir, ".claude"), engramBin, homeDir);
+  const explicit = process.env.CLAUDE_CONFIG_DIR !== undefined;
+  return verifyOfficialForRuntime("claude-code", path.join(homeDir, ".claude"), engramBin, homeDir, explicit);
 }
 
 async function doctorHasCodexSetup(
@@ -489,17 +505,31 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
 
     // Setup/exposure oficial exacto contra el configDir detectado. Sin bin
     // disponible el verificador falla cerrado; este loop solo cuenta runtimes
-    // instalados con adapter.
+    // instalados con adapter y muestra la razón diagnóstica cuando existe.
     try {
-      // El HOME efectivo ancla el modo del verificador Claude (default →
-      // archivo hermano, CLAUDE_CONFIG_DIR personalizado → anidado).
-      const setup = await verifyOfficialForRuntime(adapter.id, detection.configDir, engramBin ?? "", HOME);
+      // El modo del verificador Claude depende de si CLAUDE_CONFIG_DIR está
+      // definida, no solo de que el path coincida con el valor predeterminado.
+      const explicitClaude = adapter.id === "claude-code"
+        ? process.env.CLAUDE_CONFIG_DIR !== undefined
+        : undefined;
+      const setup = await verifyOfficialForRuntime(
+        adapter.id,
+        detection.configDir,
+        engramBin ?? "",
+        HOME,
+        explicitClaude,
+      );
       const exposed = setup.layers.includes("mcp") && engramBinAvailable;
       officialResults.push({ runtime: adapter.id, ok: setup.ok, layers: setup.layers, exposed });
       if (!setup.ok) {
-        p.log.warn(
-          `${adapter.name}: setup oficial Engram incompleto (${setup.layers.join(", ")}) → ejecuta install.`,
-        );
+        const reason = typeof setup.reason === "string" ? setup.reason.trim() : "";
+        if (reason !== "") {
+          p.log.warn(`${adapter.name}: ${reason}`);
+        } else {
+          p.log.warn(
+            `${adapter.name}: setup oficial Engram incompleto (${setup.layers.join(", ")}) → ejecuta install.`,
+          );
+        }
         problems++;
       }
     } catch (error) {

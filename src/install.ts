@@ -367,8 +367,8 @@ async function runOfficialSetupForInstall(args: {
 }): Promise<OfficialSetupIfNeededResult> {
   // Solo Claude necesita la comprobación de versión; Codex/OpenCode son
   // gestionados por el proveedor. Ejecuta `--version` localmente, sin red ni
-  // estado personal; un resultado nulo o ilegible omite la comprobación
-  // (preserva el comportamiento existente).
+  // estado personal; un resultado nulo/ilegible falla cerrado en el preflight
+  // Claude (binario intacto, antes de targets/backup/spawn).
   let detectedVersion: string | null = null;
   if (args.runtime === "claude-code" && typeof args.engramBin === "string" && args.engramBin !== "") {
     try {
@@ -385,6 +385,9 @@ async function runOfficialSetupForInstall(args: {
     configDir: args.configDir,
     homeDir: HOME,
     engramVersion: detectedVersion,
+    ...(args.runtime === "claude-code"
+      ? { isExplicitClaudeConfigDir: process.env.CLAUDE_CONFIG_DIR !== undefined }
+      : {}),
   });
 }
 

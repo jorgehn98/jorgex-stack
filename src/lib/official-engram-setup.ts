@@ -426,7 +426,25 @@ export type OfficialSetupVerifyFn = (args: {
   engramBin: string;
   /** HOME efectivo: el verificador Claude elige el MCP exacto según el modo. */
   homeDir?: string;
+  /**
+   * Modo explícito Claude: true cuando CLAUDE_CONFIG_DIR está definida
+   * (aunque coincida con `<home>/.claude`) → anidado; false fuerza el modo
+   * por defecto. Cuando se omite, el verificador consulta
+   * `process.env.CLAUDE_CONFIG_DIR`.
+   */
+  isExplicitClaudeConfigDir?: boolean;
 }) => Promise<OfficialSetupVerifyResult>;
+
+/**
+ * Modo Claude explícito: una variable definida —aunque sea igual a
+ * `<home>/.claude`— implica el archivo anidado. Si se pasa `false`, o la
+ * variable está ausente cuando se omite el argumento, se aplica la inferencia
+ * por path.
+ */
+export function isExplicitClaudeConfigDirEnv(explicit?: boolean): boolean {
+  if (explicit !== undefined) return explicit;
+  return process.env.CLAUDE_CONFIG_DIR !== undefined;
+}
 
 /** Verificadores por runtime; cada adapter los registra al cargarse. */
 export const officialSetupVerifiers: Partial<Record<OfficialSetupRuntime, OfficialSetupVerifyFn>> = {};
@@ -440,20 +458,26 @@ export function registerOfficialSetupVerifier(runtime: OfficialSetupRuntime, fn:
  * respaldan; `createBackup` ignora ausentes y devuelve null si no hay nada).
  * No incluye `~/.engram` ni el binario.
  *
- * Claude usa el archivo hermano `~/.claude.json` con el configDir
- * predeterminado (`<home>/.claude`); con un configDir personalizado
- * (CLAUDE_CONFIG_DIR), el setup oficial escribe `configDir/.claude.json`.
+ * Claude usa el archivo hermano `~/.claude.json` cuando no hay
+ * `CLAUDE_CONFIG_DIR` explícita y el configDir es el predeterminado
+ * (`<home>/.claude`); con la variable explícita, el setup oficial escribe
+ * `configDir/.claude.json` aunque ambos paths coincidan.
  */
 export function collectOfficialSetupBackupTargets(
   runtime: OfficialSetupRuntime,
   configDir: string,
   homeDir?: string,
+  isExplicitClaudeConfigDir?: boolean,
 ): string[] {
   switch (runtime) {
     case "claude-code": {
-      const isDefault = homeDir !== undefined
+      const explicit = isExplicitClaudeConfigDirEnv(isExplicitClaudeConfigDir);
+      const pathIsDefault = homeDir !== undefined
         ? path.resolve(configDir) === path.resolve(path.join(homeDir, ".claude"))
         : path.basename(path.resolve(configDir)) === ".claude";
+      // Explícito (env definida, aunque igual) siempre es custom; por defecto
+      // solo cuando el env está ausente y el path coincide.
+      const isDefault = !explicit && pathIsDefault;
       const nested = path.join(configDir, ".claude.json");
       const sibling = path.join(path.dirname(configDir), ".claude.json");
       const targets = [
@@ -464,7 +488,7 @@ export function collectOfficialSetupBackupTargets(
         path.join(configDir, "plugins", "cache", "engram"),
         path.join(configDir, "mcp", "engram.json"),
         // El MCP exacto puede estar en el archivo hermano (modo predeterminado)
-        // o en la ruta anidada (modo personalizado); se respaldan ambas ubicaciones.
+        // o en la ruta anidada (modo explícito); se respaldan ambas ubicaciones.
         nested,
         // En el modo predeterminado se añade el archivo hermano efectivo
         // (`HOME/.claude.json`).
@@ -507,10 +531,11 @@ export function collectOfficialSetupBackupTargets(
  * Un solo configDir efectivo para backup, subprocess, verify y rollback.
  *
  * Claude depende del HOME efectivo (diagnóstico comprobado en Claude 2.1.267
- * y Engram 2.0.0): con el configDir predeterminado (`<home>/.claude`) NO se
- * fuerza CLAUDE_CONFIG_DIR para que el proveedor y el runtime usen el archivo
- * hermano `<home>/.claude.json`; con un configDir personalizado se pasa
- * `CLAUDE_CONFIG_DIR=<custom>` y ambos usan el anidado `configDir/.claude.json`.
+ * y Engram 2.0.0): sin CLAUDE_CONFIG_DIR explícita y con el configDir
+ * predeterminado (`<home>/.claude`) no se fuerza la variable, para que el
+ * proveedor y el runtime usen el archivo hermano `<home>/.claude.json`.
+ * Con la variable explícita se usa el anidado `configDir/.claude.json`,
+ * incluso si su valor coincide con `<home>/.claude`.
  * El resto de variables de entorno se preserva (el proceso combina sobre
  * process.env).
  */
@@ -518,10 +543,16 @@ export function resolveOfficialSetupEnv(
   runtime: OfficialSetupRuntime,
   configDir: string,
   homeDir?: string,
+  isExplicitClaudeConfigDir?: boolean,
 ): NodeJS.ProcessEnv {
   switch (runtime) {
     case "claude-code": {
       const home = homeDir ?? HOME;
+      const explicit = isExplicitClaudeConfigDirEnv(isExplicitClaudeConfigDir);
+      // Explícito siempre usa semántica custom/anidada, aunque el path sea
+      // igual al predeterminado. Por defecto (env ausente + path default)
+      // no se fuerza la variable para usar el hermano.
+      if (explicit) return { CLAUDE_CONFIG_DIR: configDir };
       if (path.resolve(configDir) === path.resolve(path.join(home, ".claude"))) return {};
       return { CLAUDE_CONFIG_DIR: configDir };
     }
@@ -582,20 +613,20 @@ export type OfficialSetupIfNeededResult =
  * Versión mínima de Engram que registra el MCP exacto en Claude
  * (diagnóstico comprobado: 1.20.0 y 2.0.0-rc.11 escriben el obsoleto
  * `<config>/mcp/engram.json`, que el CLI ignora; 2.0.0 escribe la ubicación
- * efectiva). La comprobación rechaza cualquier versión con guion, como
- * `2.0.0-rc.11`, y cualquier versión extraída anterior a 2.0.0; los textos
- * vacíos o sin una secuencia numérica se aceptan para conservar el
- * comportamiento no bloqueante ante una versión ilegible.
+ * efectiva). La comprobación exige una versión estable numérica >=2.0.0:
+ * rechaza vacíos, textos sin triple numérica y cualquier versión con guion,
+ * como `2.0.0-rc.11`, además de cualquier versión anterior a 2.0.0.
+ * Fail-closed: lo ilegible nunca se acepta como compatible.
  */
 export function isClaudeEngramVersionSupported(version: string): boolean {
   const trimmed = version.trim();
-  if (trimmed === "") return true;
+  if (trimmed === "") return false;
   if (trimmed.includes("-")) return false;
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(trimmed);
-  if (!match) return true;
+  if (!match) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  if (!Number.isFinite(major) || !Number.isFinite(minor)) return true;
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return false;
   if (major > 2) return true;
   if (major < 2) return false;
   return minor >= 0;
@@ -619,8 +650,10 @@ export async function runOfficialSetupIfNeeded(
     engramBin?: string | null;
     configDir: string;
     homeDir: string;
-    /** Versión proporcionada por las pruebas o la integración; undefined/null omite la comprobación. */
+    /** Versión `engram --version` para el preflight Claude; null/undefined/vacía/ilegible falla cerrado. */
     engramVersion?: string | null;
+    /** Modo explícito Claude; si se omite, se infiere de `CLAUDE_CONFIG_DIR`. */
+    isExplicitClaudeConfigDir?: boolean;
   },
 ): Promise<OfficialSetupIfNeededResult> {
   if (!shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
@@ -644,13 +677,17 @@ export async function runOfficialSetupIfNeeded(
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
   }
 
-  // Comprobación previa solo para Claude antes de objetivos/copia/spawn: Engram <2.0.0
-  // estable o prerelease (p.ej. 2.0.0-rc.11) enmascara el setup como éxito.
-  // Codex/OpenCode son gestionados por el proveedor y nunca se bloquean por versión.
-  if (runtime === "claude-code" && typeof opts.engramVersion === "string" && opts.engramVersion.trim() !== "") {
-    const provided = opts.engramVersion.trim();
-    if (!isClaudeEngramVersionSupported(provided)) {
-      const detail = `runOfficialSetupIfNeeded: Engram ${provided} no registra el MCP de Claude Code; update to Engram 2.0.0+ and rerun install; existing binary was not replaced.`;
+  // Preflight estricto solo para Claude antes de targets/backup/spawn: exige
+  // una versión estable numérica >=2.0.0. `null`, vacía, malformada,
+  // fallida/timeout o sin triple numérica falla cerrado con razón accionable
+  // (check/update a 2.0.0+) y binario intacto. Codex/OpenCode son gestionados
+  // por el proveedor y nunca se bloquean por versión.
+  if (runtime === "claude-code") {
+    const raw = opts.engramVersion;
+    const provided = typeof raw === "string" ? raw.trim() : "";
+    if (provided === "" || !isClaudeEngramVersionSupported(provided)) {
+      const shown = provided === "" ? "unknown/unreadable" : provided;
+      const detail = `runOfficialSetupIfNeeded: Engram ${shown} no registra el MCP de Claude Code; check engram --version and update to Engram 2.0.0+ and rerun install; existing binary was not replaced.`;
       return {
         ran: true,
         ok: false,
@@ -669,8 +706,11 @@ export async function runOfficialSetupIfNeeded(
     const detail = `runOfficialSetupIfNeeded: configDir OpenCode incompatible (${configDir}); el provider solo alinea <parent>/opencode vía XDG_CONFIG_HOME.`;
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
   }
-  const targets = collectOfficialSetupBackupTargets(runtime, configDir, opts.homeDir);
-  const setupEnv = resolveOfficialSetupEnv(runtime, configDir, opts.homeDir);
+  const explicitClaude = runtime === "claude-code"
+    ? isExplicitClaudeConfigDirEnv(opts.isExplicitClaudeConfigDir)
+    : undefined;
+  const targets = collectOfficialSetupBackupTargets(runtime, configDir, opts.homeDir, explicitClaude);
+  const setupEnv = resolveOfficialSetupEnv(runtime, configDir, opts.homeDir, explicitClaude);
   let backupId: string | null = null;
   let expectedBackupFiles = 0;
   const expandBackupTargets = (files: string[]): string[] => {
@@ -716,7 +756,12 @@ export async function runOfficialSetupIfNeeded(
       return { id: backupId ?? "no-backup" };
     },
     spawn: async (bin, argv) => spawnOfficialSetupBin(bin, argv, setupEnv),
-    verify: async () => verify({ configDir, engramBin, homeDir: opts.homeDir }),
+    verify: async () => verify({
+      configDir,
+      engramBin,
+      homeDir: opts.homeDir,
+      ...(explicitClaude === undefined ? {} : { isExplicitClaudeConfigDir: explicitClaude }),
+    }),
     restore: async () => {
       if (backupId === null) return { restored: false };
       const restored = restoreBackup(backupId);

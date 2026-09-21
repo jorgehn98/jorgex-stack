@@ -451,8 +451,8 @@ export const claudeCodeAdapter: Adapter = {
  *   sigue enlaces) y `settings.json enabledPlugins["engram@engram"]===true`.
  * - mcp: entrada exacta SOLO en la ubicación del modo efectivo (diagnóstico
  *   comprobado en Claude 2.1.267): predeterminado (`configDir == <home>/.claude`) →
- *   archivo hermano `<home>/.claude.json`; personalizado (CLAUDE_CONFIG_DIR) → anidado
- *   `configDir/.claude.json`. La ubicación opuesta se rechaza. Tipo stdio,
+ *   archivo hermano `<home>/.claude.json`; explícito (CLAUDE_CONFIG_DIR definida) →
+ *   anidado `configDir/.claude.json`. La ubicación opuesta se rechaza. Tipo stdio,
  *   command == engramBin, args == ["mcp","--tools=agent"].
  * - hooks: `hooks/hooks.json` oficial bajo installPath con objeto `hooks`
  *   no vacío + al menos un script en `scripts/` bajo el mismo installPath.
@@ -462,34 +462,44 @@ export const claudeCodeAdapter: Adapter = {
  *
  * No escribe, no reemplaza binarios ni reclama nada; la config ajena intacta.
  */
+function errnoCodeOf(error: unknown): string {
+  return error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+    ? (error as NodeJS.ErrnoException).code as string
+    : "UNKNOWN";
+}
+
 function resolveStrictInstallPath(configDir: string): { ok: boolean; installPath?: string; detail?: string } {
   const registryFile = path.join(configDir, "plugins", "installed_plugins.json");
   let raw: string;
   try {
     raw = fs.readFileSync(registryFile, "utf8");
-  } catch {
-    return { ok: false, detail: "installPath:missing (registry ausente)" };
+  } catch (error) {
+    const code = errnoCodeOf(error);
+    if (code === "ENOENT") {
+      return { ok: false, detail: `installPath:missing (registry ausente: ${registryFile})` };
+    }
+    return { ok: false, detail: `installPath:unreadable (${registryFile}: ${code}, ilegible)` };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
   } catch {
-    return { ok: false, detail: "installPath: registry ilegible" };
+    return { ok: false, detail: `installPath:malformed (${registryFile}: JSON inválido, ilegible)` };
   }
   if (!isRecord(parsed) || (parsed["version"] as unknown) !== 2) {
-    return { ok: false, detail: "installPath: registry version 2 requerida" };
+    return { ok: false, detail: `installPath:malformed (${registryFile}: registry version 2 requerida, inválido)` };
   }
   const plugins = (parsed as Record<string, unknown>)["plugins"];
-  if (!isRecord(plugins)) return { ok: false, detail: "plugin:missing" };
+  if (!isRecord(plugins)) return { ok: false, detail: `plugin:malformed (plugins no es objeto en ${registryFile})` };
   const entry = (plugins as Record<string, unknown>)["engram@engram"];
   if (!Array.isArray(entry) || entry.length === 0 || !isRecord(entry[0])) {
-    return { ok: false, detail: "plugin:missing (engram@engram ausente)" };
+    return { ok: false, detail: `plugin:missing (engram@engram ausente en ${registryFile})` };
   }
   const first = entry[0] as Record<string, unknown>;
-  if (first["scope"] !== "user") return { ok: false, detail: "plugin: scope user requerido" };
+  if (first["scope"] !== "user") return { ok: false, detail: `plugin:disabled (scope user requerido en ${registryFile})` };
   const installPath = first["installPath"];
   if (typeof installPath !== "string" || installPath === "" || !path.isAbsolute(installPath)) {
-    return { ok: false, detail: "installPath:missing (absoluto requerido)" };
+    return { ok: false, detail: `installPath:missing (absoluto requerido en ${registryFile})` };
   }
   const expectedRoot = path.resolve(path.join(configDir, "plugins", "cache", "engram"));
   const resolved = path.resolve(installPath);
@@ -532,22 +542,38 @@ function resolveStrictInstallPath(configDir: string): { ok: boolean; installPath
   return { ok: true, installPath: resolved };
 }
 
-function checkStrictEnabled(configDir: string): boolean {
+function checkStrictEnabled(configDir: string): { ok: boolean; detail?: string } {
+  const settingsFile = path.join(configDir, "settings.json");
   let raw: string;
   try {
-    raw = fs.readFileSync(path.join(configDir, "settings.json"), "utf8");
-  } catch {
-    return false;
+    raw = fs.readFileSync(settingsFile, "utf8");
+  } catch (error) {
+    const code = errnoCodeOf(error);
+    if (code === "ENOENT") {
+      return { ok: false, detail: `plugin:missing (settings ausente: ${settingsFile})` };
+    }
+    return { ok: false, detail: `plugin:unreadable (${settingsFile}: ${code}, ilegible)` };
   }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return false;
-    const enabled = parsed["enabledPlugins"];
-    if (!isRecord(enabled)) return false;
-    return (enabled as Record<string, unknown>)["engram@engram"] === true;
+    parsed = JSON.parse(raw) as unknown;
   } catch {
-    return false;
+    return { ok: false, detail: `plugin:malformed (${settingsFile}: JSON inválido, ilegible)` };
   }
+  if (!isRecord(parsed)) {
+    return { ok: false, detail: `plugin:malformed (${settingsFile}: objeto JSON requerido, inválido)` };
+  }
+  const enabled = (parsed as Record<string, unknown>)["enabledPlugins"];
+  if (enabled === undefined) {
+    return { ok: false, detail: `plugin:disabled (enabledPlugins ausente en ${settingsFile})` };
+  }
+  if (!isRecord(enabled)) {
+    return { ok: false, detail: `plugin:malformed (${settingsFile}: enabledPlugins no es objeto, inválido)` };
+  }
+  if ((enabled as Record<string, unknown>)["engram@engram"] === true) {
+    return { ok: true };
+  }
+  return { ok: false, detail: `plugin:disabled (enabledPlugins en ${settingsFile})` };
 }
 
 function isExactClaudeEngramMcp(value: unknown, engramBin: string): boolean {
@@ -563,14 +589,22 @@ function isExactClaudeEngramMcp(value: unknown, engramBin: string): boolean {
 }
 
 /**
- * El modo efectivo lo decide homeDir + configDir (diagnóstico comprobado en
- * Claude 2.1.267): predeterminado (`configDir == <home>/.claude`, CLAUDE_CONFIG_DIR
- * ausente) → el proveedor y el runtime usan el archivo hermano `<home>/.claude.json`;
- * personalizado (CLAUDE_CONFIG_DIR) → usan el anidado `configDir/.claude.json`.
- * Sin homeDir se infiere por el nombre base (`.claude` ⇒ default, archivo hermano bajo el
- * padre del configDir), igual que los backup targets.
+ * El modo efectivo lo decide la presencia explícita de CLAUDE_CONFIG_DIR más
+ * homeDir + configDir (diagnóstico comprobado en Claude 2.1.267):
+ * explícito (env definida, aunque igual a `<home>/.claude`) → anidado
+ * `configDir/.claude.json`; por defecto (env ausente + `configDir ==
+ * <home>/.claude`) → hermano `<home>/.claude.json`.
+ * Sin homeDir se infiere por el nombre base, igual que los backup targets.
+ * El booleano explícito se propaga desde setup/doctor; cuando se omite se
+ * consulta `process.env.CLAUDE_CONFIG_DIR` para conservar el comportamiento directo.
  */
-function isDefaultClaudeConfigDir(configDir: string, homeDir?: string): boolean {
+function isExplicitClaudeMode(isExplicit?: boolean): boolean {
+  if (isExplicit !== undefined) return isExplicit;
+  return process.env.CLAUDE_CONFIG_DIR !== undefined;
+}
+
+function isDefaultClaudeConfigDir(configDir: string, homeDir?: string, isExplicit?: boolean): boolean {
+  if (isExplicitClaudeMode(isExplicit)) return false;
   if (homeDir !== undefined) {
     return path.resolve(configDir) === path.resolve(path.join(homeDir, ".claude"));
   }
@@ -578,19 +612,19 @@ function isDefaultClaudeConfigDir(configDir: string, homeDir?: string): boolean 
 }
 
 /** Ubicación exacta del MCP según el modo efectivo; solo ella es evidencia. */
-function claudeOfficialMcpFile(configDir: string, homeDir?: string): string {
-  if (isDefaultClaudeConfigDir(configDir, homeDir)) {
+function claudeOfficialMcpFile(configDir: string, homeDir?: string, isExplicit?: boolean): string {
+  if (isDefaultClaudeConfigDir(configDir, homeDir, isExplicit)) {
     const home = homeDir ?? path.dirname(path.resolve(configDir));
     return path.join(home, ".claude.json");
   }
   return path.join(configDir, ".claude.json");
 }
 
-function checkClaudeOfficialMcp(configDir: string, engramBin: string, homeDir?: string): boolean {
+function checkClaudeOfficialMcp(configDir: string, engramBin: string, homeDir?: string, isExplicit?: boolean): boolean {
   // Engram 2.0.0 escribe el MCP exacto SOLO en la ubicación del modo
   // efectivo. El layout opuesto-solo se rechaza; el obsoleto
   // mcp/engram.json nunca es evidencia.
-  const file = claudeOfficialMcpFile(configDir, homeDir);
+  const file = claudeOfficialMcpFile(configDir, homeDir, isExplicit);
   let content: string;
   try {
     content = fs.readFileSync(file, "utf8");
@@ -636,18 +670,28 @@ function checkClaudeOfficialHooksAt(installPath: string): boolean {
   return true;
 }
 
-export async function verifyOfficialSetup(args: { configDir: string; engramBin: string; homeDir?: string }): Promise<{
+export async function verifyOfficialSetup(args: {
+  configDir: string;
+  engramBin: string;
+  homeDir?: string;
+  isExplicitClaudeConfigDir?: boolean;
+}): Promise<{
   ok: boolean;
   layers: string[];
   duplicates: boolean;
   reason?: string;
 }> {
+  const explicit = isExplicitClaudeMode(args.isExplicitClaudeConfigDir);
   const resolved = resolveStrictInstallPath(args.configDir);
   const enabled = checkStrictEnabled(args.configDir);
-  const hasPlugin = resolved.ok && enabled;
-  const pluginDetail = !resolved.ok ? (resolved.detail ?? "plugin:missing") : !enabled ? "plugin:disabled (enabledPlugins)" : null;
+  const hasPlugin = resolved.ok && enabled.ok;
+  const pluginDetail = !resolved.ok
+    ? (resolved.detail ?? "plugin:missing")
+    : !enabled.ok
+      ? (enabled.detail ?? "plugin:disabled (enabledPlugins)")
+      : null;
   const hasMcp = typeof args.engramBin === "string" && args.engramBin !== ""
-    ? checkClaudeOfficialMcp(args.configDir, args.engramBin, args.homeDir)
+    ? checkClaudeOfficialMcp(args.configDir, args.engramBin, args.homeDir, explicit)
     : false;
   const hasHooks = resolved.ok && resolved.installPath !== undefined
     ? checkClaudeOfficialHooksAt(resolved.installPath)
@@ -669,7 +713,7 @@ export async function verifyOfficialSetup(args: { configDir: string; engramBin: 
       ok: false,
       layers: [...passed, ...missing],
       duplicates: false,
-      reason: `Claude Code: incompatible existing setup (obsolete mcp/engram.json without valid MCP in ${claudeOfficialMcpFile(args.configDir, args.homeDir)}). Update to Engram 2.0.0+ and rerun install; never auto-replace existing binary. (falta: ${missing.join(", ")}).`,
+      reason: `Claude Code: incompatible existing setup (obsolete mcp/engram.json without valid MCP in ${claudeOfficialMcpFile(args.configDir, args.homeDir, explicit)}). Update to Engram 2.0.0+ and rerun install; never auto-replace existing binary. (falta: ${missing.join(", ")}).`,
     };
   }
   return {
