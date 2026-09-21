@@ -536,6 +536,32 @@ export function collectOfficialSetupBackupTargets(
 }
 
 /**
+ * Puerta pura del destino para instalaciones reales (sin efectos en disco).
+ *
+ * Codex exige exactamente `<homeDir>/.codex`: el provider ignora CODEX_HOME
+ * y `engram setup codex` siempre escribe allí. Una ruta distinta devuelve un
+ * error accionable; null permite continuar. OpenCode conserva su puerta por
+ * basename; los demás runtimes no restringen el destino.
+ */
+export function validateOfficialSetupDestination(
+  runtime: string,
+  configDir: string,
+  homeDir: string,
+): string | null {
+  if (runtime === "codex") {
+    const expected = path.resolve(path.join(homeDir, ".codex"));
+    if (path.resolve(configDir) !== expected) {
+      return `runOfficialSetupIfNeeded: Codex custom CODEX_HOME (${configDir}) is not supported: the provider ignores CODEX_HOME and 'engram setup codex' always writes ${expected}; use the default <home>/.codex.`;
+    }
+    return null;
+  }
+  if (runtime === "opencode" && path.basename(path.resolve(configDir)) !== "opencode") {
+    return `runOfficialSetupIfNeeded: configDir OpenCode incompatible (${configDir}); el provider solo alinea <parent>/opencode vía XDG_CONFIG_HOME.`;
+  }
+  return null;
+}
+
+/**
  * Selector de config por runtime para el subprocess oficial.
  * Un solo configDir efectivo para backup, subprocess, verify y rollback.
  *
@@ -572,7 +598,10 @@ export function resolveOfficialSetupEnv(
       return { CLAUDE_CONFIG_DIR: configDir };
     }
     case "codex":
-      return { CODEX_HOME: configDir };
+      // El provider ignora CODEX_HOME y usa `$HOME/.codex`; el setup custom
+      // ya quedó bloqueado. `undefined` elimina del hijo cualquier valor
+      // custom heredado.
+      return { CODEX_HOME: undefined };
     case "opencode":
       // Smoke real: `engram setup opencode` honra XDG_CONFIG_HOME sobre
       // OPENCODE_CONFIG_DIR. Se fijan ambos para que el config efectivo sea
@@ -727,9 +756,9 @@ export async function runOfficialSetupIfNeeded(
 
   const engramBin = opts.engramBin;
   const configDir = opts.configDir;
-  if (runtime === "opencode" && path.basename(path.resolve(configDir)) !== "opencode") {
-    const detail = `runOfficialSetupIfNeeded: configDir OpenCode incompatible (${configDir}); el provider solo alinea <parent>/opencode vía XDG_CONFIG_HOME.`;
-    return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
+  const destinationError = validateOfficialSetupDestination(runtime, configDir, opts.homeDir);
+  if (destinationError !== null) {
+    return { ran: true, ok: false, ownershipTransferred: false, stderr: destinationError, reason: destinationError, recovery: "none", backupId: null };
   }
   const explicitClaude = runtime === "claude-code"
     ? isExplicitClaudeConfigDirEnv(opts.isExplicitClaudeConfigDir)

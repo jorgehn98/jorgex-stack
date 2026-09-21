@@ -17,6 +17,7 @@ import {
   runOfficialSetup,
   runOfficialSetupIfNeeded,
   shouldRunOfficialSetup,
+  validateOfficialSetupDestination,
   type OfficialSetupIfNeededResult,
 } from "./lib/official-engram-setup.js";
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
@@ -528,6 +529,19 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       exitCode = 1;
       reportStatus(adapter.name, "failed");
       continue;
+    }
+
+    // Preflight del destino antes de construir/aplicar planes: una config
+    // Codex custom falla aquí sin escrituras ni setup/verifier. Los skips
+    // intencionales de sync/dry-run/target-dir no llegan a esta puerta.
+    if (shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
+      const destinationError = validateOfficialSetupDestination(id, configDir, HOME);
+      if (destinationError !== null) {
+        p.log.error(`${adapter.name}: ${destinationError}`);
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        continue;
+      }
     }
 
     const ctx: InstallContext = {
