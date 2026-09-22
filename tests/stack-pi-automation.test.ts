@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const automationModuleUrl = new URL("../.github/scripts/stack-pi-automation.mjs", import.meta.url).href;
@@ -403,5 +406,17 @@ describe("Stack–Pi proposal publication", () => {
 
     await expect(publishProposal(snapshotProposal(), remote.api)).rejects.toThrow();
     expect(writeCalls(remote.calls).filter((call) => call.path === "/graphql")).toHaveLength(1);
+  });
+});
+
+describe("Stack–Pi engram protocol removal idempotency (T70)", () => {
+  it("keeps passing the historic engram protocol removal acceptance to the preparer", async () => {
+    const automationPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "scripts", "stack-pi-automation.mjs");
+    const automationSource = fs.readFileSync(automationPath, "utf8");
+
+    // La automatización posterior a 0.8.29 sigue pasando el flag histórico; una
+    // baseline/candidato donde ambas paridades ya omiten engramProtocol debe
+    // tratarlo como no-op en el preparador (ver prepare-pi-adoption.test.ts T70).
+    expect(automationSource).toContain("acceptEngramProtocolRemoval: true");
   });
 });

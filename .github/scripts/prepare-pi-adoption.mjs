@@ -141,6 +141,8 @@ const INITIALIZATION_EXPERIENCE_SCHEMA = {
 };
 const ENGRAM_CHILD_MEMBER = "extensions/engram-child.ts";
 const ENGRAM_CHILD_ROUTE = "../extensions/engram-child.ts";
+const ENGRAM_PROTOCOL_SOURCE_PATH = "stack/system-prompt/engram-protocol.md";
+const ENGRAM_PROTOCOL_TARGET_PATH = "assets/system-prompt/engram-protocol.md";
 const OFFICIAL_ENGRAM_CAPABILITY = "engram-official-bridge-v1";
 const REMOVED_MCP_ADAPTER_CAPABILITY = "mcp-adapter-v1";
 const ENGRAM_MCP_WRAPPER_MEMBER = "extensions/engram-mcp-wrapper.mjs";
@@ -330,6 +332,22 @@ function deepMatches(left, right) {
   }
 }
 
+// Etiqueta de inventario por transición (orden explícito equivalente al
+// ternario anidado previo): primera transición activa gana; el fallback es
+// diagnostics de inicialización cuando ninguna otra aplica.
+function transitionArchiveLabel(flags) {
+  if (flags.engramProtocolRemovalTransition) return "Engram protocol";
+  if (flags.officialEngramTransition) return "Official Engram";
+  if (flags.engramChildOnlyTransition) return "Engram child-only";
+  if (flags.modularTransition) return "Modular system prompt";
+  if (flags.playwrightTransition || flags.playwrightSkillRemoval) return "Playwright";
+  if (flags.context7Transition) return "Context7";
+  if (flags.permissionsTransition) return "Permissions policy";
+  if (flags.experienceTransition) return "Experience defaults";
+  if (flags.upgradeTransition) return "Permissions upgrade";
+  return "Initialization diagnostics";
+}
+
 // Pareja Engram compartida (old/new + igualdad del resto): extrae las listas,
 // índices y agentes `engram` y verifica que los demás agentes y claves
 // coinciden; cada transición añade solo su gate específico encima.
@@ -452,10 +470,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPermissionsUpgrade = false, acceptEngramChildOnly = false, acceptOfficialEngram = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPermissionsUpgrade = false, acceptEngramChildOnly = false, acceptOfficialEngram = false, acceptEngramProtocolRemoval = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean" || typeof acceptPermissionsUpgrade !== "boolean" || typeof acceptEngramChildOnly !== "boolean" || typeof acceptOfficialEngram !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean" || typeof acceptPermissionsUpgrade !== "boolean" || typeof acceptEngramChildOnly !== "boolean" || typeof acceptOfficialEngram !== "boolean" || typeof acceptEngramProtocolRemoval !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -878,6 +896,52 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       officialEngramTransition = true;
     }
   }
+  let engramProtocolRemovalTransition = false;
+  if (acceptEngramProtocolRemoval) {
+    const oldRoot = oldContracts[rootContract];
+    const newRoot = newContracts[rootContract];
+    const oldParity = oldContracts[PARITY];
+    const newParity = newContracts[PARITY];
+    const oldPackage = oldContracts["package.json"];
+    const newPackage = newContracts["package.json"];
+    // Aplicabilidad histórica (T70/T71): el flag solo aplica cuando la
+    // baseline conserva engramProtocol. Ambas ausencias y reintroducción
+    // (old sin protocolo) son no-op para este flag y caen a los gates
+    // normales; la retirada exacta (old has/new lacks) corre los gates
+    // estrictos; la retención (old+new has) los corre y se rechaza sin
+    // aceptación.
+    const oldHasEngramProtocol = Boolean(oldParity && typeof oldParity === "object" && "engramProtocol" in oldParity);
+    if (oldHasEngramProtocol) {
+      const removal = `${PARITY} compatibility requires manual review (engram protocol removal)`;
+      assert(oldParity && typeof oldParity === "object" && oldParity.engramProtocol && typeof oldParity.engramProtocol === "object" && !Array.isArray(oldParity.engramProtocol), removal);
+      assert(!("engramProtocol" in newParity), removal);
+      assert.deepEqual(Object.keys(oldParity.engramProtocol).sort(), ["outputSha256", "sourcePath", "sourceSha256", "targetPath"], removal);
+      assert.equal(oldParity.engramProtocol.sourcePath, ENGRAM_PROTOCOL_SOURCE_PATH, removal);
+      assert.equal(oldParity.engramProtocol.targetPath, ENGRAM_PROTOCOL_TARGET_PATH, removal);
+      assert.notEqual(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "", removal);
+      assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "", removal);
+      const protocolBytes = git(piDir, ["show", `${current.provenance.commit}:${ENGRAM_PROTOCOL_TARGET_PATH}`]);
+      const protocolDigest = createHash("sha256").update(protocolBytes).digest("hex");
+      assert.equal(oldParity.engramProtocol.sourceSha256, protocolDigest, removal);
+      assert.equal(oldParity.engramProtocol.outputSha256, protocolDigest, removal);
+      const expectedPackage = structuredClone(oldPackage);
+      expectedPackage.version = newPackage.version;
+      assert.deepEqual(newPackage, expectedPackage, removal);
+      const expectedRoot = structuredClone(oldRoot);
+      expectedRoot.package = { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` };
+      assert.deepEqual(newRoot, expectedRoot, removal);
+      const expectedParity = structuredClone(oldParity);
+      expectedParity.source.commit = newParity.source.commit;
+      delete expectedParity.engramProtocol;
+      assert.deepEqual(newParity, expectedParity, removal);
+      for (const member of CONTRACTS) {
+        if (member === "package.json" || member === rootContract || member === PARITY) continue;
+        assert.deepEqual(newContracts[member], oldContracts[member], removal);
+      }
+      delete expectedContracts[PARITY].engramProtocol;
+      engramProtocolRemovalTransition = true;
+    }
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -951,7 +1015,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition || upgradeTransition || engramChildOnlyTransition || officialEngramTransition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition || upgradeTransition || engramChildOnlyTransition || officialEngramTransition || engramProtocolRemovalTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -1021,9 +1085,20 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
         }
         expectedEntries = expectedEntries.filter((entry) => surviving.has(entry));
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract", upgradeTransition && "permissions upgrade contract", engramChildOnlyTransition && "Engram child-only addition", officialEngramTransition && "official Engram removal"].filter(Boolean).join(" and ");
+      if (engramProtocolRemovalTransition) {
+        const inventory = "Engram protocol archive inventory requires exactly the reviewed engram protocol removal";
+        const member = `package/${ENGRAM_PROTOCOL_TARGET_PATH}`;
+        assert(previousEntries.includes(member), `Engram protocol member must exist in the previous archive: ${member}`);
+        assert.notEqual(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "",
+          `${inventory} (absent ${member} in previous producer)`);
+        assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "",
+          `${inventory} (retained ${member})`);
+        assert(!entries.includes(member), `${inventory} (retained ${member})`);
+        expectedEntries = expectedEntries.filter((entry) => entry !== member);
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract", upgradeTransition && "permissions upgrade contract", engramChildOnlyTransition && "Engram child-only addition", officialEngramTransition && "official Engram removal", engramProtocolRemovalTransition && "engram protocol removal"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${officialEngramTransition ? "Official Engram" : engramChildOnlyTransition ? "Engram child-only" : modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : experienceTransition ? "Experience defaults" : upgradeTransition ? "Permissions upgrade" : "Initialization diagnostics"} archive inventory requires exactly the reviewed ${changes}`);
+        `${transitionArchiveLabel({ engramProtocolRemovalTransition, officialEngramTransition, engramChildOnlyTransition, modularTransition, playwrightTransition, playwrightSkillRemoval, context7Transition, permissionsTransition, experienceTransition, upgradeTransition })} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
@@ -1082,11 +1157,11 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 17 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics", "--accept-permissions-upgrade", "--accept-engram-child-only", "--accept-official-engram"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 18 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics", "--accept-permissions-upgrade", "--accept-engram-child-only", "--accept-official-engram", "--accept-engram-protocol-removal"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics"), acceptPermissionsUpgrade: flags.includes("--accept-permissions-upgrade"), acceptEngramChildOnly: flags.includes("--accept-engram-child-only"), acceptOfficialEngram: flags.includes("--accept-official-engram") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics"), acceptPermissionsUpgrade: flags.includes("--accept-permissions-upgrade"), acceptEngramChildOnly: flags.includes("--accept-engram-child-only"), acceptOfficialEngram: flags.includes("--accept-official-engram"), acceptEngramProtocolRemoval: flags.includes("--accept-engram-protocol-removal") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
     console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics] [--accept-permissions-upgrade] [--accept-engram-child-only]");

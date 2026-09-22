@@ -736,13 +736,13 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(fs.existsSync(packageRoot)).toBe(false);
   }, 60_000);
 
-  it("exposes the exact Pi 0.8.28 initialization-diagnostics-v1 contract and provisional pending doctor", async () => {
+  it("exposes the exact Pi 0.8.29 initialization-diagnostics-v1 contract and provisional pending doctor", async () => {
     const root = path.resolve(piDirectory!);
     const manifest = readJson(path.join(root, "package.json")) as { name?: string; version?: string };
-    expect(manifest).toMatchObject({ name: "jorgex-pi", version: "0.8.28" });
+    expect(manifest).toMatchObject({ name: "jorgex-pi", version: "0.8.29" });
 
     const contract = readJson(path.join(root, "contract", "jorgex-pi.v1.json")) as { capabilities?: string[]; package?: { version?: string; source?: string } };
-    expect(contract.package).toEqual({ name: "jorgex-pi", version: "0.8.28", source: "npm:jorgex-pi@0.8.28" });
+    expect(contract.package).toEqual({ name: "jorgex-pi", version: "0.8.29", source: "npm:jorgex-pi@0.8.29" });
     expect(contract.capabilities).toContain("initialization-diagnostics-v1");
     expect(contract.capabilities?.at(-1)).toBe("initialization-diagnostics-v1");
 
@@ -787,7 +787,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       schemaVersion: 1,
       command: "doctor",
       ok: false,
-      package: { name: "jorgex-pi", version: "0.8.28", root: packageRoot },
+      package: { name: "jorgex-pi", version: "0.8.29", root: packageRoot },
       result: {
         healthy: false,
         checks: [
@@ -806,11 +806,11 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       },
     })}\n`;
     const candidate = {
-      source: "npm:jorgex-pi@0.8.28",
+      source: "npm:jorgex-pi@0.8.29",
       bytes: 1,
       sha256: "a".repeat(64),
       sha512: "b".repeat(128),
-      package: { name: "jorgex-pi", version: "0.8.28", source: "npm:jorgex-pi@0.8.28" },
+      package: { name: "jorgex-pi", version: "0.8.29", source: "npm:jorgex-pi@0.8.29" },
     } as const;
 
     let downloadDestination: string | null = null;
@@ -859,18 +859,18 @@ describe("T43 provider-only parity: Stack sin protocolo Engram", () => {
 });
 
 // ---------------------------------------------------------------------------
-// T52-RED: seam cross-repo compara el contrato productor 0.8.28 completo.
+// T52-RED: seam cross-repo compara el contrato productor 0.8.29 completo.
 // Cuando JORGEX_PI_DIR se provee, lee el tag exacto
-// 056fbc7eeea07466c3ce3a6f85723e94bcf38577 read-only (git show, sin mutar el
-// checkout) o el checkout si ya es 0.8.28, y compara capabilities completas.
+// bbaf80f09bd1512e21fe80f22b4aad61420a8800 read-only (git show, sin mutar el
+// checkout) o el checkout si ya es 0.8.29, y compara capabilities completas.
 // Cuando JORGEX_PI_TARBALL se provee, lee el tarball exacto read-only y
 // compara el mismo contrato. Fuente independiente: contract/jorgex-pi.v1.json
-// del tag Pi v0.8.28. Ambos exigen bridge y resto intacto en productor y en
+// del tag Pi v0.8.29. Ambos exigen bridge y resto intacto en productor y en
 // Stack (fixture + producción). No edita pin generado.
 // ---------------------------------------------------------------------------
 
-const T52_EXPECTED_PI_0_8_28_COMMIT = "056fbc7eeea07466c3ce3a6f85723e94bcf38577";
-const T52_EXPECTED_PI_0_8_28_CAPABILITIES = [
+const T52_EXPECTED_PI_0_8_29_COMMIT = "bbaf80f09bd1512e21fe80f22b4aad61420a8800";
+const T52_EXPECTED_PI_0_8_29_CAPABILITIES = [
   "foundation-contract-v1",
   "stack-snapshot-v2",
   "modular-system-prompts-v1",
@@ -900,49 +900,49 @@ function t52ReadProducerContract(piDir: string): { version: string; capabilities
   const checkoutFile = path.join(root, "contract", "jorgex-pi.v1.json");
   try {
     const checkout = readJson(checkoutFile) as { package?: { version?: unknown }; capabilities?: unknown };
-    if (checkout.package?.version === "0.8.28" && Array.isArray(checkout.capabilities)) {
-      return { version: "0.8.28", capabilities: checkout.capabilities as string[] };
+    if (checkout.package?.version === "0.8.29" && Array.isArray(checkout.capabilities)) {
+      return { version: "0.8.29", capabilities: checkout.capabilities as string[] };
     }
   } catch {
     // El checkout puede estar en otra versión; se intenta el tag exacto.
   }
-  const tagOut = execFileSync("git", ["show", `${T52_EXPECTED_PI_0_8_28_COMMIT}:contract/jorgex-pi.v1.json`], {
+  const tagOut = execFileSync("git", ["show", `${T52_EXPECTED_PI_0_8_29_COMMIT}:contract/jorgex-pi.v1.json`], {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const tagContract = JSON.parse(tagOut) as { package?: { version?: unknown }; capabilities?: unknown };
-  expect(tagContract.package?.version).toBe("0.8.28");
+  expect(tagContract.package?.version).toBe("0.8.29");
   expect(Array.isArray(tagContract.capabilities)).toBe(true);
-  return { version: "0.8.28", capabilities: tagContract.capabilities as string[] };
+  return { version: "0.8.29", capabilities: tagContract.capabilities as string[] };
 }
 
 const t52CrossRepo = piDirectory === undefined ? describe.skip : describe;
 const t52Registry = registryTarball === undefined ? describe.skip : describe;
 
-t52CrossRepo("[T52-RED] productor Pi 0.8.28 leído del tag exacto", () => {
+t52CrossRepo("[T52-RED] productor Pi 0.8.29 leído del tag exacto", () => {
   it("el checkout/tag productor contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
     const producer = t52ReadProducerContract(piDirectory!);
     expect(producer.capabilities).toContain("engram-official-bridge-v1");
     expect(producer.capabilities).not.toContain("mcp-adapter-v1");
-    expect(producer.capabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(producer.capabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
 
     const fixtureCapabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
     expect(fixtureCapabilities).toContain("engram-official-bridge-v1");
     expect(fixtureCapabilities).not.toContain("mcp-adapter-v1");
-    expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
     expect(fixtureCapabilities).toEqual(producer.capabilities);
 
     const { PI_RUNTIME_REGISTRY } = await import("../src/lib/pi-runtime.js");
     const productionCapabilities = [...PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities];
     expect(productionCapabilities).toContain("engram-official-bridge-v1");
     expect(productionCapabilities).not.toContain("mcp-adapter-v1");
-    expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
     expect(productionCapabilities).toEqual(producer.capabilities);
   }, 60_000);
 });
 
-t52Registry("[T52-RED] tarball exacto Pi 0.8.28 con contrato productor completo", () => {
+t52Registry("[T52-RED] tarball exacto Pi 0.8.29 con contrato productor completo", () => {
   it("el tarball contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
     const tarball = path.resolve(registryTarball!);
     expectExactArtifactIntegrity(tarball);
@@ -950,19 +950,19 @@ t52Registry("[T52-RED] tarball exacto Pi 0.8.28 con contrato productor completo"
       package?: { version?: unknown };
       capabilities?: unknown;
     };
-    expect(contract.package?.version).toBe("0.8.28");
+    expect(contract.package?.version).toBe("0.8.29");
     const tarballCapabilities = contract.capabilities as string[];
     expect(tarballCapabilities).toContain("engram-official-bridge-v1");
     expect(tarballCapabilities).not.toContain("mcp-adapter-v1");
-    expect(tarballCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(tarballCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
 
     const fixtureCapabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
-    expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
     expect(fixtureCapabilities).toEqual(tarballCapabilities);
 
     const { PI_RUNTIME_REGISTRY } = await import("../src/lib/pi-runtime.js");
     const productionCapabilities = [...PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities];
-    expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
     expect(productionCapabilities).toEqual(tarballCapabilities);
   }, 60_000);
 });
