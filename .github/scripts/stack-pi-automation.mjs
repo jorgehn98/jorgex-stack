@@ -229,7 +229,7 @@ function reportUnchanged(output, actual, expected, message) {
   report({ status: 'unchanged' });
 }
 
-async function prepare(stackRoot, piRoot, output) {
+export async function prepare(stackRoot, piRoot, output) {
   validateWake(process.env.GITHUB_EVENT_NAME, JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')));
   assert(!process.env.AUTOMATION_TOKEN, 'Preparation must not receive the App token');
   const direction = process.env.AUTOMATION_DIRECTION;

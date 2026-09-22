@@ -210,6 +210,63 @@ function writeCalls(calls: ApiCall[]): ApiCall[] {
   return calls.filter((call) => call.method !== "GET");
 }
 
+function isolatedGitEnv(home: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: path.join(home, "appdata"),
+    LOCALAPPDATA: path.join(home, "localappdata"),
+    XDG_CONFIG_HOME: path.join(home, "config"),
+    GIT_CONFIG_GLOBAL: path.join(home, ".gitconfig"),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_OPTIONAL_LOCKS: "0",
+  };
+}
+
+function git(root: string, args: string[]): string {
+  return execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    env: isolatedGitEnv(root),
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+    windowsHide: true,
+  }).trim();
+}
+
+function writeJson(root: string, relativePath: string, value: unknown): void {
+  const file = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function initRepo(root: string): void {
+  fs.mkdirSync(root, { recursive: true });
+  git(root, ["init", "--initial-branch=main"]);
+  git(root, ["config", "user.name", "fixture"]);
+  git(root, ["config", "user.email", "fixture@example.invalid"]);
+}
+
+function commitAll(root: string, message: string): string {
+  git(root, ["add", "--all"]);
+  git(root, ["commit", "-m", message]);
+  return git(root, ["rev-parse", "HEAD"]);
+}
+
+function pinFixture(version: string, commit: string): Record<string, unknown> {
+  return {
+    package: { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` },
+    provenance: { commit },
+    tarball: {
+      bytes: 16,
+      sha256: "a".repeat(64),
+      sha512: "b".repeat(128),
+    },
+  };
+}
+
 describe("Stack–Pi proposal validation", () => {
   it("accepts the bounded snapshot and adoption proposal shapes", async () => {
     const { validateProposal } = await loadAutomation();
@@ -450,63 +507,6 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
     }
   });
 
-  function isolatedGitEnv(home: string): NodeJS.ProcessEnv {
-    return {
-      ...process.env,
-      HOME: home,
-      USERPROFILE: home,
-      APPDATA: path.join(home, "appdata"),
-      LOCALAPPDATA: path.join(home, "localappdata"),
-      XDG_CONFIG_HOME: path.join(home, "config"),
-      GIT_CONFIG_GLOBAL: path.join(home, ".gitconfig"),
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_OPTIONAL_LOCKS: "0",
-    };
-  }
-
-  function git(root: string, args: string[]): string {
-    return execFileSync("git", args, {
-      cwd: root,
-      encoding: "utf8",
-      env: isolatedGitEnv(root),
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 5_000,
-      windowsHide: true,
-    }).trim();
-  }
-
-  function writeJson(root: string, relativePath: string, value: unknown): void {
-    const file = path.join(root, relativePath);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  }
-
-  function initRepo(root: string): void {
-    fs.mkdirSync(root, { recursive: true });
-    git(root, ["init", "--initial-branch=main"]);
-    git(root, ["config", "user.name", "T72 fixture"]);
-    git(root, ["config", "user.email", "t72@example.invalid"]);
-  }
-
-  function commitAll(root: string, message: string): string {
-    git(root, ["add", "--all"]);
-    git(root, ["commit", "-m", message]);
-    return git(root, ["rev-parse", "HEAD"]);
-  }
-
-  function pinFixture(version: string, commit: string): Record<string, unknown> {
-    return {
-      package: { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` },
-      provenance: { commit },
-      tarball: {
-        bytes: 16,
-        sha256: "a".repeat(64),
-        sha512: "b".repeat(128),
-      },
-    };
-  }
-
   it("adoption exact pin identity is noop without preparer, fetch, or writes", async () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "t72-adoption-noop-"));
     temporaryRoots.push(parent);
@@ -659,5 +659,177 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
       status: "proceed",
       sourceSha: canonicalHead,
     });
+  });
+});
+
+describe("Stack–Pi coordinator prepare no-op wiring", () => {
+  const temporaryRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of temporaryRoots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  type PrepareFn = (stackRoot: string, piRoot: string, output: string) => Promise<unknown>;
+
+  async function loadPrepare(): Promise<PrepareFn> {
+    const module = await import(/* @vite-ignore */ automationModuleUrl) as { prepare?: unknown };
+    expect(module.prepare, "missing coordinator prepare seam (T76): export prepare from stack-pi-automation.mjs").toBeTypeOf("function");
+    return module.prepare as PrepareFn;
+  }
+
+  function writePushEvent(file: string): void {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ ref: "refs/heads/main", repository: { full_name: "jorgehn98/jorgex-stack" } }),
+      "utf8",
+    );
+  }
+
+  function stubFetchNoApi(): { count: () => number; restore: () => void } {
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      throw new Error(`GitHub API must not be called on coordinator no-op (call ${calls})`);
+    }) as typeof globalThis.fetch;
+    return { count: () => calls, restore: () => { globalThis.fetch = original; } };
+  }
+
+  interface PrepareSandbox {
+    stackRoot: string;
+    piRoot: string;
+    outputDir: string;
+    eventFile: string;
+    githubOutput: string;
+    stepSummary: string;
+  }
+
+  function makePrepareSandbox(prefix: string): PrepareSandbox {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    temporaryRoots.push(parent);
+    return {
+      stackRoot: path.join(parent, "stack"),
+      piRoot: path.join(parent, "pi"),
+      outputDir: path.join(parent, "output"),
+      eventFile: path.join(parent, "event.json"),
+      githubOutput: path.join(parent, "github-output.txt"),
+      stepSummary: path.join(parent, "step-summary.md"),
+    };
+  }
+
+  async function runPrepareNoOp(sandbox: PrepareSandbox, direction: "adoption" | "snapshot"): Promise<number> {
+    writePushEvent(sandbox.eventFile);
+    const fetchGuard = stubFetchNoApi();
+    const savedEnv = {
+      GITHUB_EVENT_NAME: process.env.GITHUB_EVENT_NAME,
+      GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+      AUTOMATION_DIRECTION: process.env.AUTOMATION_DIRECTION,
+      AUTOMATION_TOKEN: process.env.AUTOMATION_TOKEN,
+      GITHUB_OUTPUT: process.env.GITHUB_OUTPUT,
+      GITHUB_STEP_SUMMARY: process.env.GITHUB_STEP_SUMMARY,
+    };
+    process.env.GITHUB_EVENT_NAME = "push";
+    process.env.GITHUB_EVENT_PATH = sandbox.eventFile;
+    process.env.AUTOMATION_DIRECTION = direction;
+    delete process.env.AUTOMATION_TOKEN;
+    process.env.GITHUB_OUTPUT = sandbox.githubOutput;
+    process.env.GITHUB_STEP_SUMMARY = sandbox.stepSummary;
+    try {
+      const prepare = await loadPrepare();
+
+      await prepare(sandbox.stackRoot, sandbox.piRoot, sandbox.outputDir);
+
+      return fetchGuard.count();
+    } finally {
+      fetchGuard.restore();
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  function assertPrepareNoOp(sandbox: PrepareSandbox, fetchCalls: number): void {
+    // A no-op writes only the proposal/report; it must not query GitHub, invoke
+    // a preparer, or leave working-tree or index changes.
+    expect(JSON.parse(fs.readFileSync(path.join(sandbox.outputDir, "proposal.json"), "utf8"))).toEqual({
+      status: "unchanged",
+    });
+    expect(fs.readFileSync(sandbox.githubOutput, "utf8")).toContain("status=unchanged");
+    expect(fetchCalls).toBe(0);
+    expect(git(sandbox.stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(sandbox.piRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(sandbox.stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(git(sandbox.piRoot, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(fs.readdirSync(sandbox.outputDir).sort()).toEqual(["proposal.json"]);
+  }
+
+  it("adoption no-op returns unchanged before preparer/pending/API/staging", async () => {
+    const sandbox = makePrepareSandbox("t76-adoption-prepare-");
+    const { stackRoot, piRoot, outputDir } = sandbox;
+
+    // Fixture from run 35768465981: the latest published version matches the canonical pin.
+    initRepo(piRoot);
+    fs.writeFileSync(path.join(piRoot, "package.json"), '{"name":"jorgex-pi"}\n', "utf8");
+    const producer = commitAll(piRoot, "pi: 0.8.29");
+    git(piRoot, ["tag", "v0.8.29", producer]);
+    const tagCommit = git(piRoot, ["rev-parse", "refs/tags/v0.8.29^{commit}"]);
+    git(piRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    initRepo(stackRoot);
+    writeJson(stackRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
+    writeJson(stackRoot, "src/lib/pi-runtime-pin.json", pinFixture("0.8.29", tagCommit));
+    commitAll(stackRoot, "stack: pin 0.8.29");
+    git(stackRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    // The missing preparer is intentional: calling it would raise MODULE_NOT_FOUND,
+    // so a successful no-op proves the coordinator returned before preparation.
+    expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(piRoot, ["status", "--porcelain"])).toBe("");
+    expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);
+    expect(fs.existsSync(path.join(stackRoot, ".github", "scripts", "prepare-pi-adoption.mjs"))).toBe(false);
+
+    const fetchCalls = await runPrepareNoOp(sandbox, "adoption");
+
+    assertPrepareNoOp(sandbox, fetchCalls);
+  });
+
+  it("snapshot no-op returns unchanged before preparer/pending/API/staging", async () => {
+    const sandbox = makePrepareSandbox("t76-snapshot-prepare-");
+    const { stackRoot, piRoot, outputDir } = sandbox;
+
+    // Fixture from run 35768465981: parity is newer than the last commit touching
+    // stack/, with no subsequent canonical diff.
+    initRepo(stackRoot);
+    fs.mkdirSync(path.join(stackRoot, "stack", "agents"), { recursive: true });
+    fs.writeFileSync(path.join(stackRoot, "stack", "agents", "tester.md"), "canon v1\n", "utf8");
+    commitAll(stackRoot, "stack: canonical source");
+    fs.mkdirSync(path.join(stackRoot, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(stackRoot, "docs", "note.md"), "non-canonical bump\n", "utf8");
+    const parityCommit = commitAll(stackRoot, "release: bump without stack/ change");
+    git(stackRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    initRepo(piRoot);
+    writeJson(piRoot, "package.json", { name: "jorgex-pi", private: true, type: "module" });
+    writeJson(piRoot, "contract/parity.v2.json", {
+      schemaVersion: 2,
+      source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: parityCommit },
+    });
+    commitAll(piRoot, "pi: parity");
+    git(piRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    // The missing preparer is intentional: calling it would fail, so a successful
+    // no-op proves the coordinator returned before preparation.
+    expect(git(stackRoot, ["diff", "--name-only", `${parityCommit}..origin/main`, "--", "stack/"])).toBe("");
+    expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(piRoot, ["status", "--porcelain"])).toBe("");
+    expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);
+    expect(fs.existsSync(path.join(piRoot, "scripts", "prepare-stack-snapshot.mjs"))).toBe(false);
+
+    const fetchCalls = await runPrepareNoOp(sandbox, "snapshot");
+
+    assertPrepareNoOp(sandbox, fetchCalls);
   });
 });
