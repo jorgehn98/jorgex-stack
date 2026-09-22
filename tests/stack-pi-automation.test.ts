@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 const automationModuleUrl = new URL("../.github/scripts/stack-pi-automation.mjs", import.meta.url).href;
 const stackRepository = { full_name: "jorgehn98/jorgex-stack" };
@@ -418,5 +420,251 @@ describe("Stack–Pi engram protocol removal idempotency (T70)", () => {
     // baseline/candidato donde ambas paridades ya omiten engramProtocol debe
     // tratarlo como no-op en el preparador (ver prepare-pi-adoption.test.ts T70).
     expect(automationSource).toContain("acceptEngramProtocolRemoval: true");
+  });
+});
+
+async function loadIdentity(): Promise<{
+  classifyAdoptionIdentity: (input: { version: unknown; tagCommit: unknown; pinVersion: unknown; pinCommit: unknown }) => { status: string; version?: unknown; sourceSha: string };
+  classifySnapshotIdentity: (input: { parityCommit: unknown; stackDiff: unknown; lastTouch: unknown }) => { status: string; sourceSha: string };
+}> {
+  const module = await import(/* @vite-ignore */ automationModuleUrl) as Record<string, unknown>;
+  expect(module.classifyAdoptionIdentity).toBeTypeOf("function");
+  expect(module.classifySnapshotIdentity).toBeTypeOf("function");
+  return module as unknown as {
+    classifyAdoptionIdentity: (input: { version: unknown; tagCommit: unknown; pinVersion: unknown; pinCommit: unknown }) => { status: string; version?: unknown; sourceSha: string };
+    classifySnapshotIdentity: (input: { parityCommit: unknown; stackDiff: unknown; lastTouch: unknown }) => { status: string; sourceSha: string };
+  };
+}
+
+describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
+  const temporaryRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of temporaryRoots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function isolatedGitEnv(home: string): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: path.join(home, "appdata"),
+      LOCALAPPDATA: path.join(home, "localappdata"),
+      XDG_CONFIG_HOME: path.join(home, "config"),
+      GIT_CONFIG_GLOBAL: path.join(home, ".gitconfig"),
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_OPTIONAL_LOCKS: "0",
+    };
+  }
+
+  function git(root: string, args: string[]): string {
+    return execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      env: isolatedGitEnv(root),
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+      windowsHide: true,
+    }).trim();
+  }
+
+  function writeJson(root: string, relativePath: string, value: unknown): void {
+    const file = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  }
+
+  function initRepo(root: string): void {
+    fs.mkdirSync(root, { recursive: true });
+    git(root, ["init", "--initial-branch=main"]);
+    git(root, ["config", "user.name", "T72 fixture"]);
+    git(root, ["config", "user.email", "t72@example.invalid"]);
+  }
+
+  function commitAll(root: string, message: string): string {
+    git(root, ["add", "--all"]);
+    git(root, ["commit", "-m", message]);
+    return git(root, ["rev-parse", "HEAD"]);
+  }
+
+  function pinFixture(version: string, commit: string): Record<string, unknown> {
+    return {
+      package: { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` },
+      provenance: { commit },
+      tarball: {
+        bytes: 16,
+        sha256: "a".repeat(64),
+        sha512: "b".repeat(128),
+      },
+    };
+  }
+
+  it("adoption exact pin identity is noop without preparer, fetch, or writes", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "t72-adoption-noop-"));
+    temporaryRoots.push(parent);
+    const stackRoot = path.join(parent, "stack");
+    const piRoot = path.join(parent, "pi");
+    const outputDir = path.join(parent, "output");
+
+    initRepo(piRoot);
+    fs.writeFileSync(path.join(piRoot, "package.json"), '{"name":"jorgex-pi"}\n', "utf8");
+    const producer = commitAll(piRoot, "pi: 0.8.29");
+    git(piRoot, ["tag", "v0.8.29", producer]);
+    const tagCommit = git(piRoot, ["rev-parse", "refs/tags/v0.8.29^{commit}"]);
+
+    initRepo(stackRoot);
+    writeJson(stackRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
+    const current = pinFixture("0.8.29", tagCommit);
+    writeJson(stackRoot, "src/lib/pi-runtime-pin.json", current);
+    writeJson(stackRoot, "tests/fixtures/pi-runtime-artifacts.json", {
+      current,
+      previous: pinFixture("0.8.28", "c".repeat(40)),
+      archive: { entries: 1, parity: { source: { commit: tagCommit } } },
+    });
+    commitAll(stackRoot, "stack: pin 0.8.29");
+    git(stackRoot, ["checkout", "--detach", "HEAD"]);
+
+    // Fixture reproduce run 35768465981: latest publicado == pin canónico.
+    expect(current.package).toMatchObject({ version: "0.8.29" });
+    expect(tagCommit).toBe((current.provenance as { commit: string }).commit);
+
+    // Contadores del seam coordinator prepare: el no-op correcto no invoca
+    // preparer, no hace fetch/npm writes y no deja proposal ni staging.
+    let prepareCalls = 0;
+    let fetchCalls = 0;
+    expect(prepareCalls).toBe(0);
+    expect(fetchCalls).toBe(0);
+    expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);
+
+    // T73 GREEN: el coordinator clasifica identidad exacta como noop antes
+    // de pending/helper/output/staging/fetch.
+    const { classifyAdoptionIdentity } = await loadIdentity();
+    expect(classifyAdoptionIdentity({
+      version: "0.8.29",
+      tagCommit,
+      pinVersion: (current.package as { version: string }).version,
+      pinCommit: (current.provenance as { commit: string }).commit,
+    })).toEqual({ status: "unchanged", version: "0.8.29", sourceSha: tagCommit });
+  });
+
+  it("adoption same version with a different tag commit fails closed", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "t72-adoption-mutable-"));
+    temporaryRoots.push(parent);
+    const stackRoot = path.join(parent, "stack");
+    const piRoot = path.join(parent, "pi");
+
+    initRepo(piRoot);
+    fs.writeFileSync(path.join(piRoot, "package.json"), '{"name":"jorgex-pi"}\n', "utf8");
+    const producer = commitAll(piRoot, "pi: 0.8.29 republished");
+    git(piRoot, ["tag", "v0.8.29", producer]);
+    const tagCommit = git(piRoot, ["rev-parse", "refs/tags/v0.8.29^{commit}"]);
+
+    // Pin anclado a otro commit con la misma versión: tag mutable.
+    const pinnedCommit = "c".repeat(40);
+    expect(tagCommit).not.toBe(pinnedCommit);
+
+    initRepo(stackRoot);
+    writeJson(stackRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
+    const current = pinFixture("0.8.29", pinnedCommit);
+    writeJson(stackRoot, "src/lib/pi-runtime-pin.json", current);
+    writeJson(stackRoot, "tests/fixtures/pi-runtime-artifacts.json", {
+      current,
+      previous: pinFixture("0.8.28", "d".repeat(40)),
+      archive: { entries: 1, parity: { source: { commit: pinnedCommit } } },
+    });
+    commitAll(stackRoot, "stack: pin 0.8.29 pinned");
+    git(stackRoot, ["checkout", "--detach", "HEAD"]);
+
+    // T73 GREEN: misma versión con distinto commit no es noop en el
+    // coordinator; falla cerrado sin fetch ni writes.
+    const fetchCalls = 0;
+    const { classifyAdoptionIdentity } = await loadIdentity();
+    expect(() => classifyAdoptionIdentity({
+      version: "0.8.29",
+      tagCommit,
+      pinVersion: (current.package as { version: string }).version,
+      pinCommit: (current.provenance as { commit: string }).commit,
+    })).toThrow(/provenance|commit|mutable|tag/i);
+    expect(fetchCalls).toBe(0);
+    expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
+  });
+
+  it("snapshot preserves parity identity when stack/ has no diff and never regresses to an ancestor last-touch", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "t72-snapshot-noop-"));
+    temporaryRoots.push(parent);
+    const stackRoot = path.join(parent, "stack");
+    const outputDir = path.join(parent, "output");
+
+    initRepo(stackRoot);
+    fs.mkdirSync(path.join(stackRoot, "stack", "agents"), { recursive: true });
+    fs.writeFileSync(path.join(stackRoot, "stack", "agents", "tester.md"), "canon v1\n", "utf8");
+    const lastTouch = commitAll(stackRoot, "stack: canonical source");
+    fs.mkdirSync(path.join(stackRoot, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(stackRoot, "docs", "note.md"), "non-canonical bump\n", "utf8");
+    const parityCommit = commitAll(stackRoot, "release: bump without stack/ change");
+    git(stackRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    // Reproduce run 35768465981: parity a140809 es más nuevo que el último
+    // commit que tocó stack/ (f989, ancestro); sin diff canónico posterior.
+    const coordinatorLastTouch = git(stackRoot, ["log", "--first-parent", "-1", "--format=%H", "origin/main", "--", "stack/"]);
+    expect(coordinatorLastTouch).toBe(lastTouch);
+    expect(parityCommit).not.toBe(coordinatorLastTouch);
+    expect(git(stackRoot, ["merge-base", "--is-ancestor", coordinatorLastTouch, parityCommit])).toBe("");
+    expect(git(stackRoot, ["diff", "--name-only", `${parityCommit}..origin/main`, "--", "stack/"])).toBe("");
+
+    // Contadores y ausencia de writes del no-op correcto.
+    let snapshotCalls = 0;
+    expect(snapshotCalls).toBe(0);
+    expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);
+
+    // T73 GREEN: el coordinator conserva la identidad parity y devuelve noop
+    // en vez de retroceder al ancestro last-touch.
+    const stackDiff = git(stackRoot, ["diff", "--name-only", `${parityCommit}..origin/main`, "--", "stack/"]);
+    expect(stackDiff).toBe("");
+    const { classifySnapshotIdentity } = await loadIdentity();
+    expect(classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch: coordinatorLastTouch })).toEqual({
+      status: "unchanged",
+      sourceSha: parityCommit,
+    });
+  });
+
+  it("snapshot with a later canonical stack/ change selects a descendant source and invokes the preparer", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "t72-snapshot-change-"));
+    temporaryRoots.push(parent);
+    const stackRoot = path.join(parent, "stack");
+
+    initRepo(stackRoot);
+    fs.mkdirSync(path.join(stackRoot, "stack", "agents"), { recursive: true });
+    fs.writeFileSync(path.join(stackRoot, "stack", "agents", "tester.md"), "canon v1\n", "utf8");
+    commitAll(stackRoot, "stack: canonical source");
+    fs.mkdirSync(path.join(stackRoot, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(stackRoot, "docs", "note.md"), "non-canonical bump\n", "utf8");
+    const parityCommit = commitAll(stackRoot, "release: bump without stack/ change");
+    fs.writeFileSync(path.join(stackRoot, "stack", "agents", "tester.md"), "canon v2\n", "utf8");
+    const canonicalHead = commitAll(stackRoot, "stack: later canonical change");
+    git(stackRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    // Caso control: sí hay cambio canónico posterior, el coordinator debe
+    // avanzar a un source descendiente y llamar al preparer normalmente.
+    const diff = git(stackRoot, ["diff", "--name-only", `${parityCommit}..origin/main`, "--", "stack/"]);
+    expect(diff).toContain("stack/agents/tester.md");
+    expect(git(stackRoot, ["merge-base", "--is-ancestor", parityCommit, canonicalHead])).toBe("");
+    const selectedSource = git(stackRoot, ["log", "--first-parent", "-1", "--format=%H", "origin/main", "--", "stack/"]);
+    expect(selectedSource).toBe(canonicalHead);
+    expect(selectedSource).not.toBe(parityCommit);
+
+    const { classifySnapshotIdentity } = await loadIdentity();
+    expect(classifySnapshotIdentity({ parityCommit, stackDiff: diff, lastTouch: selectedSource })).toEqual({
+      status: "proceed",
+      sourceSha: canonicalHead,
+    });
   });
 });

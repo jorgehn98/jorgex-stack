@@ -24,6 +24,30 @@ const repository = (direction) => direction === 'snapshot' ? PI : STACK;
 const prefix = (direction) => `codex/stack-pi-${direction}-`;
 const branch = (p) => `${prefix(p.direction)}${p.sourceSha}${p.version === null ? '' : `-v${p.version}`}`;
 
+export function classifyAdoptionIdentity({ version, tagCommit, pinVersion, pinCommit }) {
+  assert(full(VERSION, version), 'Invalid published version');
+  assert(full(SHA, tagCommit), 'Invalid published tag commit');
+  assert(full(VERSION, pinVersion), 'Invalid pin version');
+  assert(full(SHA, pinCommit), 'Invalid pin provenance commit');
+  if (version !== pinVersion) return { status: 'proceed', version, sourceSha: tagCommit };
+  assert.equal(tagCommit, pinCommit, 'Same published version with a different tag commit; refusing mutable tag without fetching');
+  return { status: 'unchanged', version, sourceSha: tagCommit };
+}
+
+export function classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch }) {
+  assert(full(SHA, parityCommit), 'Invalid parity source commit');
+  assert(typeof stackDiff === 'string', 'Invalid stack diff');
+  assert(full(SHA, lastTouch), 'Invalid stack source commit');
+  if (stackDiff.trim() === '') return { status: 'unchanged', sourceSha: parityCommit };
+  return { status: 'proceed', sourceSha: lastTouch };
+}
+
+function readBoundedJsonFile(file) {
+  const stat = lstatSync(file);
+  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_BYTES, 'Invalid identity file');
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+
 export function validateWake(eventName, event) {
   assert.equal(event?.repository?.full_name, STACK, 'Unexpected event repository');
   if (eventName === 'push' || eventName === 'workflow_dispatch') {
@@ -210,12 +234,37 @@ async function prepare(stackRoot, piRoot, output) {
   const baseSha = git(target, ['rev-parse', 'HEAD']).trim();
   let sourceSha, version = null;
   if (direction === 'snapshot') {
-    sourceSha = git(stackRoot, ['log', '--first-parent', '-1', '--format=%H', 'origin/main', '--', 'stack/']).trim();
+    const parityCommit = readBoundedJsonFile(join(piRoot, 'contract/parity.v2.json'))?.source?.commit;
+    assert(full(SHA, parityCommit), 'Invalid parity source commit');
+    git(stackRoot, ['cat-file', '-e', `${parityCommit}^{commit}`]);
+    git(stackRoot, ['merge-base', '--is-ancestor', parityCommit, 'origin/main']);
+    const stackDiff = git(stackRoot, ['diff', '--name-only', `${parityCommit}..origin/main`, '--', 'stack/']);
+    const lastTouch = git(stackRoot, ['log', '--first-parent', '-1', '--format=%H', 'origin/main', '--', 'stack/']).trim();
+    const decision = classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch });
+    if (decision.status === 'unchanged') {
+      assert.equal(decision.sourceSha, parityCommit, 'Snapshot noop must keep parity identity');
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, 'proposal.json'), JSON.stringify({ status: 'unchanged' }));
+      report({ status: 'unchanged' });
+      return;
+    }
+    git(stackRoot, ['merge-base', '--is-ancestor', parityCommit, decision.sourceSha]);
+    sourceSha = decision.sourceSha;
   } else {
     const tags = git(piRoot, ['tag', '--merged', 'origin/main', '--sort=-version:refname']).trim().split('\n');
     version = tags.find((tag) => tag.startsWith('v') && full(VERSION, tag.slice(1)))?.slice(1);
     assert(version, 'No published version tag available');
     sourceSha = git(piRoot, ['rev-parse', `refs/tags/v${version}^{commit}`]).trim();
+    assert(full(SHA, sourceSha));
+    const pin = readBoundedJsonFile(join(stackRoot, 'src/lib/pi-runtime-pin.json'));
+    const decision = classifyAdoptionIdentity({ version, tagCommit: sourceSha, pinVersion: pin?.package?.version, pinCommit: pin?.provenance?.commit });
+    if (decision.status === 'unchanged') {
+      assert.equal(decision.sourceSha, sourceSha, 'Adoption noop must keep tag identity');
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, 'proposal.json'), JSON.stringify({ status: 'unchanged' }));
+      report({ status: 'unchanged' });
+      return;
+    }
   }
   assert(full(SHA, sourceSha));
   mkdirSync(output, { recursive: true });
