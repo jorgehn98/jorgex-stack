@@ -1162,3 +1162,472 @@ describe("[T43-RED] provider-only sin duplicado Stack", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// T48-RED: regresión symlinks internos npm Pi (repro smoke real T46).
+// Contrato: symlink relativo dentro de <PI_CODING_AGENT_DIR>/npm cuyo destino
+// canónico permanece bajo la misma raíz es válido (p.ej.
+// `npm/node_modules/.bin/is-docker -> ../is-docker/cli.js`); absoluto/
+// relativo que escape, roto o con ciclo falla cerrado pre/post spawn.
+// Rollback restaura targets de links preexistentes mutados/eliminados y
+// elimina links nuevos; ajenos sobreviven; solo restoration exacta reporta
+// complete. Fuera de npm rige rechazo estricto. Temporales aislados.
+// ---------------------------------------------------------------------------
+
+function t48PiDirs(home: string): {
+  configDir: string;
+  npmDir: string;
+  settingsFile: string;
+  mcpFile: string;
+  engramBin: string;
+} {
+  const configDir = path.join(home, ".pi", "agent");
+  const npmDir = path.join(configDir, "npm");
+  const settingsFile = path.join(configDir, "settings.json");
+  const mcpFile = path.join(configDir, "mcp.json");
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
+  fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: {} }));
+  return { configDir, npmDir, settingsFile, mcpFile, engramBin };
+}
+
+function t48SeedInternalBin(npmDir: string): { linkPath: string; rawTarget: string } {
+  const pkgDir = path.join(npmDir, "node_modules", "is-docker");
+  const binDir = path.join(npmDir, "node_modules", ".bin");
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, "cli.js"), "#!/usr/bin/env node\n");
+  const linkPath = path.join(binDir, "is-docker");
+  const rawTarget = path.join("..", "is-docker", "cli.js");
+  fs.symlinkSync(rawTarget, linkPath);
+  return { linkPath, rawTarget };
+}
+
+/** Expansión production-like: solo ficheros regulares (lstat salta symlinks). */
+function t48ExpandRegularOnly(files: string[]): string[] {
+  const out: string[] = [];
+  for (const file of files) {
+    try {
+      const stat = fs.lstatSync(file);
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        const walk = (dir: string): void => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            let entryStat: fs.Stats;
+            try {
+              entryStat = fs.lstatSync(full);
+            } catch {
+              continue;
+            }
+            if (entryStat.isSymbolicLink()) continue;
+            if (entryStat.isDirectory()) walk(full);
+            else out.push(full);
+          }
+        };
+        walk(file);
+        continue;
+      }
+    } catch {
+      // Ausente: se conserva el path para el gate.
+    }
+    out.push(file);
+  }
+  return out;
+}
+
+describe("[T48-RED] npm .bin interno contenido vs escapes (transacción)", () => {
+  it("RED: symlink relativo interno .bin/is-docker -> ../is-docker/cli.js permite setup/verify ok (repro smoke T46)", async () => {
+    const home = tempHome("jx-t48-npm-internal-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    const { linkPath, rawTarget } = t48SeedInternalBin(npmDir);
+    expect(fs.readlinkSync(linkPath)).toBe(rawTarget);
+    // Destino canónico permanece bajo npm (repro exacto del smoke T46).
+    expect(path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath))).toBe(
+      path.join(npmDir, "node_modules", "is-docker", "cli.js"),
+    );
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    expect(targets).toContain(path.join(configDir, "npm"));
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-internal-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(spawned).toBe(1);
+    expect(result.ok).toBe(true);
+    expect(result.ownershipTransferred).toBe(true);
+  });
+
+  it("rechaza escape absoluto pre-setup sin spawn (fail-closed)", async () => {
+    const home = tempHome("jx-t48-npm-abs-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    const outside = path.join(home, "outside.txt");
+    fs.writeFileSync(outside, "outside\n");
+    const binDir = path.join(npmDir, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.symlinkSync(outside, path.join(binDir, "evil"));
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-abs-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(result.ownershipTransferred ?? false).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|escape|fuera|rechazado/i);
+    expect(result.recovery).toBe("none");
+  });
+
+  it("rechaza escape relativo que sale de npm pre-setup sin spawn", async () => {
+    const home = tempHome("jx-t48-npm-relesc-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    const outside = path.join(home, "outside-rel.txt");
+    fs.writeFileSync(outside, "outside\n");
+    const binDir = path.join(npmDir, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const linkPath = path.join(binDir, "evil");
+    const rel = path.relative(path.dirname(linkPath), outside);
+    expect(rel.startsWith("..")).toBe(true);
+    expect(path.resolve(path.dirname(linkPath), rel)).toBe(path.resolve(outside));
+    fs.symlinkSync(rel, linkPath);
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-relesc-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|escape|fuera|rechazado/i);
+  });
+
+  it("rechaza symlink roto pre-setup sin spawn", async () => {
+    const home = tempHome("jx-t48-npm-broken-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    const binDir = path.join(npmDir, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.symlinkSync(path.join("..", "nonexistent", "cli.js"), path.join(binDir, "broken"));
+    expect(fs.existsSync(path.join(binDir, "broken"))).toBe(false);
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-broken-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|roto|broken|ilegible|rechazado/i);
+  });
+
+  it("rechaza ciclo pre-setup sin spawn (self-loop y 2-nodos)", async () => {
+    const home = tempHome("jx-t48-npm-cycle-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    fs.mkdirSync(npmDir, { recursive: true });
+    fs.symlinkSync("loop", path.join(npmDir, "loop"));
+    fs.symlinkSync("b", path.join(npmDir, "a"));
+    fs.symlinkSync("a", path.join(npmDir, "b"));
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-cycle-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|ciclo|cycle|loop|rechazado/i);
+  });
+
+  it("RED: link interno creado por spawn permite éxito post-setup", async () => {
+    const home = tempHome("jx-t48-npm-post-internal-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    fs.mkdirSync(npmDir, { recursive: true });
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-post-internal-backup" }),
+      spawn: async () => {
+        const pkgDir = path.join(npmDir, "node_modules", "is-docker");
+        const binDir = path.join(npmDir, "node_modules", ".bin");
+        fs.mkdirSync(pkgDir, { recursive: true });
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(pkgDir, "cli.js"), "#!/usr/bin/env node\n");
+        fs.symlinkSync(path.join("..", "is-docker", "cli.js"), path.join(binDir, "is-docker"));
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ownershipTransferred).toBe(true);
+    expect(fs.readlinkSync(path.join(npmDir, "node_modules", ".bin", "is-docker"))).toBe(
+      path.join("..", "is-docker", "cli.js"),
+    );
+  });
+
+  it("rechaza escape creado por spawn post-setup aunque verify diga ok", async () => {
+    const home = tempHome("jx-t48-npm-post-escape-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    fs.mkdirSync(npmDir, { recursive: true });
+    const outside = path.join(home, "post-outside.txt");
+    fs.writeFileSync(outside, "outside\n");
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-post-escape-backup" }),
+      spawn: async () => {
+        fs.symlinkSync(outside, path.join(npmDir, "evil-post"));
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ownershipTransferred ?? false).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|escape|rechazado/i);
+  });
+
+  it("control: symlink fuera de npm (settings.json como link) mantiene rechazo estricto", async () => {
+    const home = tempHome("jx-t48-npm-outside-strict-");
+    const { configDir, npmDir, settingsFile, engramBin } = t48PiDirs(home);
+    t48SeedInternalBin(npmDir);
+    const realSettings = path.join(configDir, "settings.real.json");
+    fs.writeFileSync(realSettings, JSON.stringify({ packages: [] }));
+    fs.rmSync(settingsFile, { force: true });
+    fs.symlinkSync(realSettings, settingsFile);
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-outside-strict-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|rechazado/i);
+  });
+
+  it("control: otro runtime mantiene rechazo total aunque el link sería interno para Pi", async () => {
+    const home = tempHome("jx-t48-npm-other-runtime-");
+    const { npmDir, engramBin } = t48PiDirs(home);
+    t48SeedInternalBin(npmDir);
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    let spawned = 0;
+    const result = await mod.runOfficialSetup("codex", {
+      homeDir: home,
+      engramBin,
+      targets: [npmDir],
+      backup: async () => ({ id: "t48-other-runtime-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["plugin", "mcp", "hooks"] }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|rechazado/i);
+  });
+});
+
+describe("[T48-RED] rollback exacto de symlinks npm internos", () => {
+  it("RED: mutación + borrado + creación nueva restaura targets, elimina creados, preserva ajenos y reporta complete", async () => {
+    const home = tempHome("jx-t48-npm-rollback-");
+    const { configDir, npmDir, settingsFile, mcpFile, engramBin } = t48PiDirs(home);
+    // Preexistentes internos + ajenos regulares.
+    const binDir = path.join(npmDir, "node_modules", ".bin");
+    const pkgDir = path.join(npmDir, "node_modules", "is-docker");
+    const keepPkg = path.join(npmDir, "node_modules", "keep-pkg");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.mkdirSync(keepPkg, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, "cli.js"), "#!/usr/bin/env node\n");
+    fs.writeFileSync(path.join(keepPkg, "cli.js"), "keep\n");
+    const victimLink = path.join(binDir, "is-docker");
+    const deletedLink = path.join(binDir, "gone");
+    fs.symlinkSync(path.join("..", "is-docker", "cli.js"), victimLink);
+    fs.symlinkSync(path.join("..", "keep-pkg", "cli.js"), deletedLink);
+    const originalVictim = fs.readlinkSync(victimLink);
+    const originalDeleted = fs.readlinkSync(deletedLink);
+    const unrelatedDir = path.join(npmDir, "unrelated");
+    fs.mkdirSync(unrelatedDir, { recursive: true });
+    const unrelatedFile = path.join(unrelatedDir, "keep.json");
+    fs.writeFileSync(unrelatedFile, JSON.stringify({ keep: true }));
+    const npmExisting = path.join(npmDir, "existing.txt");
+    fs.writeFileSync(npmExisting, "preexisting-npm\n");
+    const originalSettings = fs.readFileSync(settingsFile, "utf8");
+    const originalMcp = fs.readFileSync(mcpFile, "utf8");
+    const originalExisting = fs.readFileSync(npmExisting, "utf8");
+    const originalKeep = fs.readFileSync(unrelatedFile, "utf8");
+
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    expect(targets).toContain(path.join(configDir, "npm"));
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+    const order: string[] = [];
+    const createdLink = path.join(binDir, "new-link");
+    const createdDirFile = path.join(npmDir, "new-dir", "nested.txt");
+
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => {
+        order.push("backup");
+        // Backup production-like: solo regulares (los links van por snapshot explícito de la transacción).
+        const backup = createBackup(t48ExpandRegularOnly(targets), "t48-pi-npm-rollback", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        order.push("spawn");
+        // Mutación: cambia target del link preexistente.
+        fs.rmSync(victimLink, { force: true });
+        fs.symlinkSync(path.join("..", "keep-pkg", "cli.js"), victimLink);
+        // Borrado: elimina otro link preexistente.
+        fs.rmSync(deletedLink, { force: true });
+        // Creación: links nuevos que el rollback debe eliminar.
+        fs.symlinkSync(path.join("..", "is-docker", "cli.js"), createdLink);
+        fs.mkdirSync(path.dirname(createdDirFile), { recursive: true });
+        fs.writeFileSync(createdDirFile, "nested\n");
+        // Mutación regular para comprobar restore de bytes.
+        fs.writeFileSync(npmExisting, "mutated\n");
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => {
+        order.push("verify");
+        return { ok: false, layers: ["packages:partial"], reason: "singleton incompleto" };
+      },
+      restore: async () => {
+        if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+        return { restored: backupId !== null };
+      },
+    });
+
+    expect(order).toEqual(["backup", "spawn", "verify"]);
+    expect(result.ok).toBe(false);
+    expect(result.ownershipTransferred ?? false).toBe(false);
+    expect(backupId !== null).toBe(true);
+    expect(result.backupId).toBe(backupId);
+    // Solo restoration exacta reporta complete.
+    expect(result.recovery).toBe("complete");
+    expect(result.incompleteRecovery ?? false).toBe(false);
+    // Targets de links preexistentes vuelven al original (byte/target-equivalentes).
+    expect(fs.readlinkSync(victimLink)).toBe(originalVictim);
+    expect(fs.readlinkSync(deletedLink)).toBe(originalDeleted);
+    // Links/descendientes creados se eliminan (lstat, sin seguir: cubre roto y válido).
+    expect(
+      (() => {
+        try {
+          fs.lstatSync(createdLink);
+          return true;
+        } catch {
+          return false;
+        }
+      })(),
+    ).toBe(false);
+    expect(fs.existsSync(createdDirFile)).toBe(false);
+    expect(fs.existsSync(path.join(npmDir, "new-dir"))).toBe(false);
+    // Ajenos y regulares sobreviven/restauran.
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe(originalSettings);
+    expect(fs.readFileSync(mcpFile, "utf8")).toBe(originalMcp);
+    expect(fs.readFileSync(npmExisting, "utf8")).toBe(originalExisting);
+    expect(fs.readFileSync(unrelatedFile, "utf8")).toBe(originalKeep);
+    expect(fs.existsSync(npmDir)).toBe(true);
+  });
+
+  it("RED: cambio de target de un solo link interno se revierte byte-exacto y solo entonces es complete", async () => {
+    const home = tempHome("jx-t48-npm-rollback-single-");
+    const { configDir, npmDir, engramBin } = t48PiDirs(home);
+    const { linkPath } = t48SeedInternalBin(npmDir);
+    const originalTarget = fs.readlinkSync(linkPath);
+    expect(originalTarget).toBe(path.join("..", "is-docker", "cli.js"));
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => {
+        const backup = createBackup(t48ExpandRegularOnly(targets), "t48-pi-npm-rollback-single", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        fs.rmSync(linkPath, { force: true });
+        const otherPkg = path.join(npmDir, "node_modules", "other");
+        fs.mkdirSync(otherPkg, { recursive: true });
+        fs.writeFileSync(path.join(otherPkg, "cli.js"), "other\n");
+        fs.symlinkSync(path.join("..", "other", "cli.js"), linkPath);
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: false, layers: ["packages:partial"], reason: "verify falló" }),
+      restore: async () => {
+        if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+        return { restored: backupId !== null };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.backupId).toBe(backupId);
+    expect(result.recovery).toBe("complete");
+    expect(result.incompleteRecovery ?? false).toBe(false);
+    expect(fs.readlinkSync(linkPath)).toBe(originalTarget);
+  });
+});

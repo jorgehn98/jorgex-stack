@@ -404,3 +404,208 @@ describe("[T41-RED] wiring install Pi real con setup oficial verificado", () => 
     expect(typeof pi.verifyOfficialSetup, "falta verify Pi para preservación en uninstall (T41)").toBe("function");
   });
 });
+
+// ---------------------------------------------------------------------------
+// T48-RED: wiring Pi con closure npm (repro smoke T46).
+// Contrato: install real cablea Engram → backup → `engram setup pi` → verify
+// singleton Pi con closure npm interno permitido; escape/roto/ciclo falla
+// cerrado sin activar Pi; rollback restaura links y solo entonces es
+// complete. Fuera de npm rige rechazo estricto. Temporales aislados.
+// ---------------------------------------------------------------------------
+
+function t48WiringIsolatedPi(): { root: string; home: string; piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t48-pi-wiring-"));
+  T41_WIRING_ROOTS.push(root);
+  const home = path.join(root, "home");
+  // Contenido en HOME para la frontera de restore (<home>/.pi/agent, como en prod).
+  const piAgentDir = path.join(home, ".pi", "agent");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
+  try { fs.chmodSync(engramBin, 0o755); } catch { /* best-effort en tmp */ }
+  return { root, home, piAgentDir, engramBin };
+}
+
+function t48WiringSeedNpm(piAgentDir: string): { npmDir: string; linkPath: string; rawTarget: string } {
+  const npmDir = path.join(piAgentDir, "npm");
+  const pkgDir = path.join(npmDir, "node_modules", "is-docker");
+  const binDir = path.join(npmDir, "node_modules", ".bin");
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, "cli.js"), "#!/usr/bin/env node\n");
+  const linkPath = path.join(binDir, "is-docker");
+  const rawTarget = path.join("..", "is-docker", "cli.js");
+  fs.symlinkSync(rawTarget, linkPath);
+  return { npmDir, linkPath, rawTarget };
+}
+
+function t48WiringSeedSingleton(piAgentDir: string, engramBin: string): void {
+  fs.writeFileSync(
+    path.join(piAgentDir, "settings.json"),
+    JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"] }),
+  );
+  fs.writeFileSync(
+    path.join(piAgentDir, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+      },
+    }),
+  );
+}
+
+describe("[T48-RED] wiring Pi con closure npm", () => {
+  it("RED: singleton válido + .bin interno permite wiring ok (repro smoke T46)", async () => {
+    const { home, piAgentDir, engramBin } = t48WiringIsolatedPi();
+    t48WiringSeedSingleton(piAgentDir, engramBin);
+    const { npmDir, linkPath, rawTarget } = t48WiringSeedNpm(piAgentDir);
+    expect(fs.readlinkSync(linkPath)).toBe(rawTarget);
+    expect(path.resolve(path.dirname(linkPath), rawTarget)).toBe(
+      path.join(npmDir, "node_modules", "is-docker", "cli.js"),
+    );
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verify Pi en wiring (T48)").toBe("function");
+    const pre = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin });
+    expect(pre.ok).toBe(true);
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    expect(targets).toContain(path.join(piAgentDir, "npm"));
+    const result = await setup.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-wiring-internal-backup" }),
+      spawn: async () => ({ ok: true, stdout: "", stderr: "" }),
+      verify: async () => pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ownershipTransferred).toBe(true);
+  });
+
+  it("escape relativo bloquea wiring sin activar Pi aunque el singleton sea válido", async () => {
+    const { home, piAgentDir, engramBin } = t48WiringIsolatedPi();
+    t48WiringSeedSingleton(piAgentDir, engramBin);
+    const npmDir = path.join(piAgentDir, "npm");
+    const binDir = path.join(npmDir, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const outside = path.join(home, "wiring-outside.txt");
+    fs.writeFileSync(outside, "outside\n");
+    const linkPath = path.join(binDir, "evil");
+    fs.symlinkSync(path.relative(path.dirname(linkPath), outside), linkPath);
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    const pre = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin });
+    expect(pre.ok).toBe(true);
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    let spawned = 0;
+    const result = await setup.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-wiring-escape-backup" }),
+      spawn: async () => {
+        spawned += 1;
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin }),
+    });
+    expect(spawned).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(result.ownershipTransferred ?? false).toBe(false);
+    expect(String(result.reason ?? result.stderr ?? "")).toMatch(/symlink|escape|rechazado/i);
+  });
+
+  it("RED: rollback wiring restaura link, elimina creado, preserva ajeno y reporta complete", async () => {
+    const { home, piAgentDir, engramBin } = t48WiringIsolatedPi();
+    // Singleton parcial para forzar verify fail tras mutación (falta adapter).
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] }),
+    );
+    fs.writeFileSync(path.join(piAgentDir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+    const originalSettings = fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8");
+    const { npmDir, linkPath } = t48WiringSeedNpm(piAgentDir);
+    const originalTarget = fs.readlinkSync(linkPath);
+    const unrelated = path.join(npmDir, "unrelated", "keep.json");
+    fs.mkdirSync(path.dirname(unrelated), { recursive: true });
+    fs.writeFileSync(unrelated, JSON.stringify({ keep: true }));
+    const originalKeep = fs.readFileSync(unrelated, "utf8");
+    const { createBackup, restoreBackup } = (await import("../src/lib/backup.js")) as any;
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+    const createdLink = path.join(npmDir, "node_modules", ".bin", "new-wiring");
+    const result = await setup.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => {
+        const expanded: string[] = [];
+        for (const file of targets) {
+          try {
+            const stat = fs.lstatSync(file);
+            if (stat.isSymbolicLink()) continue;
+            if (stat.isDirectory()) {
+              const walk = (dir: string): void => {
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                  const full = path.join(dir, entry.name);
+                  try {
+                    const entryStat = fs.lstatSync(full);
+                    if (entryStat.isSymbolicLink()) continue;
+                    if (entryStat.isDirectory()) walk(full);
+                    else expanded.push(full);
+                  } catch {
+                    continue;
+                  }
+                }
+              };
+              walk(file);
+              continue;
+            }
+          } catch {
+            // Ausente: conservar path.
+          }
+          expanded.push(file);
+        }
+        const backup = createBackup(expanded, "t48-wiring-rollback", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        fs.rmSync(linkPath, { force: true });
+        const otherPkg = path.join(npmDir, "node_modules", "other-wiring");
+        fs.mkdirSync(otherPkg, { recursive: true });
+        fs.writeFileSync(path.join(otherPkg, "cli.js"), "other\n");
+        fs.symlinkSync(path.join("..", "other-wiring", "cli.js"), linkPath);
+        fs.symlinkSync(path.join("..", "is-docker", "cli.js"), createdLink);
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin }),
+      restore: async () => {
+        if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+        return { restored: backupId !== null };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.backupId).toBe(backupId);
+    expect(result.recovery).toBe("complete");
+    expect(result.incompleteRecovery ?? false).toBe(false);
+    expect(fs.readlinkSync(linkPath)).toBe(originalTarget);
+    expect(
+      (() => {
+        try {
+          fs.lstatSync(createdLink);
+          return true;
+        } catch {
+          return false;
+        }
+      })(),
+    ).toBe(false);
+    expect(fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8")).toBe(originalSettings);
+    expect(fs.readFileSync(unrelated, "utf8")).toBe(originalKeep);
+  });
+});

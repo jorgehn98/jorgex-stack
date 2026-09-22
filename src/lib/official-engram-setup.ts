@@ -121,13 +121,92 @@ function errnoCode(error: unknown): string {
 }
 
 /**
+ * Raíz npm trusted solo para runtime Pi (provider-owned `<configDir>/npm`).
+ * Otros runtimes devuelven vacío y conservan rechazo total. Se identifica por
+ * basename `npm` entre los targets explícitos ya contenidos en HOME.
+ */
+function resolveTrustedNpmRoots(runtime: string, preciseTargets: string[]): string[] {
+  if (runtime !== "pi") return [];
+  const roots = new Set<string>();
+  for (const t of preciseTargets) {
+    const resolved = path.resolve(t);
+    if (path.basename(resolved) === "npm") roots.add(resolved);
+  }
+  return [...roots];
+}
+
+function findTrustedRootFor(linkPath: string, trustedRoots: string[]): string | null {
+  const resolved = path.resolve(linkPath);
+  for (const root of trustedRoots) {
+    if (isContainedIn(resolved, root)) return root;
+  }
+  return null;
+}
+
+/**
+ * Valida un symlink bajo npm trusted: solo relativo cuyo destino lógico queda
+ * bajo la misma raíz y cuyo realpath resuelve sin roto/ciclo y permanece
+ * dentro. Absolutos, escapes, rotos y ciclos son violación. Todo mensaje
+ * incluye `symlink` más la causa (escape/fuera, roto/broken, ciclo/cycle/loop,
+ * ilegible) para fail-closed accionable.
+ */
+function validateTrustedNpmSymlink(linkPath: string, trustedRoots: string[]): string | null {
+  const resolvedLink = path.resolve(linkPath);
+  const root = findTrustedRootFor(resolvedLink, trustedRoots);
+  if (root === null) return `${resolvedLink}: symlink fuera de npm trusted (rechazado)`;
+  let raw: string;
+  try {
+    raw = fs.readlinkSync(resolvedLink);
+  } catch (error) {
+    return `${resolvedLink}: symlink ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+  }
+  if (path.isAbsolute(raw)) {
+    return `${resolvedLink}: symlink absoluto con escape fuera de npm trusted (rechazado)`;
+  }
+  const logical = path.resolve(path.dirname(resolvedLink), raw);
+  if (logical !== root && !isContainedIn(logical, root)) {
+    return `${resolvedLink}: symlink con escape fuera de npm trusted (${raw}, rechazado)`;
+  }
+  let canonical: string;
+  try {
+    canonical = fs.realpathSync(resolvedLink);
+  } catch (error) {
+    const code = errnoCode(error);
+    if (code === "ENOENT") {
+      return `${resolvedLink}: symlink roto/broken hacia ${raw} (rechazado, no resuelve)`;
+    }
+    if (code === "ELOOP" || code === "EAGAIN" || code === "ENAMETOOLONG") {
+      return `${resolvedLink}: symlink con ciclo/cycle/loop hacia ${raw} (rechazado)`;
+    }
+    return `${resolvedLink}: symlink ilegible (${code}, no se puede descartar alias)`;
+  }
+  if (canonical !== root && !isContainedIn(canonical, root)) {
+    return `${resolvedLink}: symlink con escape fuera de npm trusted tras resolver (rechazado)`;
+  }
+  return null;
+}
+
+/**
  * Recorre un árbol existente sin seguir symlinks (lstat en cada entrada).
  * Devuelve la primera entrada symlink/ilegible, o null si está limpio.
- * Best-effort contra TOCTOU: solo reduce la ventana, no la elimina; el
- * resultado se revalida antes de restore/cleanup y todo fallo es incompleto.
+ * Con raíces trusted (solo Pi+npm), un symlink relativo interno cuyo destino
+ * lógico y canónico permanecen bajo la raíz se permite; el resto falla
+ * cerrado. Best-effort contra TOCTOU: solo reduce la ventana, no la elimina;
+ * el resultado se revalida antes de restore/cleanup y todo fallo es incompleto.
  */
-function findSymlinkInTree(root: string): string | null {
-  const stack: string[] = [path.resolve(root)];
+function findSymlinkInTree(root: string, trustedRoots: string[] = []): string | null {
+  const resolvedRoot = path.resolve(root);
+  try {
+    if (fs.lstatSync(resolvedRoot).isSymbolicLink()) {
+      return `${resolvedRoot}: el target es un symlink (no se respalda ni se ejecuta setup)`;
+    }
+  } catch (error) {
+    if (errnoCode(error) !== "ENOENT") {
+      return `${resolvedRoot}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
+    }
+    return null;
+  }
+  const stack: string[] = [resolvedRoot];
   while (stack.length > 0) {
     const current = stack.pop()!;
     let entries: fs.Dirent[];
@@ -146,7 +225,14 @@ function findSymlinkInTree(root: string): string | null {
         if (errnoCode(error) === "ENOENT") continue;
         return `${full}: ilegible (${errnoCode(error)}, no se puede descartar alias)`;
       }
-      if (st.isSymbolicLink()) return `${full}: es un symlink (no se sigue ni se copia)`;
+      if (st.isSymbolicLink()) {
+        if (trustedRoots.length > 0) {
+          const allowed = validateTrustedNpmSymlink(full, trustedRoots);
+          if (allowed === null) continue;
+          return allowed;
+        }
+        return `${full}: es un symlink (no se sigue ni se copia)`;
+      }
       if (st.isDirectory()) stack.push(full);
     }
   }
@@ -154,13 +240,192 @@ function findSymlinkInTree(root: string): string | null {
 }
 
 /**
+ * Snapshot de symlinks preexistentes bajo raíces trusted (path absoluto +
+ * raw target byte-exacto, sin seguir enlaces). Devuelve null si el árbol no
+ * puede leerse (desconocido, fail-closed: sin restore a ciegas).
+ */
+function snapshotTrustedSymlinks(trustedRoots: string[]): Map<string, string> | null {
+  const out = new Map<string, string>();
+  try {
+    for (const root of trustedRoots) {
+      const resolvedRoot = path.resolve(root);
+      try {
+        if (fs.lstatSync(resolvedRoot).isSymbolicLink()) return null;
+      } catch (error) {
+        if (errnoCode(error) === "ENOENT") continue;
+        return null;
+      }
+      let isDir = false;
+      try {
+        isDir = fs.statSync(resolvedRoot).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!isDir) continue;
+      const stack: string[] = [resolvedRoot];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        let names: string[];
+        try {
+          names = fs.readdirSync(current);
+        } catch (error) {
+          if (errnoCode(error) === "ENOENT") continue;
+          return null;
+        }
+        for (const name of names) {
+          const full = path.join(current, name);
+          let st: fs.Stats;
+          try {
+            st = fs.lstatSync(full);
+          } catch (error) {
+            if (errnoCode(error) === "ENOENT") continue;
+            return null;
+          }
+          if (st.isSymbolicLink()) {
+            try {
+              out.set(path.resolve(full), fs.readlinkSync(full));
+            } catch {
+              return null;
+            }
+            continue;
+          }
+          if (st.isDirectory()) stack.push(full);
+        }
+      }
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Restaura symlinks preexistentes (cambiados o borrados) a su raw target
+ * original sin seguir enlaces. No elimina creados (lo hace el cleanup). Cada
+ * escritura revalida contención trusted, target relativo interno y ancestros
+ * sin alias (TOCTOU). Cualquier duda falla cerrado.
+ */
+function restoreTrustedSymlinks(
+  snapshot: Map<string, string> | null,
+  trustedRoots: string[],
+): { ok: boolean; error?: string } {
+  if (snapshot === null) {
+    return { ok: false, error: "symlink snapshot ilegible (no se puede restaurar a ciegas)" };
+  }
+  for (const [linkPath, rawTarget] of snapshot) {
+    const resolvedLink = path.resolve(linkPath);
+    const root = findTrustedRootFor(resolvedLink, trustedRoots);
+    if (root === null) {
+      return { ok: false, error: `symlink ${resolvedLink} fuera de npm trusted (restore omitido)` };
+    }
+    if (path.isAbsolute(rawTarget)) {
+      return { ok: false, error: `symlink ${resolvedLink} con target absoluto (restore omitido)` };
+    }
+    const logical = path.resolve(path.dirname(resolvedLink), rawTarget);
+    const stop = path.resolve(root);
+    if (logical !== stop && !isContainedIn(logical, stop)) {
+      return { ok: false, error: `symlink ${resolvedLink} con escape fuera de npm trusted (restore omitido)` };
+    }
+    let dir = path.dirname(resolvedLink);
+    let unsafe: string | null = null;
+    while (true) {
+      if (dir === stop) {
+        try {
+          if (fs.lstatSync(dir).isSymbolicLink()) unsafe = dir;
+        } catch (error) {
+          unsafe = errnoCode(error) === "ENOENT" ? `${dir}: raíz ausente` : `${dir}: ilegible`;
+        }
+        break;
+      }
+      if (!isContainedIn(dir, stop)) break;
+      try {
+        if (fs.lstatSync(dir).isSymbolicLink()) {
+          unsafe = dir;
+          break;
+        }
+      } catch (error) {
+        if (errnoCode(error) !== "ENOENT") {
+          unsafe = `${dir}: ilegible`;
+          break;
+        }
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    if (unsafe !== null) {
+      return { ok: false, error: `symlink ${resolvedLink}: ancestro inseguro ${unsafe} (restore omitido)` };
+    }
+    try {
+      let current: fs.Stats | null = null;
+      try {
+        current = fs.lstatSync(resolvedLink);
+      } catch (error) {
+        if (errnoCode(error) !== "ENOENT") {
+          return { ok: false, error: `symlink ${resolvedLink} ilegible (${errnoCode(error)})` };
+        }
+        current = null;
+      }
+      if (current !== null && current.isSymbolicLink()) {
+        let curRaw: string;
+        try {
+          curRaw = fs.readlinkSync(resolvedLink);
+        } catch (error) {
+          return { ok: false, error: `symlink ${resolvedLink} ilegible al releer (${errnoCode(error)})` };
+        }
+        if (curRaw === rawTarget) continue;
+        fs.rmSync(resolvedLink, { force: true });
+      } else if (current !== null) {
+        fs.rmSync(resolvedLink, { recursive: true, force: true });
+      }
+      fs.mkdirSync(path.dirname(resolvedLink), { recursive: true });
+      try {
+        if (fs.lstatSync(path.dirname(resolvedLink)).isSymbolicLink()) {
+          return { ok: false, error: `symlink ${resolvedLink}: padre es symlink tras mkdir (restore omitido)` };
+        }
+      } catch (error) {
+        return { ok: false, error: `symlink ${resolvedLink}: padre ilegible tras mkdir (${errnoCode(error)})` };
+      }
+      try {
+        const re = fs.lstatSync(resolvedLink);
+        if (re.isSymbolicLink()) {
+          try {
+            if (fs.readlinkSync(resolvedLink) === rawTarget) continue;
+          } catch {
+            // Releer falló: reintentar reemplazo seguro abajo.
+          }
+          fs.rmSync(resolvedLink, { recursive: true, force: true });
+        } else {
+          fs.rmSync(resolvedLink, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if (errnoCode(error) !== "ENOENT") {
+          return { ok: false, error: `symlink ${resolvedLink} ilegible antes de recrear (${errnoCode(error)})` };
+        }
+      }
+      try {
+        fs.symlinkSync(rawTarget, resolvedLink);
+      } catch (error) {
+        return { ok: false, error: `symlink ${resolvedLink}: no se pudo restaurar target (${errnoCode(error)})` };
+      }
+    } catch (error) {
+      return { ok: false, error: `symlink ${resolvedLink}: restore falló (${errnoCode(error)})` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
  * Valida que ningún target, ancestro existente ni entrada de árbol sea un
  * symlink (lstat, sin seguir) antes de mutar. Rechaza también lo ilegible
  * (no se puede descartar alias hacia fuera de HOME o ~/.engram). Devuelve la
  * primera violación o null si está limpio. La puerta léxica HOME se conserva
- * aparte; esto la complementa, no la sustituye.
+ * aparte; esto la complementa, no la sustituye. Con raíces trusted (solo
+ * Pi+npm) los symlinks relativos internos contenidos se permiten; el resto
+ * (absolutos, escapes, rotos, ciclos) y cualquier symlink fuera de npm
+ * siguen rechazados.
  */
-function findSetupSymlinkViolation(targets: string[], homeDir: string): string | null {
+function findSetupSymlinkViolation(targets: string[], homeDir: string, trustedRoots: string[] = []): string | null {
   const homeResolved = path.resolve(homeDir);
   for (const target of targets) {
     const resolved = path.resolve(target);
@@ -192,7 +457,7 @@ function findSetupSymlinkViolation(targets: string[], homeDir: string): string |
     }
     try {
       if (fs.statSync(resolved).isDirectory()) {
-        const bad = findSymlinkInTree(resolved);
+        const bad = findSymlinkInTree(resolved, trustedRoots);
         if (bad !== null) return bad;
       }
     } catch {
@@ -258,10 +523,15 @@ export async function runOfficialSetup(
     };
   }
 
+  // Raíz npm trusted solo para Pi: los symlinks relativos internos contenidos
+  // se permiten; absolutos, escapes, rotos y ciclos siguen siendo violación.
+  // Otros runtimes/targets conservan rechazo total (lista vacía).
+  const trustedNpmRoots = resolveTrustedNpmRoots(runtime, preciseTargets);
   // Seguridad symlink (lstat, sin seguir): ni el target, ni un ancestro, ni
-  // una entrada del árbol pueden ser alias hacia fuera de HOME o ~/.engram.
-  // Bloquea antes del backup: no se respalda ni se ejecuta nada con alias.
-  const preViolation = findSetupSymlinkViolation(preciseTargets, homeResolved);
+  // una entrada del árbol pueden ser alias hacia fuera de HOME o ~/.engram,
+  // salvo closure npm interno trusted en Pi. Bloquea antes del backup: no se
+  // respalda ni se ejecuta nada con alias.
+  const preViolation = findSetupSymlinkViolation(preciseTargets, homeResolved, trustedNpmRoots);
   if (preViolation !== null) {
     const detail = `runOfficialSetup: symlink rechazado antes del setup (${preViolation}). Bloqueado antes del backup.`;
     return {
@@ -314,6 +584,11 @@ export async function runOfficialSetup(
       dirSnapshots.set(t, null);
     }
   }
+  // Snapshot de symlinks trusted preexistentes (path + raw target, sin seguir):
+  // el backup de ficheros no conserva metadata de symlink, así que la
+  // transacción los restaura explícitamente. Nunca se excluye el árbol a
+  // ciegas ni se sigue durante el snapshot (lstat).
+  const trustedSymlinkSnapshot = snapshotTrustedSymlinks(trustedNpmRoots);
 
   let spawnResult: OfficialSetupSpawnResult;
   try {
@@ -333,12 +608,13 @@ export async function runOfficialSetup(
 
   // Revalidación post-spawn antes de declarar éxito: si queda un symlink en un
   // target o en sus ancestros, el run no puede declararse ok aunque spawn y
-  // verify lo indiquen. Es una comprobación best effort contra TOCTOU.
-  const postViolation = findSetupSymlinkViolation(preciseTargets, homeResolved);
+  // verify lo indiquen. Es una comprobación best effort contra TOCTOU. En Pi
+  // se permite el closure npm interno trusted (misma regla que pre-check).
+  const postViolation = findSetupSymlinkViolation(preciseTargets, homeResolved, trustedNpmRoots);
   const tainted = new Set<string>();
   if (postViolation !== null) {
     for (const t of preciseTargets) {
-      if (findSetupSymlinkViolation([t], homeResolved) !== null) tainted.add(t);
+      if (findSetupSymlinkViolation([t], homeResolved, trustedNpmRoots) !== null) tainted.add(t);
     }
   }
   const ok = spawnResult.ok === true && verifyResult.ok === true && postViolation === null;
@@ -359,6 +635,8 @@ export async function runOfficialSetup(
   // recuperación manual y el target exterior queda intacto.
   let restoreError: string | undefined;
   let restoreFailed = false;
+  let symlinkRestoreFailed = false;
+  let symlinkRestoreError: string | undefined;
   if (postViolation !== null) {
     restoreFailed = true;
     restoreError = `symlink post-setup (${postViolation}); restore omitido para no escribir a través del enlace`;
@@ -369,16 +647,35 @@ export async function runOfficialSetup(
       restoreFailed = true;
       restoreError = error instanceof Error ? error.message : String(error);
     }
+    // Rollback de symlinks trusted: restaura cambiados/borrados a su raw
+    // target original (byte-exacto) con revalidación TOCTOU; los creados los
+    // elimina el cleanup. Solo complete si ficheros, symlinks y cleanup ok.
+    if (trustedNpmRoots.length > 0) {
+      const symRes = restoreTrustedSymlinks(trustedSymlinkSnapshot, trustedNpmRoots);
+      if (!symRes.ok) {
+        symlinkRestoreFailed = true;
+        symlinkRestoreError = symRes.error;
+      }
+    } else if (trustedSymlinkSnapshot !== null && trustedSymlinkSnapshot.size > 0) {
+      symlinkRestoreFailed = true;
+      symlinkRestoreError = "symlink snapshot inesperado fuera de Pi (restore omitido)";
+    }
   }
   // Rollback: recomponer preexistentes mediante restore cuando sea posible y
   // eliminar solo lo creado por el setup. En directorios ya existentes, solo
   // se eliminan descendientes nuevos (post-order), preservando preexistentes.
+  // lstat (sin seguir) para cubrir también links rotos creados por el setup.
   let cleanupFailed = tainted.size > 0;
   for (const t of preciseTargets) {
     if (tainted.has(t)) continue;
     try {
       if (!existedBefore.has(t)) {
-        if (fs.existsSync(t)) fs.rmSync(t, { recursive: true, force: true });
+        try {
+          fs.lstatSync(t);
+          fs.rmSync(t, { recursive: true, force: true });
+        } catch (error) {
+          if (errnoCode(error) !== "ENOENT") cleanupFailed = true;
+        }
         continue;
       }
       if (!dirSnapshots.has(t)) continue;
@@ -401,7 +698,14 @@ export async function runOfficialSetup(
       });
       for (const p of created) {
         try {
-          if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+          try {
+            fs.lstatSync(p);
+          } catch (error) {
+            if (errnoCode(error) === "ENOENT") continue;
+            cleanupFailed = true;
+            continue;
+          }
+          fs.rmSync(p, { recursive: true, force: true });
         } catch {
           cleanupFailed = true;
         }
@@ -410,7 +714,10 @@ export async function runOfficialSetup(
       cleanupFailed = true;
     }
   }
-  const incomplete = restoreFailed || cleanupFailed;
+  const incomplete = restoreFailed || symlinkRestoreFailed || cleanupFailed;
+  const combinedRestoreError = [restoreError, symlinkRestoreError].filter((p) => p !== undefined).join("; ") || undefined;
+  // restoreError visible conserva ambas causas (ficheros + symlinks).
+  restoreError = combinedRestoreError;
   const detail =
     [spawnResult.stderr, verifyResult.stderr, verifyResult.reason, (verifyResult.layers ?? []).join(", ")]
       .map((part) => (part ?? "").trim())
