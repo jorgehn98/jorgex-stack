@@ -133,7 +133,11 @@ describe("Pi managed shared projection", () => {
 
       expect(action.content).toContain(userPrompt.trim());
       expect(action.content.match(/<!-- jorgex:system-prompt -->/g)).toHaveLength(1);
-      expect(action.content.match(/<!-- jorgex:engram-protocol -->/g)).toHaveLength(1);
+      // T43 provider-only: Pi ya no recibe sección Stack; el provider oficial
+      // (engram setup pi + gentle-engram) owns prompt/tools/capture/hooks.
+      expect(action.content).not.toContain("jorgex:engram-protocol");
+      expect(action.content.match(/<!-- jorgex:engram-protocol -->/g)).toBeNull();
+      expect((adapter as unknown as Record<string, unknown>).injectEngramProtocol).toBeUndefined();
       expect(action.content).not.toContain("<!-- jorgex:context7 -->");
       expect(action.content.match(/<!-- jorgex:playwright -->/g)).toHaveLength(1);
       expect(action.content.match(/<!-- jorgex:chrome-devtools -->/g)).toHaveLength(1);

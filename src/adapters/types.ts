@@ -101,6 +101,15 @@ export interface AdapterPaths {
 }
 
 /**
+ * Secciones retiradas (provider-only): Stack ya no las inyecta en ningún
+ * runtime — el provider oficial (`engram setup` + plugin/MCP/skills oficiales)
+ * es el único owner. Lista acotada SOLO para migración: sync/install/uninstall
+ * eliminan idempotentemente los bloques que versiones anteriores instalaron.
+ * No añadir secciones activas aquí.
+ */
+export const LEGACY_SYSTEM_PROMPT_SECTIONS = ["engram-protocol"] as const;
+
+/**
  * Contrato mínimo de los recursos que todos los runtimes pueden proyectar.
  * Pi lo usa sin participar aún en el ciclo de vida completo de Adapter.
  */
@@ -109,8 +118,6 @@ export interface SharedProjectionAdapter {
   paths(configDir: string): AdapterPaths;
   /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
   renderCommand(file: string, content: string): { file: string; content: string };
-  /** Decide si el system prompt debe incluir el protocolo Engram. */
-  injectEngramProtocol(ctx: InstallContext): boolean;
   /** Adapta los bloques a un formato legado cuando el runtime aún lo requiere. */
   adaptSystemPromptSections?(sections: SystemPromptSections): SystemPromptSections;
 }

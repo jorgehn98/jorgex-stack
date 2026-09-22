@@ -152,3 +152,60 @@ describe("Pi Engram requirement", () => {
     expect(failed.events).toEqual(["detect-host", "confirm:false", "install-shared"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T41-RED: el install Pi gestionado exige el binario Engram antes del setup.
+// Contrato: install real resuelve/instala el binario primero (requirement
+// existente), con binario absoluto; solo entonces respalda cada path mutable,
+// ejecuta `engram setup pi` (argv exacto) y verifica singleton antes del
+// package install. Sin binario absoluto no hay backup/spawn/verify ni package.
+// Aislado, sin HOME real/red.
+// ---------------------------------------------------------------------------
+
+describe("[T41-RED] Pi install exige Engram absoluto antes del setup pi", () => {
+  it("el requirement resuelto es un binario absoluto reutilizable por el setup", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const state = deps({ host: "/isolated/bin/engram" });
+
+    const decision = await resolvePiEngramRequirement({ interactive: true, yes: false }, state.api);
+    expect(decision).toEqual({ kind: "existing", bin: "/isolated/bin/engram", scope: "host" });
+    expect((decision as { bin: string }).bin.startsWith("/")).toBe(true);
+    expect(state.events).toEqual(["detect-host"]);
+  });
+
+  it("el setup pi posterior usa ese binario absoluto con argv exacto y targets explícitos", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const state = deps({ host: "/isolated/bin/engram" });
+    const decision = await resolvePiEngramRequirement({ interactive: true, yes: false }, state.api);
+    expect(decision).toMatchObject({ kind: "existing" });
+    const bin = (decision as { bin: string }).bin;
+
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof setup.resolveOfficialSetupArgv, "falta argv setup pi tras Engram (T41)").toBe("function");
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+    expect(bin.startsWith("/")).toBe(true);
+
+    const targets = setup.collectOfficialSetupBackupTargets("pi", "/isolated/pi-agent", "/isolated/home") as string[];
+    expect(Array.isArray(targets) && targets.length > 0, "Pi debe declarar backup targets tras Engram").toBe(true);
+    expect(targets.join("\n")).not.toMatch(/\.engram\/engram\.db|engram\.db/);
+  });
+
+  it("sin binario absoluto no hay setup pi: falla cerrado antes de backup/spawn", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const missing = deps();
+    const decision = await resolvePiEngramRequirement({ interactive: false, yes: false }, missing.api);
+    expect(decision).toMatchObject({ kind: "blocked", reason: "engram-required" });
+    expect(missing.events).toEqual(["detect-host"]);
+
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    // Sin engramBin absoluto el núcleo debe exigirlo antes de mutar.
+    await expect(setup.runOfficialSetup("pi", {
+      homeDir: "/isolated/home",
+      engramBin: null,
+      targets: ["/isolated/pi-agent/settings.json"],
+      backup: async () => ({ id: "must-not-run" }),
+      spawn: async () => { throw new Error("must-not-spawn-without-engram"); },
+      verify: async () => ({ ok: true }),
+    })).rejects.toThrow(/engramBin absoluto/i);
+  });
+});

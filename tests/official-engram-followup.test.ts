@@ -171,15 +171,49 @@ describe("[followup-2] marketplace dir: preexisting preserved, new descendants r
   });
 });
 
-describe("[followup-pi] Pi install real is intentional unsupported skip", () => {
-  it("pi returns ran:false; arbitrary unknown still fails", async () => {
+describe("[followup-pi] Pi install real runs verified official setup (install-only)", () => {
+  it("pi declares official path and runs on install real; gated modes skip; unknown still fails", async () => {
     const home = tempHome("jx-followpi-");
     const configDir = path.join(home, ".pi", "agent");
     fs.mkdirSync(configDir, { recursive: true });
     const bin = path.join(home, ".local", "bin", "engram");
     fs.mkdirSync(path.dirname(bin), { recursive: true });
     fs.writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    try {
+      fs.chmodSync(bin, 0o755);
+    } catch {
+      // Windows: el bit de ejecución no aplica; el spawn fallará igual.
+    }
+    await import("../src/adapters/pi.js");
     const mod = await import("../src/lib/official-engram-setup.js");
+    // Verified official Pi path (T41/T42 canonical: argv/env/targets/destination/verifier).
+    expect(mod.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+    expect(mod.isOfficialSetupRuntime("pi")).toBe(true);
+    expect(mod.resolveOfficialSetupEnv("pi", configDir)).toMatchObject({ PI_CODING_AGENT_DIR: configDir });
+    expect(mod.validateOfficialSetupDestination("pi", configDir, home)).toBeNull();
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const joined = targets.join("\n");
+    expect(joined).toMatch(/settings\.json/);
+    expect(joined).toMatch(/mcp\.json/);
+    expect(joined).not.toMatch(/engram\.db/);
+    expect(joined).not.toMatch(/\.local\/bin\/engram/);
+    expect(typeof mod.officialSetupVerifiers["pi"]).toBe("function");
+    // Install-only: sync/dry-run/target-dir skip without running setup.
+    for (const gated of [
+      { command: "sync", dryRun: false, targetDir: undefined },
+      { command: "install", dryRun: true, targetDir: undefined },
+      { command: "install", dryRun: false, targetDir: path.join(home, "target") },
+    ] as const) {
+      const skipped = await mod.runOfficialSetupIfNeeded("pi", {
+        ...gated,
+        engramBin: bin,
+        configDir,
+        homeDir: home,
+      });
+      expect(skipped, `Pi debe omitir setup en ${gated.command}/dryRun=${gated.dryRun}`).toMatchObject({ ran: false });
+    }
+    // Install real runs official setup (T42: short-circuit eliminado); estado
+    // vacío falla cerrado sin ownership (verify singleton + MCP ausentes).
     const pi = await mod.runOfficialSetupIfNeeded("pi", {
       command: "install",
       dryRun: false,
@@ -188,7 +222,12 @@ describe("[followup-pi] Pi install real is intentional unsupported skip", () => 
       configDir,
       homeDir: home,
     });
-    expect(pi).toMatchObject({ ran: false });
+    expect(pi.ran).toBe(true);
+    if (pi.ran) {
+      expect(pi.ok).toBe(false);
+      expect(pi.ownershipTransferred ?? false).toBe(false);
+    }
+    // Failure guard preserved: arbitrary unknown still fails (never silent skip).
     const unknown = await mod.runOfficialSetupIfNeeded("unknown-rt-xyz", {
       command: "install",
       dryRun: false,

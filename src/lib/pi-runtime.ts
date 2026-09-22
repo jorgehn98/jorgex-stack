@@ -33,7 +33,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "structured-questions-v1",
       "web-access-v1",
       "goal-continuation-v1",
-      "mcp-adapter-v1",
+      "engram-official-bridge-v1",
       "engram-runtime-tools-v1",
       "context7-http-v1",
       "permissions-policy-v1",
@@ -701,7 +701,39 @@ function runProcess(invocation: {
   };
 }
 
+function setupPiFailedRemedy(setup: {
+  reason?: string;
+  stderr?: string;
+  recovery?: string;
+  backupId?: string | null;
+  restoreError?: string;
+}): string {
+  // Remedy veraz según recovery: none nunca afirma restauración e indica
+  // acción manual; complete afirma restaurado con backupId; incomplete
+  // indica incompleta con backupId + acción manual sin afirmar limpio.
+  const detail = setup.reason ?? setup.stderr ?? "setup oficial Pi falló";
+  const recovery = setup.recovery ?? "none";
+  const backupId = setup.backupId ?? null;
+  if (recovery === "complete") {
+    return backupId !== null
+      ? `${detail}. Se restauró el backup ${backupId}; Pi no quedó activado.`
+      : `${detail}. Se restauró el backup previo; Pi no quedó activado.`;
+  }
+  if (recovery === "incomplete") {
+    const id = backupId !== null ? ` (backup ${backupId})` : " (sin backup válido)";
+    const cause = setup.restoreError !== undefined ? ` ${setup.restoreError}.` : "";
+    return `${detail}. Recuperación incompleta${id};${cause} revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.`;
+  }
+  const id = backupId !== null ? ` (backup ${backupId})` : " (sin backup válido)";
+  return `${detail}. Sin recuperación automática${id}; revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.`;
+}
+
 export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<RuntimeResult> {
+  // Pi install real ordena Engram absoluto primero → `engram setup pi`
+  // (backup/setup/verify singleton via runOfficialSetupIfNeeded("pi"),
+  // install-only: shouldRunOfficialSetup excluye sync/dry-run/targetDir) →
+  // package/projection/sync gestionados. sync/dry-run/--target-dir nunca
+  // ejecutan setup ni descargas globales; el parcial restaura y no activa Pi.
   if (input.engramBin === null && input.operation !== "uninstall") return runPiRuntime(input, {
     readSettings: () => { throw new Error("unreachable"); },
     readReceipt: () => { throw new Error("unreachable"); },
@@ -721,6 +753,33 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         reason: "engram-required",
         remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
       };
+    }
+    // Setup oficial solo en install real (targetDir undefined). Con
+    // --target-dir se omite (no-op global) y el package usa su destino aislado.
+    if (input.targetDir === undefined) {
+      const { runOfficialSetupIfNeeded } = await import("./official-engram-setup.js");
+      const setup = await runOfficialSetupIfNeeded("pi", {
+        command: "install",
+        dryRun: false,
+        targetDir: undefined,
+        engramBin: input.engramBin,
+        configDir: paths.codingAgentDir,
+        homeDir: os.homedir(),
+      });
+      if (!setup.ran || !setup.ok) {
+        if (!setup.ran) {
+          return {
+            kind: "blocked",
+            reason: "setup-pi-failed",
+            remedy: "setup oficial Pi omitido en install real. Sin recuperación automática (sin backup válido); revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.",
+          };
+        }
+        return {
+          kind: "blocked",
+          reason: "setup-pi-failed",
+          remedy: setupPiFailedRemedy(setup),
+        };
+      }
     }
     const destination = input.targetDir === undefined
       ? path.join(dataDir(), "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`)

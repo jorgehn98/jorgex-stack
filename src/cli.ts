@@ -527,6 +527,11 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     console.error("No se pudo verificar la versión instalada de Pi sin ejecutarlo; revisa la instalación de Pi.");
     return 1;
   }
+  // Pi install real ordena Engram primero (resolvePiEngramBin/installMissingEngram
+  // vía resolvePiEngramRequirement) y `engram setup pi` antes del package install
+  // vía runOfficialSetupIfNeeded("pi") en pi-runtime (spawnOfficialSetupBin con
+  // argv exacto ["setup","pi"], shell false). Gate install-only con
+  // shouldRunOfficialSetup: sync/dry-run/targetDir undefined excluidos.
   let engramBin = resolvedEngramBin === undefined
     ? resolvePiEngramBin(targetDir)
     : resolvedEngramBin;

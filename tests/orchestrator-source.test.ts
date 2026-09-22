@@ -345,23 +345,38 @@ describe.each(RUNTIMES)("%s orchestrator ownership", (_runtime, adapter) => {
     expect(lifecycle).toMatch(/\[coverage revalidation\]\(\.\.\/xreview\/SKILL\.md#7-revalidate-coverage-and-stop\).+not an automatic repeated panel/is);
     expect(lifecycle).toMatch(/integration assumptions, including the effective base/i);
 
-    // OpenCode ya no recibe el protocolo vía el plugin legacy del Stack; lo
-    // provee `engram setup opencode` y el plan no incluye ese plugin.
+    // T43 provider-only: Stack ya no proyecta protocolo Engram en ningún
+    // runtime; lo provee `engram setup` + provider oficial (prompt/tools/capture/hooks).
     if (adapter.id === "opencode") {
       expect(actions.some((action) => action.target.endsWith("engram.ts"))).toBe(false);
     }
-    const protocolPayload = adapter.id === "opencode"
-      ? fs.readFileSync(path.join(stackDir, "system-prompt", "engram-protocol.md"), "utf8")
-      : sectionBetween(prompt, "<!-- jorgex:engram-protocol -->", "<!-- /jorgex:engram-protocol -->");
-    expect(protocolPayload).toMatch(/Spec as read-only/i);
-    expect(protocolPayload).toMatch(/separate outcome topic_key/i);
-    expect(protocolPayload).toMatch(/Never[^\n]{0,180}mem_save[^\n]{0,180}mem_update[^\n]{0,180}Spec observation/i);
-    expect(protocolPayload).toMatch(/no separate outcome destination[^\n]{0,120}return the result to the coordinator/i);
-    expect(protocolPayload).toContain("work/{name}/task/{NN}");
-    expect(protocolPayload).toContain("work/{name}/{phase}");
-    expect(protocolPayload).toContain("work/{name}/pr/{NN}");
-    expect(protocolPayload).toContain("work/{name}/done");
-    expect(protocolPayload).toContain("work/backlog");
+    expect(fs.existsSync(path.join(stackDir, "system-prompt", "engram-protocol.md"))).toBe(false);
+    expect(prompt).not.toContain("jorgex:engram-protocol");
+    expect(prompt).not.toContain("{{ENGRAM_PROTOCOL}}");
+    expect((adapter as unknown as Record<string, unknown>).injectEngramProtocol).toBeUndefined();
+    // La guía de rol canónica se conserva como guía, sin convertirse en provider.
+    const engramGuide = path.join(stackDir, "agents", "engram.md");
+    expect(fs.existsSync(engramGuide)).toBe(true);
+    expect(fs.readFileSync(engramGuide, "utf8")).toContain("Engram Memory Agent");
+  });
+
+  it.each(["human", "programmatic"] as const)("engram conserva rol pero no filtra tools oficiales en %s", (mode) => {
+    const { ctx, actions } = plan(mode);
+    const engram = loadCanonicalAgents(path.join(stackDir, "agents")).find((candidate) => candidate.name === "engram");
+    expect(engram, "falta el agente canónico engram").toBeDefined();
+    expect(engram!.body).toContain("Engram Memory Agent");
+    const payload = plannedAgentContent(actions, adapter, ctx, "engram");
+    expect(payload).toContain("Engram Memory Agent");
+    // Provider-only: el artefacto generado omite selección de tools del
+    // provider donde el runtime lo soporta; nunca declara allowlists
+    // Engram-específicas que filtren tools oficiales. maxSubagentDepth y la
+    // guía general de rol pueden permanecer. La guía de rol menciona
+    // mem_* como prosa, así que el filtro se detecta solo en selectores
+    // (frontmatter `tools:` o prefijo MCP `mcp__engram__`), no en el body.
+    expect(payload).not.toMatch(/mcp__engram__/);
+    expect(payload).not.toMatch(/^tools:.*mem_/m);
+    const readonlyPayload = plannedAgentContent(actions, adapter, ctx, "codebase-analyst");
+    expect(readonlyPayload).not.toMatch(/mcp__engram__/);
   });
 
   it.each(["human", "programmatic"] as const)("proyecta el prompt global compacto sin modos artificiales en %s", (mode) => {

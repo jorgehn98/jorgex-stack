@@ -180,7 +180,7 @@ function expectDeliveryAgentContract(adapter: Adapter, ctx: InstallContext, file
     expect(header).toContain(`description: `);
     if (agent.readonly) {
       expect(header).toContain("tools: Read, Grep, Glob, Skill, Bash");
-      expect(header).toContain("mcp__engram__mem_save");
+      expect(header).not.toContain("mcp__engram__");
     } else {
       expect(header).not.toMatch(/^tools:/m);
     }

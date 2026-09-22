@@ -1035,7 +1035,8 @@ describe("Pi shared projection lifecycle", () => {
         ],
       });
       const installedPrompt = fs.readFileSync(agentsFile, "utf8");
-      expect(installedPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      // T43 provider-only: Pi nunca recibe sección Stack; provider oficial owns prompt.
+      expect(installedPrompt).not.toContain("jorgex:engram-protocol");
       expect(installedPrompt).not.toContain("<!-- jorgex:context7 -->");
       expect(installedPrompt).not.toContain("Use Context7 whenever you need current documentation");
       expect(installedPrompt).not.toContain("<!-- jorgex:browser -->");
@@ -1084,7 +1085,7 @@ describe("Pi shared projection lifecycle", () => {
       expect(browserEnabledPrompt).not.toContain("Use Context7 whenever you need current documentation");
       expect(browserEnabledPrompt).not.toContain("<!-- jorgex:browser -->");
       expect(browserEnabledPrompt).not.toContain("<!-- jorgex:chrome-devtools -->");
-      expect(browserEnabledPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      expect(browserEnabledPrompt).not.toContain("jorgex:engram-protocol");
 
       events.length = 0;
       expect(runPiProjectionLifecycle({ ...browserEnabledInput, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
@@ -1107,7 +1108,7 @@ describe("Pi shared projection lifecycle", () => {
       expectBackupsBeforeMutation(events, [agentsFile]);
       const browserDisabledPrompt = fs.readFileSync(agentsFile, "utf8");
       expect(browserDisabledPrompt).toContain(target.userPrompt.trim());
-      expect(browserDisabledPrompt).toContain("<!-- jorgex:engram-protocol -->");
+      expect(browserDisabledPrompt).not.toContain("jorgex:engram-protocol");
       expect(browserDisabledPrompt).not.toContain("<!-- jorgex:context7 -->");
       expect(browserDisabledPrompt).not.toContain("Use Context7 whenever you need current documentation");
       expect(browserDisabledPrompt).not.toContain("<!-- jorgex:browser -->");

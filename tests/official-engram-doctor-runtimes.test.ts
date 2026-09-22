@@ -201,3 +201,192 @@ describe("[doctor-runtimes] incomplete selected installed runtime is unhealthy",
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// T41-RED: doctor Pi distingue binary/setup/runtime (fail-closed, solo lectura).
+// Contrato: binario Engram (found/path/version) vs setup oficial Pi
+// (singleton gentle-engram + pi-mcp-adapter + mcpServers.engram válido,
+// versiones observadas sin pin) vs runtime Pi (exposición/doctor del paquete).
+// Ausente/duplicado/inválido/ilegible/parcial falla cerrado con razón
+// diagnóstica distinta por capa; nunca ejecuta setup ni escribe.
+// Temporales aislados; cero HOME real/red.
+// ---------------------------------------------------------------------------
+
+describe("[T41-RED] doctor Pi distingue binary/setup/runtime", () => {
+  it("expone bin, setup pi y exposure pi como capas distintas en filesystem aislado", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-doc-pi-"));
+    const homeDir = path.join(tmp, "home");
+    try {
+      fs.mkdirSync(homeDir, { recursive: true });
+      const bin = path.join(homeDir, ".local", "bin", "engram");
+      fs.mkdirSync(path.dirname(bin), { recursive: true });
+      // Binario aislado que responde --version (capa bin exige versión legible).
+      fs.writeFileSync(bin, "#!/bin/sh\necho 2.0.0\n");
+      try { fs.chmodSync(bin, 0o755); } catch { /* best-effort en tmp */ }
+      const piAgentDir = path.join(homeDir, ".pi", "agent");
+      fs.mkdirSync(piAgentDir, { recursive: true });
+
+      const { resolveEngramOfficialState } = await import("../src/doctor.js") as any;
+      expect(typeof resolveEngramOfficialState, "falta doctor oficial Pi por capas (T41)").toBe("function");
+
+      const state = await resolveEngramOfficialState({ homeDir });
+      expect(Object.keys(state)).toEqual(expect.arrayContaining(["bin", "setup", "exposure"]));
+      // Pi debe aparecer como runtime propio, distinto de claude/codex/opencode.
+      expect(state.setup.runtimes).toHaveProperty("pi");
+      expect(state.exposure.runtimes).toHaveProperty("pi");
+      // Capas distinguibles: binario presente pero setup Pi ausente => no expuesto.
+      expect(state.bin.found).toBe(true);
+      expect(state.setup.runtimes.pi.ok).toBe(false);
+      expect(state.exposure.runtimes.pi.exposed).toBe(false);
+      expect(JSON.stringify(state.setup.runtimes.pi)).toMatch(/pi|setup|singleton|mcp|package/i);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("setup Pi parcial/ilegible falla cerrado con razón de setup, sin confundirla con binario", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-doc-pi-partial-"));
+    const homeDir = path.join(tmp, "home");
+    try {
+      fs.mkdirSync(homeDir, { recursive: true });
+      const bin = path.join(homeDir, ".local", "bin", "engram");
+      fs.mkdirSync(path.dirname(bin), { recursive: true });
+      fs.writeFileSync(bin, "#!/bin/sh\necho 2.0.0\n");
+      try { fs.chmodSync(bin, 0o755); } catch { /* best-effort en tmp */ }
+      const piAgentDir = path.join(homeDir, ".pi", "agent");
+      fs.mkdirSync(piAgentDir, { recursive: true });
+      // Parcial canónico: settings con solo npm:gentle-engram (falta
+      // npm:pi-mcp-adapter + mcp.json). Fuente Pi: string u objeto con source.
+      fs.writeFileSync(
+        path.join(piAgentDir, "settings.json"),
+        JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] }),
+      );
+      // Ilegible: directorio donde el verificador espera el MCP exacto
+      // (mcp.json canónico de `engram setup pi`).
+      fs.mkdirSync(path.join(piAgentDir, "mcp.json"));
+
+      const { resolveEngramOfficialState } = await import("../src/doctor.js") as any;
+      const state = await resolveEngramOfficialState({ homeDir });
+
+      expect(state.bin.found).toBe(true);
+      expect(state.setup.runtimes.pi.ok).toBe(false);
+      expect(state.exposure.runtimes.pi.exposed).toBe(false);
+      const detail = JSON.stringify(state.setup.runtimes.pi);
+      expect(detail).toMatch(/partial|singleton|duplicate|invalid|unreadable|mcp|package/i);
+      // La razón de setup no debe culpar al binario cuando este existe.
+      expect(detail).not.toMatch(/binario.*no detectado|NO detectado/i);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("no ejecuta setup ni escribe durante el diagnóstico Pi", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-doc-pi-readonly-"));
+    const homeDir = path.join(tmp, "home");
+    try {
+      fs.mkdirSync(homeDir, { recursive: true });
+      const before = new Set(fs.readdirSync(tmp));
+
+      const { resolveEngramOfficialState } = await import("../src/doctor.js") as any;
+      await resolveEngramOfficialState({ homeDir });
+
+      expect(new Set(fs.readdirSync(tmp))).toEqual(before);
+      expect(fs.existsSync(path.join(homeDir, ".jorgex-stack"))).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T50-RED: doctor honra PI_CODING_AGENT_DIR efectivo del runtime.
+// Contrato: resolveEngramOfficialState usa el mismo PI_CODING_AGENT_DIR
+// efectivo que el runtime (env explícito, por defecto <home>/.pi/agent);
+// nunca lee el default cuando el env apunta a otro dir aislado.
+// Temporales aislados; env restaurado; cero HOME real.
+// ---------------------------------------------------------------------------
+
+function t50SeedValidPi(piAgentDir: string, engramBin: string): void {
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(piAgentDir, "settings.json"),
+    JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"] }),
+  );
+  fs.writeFileSync(
+    path.join(piAgentDir, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+      },
+    }),
+  );
+}
+
+function t50SeedBin(homeDir: string): string {
+  const bin = path.join(homeDir, ".local", "bin", "engram");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho 2.0.0\n");
+  try { fs.chmodSync(bin, 0o755); } catch { /* best-effort en tmp */ }
+  return bin;
+}
+
+describe("[T50-RED] doctor Pi honra PI_CODING_AGENT_DIR", () => {
+  it("usa el dir efectivo del env aunque el default esté ausente/inválido", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-doc-pi-env-"));
+    const homeDir = path.join(tmp, "home");
+    const customDir = path.join(tmp, "custom-pi-agent");
+    try {
+      fs.mkdirSync(homeDir, { recursive: true });
+      const bin = t50SeedBin(homeDir);
+      t50SeedValidPi(customDir, bin);
+      // Default deliberadamente ausente: solo el env es válido.
+      expect(fs.existsSync(path.join(homeDir, ".pi", "agent", "settings.json"))).toBe(false);
+      const previous = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = customDir;
+      try {
+        const { resolveEngramOfficialState } = await import("../src/doctor.js") as any;
+        expect(typeof resolveEngramOfficialState, "falta doctor Pi con env (T50)").toBe("function");
+        const state = await resolveEngramOfficialState({ homeDir });
+        expect(state.bin.found).toBe(true);
+        expect(state.setup.runtimes.pi.ok, "doctor debe leer PI_CODING_AGENT_DIR efectivo, no el default").toBe(true);
+        expect(state.exposure.runtimes.pi.exposed).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previous;
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("nunca lee el default cuando el env apunta a un setup parcial", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-doc-pi-env-partial-"));
+    const homeDir = path.join(tmp, "home");
+    const customDir = path.join(tmp, "custom-pi-partial");
+    try {
+      fs.mkdirSync(homeDir, { recursive: true });
+      const bin = t50SeedBin(homeDir);
+      // Default válido que no debe leerse cuando el env es efectivo.
+      t50SeedValidPi(path.join(homeDir, ".pi", "agent"), bin);
+      // Env parcial: falta adapter + mcp exacto.
+      fs.mkdirSync(customDir, { recursive: true });
+      fs.writeFileSync(path.join(customDir, "settings.json"), JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] }));
+      fs.writeFileSync(path.join(customDir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+      const previous = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = customDir;
+      try {
+        const { resolveEngramOfficialState } = await import("../src/doctor.js") as any;
+        const state = await resolveEngramOfficialState({ homeDir });
+        expect(state.bin.found).toBe(true);
+        expect(state.setup.runtimes.pi.ok, "doctor debe fallar por el env parcial, no pasar por el default").toBe(false);
+        expect(state.exposure.runtimes.pi.exposed).toBe(false);
+        expect(JSON.stringify(state.setup.runtimes.pi)).toMatch(/pi|singleton|mcp|package|partial|missing/i);
+      } finally {
+        if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previous;
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

@@ -81,20 +81,6 @@ function hasActiveEngramPlugin(configDir: string): boolean {
   return match !== null && !/enabled\s*=\s*false/.test(match[1]!);
 }
 
-/**
- * Protocolo de memoria ya presente por otra vía: hooks y skill del plugin
- * activo, o un engram-instructions.md de `engram setup codex` (en configDir o
- * referenciado como model_instructions_file en config.toml). En ese caso no
- * se inyecta la sección engram-protocol en AGENTS.md para no duplicarla; el
- * MCP user separado se conserva y se gestiona por otro flujo.
- */
-function hasEngramProtocol(configDir: string): boolean {
-  if (hasActiveEngramPlugin(configDir)) return true;
-  if (fs.existsSync(path.join(configDir, "engram-instructions.md"))) return true;
-  const config = readTextIfExists(path.join(configDir, "config.toml"));
-  return config !== null && /engram-instructions\.md/.test(config);
-}
-
 const CODEX_JSON_STRING = String.raw`"(?:\\.|[^"\\\r\n])*"`;
 const CODEX_JSON_VALUE = String.raw`(?:${CODEX_JSON_STRING}|-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|true|false)`;
 const CODEX_JSON_STRING_ARRAY = String.raw`\[(?:\s*${CODEX_JSON_STRING}(?:\s*,\s*${CODEX_JSON_STRING})*\s*)?\]`;
@@ -432,10 +418,6 @@ export const codexAdapter: Adapter = {
         reason: "External verification is available only through the external verifier",
       },
     ]);
-  },
-
-  injectEngramProtocol(ctx) {
-    return !hasEngramProtocol(ctx.configDir);
   },
 
   paths(configDir) {

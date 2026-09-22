@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
+import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE, STACK_ENGRAM_PROVIDER_ONLY } from "./fixtures/pi-runtime.js";
 import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
+import { stackRoot } from "../src/lib/paths.js";
 
 const piDirectory = process.env.JORGEX_PI_DIR;
 const crossRepo = piDirectory === undefined ? describe.skip : describe;
@@ -256,10 +257,33 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const experienceReceipt = path.join(agentDir, "jorgex-pi", "experience-lifecycle.v1.json");
     const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
     const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
+    // T54-RED: official `engram setup pi` preconditions (provider-managed
+    // singleton packages + canonical MCP + executable sandbox binary) must
+    // exist before runner sync/doctor; the runner never invokes the
+    // coordinator. Versions are provider-managed observations, only the
+    // singleton shape (exactly one gentle + one adapter) and the canonical
+    // MCP form are asserted. Sandbox stays under the temp root, no real HOME.
+    const officialGentle = "npm:gentle-engram@0.1.99";
+    const officialAdapter = "npm:pi-mcp-adapter@0.2.5";
+    const officialPackages = [officialGentle, officialAdapter];
     fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(settingsFile, JSON.stringify({ foreign: { keep: true }, defaultThinkingLevel: "high" }));
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: officialPackages, foreign: { keep: true }, defaultThinkingLevel: "high" }));
     fs.writeFileSync(modelsFile, JSON.stringify({ foreign: { keep: true } }));
-    fs.writeFileSync(engramBin, "placeholder");
+    fs.writeFileSync(engramBin, process.platform === "win32" ? "placeholder" : "#!/bin/sh\nexit 0\n");
+    if (process.platform !== "win32") fs.chmodSync(engramBin, 0o700);
+    const seedOfficialSetup = (codingAgentDir: string): void => {
+      fs.mkdirSync(codingAgentDir, { recursive: true });
+      const targetSettings = path.join(codingAgentDir, "settings.json");
+      if (!fs.existsSync(targetSettings)) {
+        fs.writeFileSync(targetSettings, JSON.stringify({ packages: officialPackages }));
+      }
+      fs.writeFileSync(path.join(codingAgentDir, "mcp.json"), JSON.stringify({
+        mcpServers: {
+          engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+        },
+      }));
+    };
+    seedOfficialSetup(agentDir);
 
     const environment = {
       PI_CODING_AGENT_DIR: agentDir,
@@ -281,6 +305,16 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const sync = run("sync");
     expect(sync.status).toBe(0);
     expectRunnerOutput(sync, "sync", runner);
+    // Official setup preconditions survive managed sync: exactly one
+    // provider-managed gentle + adapter entry and the canonical MCP server
+    // pointing at the executable sandbox binary.
+    expect(readJson(settingsFile)).toMatchObject({ packages: officialPackages });
+    expect(readJson(path.join(agentDir, "mcp.json"))).toEqual({
+      mcpServers: {
+        engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+      },
+    });
+    expect(fs.statSync(engramBin).isFile()).toBe(true);
     expect(readJson(settingsFile)).toMatchObject({
       foreign: { keep: true },
       defaultProvider: "openai-codex",
@@ -310,7 +344,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const canonicalCleanup = run("cleanup");
     expect(canonicalCleanup.status).toBe(0);
     expectRunnerOutput(canonicalCleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultThinkingLevel: "high" });
+    expect(readJson(settingsFile)).toEqual({ packages: officialPackages, foreign: { keep: true }, defaultThinkingLevel: "high" });
     expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
     expect(fs.existsSync(receiptFile)).toBe(false);
     expect(fs.existsSync(permissionsFile)).toBe(false);
@@ -346,7 +380,7 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const cleanup = run("cleanup");
     expect(cleanup.status).toBe(0);
     expectRunnerOutput(cleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ foreign: { keep: true }, defaultModel: "user-model", theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
+    expect(readJson(settingsFile)).toEqual({ packages: officialPackages, foreign: { keep: true }, defaultModel: "user-model", theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
     expect(readJson(modelsFile)).toEqual({
       foreign: { keep: true },
       providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
@@ -357,9 +391,11 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const preexistingPolicy = path.join(preexistingAgent, "extensions", "pi-permission-system", "config.json");
     fs.mkdirSync(path.dirname(preexistingPolicy), { recursive: true });
     fs.writeFileSync(preexistingPolicy, userPolicyBytes);
-    const preexistingSettings = { theme: "JorgeX", quietStartup: false, hideThinkingBlock: true, defaultThinkingLevel: "high" };
+    const preexistingSettings = { packages: officialPackages, theme: "JorgeX", quietStartup: false, hideThinkingBlock: true, defaultThinkingLevel: "high" };
     const preexistingSettingsFile = path.join(preexistingAgent, "settings.json");
     fs.writeFileSync(preexistingSettingsFile, JSON.stringify(preexistingSettings));
+    seedOfficialSetup(preexistingAgent);
+    expect(readJson(preexistingSettingsFile)).toMatchObject({ packages: officialPackages });
     expect(run("sync", preexistingAgent).status).toBe(0);
     expect(run("cleanup", preexistingAgent).status).toBe(0);
     expect(fs.readFileSync(preexistingPolicy, "utf8")).toBe(userPolicyBytes);
@@ -369,6 +405,8 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     const invalidPolicy = path.join(invalidAgent, "extensions", "pi-permission-system", "config.json");
     fs.mkdirSync(path.dirname(invalidPolicy), { recursive: true });
     fs.writeFileSync(invalidPolicy, "invalid JSON");
+    fs.writeFileSync(path.join(invalidAgent, "settings.json"), JSON.stringify({ packages: officialPackages }));
+    seedOfficialSetup(invalidAgent);
     const invalidSync = run("sync", invalidAgent);
     expect(invalidSync.status).toBe(0);
     expectRunnerOutput(invalidSync, "sync", runner);
@@ -519,13 +557,28 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     const engramBin = path.join(target, "bin", process.platform === "win32" ? "engram.exe" : "engram");
     const foreignSource = "npm:foreign@1.0.0";
     const foreignState = { owner: "user", nested: { keep: true } };
+    // T54-RED: this lower-level managed-operation test starts AFTER the
+    // coordinator's external `engram setup pi` (it never pretends to run the
+    // coordinator). Seed the singleton provider-managed packages + canonical
+    // MCP with the executable sandbox binary before the managed install;
+    // versions are provider-managed observations, only the singleton shape and
+    // canonical MCP form are asserted. Order/package/projection assertions
+    // below stay strict. Sandbox stays under the temp target, no real HOME.
+    const officialGentle = "npm:gentle-engram@0.1.99";
+    const officialAdapter = "npm:pi-mcp-adapter@0.2.5";
 
     fs.mkdirSync(workspace, { recursive: true });
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, process.platform === "win32" ? "placeholder" : "#!/bin/sh\nexit 0\n");
     if (process.platform !== "win32") fs.chmodSync(engramBin, 0o700);
-    fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: [foreignSource], foreignState, defaultThinkingLevel: "high" })}\n`);
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: [foreignSource, officialGentle, officialAdapter], foreignState, defaultThinkingLevel: "high" })}\n`);
+    fs.writeFileSync(path.join(agentDir, "mcp.json"), JSON.stringify({
+      mcpServers: {
+        engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+      },
+    }));
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8")).packages).toEqual([foreignSource, officialGentle, officialAdapter]);
 
     const invocations: Array<{ executable: string; args: string[]; environment: Record<string, string> }> = [];
     const runIsolated = (invocation: { executable: string; args: string[]; environment: Record<string, string> }) => {
@@ -654,14 +707,14 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       }),
     ]);
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
-      packages: [foreignSource, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [], prompts: [] }],
+      packages: [foreignSource, officialGentle, officialAdapter, { source: PI_RUNTIME_CANDIDATE.package.source, skills: [], prompts: [] }],
       foreignState,
       defaultProvider: "openai-codex",
       defaultModel: "gpt-5.6-sol",
       defaultThinkingLevel: "high",
     });
     expect(JSON.parse(fs.readFileSync(path.join(target, "backups", "settings.json"), "utf8"))).toEqual({
-      packages: [foreignSource],
+      packages: [foreignSource, officialGentle, officialAdapter],
       foreignState,
       defaultThinkingLevel: "high",
     });
@@ -676,20 +729,20 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     });
     expect(remove).toMatchObject({ exitCode: 0, stderr: "" });
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
-      packages: [foreignSource],
+      packages: [foreignSource, officialGentle, officialAdapter],
       foreignState,
       defaultThinkingLevel: "high",
     });
     expect(fs.existsSync(packageRoot)).toBe(false);
   }, 60_000);
 
-  it("exposes the exact Pi 0.8.23 initialization-diagnostics-v1 contract and provisional pending doctor", async () => {
+  it("exposes the exact Pi 0.8.28 initialization-diagnostics-v1 contract and provisional pending doctor", async () => {
     const root = path.resolve(piDirectory!);
     const manifest = readJson(path.join(root, "package.json")) as { name?: string; version?: string };
-    expect(manifest).toMatchObject({ name: "jorgex-pi", version: "0.8.23" });
+    expect(manifest).toMatchObject({ name: "jorgex-pi", version: "0.8.28" });
 
     const contract = readJson(path.join(root, "contract", "jorgex-pi.v1.json")) as { capabilities?: string[]; package?: { version?: string; source?: string } };
-    expect(contract.package).toEqual({ name: "jorgex-pi", version: "0.8.23", source: "npm:jorgex-pi@0.8.23" });
+    expect(contract.package).toEqual({ name: "jorgex-pi", version: "0.8.28", source: "npm:jorgex-pi@0.8.28" });
     expect(contract.capabilities).toContain("initialization-diagnostics-v1");
     expect(contract.capabilities?.at(-1)).toBe("initialization-diagnostics-v1");
 
@@ -734,7 +787,7 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       schemaVersion: 1,
       command: "doctor",
       ok: false,
-      package: { name: "jorgex-pi", version: "0.8.23", root: packageRoot },
+      package: { name: "jorgex-pi", version: "0.8.28", root: packageRoot },
       result: {
         healthy: false,
         checks: [
@@ -753,11 +806,11 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
       },
     })}\n`;
     const candidate = {
-      source: "npm:jorgex-pi@0.8.23",
+      source: "npm:jorgex-pi@0.8.28",
       bytes: 1,
       sha256: "a".repeat(64),
       sha512: "b".repeat(128),
-      package: { name: "jorgex-pi", version: "0.8.23", source: "npm:jorgex-pi@0.8.23" },
+      package: { name: "jorgex-pi", version: "0.8.28", source: "npm:jorgex-pi@0.8.28" },
     } as const;
 
     let downloadDestination: string | null = null;
@@ -787,4 +840,129 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(result).toEqual(expect.objectContaining({ kind: "installed" }));
   }, 60_000);
 
+});
+
+describe("T43 provider-only parity: Stack sin protocolo Engram", () => {
+  it("no distribuye fuente/sección/placeholder/interfaz Stack en ningún runtime", () => {
+    const root = stackRoot();
+    expect(fs.existsSync(path.join(root, STACK_ENGRAM_PROVIDER_ONLY.forbiddenSource.replace(/^stack\//, "")))).toBe(false);
+    const sections = fs.readFileSync(path.join(root, "..", "src", "lib", "system-prompt-sections.ts"), "utf8");
+    expect(sections).not.toContain(STACK_ENGRAM_PROVIDER_ONLY.forbiddenSection);
+    const plugins = fs.readFileSync(path.join(root, "..", "src", "components", "plugins.ts"), "utf8");
+    expect(plugins).not.toContain(STACK_ENGRAM_PROVIDER_ONLY.forbiddenPlaceholder);
+    const types = fs.readFileSync(path.join(root, "..", "src", "adapters", "types.ts"), "utf8");
+    expect(types).not.toContain(STACK_ENGRAM_PROVIDER_ONLY.forbiddenInterface);
+    // Context7/browser/writing-style no se tocan en T43.
+    expect(sections).toContain("context7");
+    expect(sections).toContain("writing-style");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T52-RED: seam cross-repo compara el contrato productor 0.8.28 completo.
+// Cuando JORGEX_PI_DIR se provee, lee el tag exacto
+// 056fbc7eeea07466c3ce3a6f85723e94bcf38577 read-only (git show, sin mutar el
+// checkout) o el checkout si ya es 0.8.28, y compara capabilities completas.
+// Cuando JORGEX_PI_TARBALL se provee, lee el tarball exacto read-only y
+// compara el mismo contrato. Fuente independiente: contract/jorgex-pi.v1.json
+// del tag Pi v0.8.28. Ambos exigen bridge y resto intacto en productor y en
+// Stack (fixture + producción). No edita pin generado.
+// ---------------------------------------------------------------------------
+
+const T52_EXPECTED_PI_0_8_28_COMMIT = "056fbc7eeea07466c3ce3a6f85723e94bcf38577";
+const T52_EXPECTED_PI_0_8_28_CAPABILITIES = [
+  "foundation-contract-v1",
+  "stack-snapshot-v2",
+  "modular-system-prompts-v1",
+  "runtime-agents-v1",
+  "permission-gated-tools-v1",
+  "structured-questions-v1",
+  "web-access-v1",
+  "goal-continuation-v1",
+  "engram-official-bridge-v1",
+  "engram-runtime-tools-v1",
+  "context7-http-v1",
+  "permissions-policy-v1",
+  "permissions-upgrade-v1",
+  "experience-defaults-v1",
+  "chrome-devtools-handoff-v1",
+  "playwright-handoff-v1",
+  "runner-json-v1",
+  "tui-branding-v1",
+  "managed-primary-model-v1",
+  "quality-receipt-contract-v1",
+  "quality-capabilities-contract-v1",
+  "initialization-diagnostics-v1",
+] as const;
+
+function t52ReadProducerContract(piDir: string): { version: string; capabilities: string[] } {
+  const root = path.resolve(piDir);
+  const checkoutFile = path.join(root, "contract", "jorgex-pi.v1.json");
+  try {
+    const checkout = readJson(checkoutFile) as { package?: { version?: unknown }; capabilities?: unknown };
+    if (checkout.package?.version === "0.8.28" && Array.isArray(checkout.capabilities)) {
+      return { version: "0.8.28", capabilities: checkout.capabilities as string[] };
+    }
+  } catch {
+    // El checkout puede estar en otra versión; se intenta el tag exacto.
+  }
+  const tagOut = execFileSync("git", ["show", `${T52_EXPECTED_PI_0_8_28_COMMIT}:contract/jorgex-pi.v1.json`], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const tagContract = JSON.parse(tagOut) as { package?: { version?: unknown }; capabilities?: unknown };
+  expect(tagContract.package?.version).toBe("0.8.28");
+  expect(Array.isArray(tagContract.capabilities)).toBe(true);
+  return { version: "0.8.28", capabilities: tagContract.capabilities as string[] };
+}
+
+const t52CrossRepo = piDirectory === undefined ? describe.skip : describe;
+const t52Registry = registryTarball === undefined ? describe.skip : describe;
+
+t52CrossRepo("[T52-RED] productor Pi 0.8.28 leído del tag exacto", () => {
+  it("el checkout/tag productor contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
+    const producer = t52ReadProducerContract(piDirectory!);
+    expect(producer.capabilities).toContain("engram-official-bridge-v1");
+    expect(producer.capabilities).not.toContain("mcp-adapter-v1");
+    expect(producer.capabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+
+    const fixtureCapabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
+    expect(fixtureCapabilities).toContain("engram-official-bridge-v1");
+    expect(fixtureCapabilities).not.toContain("mcp-adapter-v1");
+    expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(fixtureCapabilities).toEqual(producer.capabilities);
+
+    const { PI_RUNTIME_REGISTRY } = await import("../src/lib/pi-runtime.js");
+    const productionCapabilities = [...PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities];
+    expect(productionCapabilities).toContain("engram-official-bridge-v1");
+    expect(productionCapabilities).not.toContain("mcp-adapter-v1");
+    expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(productionCapabilities).toEqual(producer.capabilities);
+  }, 60_000);
+});
+
+t52Registry("[T52-RED] tarball exacto Pi 0.8.28 con contrato productor completo", () => {
+  it("el tarball contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
+    const tarball = path.resolve(registryTarball!);
+    expectExactArtifactIntegrity(tarball);
+    const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {
+      package?: { version?: unknown };
+      capabilities?: unknown;
+    };
+    expect(contract.package?.version).toBe("0.8.28");
+    const tarballCapabilities = contract.capabilities as string[];
+    expect(tarballCapabilities).toContain("engram-official-bridge-v1");
+    expect(tarballCapabilities).not.toContain("mcp-adapter-v1");
+    expect(tarballCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+
+    const fixtureCapabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
+    expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(fixtureCapabilities).toEqual(tarballCapabilities);
+
+    const { PI_RUNTIME_REGISTRY } = await import("../src/lib/pi-runtime.js");
+    const productionCapabilities = [...PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities];
+    expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+    expect(productionCapabilities).toEqual(tarballCapabilities);
+  }, 60_000);
 });

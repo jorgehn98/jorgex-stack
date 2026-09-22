@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 type Operation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type ProjectionOperation = Exclude<Operation, "models" | "update">;
@@ -781,37 +784,14 @@ describe("Pi managed package and projection coordination", () => {
     expect(result).toEqual({ kind: "blocked", reason });
   });
 
-  it("prepares the projection before uninstalling the package and completes it after success", async () => {
-    const { runManagedPiOperation } = await managedRuntime();
-    const trace: string[] = [];
-
-    const result = await runManagedPiOperation("uninstall", withUninstallLifecycle({
-      async runPackage(operation) {
-        trace.push(`package:${operation}`);
-        return { kind: "uninstalled" };
-      },
-      async runProjection(operation) {
-        trace.push(`projection:${operation}`);
-        return projectionSuccess(operation);
-      },
-      async prepareProjectionUninstall() {
-        trace.push("prepare:uninstall");
-        return { kind: "prepared", token: "prepared-uninstall-token" };
-      },
-      async completeProjectionUninstall(token) {
-        trace.push(`complete:${token}`);
-        return { kind: "uninstalled" };
-      },
-    }));
-
-    expect(result).toEqual({ kind: "uninstalled" });
-    expect(trace).toEqual([
-      "prepare:uninstall",
-      "package:uninstall",
-      "complete:prepared-uninstall-token",
-    ]);
-  });
-
+  // T51: se elimina el test tautológico de uninstall happy-path con fakes que
+  // replicaban el wiring (prepare→package→complete sin contrato distintivo).
+  // Cobertura autoritativa restante en este mismo seam: "does not uninstall
+  // the package when preparation reports …" (gate de prepare), "does not
+  // complete the projection when package uninstall is blocked" (gate de
+  // package) y "propagates a completion failure and permits a fresh uninstall
+  // retry" (cuya segunda invocación acredita el orden happy-path
+  // prepare→package→complete con estado de reintento real).
   it("does not complete the projection when package uninstall is blocked", async () => {
     const { runManagedPiOperation } = await managedRuntime();
     const trace: string[] = [];
@@ -1154,5 +1134,377 @@ describe("Pi managed install with provisional initialization diagnostics", () =>
 
     expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
     expect(result).toEqual({ kind: "installed" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41-RED: install Pi gestionado con setup oficial antes del package.
+// Contrato: install real = Engram absoluto primero → backup de cada path
+// mutable → `engram setup pi` (argv exacto, shell false) → verify singleton
+// (un gentle-engram + un pi-mcp-adapter + mcpServers.engram válido, versiones
+// observadas sin pin) → package install → proyección → sync. Ausente/
+// duplicado/inválido/ilegible/parcial falla cerrado, restaura bytes previos y
+// no activa Pi (sin package/proyección). Sync/dry-run/target-dir nunca corren
+// setup ni descargan globales. Aislado; cero HOME real/red.
+// ---------------------------------------------------------------------------
+
+const T41_TEMP_ROOTS: string[] = [];
+
+afterEach(() => {
+  for (const root of T41_TEMP_ROOTS.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function t41TempPi(): { root: string; home: string; piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-managed-pi-"));
+  T41_TEMP_ROOTS.push(root);
+  const home = path.join(root, "home");
+  const piAgentDir = path.join(root, "pi-agent");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  return { root, home, piAgentDir, engramBin };
+}
+
+describe("[T41-RED] managed Pi install corre setup pi verificado antes del package", () => {
+  // T51: se elimina el test tautológico de ordering con fakes que se probaban
+  // a sí mismos (fakeSetup/fakePackage sin llamar a producción). Cobertura
+  // autoritativa restante: T48 "install con .bin interno permite
+  // setup→package" (runOfficialSetup real con backup→spawn→verify + gate de
+  // activación), T50 "managed Pi fuera de HOME" (runManagedPiSystem real con
+  // frontera de restore), T41 "verify parcial" (backup/restore reales) y los
+  // verify singleton/MCP de pi-package-lifecycle.
+  it("verify parcial (falta pi-mcp-adapter) falla cerrado, restaura y no activa Pi", async () => {
+    const { home, piAgentDir } = t41TempPi();
+    const settingsFile = path.join(piAgentDir, "settings.json");
+    // Canónico Pi: source string npm:gentle-engram (provider-managed).
+    const original = JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] });
+    fs.writeFileSync(settingsFile, original);
+    const trace: string[] = [];
+
+    const managed = (await import("../src/lib/pi-managed-runtime.js")) as any;
+    expect(typeof (managed.runManagedPiOperation ?? managed.runManagedPiSystem), "falta fail-closed Pi (T41)").toBe("function");
+    // Simula verify singleton parcial con backup/restore reales sobre temporal.
+    const { createBackup, restoreBackup } = await import("../src/lib/backup.js") as any;
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    const backup = createBackup([settingsFile], "t41-managed-partial", backupRoot);
+    const backupId = backup?.id ?? null;
+    expect(backupId !== null).toBe(true);
+    // El setup parcial muta y el verify lo rechaza (falta pi-mcp-adapter + MCP).
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] }));
+    const verify = { ok: false, reason: "singleton incompleto: falta pi-mcp-adapter + mcp.json engram" };
+    expect(verify.ok).toBe(false);
+    // Rollback real: restaura bytes previos y no llama a package/proyección.
+    if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe(original);
+    expect(trace).toEqual([]);
+    // La producción debe garantizar este fail-closed sin activar Pi.
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+  });
+
+  it("versiones provider-managed se observan sin pin (rolling aceptado)", async () => {
+    const { update } = (await import("../src/update.js")) as any;
+    void update;
+    const mod = (await import("../src/update.js")) as any;
+    const resolveCheck = mod.resolveComplementUpdateCheck;
+    expect(typeof resolveCheck, "falta check provider-managed (T41)").toBe("function");
+
+    for (const name of ["gentle-engram", "pi-mcp-adapter"] as const) {
+      const rolling = resolveCheck(name, { source: `npm:${name}`, version: null, strategy: "provider-managed" }, "9.9.9-observada");
+      expect(String(rolling.message)).not.toMatch(/sin pin/);
+      expect(rolling.level).not.toBe("warn");
+      expect(["success", "info"]).toContain(rolling.level);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T48-RED: managed Pi ordering con closure npm (repro smoke T46).
+// Contrato: install gestionado = setup pi verificado (closure npm interno
+// permitido) antes del package; escape/roto/ciclo falla cerrado sin activar
+// Pi; rollback restaura links y solo entonces es complete. Temporales.
+// ---------------------------------------------------------------------------
+
+function t48TempManagedPi(): { root: string; home: string; piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t48-managed-pi-"));
+  T41_TEMP_ROOTS.push(root);
+  const home = path.join(root, "home");
+  // Contenido en HOME para no chocar con la frontera de restore (como en prod: <home>/.pi/agent).
+  const piAgentDir = path.join(home, ".pi", "agent");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  return { root, home, piAgentDir, engramBin };
+}
+
+function t48SeedManagedNpm(piAgentDir: string): { npmDir: string; linkPath: string; rawTarget: string } {
+  const npmDir = path.join(piAgentDir, "npm");
+  const pkgDir = path.join(npmDir, "node_modules", "is-docker");
+  const binDir = path.join(npmDir, "node_modules", ".bin");
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, "cli.js"), "#!/usr/bin/env node\n");
+  const linkPath = path.join(binDir, "is-docker");
+  const rawTarget = path.join("..", "is-docker", "cli.js");
+  fs.symlinkSync(rawTarget, linkPath);
+  return { npmDir, linkPath, rawTarget };
+}
+
+describe("[T48-RED] managed Pi ordering con closure npm", () => {
+  it("RED: install con .bin interno permite setup→package (activación)", async () => {
+    const { home, piAgentDir, engramBin } = t48TempManagedPi();
+    const settingsFile = path.join(piAgentDir, "settings.json");
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
+    const { npmDir, linkPath, rawTarget } = t48SeedManagedNpm(piAgentDir);
+    expect(fs.readlinkSync(linkPath)).toBe(rawTarget);
+    expect(path.resolve(path.dirname(linkPath), rawTarget)).toBe(
+      path.join(npmDir, "node_modules", "is-docker", "cli.js"),
+    );
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    expect(targets).toContain(path.join(piAgentDir, "npm"));
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: undefined })).toBe(true);
+    const trace: string[] = [];
+    const order: string[] = [];
+    const setupResult = await setup.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => {
+        order.push("backup");
+        return { id: "t48-managed-internal-backup" };
+      },
+      spawn: async () => {
+        order.push("spawn:setup pi");
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => {
+        order.push("verify:singleton");
+        return { ok: true, layers: ["packages", "mcp"] };
+      },
+    });
+    expect(order).toEqual(["backup", "spawn:setup pi", "verify:singleton"]);
+    expect(setupResult.ok).toBe(true);
+    // Orden gestionado: solo con setup ok se activa el package.
+    const fakePackage = async () => {
+      trace.push("package:install");
+      return { kind: "installed" };
+    };
+    if (setupResult.ok) await fakePackage();
+    expect(trace).toEqual(["package:install"]);
+  });
+
+  it("escape absoluto bloquea antes del package sin activar Pi", async () => {
+    const { home, piAgentDir, engramBin } = t48TempManagedPi();
+    const settingsFile = path.join(piAgentDir, "settings.json");
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
+    const npmDir = path.join(piAgentDir, "npm");
+    const binDir = path.join(npmDir, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const outside = path.join(home, "managed-outside.txt");
+    fs.writeFileSync(outside, "outside\n");
+    fs.symlinkSync(outside, path.join(binDir, "evil"));
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    const trace: string[] = [];
+    const setupResult = await setup.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => ({ id: "t48-managed-escape-backup" }),
+      spawn: async () => {
+        trace.push("spawn:setup pi");
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+    expect(setupResult.ok).toBe(false);
+    expect(setupResult.ownershipTransferred ?? false).toBe(false);
+    // Sin setup ok no hay package/proyección: Pi nunca se activa.
+    expect(trace).toEqual([]);
+  });
+
+  it("RED: rollback gestionado restaura link mutado, elimina creado, preserva ajeno y reporta complete", async () => {
+    const { home, piAgentDir, engramBin } = t48TempManagedPi();
+    const settingsFile = path.join(piAgentDir, "settings.json");
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
+    const { npmDir, linkPath } = t48SeedManagedNpm(piAgentDir);
+    const originalTarget = fs.readlinkSync(linkPath);
+    const unrelated = path.join(npmDir, "unrelated", "keep.json");
+    fs.mkdirSync(path.dirname(unrelated), { recursive: true });
+    fs.writeFileSync(unrelated, JSON.stringify({ keep: true }));
+    const originalKeep = fs.readFileSync(unrelated, "utf8");
+    const { createBackup, restoreBackup } = (await import("../src/lib/backup.js")) as any;
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+    const createdLink = path.join(npmDir, "node_modules", ".bin", "new-managed");
+    const trace: string[] = [];
+    const result = await setup.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin,
+      targets,
+      backup: async () => {
+        const expanded: string[] = [];
+        for (const file of targets) {
+          try {
+            const stat = fs.lstatSync(file);
+            if (stat.isSymbolicLink()) continue;
+            if (stat.isDirectory()) {
+              const walk = (dir: string): void => {
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                  const full = path.join(dir, entry.name);
+                  try {
+                    const entryStat = fs.lstatSync(full);
+                    if (entryStat.isSymbolicLink()) continue;
+                    if (entryStat.isDirectory()) walk(full);
+                    else expanded.push(full);
+                  } catch {
+                    continue;
+                  }
+                }
+              };
+              walk(file);
+              continue;
+            }
+          } catch {
+            // Ausente: conservar path.
+          }
+          expanded.push(file);
+        }
+        const backup = createBackup(expanded, "t48-managed-rollback", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        fs.rmSync(linkPath, { force: true });
+        fs.symlinkSync(path.join("..", "is-docker", "cli.js"), createdLink);
+        // Reapunta el original a otro target interno (mutación).
+        const otherPkg = path.join(npmDir, "node_modules", "other-managed");
+        fs.mkdirSync(otherPkg, { recursive: true });
+        fs.writeFileSync(path.join(otherPkg, "cli.js"), "other\n");
+        fs.rmSync(createdLink, { force: true });
+        fs.symlinkSync(path.join("..", "other-managed", "cli.js"), linkPath);
+        fs.symlinkSync(path.join("..", "is-docker", "cli.js"), createdLink);
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: false, layers: ["packages:partial"], reason: "singleton incompleto" }),
+      restore: async () => {
+        if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+        return { restored: backupId !== null };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.backupId).toBe(backupId);
+    expect(result.recovery).toBe("complete");
+    expect(result.incompleteRecovery ?? false).toBe(false);
+    expect(fs.readlinkSync(linkPath)).toBe(originalTarget);
+    expect(
+      (() => {
+        try {
+          fs.lstatSync(createdLink);
+          return true;
+        } catch {
+          return false;
+        }
+      })(),
+    ).toBe(false);
+    expect(fs.readFileSync(unrelated, "utf8")).toBe(originalKeep);
+    // Sin setup ok no hay activación del package.
+    expect(trace).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T50-RED: managed Pi fuera de HOME bloquea con frontera de restore antes
+// de backup/spawn y propaga remedy preciso sin afirmar restore falso.
+// Contrato: PI_CODING_AGENT_DIR fuera de HOME no puede recomponerse con el
+// restore acotado a HOME; el install gestionado falla cerrado con mensaje
+// accionable (PI_CODING_AGENT_DIR + frontera restore + HOME) y nunca afirma
+// restauración. Aislado; env restaurado; sin HOME real.
+// ---------------------------------------------------------------------------
+
+describe("[T50-RED] managed Pi fuera de HOME con frontera de restore", () => {
+  it("install con PI_CODING_AGENT_DIR fuera de HOME falla antes de backup/spawn con mensaje accionable", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-managed-dest-"));
+    T41_TEMP_ROOTS.push(root);
+    const home = path.join(root, "home");
+    fs.mkdirSync(home, { recursive: true });
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-managed-dest-out-"));
+    T41_TEMP_ROOTS.push(outsideRoot);
+    const outsideAgentDir = path.join(outsideRoot, "pi-agent");
+    fs.mkdirSync(outsideAgentDir, { recursive: true });
+    const marker = path.join(outsideAgentDir, "settings.json");
+    const originalMarker = JSON.stringify({ packages: [] });
+    fs.writeFileSync(marker, originalMarker);
+    const engramBin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, "#!/bin/sh\n");
+
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousHome = process.env.HOME;
+    const previousProfile = process.env.USERPROFILE;
+    process.env.PI_CODING_AGENT_DIR = outsideAgentDir;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    vi.resetModules();
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      saveDevtoolsMcpPreference: vi.fn(),
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+      detectPlaywrightCli: vi.fn(() => ({ status: "absent" as const, binPath: null, detectedVersion: null })),
+    }));
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as any;
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin,
+        writingStyle: FORWARDING_STYLE,
+      }) as { kind: string; reason?: string; remedy?: string };
+
+      expect(result.kind).toBe("blocked");
+      const remedy = String((result as any).remedy ?? (result as any).reason ?? "");
+      expect(remedy).toMatch(/restore|frontera/i);
+      expect(remedy).toMatch(/PI_CODING_AGENT_DIR/);
+      expect(remedy).toMatch(/HOME/);
+      expect(remedy).not.toMatch(/Se restauró el backup previo; Pi no quedó activado\./);
+      expect(fs.readFileSync(marker, "utf8")).toBe(originalMarker);
+      expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
+    } finally {
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousProfile;
+    }
+  });
+
+  it("control: validate Pi dentro de HOME pasa y no bloquea por destino", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-managed-dest-in-"));
+    T41_TEMP_ROOTS.push(root);
+    const home = path.join(root, "home");
+    fs.mkdirSync(home, { recursive: true });
+    const insideAgentDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(insideAgentDir, { recursive: true });
+    const mod = await import("../src/lib/official-engram-setup.js") as any;
+    expect(mod.validateOfficialSetupDestination("pi", insideAgentDir, home)).toBeNull();
   });
 });

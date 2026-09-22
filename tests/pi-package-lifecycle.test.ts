@@ -1,5 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PI_RUNTIME_CANDIDATE, PI_RUNTIME_PREVIOUS_CANDIDATE, type PiRuntimeCandidate } from "./fixtures/pi-runtime.js";
 
 type PiPackageReceipt = {
@@ -920,7 +922,515 @@ describe("Pi package-managed lifecycle", () => {
       },
     });
 
-    expect(calls).toEqual(["sync", "upgrade"]);
-    expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+      expect(calls).toEqual(["sync", "upgrade"]);
+      expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41-RED: verificación singleton del post-estado `engram setup pi`.
+// Contrato: tras el setup, exactamente una entrada global gentle-engram +
+// exactamente una global pi-mcp-adapter + un mcpServers.engram oficial válido;
+// versiones provider-managed (se observan, no se fijan). Ausente/duplicado/
+// inválido/ilegible/parcial falla cerrado, preserva bytes previos y no activa
+// Pi (sin invocación al package). Temporales aislados; cero HOME real/red.
+// El verificador Pi sigue el patrón de los adapters (verifyOfficialSetup).
+// ---------------------------------------------------------------------------
+
+const T41_PI_LIFECYCLE_ROOTS: string[] = [];
+
+afterEach(() => {
+  for (const root of T41_PI_LIFECYCLE_ROOTS.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function t41PiPostState(kind: "valid" | "missing-adapter" | "duplicate-engram" | "invalid-mcp" | "partial"): {
+  root: string;
+  piAgentDir: string;
+  engramBin: string;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-post-"));
+  T41_PI_LIFECYCLE_ROOTS.push(root);
+  const piAgentDir = path.join(root, "pi-agent");
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(root, "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  // Canónico upstream main + Pi 0.8.28: packages como sources
+  // `npm:gentle-engram` / `npm:pi-mcp-adapter` (provider-managed, se observan
+  // sin pin) y mcp.json con mcpServers.engram directo exacto (command absoluto,
+  // args ["mcp","--tools=agent"], lifecycle "lazy", directTools false).
+  const packages =
+    kind === "valid"
+      ? ["npm:gentle-engram@0.1.99-observada", "npm:pi-mcp-adapter@2.99.0-observada"]
+      : kind === "missing-adapter"
+        ? ["npm:gentle-engram@0.1.99-observada"]
+        : kind === "duplicate-engram"
+          ? [
+            "npm:gentle-engram@0.1.99-observada",
+            "npm:gentle-engram@0.1.100-observada",
+            "npm:pi-mcp-adapter@2.99.0-observada",
+          ]
+          : kind === "invalid-mcp"
+            ? ["npm:gentle-engram@0.1.99-observada", "npm:pi-mcp-adapter@2.99.0-observada"]
+            : ["npm:gentle-engram@0.1.99-observada"];
+  fs.writeFileSync(path.join(piAgentDir, "settings.json"), JSON.stringify({ packages }));
+  const mcp =
+    kind === "invalid-mcp"
+      ? { mcpServers: { engram: { command: "foreign-server" } } }
+      : kind === "valid"
+        ? { mcpServers: { engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false } } }
+        : { mcpServers: {} };
+  fs.writeFileSync(path.join(piAgentDir, "mcp.json"), JSON.stringify(mcp));
+  if (kind === "partial") {
+    // Parcial ilegible: directorio donde se espera el MCP exacto (mcp.json).
+    fs.rmSync(path.join(piAgentDir, "mcp.json"), { force: true });
+    fs.mkdirSync(path.join(piAgentDir, "mcp.json"));
+  }
+  return { root, piAgentDir, engramBin };
+}
+
+describe("[T41-RED] verify Pi singleton + MCP exacto antes del package", () => {
+  it("acepta el post-estado válido con versiones rolling observadas (sin pin)", async () => {
+    const { piAgentDir, engramBin } = t41PiPostState("valid");
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    const verify = pi.verifyOfficialSetup;
+    expect(typeof verify, "falta verificador Pi singleton + MCP exacto (T41)").toBe("function");
+
+    const report = await verify({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok).toBe(true);
+    expect(report.layers).toEqual(expect.arrayContaining(["packages", "mcp"]));
+    expect(report.duplicates ?? false).toBe(false);
+    // Versiones rolling aceptadas: el reporte las observa sin exigir pin.
+    expect(JSON.stringify(report)).not.toMatch(/sin pin/i);
+  });
+
+  it.each([
+    ["missing-adapter", /pi-mcp-adapter|singleton|missing/i],
+    ["duplicate-engram", /duplicate|singleton/i],
+    ["invalid-mcp", /mcp|engram|invalid/i],
+    ["partial", /partial|unreadable|invalid|mcp|singleton/i],
+  ] as const)("falla cerrado ante post-estado %s sin activar Pi", async (kind, reasonPattern) => {
+    const { piAgentDir, engramBin } = t41PiPostState(kind);
+    const before = kind === "partial"
+      ? null
+      : fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8");
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    const verify = pi.verifyOfficialSetup;
+    expect(typeof verify, "falta verificador Pi fail-closed (T41)").toBe("function");
+
+    const report = await verify({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok).toBe(false);
+    expect(JSON.stringify(report)).toMatch(reasonPattern);
+    // Preserva bytes previos: el verificador es solo lectura.
+    if (before !== null) {
+      expect(fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8")).toBe(before);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T42-RED: verificación Pi acepta SOLO la forma directa canónica de upstream
+// main. Contrato: mcpServers.engram debe ser exactamente
+// { command === engramBin, args === ["mcp","--tools=agent"],
+//   lifecycle === "lazy", directTools === false }.
+// Cualquier wrapper arbitrario/Node/shell se rechaza aunque sus args
+// contengan tokens confiables (engramBin, "mcp", "--tools=agent"), y la forma
+// directa sin lifecycle lazy o sin directTools false explícito también se
+// rechaza. Solo lectura; temporales aislados.
+// ---------------------------------------------------------------------------
+
+function t42PiDir(): { piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t42-pi-mcp-"));
+  T41_PI_LIFECYCLE_ROOTS.push(root);
+  const piAgentDir = path.join(root, "pi-agent");
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(root, "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  fs.writeFileSync(
+    path.join(piAgentDir, "settings.json"),
+    JSON.stringify({ packages: ["npm:gentle-engram@0.1.99-observada", "npm:pi-mcp-adapter@2.99.0-observada"] }),
+  );
+  return { piAgentDir, engramBin };
+}
+
+describe("[T42-RED] verify Pi solo acepta MCP directo canónico upstream", () => {
+  it("control: acepta la forma directa canónica con lifecycle lazy + directTools false", async () => {
+    const { piAgentDir, engramBin } = t42PiDir();
+    fs.writeFileSync(
+      path.join(piAgentDir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+        },
+      }),
+    );
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi canónico (T42)").toBe("function");
+
+    const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok).toBe(true);
+    expect(report.layers).toEqual(expect.arrayContaining(["packages", "mcp"]));
+  });
+
+  it.each([["node"], ["arbitrary"], ["shell"]] as const)(
+    "rechaza wrapper %s aunque sus args contengan tokens confiables",
+    async (kind) => {
+      const { piAgentDir, engramBin } = t42PiDir();
+      const before = fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8");
+      const wrapper =
+        kind === "node"
+          ? { command: "node", args: ["/opt/pi/wrapper.js", engramBin, "mcp", "--tools=agent"], lifecycle: "lazy", directTools: false }
+          : kind === "arbitrary"
+            ? { command: "/tmp/pi-wrapper", args: [engramBin, "mcp", "--tools=agent"], lifecycle: "lazy", directTools: false }
+            : { command: "/bin/sh", args: ["-c", engramBin, "mcp", "--tools=agent"], lifecycle: "lazy", directTools: false };
+      fs.writeFileSync(path.join(piAgentDir, "mcp.json"), JSON.stringify({ mcpServers: { engram: wrapper } }));
+      const pi = (await import("../src/adapters/pi.js")) as any;
+      expect(typeof pi.verifyOfficialSetup, "falta verificador Pi estricto (T42)").toBe("function");
+
+      const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+      expect(report.ok).toBe(false);
+      expect(JSON.stringify(report)).toMatch(/mcp|invalid|conflict/i);
+      expect(fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8")).toBe(before);
+    },
+  );
+
+  it.each([["missing-lifecycle"], ["wrong-lifecycle"], ["missing-directTools"]] as const)(
+    "rechaza forma directa sin lifecycle lazy + directTools false exactos (%s)",
+    async (kind) => {
+      const { piAgentDir, engramBin } = t42PiDir();
+      const direct =
+        kind === "missing-lifecycle"
+          ? { command: engramBin, args: ["mcp", "--tools=agent"], directTools: false }
+          : kind === "wrong-lifecycle"
+            ? { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "eager", directTools: false }
+            : { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy" };
+      fs.writeFileSync(path.join(piAgentDir, "mcp.json"), JSON.stringify({ mcpServers: { engram: direct } }));
+      const pi = (await import("../src/adapters/pi.js")) as any;
+      expect(typeof pi.verifyOfficialSetup, "falta verificador Pi estricto (T42)").toBe("function");
+
+      const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+      expect(report.ok).toBe(false);
+      expect(JSON.stringify(report)).toMatch(/mcp|invalid|lifecycle|directTools/i);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// T50-RED: identidad estricta de package source + conflicto legacy servers.
+// Contrato: solo bare oficial o selector npm seguro de versión/tag/rango
+// (string u objeto con source); file:/link:/workspace:/patch:/URL/Git/paths
+// y alias npm a otro paquete se rechazan aunque el prefijo sea
+// npm:gentle-engram@/npm:pi-mcp-adapter@. MCP canónico exacto exige ausencia
+// de servers.engram legacy adicional: coexistencia es conflicto fail-closed.
+// Solo lectura; temporales aislados.
+// ---------------------------------------------------------------------------
+
+const T50_PI_SOURCE_ROOTS: string[] = [];
+
+afterEach(() => {
+  for (const root of T50_PI_SOURCE_ROOTS.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function t50PiDir(): { piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-pi-source-"));
+  T50_PI_SOURCE_ROOTS.push(root);
+  const piAgentDir = path.join(root, "pi-agent");
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(root, "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  fs.writeFileSync(
+    path.join(piAgentDir, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
+      },
+    }),
+  );
+  return { piAgentDir, engramBin };
+}
+
+describe("[T50-RED] Pi package source identidad estricta", () => {
+  it("control: acepta bare y selectores seguros de versión/tag/rango en string", async () => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi identidad (T50)").toBe("function");
+    const safePairs = [
+      ["npm:gentle-engram", "npm:pi-mcp-adapter"],
+      ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"],
+      ["npm:gentle-engram@^0.1.0", "npm:pi-mcp-adapter@^0.2.0"],
+      ["npm:gentle-engram@~0.1.0", "npm:pi-mcp-adapter@~0.2.0"],
+      ["npm:gentle-engram@latest", "npm:pi-mcp-adapter@latest"],
+      ["npm:gentle-engram@beta", "npm:pi-mcp-adapter@beta"],
+    ] as const;
+    for (const [gentle, adapter] of safePairs) {
+      fs.writeFileSync(path.join(piAgentDir, "settings.json"), JSON.stringify({ packages: [gentle, adapter] }));
+      const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+      expect(report.ok, `debe aceptar string seguro ${gentle} + ${adapter}`).toBe(true);
+    }
+  });
+
+  it("control: acepta bare y selectores seguros en objeto { source }", async () => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi identidad objeto (T50)").toBe("function");
+    const safePairs = [
+      ["npm:gentle-engram", "npm:pi-mcp-adapter"],
+      ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"],
+      ["npm:gentle-engram@^0.1.0", "npm:pi-mcp-adapter@latest"],
+    ] as const;
+    for (const [gentle, adapter] of safePairs) {
+      fs.writeFileSync(
+        path.join(piAgentDir, "settings.json"),
+        JSON.stringify({ packages: [{ source: gentle }, { source: adapter }] }),
+      );
+      const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+      expect(report.ok, `debe aceptar objeto seguro ${gentle} + ${adapter}`).toBe(true);
+    }
+  });
+
+  it.each([
+    ["file relativo", "npm:gentle-engram@file:../evil.tgz"],
+    ["file absoluto", "npm:gentle-engram@file:/tmp/evil.tgz"],
+    ["link", "npm:gentle-engram@link:../evil"],
+    ["workspace", "npm:gentle-engram@workspace:*"],
+    ["patch", "npm:gentle-engram@patch:gentle-engram@npm:0.1.99#./patch.diff"],
+    ["URL https", "npm:gentle-engram@https://evil.invalid/g.tgz"],
+    ["URL http", "npm:gentle-engram@http://evil.invalid/g.tgz"],
+    ["git https", "npm:gentle-engram@git+https://github.com/evil/r.git"],
+    ["git ssh", "npm:gentle-engram@git+ssh://git@github.com/evil/r.git"],
+    ["github shorthand", "npm:gentle-engram@github:evil/r"],
+    ["path relativo padre", "npm:gentle-engram@../evil"],
+    ["path relativo actual", "npm:gentle-engram@./evil"],
+    ["path absoluto", "npm:gentle-engram@/tmp/evil"],
+    ["alias npm a otro paquete", "npm:gentle-engram@npm:evil@1.0.0"],
+  ] as const)("rechaza gentle redirigido %s en string y en objeto", async (_name, gentleRedirected) => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi estricto (T50)").toBe("function");
+    const before = fs.readFileSync(path.join(piAgentDir, "mcp.json"), "utf8");
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: [gentleRedirected, "npm:pi-mcp-adapter@0.2.5"] }),
+    );
+    const asString = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asString.ok, `string redirigido debe fallar: ${gentleRedirected}`).toBe(false);
+    expect(JSON.stringify(asString)).toMatch(/singleton|source|divergent|invalid|package/i);
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: [{ source: gentleRedirected }, { source: "npm:pi-mcp-adapter@0.2.5" }] }),
+    );
+    const asObject = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asObject.ok, `objeto redirigido debe fallar: ${gentleRedirected}`).toBe(false);
+    expect(JSON.stringify(asObject)).toMatch(/singleton|source|divergent|invalid|package/i);
+    expect(fs.readFileSync(path.join(piAgentDir, "mcp.json"), "utf8")).toBe(before);
+  });
+
+  it.each([
+    ["file", "npm:pi-mcp-adapter@file:../evil.tgz"],
+    ["URL", "npm:pi-mcp-adapter@https://evil.invalid/a.tgz"],
+    ["git", "npm:pi-mcp-adapter@git+https://github.com/evil/a.git"],
+    ["alias a otro paquete", "npm:pi-mcp-adapter@npm:evil@1.0.0"],
+    ["workspace", "npm:pi-mcp-adapter@workspace:*"],
+    ["path", "npm:pi-mcp-adapter@../evil"],
+  ] as const)("rechaza adapter redirigido %s en string y en objeto", async (_name, adapterRedirected) => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi estricto adapter (T50)").toBe("function");
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", adapterRedirected] }),
+    );
+    const asString = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asString.ok, `adapter string redirigido debe fallar: ${adapterRedirected}`).toBe(false);
+    expect(JSON.stringify(asString)).toMatch(/singleton|source|divergent|invalid|package/i);
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: [{ source: "npm:gentle-engram@0.1.99" }, { source: adapterRedirected }] }),
+    );
+    const asObject = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asObject.ok, `adapter objeto redirigido debe fallar: ${adapterRedirected}`).toBe(false);
+    expect(JSON.stringify(asObject)).toMatch(/singleton|source|divergent|invalid|package/i);
+  });
+});
+
+describe("[T50-RED] Pi MCP canónico exige ausencia de servers.engram legacy", () => {
+  it("control: canónico exacto solo sin legacy pasa", async () => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"] }),
+    );
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi MCP (T50)").toBe("function");
+    const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok).toBe(true);
+  });
+
+  it.each([
+    ["copia exacta legacy", "exact"],
+    ["comando ajeno", "foreign"],
+    ["forma inválida", "invalid"],
+  ] as const)("coexistencia canónico exacto + servers.engram legacy %s es conflicto fail-closed", async (_name, legacyKind) => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"] }),
+    );
+    const canonical = { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false };
+    const legacy =
+      legacyKind === "exact"
+        ? { ...canonical }
+        : legacyKind === "foreign"
+          ? { command: "foreign-server", args: ["mcp"], lifecycle: "lazy", directTools: false }
+          : { command: engramBin };
+    fs.writeFileSync(
+      path.join(piAgentDir, "mcp.json"),
+      JSON.stringify({ mcpServers: { engram: canonical }, servers: { engram: legacy } }),
+    );
+    const before = fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8");
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi conflicto legacy (T50)").toBe("function");
+    const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok, `canónico + legacy ${legacyKind} debe fallar cerrado`).toBe(false);
+    expect(JSON.stringify(report)).toMatch(/conflict|servers|legacy|mcp/i);
+    expect(fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8")).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T50-RED fix-check: sufijo tarball local + válido+inseguro mismo nombre.
+// Contrato: selector que termina case-insensitive en .tgz/.tar/.tar.gz es
+// redirect a tarball local y se rechaza (string y {source}); un válido
+// oficial más un segundo inseguro que reclama el mismo nombre protegido
+// (gentle-engram o pi-mcp-adapter) falla en vez de filtrar el inseguro
+// antes del conteo singleton. Entradas ajenas no protegidas siguen
+// permitidas. Solo lectura; temporales aislados.
+// ---------------------------------------------------------------------------
+
+describe("[T50-RED] Pi sufijo tarball local rechazado", () => {
+  it.each([
+    ["gentle tgz minúsculas", "npm:gentle-engram@evil.tgz", "npm:pi-mcp-adapter@0.2.5"],
+    ["gentle TGZ mayúsculas", "npm:gentle-engram@EVIL.TGZ", "npm:pi-mcp-adapter@0.2.5"],
+    ["gentle tar minúsculas", "npm:gentle-engram@evil.tar", "npm:pi-mcp-adapter@0.2.5"],
+    ["gentle TAR mayúsculas", "npm:gentle-engram@evil.TAR", "npm:pi-mcp-adapter@0.2.5"],
+    ["gentle tar.gz minúsculas", "npm:gentle-engram@evil.tar.gz", "npm:pi-mcp-adapter@0.2.5"],
+    ["gentle TAR.GZ mayúsculas", "npm:gentle-engram@evil.TAR.GZ", "npm:pi-mcp-adapter@0.2.5"],
+    ["adapter tgz minúsculas", "npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@evil.tgz"],
+    ["adapter TGZ mayúsculas", "npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@EVIL.TGZ"],
+    ["adapter tar minúsculas", "npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@evil.tar"],
+    ["adapter TAR mayúsculas", "npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@evil.TAR"],
+    ["adapter tar.gz minúsculas", "npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@evil.tar.gz"],
+    ["adapter TAR.GZ mayúsculas", "npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@evil.TAR.GZ"],
+  ] as const)("rechaza tarball local %s en string y en objeto", async (_name, gentle, adapter) => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi tarball (T50)").toBe("function");
+    const before = fs.readFileSync(path.join(piAgentDir, "mcp.json"), "utf8");
+
+    fs.writeFileSync(path.join(piAgentDir, "settings.json"), JSON.stringify({ packages: [gentle, adapter] }));
+    const asString = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asString.ok, `tarball string debe fallar: ${gentle} + ${adapter}`).toBe(false);
+    expect(JSON.stringify(asString)).toMatch(/singleton|source|divergent|invalid|package|tarball/i);
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: [{ source: gentle }, { source: adapter }] }),
+    );
+    const asObject = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asObject.ok, `tarball objeto debe fallar: ${gentle} + ${adapter}`).toBe(false);
+    expect(JSON.stringify(asObject)).toMatch(/singleton|source|divergent|invalid|package|tarball/i);
+    expect(fs.readFileSync(path.join(piAgentDir, "mcp.json"), "utf8")).toBe(before);
+  });
+});
+
+describe("[T50-RED] Pi válido más inseguro del mismo nombre falla sin filtrar", () => {
+  it.each([
+    ["gentle válido más file", "npm:gentle-engram@0.1.99", "npm:gentle-engram@file:../evil.tgz"],
+    ["gentle válido más URL", "npm:gentle-engram@0.1.99", "npm:gentle-engram@https://evil.invalid/x.tgz"],
+    ["gentle válido más alias a otro", "npm:gentle-engram@0.1.99", "npm:gentle-engram@npm:evil@1.0.0"],
+    ["gentle válido más workspace", "npm:gentle-engram", "npm:gentle-engram@workspace:*"],
+  ] as const)("gentle %s en string y en objeto", async (_name, validGentle, unsafeGentle) => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi válido+inseguro (T50)").toBe("function");
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: [validGentle, unsafeGentle, "npm:pi-mcp-adapter@0.2.5"] }),
+    );
+    const asString = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asString.ok, `válido+inseguro string debe fallar: ${validGentle} + ${unsafeGentle}`).toBe(false);
+    expect(JSON.stringify(asString)).toMatch(/singleton|source|divergent|invalid|duplicate|package/i);
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({
+        packages: [{ source: validGentle }, { source: unsafeGentle }, { source: "npm:pi-mcp-adapter@0.2.5" }],
+      }),
+    );
+    const asObject = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asObject.ok, `válido+inseguro objeto debe fallar: ${validGentle} + ${unsafeGentle}`).toBe(false);
+    expect(JSON.stringify(asObject)).toMatch(/singleton|source|divergent|invalid|duplicate|package/i);
+  });
+
+  it.each([
+    ["adapter válido más file", "npm:pi-mcp-adapter@0.2.5", "npm:pi-mcp-adapter@file:../evil.tgz"],
+    ["adapter válido más URL", "npm:pi-mcp-adapter@0.2.5", "npm:pi-mcp-adapter@https://evil.invalid/a.tgz"],
+    ["adapter válido más alias a otro", "npm:pi-mcp-adapter@0.2.5", "npm:pi-mcp-adapter@npm:evil@1.0.0"],
+    ["adapter válido más workspace", "npm:pi-mcp-adapter", "npm:pi-mcp-adapter@workspace:*"],
+  ] as const)("adapter %s en string y en objeto", async (_name, validAdapter, unsafeAdapter) => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi válido+inseguro adapter (T50)").toBe("function");
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", validAdapter, unsafeAdapter] }),
+    );
+    const asString = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asString.ok, `válido+inseguro string debe fallar: ${validAdapter} + ${unsafeAdapter}`).toBe(false);
+    expect(JSON.stringify(asString)).toMatch(/singleton|source|divergent|invalid|duplicate|package/i);
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({
+        packages: [{ source: "npm:gentle-engram@0.1.99" }, { source: validAdapter }, { source: unsafeAdapter }],
+      }),
+    );
+    const asObject = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asObject.ok, `válido+inseguro objeto debe fallar: ${validAdapter} + ${unsafeAdapter}`).toBe(false);
+    expect(JSON.stringify(asObject)).toMatch(/singleton|source|divergent|invalid|duplicate|package/i);
+  });
+
+  it("control: entradas ajenas no protegidas siguen permitidas en string y en objeto", async () => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verificador Pi ajenas (T50)").toBe("function");
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5", "npm:lodash@4.17.21"] }),
+    );
+    const asString = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asString.ok, "ajena string no debe bloquear singleton oficial").toBe(true);
+
+    fs.writeFileSync(
+      path.join(piAgentDir, "settings.json"),
+      JSON.stringify({
+        packages: [{ source: "npm:gentle-engram" }, { source: "npm:pi-mcp-adapter" }, { source: "npm:lodash@4.17.21" }],
+      }),
+    );
+    const asObject = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(asObject.ok, "ajena objeto no debe bloquear singleton oficial").toBe(true);
   });
 });

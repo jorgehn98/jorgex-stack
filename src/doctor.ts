@@ -225,7 +225,7 @@ export interface EngramOfficialState {
  * la razón diagnóstica del verificador cuando está disponible.
  */
 async function verifyOfficialForRuntime(
-  runtime: "claude-code" | "codex" | "opencode",
+  runtime: "claude-code" | "codex" | "opencode" | "pi",
   configDir: string,
   engramBin: string,
   homeDir?: string,
@@ -244,6 +244,15 @@ async function verifyOfficialForRuntime(
   if (runtime === "codex") {
     const { verifyOfficialSetup } = await import("./adapters/codex.js");
     const report = await verifyOfficialSetup({ configDir, engramBin });
+    return {
+      ok: report.ok,
+      layers: report.layers,
+      ...(report.reason === undefined ? {} : { reason: report.reason }),
+    };
+  }
+  if (runtime === "pi") {
+    const { verifyOfficialSetup } = await import("./adapters/pi.js");
+    const report = await verifyOfficialSetup({ configDir, engramBin, homeDir });
     return {
       ok: report.ok,
       layers: report.layers,
@@ -281,6 +290,16 @@ async function doctorHasOpencodeSetup(
   return verifyOfficialForRuntime("opencode", path.join(homeDir, ".config", "opencode"), engramBin);
 }
 
+async function doctorHasPiSetup(
+  homeDir: string,
+  engramBin: string,
+): Promise<{ ok: boolean; layers: string[]; reason?: string }> {
+  // Mismo PI_CODING_AGENT_DIR efectivo que el runtime: env explícito o
+  // <homeDir>/.pi/agent; nunca el default cuando el env apunta a otro dir.
+  const effective = process.env.PI_CODING_AGENT_DIR ?? path.join(homeDir, ".pi", "agent");
+  return verifyOfficialForRuntime("pi", effective, engramBin, homeDir);
+}
+
 export async function resolveEngramOfficialState(args: { homeDir: string }): Promise<EngramOfficialState> {
   const homeDir = args.homeDir;
   const candidates = [
@@ -310,13 +329,14 @@ export async function resolveEngramOfficialState(args: { homeDir: string }): Pro
     version,
   };
   const effectiveBin = binPath ?? "";
-  const [claude, codex, opencode] = await Promise.all([
+  const [claude, codex, opencode, pi] = await Promise.all([
     doctorHasClaudeSetup(homeDir, effectiveBin),
     doctorHasCodexSetup(homeDir, effectiveBin),
     doctorHasOpencodeSetup(homeDir, effectiveBin),
+    doctorHasPiSetup(homeDir, effectiveBin),
   ]);
   const setup: EngramOfficialSetupState = {
-    runtimes: { "claude-code": claude, codex, opencode },
+    runtimes: { "claude-code": claude, codex, opencode, pi },
   };
   const exposure: EngramOfficialExposureState = {
     runtimes: {
@@ -327,6 +347,9 @@ export async function resolveEngramOfficialState(args: { homeDir: string }): Pro
         ? { exposed: true, reason: "MCP registrado y binario disponible." }
         : { exposed: false, reason: "MCP o binario ausente." },
       opencode: opencode.layers.includes("mcp") && bin.found
+        ? { exposed: true, reason: "MCP registrado y binario disponible." }
+        : { exposed: false, reason: "MCP o binario ausente." },
+      pi: pi.layers.includes("mcp") && bin.found
         ? { exposed: true, reason: "MCP registrado y binario disponible." }
         : { exposed: false, reason: "MCP o binario ausente." },
     },

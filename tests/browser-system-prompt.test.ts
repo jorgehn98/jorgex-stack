@@ -711,7 +711,7 @@ describe("Playwright prompt install ordering", () => {
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
       const adapter = install.ADAPTERS.opencode!;
-      const originalInjectEngramProtocol = adapter.injectEngramProtocol;
+      const originalAdaptSystemPromptSections = adapter.adaptSystemPromptSections;
       let browserReconciliationCalls = 0;
       try {
         const code = await install.runInstall({
@@ -730,7 +730,11 @@ describe("Playwright prompt install ordering", () => {
           playwrightToolDeps: {
             run: async (action) => {
               if (action === "install-browser") {
-                adapter.injectEngramProtocol = () => browserReconciliationCalls++ === 0;
+                adapter.adaptSystemPromptSections = (sections) => {
+                  browserReconciliationCalls += 1;
+                  const base = sections.playwright ?? sections["system-prompt"] ?? "";
+                  return { ...sections, playwright: `${base}\n<!-- drift-${browserReconciliationCalls} -->` };
+                };
               }
               return true;
             },
@@ -754,7 +758,7 @@ describe("Playwright prompt install ordering", () => {
         expect(output).toMatch(/preferencia.*activ[ao]|activ[ao].*preferencia/i);
         expect(output).toMatch(/jorgex-stack (?:sync|install --playwright)/i);
       } finally {
-        adapter.injectEngramProtocol = originalInjectEngramProtocol;
+        adapter.adaptSystemPromptSections = originalAdaptSystemPromptSections;
         restoreDetect();
       }
     });
