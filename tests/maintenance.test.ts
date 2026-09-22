@@ -130,13 +130,6 @@ const MULTI_PR_LIFECYCLE_CASES = [
     ],
   },
   {
-    relativePath: "system-prompt/engram-protocol.md",
-    fragments: [
-      "PR checkpoints",
-      "final outcome in `work/{name}/done` only after the last PR",
-    ],
-  },
-  {
     relativePath: "skills/work-lifecycle/references/plan-template.md",
     fragments: [
       "## PR Roadmap",
@@ -1013,13 +1006,15 @@ describe("work backlog mutation contract", () => {
       "concurrent",
     ];
 
+    // T43 provider-only: el contrato backlog vive solo en skills propias;
+    // Stack ya no distribuye fuente de protocolo Engram.
     for (const relativePath of [
       "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
-      "system-prompt/engram-protocol.md",
     ]) {
       expectFragments(readStackFile(relativePath), fragments);
     }
+    expect(fs.existsSync(path.join(stackRoot(), "system-prompt", "engram-protocol.md"))).toBe(false);
 
     const basePrompt = readStackFile("system-prompt/AGENTS.md");
     expectFragments(basePrompt, ["work-lifecycle", "single writer", "project backlog"]);
@@ -1036,6 +1031,32 @@ describe("work backlog mutation contract", () => {
       "verificar",
       "concurrentes",
     ]);
+  });
+});
+
+describe("T43 provider-only: sin fuente/sección/placeholder/interfaz Engram Stack", () => {
+  it("elimina fuente, sección, placeholder e interfaz sin tocar Context7/browser/writing-style", () => {
+    const root = stackRoot();
+    // Fuente eliminada.
+    expect(fs.existsSync(path.join(root, "system-prompt", "engram-protocol.md"))).toBe(false);
+    // Inventario de secciones sin protocolo; Context7/browser/writing-style intactos.
+    const sections = fs.readFileSync(path.join(root, "..", "src", "lib", "system-prompt-sections.ts"), "utf8");
+    expect(sections).not.toContain("engram-protocol");
+    expect(sections).toContain("context7");
+    expect(sections).toContain("playwright");
+    expect(sections).toContain("chrome-devtools");
+    expect(sections).toContain("writing-style");
+    // Placeholder eliminado del puente de plugins.
+    const plugins = fs.readFileSync(path.join(root, "..", "src", "components", "plugins.ts"), "utf8");
+    expect(plugins).not.toContain("{{ENGRAM_PROTOCOL}}");
+    expect(plugins).not.toContain("engram-protocol.md");
+    // Interfaz eliminada del contrato de adapters.
+    const types = fs.readFileSync(path.join(root, "..", "src", "adapters", "types.ts"), "utf8");
+    expect(types).not.toContain("injectEngramProtocol");
+    // Módulo system-prompt sin rama de protocolo.
+    const systemPrompt = fs.readFileSync(path.join(root, "..", "src", "components", "system-prompt.ts"), "utf8");
+    expect(systemPrompt).not.toContain("engram-protocol");
+    expect(systemPrompt).not.toContain("injectEngramProtocol");
   });
 });
 

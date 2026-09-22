@@ -1,19 +1,27 @@
 import { hasHealthyManagedMarkdownMarkers, removeMarkdownSection } from "./filemerge.js";
+import { LEGACY_SYSTEM_PROMPT_SECTIONS } from "../adapters/types.js";
 import { isContainedIn } from "./fsx.js";
 import fs from "node:fs";
 import path from "node:path";
 
 export const SYSTEM_PROMPT_SECTIONS = [
-  "system-prompt", "engram-protocol", "context7", "playwright", "chrome-devtools", "browser", "writing-style",
+  "system-prompt", "context7", "playwright", "chrome-devtools", "browser", "writing-style",
 ] as const;
 
 export type SystemPromptSections = Partial<Record<typeof SYSTEM_PROMPT_SECTIONS[number], string>>;
+
+/**
+ * Secciones gestionadas + retiradas: los bloques legacy se siguen validando
+ * para no romper su contenido, y se eliminan (nunca se inyectan) en
+ * sync/install/uninstall.
+ */
+const KNOWN_SECTIONS: readonly string[] = [...SYSTEM_PROMPT_SECTIONS, ...LEGACY_SYSTEM_PROMPT_SECTIONS];
 
 /** Las operaciones gestionadas bloquean marcadores rotos o anidados para preservar su contenido. */
 export function assertSystemPromptMarkers(content: string | null, target: string): void {
   if (content === null) return;
   const ranges: { section: string; start: number; end: number }[] = [];
-  for (const section of SYSTEM_PROMPT_SECTIONS) {
+  for (const section of KNOWN_SECTIONS) {
     const markers = [...content.matchAll(new RegExp(`<!--\\s*\\/?jorgex:${section}(?=[\\s>]|-->|$)`, "g"))];
     if (markers.length === 0) continue;
     if (markers.length !== 2 || !hasHealthyManagedMarkdownMarkers(content, section)) {
@@ -61,5 +69,5 @@ export function assertSystemPromptFile(target: string, rootDir?: string): void {
 
 export function removeSystemPromptSections(content: string): string {
   assertSystemPromptMarkers(content, "system prompt");
-  return SYSTEM_PROMPT_SECTIONS.reduce((current, section) => removeMarkdownSection(current, section), content);
+  return KNOWN_SECTIONS.reduce((current, section) => removeMarkdownSection(current, section), content);
 }

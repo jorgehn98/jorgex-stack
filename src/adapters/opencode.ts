@@ -173,12 +173,6 @@ export const opencodeAdapter: Adapter = {
     ]);
   },
 
-  injectEngramProtocol() {
-    // La integración oficial de Engram aporta el protocolo en runtime; Stack no
-    // duplica esa sección en AGENTS.md ni vuelve a desplegar el plugin legacy.
-    return false;
-  },
-
   paths(configDir) {
     // Skills: OpenCode lee ~/.agents/skills nativamente (verificado en
     // packages/opencode/src/skill/index.ts) — la misma copia sirve a Codex,

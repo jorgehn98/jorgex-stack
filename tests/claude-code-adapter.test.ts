@@ -47,10 +47,11 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(style.content).not.toContain("## Phases");
   });
 
-  it("subagente readonly con git-read: allowlist con Skill, Bash y tools de memoria", () => {
+  it("subagente readonly con git-read: allowlist con Skill y Bash, sin tools de memoria (provider-only)", () => {
     const [out] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
     expect(out!.kind).toBe("agent");
-    expect(out!.content).toContain("tools: Read, Grep, Glob, Skill, Bash, mcp__engram__mem_save");
+    expect(out!.content).toContain("tools: Read, Grep, Glob, Skill, Bash");
+    expect(out!.content).not.toContain("mcp__engram__");
     expect(out!.content).toContain("model: fable");
   });
 
@@ -68,12 +69,13 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(other!.content).toContain("model: fable");
   });
 
-  it("el agente engram recibe solo tools de lectura de memoria (sin mem_save)", () => {
+  it("el agente engram omite tools y hereda todo del provider oficial", () => {
     const [out] = claudeCodeAdapter.renderAgent(
       agent({ name: "engram", readonly: true, bash: "none", tier: "cheap" }),
       MODELS,
     );
-    expect(out!.content).toContain("mcp__engram__mem_get_observation");
+    expect(out!.content).not.toMatch(/^tools:/m);
+    expect(out!.content).not.toContain("mcp__engram__");
     expect(out!.content).not.toContain("mem_save");
     expect(out!.content).not.toContain("Bash");
   });

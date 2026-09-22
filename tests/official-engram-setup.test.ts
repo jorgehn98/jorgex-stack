@@ -608,7 +608,9 @@ describe("[T13] Claude verifica huellas oficiales en filesystem", () => {
     const { configDir, mainFile, installPath, engramBin } = seedClaudeOfficial(home);
     const { claudeCodeAdapter } = (await import("../src/adapters/claude-code.js")) as any;
 
-    expect(claudeCodeAdapter.injectEngramProtocol({ configDir } as any)).toBe(false);
+    // Provider-only: Stack ya no expone interfaz de inyección; el setup
+    // oficial + provider es el único owner del protocolo.
+    expect(claudeCodeAdapter.injectEngramProtocol).toBeUndefined();
     // Diagnóstico comprobado: CLAUDE_CONFIG_DIR ausente → archivo hermano;
     // anidado ausente.
     expect(mainFile).toBe(path.join(home, ".claude.json"));
@@ -699,7 +701,9 @@ describe("[T13] Codex verifica MCP + instructions + plugin main en filesystem", 
     const { configDir, configFile, instructionsFile, compactFile } = seedCodexOfficial(home);
     const { codexAdapter } = (await import("../src/adapters/codex.js")) as any;
 
-    expect(codexAdapter.injectEngramProtocol({ configDir } as any)).toBe(false);
+    // Provider-only: Stack ya no expone interfaz de inyección; el setup
+    // oficial + provider es el único owner del protocolo.
+    expect(codexAdapter.injectEngramProtocol).toBeUndefined();
     expect(fs.readFileSync(configFile, "utf8")).toContain('[plugins."engram@main"]');
     expect(fs.readFileSync(configFile, "utf8")).toContain("[mcp_servers.engram]");
     expect(fs.readFileSync(configFile, "utf8")).toContain("[mcp_servers.ajeno]");
@@ -1125,5 +1129,36 @@ describe("[T42-RED] backup Pi cubre npm + rollback parcial con descendientes", (
     expect(result.ownershipTransferred).toBe(true);
     expect(result.recovery).toBe("none");
     expect(fs.readFileSync(path.join(npmDir, "provider-state.json"), "utf8")).toContain("provider");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T43-RED: provider-only universal. Stack no duplica prompt/tools/capture/
+// hooks Engram: sin fuente, sin placeholder y sin interfaz de inyección.
+// El setup oficial + provider es el único owner. Temporales aislados.
+// ---------------------------------------------------------------------------
+
+describe("[T43-RED] provider-only sin duplicado Stack", () => {
+  it("Stack no distribuye fuente ni placeholder de protocolo", async () => {
+    const { stackRoot } = await import("../src/lib/paths.js");
+    const root = stackRoot();
+    expect(fs.existsSync(path.join(root, "system-prompt", "engram-protocol.md"))).toBe(false);
+    const plugins = fs.readFileSync(path.join(root, "..", "src", "components", "plugins.ts"), "utf8");
+    expect(plugins).not.toContain("{{ENGRAM_PROTOCOL}}");
+    expect(plugins).not.toContain("engram-protocol.md");
+    const prompt = fs.readFileSync(path.join(root, "..", "src", "components", "system-prompt.ts"), "utf8");
+    expect(prompt).not.toContain("engram-protocol");
+    expect(prompt).not.toContain("injectEngramProtocol");
+  });
+
+  it("ningún adapter declara interfaz de inyección Stack", async () => {
+    const { stackRoot } = await import("../src/lib/paths.js");
+    const root = stackRoot();
+    const types = fs.readFileSync(path.join(root, "..", "src", "adapters", "types.ts"), "utf8");
+    expect(types).not.toContain("injectEngramProtocol");
+    for (const file of ["claude-code.ts", "codex.ts", "opencode.ts", "pi.ts"]) {
+      const content = fs.readFileSync(path.join(root, "..", "src", "adapters", file), "utf8");
+      expect(content).not.toContain("injectEngramProtocol");
+    }
   });
 });

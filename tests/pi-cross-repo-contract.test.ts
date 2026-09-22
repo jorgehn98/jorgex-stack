@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE } from "./fixtures/pi-runtime.js";
+import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE, STACK_ENGRAM_PROVIDER_ONLY } from "./fixtures/pi-runtime.js";
 import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
+import { stackRoot } from "../src/lib/paths.js";
 
 const piDirectory = process.env.JORGEX_PI_DIR;
 const crossRepo = piDirectory === undefined ? describe.skip : describe;
@@ -787,4 +788,20 @@ crossRepo("cross-repo contract for the pinned jorgex-pi candidate", () => {
     expect(result).toEqual(expect.objectContaining({ kind: "installed" }));
   }, 60_000);
 
+});
+
+describe("T43 provider-only parity: Stack sin protocolo Engram", () => {
+  it("no distribuye fuente/sección/placeholder/interfaz Stack en ningún runtime", () => {
+    const root = stackRoot();
+    expect(fs.existsSync(path.join(root, STACK_ENGRAM_PROVIDER_ONLY.forbiddenSource.replace(/^stack\//, "")))).toBe(false);
+    const sections = fs.readFileSync(path.join(root, "..", "src", "lib", "system-prompt-sections.ts"), "utf8");
+    expect(sections).not.toContain(STACK_ENGRAM_PROVIDER_ONLY.forbiddenSection);
+    const plugins = fs.readFileSync(path.join(root, "..", "src", "components", "plugins.ts"), "utf8");
+    expect(plugins).not.toContain(STACK_ENGRAM_PROVIDER_ONLY.forbiddenPlaceholder);
+    const types = fs.readFileSync(path.join(root, "..", "src", "adapters", "types.ts"), "utf8");
+    expect(types).not.toContain(STACK_ENGRAM_PROVIDER_ONLY.forbiddenInterface);
+    // Context7/browser/writing-style no se tocan en T43.
+    expect(sections).toContain("context7");
+    expect(sections).toContain("writing-style");
+  });
 });

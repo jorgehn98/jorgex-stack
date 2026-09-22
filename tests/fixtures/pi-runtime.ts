@@ -222,3 +222,17 @@ export const PI_RUNTIME_ARCHIVE = {
 } as const;
 
 export type PiRuntimeCandidate = typeof PI_RUNTIME_CANDIDATE;
+
+/**
+ * T43 provider-only: Stack nunca es fuente de protocolo Engram. El provider
+ * oficial (`engram setup` + gentle-engram/pi-mcp-adapter) owns
+ * prompt/tools/capture/hooks en los cuatro runtimes. T44 elimina la fuente,
+ * la sección, el placeholder y la interfaz; este fixture congela la lista
+ * prohibida para que la paridad falle en RED hasta entonces.
+ */
+export const STACK_ENGRAM_PROVIDER_ONLY = {
+  forbiddenSource: "stack/system-prompt/engram-protocol.md",
+  forbiddenSection: "jorgex:engram-protocol",
+  forbiddenPlaceholder: "{{ENGRAM_PROTOCOL}}",
+  forbiddenInterface: "injectEngramProtocol",
+} as const;

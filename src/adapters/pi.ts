@@ -40,10 +40,6 @@ export const piAdapter: SharedProjectionAdapter & {
     return { file, content: content.replace(/\{\{input\}\}/g, "$ARGUMENTS") };
   },
 
-  injectEngramProtocol() {
-    return true;
-  },
-
   // La guía Context7 se habilita al adoptar su registro HTTP en Pi.
   adaptSystemPromptSections(sections) {
     const modular = { ...sections };
