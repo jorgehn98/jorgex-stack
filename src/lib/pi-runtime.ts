@@ -33,7 +33,7 @@ export const PI_RUNTIME_CANDIDATE = {
       "structured-questions-v1",
       "web-access-v1",
       "goal-continuation-v1",
-      "mcp-adapter-v1",
+      "engram-official-bridge-v1",
       "engram-runtime-tools-v1",
       "context7-http-v1",
       "permissions-policy-v1",

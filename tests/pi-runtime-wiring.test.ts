@@ -704,3 +704,60 @@ describe("[T50-RED] setup-pi-failed remedy distingue recovery", () => {
     expect(remedy).not.toMatch(/Se restauró el backup previo; Pi no quedó activado\./);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T52-RED: contrato runtime Pi 0.8.28 exige engram-official-bridge-v1.
+// Contrato: pin 0.8.28 (commit 056fbc7eeea07466c3ce3a6f85723e94bcf38577)
+// se vincula a capabilities con `engram-official-bridge-v1` y sin
+// `mcp-adapter-v1`; el resto intacto y en orden. Fuente independiente:
+// contract/jorgex-pi.v1.json del tag Pi v0.8.28. Sin env, esta aserción
+// estática debe fallar mientras Stack siga legacy e impide adoptar el pin
+// con bytes válidos pero contrato incompatible. No edita pin generado.
+// ---------------------------------------------------------------------------
+
+const T52_EXPECTED_PI_0_8_28_COMMIT = "056fbc7eeea07466c3ce3a6f85723e94bcf38577";
+const T52_EXPECTED_PI_0_8_28_CAPABILITIES = [
+  "foundation-contract-v1",
+  "stack-snapshot-v2",
+  "modular-system-prompts-v1",
+  "runtime-agents-v1",
+  "permission-gated-tools-v1",
+  "structured-questions-v1",
+  "web-access-v1",
+  "goal-continuation-v1",
+  "engram-official-bridge-v1",
+  "engram-runtime-tools-v1",
+  "context7-http-v1",
+  "permissions-policy-v1",
+  "permissions-upgrade-v1",
+  "experience-defaults-v1",
+  "chrome-devtools-handoff-v1",
+  "playwright-handoff-v1",
+  "runner-json-v1",
+  "tui-branding-v1",
+  "managed-primary-model-v1",
+  "quality-receipt-contract-v1",
+  "quality-capabilities-contract-v1",
+  "initialization-diagnostics-v1",
+] as const;
+
+describe("[T52-RED] contrato runtime Pi 0.8.28 con bridge oficial", () => {
+  it("el fixture independiente para el pin 0.8.28 contiene bridge y no legacy, resto intacto", () => {
+    expect(PI_RUNTIME_CANDIDATE.package.version).toBe("0.8.28");
+    expect(PI_RUNTIME_CANDIDATE.provenance.commit).toBe(T52_EXPECTED_PI_0_8_28_COMMIT);
+    const capabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
+    expect(capabilities).toContain("engram-official-bridge-v1");
+    expect(capabilities).not.toContain("mcp-adapter-v1");
+    expect(capabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+  });
+
+  it("el candidate de producción para el pin 0.8.28 contiene bridge y no legacy, resto intacto", async () => {
+    const { PI_RUNTIME_CANDIDATE: productionCandidate } = await import("../src/lib/pi-runtime.js");
+    expect(productionCandidate.package.version).toBe("0.8.28");
+    expect(productionCandidate.provenance.commit).toBe(T52_EXPECTED_PI_0_8_28_COMMIT);
+    const capabilities = [...productionCandidate.contract.capabilities];
+    expect(capabilities).toContain("engram-official-bridge-v1");
+    expect(capabilities).not.toContain("mcp-adapter-v1");
+    expect(capabilities).toEqual([...T52_EXPECTED_PI_0_8_28_CAPABILITIES]);
+  });
+});
