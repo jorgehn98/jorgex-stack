@@ -5012,4 +5012,73 @@ describe("preparePiAdoption", () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
   });
+
+  // T70 RED: flag permanente idempotente tras 0.8.29. Automation pasa
+  // acceptEngramProtocolRemoval:true siempre; una baseline/candidato posterior
+  // donde ambas paridades ya omiten engramProtocol debe ser no-op (flag no
+  // aplicable) y la adopción ordinaria compatible procede sin bloqueo histórico.
+  it("mantiene la adopción ordinaria compatible aunque se confirme la retirada histórica de engramProtocol", async () => {
+    const fixture = createAdoptionFixture();
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    const oldParity = JSON.parse(git(fixture.piDir, ["show", `${fixture.current.provenance.commit}:contract/parity.v2.json`], false)) as {
+      engramProtocol?: unknown;
+    };
+    const newParity = JSON.parse(git(fixture.piDir, ["show", `${fixture.next.provenance.commit}:contract/parity.v2.json`], false)) as {
+      engramProtocol?: unknown;
+    };
+    expect(oldParity).not.toHaveProperty("engramProtocol");
+    expect(newParity).not.toHaveProperty("engramProtocol");
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      acceptEngramProtocolRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).resolves.toEqual({
+      status: "prepared",
+      version: fixture.version,
+      changedPaths: [PIN_PATH, ARTIFACTS_PATH],
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
+
+  // T70 guards: el flag histórico no autoriza retención (old+new presentes) ni
+  // reintroducción (old ausente + new presente); sólo la transición exacta
+  // oldHas && !newHas de T65 queda autorizada.
+  it.each([
+    ["la retención del protocolo", { previousEngramProtocol: true, engramProtocol: true }],
+    ["la reintroducción del protocolo", { engramProtocol: true }],
+  ] as const)("rechaza %s aunque se confirme la retirada histórica", async (_label, options) => {
+    const fixture = createAdoptionFixture({ ...options });
+    const fetch = registryFetch(fixture);
+    const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };
+    const before = rootState(fixture);
+
+    const newParity = JSON.parse(git(fixture.piDir, ["show", `${fixture.next.provenance.commit}:contract/parity.v2.json`], false)) as {
+      engramProtocol?: unknown;
+    };
+    expect(newParity).toHaveProperty("engramProtocol");
+
+    await expect(module.preparePiAdoption({
+      root: fixture.root,
+      piDir: fixture.piDir,
+      version: fixture.version,
+      apply: true,
+      acceptEngramProtocolRemoval: true,
+    }, {
+      fetch: fetch as typeof globalThis.fetch,
+      now: () => 0,
+      sleep: async () => undefined,
+    })).rejects.toThrow(/archive inventory.*review|compatibility requires manual review/i);
+    expect(rootState(fixture)).toEqual(before);
+  }, 15_000);
 });
