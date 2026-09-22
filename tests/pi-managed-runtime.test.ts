@@ -784,37 +784,14 @@ describe("Pi managed package and projection coordination", () => {
     expect(result).toEqual({ kind: "blocked", reason });
   });
 
-  it("prepares the projection before uninstalling the package and completes it after success", async () => {
-    const { runManagedPiOperation } = await managedRuntime();
-    const trace: string[] = [];
-
-    const result = await runManagedPiOperation("uninstall", withUninstallLifecycle({
-      async runPackage(operation) {
-        trace.push(`package:${operation}`);
-        return { kind: "uninstalled" };
-      },
-      async runProjection(operation) {
-        trace.push(`projection:${operation}`);
-        return projectionSuccess(operation);
-      },
-      async prepareProjectionUninstall() {
-        trace.push("prepare:uninstall");
-        return { kind: "prepared", token: "prepared-uninstall-token" };
-      },
-      async completeProjectionUninstall(token) {
-        trace.push(`complete:${token}`);
-        return { kind: "uninstalled" };
-      },
-    }));
-
-    expect(result).toEqual({ kind: "uninstalled" });
-    expect(trace).toEqual([
-      "prepare:uninstall",
-      "package:uninstall",
-      "complete:prepared-uninstall-token",
-    ]);
-  });
-
+  // T51: se elimina el test tautológico de uninstall happy-path con fakes que
+  // replicaban el wiring (prepare→package→complete sin contrato distintivo).
+  // Cobertura autoritativa restante en este mismo seam: "does not uninstall
+  // the package when preparation reports …" (gate de prepare), "does not
+  // complete the projection when package uninstall is blocked" (gate de
+  // package) y "propagates a completion failure and permits a fresh uninstall
+  // retry" (cuya segunda invocación acredita el orden happy-path
+  // prepare→package→complete con estado de reintento real).
   it("does not complete the projection when package uninstall is blocked", async () => {
     const { runManagedPiOperation } = await managedRuntime();
     const trace: string[] = [];
@@ -1193,49 +1170,13 @@ function t41TempPi(): { root: string; home: string; piAgentDir: string; engramBi
 }
 
 describe("[T41-RED] managed Pi install corre setup pi verificado antes del package", () => {
-  it("ordena Engram → backup → setup pi → verify singleton → package install", async () => {
-    const { home, piAgentDir, engramBin } = t41TempPi();
-    const settingsFile = path.join(piAgentDir, "settings.json");
-    fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
-    const trace: string[] = [];
-
-    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
-    expect(typeof setup.resolveOfficialSetupArgv, "falta argv setup pi gestionado (T41)").toBe("function");
-    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
-    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
-    expect(Array.isArray(targets) && targets.length > 0).toBe(true);
-
-    // El coordinador gestionado debe exponer el orden install-only con verify
-    // singleton antes del package; este seam hace observable ese contrato.
-    const managed = (await import("../src/lib/pi-managed-runtime.js")) as any;
-    const runManaged = managed.runManagedPiOperation ?? managed.runManagedPiSystem;
-    expect(typeof runManaged, "falta coordinador gestionado Pi con setup (T41)").toBe("function");
-    // Contrato mínimo observable: el managed install real acepta un hook de
-    // setup inyectable y lo corre antes del package (backup→spawn→verify).
-    // El trace permanece aislado de los procesos reales y conserva el orden
-    // observable del contrato.
-    const order: string[] = [];
-    const fakeSetup = async () => {
-      order.push("backup");
-      order.push("spawn:setup pi");
-      order.push("verify:singleton");
-      trace.push("setup:pi");
-      return { ok: true };
-    };
-    const fakePackage = async () => {
-      trace.push("package:install");
-      return { kind: "installed" };
-    };
-    await fakeSetup();
-    await fakePackage();
-    expect(trace).toEqual(["setup:pi", "package:install"]);
-    expect(order).toEqual(["backup", "spawn:setup pi", "verify:singleton"]);
-    // La producción debe reproducir este orden mediante el subprocess real;
-    // una omisión del setup debe dejar el runtime bloqueado.
-    expect(JSON.stringify(Object.keys(managed))).toMatch(/runManagedPi/);
-    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: undefined })).toBe(true);
-  });
-
+  // T51: se elimina el test tautológico de ordering con fakes que se probaban
+  // a sí mismos (fakeSetup/fakePackage sin llamar a producción). Cobertura
+  // autoritativa restante: T48 "install con .bin interno permite
+  // setup→package" (runOfficialSetup real con backup→spawn→verify + gate de
+  // activación), T50 "managed Pi fuera de HOME" (runManagedPiSystem real con
+  // frontera de restore), T41 "verify parcial" (backup/restore reales) y los
+  // verify singleton/MCP de pi-package-lifecycle.
   it("verify parcial (falta pi-mcp-adapter) falla cerrado, restaura y no activa Pi", async () => {
     const { home, piAgentDir } = t41TempPi();
     const settingsFile = path.join(piAgentDir, "settings.json");
@@ -1478,5 +1419,92 @@ describe("[T48-RED] managed Pi ordering con closure npm", () => {
     expect(fs.readFileSync(unrelated, "utf8")).toBe(originalKeep);
     // Sin setup ok no hay activación del package.
     expect(trace).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T50-RED: managed Pi fuera de HOME bloquea con frontera de restore antes
+// de backup/spawn y propaga remedy preciso sin afirmar restore falso.
+// Contrato: PI_CODING_AGENT_DIR fuera de HOME no puede recomponerse con el
+// restore acotado a HOME; el install gestionado falla cerrado con mensaje
+// accionable (PI_CODING_AGENT_DIR + frontera restore + HOME) y nunca afirma
+// restauración. Aislado; env restaurado; sin HOME real.
+// ---------------------------------------------------------------------------
+
+describe("[T50-RED] managed Pi fuera de HOME con frontera de restore", () => {
+  it("install con PI_CODING_AGENT_DIR fuera de HOME falla antes de backup/spawn con mensaje accionable", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-managed-dest-"));
+    T41_TEMP_ROOTS.push(root);
+    const home = path.join(root, "home");
+    fs.mkdirSync(home, { recursive: true });
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-managed-dest-out-"));
+    T41_TEMP_ROOTS.push(outsideRoot);
+    const outsideAgentDir = path.join(outsideRoot, "pi-agent");
+    fs.mkdirSync(outsideAgentDir, { recursive: true });
+    const marker = path.join(outsideAgentDir, "settings.json");
+    const originalMarker = JSON.stringify({ packages: [] });
+    fs.writeFileSync(marker, originalMarker);
+    const engramBin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, "#!/bin/sh\n");
+
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const previousHome = process.env.HOME;
+    const previousProfile = process.env.USERPROFILE;
+    process.env.PI_CODING_AGENT_DIR = outsideAgentDir;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    vi.resetModules();
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      saveDevtoolsMcpPreference: vi.fn(),
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+      detectPlaywrightCli: vi.fn(() => ({ status: "absent" as const, binPath: null, detectedVersion: null })),
+    }));
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as any;
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin,
+        writingStyle: FORWARDING_STYLE,
+      }) as { kind: string; reason?: string; remedy?: string };
+
+      expect(result.kind).toBe("blocked");
+      const remedy = String((result as any).remedy ?? (result as any).reason ?? "");
+      expect(remedy).toMatch(/restore|frontera/i);
+      expect(remedy).toMatch(/PI_CODING_AGENT_DIR/);
+      expect(remedy).toMatch(/HOME/);
+      expect(remedy).not.toMatch(/Se restauró el backup previo; Pi no quedó activado\./);
+      expect(fs.readFileSync(marker, "utf8")).toBe(originalMarker);
+      expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
+    } finally {
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousProfile;
+    }
+  });
+
+  it("control: validate Pi dentro de HOME pasa y no bloquea por destino", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-managed-dest-in-"));
+    T41_TEMP_ROOTS.push(root);
+    const home = path.join(root, "home");
+    fs.mkdirSync(home, { recursive: true });
+    const insideAgentDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(insideAgentDir, { recursive: true });
+    const mod = await import("../src/lib/official-engram-setup.js") as any;
+    expect(mod.validateOfficialSetupDestination("pi", insideAgentDir, home)).toBeNull();
   });
 });

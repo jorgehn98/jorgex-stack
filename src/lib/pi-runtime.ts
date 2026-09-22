@@ -701,6 +701,33 @@ function runProcess(invocation: {
   };
 }
 
+function setupPiFailedRemedy(setup: {
+  reason?: string;
+  stderr?: string;
+  recovery?: string;
+  backupId?: string | null;
+  restoreError?: string;
+}): string {
+  // Remedy veraz según recovery: none nunca afirma restauración e indica
+  // acción manual; complete afirma restaurado con backupId; incomplete
+  // indica incompleta con backupId + acción manual sin afirmar limpio.
+  const detail = setup.reason ?? setup.stderr ?? "setup oficial Pi falló";
+  const recovery = setup.recovery ?? "none";
+  const backupId = setup.backupId ?? null;
+  if (recovery === "complete") {
+    return backupId !== null
+      ? `${detail}. Se restauró el backup ${backupId}; Pi no quedó activado.`
+      : `${detail}. Se restauró el backup previo; Pi no quedó activado.`;
+  }
+  if (recovery === "incomplete") {
+    const id = backupId !== null ? ` (backup ${backupId})` : " (sin backup válido)";
+    const cause = setup.restoreError !== undefined ? ` ${setup.restoreError}.` : "";
+    return `${detail}. Recuperación incompleta${id};${cause} revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.`;
+  }
+  const id = backupId !== null ? ` (backup ${backupId})` : " (sin backup válido)";
+  return `${detail}. Sin recuperación automática${id}; revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.`;
+}
+
 export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<RuntimeResult> {
   // Pi install real ordena Engram absoluto primero → `engram setup pi`
   // (backup/setup/verify singleton via runOfficialSetupIfNeeded("pi"),
@@ -740,13 +767,17 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         homeDir: os.homedir(),
       });
       if (!setup.ran || !setup.ok) {
-        const detail = setup.ran
-          ? (setup.reason ?? setup.stderr ?? "setup oficial Pi falló")
-          : "setup oficial Pi omitido en install real";
+        if (!setup.ran) {
+          return {
+            kind: "blocked",
+            reason: "setup-pi-failed",
+            remedy: "setup oficial Pi omitido en install real. Sin recuperación automática (sin backup válido); revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.",
+          };
+        }
         return {
           kind: "blocked",
           reason: "setup-pi-failed",
-          remedy: `${detail}. Se restauró el backup previo; Pi no quedó activado.`,
+          remedy: setupPiFailedRemedy(setup),
         };
       }
     }

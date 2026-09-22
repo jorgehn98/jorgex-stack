@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { readManifest } from "../src/lib/manifest.js";
@@ -607,5 +607,100 @@ describe("[T48-RED] wiring Pi con closure npm", () => {
     ).toBe(false);
     expect(fs.readFileSync(path.join(piAgentDir, "settings.json"), "utf8")).toBe(originalSettings);
     expect(fs.readFileSync(unrelated, "utf8")).toBe(originalKeep);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T50-RED: remedy setup-pi-failed distingue recovery con backupId/acción.
+// Contrato: blocked setup-pi-failed nunca afirma restore falso; recovery
+// none => sin claim de restauración + acción manual; complete => restaurado
+// + backupId; incomplete => incompleta + backupId + acción manual.
+// Solo lectura del remedy; PI_CODING_AGENT_DIR aislado; sin HOME real.
+// ---------------------------------------------------------------------------
+
+async function t50SetupPiFailedRemedy(setupResult: Record<string, unknown>): Promise<{ kind: string; reason?: string; remedy?: string }> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-pi-remedy-"));
+  const isolatedAgentDir = path.join(tmp, "pi-agent");
+  fs.mkdirSync(isolatedAgentDir, { recursive: true });
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+  vi.resetModules();
+  vi.doMock("../src/lib/official-engram-setup.js", async () => {
+    const actual = await vi.importActual<typeof import("../src/lib/official-engram-setup.js")>("../src/lib/official-engram-setup.js");
+    return { ...actual, runOfficialSetupIfNeeded: async () => setupResult };
+  });
+  try {
+    const { runPiRuntimeSystem } = await import("../src/lib/pi-runtime.js") as any;
+    const result = await runPiRuntimeSystem({
+      operation: "install",
+      detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+      engramBin: "/isolated/bin/engram",
+    });
+    return result;
+  } finally {
+    vi.doUnmock("../src/lib/official-engram-setup.js");
+    vi.resetModules();
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+describe("[T50-RED] setup-pi-failed remedy distingue recovery", () => {
+  it("recovery none nunca afirma restaurado e indica acción manual", async () => {
+    const result = await t50SetupPiFailedRemedy({
+      ran: true,
+      ok: false,
+      ownershipTransferred: false,
+      reason: "singleton incompleto: falta pi-mcp-adapter",
+      stderr: "singleton incompleto: falta pi-mcp-adapter",
+      recovery: "none",
+      backupId: null,
+    });
+    expect(result.kind).toBe("blocked");
+    expect(result.reason).toBe("setup-pi-failed");
+    const remedy = String(result.remedy ?? "");
+    expect(remedy).toContain("singleton incompleto");
+    expect(remedy).not.toMatch(/restauró|restaurado|restored|backup previo.*restaur/i);
+    expect(remedy).toMatch(/manual|revisa|reintenta|corrige|backup/i);
+  });
+
+  it("recovery complete incluye backupId y afirma restaurado sin decir incompleta", async () => {
+    const result = await t50SetupPiFailedRemedy({
+      ran: true,
+      ok: false,
+      ownershipTransferred: false,
+      reason: "singleton incompleto tras setup",
+      stderr: "singleton incompleto tras setup",
+      recovery: "complete",
+      backupId: "bk-t50-complete-123",
+    });
+    expect(result.kind).toBe("blocked");
+    expect(result.reason).toBe("setup-pi-failed");
+    const remedy = String(result.remedy ?? "");
+    expect(remedy).toMatch(/restaur/i);
+    expect(remedy).toContain("bk-t50-complete-123");
+    expect(remedy).not.toMatch(/incompleta/i);
+  });
+
+  it("recovery incomplete indica incompleta con backupId y acción manual, sin afirmar restaurado limpio", async () => {
+    const result = await t50SetupPiFailedRemedy({
+      ran: true,
+      ok: false,
+      ownershipTransferred: false,
+      reason: "verify falló tras setup",
+      stderr: "verify falló tras setup",
+      recovery: "incomplete",
+      backupId: "bk-t50-incomplete-456",
+      incompleteRecovery: true,
+      restoreError: "restore incompleto: 1/2 archivos",
+    });
+    expect(result.kind).toBe("blocked");
+    expect(result.reason).toBe("setup-pi-failed");
+    const remedy = String(result.remedy ?? "");
+    expect(remedy).toMatch(/incompleta/i);
+    expect(remedy).toContain("bk-t50-incomplete-456");
+    expect(remedy).toMatch(/manual|revisa/i);
+    expect(remedy).not.toMatch(/Se restauró el backup previo; Pi no quedó activado\./);
   });
 });

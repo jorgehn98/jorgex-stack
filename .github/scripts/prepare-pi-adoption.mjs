@@ -318,6 +318,37 @@ function compareVersions(left, right) {
   return 0;
 }
 
+// Comparación profunda compartida de los gates Engram (child-only y
+// oficial): mismo assert.deepEqual tolerante, sin cambiar resultados ni
+// strict gates; evita duplicar el comparador en cada transición.
+function deepMatches(left, right) {
+  try {
+    assert.deepEqual(left, right);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Pareja Engram compartida (old/new + igualdad del resto): extrae las listas,
+// índices y agentes `engram` y verifica que los demás agentes y claves
+// coinciden; cada transición añade solo su gate específico encima.
+function engramAgentPair(oldAgents, newAgents) {
+  const oldList = oldAgents?.agents;
+  const newList = newAgents?.agents;
+  const oldIndex = Array.isArray(oldList) ? oldList.findIndex((agent) => agent?.name === "engram") : -1;
+  const newIndex = Array.isArray(newList) ? newList.findIndex((agent) => agent?.name === "engram") : -1;
+  const oldEngram = oldIndex !== -1 ? oldList[oldIndex] : undefined;
+  const newEngram = newIndex !== -1 ? newList[newIndex] : undefined;
+  const otherAgentsEqual = Array.isArray(oldList) && Array.isArray(newList)
+    && oldList.length === newList.length
+    && oldList.every((agent, index) => index === oldIndex || deepMatches(newList[index], agent));
+  const otherKeysEqual = Boolean(oldAgents) && Boolean(newAgents)
+    && deepMatches(Object.keys(newAgents).sort(), Object.keys(oldAgents).sort())
+    && Object.keys(oldAgents).every((key) => key === "agents" || key === "schemaVersion" || deepMatches(newAgents[key], oldAgents[key]));
+  return { oldList, newList, oldIndex, newIndex, oldEngram, newEngram, otherAgentsEqual, otherKeysEqual };
+}
+
 async function boundedJson(response) {
   if (!response.body) throw new Error("Missing registry metadata body");
   let bytes = 0;
@@ -762,34 +793,16 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
   if (acceptEngramChildOnly) {
     const oldAgents = oldContracts["contract/runtime-agents.v1.json"];
     const newAgents = newContracts["contract/runtime-agents.v1.json"];
-    const matches = (left, right) => {
-      try {
-        assert.deepEqual(left, right);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const oldList = oldAgents?.agents;
-    const newList = newAgents?.agents;
-    const oldIndex = Array.isArray(oldList) ? oldList.findIndex((agent) => agent?.name === "engram") : -1;
-    const newIndex = Array.isArray(newList) ? newList.findIndex((agent) => agent?.name === "engram") : -1;
-    const oldEngram = oldIndex !== -1 ? oldList[oldIndex] : undefined;
-    const newEngram = newIndex !== -1 ? newList[newIndex] : undefined;
+    const { oldIndex, newIndex, oldEngram, newEngram, otherAgentsEqual, otherKeysEqual } =
+      engramAgentPair(oldAgents, newAgents);
     const { subagentOnlyExtensions: _dropped, ...newRest } = newEngram ?? {};
-    const otherAgentsEqual = Array.isArray(oldList) && Array.isArray(newList)
-      && oldList.length === newList.length
-      && oldList.every((agent, index) => index === oldIndex || matches(newList[index], agent));
-    const otherKeysEqual = Boolean(oldAgents) && Boolean(newAgents)
-      && matches(Object.keys(newAgents).sort(), Object.keys(oldAgents).sort())
-      && Object.keys(oldAgents).every((key) => key === "agents" || key === "schemaVersion" || matches(newAgents[key], oldAgents[key]));
     if (oldAgents?.schemaVersion === 1
       && newAgents?.schemaVersion === 1
       && oldIndex !== -1
       && newIndex === oldIndex
       && oldEngram?.subagentOnlyExtensions === undefined
-      && matches(newEngram?.subagentOnlyExtensions, [ENGRAM_CHILD_ROUTE])
-      && matches(newRest, oldEngram)
+      && deepMatches(newEngram?.subagentOnlyExtensions, [ENGRAM_CHILD_ROUTE])
+      && deepMatches(newRest, oldEngram)
       && otherAgentsEqual
       && otherKeysEqual) {
       expectedContracts["contract/runtime-agents.v1.json"] = structuredClone(newAgents);
@@ -802,30 +815,12 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const newRoot = newContracts[rootContract];
     const oldAgents = oldContracts["contract/runtime-agents.v1.json"];
     const newAgents = newContracts["contract/runtime-agents.v1.json"];
-    const matches = (left, right) => {
-      try {
-        assert.deepEqual(left, right);
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    const { oldIndex, newIndex, oldEngram, newEngram, otherAgentsEqual, otherKeysEqual } =
+      engramAgentPair(oldAgents, newAgents);
     const oldCapabilities = oldRoot?.capabilities;
     const newCapabilities = newRoot?.capabilities;
     const removedIndex = Array.isArray(oldCapabilities) ? oldCapabilities.indexOf(REMOVED_MCP_ADAPTER_CAPABILITY) : -1;
-    const oldList = oldAgents?.agents;
-    const newList = newAgents?.agents;
-    const oldIndex = Array.isArray(oldList) ? oldList.findIndex((agent) => agent?.name === "engram") : -1;
-    const newIndex = Array.isArray(newList) ? newList.findIndex((agent) => agent?.name === "engram") : -1;
-    const oldEngram = oldIndex !== -1 ? oldList[oldIndex] : undefined;
-    const newEngram = newIndex !== -1 ? newList[newIndex] : undefined;
     const { tools: _removedTools, subagentOnlyExtensions: _removedRoute, ...oldRest } = oldEngram ?? {};
-    const otherAgentsEqual = Array.isArray(oldList) && Array.isArray(newList)
-      && oldList.length === newList.length
-      && oldList.every((agent, index) => index === oldIndex || matches(newList[index], agent));
-    const otherKeysEqual = Boolean(oldAgents) && Boolean(newAgents)
-      && matches(Object.keys(newAgents).sort(), Object.keys(oldAgents).sort())
-      && Object.keys(oldAgents).every((key) => key === "agents" || key === "schemaVersion" || matches(newAgents[key], oldAgents[key]));
     const oldPackage = oldContracts["package.json"];
     const oldDependencies = oldPackage?.dependencies;
     const oldBundled = oldPackage?.bundledDependencies;
@@ -837,10 +832,10 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       && !oldBundled.includes(ADDED_JSONC_DEPENDENCY);
     const oldComponents = oldContracts["contract/components.v1.json"]?.components;
     const componentsRemoval = Array.isArray(oldComponents)
-      && oldComponents.filter((component) => matches(component, REMOVED_ADAPTER_COMPONENT)).length === 1;
+      && oldComponents.filter((component) => deepMatches(component, REMOVED_ADAPTER_COMPONENT)).length === 1;
     const oldPreserved = oldContracts["contract/assets.v1.json"]?.preservedExternalState;
     const assetsSwap = Array.isArray(oldPreserved)
-      && oldPreserved.filter((entry) => matches(entry, PRESERVED_ADAPTER_CACHE)).length === 1;
+      && oldPreserved.filter((entry) => deepMatches(entry, PRESERVED_ADAPTER_CACHE)).length === 1;
     if (Array.isArray(oldCapabilities)
       && Array.isArray(newCapabilities)
       && removedIndex !== -1
@@ -853,11 +848,11 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
       && oldIndex !== -1
       && newIndex === oldIndex
       && oldEngram?.tools !== undefined
-      && matches(oldEngram?.subagentOnlyExtensions, [ENGRAM_CHILD_ROUTE])
+      && deepMatches(oldEngram?.subagentOnlyExtensions, [ENGRAM_CHILD_ROUTE])
       && newEngram !== undefined
       && !("tools" in newEngram)
       && !("subagentOnlyExtensions" in newEngram)
-      && matches(newEngram, oldRest)
+      && deepMatches(newEngram, oldRest)
       && otherAgentsEqual
       && otherKeysEqual
       && packageSwap
@@ -875,10 +870,10 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
         expectedPackage.bundledDependencies.indexOf(REMOVED_ADAPTER_DEPENDENCY), 1, ADDED_JSONC_DEPENDENCY);
       expectedContracts["contract/components.v1.json"].components =
         expectedContracts["contract/components.v1.json"].components.filter(
-          (component) => !matches(component, REMOVED_ADAPTER_COMPONENT));
+          (component) => !deepMatches(component, REMOVED_ADAPTER_COMPONENT));
       const expectedAssets = expectedContracts["contract/assets.v1.json"];
       expectedAssets.preservedExternalState = expectedAssets.preservedExternalState.map((entry) =>
-        matches(entry, PRESERVED_ADAPTER_CACHE) ? structuredClone(PRESERVED_OFFICIAL_CACHE) : entry);
+        deepMatches(entry, PRESERVED_ADAPTER_CACHE) ? structuredClone(PRESERVED_OFFICIAL_CACHE) : entry);
       expectedAssets.preservedExternalState.push(...structuredClone(OFFICIAL_PRESERVED_ADDITIONS));
       officialEngramTransition = true;
     }

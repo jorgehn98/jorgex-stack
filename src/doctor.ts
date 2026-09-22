@@ -294,7 +294,10 @@ async function doctorHasPiSetup(
   homeDir: string,
   engramBin: string,
 ): Promise<{ ok: boolean; layers: string[]; reason?: string }> {
-  return verifyOfficialForRuntime("pi", path.join(homeDir, ".pi", "agent"), engramBin, homeDir);
+  // Mismo PI_CODING_AGENT_DIR efectivo que el runtime: env explícito o
+  // <homeDir>/.pi/agent; nunca el default cuando el env apunta a otro dir.
+  const effective = process.env.PI_CODING_AGENT_DIR ?? path.join(homeDir, ".pi", "agent");
+  return verifyOfficialForRuntime("pi", effective, engramBin, homeDir);
 }
 
 export async function resolveEngramOfficialState(args: { homeDir: string }): Promise<EngramOfficialState> {

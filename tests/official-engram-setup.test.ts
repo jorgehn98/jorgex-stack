@@ -1631,3 +1631,93 @@ describe("[T48-RED] rollback exacto de symlinks npm internos", () => {
     expect(fs.readlinkSync(linkPath)).toBe(originalTarget);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T50-RED: destino Pi fuera de HOME rechazado en validate antes de backup.
+// Contrato: PI configDir fuera de homeDir no puede recomponerse con el
+// restore acotado a HOME; validateOfficialSetupDestination("pi") debe fallar
+// con mensaje accionable (frontera de restore + PI_CODING_AGENT_DIR + HOME)
+// antes de backup/spawn. Dentro de HOME pasa. Temporales aislados.
+// ---------------------------------------------------------------------------
+
+async function t50PiCountingVerifier<T>(run: (count: { calls: number }) => Promise<T>): Promise<T> {
+  const setup = await import("../src/lib/official-engram-setup.js");
+  await import("../src/adapters/pi.js");
+  const verifiers = setup.officialSetupVerifiers as Record<string, unknown>;
+  const original = verifiers["pi"];
+  const count = { calls: 0 };
+  verifiers["pi"] = async () => {
+    count.calls++;
+    return { ok: true, layers: ["packages", "mcp"] };
+  };
+  try {
+    return await run(count);
+  } finally {
+    if (original === undefined) delete verifiers["pi"];
+    else verifiers["pi"] = original;
+  }
+}
+
+describe("[T50-RED] Pi configDir fuera de HOME rechazado en validate", () => {
+  it("rechaza Pi fuera de HOME con mensaje accionable de frontera de restore", async () => {
+    const home = tempHome("jx-t50-pi-dest-out-");
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-pi-dest-outside-"));
+    tempRoots.push(outsideRoot);
+    const configDir = path.join(outsideRoot, "pi-agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof mod.validateOfficialSetupDestination, "falta puerta Pi de destino (T50)").toBe("function");
+
+    const error = mod.validateOfficialSetupDestination("pi", configDir, home) as string | null;
+    expect(typeof error, "Pi fuera de HOME debe rechazarse en validate (T50)").toBe("string");
+    expect(String(error)).toMatch(/restore|frontera/i);
+    expect(String(error)).toMatch(/PI_CODING_AGENT_DIR|configDir|destino/i);
+    expect(String(error)).toMatch(/HOME|homeDir/i);
+  });
+
+  it("control: Pi dentro de HOME pasa validate", async () => {
+    const home = tempHome("jx-t50-pi-dest-in-");
+    const configDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+
+    expect(mod.validateOfficialSetupDestination("pi", configDir, home)).toBeNull();
+  });
+
+  it("runOfficialSetupIfNeeded Pi fuera de HOME falla antes de backup/spawn con recovery none y sin verificar", async () => {
+    const home = tempHome("jx-t50-pi-dest-ifneeded-");
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-pi-dest-ifneeded-out-"));
+    tempRoots.push(outsideRoot);
+    const configDir = path.join(outsideRoot, "pi-agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const marker = path.join(configDir, "settings.json");
+    fs.writeFileSync(marker, JSON.stringify({ packages: [] }));
+    const engramBin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, "#!/bin/sh\n");
+
+    await t50PiCountingVerifier(async (count) => {
+      const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+      const result = (await mod.runOfficialSetupIfNeeded("pi", {
+        command: "install",
+        dryRun: false,
+        targetDir: undefined,
+        engramBin,
+        configDir,
+        homeDir: home,
+      })) as Record<string, unknown>;
+
+      expect(result["ran"]).toBe(true);
+      expect(result["ok"]).toBe(false);
+      expect(result["backupId"] ?? null).toBeNull();
+      expect(result["recovery"] ?? "none").toBe("none");
+      const detail = String((result["reason"] ?? result["stderr"] ?? "") as unknown);
+      expect(detail).toMatch(/restore|frontera/i);
+      expect(detail).toMatch(/PI_CODING_AGENT_DIR/);
+      expect(detail).toMatch(/HOME/);
+      expect(count.calls).toBe(0);
+      expect(fs.readFileSync(marker, "utf8")).toBe(JSON.stringify({ packages: [] }));
+      expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
+    });
+  });
+});

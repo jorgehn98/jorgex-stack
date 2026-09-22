@@ -4194,26 +4194,31 @@ describe("preparePiAdoption", () => {
     };
   }
 
+  // Baseline oficial único: los 12 flags del estado previo/post previo al
+  // delta oficial Engram; los tests que necesitan mutaciones extra los
+  // extienden con spread sin duplicar la lista (T51).
+  const OFFICIAL_ENGRAM_BASELINE_FIXTURE = {
+    previousEngramChild: true,
+    engramChild: true,
+    previousEngramMcpWrapper: true,
+    engramMcpWrapper: true,
+    previousBundledAdapterClosure: true,
+    bundledAdapterClosure: true,
+    previousBundledAdapterPackage: true,
+    bundledAdapterPackage: true,
+    previousBundledAdapterComponent: true,
+    bundledAdapterComponent: true,
+    previousBundledAdapterPreserved: true,
+    bundledAdapterPreserved: true,
+  } as const;
+
   function createOfficialEngramFixture(deltaOptions: {
     retainMcpWrapper?: boolean;
     retainClosureMember?: string;
     skip?: { package?: boolean; components?: boolean; assets?: boolean };
     drift?: (piDir: string) => void;
   } = {}): AdoptionFixture {
-    const fixture = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
-    });
+    const fixture = createAdoptionFixture({ ...OFFICIAL_ENGRAM_BASELINE_FIXTURE });
     applyOfficialEngramDelta(fixture, deltaOptions);
     return fixture;
   }
@@ -4362,18 +4367,7 @@ describe("preparePiAdoption", () => {
     ["una mutación del contrato raíz", { rootContractMutation: true }],
   ] as const)("rechaza %s aunque se confirme la transición oficial Engram", async (_label, options) => {
     const base = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
+      ...OFFICIAL_ENGRAM_BASELINE_FIXTURE,
       ...options,
     });
     applyOfficialEngramDelta(base);
@@ -4396,18 +4390,7 @@ describe("preparePiAdoption", () => {
 
   it("rechaza un archivo ajeno añadido al delta oficial Engram confirmado", async () => {
     const fixture = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
+      ...OFFICIAL_ENGRAM_BASELINE_FIXTURE,
       extraArchiveFile: { path: "extensions/unrelated.ts", content: "export const unrelated = true;\n" },
     });
     applyOfficialEngramDelta(fixture);
@@ -4431,18 +4414,7 @@ describe("preparePiAdoption", () => {
 
   it("rechaza el shim engram-mcp-wrapper retenido aunque se confirme la transición oficial Engram", async () => {
     const fixture = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
+      ...OFFICIAL_ENGRAM_BASELINE_FIXTURE,
     });
     applyOfficialEngramDelta(fixture, { retainMcpWrapper: true });
     const fetch = registryFetch(fixture);
@@ -4466,18 +4438,7 @@ describe("preparePiAdoption", () => {
 
   it("rechaza el closure bundled retenido aunque se confirme la transición oficial Engram", async () => {
     const fixture = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
+      ...OFFICIAL_ENGRAM_BASELINE_FIXTURE,
     });
     applyOfficialEngramDelta(fixture, { retainClosureMember: "pi-mcp-adapter" });
     const fetch = registryFetch(fixture);
@@ -4501,18 +4462,7 @@ describe("preparePiAdoption", () => {
 
   it("rechaza una retirada ajena junto al delta oficial Engram confirmado", async () => {
     const fixture = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
+      ...OFFICIAL_ENGRAM_BASELINE_FIXTURE,
       removeExtraArchiveFile: "extensions/bootstrap.ts",
     });
     applyOfficialEngramDelta(fixture);
@@ -4600,18 +4550,7 @@ describe("preparePiAdoption", () => {
     }],
   ] as const)("rechaza el drift %s aunque se confirme la transición oficial Engram", async (_label, drift) => {
     const drifted = createAdoptionFixture({
-      previousEngramChild: true,
-      engramChild: true,
-      previousEngramMcpWrapper: true,
-      engramMcpWrapper: true,
-      previousBundledAdapterClosure: true,
-      bundledAdapterClosure: true,
-      previousBundledAdapterPackage: true,
-      bundledAdapterPackage: true,
-      previousBundledAdapterComponent: true,
-      bundledAdapterComponent: true,
-      previousBundledAdapterPreserved: true,
-      bundledAdapterPreserved: true,
+      ...OFFICIAL_ENGRAM_BASELINE_FIXTURE,
     });
     applyOfficialEngramDelta(drifted, { drift });
     const module = await import(/* @vite-ignore */ adoptionModuleUrl) as { preparePiAdoption: PreparePiAdoption };

@@ -54,10 +54,14 @@ export const piAdapter: SharedProjectionAdapter & {
  * Canonical (`plugin/pi` README, `pi-engram init`):
  * - settings.json declara exactamente un `npm:gentle-engram` + un
  *   `npm:pi-mcp-adapter` (entradas string u objeto con `source`;
- *   versiones provider-managed: se observan, no se fijan).
+ *   versiones provider-managed: se observan, no se fijan; solo bare o
+ *   selector npm seguro de versión/tag/rango, sin file:/link:/workspace:/
+ *   patch:/URL/git/paths/archivo (.tgz/.tar/.tar.gz)/alias npm redirigidos;
+ *   toda reclamación del nombre protegido con selector inseguro falla).
  * - mcp.json contiene `mcpServers.engram` exactamente como upstream main:
  *   `{ command === engramBin absoluto, args === ["mcp","--tools=agent"],
- *   lifecycle === "lazy", directTools === false }`. Sin wrappers.
+ *   lifecycle === "lazy", directTools === false }`. Sin wrappers. Toda
+ *   coexistencia con `servers.engram` legacy es conflicto fail-closed.
  * Respeta PI_CODING_AGENT_DIR; por defecto <home>/.pi/agent.
  * Ausente/duplicado/inválido/ilegible/parcial falla cerrado sin escribir.
  */
@@ -73,12 +77,43 @@ function piPackageSource(entry: unknown): string | null {
   return typeof source === "string" ? source : null;
 }
 
+function isSafePiVersionSpec(spec: string): boolean {
+  // Bare o selector npm seguro de versión/tag/rango (provider-managed, sin
+  // pin Stack): se acepta y se observa. Rechaza procedencia redirigida
+  // (file:/link:/workspace:/patch:/URL/git/paths/alias npm) que contiene
+  // `/`, `\`, `:`, `#`, `?` o empieza por `.`, además de selectores que
+  // terminan en archivo (.tgz/.tar/.tar.gz, case-insensitive); el resto usa
+  // whitelist de caracteres de versión/tag/rango sin fijar versión del
+  // provider.
+  if (spec === "" || /[\r\n]/.test(spec)) return false;
+  if (spec.includes("/") || spec.includes("\\") || spec.includes(":") || spec.includes("#") || spec.includes("?")) {
+    return false;
+  }
+  if (spec.startsWith(".")) return false;
+  const lower = spec.toLowerCase();
+  if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz") || lower.endsWith(".tar")) return false;
+  return /^[A-Za-z0-9._\-^~><=| +*xXv]+$/.test(spec);
+}
+
+function claimsProtectedName(source: string, name: string): boolean {
+  // Reclama el nombre protegido aunque el selector sea inseguro: bare
+  // `npm:<name>` o cualquier `npm:<name>@<spec>`, seguro o no.
+  return source === `npm:${name}` || source.startsWith(`npm:${name}@`);
+}
+
+function isNamedPiSource(source: string, name: string): boolean {
+  if (source === `npm:${name}`) return true;
+  const prefix = `npm:${name}@`;
+  if (!source.startsWith(prefix)) return false;
+  return isSafePiVersionSpec(source.slice(prefix.length));
+}
+
 function isGentleSource(source: string): boolean {
-  return source === "npm:gentle-engram" || source.startsWith("npm:gentle-engram@");
+  return isNamedPiSource(source, "gentle-engram");
 }
 
 function isAdapterSource(source: string): boolean {
-  return source === "npm:pi-mcp-adapter" || source.startsWith("npm:pi-mcp-adapter@");
+  return isNamedPiSource(source, "pi-mcp-adapter");
 }
 
 function isExactPiEngramMcp(value: unknown, engramBin: string): boolean {
@@ -143,28 +178,43 @@ export async function verifyOfficialSetup(args: {
       packagesDetail = "singleton incompleto en settings.json (falta packages[])";
     } else {
       const sources = (parsed["packages"] as unknown[]).map(piPackageSource);
-      const gentle = sources.filter((source): source is string => source !== null && isGentleSource(source));
-      const adapter = sources.filter((source): source is string => source !== null && isAdapterSource(source));
-      if (gentle.length === 1 && adapter.length === 1) {
-        passed.push("packages");
-        packagesDetail = null;
+      // Toda entrada que reclama un nombre protegido con selector inseguro
+      // falla cerrado antes de contar singletons; las ajenas se preservan
+      // (se ignoran) y solo después se exige exactamente una entrada segura
+      // por nombre protegido.
+      const unsafeClaimed = sources.filter(
+        (source): source is string =>
+          source !== null
+          && ((claimsProtectedName(source, "gentle-engram") && !isGentleSource(source))
+            || (claimsProtectedName(source, "pi-mcp-adapter") && !isAdapterSource(source))),
+      );
+      if (unsafeClaimed.length > 0) {
+        missing.push("packages:invalid");
+        packagesDetail = `singleton inválido en settings.json (selector inseguro que reclama nombre protegido: ${unsafeClaimed[0]})`;
       } else {
-        duplicates = gentle.length > 1 || adapter.length > 1;
-        if (duplicates) missing.push("packages:duplicate");
-        else if (gentle.length === 0 || adapter.length === 0) {
-          const absent = [
-            ...(gentle.length === 0 ? ["gentle-engram"] : []),
-            ...(adapter.length === 0 ? ["pi-mcp-adapter"] : []),
-          ].join(" + ");
-          missing.push("packages:missing");
-          void absent;
+        const gentle = sources.filter((source): source is string => source !== null && isGentleSource(source));
+        const adapter = sources.filter((source): source is string => source !== null && isAdapterSource(source));
+        if (gentle.length === 1 && adapter.length === 1) {
+          passed.push("packages");
+          packagesDetail = null;
         } else {
-          missing.push("packages:missing");
+          duplicates = gentle.length > 1 || adapter.length > 1;
+          if (duplicates) missing.push("packages:duplicate");
+          else if (gentle.length === 0 || adapter.length === 0) {
+            const absent = [
+              ...(gentle.length === 0 ? ["gentle-engram"] : []),
+              ...(adapter.length === 0 ? ["pi-mcp-adapter"] : []),
+            ].join(" + ");
+            missing.push("packages:missing");
+            void absent;
+          } else {
+            missing.push("packages:missing");
+          }
+          const detail = duplicates
+            ? `singleton duplicado en settings.json (gentle-engram x${gentle.length}, pi-mcp-adapter x${adapter.length})`
+            : `singleton incompleto en settings.json (falta ${gentle.length === 0 ? "gentle-engram" : "pi-mcp-adapter"})`;
+          packagesDetail = detail;
         }
-        const detail = duplicates
-          ? `singleton duplicado en settings.json (gentle-engram x${gentle.length}, pi-mcp-adapter x${adapter.length})`
-          : `singleton incompleto en settings.json (falta ${gentle.length === 0 ? "gentle-engram" : "pi-mcp-adapter"})`;
-        packagesDetail = detail;
       }
     }
   } catch (error) {
@@ -219,8 +269,16 @@ export async function verifyOfficialSetup(args: {
             mcpDetail = `mcp inválido en mcp.json (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`;
           }
         } else if (isExactPiEngramMcp(servers["engram"], args.engramBin)) {
-          passed.push("mcp");
-          mcpDetail = null;
+          // Canónico exacto exige ausencia de `servers.engram` legacy: toda
+          // coexistencia (exacta, ajena o inválida) es conflicto fail-closed.
+          const legacy = isRecord(parsed["servers"]) ? (parsed["servers"] as Record<string, unknown>)["engram"] : undefined;
+          if (legacy !== undefined) {
+            missing.push("mcp:conflict");
+            mcpDetail = "mcp en conflicto en mcp.json (servers.engram legacy coexiste con mcpServers.engram canónico; conflicto fail-closed sin activar Pi)";
+          } else {
+            passed.push("mcp");
+            mcpDetail = null;
+          }
         } else {
           const foreign = isRecord(servers["engram"])
             && typeof (servers["engram"] as Record<string, unknown>)["command"] === "string"

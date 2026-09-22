@@ -357,27 +357,9 @@ function restoreTrustedSymlinks(
       return { ok: false, error: `symlink ${resolvedLink}: ancestro inseguro ${unsafe} (restore omitido)` };
     }
     try {
-      let current: fs.Stats | null = null;
-      try {
-        current = fs.lstatSync(resolvedLink);
-      } catch (error) {
-        if (errnoCode(error) !== "ENOENT") {
-          return { ok: false, error: `symlink ${resolvedLink} ilegible (${errnoCode(error)})` };
-        }
-        current = null;
-      }
-      if (current !== null && current.isSymbolicLink()) {
-        let curRaw: string;
-        try {
-          curRaw = fs.readlinkSync(resolvedLink);
-        } catch (error) {
-          return { ok: false, error: `symlink ${resolvedLink} ilegible al releer (${errnoCode(error)})` };
-        }
-        if (curRaw === rawTarget) continue;
-        fs.rmSync(resolvedLink, { force: true });
-      } else if (current !== null) {
-        fs.rmSync(resolvedLink, { recursive: true, force: true });
-      }
+      // Mutación única: el pre-remove redundante previo al recheck del padre
+      // se colapsa aquí (tras mkdir + recheck) para preservar TOCTOU con una
+      // sola escritura; el estado final es idéntico (T48).
       fs.mkdirSync(path.dirname(resolvedLink), { recursive: true });
       try {
         if (fs.lstatSync(path.dirname(resolvedLink)).isSymbolicLink()) {
@@ -885,9 +867,14 @@ export function validateOfficialSetupDestination(
     return `runOfficialSetupIfNeeded: configDir OpenCode incompatible (${configDir}); el provider solo alinea <parent>/opencode vía XDG_CONFIG_HOME.`;
   }
   if (runtime === "pi") {
-    // El provider respeta PI_CODING_AGENT_DIR (cualquier dir explícito) y por
-    // defecto <home>/.pi/agent; no hay destino incompatible que bloquear en
-    // install real. Se declara explícito para el gate install-only.
+    // Pi respeta PI_CODING_AGENT_DIR explícito, pero el restore está acotado
+    // a HOME: un configDir fuera de homeDir no puede recomponerse y se
+    // rechaza temprano con diagnóstico accionable antes de backup/spawn.
+    const resolved = path.resolve(configDir);
+    const homeResolved = path.resolve(homeDir);
+    if (resolved !== homeResolved && !isContainedIn(resolved, homeResolved)) {
+      return `runOfficialSetupIfNeeded: Pi PI_CODING_AGENT_DIR (${configDir}) fuera de HOME (${homeDir}): queda fuera de la frontera de restore acotada a HOME; usa un PI_CODING_AGENT_DIR dentro de HOME o ajusta HOME antes de reintentar.`;
+    }
     return null;
   }
   return null;
