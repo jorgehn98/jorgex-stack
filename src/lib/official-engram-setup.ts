@@ -241,7 +241,7 @@ function findSymlinkInTree(root: string, trustedRoots: string[] = []): string | 
 
 /**
  * Snapshot de symlinks preexistentes bajo raíces trusted (path absoluto +
- * raw target byte-exacto, sin seguir enlaces). Devuelve null si el árbol no
+ * target textual exacto, sin seguir enlaces). Devuelve null si el árbol no
  * puede leerse (desconocido, fail-closed: sin restore a ciegas).
  */
 function snapshotTrustedSymlinks(trustedRoots: string[]): Map<string, string> | null {
@@ -300,7 +300,7 @@ function snapshotTrustedSymlinks(trustedRoots: string[]): Map<string, string> | 
 }
 
 /**
- * Restaura symlinks preexistentes (cambiados o borrados) a su raw target
+ * Restaura symlinks preexistentes (cambiados o borrados) a su target textual
  * original sin seguir enlaces. No elimina creados (lo hace el cleanup). Cada
  * escritura revalida contención trusted, target relativo interno y ancestros
  * sin alias (TOCTOU). Cualquier duda falla cerrado.
@@ -530,7 +530,7 @@ export async function runOfficialSetup(
   // Seguridad symlink (lstat, sin seguir): ni el target, ni un ancestro, ni
   // una entrada del árbol pueden ser alias hacia fuera de HOME o ~/.engram,
   // salvo closure npm interno trusted en Pi. Bloquea antes del backup: no se
-  // respalda ni se ejecuta nada con alias.
+  // respalda ni se ejecuta nada con alias no confiable.
   const preViolation = findSetupSymlinkViolation(preciseTargets, homeResolved, trustedNpmRoots);
   if (preViolation !== null) {
     const detail = `runOfficialSetup: symlink rechazado antes del setup (${preViolation}). Bloqueado antes del backup.`;
@@ -647,8 +647,8 @@ export async function runOfficialSetup(
       restoreFailed = true;
       restoreError = error instanceof Error ? error.message : String(error);
     }
-    // Rollback de symlinks trusted: restaura cambiados/borrados a su raw
-    // target original (byte-exacto) con revalidación TOCTOU; los creados los
+    // Rollback de symlinks trusted: restaura cambiados/borrados a su target
+    // textual original con revalidación TOCTOU; los creados los
     // elimina el cleanup. Solo complete si ficheros, symlinks y cleanup ok.
     if (trustedNpmRoots.length > 0) {
       const symRes = restoreTrustedSymlinks(trustedSymlinkSnapshot, trustedNpmRoots);

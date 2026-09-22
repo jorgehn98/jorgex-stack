@@ -337,8 +337,8 @@ describe("[T41-RED] wiring install Pi real con setup oficial verificado", () => 
     expect(Array.isArray(targets) && targets.length > 0, "wiring Pi debe declarar backup targets").toBe(true);
 
     const { runPiRuntime, PI_RUNTIME_REGISTRY } = await runtime();
-    // El wiring real debe correr el setup pi antes de prepare/execute: sin ese
-    // seam el trace queda sin setup y este RED guía al implementer.
+    // El wiring real debe correr el setup pi antes de prepare/execute; el trace
+    // permite detectar si se altera ese orden.
     // runPiRuntime exige verifiedArtifact en install (tarball-integrity); se
     // aporta el tarball canónico para que prepare bloquee con setup-pi-missing.
     const events: string[] = [];

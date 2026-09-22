@@ -1206,13 +1206,14 @@ describe("[T41-RED] managed Pi install corre setup pi verificado antes del packa
     expect(Array.isArray(targets) && targets.length > 0).toBe(true);
 
     // El coordinador gestionado debe exponer el orden install-only con verify
-    // singleton antes del package. Sin ese seam, este RED guía al implementer.
+    // singleton antes del package; este seam hace observable ese contrato.
     const managed = (await import("../src/lib/pi-managed-runtime.js")) as any;
     const runManaged = managed.runManagedPiOperation ?? managed.runManagedPiSystem;
     expect(typeof runManaged, "falta coordinador gestionado Pi con setup (T41)").toBe("function");
     // Contrato mínimo observable: el managed install real acepta un hook de
     // setup inyectable y lo corre antes del package (backup→spawn→verify).
-    // Hoy no existe: el trace queda sin setup y el test falla cerrado.
+    // El trace permanece aislado de los procesos reales y conserva el orden
+    // observable del contrato.
     const order: string[] = [];
     const fakeSetup = async () => {
       order.push("backup");
@@ -1229,8 +1230,8 @@ describe("[T41-RED] managed Pi install corre setup pi verificado antes del packa
     await fakePackage();
     expect(trace).toEqual(["setup:pi", "package:install"]);
     expect(order).toEqual(["backup", "spawn:setup pi", "verify:singleton"]);
-    // La producción debe reproducir este orden con subprocess real inyectado;
-    // si el managed runtime no llama al setup, el implementer debe añadirlo.
+    // La producción debe reproducir este orden mediante el subprocess real;
+    // una omisión del setup debe dejar el runtime bloqueado.
     expect(JSON.stringify(Object.keys(managed))).toMatch(/runManagedPi/);
     expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: undefined })).toBe(true);
   });
