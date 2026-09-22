@@ -812,3 +812,318 @@ describe("[doctor] distingue bin/setup/exposure sin prometer OpenCode2", () => {
     expect(JSON.stringify(state)).not.toMatch(/opencode\s*2|opencode2/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T41-RED: coordinador oficial `engram setup pi` (install-only gestionado).
+// Contrato: install real resuelve/instala el binario Engram primero, respalda
+// cada path que `engram setup pi` puede mutar, ejecuta el oficial
+// `engram setup pi` antes del package install y verifica singleton exacto
+// (un gentle-engram + un pi-mcp-adapter + mcpServers.engram válido, versiones
+// provider-managed sin pin). Sync/dry-run/target-dir nunca ejecutan setup ni
+// red global. Fallo parcial restaura backup y no activa Pi. Temporales
+// aislados; cero HOME real/red.
+// ---------------------------------------------------------------------------
+
+describe("[T41-RED] coordinador install-only `engram setup pi`", () => {
+  it("expone argv exacto setup pi, sin aliases", async () => {
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof mod.resolveOfficialSetupArgv, "falta coordinador setup oficial Pi (T41)").toBe("function");
+
+    expect(mod.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+  });
+
+  it("registra pi como runtime oficial gestionado", async () => {
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+
+    expect(mod.isOfficialSetupRuntime("pi")).toBe(true);
+    expect(mod.OFFICIAL_SETUP_RUNTIMES).toContain("pi");
+  });
+
+  it("declara backup targets Pi que cubren todo lo mutable por setup, sin DB ni binario", async () => {
+    const home = tempHome("jx-t41-pi-targets-");
+    const configDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const collect = mod.collectOfficialSetupBackupTargets;
+    expect(typeof collect, "faltan backup targets Pi (T41)").toBe("function");
+
+    const targets = collect("pi", configDir, home) as string[];
+    expect(Array.isArray(targets) && targets.length > 0, "Pi debe declarar targets explícitos no vacíos").toBe(true);
+    const joined = targets.join("\n");
+    // El setup Pi muta su settings global; el backup debe cubrirlo.
+    expect(joined).toMatch(/settings\.json/);
+    // Nunca DB ni binario (intocables).
+    expect(joined).not.toMatch(/\.engram\/engram\.db|engram\.db/);
+    expect(joined).not.toMatch(/\.local\/bin\/engram/);
+  });
+
+  it("install real Pi ejecuta backup → spawn setup pi (shell false) → verify en orden", async () => {
+    const home = tempHome("jx-t41-pi-order-");
+    const configDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const declaredTarget = path.join(configDir, "settings.json");
+    fs.writeFileSync(declaredTarget, JSON.stringify({ packages: [] }));
+    const order: string[] = [];
+    const spawn = fakeSpawnCapture();
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof mod.runOfficialSetup, "falta ejecución segura Pi con backup (T41)").toBe("function");
+
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin: path.join(home, ".local", "bin", "engram"),
+      targets: [declaredTarget],
+      backup: async () => {
+        order.push("backup");
+        return { id: "t41-pi-backup" };
+      },
+      spawn: async (bin: string, argv: string[], options: Record<string, unknown>) => {
+        order.push("spawn");
+        return spawn.spawn(bin, argv, options);
+      },
+      verify: async () => {
+        order.push("verify");
+        return { ok: true, layers: ["packages", "mcp"] };
+      },
+    });
+
+    expect(order).toEqual(["backup", "spawn", "verify"]);
+    expect(result.ok).toBe(true);
+    expect(result.ownershipTransferred).toBe(true);
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.calls[0]!.argv).toEqual(["setup", "pi"]);
+    expect(spawn.calls[0]!.options).toMatchObject({ shell: false });
+  });
+
+  it("install real Pi falla cerrado con restore y sin ownership cuando verify queda parcial", async () => {
+    const home = tempHome("jx-t41-pi-rollback-");
+    const configDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const preexisting = path.join(configDir, "settings.json");
+    const original = JSON.stringify({ packages: [] });
+    fs.writeFileSync(preexisting, original);
+    // Canonical mutable por `engram setup pi`: settings.json + mcp.json.
+    const newTarget = path.join(configDir, "mcp.json");
+    expect(fs.existsSync(newTarget)).toBe(false);
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const order: string[] = [];
+
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin: path.join(home, ".local", "bin", "engram"),
+      targets: [newTarget, preexisting],
+      backup: async () => {
+        order.push("backup");
+        const backup = createBackup([preexisting], "t41-pi-rollback", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        order.push("spawn");
+        fs.writeFileSync(newTarget, JSON.stringify({ mcpServers: {} }));
+        fs.writeFileSync(preexisting, JSON.stringify({ packages: [{ name: "parcial" }] }));
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => {
+        order.push("verify");
+        return { ok: false, layers: ["packages:partial"], reason: "singleton incompleto" };
+      },
+      restore: async () => {
+        if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+        return { restored: backupId !== null };
+      },
+    });
+
+    expect(order).toEqual(["backup", "spawn", "verify"]);
+    expect(result.ok).toBe(false);
+    expect(result.ownershipTransferred ?? false).toBe(false);
+    expect(fs.readFileSync(preexisting, "utf8")).toBe(original);
+    expect(fs.existsSync(newTarget)).toBe(false);
+  });
+
+  it("runOfficialSetupIfNeeded Pi solo corre en install real; sync/dry-run/target-dir omiten sin spawn", async () => {
+    const home = tempHome("jx-t41-pi-ifneeded-");
+    const configDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const runIfNeeded = mod.runOfficialSetupIfNeeded;
+    expect(typeof runIfNeeded, "falta wiring Pi install-only testeable (T41)").toBe("function");
+
+    for (const gated of [
+      { command: "sync", dryRun: false, targetDir: undefined },
+      { command: "install", dryRun: true, targetDir: undefined },
+      { command: "install", dryRun: false, targetDir: path.join(home, "target") },
+      { command: "uninstall", dryRun: false, targetDir: undefined },
+      { command: "doctor", dryRun: false, targetDir: undefined },
+    ] as const) {
+      const skipped = await runIfNeeded("pi", {
+        ...gated,
+        engramBin: path.join(home, ".local", "bin", "engram"),
+        configDir,
+        homeDir: home,
+      });
+      expect(skipped, `Pi debe omitir setup en ${gated.command}/dryRun=${gated.dryRun}`).toMatchObject({ ran: false });
+    }
+    expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T42-RED: backup Pi cubre todo PI_CODING_AGENT_DIR/npm además de
+// settings.json+mcp.json. Contrato: `engram setup pi` muta descendientes bajo
+// npm (provider-owned); el backup debe incluir el directorio completo para que
+// un fallo parcial restaure bytes preexistentes, elimine descendientes creados
+// y preserve archivos ajenos, con recovery reportado con precisión. El éxito
+// puede dejar estado npm del provider. Temporales aislados; cero HOME real.
+// ---------------------------------------------------------------------------
+
+function t42ExpandBackupTargets(files: string[]): string[] {
+  const out: string[] = [];
+  for (const file of files) {
+    try {
+      if (fs.statSync(file).isDirectory()) {
+        const walk = (dir: string): void => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(full);
+            else out.push(full);
+          }
+        };
+        walk(file);
+        continue;
+      }
+    } catch {
+      // Ausente: se conserva el path para el gate de targets.
+    }
+    out.push(file);
+  }
+  return out;
+}
+
+describe("[T42-RED] backup Pi cubre npm + rollback parcial con descendientes", () => {
+  it("declara el directorio npm además de settings+mcp, sin DB ni binario", async () => {
+    const home = tempHome("jx-t42-pi-targets-");
+    const configDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(configDir, { recursive: true });
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof mod.collectOfficialSetupBackupTargets, "faltan backup targets Pi (T42)").toBe("function");
+
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const joined = targets.join("\n");
+    expect(joined).toMatch(/settings\.json/);
+    expect(joined).toMatch(/mcp\.json/);
+    expect(targets).toContain(path.join(configDir, "npm"));
+    expect(joined).not.toMatch(/\.engram\/engram\.db|engram\.db/);
+    expect(joined).not.toMatch(/\.local\/bin\/engram/);
+  });
+
+  it("fallo parcial con npm: restaura preexistentes, elimina creados, preserva ajenos y reporta complete", async () => {
+    const home = tempHome("jx-t42-pi-npm-rollback-");
+    const configDir = path.join(home, ".pi", "agent");
+    const npmDir = path.join(configDir, "npm");
+    fs.mkdirSync(path.join(npmDir, "unrelated"), { recursive: true });
+    const settingsFile = path.join(configDir, "settings.json");
+    const mcpFile = path.join(configDir, "mcp.json");
+    const npmExisting = path.join(npmDir, "existing.txt");
+    const npmKeep = path.join(npmDir, "unrelated", "keep.json");
+    const originalSettings = JSON.stringify({ packages: [] });
+    const originalMcp = JSON.stringify({ mcpServers: {} });
+    const originalExisting = "preexisting-npm\n";
+    const originalKeep = JSON.stringify({ keep: true });
+    fs.writeFileSync(settingsFile, originalSettings);
+    fs.writeFileSync(mcpFile, originalMcp);
+    fs.writeFileSync(npmExisting, originalExisting);
+    fs.writeFileSync(npmKeep, originalKeep);
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof mod.runOfficialSetup, "falta ejecución segura Pi con npm (T42)").toBe("function");
+    expect(typeof mod.collectOfficialSetupBackupTargets, "faltan backup targets Pi (T42)").toBe("function");
+
+    // Targets canónicos derivados del colector: tras el fix incluyen npm.
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+    const order: string[] = [];
+
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin: path.join(home, ".local", "bin", "engram"),
+      targets,
+      backup: async () => {
+        order.push("backup");
+        const backup = createBackup(t42ExpandBackupTargets(targets), "t42-pi-npm-rollback", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        order.push("spawn");
+        fs.writeFileSync(settingsFile, JSON.stringify({ packages: [{ name: "parcial" }] }));
+        fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: { engram: { command: "parcial" } } }));
+        fs.writeFileSync(npmExisting, "mutated\n");
+        fs.writeFileSync(path.join(npmDir, "new-partial.txt"), "partial\n");
+        const newDir = path.join(npmDir, "new-dir");
+        fs.mkdirSync(newDir, { recursive: true });
+        fs.writeFileSync(path.join(newDir, "nested.txt"), "nested\n");
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => {
+        order.push("verify");
+        return { ok: false, layers: ["packages:partial"], reason: "singleton incompleto" };
+      },
+      restore: async () => {
+        if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+        return { restored: backupId !== null };
+      },
+    });
+
+    expect(order).toEqual(["backup", "spawn", "verify"]);
+    expect(result.ok).toBe(false);
+    expect(result.ownershipTransferred ?? false).toBe(false);
+    expect(backupId !== null).toBe(true);
+    expect(result.backupId).toBe(backupId);
+    expect(result.recovery).toBe("complete");
+    expect(result.incompleteRecovery ?? false).toBe(false);
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe(originalSettings);
+    expect(fs.readFileSync(mcpFile, "utf8")).toBe(originalMcp);
+    expect(fs.readFileSync(npmExisting, "utf8")).toBe(originalExisting);
+    expect(fs.readFileSync(npmKeep, "utf8")).toBe(originalKeep);
+    expect(fs.existsSync(path.join(npmDir, "new-partial.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(npmDir, "new-dir"))).toBe(false);
+    expect(fs.existsSync(npmDir)).toBe(true);
+  });
+
+  it("control: el éxito puede dejar estado npm del provider sin limpiar", async () => {
+    const home = tempHome("jx-t42-pi-npm-success-");
+    const configDir = path.join(home, ".pi", "agent");
+    const npmDir = path.join(configDir, "npm");
+    fs.mkdirSync(configDir, { recursive: true });
+    const settingsFile = path.join(configDir, "settings.json");
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const targets = mod.collectOfficialSetupBackupTargets("pi", configDir, home) as string[];
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    let backupId: string | null = null;
+
+    const result = await mod.runOfficialSetup("pi", {
+      homeDir: home,
+      engramBin: path.join(home, ".local", "bin", "engram"),
+      targets,
+      backup: async () => {
+        const backup = createBackup(t42ExpandBackupTargets(targets), "t42-pi-npm-success", backupRoot);
+        backupId = backup?.id ?? null;
+        return { id: backupId ?? "no-backup" };
+      },
+      spawn: async () => {
+        fs.mkdirSync(npmDir, { recursive: true });
+        fs.writeFileSync(path.join(npmDir, "provider-state.json"), JSON.stringify({ provider: true }));
+        return { ok: true, stdout: "", stderr: "" };
+      },
+      verify: async () => ({ ok: true, layers: ["packages", "mcp"] }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.ownershipTransferred).toBe(true);
+    expect(result.recovery).toBe("none");
+    expect(fs.readFileSync(path.join(npmDir, "provider-state.json"), "utf8")).toContain("provider");
+  });
+});

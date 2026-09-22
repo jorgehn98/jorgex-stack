@@ -702,6 +702,11 @@ function runProcess(invocation: {
 }
 
 export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<RuntimeResult> {
+  // Pi install real ordena Engram absoluto primero → `engram setup pi`
+  // (backup/setup/verify singleton via runOfficialSetupIfNeeded("pi"),
+  // install-only: shouldRunOfficialSetup excluye sync/dry-run/targetDir) →
+  // package/projection/sync gestionados. sync/dry-run/--target-dir nunca
+  // ejecutan setup ni descargas globales; el parcial restaura y no activa Pi.
   if (input.engramBin === null && input.operation !== "uninstall") return runPiRuntime(input, {
     readSettings: () => { throw new Error("unreachable"); },
     readReceipt: () => { throw new Error("unreachable"); },
@@ -721,6 +726,29 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         reason: "engram-required",
         remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
       };
+    }
+    // Setup oficial solo en install real (targetDir undefined). Con
+    // --target-dir se omite (no-op global) y el package usa su destino aislado.
+    if (input.targetDir === undefined) {
+      const { runOfficialSetupIfNeeded } = await import("./official-engram-setup.js");
+      const setup = await runOfficialSetupIfNeeded("pi", {
+        command: "install",
+        dryRun: false,
+        targetDir: undefined,
+        engramBin: input.engramBin,
+        configDir: paths.codingAgentDir,
+        homeDir: os.homedir(),
+      });
+      if (!setup.ran || !setup.ok) {
+        const detail = setup.ran
+          ? (setup.reason ?? setup.stderr ?? "setup oficial Pi falló")
+          : "setup oficial Pi omitido en install real";
+        return {
+          kind: "blocked",
+          reason: "setup-pi-failed",
+          remedy: `${detail}. Se restauró el backup previo; Pi no quedó activado.`,
+        };
+      }
     }
     const destination = input.targetDir === undefined
       ? path.join(dataDir(), "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`)

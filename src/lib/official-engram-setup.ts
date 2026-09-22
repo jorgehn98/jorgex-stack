@@ -29,12 +29,13 @@ import { HOME } from "./paths.js";
  */
 export type OfficialSetupEnvPatch = Record<string, string | undefined>;
 
-export type OfficialSetupRuntime = "claude-code" | "codex" | "opencode";
+export type OfficialSetupRuntime = "claude-code" | "codex" | "opencode" | "pi";
 
 export const OFFICIAL_SETUP_RUNTIMES: readonly OfficialSetupRuntime[] = [
   "claude-code",
   "codex",
   "opencode",
+  "pi",
 ] as const;
 
 export function isOfficialSetupRuntime(runtime: string): runtime is OfficialSetupRuntime {
@@ -50,6 +51,8 @@ export function resolveOfficialSetupArgv(runtime: string): string[] {
       return ["setup", "codex"];
     case "opencode":
       return ["setup", "opencode"];
+    case "pi":
+      return ["setup", "pi"];
     default:
       throw new Error(`Runtime setup oficial desconocido: ${runtime}.`);
   }
@@ -532,6 +535,22 @@ export function collectOfficialSetupBackupTargets(
         path.join(configDir, "tui.jsonc"),
         path.join(configDir, "plugins", "engram.ts"),
       ];
+    case "pi":
+      // Canonical `engram setup pi` (plugin/pi README, `pi-engram init`):
+      // settings.json (declara npm:pi-mcp-adapter + npm:gentle-engram,
+      // provider-managed sin pin; auto-pin npmCommand solo con mise, nunca
+      // sobrescribe), mcp.json (servidor engram directo canónico con
+      // lifecycle lazy + directTools false) y todo <configDir>/npm
+      // (provider-owned: el setup muta descendientes bajo npm). El coordinador
+      // expande el directorio a ficheros regulares existentes, restaura bytes
+      // mutados y en fallo solo elimina descendientes creados, preservando
+      // ajenos preexistentes. Respeta PI_CODING_AGENT_DIR, por defecto
+      // <home>/.pi/agent. Nunca ~/.engram, DB, memorias ni binario.
+      return [
+        path.join(configDir, "settings.json"),
+        path.join(configDir, "mcp.json"),
+        path.join(configDir, "npm"),
+      ];
   }
 }
 
@@ -557,6 +576,12 @@ export function validateOfficialSetupDestination(
   }
   if (runtime === "opencode" && path.basename(path.resolve(configDir)) !== "opencode") {
     return `runOfficialSetupIfNeeded: configDir OpenCode incompatible (${configDir}); el provider solo alinea <parent>/opencode vía XDG_CONFIG_HOME.`;
+  }
+  if (runtime === "pi") {
+    // El provider respeta PI_CODING_AGENT_DIR (cualquier dir explícito) y por
+    // defecto <home>/.pi/agent; no hay destino incompatible que bloquear en
+    // install real. Se declara explícito para el gate install-only.
+    return null;
   }
   return null;
 }
@@ -607,6 +632,11 @@ export function resolveOfficialSetupEnv(
       // OPENCODE_CONFIG_DIR. Se fijan ambos para que el config efectivo sea
       // <parent>/opencode, donde miran backup, verify y rollback.
       return { OPENCODE_CONFIG_DIR: configDir, XDG_CONFIG_HOME: path.dirname(configDir) };
+    case "pi":
+      // Canonical: `pi-engram init` respeta PI_CODING_AGENT_DIR, por defecto
+      // <home>/.pi/agent. Se fija explícito para que backup, subprocess,
+      // verify y rollback vean el mismo configDir efectivo.
+      return { PI_CODING_AGENT_DIR: configDir };
   }
 }
 
@@ -692,7 +722,7 @@ export function isClaudeEngramVersionSupported(version: string): boolean {
  * Claude. Los saltos intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
  * En install real, runtime desconocido, verificador ausente o binario no
  * absoluto devuelven fallo explícito (`ran:true, ok:false`), nunca skip
- * silencioso. Codex/OpenCode son gestionados por el proveedor: nunca bloqueados por
+ * silencioso. Codex/OpenCode/Pi son gestionados por el proveedor: nunca bloqueados por
  * versión. El binario existente jamás se modifica.
  */
 export async function runOfficialSetupIfNeeded(
@@ -713,10 +743,6 @@ export async function runOfficialSetupIfNeeded(
   if (!shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
     return { ran: false };
   }
-  // Pi es future (PR04): nunca setup oficial; skip intencional, no fallo.
-  if (runtime === "pi") {
-    return { ran: false };
-  }
   if (!isOfficialSetupRuntime(runtime)) {
     const detail = `runOfficialSetupIfNeeded: runtime desconocido en install real: ${runtime}.`;
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
@@ -734,7 +760,7 @@ export async function runOfficialSetupIfNeeded(
   // Preflight estricto solo para Claude antes de targets/backup/spawn: exige
   // una versión estable numérica >=2.0.0. `null`, vacía, malformada,
   // fallida/timeout o sin triple numérica falla cerrado con razón accionable
-  // (check/update a 2.0.0+) y binario intacto. Codex/OpenCode son gestionados
+  // (check/update a 2.0.0+) y binario intacto. Codex/OpenCode/Pi son gestionados
   // por el proveedor y nunca se bloquean por versión.
   if (runtime === "claude-code") {
     const raw = opts.engramVersion;

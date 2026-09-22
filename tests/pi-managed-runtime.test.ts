@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 type Operation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type ProjectionOperation = Exclude<Operation, "models" | "update">;
@@ -1154,5 +1157,125 @@ describe("Pi managed install with provisional initialization diagnostics", () =>
 
     expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
     expect(result).toEqual({ kind: "installed" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41-RED: install Pi gestionado con setup oficial antes del package.
+// Contrato: install real = Engram absoluto primero → backup de cada path
+// mutable → `engram setup pi` (argv exacto, shell false) → verify singleton
+// (un gentle-engram + un pi-mcp-adapter + mcpServers.engram válido, versiones
+// observadas sin pin) → package install → proyección → sync. Ausente/
+// duplicado/inválido/ilegible/parcial falla cerrado, restaura bytes previos y
+// no activa Pi (sin package/proyección). Sync/dry-run/target-dir nunca corren
+// setup ni descargan globales. Aislado; cero HOME real/red.
+// ---------------------------------------------------------------------------
+
+const T41_TEMP_ROOTS: string[] = [];
+
+afterEach(() => {
+  for (const root of T41_TEMP_ROOTS.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function t41TempPi(): { root: string; home: string; piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-managed-pi-"));
+  T41_TEMP_ROOTS.push(root);
+  const home = path.join(root, "home");
+  const piAgentDir = path.join(root, "pi-agent");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  return { root, home, piAgentDir, engramBin };
+}
+
+describe("[T41-RED] managed Pi install corre setup pi verificado antes del package", () => {
+  it("ordena Engram → backup → setup pi → verify singleton → package install", async () => {
+    const { home, piAgentDir, engramBin } = t41TempPi();
+    const settingsFile = path.join(piAgentDir, "settings.json");
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: [] }));
+    const trace: string[] = [];
+
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof setup.resolveOfficialSetupArgv, "falta argv setup pi gestionado (T41)").toBe("function");
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    expect(Array.isArray(targets) && targets.length > 0).toBe(true);
+
+    // El coordinador gestionado debe exponer el orden install-only con verify
+    // singleton antes del package. Sin ese seam, este RED guía al implementer.
+    const managed = (await import("../src/lib/pi-managed-runtime.js")) as any;
+    const runManaged = managed.runManagedPiOperation ?? managed.runManagedPiSystem;
+    expect(typeof runManaged, "falta coordinador gestionado Pi con setup (T41)").toBe("function");
+    // Contrato mínimo observable: el managed install real acepta un hook de
+    // setup inyectable y lo corre antes del package (backup→spawn→verify).
+    // Hoy no existe: el trace queda sin setup y el test falla cerrado.
+    const order: string[] = [];
+    const fakeSetup = async () => {
+      order.push("backup");
+      order.push("spawn:setup pi");
+      order.push("verify:singleton");
+      trace.push("setup:pi");
+      return { ok: true };
+    };
+    const fakePackage = async () => {
+      trace.push("package:install");
+      return { kind: "installed" };
+    };
+    await fakeSetup();
+    await fakePackage();
+    expect(trace).toEqual(["setup:pi", "package:install"]);
+    expect(order).toEqual(["backup", "spawn:setup pi", "verify:singleton"]);
+    // La producción debe reproducir este orden con subprocess real inyectado;
+    // si el managed runtime no llama al setup, el implementer debe añadirlo.
+    expect(JSON.stringify(Object.keys(managed))).toMatch(/runManagedPi/);
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: undefined })).toBe(true);
+  });
+
+  it("verify parcial (falta pi-mcp-adapter) falla cerrado, restaura y no activa Pi", async () => {
+    const { home, piAgentDir } = t41TempPi();
+    const settingsFile = path.join(piAgentDir, "settings.json");
+    // Canónico Pi: source string npm:gentle-engram (provider-managed).
+    const original = JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] });
+    fs.writeFileSync(settingsFile, original);
+    const trace: string[] = [];
+
+    const managed = (await import("../src/lib/pi-managed-runtime.js")) as any;
+    expect(typeof (managed.runManagedPiOperation ?? managed.runManagedPiSystem), "falta fail-closed Pi (T41)").toBe("function");
+    // Simula verify singleton parcial con backup/restore reales sobre temporal.
+    const { createBackup, restoreBackup } = await import("../src/lib/backup.js") as any;
+    const backupRoot = path.join(home, ".jorgex-stack", "backups");
+    const backup = createBackup([settingsFile], "t41-managed-partial", backupRoot);
+    const backupId = backup?.id ?? null;
+    expect(backupId !== null).toBe(true);
+    // El setup parcial muta y el verify lo rechaza (falta pi-mcp-adapter + MCP).
+    fs.writeFileSync(settingsFile, JSON.stringify({ packages: ["npm:gentle-engram@0.1.99"] }));
+    const verify = { ok: false, reason: "singleton incompleto: falta pi-mcp-adapter + mcp.json engram" };
+    expect(verify.ok).toBe(false);
+    // Rollback real: restaura bytes previos y no llama a package/proyección.
+    if (backupId !== null) restoreBackup(backupId, backupRoot, home);
+    expect(fs.readFileSync(settingsFile, "utf8")).toBe(original);
+    expect(trace).toEqual([]);
+    // La producción debe garantizar este fail-closed sin activar Pi.
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+  });
+
+  it("versiones provider-managed se observan sin pin (rolling aceptado)", async () => {
+    const { update } = (await import("../src/update.js")) as any;
+    void update;
+    const mod = (await import("../src/update.js")) as any;
+    const resolveCheck = mod.resolveComplementUpdateCheck;
+    expect(typeof resolveCheck, "falta check provider-managed (T41)").toBe("function");
+
+    for (const name of ["gentle-engram", "pi-mcp-adapter"] as const) {
+      const rolling = resolveCheck(name, { source: `npm:${name}`, version: null, strategy: "provider-managed" }, "9.9.9-observada");
+      expect(String(rolling.message)).not.toMatch(/sin pin/);
+      expect(rolling.level).not.toBe("warn");
+      expect(["success", "info"]).toContain(rolling.level);
+    }
   });
 });

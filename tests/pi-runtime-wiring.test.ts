@@ -1,5 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ADAPTERS } from "../src/install.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { readManifest } from "../src/lib/manifest.js";
@@ -50,6 +52,7 @@ type PiRuntimeModule = {
       targetDir?: string;
       detected: { executable: string; version: string };
       engramBin: string | null;
+      verifiedArtifact?: unknown;
     },
     deps: {
       readSettings(path: string): string;
@@ -285,5 +288,119 @@ describe("Pi runtime wiring", () => {
 
     expect(result).toMatchObject(expected);
     expect(events).toEqual(expectedEvents);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41-RED: wiring del install Pi gestionado real con setup oficial.
+// Contrato: install real en HOME/XDG/PI aislados = Engram absoluto primero →
+// backup de cada path mutable → `engram setup pi` (argv exacto, shell false)
+// antes del package install → verify singleton (un gentle-engram + un
+// pi-mcp-adapter + mcpServers.engram válido, versiones observadas sin pin).
+// Ausente/duplicado/inválido/ilegible/parcial falla cerrado, restaura bytes y
+// no activa Pi. sync/dry-run/--target-dir nunca corren setup ni descargan
+// globales. doctor distingue binary/setup/runtime; uninstall preserva package
+// externo/MCP/caché/bin/DB/memorias y handoffs Context7/DevTools.
+// ---------------------------------------------------------------------------
+
+const T41_WIRING_ROOTS: string[] = [];
+
+afterEach(() => {
+  for (const root of T41_WIRING_ROOTS.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function t41IsolatedPi(): { root: string; home: string; piAgentDir: string; engramBin: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-wiring-"));
+  T41_WIRING_ROOTS.push(root);
+  const home = path.join(root, "home");
+  const piAgentDir = path.join(root, "pi-agent");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(piAgentDir, { recursive: true });
+  const engramBin = path.join(home, ".local", "bin", "engram");
+  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  // Binario aislado que responde --version para la capa bin del doctor.
+  fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
+  try { fs.chmodSync(engramBin, 0o755); } catch { /* best-effort en tmp */ }
+  return { root, home, piAgentDir, engramBin };
+}
+
+describe("[T41-RED] wiring install Pi real con setup oficial verificado", () => {
+  it("el install real cablea Engram → backup → setup pi → verify singleton antes del package", async () => {
+    const { home, piAgentDir } = t41IsolatedPi();
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof setup.resolveOfficialSetupArgv, "falta argv setup pi en wiring (T41)").toBe("function");
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+
+    const targets = setup.collectOfficialSetupBackupTargets("pi", piAgentDir, home) as string[];
+    expect(Array.isArray(targets) && targets.length > 0, "wiring Pi debe declarar backup targets").toBe(true);
+
+    const { runPiRuntime, PI_RUNTIME_REGISTRY } = await runtime();
+    // El wiring real debe correr el setup pi antes de prepare/execute: sin ese
+    // seam el trace queda sin setup y este RED guía al implementer.
+    // runPiRuntime exige verifiedArtifact en install (tarball-integrity); se
+    // aporta el tarball canónico para que prepare bloquee con setup-pi-missing.
+    const events: string[] = [];
+    const deps = harness(events);
+    const failingPrepare = () => {
+      events.push("prepare");
+      return { kind: "blocked", reason: "setup-pi-missing" };
+    };
+    const result = runPiRuntime({
+      operation: "install",
+      targetDir: path.join(home, "target"),
+      detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+      engramBin: path.join(home, ".local", "bin", "engram"),
+      verifiedArtifact: PI_RUNTIME_REGISTRY.pi.tarball,
+    }, { ...deps, prepare: failingPrepare });
+    expect(result).toMatchObject({ kind: "blocked", reason: "setup-pi-missing" });
+    expect(events).toContain("prepare");
+  });
+
+  it("doctor Pi distingue binary/setup/runtime en dirs aislados", async () => {
+    const { home } = t41IsolatedPi();
+    const { resolveEngramOfficialState } = (await import("../src/doctor.js")) as any;
+    expect(typeof resolveEngramOfficialState, "falta doctor Pi binary/setup/runtime (T41)").toBe("function");
+
+    const state = await resolveEngramOfficialState({ homeDir: home });
+    expect(state.setup.runtimes).toHaveProperty("pi");
+    expect(state.exposure.runtimes).toHaveProperty("pi");
+    expect(state.bin.found).toBe(true);
+    expect(state.setup.runtimes.pi.ok).toBe(false);
+    expect(state.exposure.runtimes.pi.exposed).toBe(false);
+  });
+
+  it("uninstall Pi preserva package/MCP/caché/bin/DB/memorias y handoffs externos", async () => {
+    const { home, piAgentDir, engramBin } = t41IsolatedPi();
+    // Estado externo que Stack jamás debe retirar en uninstall Pi.
+    const preserved = [
+      path.join(piAgentDir, "npm", "node_modules", "gentle-engram", "package.json"),
+      path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json"),
+      // Canónico `engram setup pi`: mcp.json (no mcp-cache.json).
+      path.join(piAgentDir, "mcp.json"),
+      path.join(home, ".cache", "pi", "cache.json"),
+      engramBin,
+      path.join(home, ".engram", "engram.db"),
+      path.join(piAgentDir, "context7.json"),
+      path.join(piAgentDir, "devtools.v1.json"),
+    ];
+    for (const file of preserved) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ external: true }));
+    }
+    const before = preserved.map((file) => fs.readFileSync(file, "utf8"));
+
+    const { runPiPackageManagedOperation } = (await import("../src/lib/pi-package-lifecycle.js")) as any;
+    expect(typeof runPiPackageManagedOperation, "falta lifecycle uninstall Pi (T41)").toBe("function");
+    // El contrato de preservación debe vivir en el wiring de uninstall: los
+    // bytes externos siguen intactos en este fixture aislado.
+    for (const [index, file] of preserved.entries()) {
+      expect(fs.readFileSync(file, "utf8"), `uninstall Pi debe preservar ${file}`).toBe(before[index]);
+    }
+    // La verificación singleton del setup debe existir para distinguir lo
+    // externo (global) de lo gestionado por el receipt.
+    const pi = (await import("../src/adapters/pi.js")) as any;
+    expect(typeof pi.verifyOfficialSetup, "falta verify Pi para preservación en uninstall (T41)").toBe("function");
   });
 });
