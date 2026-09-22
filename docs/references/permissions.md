@@ -218,7 +218,8 @@ variantes de ruta (`*/format`) para la destrucción:
 claves `engram_*`, `context7_*` ni de ningún otro servidor: cualquier
 herramienta MCP (Engram, Context7, chrome-devtools, futuros) funciona sin
 prompts por herramienta porque lo no listado usa el default nativo
-(`allow`). No hay nada que mantener cuando aparece un servidor nuevo.
+(`allow`). Stack no filtra las herramientas del provider oficial de Engram; no
+hay nada que mantener cuando aparece un servidor nuevo.
 
 **Por qué las reglas específicas importan.** OpenCode evalúa sus reglas de
 matching según la semántica nativa del runtime; sin regla global, cada
@@ -230,7 +231,7 @@ default nativo. La política no es un sandbox universal del sistema de
 **El adapter no migra solo.** El default anterior era la matriz restrictiva
 (`"*": "ask"` global, `ask` para intérpretes, `pnpm exec/dlx`, `git push`
 y decenas de formas git, denies de secretos y rutas de sistema en `bash`,
-allowlist `engram_*`/`context7_*`). Si tu `opencode.json` ya trae una
+allowlist histórica `engram_*`/`context7_*`). Si tu `opencode.json` ya trae una
 `permission` (custom o exactamente igual a ese default anterior), el
 adapter la deja intacta por defecto y emite el aviso stale
 (solo-si-difiere, sin volcar el bloque). Para subir al nuevo default,
