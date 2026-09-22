@@ -13,11 +13,15 @@ type ValidateWake = (eventName: unknown, event: unknown) => unknown;
 type ValidateProposal = (proposal: unknown) => unknown;
 type Api = (method: string, path: string, body?: unknown) => Promise<unknown>;
 type PublishProposal = (proposal: unknown, api: Api) => Promise<unknown>;
+type ClassifyAdoptionIdentity = (input: { version: unknown; tagCommit: unknown; pinVersion: unknown; pinCommit: unknown }) => { status: string; version?: unknown; sourceSha: string };
+type ClassifySnapshotIdentity = (input: { parityCommit: unknown; stackDiff: unknown; lastTouch: unknown }) => { status: string; sourceSha: string };
 
 interface AutomationModule {
   validateWake?: unknown;
   validateProposal?: unknown;
   publishProposal?: unknown;
+  classifyAdoptionIdentity?: unknown;
+  classifySnapshotIdentity?: unknown;
 }
 
 interface ApiCall {
@@ -39,19 +43,33 @@ interface FakeApiOptions {
   repository?: string;
 }
 
+async function loadModule(): Promise<AutomationModule> {
+  return await import(/* @vite-ignore */ automationModuleUrl) as AutomationModule;
+}
+
 async function loadValidateWake(): Promise<ValidateWake> {
-  const module = await import(/* @vite-ignore */ automationModuleUrl) as AutomationModule;
+  const module = await loadModule();
   expect(module.validateWake).toBeTypeOf("function");
   return module.validateWake as ValidateWake;
 }
 
 async function loadAutomation(): Promise<{ validateProposal: ValidateProposal; publishProposal: PublishProposal }> {
-  const module = await import(/* @vite-ignore */ automationModuleUrl) as AutomationModule;
+  const module = await loadModule();
   expect(module.validateProposal).toBeTypeOf("function");
   expect(module.publishProposal).toBeTypeOf("function");
   return {
     validateProposal: module.validateProposal as ValidateProposal,
     publishProposal: module.publishProposal as PublishProposal,
+  };
+}
+
+async function loadIdentity(): Promise<{ classifyAdoptionIdentity: ClassifyAdoptionIdentity; classifySnapshotIdentity: ClassifySnapshotIdentity }> {
+  const module = await loadModule();
+  expect(module.classifyAdoptionIdentity).toBeTypeOf("function");
+  expect(module.classifySnapshotIdentity).toBeTypeOf("function");
+  return {
+    classifyAdoptionIdentity: module.classifyAdoptionIdentity as ClassifyAdoptionIdentity,
+    classifySnapshotIdentity: module.classifySnapshotIdentity as ClassifySnapshotIdentity,
   };
 }
 
@@ -423,19 +441,6 @@ describe("Stack–Pi engram protocol removal idempotency (T70)", () => {
   });
 });
 
-async function loadIdentity(): Promise<{
-  classifyAdoptionIdentity: (input: { version: unknown; tagCommit: unknown; pinVersion: unknown; pinCommit: unknown }) => { status: string; version?: unknown; sourceSha: string };
-  classifySnapshotIdentity: (input: { parityCommit: unknown; stackDiff: unknown; lastTouch: unknown }) => { status: string; sourceSha: string };
-}> {
-  const module = await import(/* @vite-ignore */ automationModuleUrl) as Record<string, unknown>;
-  expect(module.classifyAdoptionIdentity).toBeTypeOf("function");
-  expect(module.classifySnapshotIdentity).toBeTypeOf("function");
-  return module as unknown as {
-    classifyAdoptionIdentity: (input: { version: unknown; tagCommit: unknown; pinVersion: unknown; pinCommit: unknown }) => { status: string; version?: unknown; sourceSha: string };
-    classifySnapshotIdentity: (input: { parityCommit: unknown; stackDiff: unknown; lastTouch: unknown }) => { status: string; sourceSha: string };
-  };
-}
-
 describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
   const temporaryRoots: string[] = [];
 
@@ -528,15 +533,8 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
     git(stackRoot, ["checkout", "--detach", "HEAD"]);
 
     // Fixture reproduce run 35768465981: latest publicado == pin canónico.
-    expect(current.package).toMatchObject({ version: "0.8.29" });
-    expect(tagCommit).toBe((current.provenance as { commit: string }).commit);
-
-    // Contadores del seam coordinator prepare: el no-op correcto no invoca
-    // preparer, no hace fetch/npm writes y no deja proposal ni staging.
-    let prepareCalls = 0;
-    let fetchCalls = 0;
-    expect(prepareCalls).toBe(0);
-    expect(fetchCalls).toBe(0);
+    // El no-op correcto no invoca preparer, no hace fetch/npm writes y no
+    // deja proposal ni staging.
     expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
     expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
     expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);
@@ -566,7 +564,6 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
 
     // Pin anclado a otro commit con la misma versión: tag mutable.
     const pinnedCommit = "c".repeat(40);
-    expect(tagCommit).not.toBe(pinnedCommit);
 
     initRepo(stackRoot);
     writeJson(stackRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
@@ -582,7 +579,6 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
 
     // T73 GREEN: misma versión con distinto commit no es noop en el
     // coordinator; falla cerrado sin fetch ni writes.
-    const fetchCalls = 0;
     const { classifyAdoptionIdentity } = await loadIdentity();
     expect(() => classifyAdoptionIdentity({
       version: "0.8.29",
@@ -590,7 +586,6 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
       pinVersion: (current.package as { version: string }).version,
       pinCommit: (current.provenance as { commit: string }).commit,
     })).toThrow(/provenance|commit|mutable|tag/i);
-    expect(fetchCalls).toBe(0);
     expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
     expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
   });
@@ -618,9 +613,7 @@ describe("Stack–Pi coordinator no-op reconciliation (T72/T73)", () => {
     expect(git(stackRoot, ["merge-base", "--is-ancestor", coordinatorLastTouch, parityCommit])).toBe("");
     expect(git(stackRoot, ["diff", "--name-only", `${parityCommit}..origin/main`, "--", "stack/"])).toBe("");
 
-    // Contadores y ausencia de writes del no-op correcto.
-    let snapshotCalls = 0;
-    expect(snapshotCalls).toBe(0);
+    // Ausencia de writes del no-op correcto.
     expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
     expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
     expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);

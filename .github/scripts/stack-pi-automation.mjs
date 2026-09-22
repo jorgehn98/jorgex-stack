@@ -42,10 +42,14 @@ export function classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch })
   return { status: 'proceed', sourceSha: lastTouch };
 }
 
-function readBoundedJsonFile(file) {
+function readBoundedJson(file, label) {
   const stat = lstatSync(file);
-  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_BYTES, 'Invalid identity file');
+  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_BYTES, label);
   return JSON.parse(readFileSync(file, 'utf8'));
+}
+
+function readBoundedJsonFile(file) {
+  return readBoundedJson(file, 'Invalid identity file');
 }
 
 export function validateWake(eventName, event) {
@@ -199,9 +203,7 @@ async function boundedJson(response) {
 }
 
 function readEnvelope(file) {
-  const stat = lstatSync(file);
-  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_BYTES, 'Invalid proposal file');
-  const data = JSON.parse(readFileSync(file, 'utf8'));
+  const data = readBoundedJson(file, 'Invalid proposal file');
   if (data.status === 'prepared') {
     exact(data, ['status', 'proposal']);
     validateProposal(data.proposal);
@@ -218,6 +220,13 @@ function report(result) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `### Stack ↔ Pi\nEstado: ${result.status}${result.url ? `\nPR: ${result.url}\nCandidato: ${result.head}\nChecks remotos pendientes; merge exclusivamente humano.` : ''}\n`);
   console.log(JSON.stringify(result));
+}
+
+function reportUnchanged(output, actual, expected, message) {
+  assert.equal(actual, expected, message);
+  mkdirSync(output, { recursive: true });
+  writeFileSync(join(output, 'proposal.json'), JSON.stringify({ status: 'unchanged' }));
+  report({ status: 'unchanged' });
 }
 
 async function prepare(stackRoot, piRoot, output) {
@@ -242,10 +251,7 @@ async function prepare(stackRoot, piRoot, output) {
     const lastTouch = git(stackRoot, ['log', '--first-parent', '-1', '--format=%H', 'origin/main', '--', 'stack/']).trim();
     const decision = classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch });
     if (decision.status === 'unchanged') {
-      assert.equal(decision.sourceSha, parityCommit, 'Snapshot noop must keep parity identity');
-      mkdirSync(output, { recursive: true });
-      writeFileSync(join(output, 'proposal.json'), JSON.stringify({ status: 'unchanged' }));
-      report({ status: 'unchanged' });
+      reportUnchanged(output, decision.sourceSha, parityCommit, 'Snapshot noop must keep parity identity');
       return;
     }
     git(stackRoot, ['merge-base', '--is-ancestor', parityCommit, decision.sourceSha]);
@@ -259,10 +265,7 @@ async function prepare(stackRoot, piRoot, output) {
     const pin = readBoundedJsonFile(join(stackRoot, 'src/lib/pi-runtime-pin.json'));
     const decision = classifyAdoptionIdentity({ version, tagCommit: sourceSha, pinVersion: pin?.package?.version, pinCommit: pin?.provenance?.commit });
     if (decision.status === 'unchanged') {
-      assert.equal(decision.sourceSha, sourceSha, 'Adoption noop must keep tag identity');
-      mkdirSync(output, { recursive: true });
-      writeFileSync(join(output, 'proposal.json'), JSON.stringify({ status: 'unchanged' }));
-      report({ status: 'unchanged' });
+      reportUnchanged(output, decision.sourceSha, sourceSha, 'Adoption noop must keep tag identity');
       return;
     }
   }
