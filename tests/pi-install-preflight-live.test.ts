@@ -23,6 +23,12 @@ import { afterEach, describe, expect, it } from "vitest";
  *   sourceAlias }` observed live: provider-selected release identity, verified
  *   tarball bytes/digests, informational producer commit, staged lock/tree
  *   evidence, and the exact staged `file:` alias. No activation.
+ * - After the preflight, runs `smokeStagedPiRuntime({ piExecutable, stageDir,
+ *   timeoutMs })` from `src/lib/pi-stage-smoke.ts` against the staged
+ *   `pi-agent` dir BEFORE sandbox cleanup and asserts the required public
+ *   commands (`goal`, `subagents`, `permission-system`, `websearch`,
+ *   `jorgex:header`) are present. Engram tools are deliberately never
+ *   required here: the stage carries no official provider pair.
  *
  * Live gate:
  * - Skipped unless `JORGEX_PI_BIN` points at a real Pi CLI. CI/default stays
@@ -132,6 +138,46 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const HEX128 = /^[0-9a-f]{128}$/;
 const COMMIT40 = /^[0-9a-f]{40}$/;
 const STAGE_TIMEOUT_MS = 120_000;
+const SMOKE_TIMEOUT_MS = 60_000;
+
+const REQUIRED_SMOKE_COMMANDS = [
+  "goal",
+  "subagents",
+  "permission-system",
+  "websearch",
+  "jorgex:header",
+] as const;
+
+function expectRequiredSmokeCommands(commands: string[]): void {
+  for (const required of REQUIRED_SMOKE_COMMANDS) {
+    expect(commands, `staged smoke must expose required command ${required}`).toContain(required);
+  }
+}
+
+type SmokeInput = {
+  piExecutable: string;
+  stageDir: string;
+  timeoutMs?: number;
+};
+
+type SmokeResult = {
+  commands: string[];
+};
+
+type StageSmokeModule = {
+  smokeStagedPiRuntime(input: SmokeInput): Promise<SmokeResult>;
+};
+
+const smokeSpecifier = new URL("../src/lib/pi-stage-smoke.js", import.meta.url).href;
+
+async function loadSmoke(): Promise<StageSmokeModule> {
+  const mod = (await import(/* @vite-ignore */ smokeSpecifier)) as Partial<StageSmokeModule>;
+  expect(
+    mod.smokeStagedPiRuntime,
+    "smokeStagedPiRuntime must be exported from src/lib/pi-stage-smoke.ts",
+  ).toBeTypeOf("function");
+  return mod as StageSmokeModule;
+}
 
 const sandboxes: string[] = [];
 
@@ -316,13 +362,32 @@ describe.skipIf(!liveBin)("Pi managed-install preflight composes the live provid
     };
     expect(JSON.stringify(stagedSettings.packages)).toContain(result.sourceAlias);
 
+    // Staged ABI smoke BEFORE sandbox cleanup: the real staged Pi host must
+    // serve the required public commands through its isolated rpc launch.
+    // Engram tools are deliberately not required: the stage carries no
+    // official provider pair.
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const smokeHomeBefore = process.env["HOME"];
+    const smokeAgentDirBefore = process.env["PI_CODING_AGENT_DIR"];
+    const smoke = await smokeStagedPiRuntime({
+      piExecutable,
+      stageDir: result.stageDir,
+      timeoutMs: SMOKE_TIMEOUT_MS,
+    });
+    expect(Array.isArray(smoke.commands)).toBe(true);
+    expectRequiredSmokeCommands(smoke.commands);
+
     // No activation: the fake active tree stays byte-identical and holds no
     // managed entry; the stage lives under the sandbox, never the real HOME.
+    // These readbacks run after the smoke too, so the smoke itself is proven
+    // to have touched no external/home state.
+    expect(process.env["HOME"]).toBe(smokeHomeBefore);
+    expect(process.env["PI_CODING_AGENT_DIR"]).toBe(smokeAgentDirBefore);
     expect(fs.readFileSync(sandbox.settingsPath, "utf8")).toBe(sandbox.beforeSettings);
     expect(fs.readFileSync(sandbox.receiptPath, "utf8")).toBe(sandbox.beforeReceipt);
     expect(fs.readFileSync(sandbox.foreignIndex, "utf8")).toBe(sandbox.beforeForeign);
     expect(fs.existsSync(path.join(sandbox.agentDir, "npm", "node_modules", "jorgex-pi"))).toBe(false);
     expect(path.resolve(sandbox.homeDir).startsWith(path.resolve(os.tmpdir()))).toBe(true);
     expect(result.stageDir).not.toBe(sandbox.agentDir);
-  }, 240_000);
+  }, 300_000);
 });
