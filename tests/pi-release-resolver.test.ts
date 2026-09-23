@@ -23,6 +23,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * - Acquisition tracer `downloadVerifiedPiTarball(release, destination,
  *   fetchImpl)`: exact-release bytes verified (URL/redirect, bounded
  *   stream, SHA-512) before private publish; no staging (T07 owns it).
+ * - Provenance tracer `resolvePiProducerCommit(version, fetchImpl)`:
+ *   INFORMATIONAL producer tag commit from the official GitHub ref API
+ *   (lightweight tag → commit sha); never an npm attestation, never a
+ *   static fallback.
  */
 
 type PiReleaseCandidate = {
@@ -515,5 +519,124 @@ describe("[T06-RED] pi tarball acquisition verifies before publishing", () => {
       /pi-release-resolver:/,
     );
     expect(fs.existsSync(destination)).toBe(false);
+  });
+});
+
+const producerTagUrl = (version: string): string =>
+  `https://api.github.com/repos/jorgehn98/jorgex-pi/git/ref/tags/v${version}`;
+
+type PiProducerProvenance = {
+  resolvePiProducerCommit(version: string, fetchImpl: typeof fetch): Promise<string>;
+};
+
+async function loadProvenance(): Promise<PiProducerProvenance> {
+  const mod = (await import(/* @vite-ignore */ resolverSpecifier)) as Partial<PiProducerProvenance>;
+  expect(
+    mod.resolvePiProducerCommit,
+    "resolvePiProducerCommit must be exported from src/lib/pi-release-resolver.ts",
+  ).toBeTypeOf("function");
+  return mod as PiProducerProvenance;
+}
+
+function tagRefFetch(
+  payload: unknown,
+  seen: Array<{ url: string; redirect?: string }>,
+  opts?: { status?: number; urlOverride?: string },
+): typeof fetch {
+  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    seen.push({ url, redirect: init?.redirect });
+    const response = new Response(JSON.stringify(payload), {
+      status: opts?.status ?? 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    Object.defineProperty(response, "url", { value: opts?.urlOverride ?? url });
+    return response;
+  });
+  return fetch as unknown as typeof fetch;
+}
+
+describe("[T06-RED] pi producer provenance resolves the informational tag commit", () => {
+  // Synthetic test-only tag sha (40 lowercase hex), not a real commit claim.
+  const SYNTHETIC_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+  it("resolves the exact lightweight tag ref to its commit sha", async () => {
+    const { resolvePiProducerCommit } = await loadProvenance();
+    const version = "9.9.10";
+    const seen: Array<{ url: string; redirect?: string }> = [];
+    const fetch = tagRefFetch(
+      { ref: `refs/tags/v${version}`, object: { type: "commit", sha: SYNTHETIC_SHA } },
+      seen,
+    );
+
+    await expect(resolvePiProducerCommit(version, fetch)).resolves.toBe(SYNTHETIC_SHA);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(seen[0]?.url).toBe(producerTagUrl(version));
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  it("rejects a non-stable input version without any fetch", async () => {
+    const { resolvePiProducerCommit } = await loadProvenance();
+    let called = false;
+    const fetch: typeof globalThis.fetch = (async (): Promise<Response> => {
+      called = true;
+      throw new Error("fetch must not be called");
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(resolvePiProducerCommit("9.9.10-beta.1", fetch)).rejects.toThrow(
+      /pi-release-resolver:/,
+    );
+    expect(called).toBe(false);
+  });
+
+  it.each(
+    [
+      {
+        label: "wrong ref",
+        payload: {
+          ref: "refs/tags/v9.9.11",
+          object: { type: "commit", sha: "0123456789abcdef0123456789abcdef01234567" },
+        },
+      },
+      {
+        label: "annotated tag object",
+        payload: {
+          ref: "refs/tags/v9.9.10",
+          object: { type: "tag", sha: "0123456789abcdef0123456789abcdef01234567" },
+        },
+      },
+      {
+        label: "non-2xx registry status",
+        payload: {
+          ref: "refs/tags/v9.9.10",
+          object: { type: "commit", sha: "0123456789abcdef0123456789abcdef01234567" },
+        },
+        status: 404,
+      },
+      {
+        label: "foreign response url",
+        payload: {
+          ref: "refs/tags/v9.9.10",
+          object: { type: "commit", sha: "0123456789abcdef0123456789abcdef01234567" },
+        },
+        urlOverride:
+          "https://api.github.com.evil.example/repos/jorgehn98/jorgex-pi/git/ref/tags/v9.9.10",
+      },
+      {
+        label: "invalid sha",
+        payload: {
+          ref: "refs/tags/v9.9.10",
+          object: { type: "commit", sha: "ZZZ-not-a-hex-sha" },
+        },
+      },
+    ] as Array<{ label: string; payload: unknown; status?: number; urlOverride?: string }>,
+  )("$label fails closed without a fabricated commit", async ({ payload, status, urlOverride }) => {
+    const { resolvePiProducerCommit } = await loadProvenance();
+    const seen: Array<{ url: string; redirect?: string }> = [];
+    const fetch = tagRefFetch(payload, seen, { status, urlOverride });
+
+    await expect(resolvePiProducerCommit("9.9.10", fetch)).rejects.toThrow(/pi-release-resolver:/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(seen[0]?.redirect).toBe("error");
   });
 });

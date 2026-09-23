@@ -339,3 +339,51 @@ export async function downloadVerifiedPiTarball(
     fail(`tarball download failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+const PRODUCER_REF_API = "https://api.github.com/repos/jorgehn98/jorgex-pi/git/ref/tags";
+const PRODUCER_ACCEPT = "application/vnd.github+json";
+const SHA40_HEX = /^[0-9a-f]{40}$/;
+
+function producerTagUrl(version: string): string {
+  return `${PRODUCER_REF_API}/v${version}`;
+}
+
+/**
+ * T06 provenance tracer: INFORMATIONAL producer tag commit for the exact
+ * stable version, read from the official public GitHub ref API. A lightweight
+ * tag pointing at a commit is the only accepted shape; annotated tags resolve
+ * to a tag object and fail closed. The result feeds `provenance.commit` as
+ * context only — never as an integrity attestation, never a static fallback.
+ */
+export async function resolvePiProducerCommit(
+  version: string,
+  fetchImpl: typeof fetch,
+): Promise<string> {
+  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) fail("invalid producer version");
+  const url = producerTagUrl(version);
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { accept: PRODUCER_ACCEPT },
+      redirect: "error",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    fail(`producer ref fetch failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!response.ok) fail(`producer ref responded ${response.status}`);
+  if (response.url !== url) fail(`unexpected producer ref response URL ${response.url}`);
+  const text = await readBoundedText(response);
+  let data: unknown;
+  try {
+    data = JSON.parse(text) as unknown;
+  } catch {
+    fail("malformed producer ref JSON");
+  }
+  if (!isRecord(data) || data["ref"] !== `refs/tags/v${version}`) fail("producer ref mismatch");
+  const object = data["object"];
+  if (!isRecord(object) || object["type"] !== "commit") fail("producer ref is not a lightweight tag commit");
+  const sha = object["sha"];
+  if (typeof sha !== "string" || !SHA40_HEX.test(sha)) fail("invalid producer commit sha");
+  return sha;
+}
