@@ -2387,6 +2387,22 @@ describe("[T06/T07-RED] sync without receipt blocks with install remedy", () => 
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // [T07-RED] fresh install blocks on a preexisting unowned FS entry before setup.
+  // Contract (final security review, coordinator-closed handoff): fresh
+  // `runPiRuntimeSystem({operation:'install',candidate+prepared,...})` with NO
+  // receipt and NO settings Pi entry must still lstat
+  // `agentDir/npm/node_modules/jorgex-pi` BEFORE official engram setup or
+  // activation. A preexisting unowned real dir (foreign/manual, no owned
+  // receipt/settings proof) must block fail-closed with zero setup calls,
+  // zero activation calls, zero fetch, and byte-identical sentinel/foreign/
+  // settings plus still-absent receipt; no managed marker/lock/backup/release
+  // may appear. The activation helper would otherwise move the foreign entry
+  // into backup and claim it. Isolated os.tmpdir HOME/agent only, synthetic
+  // 9.9.9 candidate, mocked provider setup + activation (existing fresh-setup
+  // seam), no network/Pi writes, no duplicate fallback coverage.
+  // ---------------------------------------------------------------------------
+
   it("static runPiRuntime install 0.84.2 reaches the Pi runner (control, sentinel proves auto-install risk)", async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t06-static-install-control-"));
     T41_WIRING_ROOTS.push(sandbox);
@@ -2466,5 +2482,161 @@ describe("[T06/T07-RED] sync without receipt blocks with install remedy", () => 
     expect((seenInvocation as unknown as { args: string[] }).args).toEqual(
       expect.arrayContaining(["install", "npm:jorgex-pi@0.8.29", "--no-approve"]),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T07-RED] fresh install blocks on a preexisting unowned FS entry before setup.
+// Contract (final security review, coordinator-closed handoff): fresh
+// `runPiRuntimeSystem({operation:'install',candidate+prepared,...})` with NO
+// receipt and NO settings Pi entry must still lstat
+// `agentDir/npm/node_modules/jorgex-pi` BEFORE official engram setup or
+// activation. A preexisting unowned real dir (foreign/manual, no owned
+// receipt/settings proof) must block fail-closed with zero setup calls, zero
+// activation calls, zero fetch, and byte-identical sentinel/foreign/settings
+// plus still-absent receipt; no managed marker/lock/backup/release may appear.
+// The activation helper would otherwise move the foreign entry into backup and
+// claim it. Isolated os.tmpdir HOME/agent only, synthetic 9.9.9 candidate,
+// mocked provider setup + activation (existing fresh-setup seam), no
+// network/Pi writes, no duplicate fallback coverage.
+// ---------------------------------------------------------------------------
+
+describe("[T07-RED] fresh install blocks on unowned FS entry before setup", () => {
+  it("no receipt/settings Pi entry but real unowned jorgex-pi dir blocks with zero setup/activation/fetch and preserves all bytes", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t07-fresh-unowned-"));
+    T41_WIRING_ROOTS.push(tmp);
+    const agentDir = path.join(tmp, "pi-agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    const engramBin = path.join(tmp, "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
+
+    // Preexisting UNOWNED real entry: no receipt, no settings registration.
+    const linkPath = path.join(agentDir, "npm", "node_modules", "jorgex-pi");
+    fs.mkdirSync(linkPath, { recursive: true });
+    const unownedIndex = "// unowned manual jorgex-pi - must never be backed up or claimed\n";
+    const unownedSentinel = "unowned-sentinel\n";
+    fs.writeFileSync(path.join(linkPath, "package.json"), '{"name":"jorgex-pi","version":"9.9.8-manual"}\n');
+    fs.writeFileSync(path.join(linkPath, "index.js"), unownedIndex);
+    fs.writeFileSync(path.join(linkPath, "SENTINEL.txt"), unownedSentinel);
+
+    // Foreign package sharing the same npm root (must survive byte-identically).
+    const foreignIndex = path.join(agentDir, "npm", "node_modules", "foreign-pkg", "index.js");
+    fs.mkdirSync(path.dirname(foreignIndex), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(foreignIndex), "package.json"), '{"name":"foreign-pkg","version":"1.0.0"}\n');
+    const foreignBytes = "// foreign package - must survive byte-identically\n";
+    fs.writeFileSync(foreignIndex, foreignBytes);
+
+    // Top-level sentinel proving no broad mutation.
+    const sentinelPath = path.join(tmp, "sentinel.txt");
+    const sentinelBytes = "fresh-unowned-sentinel\n";
+    fs.writeFileSync(sentinelPath, sentinelBytes);
+
+    // Settings WITHOUT any jorgex-pi registration (providers + foreign only).
+    const providerA = "npm:gentle-engram@9.9.99";
+    const providerB = "npm:pi-mcp-adapter@9.9.98";
+    const foreign = "npm:foreign-keep@1.0.0";
+    const settingsPath = path.join(agentDir, "settings.json");
+    const settingsBefore = JSON.stringify({ packages: [providerA, providerB, foreign] });
+    fs.writeFileSync(settingsPath, settingsBefore);
+    expect(settingsBefore).not.toContain("jorgex-pi");
+
+    // Synthetic stable candidate, no published-release claim.
+    const candidate = {
+      ...PI_RUNTIME_CANDIDATE,
+      package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" },
+      provenance: { commit: "0".repeat(40) },
+      tarball: { bytes: 1234567, sha256: "a".repeat(64), sha512: "b".repeat(128) },
+    } as const;
+    const stageDir = path.join(agentDir, `stage-${"f".repeat(32)}`, "pi-agent");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const syntheticDeps = [
+      { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
+      { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
+      { name: "pi-subagents", version: "9.9.12", integrity: `sha512-${Buffer.alloc(64, 13).toString("base64")}` },
+      { name: "pi-web-access", version: "9.9.13", integrity: `sha512-${Buffer.alloc(64, 14).toString("base64")}` },
+      { name: "@narumitw/pi-goal", version: "9.9.14", integrity: `sha512-${Buffer.alloc(64, 15).toString("base64")}` },
+      { name: "strip-json-comments", version: "9.9.15", integrity: `sha512-${Buffer.alloc(64, 16).toString("base64")}` },
+    ];
+    const prepared = {
+      candidate,
+      release: {
+        version: "9.9.9",
+        tarballUrl: "https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-9.9.9.tgz",
+        integrity: `sha512-${Buffer.from(candidate.tarball.sha512, "hex").toString("base64")}`,
+      },
+      artifact: {
+        path: path.join(tmp, "downloads", "jorgex-pi-9.9.9.tgz"),
+        bytes: 1234567,
+        sha256: "a".repeat(64),
+        sha512: "b".repeat(128),
+      },
+      stageDir,
+      evidence: { lockSha256: "c".repeat(64), treeSha256: "d".repeat(64), dependencies: syntheticDeps },
+      sourceAlias: `npm:jorgex-pi@file:${path.join(tmp, "downloads", "jorgex-pi-9.9.9.tgz")}`,
+    };
+
+    const setupCalls: unknown[] = [];
+    const activateCalls: unknown[] = [];
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(tmp);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    vi.resetModules();
+    vi.doMock("../src/lib/official-engram-setup.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/official-engram-setup.js")>(
+        "../src/lib/official-engram-setup.js",
+      );
+      return {
+        ...actual,
+        runOfficialSetupIfNeeded: async (...args: unknown[]) => {
+          setupCalls.push(args);
+          return { ran: true, ok: true, ownershipTransferred: true };
+        },
+      };
+    });
+    vi.doMock("../src/lib/pi-install-activation.js", () => ({
+      activatePreparedPiInstall: async (input: unknown) => {
+        activateCalls.push(input);
+        return { kind: "installed", receipt: { state: "installed" } };
+      },
+    }));
+    try {
+      const { runPiRuntimeSystem } = (await import("../src/lib/pi-runtime.js")) as any;
+      const result = await runPiRuntimeSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin,
+        candidate,
+        prepared,
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(setupCalls).toHaveLength(0);
+      expect(activateCalls).toHaveLength(0);
+      expect(result.kind).toBe("blocked");
+      expect(result).not.toMatchObject({ kind: "installed" });
+      expect(String((result as { remedy?: unknown }).remedy ?? "")).toMatch(/Pi no quedó activado/i);
+
+      // All preexisting bytes preserved; receipt still absent; no managed state.
+      expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(false);
+      expect(fs.lstatSync(linkPath).isDirectory()).toBe(true);
+      expect(fs.readFileSync(path.join(linkPath, "index.js"), "utf8")).toBe(unownedIndex);
+      expect(fs.readFileSync(path.join(linkPath, "SENTINEL.txt"), "utf8")).toBe(unownedSentinel);
+      expect(fs.readFileSync(foreignIndex, "utf8")).toBe(foreignBytes);
+      expect(fs.readFileSync(sentinelPath, "utf8")).toBe(sentinelBytes);
+      expect(fs.readFileSync(settingsPath, "utf8")).toBe(settingsBefore);
+      expect(fs.existsSync(path.join(tmp, ".jorgex-stack", "pi-receipt.json"))).toBe(false);
+      expect(fs.existsSync(path.join(agentDir, "npm", "jorgex-pi-managed"))).toBe(false);
+      expect(fs.lstatSync(stageDir).isDirectory()).toBe(true);
+      expect(fs.existsSync(path.join(stageDir, ".activate-backup"))).toBe(false);
+    } finally {
+      fetchSpy.mockRestore();
+      homedirSpy.mockRestore();
+      vi.doUnmock("../src/lib/official-engram-setup.js");
+      vi.doUnmock("../src/lib/pi-install-activation.js");
+      vi.resetModules();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
   });
 });

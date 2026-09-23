@@ -334,6 +334,16 @@ describe("Pi package-managed operations", () => {
     expect((incompleteResult as { reason?: unknown }).reason).toMatch(/recovery-incomplete/i);
     expect((incompleteResult as { reason?: unknown }).reason).not.toBe("remove-failed");
     expect(String((incompleteResult as { remedy?: unknown }).remedy ?? "")).toMatch(/backup|marker|lock/i);
+    // T07 RED: incomplete rollback must name a safe categorized cause
+    // (external drift, in Spanish) without echoing raw helper text and
+    // without inventing an entry subtype not in evidence.
+    expect(String((incompleteResult as { remedy?: unknown }).remedy ?? "")).toMatch(
+      /drift externo|cambio externo/i,
+    );
+    expect(String((incompleteResult as { remedy?: unknown }).remedy ?? "")).not.toMatch(
+      /external drift during uninstall/i,
+    );
+    expect(JSON.stringify(incompleteResult)).not.toContain("refusing to touch foreign state");
     expect(incompleteEvents).toEqual([
       "verify-legacy",
       "backup-settings",
@@ -354,10 +364,16 @@ describe("Pi package-managed operations", () => {
         throw completeFailure;
       },
     };
-    expect(runPiPackageManagedOperation(uninstallInput, completeDeps)).toMatchObject({
+    const completeResult = runPiPackageManagedOperation(uninstallInput, completeDeps);
+    expect(completeResult).toMatchObject({
       kind: "blocked",
       reason: "remove-failed",
     });
+    // Complete rollback must not leak arbitrary helper content.
+    expect(JSON.stringify(completeResult)).not.toContain("verify failed after removal, rolled back");
+    expect(String((completeResult as { remedy?: unknown }).remedy ?? "")).not.toContain(
+      "verify failed after removal, rolled back",
+    );
     expect(completeEvents).toEqual([
       "verify-legacy",
       "backup-settings",

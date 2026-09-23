@@ -1530,12 +1530,74 @@ export function runPiPackageManagedModels(
 /**
  * Shared deactivate failure mapping: an incomplete-recovery throw retains
  * backup/marker/lock and must surface explicitly, never as opaque
- * remove-failed. Normal or recovery:'complete' throws stay remove-failed.
+ * remove-failed. Classifies only known helper signals (external drift,
+ * transaction lock busy, rollback incomplete) into static Spanish remedies
+ * with backup/marker/lock inspection plus do-not-retry; never echoes raw
+ * error text. Unknown incomplete keeps the generic warning; normal or
+ * recovery:'complete' throws stay remove-failed with no content leak.
  */
+function deactivateIncompleteCause(error: unknown): "external-drift" | "lock-busy" | "rollback-incomplete" | "unknown" {
+  let message = "";
+  if (typeof error === "string") {
+    message = error;
+  } else if (error !== null && typeof error === "object") {
+    const raw = Reflect.get(error as object, "message");
+    if (typeof raw === "string") message = raw;
+  }
+  const sample = message.slice(0, 1000).toLowerCase();
+  if (
+    sample.includes("external drift")
+    || sample.includes("foreign state")
+    || sample.includes("drifted")
+  ) {
+    return "external-drift";
+  }
+  if (
+    sample.includes("transaction lock busy")
+    || sample.includes("lock busy")
+    || sample.includes("active transaction pending")
+    || sample.includes("cannot record marker")
+    || sample.includes("exclusive lock")
+  ) {
+    return "lock-busy";
+  }
+  if (
+    sample.includes("rollback incomplete")
+    || sample.includes("uninstall aborted")
+    || sample.includes("cannot restore")
+    || sample.includes("cannot clear transaction state")
+  ) {
+    return "rollback-incomplete";
+  }
+  return "unknown";
+}
+
 function mapDeactivateError(error: unknown): Extract<PiPackageManagedOperationResult, { kind: "blocked" }> {
   if (error !== null
     && typeof error === "object"
     && Reflect.get(error as object, "recovery") === "incomplete") {
+    const cause = deactivateIncompleteCause(error);
+    if (cause === "external-drift") {
+      return {
+        kind: "blocked",
+        reason: "recovery-incomplete",
+        remedy: "Cambio externo (drift externo) durante la desinstalación: se conserva backup/marker/lock para inspección manual; no reintentes la desinstalación hasta resolverlo.",
+      };
+    }
+    if (cause === "lock-busy") {
+      return {
+        kind: "blocked",
+        reason: "recovery-incomplete",
+        remedy: "Bloqueo de transacción ocupado (lock busy): se conserva backup/marker/lock para inspección manual; no reintentes la desinstalación hasta resolverlo.",
+      };
+    }
+    if (cause === "rollback-incomplete") {
+      return {
+        kind: "blocked",
+        reason: "recovery-incomplete",
+        remedy: "Reversión incompleta durante la desinstalación: se conserva backup/marker/lock para inspección manual; no reintentes la desinstalación hasta resolverlo.",
+      };
+    }
     return {
       kind: "blocked",
       reason: "recovery-incomplete",

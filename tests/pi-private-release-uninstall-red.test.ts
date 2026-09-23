@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { inventoryTreeSha256 } from "../src/lib/pi-staged-lock.js";
 
 /**
@@ -578,5 +578,98 @@ describe("pi private-release safe uninstall RED (T05 for T07)", () => {
     expect(fs.readFileSync(sb.foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
     expect(fs.readFileSync(sb.gentleIndex, "utf8")).toBe(GENTLE_INDEX);
     expect(fs.readFileSync(sb.adapterIndex, "utf8")).toBe(ADAPTER_INDEX);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T07-RED] managed uninstall faults on backup-dir mkdir AFTER lock+marker.
+// Final silent-failure review: deactivateVerifiedPiRelease writes exclusive
+// transaction.lock + active-transaction.json BEFORE
+// fs.mkdirSync(uninstall-backup-*); an ENOSPC/EACCES thrown there strands
+// lock+marker with a generic failure. Real-FS fault injection on the exact
+// sandbox uninstall-backup-* path only (never real HOME). RED: marker/lock
+// remain stranded with a generic error.
+// ---------------------------------------------------------------------------
+describe("pi managed uninstall backup mkdir fault (T07 silent-failure RED)", () => {
+  it("RED: ENOSPC creating uninstall-backup-* throws without mutating state and leaves no dangling marker/lock", async () => {
+    const sb = setupUninstallSandbox();
+    expect(sb.homeDir.startsWith(os.tmpdir())).toBe(true);
+    const { deactivateVerifiedPiRelease } = await loadModule();
+    const managedRoot = path.join(sb.npmDir, "jorgex-pi-managed");
+    const markerPath = path.join(managedRoot, "active-transaction.json");
+    const lockPath = path.join(managedRoot, "transaction.lock");
+    const resolvedHome = path.resolve(sb.homeDir);
+    const resolvedManaged = path.resolve(managedRoot);
+
+    const originalMkdir = fs.mkdirSync;
+    const spy = vi.spyOn(fs, "mkdirSync");
+    spy.mockImplementation(((target: unknown, options: unknown) => {
+      if (
+        typeof target === "string" &&
+        path.resolve(target).startsWith(resolvedManaged) &&
+        path.basename(target).startsWith("uninstall-backup-") &&
+        path.resolve(target).startsWith(resolvedHome)
+      ) {
+        const err = new Error(`ENOSPC: no space left on device, mkdir '${target}'`) as NodeJS.ErrnoException;
+        err.code = "ENOSPC";
+        throw err;
+      }
+      return (originalMkdir as typeof fs.mkdirSync)(target as string, options as never);
+    }) as typeof fs.mkdirSync);
+
+    let failure: unknown = null;
+    let verifyRan = false;
+    try {
+      deactivateVerifiedPiRelease({
+        homeDir: sb.homeDir,
+        agentDir: sb.agentDir,
+        receiptPath: sb.receiptPath,
+        managedPackage: {
+          releaseDir: sb.releaseDir,
+          linkPath: sb.linkPath,
+          backupDir: sb.backupDir,
+          lockSha256: sb.lockSha256,
+          treeSha256: sb.treeSha256,
+          dependencies: sb.dependencies.map((dep) => ({ ...dep })),
+        },
+        nextSettings: sb.nextSettings,
+        verify: () => {
+          verifyRan = true;
+        },
+      });
+    } catch (error: unknown) {
+      failure = error;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(verifyRan).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).toMatch(/ENOSPC/);
+
+    // Backup never prepared: no Stack-owned uninstall backup appeared.
+    const managedEntries = fs.existsSync(managedRoot) ? fs.readdirSync(managedRoot) : [];
+    expect(managedEntries.filter((name) => name.startsWith("uninstall-backup-"))).toEqual([]);
+    // Activation backup stays recoverable.
+    expect(fs.readFileSync(path.join(sb.backupDir, "activation-marker.json"), "utf8")).toBe('{"retained":true}\n');
+
+    // Live state untouched.
+    expect(fs.lstatSync(sb.linkPath).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(sb.linkPath)).toBe(sb.expectedLinkTarget);
+    expect(fs.realpathSync(sb.linkPath)).toBe(sb.packageRoot);
+    expect(fs.readFileSync(sb.releaseIndex, "utf8")).toBe(NEW_PI_INDEX);
+    expect(fs.readFileSync(sb.settingsPath, "utf8")).toBe(sb.oldSettings);
+    expect(fs.readFileSync(sb.receiptPath, "utf8")).toBe(sb.oldReceipt);
+    expect(fs.readFileSync(sb.foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
+    expect(fs.readFileSync(sb.gentleIndex, "utf8")).toBe(GENTLE_INDEX);
+    expect(fs.readFileSync(sb.adapterIndex, "utf8")).toBe(ADAPTER_INDEX);
+
+    // Successful-cleanup case: cleanup via plain rm is possible, so the
+    // failure stays ordinary (or explicit recovery complete), never
+    // incomplete, with no dangling marker/lock. Incomplete with marker
+    // preserved belongs only to a separate cleanup-failure seam (not added
+    // here; one test at the strongest seam if valuable).
+    expect((failure as Error & { recovery?: string }).recovery).not.toBe("incomplete");
+    expect(fs.existsSync(markerPath)).toBe(false);
+    expect(fs.existsSync(lockPath)).toBe(false);
   });
 });

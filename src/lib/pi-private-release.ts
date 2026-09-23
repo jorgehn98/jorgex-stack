@@ -12,6 +12,7 @@ export interface ActivateVerifiedPiReleaseInput {
   nextSettings: string;
   nextReceipt: string;
   verify: () => void | Promise<void>;
+  expectedPreviousEntry?: { kind: "absent" };
 }
 
 export type ActivateVerifiedPiReleaseResult = { ok: true; releaseDir: string };
@@ -247,10 +248,24 @@ function atomicWritePrivate(target: string, content: string): void {
   }
   const tmpStat = lstatOrNull(tmp);
   if (tmpStat === null || !tmpStat.isFile()) {
-    fs.rmSync(tmp, { force: true });
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      failIncomplete(`cannot clean private temp (recovery incomplete): ${tmp}`);
+    }
     throw new Error(`private temp is not a regular file: ${target}`);
   }
-  fs.renameSync(tmp, target);
+  try {
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      const original = err instanceof Error ? err.message : String(err ?? "rename failed");
+      failIncomplete(`cannot clean private temp after rename failure (recovery incomplete): ${tmp}: ${original}`);
+    }
+    throw err;
+  }
 }
 
 export async function activateVerifiedPiRelease(
@@ -412,12 +427,56 @@ export async function activateVerifiedPiRelease(
   }
 
   let lockAcquired = false;
+  let backupCreated = false;
   const releaseLock = (): void => {
     if (!lockAcquired) return;
     fs.rmSync(lockPath, { force: true });
     lockAcquired = false;
   };
+  const isOwnBackupForCleanup = (): boolean => {
+    if (!backupCreated) return false;
+    const st = lstatOrNull(backupDir);
+    if (st === null || !st.isDirectory() || st.isSymbolicLink()) return false;
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(backupDir);
+    } catch {
+      return false;
+    }
+    const allowed = new Set(["entry", "settings.json", "receipt.json", "meta.json"]);
+    for (const entry of entries) {
+      if (!allowed.has(entry)) return false;
+    }
+    const metaPath = path.join(backupDir, "meta.json");
+    const metaStat = lstatOrNull(metaPath);
+    if (metaStat !== null) {
+      if (!metaStat.isFile() || metaStat.isSymbolicLink()) return false;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(metaPath, "utf8")) as { releaseId?: unknown };
+        if (parsed.releaseId !== releaseId) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
   const abortBeforePublish = (err: unknown): never => {
+    if (backupCreated && !isOwnBackupForCleanup()) {
+      try {
+        fs.rmSync(markerPath, { force: true });
+      } catch {
+        // marker retained; fail closed below
+      }
+      try {
+        releaseLock();
+      } catch {
+        // lock retained; fail closed below
+      }
+      const originalOwn = err instanceof Error ? err.message : String(err ?? "activation failed");
+      failIncomplete(
+        `backup drifted, preserving foreign state (recovery incomplete): ${backupDir}: ${originalOwn}`,
+      );
+    }
     const problems: string[] = [];
     try {
       fs.rmSync(markerPath, { force: true });
@@ -429,10 +488,12 @@ export async function activateVerifiedPiRelease(
     } catch {
       problems.push("cannot release lock");
     }
-    try {
-      fs.rmSync(backupDir, { recursive: true, force: true });
-    } catch {
-      problems.push("cannot clear backup");
+    if (backupCreated && isOwnBackupForCleanup()) {
+      try {
+        fs.rmSync(backupDir, { recursive: true, force: true });
+      } catch {
+        problems.push("cannot clear backup");
+      }
     }
     const original = err instanceof Error ? err.message : String(err ?? "activation failed");
     if (problems.length > 0) {
@@ -480,10 +541,58 @@ export async function activateVerifiedPiRelease(
     failIncomplete(`active transaction pending, cannot record marker (recovery incomplete): ${markerPath}`);
   }
 
-  fs.mkdirSync(backupDir, { recursive: true });
+  if (input.expectedPreviousEntry !== undefined) {
+    const expectation = input.expectedPreviousEntry as unknown;
+    if (
+      expectation === null ||
+      typeof expectation !== "object" ||
+      Array.isArray(expectation) ||
+      (expectation as { kind?: unknown }).kind !== "absent"
+    ) {
+      abortBeforePublish(new Error(`expected previous entry must be { kind: "absent" } when declared: ${linkPath}`));
+    }
+    if (lstatOrNull(linkPath) !== null) {
+      abortBeforePublish(
+        new Error(`expected previous entry absent but unowned entry present, refusing to claim foreign state: ${linkPath}`),
+      );
+    }
+  }
+
+  try {
+    fs.mkdirSync(backupDir);
+    backupCreated = true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "EEXIST") {
+      try {
+        fs.rmSync(markerPath, { force: true });
+      } catch {
+        // marker retained; fail closed below
+      }
+      try {
+        releaseLock();
+      } catch {
+        // lock retained; fail closed below
+      }
+      failIncomplete(
+        `foreign backup collision between precheck and post-lock mkdir, refusing to mutate (recovery incomplete): ${backupDir}`,
+      );
+    }
+    abortBeforePublish(err);
+  }
   const backupStat = lstatOrNull(backupDir);
   if (backupStat === null || !backupStat.isDirectory() || backupStat.isSymbolicLink()) {
-    throw new Error(`cannot create private backup dir: ${backupDir}`);
+    try {
+      fs.rmSync(markerPath, { force: true });
+    } catch {
+      // marker retained; fail closed below
+    }
+    try {
+      releaseLock();
+    } catch {
+      // lock retained; fail closed below
+    }
+    failIncomplete(`backup dir drifted after creation, refusing to delete foreign state (recovery incomplete): ${backupDir}`);
   }
 
   const persistBackupCopy = (target: string, content: string | null): void => {
@@ -622,10 +731,15 @@ export async function activateVerifiedPiRelease(
     if (problems.length > 0) {
       failIncomplete(`rollback incomplete (${problems.join("; ")}): ${original}`);
     }
+    if (backupCreated && !isOwnBackupForCleanup()) {
+      failIncomplete(`backup drifted during rollback, preserving foreign state (recovery incomplete): ${original}`);
+    }
     try {
       fs.rmSync(markerPath, { force: true });
       releaseLock();
-      fs.rmSync(backupDir, { recursive: true, force: true });
+      if (backupCreated && isOwnBackupForCleanup()) {
+        fs.rmSync(backupDir, { recursive: true, force: true });
+      }
     } catch {
       failIncomplete(`cannot clear transaction state after rollback: ${original}`);
     }
@@ -1070,7 +1184,11 @@ export function deactivateVerifiedPiRelease(
   };
   recheckLiveState();
 
-  fs.mkdirSync(uninstallBackupDir, { recursive: true });
+  try {
+    fs.mkdirSync(uninstallBackupDir, { recursive: true });
+  } catch (err) {
+    abortOwnTransaction(err);
+  }
   const uninstallBackupStat = lstatOrNull(uninstallBackupDir);
   if (uninstallBackupStat === null || !uninstallBackupStat.isDirectory() || uninstallBackupStat.isSymbolicLink()) {
     abortOwnTransaction(new Error(`cannot create uninstall backup: ${uninstallBackupDir}`));
@@ -1609,7 +1727,11 @@ export function deactivateVerifiedLegacyPiEntry(
     abortOwnTransaction(new Error(`receipt or settings drifted before uninstall: ${legacyEntry}`));
   }
 
-  fs.mkdirSync(uninstallBackupDir, { recursive: true });
+  try {
+    fs.mkdirSync(uninstallBackupDir, { recursive: true });
+  } catch (err) {
+    abortOwnTransaction(err);
+  }
   const uninstallBackupStat = lstatOrNull(uninstallBackupDir);
   if (uninstallBackupStat === null || !uninstallBackupStat.isDirectory() || uninstallBackupStat.isSymbolicLink()) {
     abortOwnTransaction(new Error(`cannot create uninstall backup: ${uninstallBackupDir}`));

@@ -103,6 +103,7 @@ export async function activatePreparedPiInstall(
     verify: async () => {
       await deps.verifyActive();
     },
+    ...(input.previousSource === null ? { expectedPreviousEntry: { kind: "absent" } as const } : {}),
   });
 
   return { kind: "installed", receipt };

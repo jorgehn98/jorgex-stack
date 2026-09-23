@@ -906,11 +906,13 @@ function backupLegacyMigrationState(settingsPath: string, receiptPath: string, b
  * after promotion must match the evidence. Throws on any mismatch so the
  * activation rolls back; pure reads, no writes.
  */
-function verifyActivePiRelease(input: {
+export function verifyActivePiRelease(input: {
   agentDir: string;
   receiptPath: string;
   candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
   evidence: PreparedPiInstallEvidence;
+  scopeKind: "real" | "target-dir";
+  engramBin: string;
 }): void {
   const agentDir = path.resolve(input.agentDir);
   const npmDir = path.join(agentDir, "npm");
@@ -933,6 +935,28 @@ function verifyActivePiRelease(input: {
   const record = receipt as Record<string, unknown>;
   if (record["schemaVersion"] !== 1) {
     throw new Error("pi-verify-active: el receipt promovido no tiene schemaVersion 1");
+  }
+  if (record["state"] !== "installed") {
+    throw new Error("pi-verify-active: el receipt promovido no tiene state installed");
+  }
+  const receiptScope = record["scope"];
+  if (receiptScope === null || typeof receiptScope !== "object" || Array.isArray(receiptScope)) {
+    throw new Error("pi-verify-active: el receipt promovido no trae scope válido");
+  }
+  const scopeRecord = receiptScope as Record<string, unknown>;
+  if (scopeRecord["kind"] !== input.scopeKind) {
+    throw new Error("pi-verify-active: el scope del receipt promovido no coincide con el esperado");
+  }
+  const scopeDir = scopeRecord["codingAgentDir"];
+  if (typeof scopeDir !== "string" || !path.isAbsolute(scopeDir) || path.resolve(scopeDir) !== agentDir) {
+    throw new Error("pi-verify-active: el codingAgentDir del receipt promovido no coincide con el agentDir");
+  }
+  const receiptEngram = record["engram"];
+  if (receiptEngram === null || typeof receiptEngram !== "object" || Array.isArray(receiptEngram)) {
+    throw new Error("pi-verify-active: el receipt promovido no trae engram válido");
+  }
+  if ((receiptEngram as Record<string, unknown>)["binary"] !== input.engramBin) {
+    throw new Error("pi-verify-active: el binario Engram del receipt promovido no coincide con el esperado");
   }
   const receiptCandidate = record["candidate"];
   if (receiptCandidate === null || typeof receiptCandidate !== "object" || Array.isArray(receiptCandidate)) {
@@ -1215,6 +1239,51 @@ export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiR
       remedy: `PI_CODING_AGENT_DIR (${agentDir}) está fuera de la frontera de restore HOME (${homeDir}); corrige el destino antes de reintentar; Pi no quedó activado.`,
     };
   }
+  // Cheap absence guard before any preflight network: with no receipt, a
+  // preexisting real dir OR symlink (including broken) at the single owned
+  // entry proves foreign/manual state. Read-only lstat probes only within
+  // this real install boundary; never HOME writes nor pi remove. Unreadable
+  // probes (any non-ENOENT error) block fail-closed before mkdir/fetch;
+  // absent (ENOENT/undefined) continues to normal install.
+  let preflightReceipt: fs.Stats | undefined;
+  try {
+    preflightReceipt = fs.lstatSync(path.join(dataDir(), "pi-receipt.json"), { throwIfNoEntry: false });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      preflightReceipt = undefined;
+    } else {
+      return {
+        kind: "blocked",
+        reason: "unowned-entry-unreadable",
+        remedy: "No se pudo verificar el estado previo del receipt/entry jorgex-pi (ilegible); revisa permisos y corrige la causa antes de reintentar. No se descargó nada; Pi no quedó activado.",
+      };
+    }
+  }
+  if (preflightReceipt === undefined) {
+    let preflightEntry: fs.Stats | undefined;
+    try {
+      preflightEntry = fs.lstatSync(path.join(agentDir, "npm", "node_modules", "jorgex-pi"), {
+        throwIfNoEntry: false,
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        preflightEntry = undefined;
+      } else {
+        return {
+          kind: "blocked",
+          reason: "unowned-entry-unreadable",
+          remedy: "No se pudo verificar el estado previo del receipt/entry jorgex-pi (ilegible); revisa permisos y corrige la causa antes de reintentar. No se descargó nada; Pi no quedó activado.",
+        };
+      }
+    }
+    if (preflightEntry !== undefined) {
+      return {
+        kind: "blocked",
+        reason: "unowned-entry",
+        remedy: "Existe un entry jorgex-pi previo no gestionado (foreign/manual); sin receipt owned. No se descargó nada; Pi no quedó activado.",
+      };
+    }
+  }
   try {
     fs.mkdirSync(downloadsDir, { recursive: true });
   } catch (error) {
@@ -1367,6 +1436,29 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
           remedy: "Ya existe un receipt o registro Pi instalado; la migración verificada aún no está disponible. No se modificó nada; Pi no quedó activado.",
         };
       }
+      // Fresh install with no receipt and no settings Pi entry must still
+      // own the filesystem entry: lstat (never follow) the single managed
+      // path before any setup/activation. A real dir OR symlink (including
+      // a broken one) proves foreign/manual state and blocks fail-closed
+      // with zero side effects; candidate+prepared never bypass this.
+      try {
+        const freshEntry = path.join(paths.codingAgentDir, "npm", "node_modules", "jorgex-pi");
+        if (fs.lstatSync(freshEntry, { throwIfNoEntry: false }) !== undefined) {
+          return {
+            kind: "blocked",
+            reason: "unowned-entry",
+            remedy: "Existe un entry jorgex-pi previo no gestionado (foreign/manual); sin receipt ni registro owned. No se modificó nada; Pi no quedó activado.",
+          };
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          return {
+            kind: "blocked",
+            reason: "settings-corrupt",
+            remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+          };
+        }
+      }
     }
     // Setup oficial solo en install real (targetDir undefined), tras la
     // prueba del stage y antes de activar. Con --target-dir se omite
@@ -1511,7 +1603,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
       await smokeStagedPiRuntime({ piExecutable: input.detected.executable, stageDir: dir });
     };
     const verifyActive = (): void => {
-      verifyActivePiRelease({ agentDir, receiptPath, candidate: activationCandidate, evidence });
+      verifyActivePiRelease({ agentDir, receiptPath, candidate: activationCandidate, evidence, scopeKind, engramBin });
     };
     try {
       return await activatePreparedPiInstall(
@@ -1731,7 +1823,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
       await smokeStagedPiRuntime({ piExecutable: input.detected.executable, stageDir: dir });
     };
     const updateVerifyActive = (): void => {
-      verifyActivePiRelease({ agentDir: updateAgentDir, receiptPath: updateReceiptPath, candidate: updateActivationCandidate, evidence: updateEvidence });
+      verifyActivePiRelease({ agentDir: updateAgentDir, receiptPath: updateReceiptPath, candidate: updateActivationCandidate, evidence: updateEvidence, scopeKind: updateScopeKind, engramBin: engramBinForUpdate });
     };
     try {
       const updateActivated = await activatePreparedPiInstall(

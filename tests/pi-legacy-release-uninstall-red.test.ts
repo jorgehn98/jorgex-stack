@@ -39,7 +39,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import history from "../src/lib/pi-runtime-history.json" with { type: "json" };
 
 type LegacyUninstallInput = {
@@ -487,5 +487,86 @@ describe("pi legacy release uninstall RED (T07)", () => {
         expect(lstatOrNull(sb.markerPath)).toBeNull();
         expect(lstatOrNull(sb.lockPath)).toBeNull();
       }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T07-RED] legacy uninstall faults on backup-dir mkdir AFTER lock+marker.
+// Final silent-failure review: deactivateVerifiedLegacyPiEntry writes
+// exclusive transaction.lock + active-transaction.json BEFORE
+// fs.mkdirSync(uninstall-backup-*); an ENOSPC/EACCES thrown there strands
+// lock+marker with a generic failure. Real-FS fault injection on the exact
+// sandbox uninstall-backup-* path only (never real HOME). RED: marker/lock
+// remain stranded with a generic error.
+// ---------------------------------------------------------------------------
+describe("pi legacy uninstall backup mkdir fault (T07 silent-failure RED)", () => {
+  it("RED: ENOSPC creating uninstall-backup-* throws without mutating state and leaves no dangling marker/lock", async () => {
+    const fn = await loadLegacyUninstall();
+    const sb = setupLegacySandbox();
+    expect(sb.homeDir.startsWith(os.tmpdir())).toBe(true);
+    const resolvedHome = path.resolve(sb.homeDir);
+    const resolvedManaged = path.resolve(sb.managedRoot);
+    const beforeManifest = fs.readFileSync(sb.legacyManifest, "utf8");
+
+    const originalMkdir = fs.mkdirSync;
+    const spy = vi.spyOn(fs, "mkdirSync");
+    spy.mockImplementation(((target: unknown, options: unknown) => {
+      if (
+        typeof target === "string" &&
+        path.resolve(target).startsWith(resolvedManaged) &&
+        path.basename(target).startsWith("uninstall-backup-") &&
+        path.resolve(target).startsWith(resolvedHome)
+      ) {
+        const err = new Error(`ENOSPC: no space left on device, mkdir '${target}'`) as NodeJS.ErrnoException;
+        err.code = "ENOSPC";
+        throw err;
+      }
+      return (originalMkdir as typeof fs.mkdirSync)(target as string, options as never);
+    }) as typeof fs.mkdirSync);
+
+    let failure: unknown = null;
+    let verifyRan = false;
+    try {
+      fn({
+        homeDir: sb.homeDir,
+        agentDir: sb.agentDir,
+        receiptPath: sb.receiptPath,
+        source: LEGACY_SOURCE,
+        nextSettings: sb.nextSettings,
+        verify: () => {
+          verifyRan = true;
+        },
+      });
+    } catch (error: unknown) {
+      failure = error;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(verifyRan).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).toMatch(/ENOSPC/);
+
+    // Backup never prepared: no Stack-owned uninstall backup appeared.
+    const managedEntries = fs.existsSync(sb.managedRoot) ? fs.readdirSync(sb.managedRoot) : [];
+    expect(managedEntries.filter((name) => name.startsWith("uninstall-backup-"))).toEqual([]);
+
+    // Live legacy state untouched.
+    expect(fs.lstatSync(sb.legacyEntry).isDirectory()).toBe(true);
+    expect(fs.lstatSync(sb.legacyEntry).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(sb.legacyIndex, "utf8")).toBe(LEGACY_INDEX);
+    expect(fs.readFileSync(sb.legacyManifest, "utf8")).toBe(beforeManifest);
+    expect(fs.readFileSync(sb.settingsPath, "utf8")).toBe(sb.oldSettings);
+    expect(fs.readFileSync(sb.receiptPath, "utf8")).toBe(sb.oldReceipt);
+    expect(fs.readFileSync(sb.foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
+    expect(fs.readFileSync(sb.npmLock, "utf8")).toBe(NPM_LOCK_CONTENT);
+
+    // Successful-cleanup case: cleanup via plain rm is possible, so the
+    // failure stays ordinary (or explicit recovery complete), never
+    // incomplete, with no dangling marker/lock. Incomplete with marker
+    // preserved belongs only to a separate cleanup-failure seam (not added
+    // here; one test at the strongest seam if valuable).
+    expect((failure as Error & { recovery?: string }).recovery).not.toBe("incomplete");
+    expect(lstatOrNull(sb.markerPath)).toBeNull();
+    expect(lstatOrNull(sb.lockPath)).toBeNull();
   });
 });
