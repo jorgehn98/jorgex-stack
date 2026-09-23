@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
  * T06 RED tracer: live Pi latest resolver, not the static pin.
@@ -16,6 +20,9 @@ import { describe, expect, it, vi } from "vitest";
  * - Synthetic `9.9.x` values below are test-only packuments, not
  *   published-version claims. Tarball staging / npm-tree activation is
  *   explicitly out of scope for this tracer.
+ * - Acquisition tracer `downloadVerifiedPiTarball(release, destination,
+ *   fetchImpl)`: exact-release bytes verified (URL/redirect, bounded
+ *   stream, SHA-512) before private publish; no staging (T07 owns it).
  */
 
 type PiReleaseCandidate = {
@@ -285,5 +292,228 @@ describe("[T06-RED] pi latest release resolver follows dist-tags.latest", () => 
     await expect(resolveLatestPiRelease(fetch)).rejects.toThrow(/pi-release-resolver:/);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(seen[0]?.redirect).toBe("error");
+  });
+});
+
+type PiTarballDownload = {
+  downloadVerifiedPiTarball(
+    release: PiReleaseCandidate,
+    destination: string,
+    fetchImpl: typeof fetch,
+  ): Promise<{ path: string; bytes: number; sha256: string; sha512: string }>;
+};
+
+async function loadDownload(): Promise<PiTarballDownload> {
+  const mod = (await import(/* @vite-ignore */ resolverSpecifier)) as Partial<PiTarballDownload>;
+  expect(
+    mod.downloadVerifiedPiTarball,
+    "downloadVerifiedPiTarball must be exported from src/lib/pi-release-resolver.ts",
+  ).toBeTypeOf("function");
+  return mod as PiTarballDownload;
+}
+
+const downloadSandboxes: string[] = [];
+
+function downloadSandbox(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-download-"));
+  downloadSandboxes.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of downloadSandboxes.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function syntheticTarballBytes(): Buffer {
+  return Buffer.from("synthetic-jorgex-pi-tarball-9.9.10\n".repeat(128));
+}
+
+function syntheticRelease(bytes: Buffer, version = "9.9.10"): PiReleaseCandidate {
+  const tarballUrl = `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${version}.tgz`;
+  return {
+    version,
+    tarballUrl,
+    integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+  };
+}
+
+function serveTarball(
+  payload: { bytes?: Uint8Array; streamTotal?: number },
+  tarballUrl: string,
+  seen: Array<{ url: string; redirect?: string }>,
+  opts?: {
+    urlOverride?: string;
+    status?: number;
+    contentLength?: string;
+    chunkSize?: number;
+    stats?: { suppliedBytes: number; cancelled: boolean };
+  },
+): typeof fetch {
+  const chunkSize = opts?.chunkSize ?? 1024;
+  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    seen.push({ url, redirect: init?.redirect });
+    const headers: Record<string, string> = { "Content-Type": "application/octet-stream" };
+    if (opts?.contentLength !== undefined) headers["Content-Length"] = opts.contentLength;
+    let body: ReadableStream<Uint8Array>;
+    if (payload.streamTotal !== undefined) {
+      const total = payload.streamTotal;
+      const chunk = new Uint8Array(chunkSize).fill(0x61);
+      let supplied = 0;
+      body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (supplied >= total) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunk.slice());
+          supplied += chunkSize;
+          if (opts?.stats !== undefined) opts.stats.suppliedBytes = supplied;
+        },
+        cancel() {
+          if (opts?.stats !== undefined) opts.stats.cancelled = true;
+        },
+      });
+    } else {
+      const bytes = payload.bytes ?? new Uint8Array();
+      let offset = 0;
+      body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (offset >= bytes.byteLength) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(bytes.slice(offset, offset + chunkSize));
+          offset += chunkSize;
+        },
+      });
+    }
+    const response = new Response(body, { status: opts?.status ?? 200, headers });
+    Object.defineProperty(response, "url", { value: opts?.urlOverride ?? url });
+    return response;
+  });
+  return fetch as unknown as typeof fetch;
+}
+
+describe("[T06-RED] pi tarball acquisition verifies before publishing", () => {
+  it("persists verified bytes with observed size and digests", async () => {
+    const { downloadVerifiedPiTarball } = await loadDownload();
+    const bytes = syntheticTarballBytes();
+    const release = syntheticRelease(bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `jorgex-pi-${release.version}.tgz`);
+    expect(fs.existsSync(destination)).toBe(false);
+    const seen: Array<{ url: string; redirect?: string }> = [];
+    const fetch = serveTarball({ bytes }, release.tarballUrl, seen, {
+      contentLength: String(bytes.byteLength),
+    });
+
+    const result = await downloadVerifiedPiTarball(release, destination, fetch);
+
+    expect(result).toEqual({
+      path: destination,
+      bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sha512: createHash("sha512").update(bytes).digest("hex"),
+    });
+    expect(fs.readFileSync(destination)).toEqual(bytes);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(seen[0]?.url).toBe(release.tarballUrl);
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  it("rejects an SRI mismatch without touching preexisting destination bytes", async () => {
+    const { downloadVerifiedPiTarball } = await loadDownload();
+    const bytes = syntheticTarballBytes();
+    const release = syntheticRelease(bytes);
+    const wrongIntegrity = `sha512-${createHash("sha512").update("unrelated-test-bytes").digest("base64")}`;
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `jorgex-pi-${release.version}.tgz`);
+    fs.writeFileSync(destination, "unrelated\n");
+    const fetch = serveTarball({ bytes }, release.tarballUrl, [], {
+      contentLength: String(bytes.byteLength),
+    });
+
+    await expect(
+      downloadVerifiedPiTarball({ ...release, integrity: wrongIntegrity }, destination, fetch),
+    ).rejects.toThrow(/pi-release-resolver:/);
+    expect(fs.readFileSync(destination, "utf8")).toBe("unrelated\n");
+  });
+
+  it("caps an unbounded tarball stream early and leaves no file or temp", async () => {
+    const { downloadVerifiedPiTarball } = await loadDownload();
+    const release: PiReleaseCandidate = {
+      version: "9.9.10",
+      tarballUrl: "https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-9.9.10.tgz",
+      integrity: `sha512-${Buffer.alloc(64, 4).toString("base64")}`,
+    };
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `jorgex-pi-${release.version}.tgz`);
+    const stats = { suppliedBytes: 0, cancelled: false };
+    // Policy bound under test: 128 MiB. The 129 MiB stream forces it with a
+    // single reusable 1 MiB chunk; early cancellation must fire before the
+    // stream is fully drained.
+    const TOTAL_BYTES = 129 * 1024 * 1024;
+    const fetch = serveTarball({ streamTotal: TOTAL_BYTES }, release.tarballUrl, [], {
+      chunkSize: 1024 * 1024,
+      stats,
+    });
+
+    await expect(downloadVerifiedPiTarball(release, destination, fetch)).rejects.toThrow(
+      /pi-release-resolver:/,
+    );
+    expect(stats.suppliedBytes).toBeLessThan(TOTAL_BYTES);
+    expect(stats.suppliedBytes).toBeLessThanOrEqual(128 * 1024 * 1024 + 1024 * 1024);
+    expect(stats.cancelled).toBe(true);
+    expect(fs.existsSync(destination)).toBe(false);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("lets a historical-size body reach integrity check instead of the size bound", async () => {
+    const { downloadVerifiedPiTarball } = await loadDownload();
+    // Historical test-boundary number, not a version selection: the verified
+    // jorgex-pi@0.8.24 tarball is 89,140,631 bytes, and T07/SC05 rollback
+    // recovery must be able to acquire it. The streamed 90 MiB strictly
+    // covers that size; with a deliberately wrong SRI the download must fail
+    // at integrity mismatch, proving the size gate did not refuse it.
+    const release: PiReleaseCandidate = {
+      version: "9.9.10",
+      tarballUrl: "https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-9.9.10.tgz",
+      integrity: `sha512-${createHash("sha512").update("unrelated-test-bytes").digest("base64")}`,
+    };
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `jorgex-pi-${release.version}.tgz`);
+    const TOTAL_BYTES = 90 * 1024 * 1024;
+    const fetch = serveTarball({ streamTotal: TOTAL_BYTES }, release.tarballUrl, [], {
+      chunkSize: 1024 * 1024,
+    });
+
+    const failure = await downloadVerifiedPiTarball(release, destination, fetch).then(
+      () => {
+        throw new Error("expected downloadVerifiedPiTarball to reject");
+      },
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/integrity mismatch/i);
+    expect((failure as Error).message).not.toMatch(/exceed/i);
+    expect(fs.existsSync(destination)).toBe(false);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("rejects a redirected response url without publishing", async () => {
+    const { downloadVerifiedPiTarball } = await loadDownload();
+    const bytes = syntheticTarballBytes();
+    const release = syntheticRelease(bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `jorgex-pi-${release.version}.tgz`);
+    const fetch = serveTarball({ bytes }, release.tarballUrl, [], {
+      urlOverride: `${release.tarballUrl}?redirected=1`,
+    });
+
+    await expect(downloadVerifiedPiTarball(release, destination, fetch)).rejects.toThrow(
+      /pi-release-resolver:/,
+    );
+    expect(fs.existsSync(destination)).toBe(false);
   });
 });
