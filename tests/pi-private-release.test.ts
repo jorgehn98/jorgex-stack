@@ -1073,3 +1073,220 @@ describe("pi private-release backup-dir race (T07 TOCTOU RED)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// [T07-RED] activation backup cleanup must delete only verified files actually
+// created by its transaction. A non-cooperative writer plants a FOREIGN
+// directory at the allowed basename backupDir/settings.json (with
+// foreign-sentinel.txt inside) between Stack mkdir(stage/.activate-backup)
+// and Stack wx-write of backupSettings; the Stack write then throws EISDIR.
+// Fixed behavior: abort reports recovery incomplete, preserves marker/lock
+// for manual recovery, preserves the foreign sentinel directory, and leaves
+// old entry/settings/receipt/foreign byte-identical with no activation.
+// RED: current isOwnBackupForCleanup accepts basenames only and recursive-rm
+// deletes the sentinel while clearing marker/lock without incomplete.
+// ---------------------------------------------------------------------------
+describe("pi private-release backup settings foreign-directory drift (T07 cleanup RED)", () => {
+  it("RED: foreign directory at backup settings.json basename blocks with incomplete and never deletes the sentinel", async () => {
+    const { homeDir, agentDir, stageDir, receiptPath, linkPath, foreignIndex } = setupSandbox();
+    expectHomeBoundary(homeDir, agentDir, receiptPath);
+    expect(homeDir.startsWith(os.tmpdir())).toBe(true);
+    const { activateVerifiedPiRelease } = await loadModule();
+    const backupDir = path.join(stageDir, ".activate-backup");
+    const backupSettings = path.join(backupDir, "settings.json");
+    const sentinelPath = path.join(backupSettings, "foreign-sentinel.txt");
+    const SENTINEL = "// foreign writer dir sentinel - must never be deleted\n";
+    const managedRoot = path.join(agentDir, "npm", "jorgex-pi-managed");
+    const markerPath = path.join(managedRoot, "active-transaction.json");
+    const lockPath = path.join(managedRoot, "transaction.lock");
+    const resolvedHome = path.resolve(homeDir);
+    const resolvedBackupSettings = path.resolve(backupSettings);
+
+    const originalMkdir = fs.mkdirSync;
+    const originalWriteFile = fs.writeFileSync;
+    const spy = vi.spyOn(fs, "writeFileSync");
+    let injected = false;
+    spy.mockImplementation(((target: unknown, content: unknown, options: unknown) => {
+      if (
+        typeof target === "string" &&
+        path.resolve(target) === resolvedBackupSettings &&
+        path.resolve(target).startsWith(resolvedHome)
+      ) {
+        if (!injected) {
+          injected = true;
+          (originalMkdir as typeof fs.mkdirSync)(target as string);
+          (originalWriteFile as typeof fs.writeFileSync)(sentinelPath, SENTINEL, "utf8");
+        }
+      }
+      return (originalWriteFile as typeof fs.writeFileSync)(
+        target as string,
+        content as string,
+        options as never,
+      );
+    }) as typeof fs.writeFileSync);
+
+    let failure: unknown = null;
+    let verifyRan = false;
+    try {
+      await activateVerifiedPiRelease({
+        homeDir,
+        agentDir,
+        stageDir,
+        releaseId: RELEASE_ID,
+        receiptPath,
+        nextSettings: NEXT_SETTINGS,
+        nextReceipt: NEXT_RECEIPT,
+        verify: () => {
+          verifyRan = true;
+        },
+      }).then(
+        () => null,
+        (error: unknown) => {
+          failure = error;
+          return null;
+        },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(injected).toBe(true);
+    expect(verifyRan).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error & { recovery?: string }).recovery).toBe("incomplete");
+    expect(String((failure as Error).message)).toMatch(/EISDIR|drift|incomplete|backup|foreign/i);
+
+    // Foreign sentinel directory preserved: never deleted by abort cleanup.
+    expect(fs.lstatSync(backupSettings).isDirectory()).toBe(true);
+    expect(fs.readFileSync(sentinelPath, "utf8")).toBe(SENTINEL);
+
+    // Old owned entry/settings/receipt untouched, no activation success.
+    expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(false);
+    expect(fs.lstatSync(linkPath).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(linkPath, "index.js"), "utf8")).toBe(OLD_PI_INDEX);
+    expect(fs.readFileSync(path.join(agentDir, "settings.json"), "utf8")).toBe(OLD_SETTINGS);
+    expect(fs.readFileSync(receiptPath, "utf8")).toBe(OLD_RECEIPT);
+    expect(fs.readFileSync(path.join(stageDir, "npm", "node_modules", "jorgex-pi", "index.js"), "utf8")).toBe(
+      NEW_PI_INDEX,
+    );
+    expect(fs.existsSync(path.join(managedRoot, "releases", RELEASE_ID))).toBe(false);
+    expect(fs.readFileSync(foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
+
+    // Backup drift preserves cooperative marker/lock for manual recovery.
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    expect(fs.existsSync(backupDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T07-RED] atomicWritePrivate rename failure plus temp cleanup failure must
+// stay incomplete. EACCES on rename(tmp -> settings.json) followed by EACCES
+// on rmSync(exact tmp) raises recovery incomplete; activation rollback may
+// restore old state but MUST NOT overwrite incomplete to complete nor clear
+// marker/lock/backup, and the tmp stays for manual inspection. Real-FS fault
+// injection on the existing sandbox fixture only (never real HOME).
+// RED: current rollback overwrites recovery to complete and clears
+// marker/lock/backup.
+// ---------------------------------------------------------------------------
+describe("pi private-release atomic tmp cleanup failure (T07 incomplete RED)", () => {
+  it("RED: EACCES rename plus EACCES rm of the exact tmp stays incomplete with marker/lock/backup/tmp retained", async () => {
+    const { homeDir, agentDir, stageDir, receiptPath, linkPath, foreignIndex } = setupSandbox();
+    expectHomeBoundary(homeDir, agentDir, receiptPath);
+    expect(homeDir.startsWith(os.tmpdir())).toBe(true);
+    const { activateVerifiedPiRelease } = await loadModule();
+    const settingsPath = path.join(agentDir, "settings.json");
+    const resolvedSettings = path.resolve(settingsPath);
+    const managedRoot = path.join(agentDir, "npm", "jorgex-pi-managed");
+    const markerPath = path.join(managedRoot, "active-transaction.json");
+    const lockPath = path.join(managedRoot, "transaction.lock");
+    const backupDir = path.join(stageDir, ".activate-backup");
+
+    const originalRename = fs.renameSync;
+    const originalRm = fs.rmSync;
+    let capturedTmp: string | null = null;
+    const renameSpy = vi.spyOn(fs, "renameSync");
+    const rmSpy = vi.spyOn(fs, "rmSync");
+    let renameInjected = false;
+    renameSpy.mockImplementation(((oldPath: unknown, newPath: unknown) => {
+      if (
+        typeof oldPath === "string" &&
+        typeof newPath === "string" &&
+        path.resolve(newPath) === resolvedSettings &&
+        path.basename(oldPath).startsWith(".tmp-")
+      ) {
+        if (!renameInjected) {
+          renameInjected = true;
+          capturedTmp = oldPath as string;
+          const err = new Error(
+            `EACCES: permission denied, rename '${oldPath}' -> '${newPath}'`,
+          ) as NodeJS.ErrnoException;
+          err.code = "EACCES";
+          throw err;
+        }
+      }
+      return (originalRename as typeof fs.renameSync)(oldPath as string, newPath as string);
+    }) as typeof fs.renameSync);
+    rmSpy.mockImplementation(((target: unknown, options: unknown) => {
+      if (
+        typeof target === "string" &&
+        capturedTmp !== null &&
+        path.resolve(target) === path.resolve(capturedTmp)
+      ) {
+        const err = new Error(`EACCES: permission denied, rm '${target}'`) as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return (originalRm as typeof fs.rmSync)(target as string, options as never);
+    }) as typeof fs.rmSync);
+
+    let failure: unknown = null;
+    let verifyRan = false;
+    try {
+      await activateVerifiedPiRelease({
+        homeDir,
+        agentDir,
+        stageDir,
+        releaseId: RELEASE_ID,
+        receiptPath,
+        nextSettings: NEXT_SETTINGS,
+        nextReceipt: NEXT_RECEIPT,
+        verify: () => {
+          verifyRan = true;
+        },
+      }).then(
+        () => null,
+        (error: unknown) => {
+          failure = error;
+          return null;
+        },
+      );
+    } finally {
+      renameSpy.mockRestore();
+      rmSpy.mockRestore();
+    }
+    expect(renameInjected).toBe(true);
+    expect(capturedTmp).not.toBeNull();
+    expect(verifyRan).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error & { recovery?: string }).recovery).toBe("incomplete");
+    expect(String((failure as Error).message)).toMatch(/EACCES|cannot clean|incomplete/i);
+
+    // Old owned entry/settings/receipt/foreign restored and preserved.
+    expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(false);
+    expect(fs.lstatSync(linkPath).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(linkPath, "index.js"), "utf8")).toBe(OLD_PI_INDEX);
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(OLD_SETTINGS);
+    expect(fs.readFileSync(receiptPath, "utf8")).toBe(OLD_RECEIPT);
+    expect(fs.readFileSync(foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
+
+    // Incomplete evidence retained: marker/lock/backup plus the exact tmp.
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    expect(fs.existsSync(backupDir)).toBe(true);
+    expect(fs.readFileSync(path.join(backupDir, "settings.json"), "utf8")).toBe(OLD_SETTINGS);
+    expect(fs.readFileSync(path.join(backupDir, "receipt.json"), "utf8")).toBe(OLD_RECEIPT);
+    expect(capturedTmp!).toContain(".tmp-");
+    expect(fs.existsSync(capturedTmp!)).toBe(true);
+    expect(fs.lstatSync(capturedTmp!).isFile()).toBe(true);
+  });
+});

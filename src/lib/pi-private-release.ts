@@ -428,77 +428,155 @@ export async function activateVerifiedPiRelease(
 
   let lockAcquired = false;
   let backupCreated = false;
+  let backupDirDev: number | null = null;
+  let backupDirIno: number | null = null;
+  type OwnedBackupFile = { content: string; dev: number; ino: number };
+  const ownedBackupFiles = new Map<string, OwnedBackupFile>();
   const releaseLock = (): void => {
     if (!lockAcquired) return;
     fs.rmSync(lockPath, { force: true });
     lockAcquired = false;
   };
-  const isOwnBackupForCleanup = (): boolean => {
-    if (!backupCreated) return false;
+  const captureBackupDirIdentity = (): void => {
     const st = lstatOrNull(backupDir);
-    if (st === null || !st.isDirectory() || st.isSymbolicLink()) return false;
+    if (st !== null && st.isDirectory() && !st.isSymbolicLink()) {
+      backupDirDev = st.dev;
+      backupDirIno = st.ino;
+    } else {
+      backupDirDev = null;
+      backupDirIno = null;
+    }
+  };
+  const trackOwnedBackupFile = (target: string, expectedContent: string): void => {
+    const st = lstatOrNull(target);
+    if (st === null || !st.isFile() || st.isSymbolicLink()) return;
+    ownedBackupFiles.set(resolved(target), { content: expectedContent, dev: st.dev, ino: st.ino });
+  };
+  const verifyOwnedBackupSafe = (): string | null => {
+    if (!backupCreated) return "backup not created";
+    if (backupDirDev === null || backupDirIno === null) return "backup identity not captured";
+    const dirStat = lstatOrNull(backupDir);
+    if (dirStat === null || !dirStat.isDirectory() || dirStat.isSymbolicLink()) return "backup dir replaced";
+    if (dirStat.dev !== backupDirDev || dirStat.ino !== backupDirIno) return "backup dir replaced";
     let entries: string[];
     try {
       entries = fs.readdirSync(backupDir);
     } catch {
-      return false;
+      return "cannot list backup";
     }
-    const allowed = new Set(["entry", "settings.json", "receipt.json", "meta.json"]);
+    if (entries.includes("entry")) return "backup entry still present";
+    const allowed = new Set(["settings.json", "receipt.json", "meta.json"]);
     for (const entry of entries) {
-      if (!allowed.has(entry)) return false;
+      if (!allowed.has(entry)) return `unknown backup entry: ${entry}`;
     }
-    const metaPath = path.join(backupDir, "meta.json");
-    const metaStat = lstatOrNull(metaPath);
-    if (metaStat !== null) {
-      if (!metaStat.isFile() || metaStat.isSymbolicLink()) return false;
+    for (const entry of entries) {
+      const full = resolved(path.join(backupDir, entry));
+      const owned = ownedBackupFiles.get(full);
+      if (!owned) return `unowned backup file: ${entry}`;
+      const st = lstatOrNull(full);
+      if (st === null || !st.isFile() || st.isSymbolicLink()) return `backup file kind drifted: ${entry}`;
+      if (st.dev !== owned.dev || st.ino !== owned.ino) return `backup file replaced: ${entry}`;
+      let cur: string;
       try {
-        const parsed = JSON.parse(fs.readFileSync(metaPath, "utf8")) as { releaseId?: unknown };
-        if (parsed.releaseId !== releaseId) return false;
+        cur = fs.readFileSync(full, "utf8");
       } catch {
-        return false;
+        return `cannot read backup file: ${entry}`;
       }
+      if (cur !== owned.content) return `backup file bytes drifted: ${entry}`;
     }
-    return true;
+    for (const [fullPath] of ownedBackupFiles) {
+      const base = path.basename(fullPath);
+      if (!entries.includes(base)) return `owned backup file missing: ${base}`;
+    }
+    return null;
+  };
+  const clearOwnedBackupThenCooperativeState = (original: string): void => {
+    const unsafe = verifyOwnedBackupSafe();
+    if (unsafe !== null) {
+      failIncomplete(
+        `backup drifted, preserving foreign state (recovery incomplete): ${backupDir}: ${unsafe}: ${original}`,
+      );
+    }
+    try {
+      for (const [fullPath, owned] of ownedBackupFiles) {
+        const st = lstatOrNull(fullPath);
+        if (st === null || !st.isFile() || st.isSymbolicLink() || st.dev !== owned.dev || st.ino !== owned.ino) {
+          failIncomplete(
+            `backup drifted during cleanup, preserving foreign state (recovery incomplete): ${fullPath}: ${original}`,
+          );
+        }
+        let cur: string;
+        try {
+          cur = fs.readFileSync(fullPath, "utf8");
+        } catch {
+          failIncomplete(
+            `backup drifted during cleanup, preserving foreign state (recovery incomplete): ${fullPath}: ${original}`,
+          );
+          throw new Error("unreachable");
+        }
+        if (cur !== owned.content) {
+          failIncomplete(
+            `backup drifted during cleanup, preserving foreign state (recovery incomplete): ${fullPath}: ${original}`,
+          );
+        }
+        fs.unlinkSync(fullPath);
+      }
+    } catch (err) {
+      if (err instanceof Error && (err as Error & { recovery?: string }).recovery === "incomplete") throw err;
+      const msg = err instanceof Error ? err.message : String(err ?? "cleanup failed");
+      failIncomplete(
+        `cannot clear owned backup, preserving foreign state (recovery incomplete): ${backupDir}: ${msg}: ${original}`,
+      );
+    }
+    try {
+      const remaining = fs.readdirSync(backupDir);
+      if (remaining.length !== 0) {
+        failIncomplete(
+          `backup dir not empty after owned cleanup, preserving foreign state (recovery incomplete): ${backupDir}: ${original}`,
+        );
+      }
+      fs.rmdirSync(backupDir);
+    } catch (err) {
+      if (err instanceof Error && (err as Error & { recovery?: string }).recovery === "incomplete") throw err;
+      const msg = err instanceof Error ? err.message : String(err ?? "rmdir failed");
+      failIncomplete(
+        `cannot remove empty backup dir, preserving foreign state (recovery incomplete): ${backupDir}: ${msg}: ${original}`,
+      );
+    }
+    try {
+      fs.rmSync(markerPath, { force: true });
+      releaseLock();
+    } catch {
+      failIncomplete(`cannot clear transaction state after rollback: ${original}`);
+    }
   };
   const abortBeforePublish = (err: unknown): never => {
-    if (backupCreated && !isOwnBackupForCleanup()) {
+    const original = err instanceof Error ? err.message : String(err ?? "activation failed");
+    const causeIsIncomplete =
+      (err as Error & { recovery?: string } | null)?.recovery === "incomplete";
+    if (causeIsIncomplete) {
+      if (err instanceof Error) throw err;
+      failIncomplete(original);
+    }
+    if (!backupCreated) {
+      const problems: string[] = [];
       try {
         fs.rmSync(markerPath, { force: true });
       } catch {
-        // marker retained; fail closed below
+        problems.push("cannot remove marker");
       }
       try {
         releaseLock();
       } catch {
-        // lock retained; fail closed below
+        problems.push("cannot release lock");
       }
-      const originalOwn = err instanceof Error ? err.message : String(err ?? "activation failed");
-      failIncomplete(
-        `backup drifted, preserving foreign state (recovery incomplete): ${backupDir}: ${originalOwn}`,
-      );
-    }
-    const problems: string[] = [];
-    try {
-      fs.rmSync(markerPath, { force: true });
-    } catch {
-      problems.push("cannot remove marker");
-    }
-    try {
-      releaseLock();
-    } catch {
-      problems.push("cannot release lock");
-    }
-    if (backupCreated && isOwnBackupForCleanup()) {
-      try {
-        fs.rmSync(backupDir, { recursive: true, force: true });
-      } catch {
-        problems.push("cannot clear backup");
+      if (problems.length > 0) {
+        failIncomplete(`activation aborted (${problems.join("; ")}): ${original}`);
       }
+      if (err instanceof Error) throw err;
+      throw new Error(original);
     }
-    const original = err instanceof Error ? err.message : String(err ?? "activation failed");
-    if (problems.length > 0) {
-      failIncomplete(`activation aborted (${problems.join("; ")}): ${original}`);
-    }
+    clearOwnedBackupThenCooperativeState(original);
     if (err instanceof Error) throw err;
     throw new Error(original);
   };
@@ -561,19 +639,10 @@ export async function activateVerifiedPiRelease(
   try {
     fs.mkdirSync(backupDir);
     backupCreated = true;
+    captureBackupDirIdentity();
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | null)?.code;
     if (code === "EEXIST") {
-      try {
-        fs.rmSync(markerPath, { force: true });
-      } catch {
-        // marker retained; fail closed below
-      }
-      try {
-        releaseLock();
-      } catch {
-        // lock retained; fail closed below
-      }
       failIncomplete(
         `foreign backup collision between precheck and post-lock mkdir, refusing to mutate (recovery incomplete): ${backupDir}`,
       );
@@ -581,23 +650,24 @@ export async function activateVerifiedPiRelease(
     abortBeforePublish(err);
   }
   const backupStat = lstatOrNull(backupDir);
-  if (backupStat === null || !backupStat.isDirectory() || backupStat.isSymbolicLink()) {
-    try {
-      fs.rmSync(markerPath, { force: true });
-    } catch {
-      // marker retained; fail closed below
-    }
-    try {
-      releaseLock();
-    } catch {
-      // lock retained; fail closed below
-    }
-    failIncomplete(`backup dir drifted after creation, refusing to delete foreign state (recovery incomplete): ${backupDir}`);
+  if (
+    backupStat === null ||
+    !backupStat.isDirectory() ||
+    backupStat.isSymbolicLink() ||
+    backupDirDev === null ||
+    backupDirIno === null ||
+    backupStat.dev !== backupDirDev ||
+    backupStat.ino !== backupDirIno
+  ) {
+    failIncomplete(
+      `backup dir drifted after creation, refusing to delete foreign state (recovery incomplete): ${backupDir}`,
+    );
   }
 
   const persistBackupCopy = (target: string, content: string | null): void => {
     if (content === null) return;
     fs.writeFileSync(target, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    trackOwnedBackupFile(target, content);
   };
 
   let entryMoved = false;
@@ -607,11 +677,10 @@ export async function activateVerifiedPiRelease(
   try {
     persistBackupCopy(backupSettings, oldSettings);
     persistBackupCopy(backupReceipt, oldReceipt);
-    fs.writeFileSync(
-      path.join(backupDir, "meta.json"),
-      `${JSON.stringify({ releaseId, oldEntryExisted }, null, 2)}\n`,
-      { encoding: "utf8", flag: "wx", mode: 0o600 },
-    );
+    const metaPath = path.join(backupDir, "meta.json");
+    const metaContent = `${JSON.stringify({ releaseId, oldEntryExisted }, null, 2)}\n`;
+    fs.writeFileSync(metaPath, metaContent, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    trackOwnedBackupFile(metaPath, metaContent);
   } catch {
     abortBeforePublish(new Error(`cannot persist private backup`));
   }
@@ -619,6 +688,8 @@ export async function activateVerifiedPiRelease(
   const rollback = (verifyError: unknown): never => {
     const original =
       verifyError instanceof Error ? verifyError.message : String(verifyError ?? "verify failed");
+    const causeIsIncomplete =
+      (verifyError as Error & { recovery?: string } | null)?.recovery === "incomplete";
     // Revalidate what THIS activation published and wrote before touching
     // anything. No lock assumption covers non-cooperative writers, so any
     // drift means foreign state: never unlink or overwrite it, retain
@@ -731,17 +802,19 @@ export async function activateVerifiedPiRelease(
     if (problems.length > 0) {
       failIncomplete(`rollback incomplete (${problems.join("; ")}): ${original}`);
     }
-    if (backupCreated && !isOwnBackupForCleanup()) {
-      failIncomplete(`backup drifted during rollback, preserving foreign state (recovery incomplete): ${original}`);
+    if (causeIsIncomplete) {
+      if (verifyError instanceof Error) throw verifyError;
+      failIncomplete(original);
     }
-    try {
-      fs.rmSync(markerPath, { force: true });
-      releaseLock();
-      if (backupCreated && isOwnBackupForCleanup()) {
-        fs.rmSync(backupDir, { recursive: true, force: true });
+    if (backupCreated) {
+      clearOwnedBackupThenCooperativeState(original);
+    } else {
+      try {
+        fs.rmSync(markerPath, { force: true });
+        releaseLock();
+      } catch {
+        failIncomplete(`cannot clear transaction state after rollback: ${original}`);
       }
-    } catch {
-      failIncomplete(`cannot clear transaction state after rollback: ${original}`);
     }
     if (verifyError instanceof Error) {
       (verifyError as Error & { recovery?: string }).recovery = "complete";
