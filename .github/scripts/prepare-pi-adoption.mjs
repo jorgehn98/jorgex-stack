@@ -82,6 +82,21 @@ const PERMISSIONS_ACTIONS = [
   "backup:permissions.config",
   "removed:permissions.config",
 ];
+const UPGRADE_CAPABILITY = "permissions-upgrade-v1";
+const UPGRADE_RUNNER_COMMAND = "upgrade";
+const UPGRADE_LIFECYCLE_ACTION = "upgraded:permissions.config";
+const UPGRADE_POLICY_SHA256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const UPGRADE_ONEOF_ENTRIES = [
+  {
+    properties: { command: { const: "upgrade" }, ok: { const: true }, result: { $ref: "#/$defs/lifecycleResult" } },
+    not: { required: ["error"] },
+  },
+  {
+    properties: { command: { const: "upgrade" }, ok: { const: false }, result: { $ref: "#/$defs/lifecycleResult" } },
+    required: ["error"],
+  },
+];
+const UPGRADE_PERMISSIONS_SEMANTICS = "sync seeds only an absent config through exclusive publication; an explicit upgrade rewrites an absent or owned-stale config with a prior byte-exact backup, exclusive publication, and a versioned receipt; existing, invalid, and concurrent user state is preserved; cleanup keeps an exact owned copy in a retained backup";
 const EXPERIENCE_CAPABILITY = "experience-defaults-v1";
 const EXPERIENCE_BIN = "bin/jorgex-pi.mjs";
 const EXPERIENCE_RUNNER = {
@@ -124,6 +139,113 @@ const INITIALIZATION_EXPERIENCE_SCHEMA = {
     { type: "object", additionalProperties: false, required: ["state", "receiptPath", "initialized", "code", "reason"], properties: { state: { const: "unreadable" }, receiptPath: { type: "string" }, initialized: { const: false }, code: { const: "READ_FAILED" }, reason: { type: "string", minLength: 1 } } },
   ],
 };
+const ENGRAM_CHILD_MEMBER = "extensions/engram-child.ts";
+const ENGRAM_CHILD_ROUTE = "../extensions/engram-child.ts";
+const ENGRAM_PROTOCOL_SOURCE_PATH = "stack/system-prompt/engram-protocol.md";
+const ENGRAM_PROTOCOL_TARGET_PATH = "assets/system-prompt/engram-protocol.md";
+const OFFICIAL_ENGRAM_CAPABILITY = "engram-official-bridge-v1";
+const REMOVED_MCP_ADAPTER_CAPABILITY = "mcp-adapter-v1";
+const ENGRAM_MCP_WRAPPER_MEMBER = "extensions/engram-mcp-wrapper.mjs";
+const OFFICIAL_REMOVED_EXTENSION_MEMBERS = [ENGRAM_CHILD_MEMBER, ENGRAM_MCP_WRAPPER_MEMBER];
+const OFFICIAL_REMOVED_NODE_ROOTS = [
+  "@modelcontextprotocol/client",
+  "@modelcontextprotocol/core",
+  "@modelcontextprotocol/ext-apps",
+  "@napi-rs/keyring",
+  "@napi-rs/keyring-darwin-arm64",
+  "@napi-rs/keyring-darwin-x64",
+  "@napi-rs/keyring-linux-arm-gnueabihf",
+  "@napi-rs/keyring-linux-arm64-gnu",
+  "@napi-rs/keyring-linux-arm64-musl",
+  "@napi-rs/keyring-linux-riscv64-gnu",
+  "@napi-rs/keyring-linux-x64-gnu",
+  "@napi-rs/keyring-linux-x64-musl",
+  "@napi-rs/keyring-win32-arm64-msvc",
+  "@napi-rs/keyring-win32-ia32-msvc",
+  "@napi-rs/keyring-win32-x64-msvc",
+  "@pkgr/core",
+  "@standard-schema/spec",
+  "ajv",
+  "ajv-formats",
+  "bundle-name",
+  "cross-spawn",
+  "default-browser",
+  "default-browser-id",
+  "define-lazy-prop",
+  "eventsource",
+  "eventsource-parser",
+  "fast-deep-equal",
+  "fast-uri",
+  "is-docker",
+  "is-inside-container",
+  "is-wsl",
+  "isexe",
+  "jose",
+  "json-schema-traverse",
+  "open",
+  "path-key",
+  "pi-mcp-adapter",
+  "pkce-challenge",
+  "recheck",
+  "recheck-jar",
+  "recheck-linux-x64",
+  "recheck-macos-arm64",
+  "recheck-macos-x64",
+  "recheck-windows-x64",
+  "require-from-string",
+  "run-applescript",
+  "shebang-command",
+  "shebang-regex",
+  "smol-toml",
+  "synckit",
+  "tslib",
+  "which",
+  "wsl-utils",
+];
+const REMOVED_ADAPTER_DEPENDENCY = "pi-mcp-adapter";
+const REMOVED_ADAPTER_VERSION = "2.27.0";
+const ADDED_JSONC_DEPENDENCY = "strip-json-comments";
+const ADDED_JSONC_VERSION = "5.0.3";
+const REMOVED_ADAPTER_COMPONENT = {
+  name: "pi-mcp-adapter",
+  status: "active",
+  version: "2.27.0",
+  license: "MIT",
+  integrity: "sha512-IM9dfGhou5Q5AJqwkm1kW1+WXyMsvL53GEO4JVYukzvTxNPHn2b+Zi49+JAnOhlaOpEq5vEodUSJXmpghik+lw==",
+  purpose: "Pi-native MCP transport and tool exposure.",
+};
+const PRESERVED_ADAPTER_CACHE = {
+  owner: "pi-mcp-adapter",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "mcp-cache.json",
+};
+const PRESERVED_OFFICIAL_CACHE = {
+  owner: "official-engram-setup",
+  root: "PI_CODING_AGENT_DIR",
+  relativePath: "mcp-cache.json",
+};
+const OFFICIAL_PRESERVED_ADDITIONS = [
+  {
+    owner: "official-engram-setup",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "npm/node_modules/gentle-engram",
+  },
+  {
+    owner: "official-engram-setup",
+    root: "PI_CODING_AGENT_DIR",
+    relativePath: "npm/node_modules/pi-mcp-adapter",
+  },
+  {
+    owner: "engram",
+    root: "HOME",
+    relativePath: ".local/bin/engram",
+  },
+  {
+    owner: "engram",
+    root: "HOME",
+    relativePath: ".engram",
+  },
+];
 const MAX_JSON = 1024 * 1024;
 const MAX_TARBALL = 125_829_120;
 const fullSha = (value) => typeof value === "string" && value.length === 40 && /^[0-9a-f]{40}$/.test(value);
@@ -196,6 +318,53 @@ function compareVersions(left, right) {
   const a = versionParts(left), b = versionParts(right);
   for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
   return 0;
+}
+
+// Comparación profunda compartida de los gates Engram (child-only y
+// oficial): mismo assert.deepEqual tolerante, sin cambiar resultados ni
+// strict gates; evita duplicar el comparador en cada transición.
+function deepMatches(left, right) {
+  try {
+    assert.deepEqual(left, right);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Etiqueta de inventario por transición (orden explícito equivalente al
+// ternario anidado previo): primera transición activa gana; el fallback es
+// diagnostics de inicialización cuando ninguna otra aplica.
+function transitionArchiveLabel(flags) {
+  if (flags.engramProtocolRemovalTransition) return "Engram protocol";
+  if (flags.officialEngramTransition) return "Official Engram";
+  if (flags.engramChildOnlyTransition) return "Engram child-only";
+  if (flags.modularTransition) return "Modular system prompt";
+  if (flags.playwrightTransition || flags.playwrightSkillRemoval) return "Playwright";
+  if (flags.context7Transition) return "Context7";
+  if (flags.permissionsTransition) return "Permissions policy";
+  if (flags.experienceTransition) return "Experience defaults";
+  if (flags.upgradeTransition) return "Permissions upgrade";
+  return "Initialization diagnostics";
+}
+
+// Pareja Engram compartida (old/new + igualdad del resto): extrae las listas,
+// índices y agentes `engram` y verifica que los demás agentes y claves
+// coinciden; cada transición añade solo su gate específico encima.
+function engramAgentPair(oldAgents, newAgents) {
+  const oldList = oldAgents?.agents;
+  const newList = newAgents?.agents;
+  const oldIndex = Array.isArray(oldList) ? oldList.findIndex((agent) => agent?.name === "engram") : -1;
+  const newIndex = Array.isArray(newList) ? newList.findIndex((agent) => agent?.name === "engram") : -1;
+  const oldEngram = oldIndex !== -1 ? oldList[oldIndex] : undefined;
+  const newEngram = newIndex !== -1 ? newList[newIndex] : undefined;
+  const otherAgentsEqual = Array.isArray(oldList) && Array.isArray(newList)
+    && oldList.length === newList.length
+    && oldList.every((agent, index) => index === oldIndex || deepMatches(newList[index], agent));
+  const otherKeysEqual = Boolean(oldAgents) && Boolean(newAgents)
+    && deepMatches(Object.keys(newAgents).sort(), Object.keys(oldAgents).sort())
+    && Object.keys(oldAgents).every((key) => key === "agents" || key === "schemaVersion" || deepMatches(newAgents[key], oldAgents[key]));
+  return { oldList, newList, oldIndex, newIndex, oldEngram, newEngram, otherAgentsEqual, otherKeysEqual };
 }
 
 async function boundedJson(response) {
@@ -301,10 +470,10 @@ function applyJsonFiles(root, stage, values) {
   }
 }
 
-export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
+export async function preparePiAdoption({ root: rootInput, piDir: piInput, version, apply = false, acceptDevtoolsHandoff = false, acceptPlaywrightHandoff = false, acceptPlaywrightSkillRemoval = false, acceptModularSystemPrompts = false, acceptContext7Http = false, acceptPermissionsPolicy = false, acceptExperienceDefaults = false, acceptInitializationDiagnostics = false, acceptPermissionsUpgrade = false, acceptEngramChildOnly = false, acceptOfficialEngram = false, acceptEngramProtocolRemoval = false, acceptPiVersion }, { fetch = globalThis.fetch, now = Date.now, sleep = sleepDefault } = {}) {
   versionParts(version);
   if (acceptPiVersion !== undefined) versionParts(acceptPiVersion);
-  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean") throw new Error("Adoption options must be boolean");
+  if (typeof apply !== "boolean" || typeof acceptDevtoolsHandoff !== "boolean" || typeof acceptPlaywrightHandoff !== "boolean" || typeof acceptPlaywrightSkillRemoval !== "boolean" || typeof acceptModularSystemPrompts !== "boolean" || typeof acceptContext7Http !== "boolean" || typeof acceptPermissionsPolicy !== "boolean" || typeof acceptExperienceDefaults !== "boolean" || typeof acceptInitializationDiagnostics !== "boolean" || typeof acceptPermissionsUpgrade !== "boolean" || typeof acceptEngramChildOnly !== "boolean" || typeof acceptOfficialEngram !== "boolean" || typeof acceptEngramProtocolRemoval !== "boolean") throw new Error("Adoption options must be boolean");
   const root = checkoutRoot(rootInput);
   if (readJson(root, "package.json").name !== "jorgex-stack") throw new Error("Expected a JorgeX Stack checkout");
   if (["main", "master"].includes(git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim())) throw new Error("Use a work branch or detached checkout, not production");
@@ -486,6 +655,84 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     assert(!PERMISSIONS_ACTIONS.some((action) => lifecycleAction.enum.includes(action)), "Permissions policy lifecycle actions must be new in this transition");
     lifecycleAction.enum.push(...PERMISSIONS_ACTIONS);
   }
+  const oldHasPermissions = oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY);
+  if (oldHasPermissions && permissionsEnabled && !permissionsTransition) {
+    const oldPermissions = oldContracts[PARITY].permissions;
+    assert(oldPermissions && typeof oldPermissions === "object", "Permissions parity metadata must exist when the capability is already present");
+    assert(permissionsMetadata && typeof permissionsMetadata === "object", "Permissions parity metadata must exist in the producer");
+    if (JSON.stringify(oldPermissions) !== JSON.stringify(permissionsMetadata)) {
+      assert.equal(acceptPermissionsPolicy, true, `${PARITY} compatibility requires manual review (permissions content drift)`);
+      expectedContracts[PARITY].permissions = structuredClone(permissionsMetadata);
+    }
+  }
+  const upgradeEnabled = newContracts[rootContract].capabilities.includes(UPGRADE_CAPABILITY);
+  const upgradeTransition = acceptPermissionsUpgrade
+    && !oldContracts[rootContract].capabilities.includes(UPGRADE_CAPABILITY)
+    && upgradeEnabled;
+  if (upgradeTransition) {
+    assert(oldContracts[rootContract].capabilities.includes(PERMISSIONS_CAPABILITY) && permissionsEnabled,
+      "Permissions upgrade requires the permissions policy capability");
+    const capabilities = expectedContracts[rootContract].capabilities;
+    assert(!capabilities.includes(UPGRADE_CAPABILITY), "Permissions upgrade capability must be new in this transition");
+    const permissionsIndex = capabilities.indexOf(PERMISSIONS_CAPABILITY);
+    assert(permissionsIndex >= 0, "Permissions upgrade requires the existing permissions policy capability");
+    capabilities.splice(permissionsIndex + 1, 0, UPGRADE_CAPABILITY);
+
+    const runner = expectedContracts["contract/runner.v1.json"];
+    const newRunner = newContracts["contract/runner.v1.json"];
+    assert(!runner.commands.includes(UPGRADE_RUNNER_COMMAND), "Permissions upgrade command must be new in this transition");
+    assert(newRunner.commands.includes(UPGRADE_RUNNER_COMMAND), "Permissions upgrade command differs from producer");
+    assert.deepEqual([...newRunner.commands].sort(), [...runner.commands, UPGRADE_RUNNER_COMMAND].sort(),
+      "Permissions upgrade runner commands require exactly the reviewed upgrade addition");
+    runner.commands = structuredClone(newRunner.commands);
+
+    assert.equal(runner.permissions?.semantics, PERMISSIONS_RUNNER.semantics,
+      "Permissions upgrade requires the previous permissions semantics");
+    assert.equal(newRunner.permissions?.semantics, UPGRADE_PERMISSIONS_SEMANTICS,
+      "Permissions upgrade runner semantics differs from producer");
+    runner.permissions.semantics = UPGRADE_PERMISSIONS_SEMANTICS;
+
+    const schema = expectedContracts["contract/schemas/runner-response.v1.schema.json"];
+    const newSchema = newContracts["contract/schemas/runner-response.v1.schema.json"];
+    const oldCommands = schema.properties?.command?.enum;
+    const newCommands = newSchema.properties?.command?.enum;
+    if (Array.isArray(oldCommands) && Array.isArray(newCommands) && !oldCommands.includes(UPGRADE_RUNNER_COMMAND)) {
+      assert(newCommands.includes(UPGRADE_RUNNER_COMMAND), "Permissions upgrade runner schema differs from producer");
+      assert.deepEqual([...newCommands].sort(), [...oldCommands, UPGRADE_RUNNER_COMMAND].sort(),
+        "Permissions upgrade runner schema requires exactly the reviewed upgrade addition");
+      schema.properties.command.enum = structuredClone(newCommands);
+    }
+    const oldOneOf = schema.oneOf;
+    const newOneOf = newSchema.oneOf;
+    if (Array.isArray(oldOneOf) && Array.isArray(newOneOf) && !oldOneOf.some((entry) => entry?.properties?.command?.const === UPGRADE_RUNNER_COMMAND)) {
+      const upgradeEntries = newOneOf.filter((entry) => entry?.properties?.command?.const === UPGRADE_RUNNER_COMMAND);
+      assert.deepEqual(upgradeEntries, UPGRADE_ONEOF_ENTRIES,
+        "Permissions upgrade runner schema oneOf differs from producer");
+      assert.deepEqual(newOneOf.filter((entry) => entry?.properties?.command?.const !== UPGRADE_RUNNER_COMMAND), oldOneOf,
+        "Permissions upgrade runner schema oneOf requires exactly the reviewed upgrade addition");
+      schema.oneOf = structuredClone(newOneOf);
+    }
+    const lifecycleResult = schema.$defs?.lifecycleResult;
+    const newLifecycleResult = newSchema.$defs?.lifecycleResult;
+    if (lifecycleResult && newLifecycleResult && !("policySha256" in (lifecycleResult.properties ?? {}))) {
+      assert.deepEqual(newLifecycleResult.properties?.policySha256, UPGRADE_POLICY_SHA256,
+        "Permissions upgrade policy hash schema differs from producer");
+      const restNew = structuredClone(newLifecycleResult);
+      delete restNew.properties.policySha256;
+      assert.deepEqual(restNew, lifecycleResult,
+        "Permissions upgrade lifecycle result requires exactly the reviewed policy hash addition");
+      lifecycleResult.properties.policySha256 = structuredClone(UPGRADE_POLICY_SHA256);
+    }
+    const lifecycleAction = schema.$defs?.lifecycleAction;
+    const newLifecycleAction = newSchema.$defs?.lifecycleAction;
+    if (lifecycleAction && newLifecycleAction && !lifecycleAction.enum?.includes(UPGRADE_LIFECYCLE_ACTION)) {
+      assert(newLifecycleAction.enum?.includes(UPGRADE_LIFECYCLE_ACTION),
+        "Permissions upgrade lifecycle action differs from producer");
+      assert.deepEqual([...newLifecycleAction.enum].sort(), [...lifecycleAction.enum, UPGRADE_LIFECYCLE_ACTION].sort(),
+        "Permissions upgrade lifecycle actions require exactly the reviewed upgrade addition");
+      lifecycleAction.enum = structuredClone(newLifecycleAction.enum);
+    }
+  }
   const experienceEnabled = newContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY);
   const experienceTransition = acceptExperienceDefaults
     && !oldContracts[rootContract].capabilities.includes(EXPERIENCE_CAPABILITY)
@@ -560,6 +807,141 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     doctorChecks.maxItems = 5;
     doctorChecks.items = false;
   }
+  let engramChildOnlyTransition = false;
+  if (acceptEngramChildOnly) {
+    const oldAgents = oldContracts["contract/runtime-agents.v1.json"];
+    const newAgents = newContracts["contract/runtime-agents.v1.json"];
+    const { oldIndex, newIndex, oldEngram, newEngram, otherAgentsEqual, otherKeysEqual } =
+      engramAgentPair(oldAgents, newAgents);
+    const { subagentOnlyExtensions: _dropped, ...newRest } = newEngram ?? {};
+    if (oldAgents?.schemaVersion === 1
+      && newAgents?.schemaVersion === 1
+      && oldIndex !== -1
+      && newIndex === oldIndex
+      && oldEngram?.subagentOnlyExtensions === undefined
+      && deepMatches(newEngram?.subagentOnlyExtensions, [ENGRAM_CHILD_ROUTE])
+      && deepMatches(newRest, oldEngram)
+      && otherAgentsEqual
+      && otherKeysEqual) {
+      expectedContracts["contract/runtime-agents.v1.json"] = structuredClone(newAgents);
+      engramChildOnlyTransition = true;
+    }
+  }
+  let officialEngramTransition = false;
+  if (acceptOfficialEngram) {
+    const oldRoot = oldContracts[rootContract];
+    const newRoot = newContracts[rootContract];
+    const oldAgents = oldContracts["contract/runtime-agents.v1.json"];
+    const newAgents = newContracts["contract/runtime-agents.v1.json"];
+    const { oldIndex, newIndex, oldEngram, newEngram, otherAgentsEqual, otherKeysEqual } =
+      engramAgentPair(oldAgents, newAgents);
+    const oldCapabilities = oldRoot?.capabilities;
+    const newCapabilities = newRoot?.capabilities;
+    const removedIndex = Array.isArray(oldCapabilities) ? oldCapabilities.indexOf(REMOVED_MCP_ADAPTER_CAPABILITY) : -1;
+    const { tools: _removedTools, subagentOnlyExtensions: _removedRoute, ...oldRest } = oldEngram ?? {};
+    const oldPackage = oldContracts["package.json"];
+    const oldDependencies = oldPackage?.dependencies;
+    const oldBundled = oldPackage?.bundledDependencies;
+    const packageSwap = Boolean(oldPackage)
+      && oldDependencies?.[REMOVED_ADAPTER_DEPENDENCY] === REMOVED_ADAPTER_VERSION
+      && !(ADDED_JSONC_DEPENDENCY in (oldDependencies ?? {}))
+      && Array.isArray(oldBundled)
+      && oldBundled.filter((entry) => entry === REMOVED_ADAPTER_DEPENDENCY).length === 1
+      && !oldBundled.includes(ADDED_JSONC_DEPENDENCY);
+    const oldComponents = oldContracts["contract/components.v1.json"]?.components;
+    const componentsRemoval = Array.isArray(oldComponents)
+      && oldComponents.filter((component) => deepMatches(component, REMOVED_ADAPTER_COMPONENT)).length === 1;
+    const oldPreserved = oldContracts["contract/assets.v1.json"]?.preservedExternalState;
+    const assetsSwap = Array.isArray(oldPreserved)
+      && oldPreserved.filter((entry) => deepMatches(entry, PRESERVED_ADAPTER_CACHE)).length === 1;
+    if (Array.isArray(oldCapabilities)
+      && Array.isArray(newCapabilities)
+      && removedIndex !== -1
+      && !oldCapabilities.includes(OFFICIAL_ENGRAM_CAPABILITY)
+      && newCapabilities.includes(OFFICIAL_ENGRAM_CAPABILITY)
+      && !newCapabilities.includes(REMOVED_MCP_ADAPTER_CAPABILITY)
+      && newCapabilities.length === oldCapabilities.length
+      && oldAgents?.schemaVersion === 1
+      && newAgents?.schemaVersion === 1
+      && oldIndex !== -1
+      && newIndex === oldIndex
+      && oldEngram?.tools !== undefined
+      && deepMatches(oldEngram?.subagentOnlyExtensions, [ENGRAM_CHILD_ROUTE])
+      && newEngram !== undefined
+      && !("tools" in newEngram)
+      && !("subagentOnlyExtensions" in newEngram)
+      && deepMatches(newEngram, oldRest)
+      && otherAgentsEqual
+      && otherKeysEqual
+      && packageSwap
+      && componentsRemoval
+      && assetsSwap) {
+      const capabilities = expectedContracts[rootContract].capabilities;
+      capabilities.splice(capabilities.indexOf(REMOVED_MCP_ADAPTER_CAPABILITY), 1, OFFICIAL_ENGRAM_CAPABILITY);
+      const expectedEngram = expectedContracts["contract/runtime-agents.v1.json"].agents.find((agent) => agent?.name === "engram");
+      delete expectedEngram.tools;
+      delete expectedEngram.subagentOnlyExtensions;
+      const expectedPackage = expectedContracts["package.json"];
+      delete expectedPackage.dependencies[REMOVED_ADAPTER_DEPENDENCY];
+      expectedPackage.dependencies[ADDED_JSONC_DEPENDENCY] = ADDED_JSONC_VERSION;
+      expectedPackage.bundledDependencies.splice(
+        expectedPackage.bundledDependencies.indexOf(REMOVED_ADAPTER_DEPENDENCY), 1, ADDED_JSONC_DEPENDENCY);
+      expectedContracts["contract/components.v1.json"].components =
+        expectedContracts["contract/components.v1.json"].components.filter(
+          (component) => !deepMatches(component, REMOVED_ADAPTER_COMPONENT));
+      const expectedAssets = expectedContracts["contract/assets.v1.json"];
+      expectedAssets.preservedExternalState = expectedAssets.preservedExternalState.map((entry) =>
+        deepMatches(entry, PRESERVED_ADAPTER_CACHE) ? structuredClone(PRESERVED_OFFICIAL_CACHE) : entry);
+      expectedAssets.preservedExternalState.push(...structuredClone(OFFICIAL_PRESERVED_ADDITIONS));
+      officialEngramTransition = true;
+    }
+  }
+  let engramProtocolRemovalTransition = false;
+  if (acceptEngramProtocolRemoval) {
+    const oldRoot = oldContracts[rootContract];
+    const newRoot = newContracts[rootContract];
+    const oldParity = oldContracts[PARITY];
+    const newParity = newContracts[PARITY];
+    const oldPackage = oldContracts["package.json"];
+    const newPackage = newContracts["package.json"];
+    // Aplicabilidad histórica (T70/T71): el flag solo aplica cuando la
+    // baseline conserva engramProtocol. Ambas ausencias y reintroducción
+    // (old sin protocolo) son no-op para este flag y caen a los gates
+    // normales; la retirada exacta (old has/new lacks) corre los gates
+    // estrictos; la retención (old+new has) los corre y se rechaza sin
+    // aceptación.
+    const oldHasEngramProtocol = Boolean(oldParity && typeof oldParity === "object" && "engramProtocol" in oldParity);
+    if (oldHasEngramProtocol) {
+      const removal = `${PARITY} compatibility requires manual review (engram protocol removal)`;
+      assert(oldParity && typeof oldParity === "object" && oldParity.engramProtocol && typeof oldParity.engramProtocol === "object" && !Array.isArray(oldParity.engramProtocol), removal);
+      assert(!("engramProtocol" in newParity), removal);
+      assert.deepEqual(Object.keys(oldParity.engramProtocol).sort(), ["outputSha256", "sourcePath", "sourceSha256", "targetPath"], removal);
+      assert.equal(oldParity.engramProtocol.sourcePath, ENGRAM_PROTOCOL_SOURCE_PATH, removal);
+      assert.equal(oldParity.engramProtocol.targetPath, ENGRAM_PROTOCOL_TARGET_PATH, removal);
+      assert.notEqual(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "", removal);
+      assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "", removal);
+      const protocolBytes = git(piDir, ["show", `${current.provenance.commit}:${ENGRAM_PROTOCOL_TARGET_PATH}`]);
+      const protocolDigest = createHash("sha256").update(protocolBytes).digest("hex");
+      assert.equal(oldParity.engramProtocol.sourceSha256, protocolDigest, removal);
+      assert.equal(oldParity.engramProtocol.outputSha256, protocolDigest, removal);
+      const expectedPackage = structuredClone(oldPackage);
+      expectedPackage.version = newPackage.version;
+      assert.deepEqual(newPackage, expectedPackage, removal);
+      const expectedRoot = structuredClone(oldRoot);
+      expectedRoot.package = { name: "jorgex-pi", version, source: `npm:jorgex-pi@${version}` };
+      assert.deepEqual(newRoot, expectedRoot, removal);
+      const expectedParity = structuredClone(oldParity);
+      expectedParity.source.commit = newParity.source.commit;
+      delete expectedParity.engramProtocol;
+      assert.deepEqual(newParity, expectedParity, removal);
+      for (const member of CONTRACTS) {
+        if (member === "package.json" || member === rootContract || member === PARITY) continue;
+        assert.deepEqual(newContracts[member], oldContracts[member], removal);
+      }
+      delete expectedContracts[PARITY].engramProtocol;
+      engramProtocolRemovalTransition = true;
+    }
+  }
   if (acceptPiVersion !== undefined) {
     const pi = expectedContracts[rootContract].pi;
     pi.testedVersions = [...new Set([...pi.testedVersions, acceptPiVersion])].sort(compareVersions);
@@ -633,7 +1015,7 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
     const tarballFile = join(stage, "package.tgz");
     const tarball = await downloadTarball(fetch, url, tarballFile, metadata.dist.integrity);
     const entries = archiveEntries(tarballFile);
-    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition) {
+    if (playwrightTransition || playwrightSkillRemoval || modularTransition || context7Transition || permissionsTransition || experienceTransition || initializationTransition || upgradeTransition || engramChildOnlyTransition || officialEngramTransition || engramProtocolRemovalTransition) {
       const previousFile = join(stage, "previous.tgz");
       const previousTarball = await downloadTarball(fetch,
         `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${current.package.version}.tgz`, previousFile,
@@ -673,16 +1055,59 @@ export async function preparePiAdoption({ root: rootInput, piDir: piInput, versi
           expectedEntries.push(`package/${member}`);
         }
       }
-      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract"].filter(Boolean).join(" and ");
+      if (engramChildOnlyTransition) {
+        assert.equal(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", ENGRAM_CHILD_MEMBER]).trim(), "", "Engram child module must be new in this transition");
+        assert(!previousEntries.includes(`package/${ENGRAM_CHILD_MEMBER}`), "Engram child module must be absent from the previous archive");
+        expectedEntries.push(`package/${ENGRAM_CHILD_MEMBER}`);
+      }
+      if (officialEngramTransition) {
+        const inventory = "Official Engram archive inventory requires exactly the reviewed official Engram removal";
+        for (const member of OFFICIAL_REMOVED_EXTENSION_MEMBERS) {
+          assert.notEqual(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", member]).trim(), "",
+            `Official Engram member must exist in the previous producer: ${member}`);
+          assert(previousEntries.includes(`package/${member}`), `Official Engram member must exist in the previous archive: ${member}`);
+          assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", member]).trim(), "",
+            `${inventory} (retained ${member})`);
+          expectedEntries = expectedEntries.filter((entry) => entry !== `package/${member}`);
+        }
+        for (const root of OFFICIAL_REMOVED_NODE_ROOTS) {
+          const prefix = `package/node_modules/${root}`;
+          assert(previousEntries.some((entry) => entry === prefix || entry.startsWith(`${prefix}/`)),
+            `Official Engram closure root must exist in the previous archive: ${prefix}`);
+          assert.equal(git(piDir, ["ls-tree", "-r", "--name-only", producer, "--", `node_modules/${root}`]).trim(), "",
+            `${inventory} (retained ${prefix})`);
+          expectedEntries = expectedEntries.filter((entry) => !(entry === prefix || entry.startsWith(`${prefix}/`)));
+        }
+        const surviving = new Set(expectedEntries);
+        for (const entry of [...expectedEntries].sort((left, right) => right.length - left.length)) {
+          if (!entry.endsWith("/") || !entry.startsWith("package/node_modules/")) continue;
+          if (![...surviving].some((other) => other !== entry && other.startsWith(entry))) surviving.delete(entry);
+        }
+        expectedEntries = expectedEntries.filter((entry) => surviving.has(entry));
+      }
+      if (engramProtocolRemovalTransition) {
+        const inventory = "Engram protocol archive inventory requires exactly the reviewed engram protocol removal";
+        const member = `package/${ENGRAM_PROTOCOL_TARGET_PATH}`;
+        assert(previousEntries.includes(member), `Engram protocol member must exist in the previous archive: ${member}`);
+        assert.notEqual(git(piDir, ["ls-tree", "--name-only", current.provenance.commit, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "",
+          `${inventory} (absent ${member} in previous producer)`);
+        assert.equal(git(piDir, ["ls-tree", "--name-only", producer, "--", ENGRAM_PROTOCOL_TARGET_PATH]).trim(), "",
+          `${inventory} (retained ${member})`);
+        assert(!entries.includes(member), `${inventory} (retained ${member})`);
+        expectedEntries = expectedEntries.filter((entry) => entry !== member);
+      }
+      const changes = [playwrightTransition && "module addition", playwrightSkillRemoval && "skill removal", modularTransition && "modular system prompt additions", context7Transition && "Context7 module addition", permissionsTransition && "permissions assets additions", experienceTransition && "experience defaults contract", initializationTransition && "initialization diagnostics contract", upgradeTransition && "permissions upgrade contract", engramChildOnlyTransition && "Engram child-only addition", officialEngramTransition && "official Engram removal", engramProtocolRemovalTransition && "engram protocol removal"].filter(Boolean).join(" and ");
       assert.deepEqual([...entries].sort(), expectedEntries.sort(),
-        `${modularTransition ? "Modular system prompt" : (playwrightTransition || playwrightSkillRemoval) ? "Playwright" : context7Transition ? "Context7" : permissionsTransition ? "Permissions policy" : experienceTransition ? "Experience defaults" : "Initialization diagnostics"} archive inventory requires exactly the reviewed ${changes}`);
+        `${transitionArchiveLabel({ engramProtocolRemovalTransition, officialEngramTransition, engramChildOnlyTransition, modularTransition, playwrightTransition, playwrightSkillRemoval, context7Transition, permissionsTransition, experienceTransition, upgradeTransition })} archive inventory requires exactly the reviewed ${changes}`);
       if (playwrightTransition) {
         const module = "extensions/playwright.ts";
         assert.equal(tarText(tarballFile, module), git(piDir, ["show", `${producer}:${module}`]), "Playwright module does not match producer");
       }
       if (context7Transition) assert.equal(tarText(tarballFile, CONTEXT7_MODULE), git(piDir, ["show", `${producer}:${CONTEXT7_MODULE}`]), "Context7 module does not match producer");
+      if (engramChildOnlyTransition) assert.equal(tarText(tarballFile, ENGRAM_CHILD_MEMBER), git(piDir, ["show", `${producer}:${ENGRAM_CHILD_MEMBER}`]), "Engram child module does not match producer");
       if (experienceTransition) assert.equal(entries.length, previousEntries.length, "Experience defaults must preserve the previous archive inventory");
       if (initializationTransition) assert.equal(entries.length, previousEntries.length, "Initialization diagnostics must preserve the previous archive inventory");
+      if (upgradeTransition) assert.equal(entries.length, previousEntries.length, "Permissions upgrade must preserve the previous archive inventory");
     } else {
       assert.equal(entries.length, artifacts.archive.entries, "Archive inventory changes require manual review");
     }
@@ -732,14 +1157,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       versionParts(acceptPiVersion);
       flags.splice(versionFlag, 2);
     }
-    if (args.length < 4 || args.length > 14 || args[0] !== "--pi-dir" || args[2] !== "--version"
-      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics"].includes(flag))) throw new Error("Invalid arguments");
+    if (args.length < 4 || args.length > 18 || args[0] !== "--pi-dir" || args[2] !== "--version"
+      || new Set(flags).size !== flags.length || flags.some((flag) => !["--apply", "--accept-devtools-handoff", "--accept-playwright-handoff", "--accept-playwright-skill-removal", "--accept-modular-system-prompts", "--accept-context7-http", "--accept-permissions-policy", "--accept-experience-defaults", "--accept-initialization-diagnostics", "--accept-permissions-upgrade", "--accept-engram-child-only", "--accept-official-engram", "--accept-engram-protocol-removal"].includes(flag))) throw new Error("Invalid arguments");
     const result = await preparePiAdoption({ root: resolve(dirname(fileURLToPath(import.meta.url)), "../.."), piDir: args[1], version: args[3],
       acceptPiVersion, apply: flags.includes("--apply"), acceptDevtoolsHandoff: flags.includes("--accept-devtools-handoff"), acceptPlaywrightHandoff: flags.includes("--accept-playwright-handoff"),
-      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics") });
+      acceptPlaywrightSkillRemoval: flags.includes("--accept-playwright-skill-removal"), acceptModularSystemPrompts: flags.includes("--accept-modular-system-prompts"), acceptContext7Http: flags.includes("--accept-context7-http"), acceptPermissionsPolicy: flags.includes("--accept-permissions-policy"), acceptExperienceDefaults: flags.includes("--accept-experience-defaults"), acceptInitializationDiagnostics: flags.includes("--accept-initialization-diagnostics"), acceptPermissionsUpgrade: flags.includes("--accept-permissions-upgrade"), acceptEngramChildOnly: flags.includes("--accept-engram-child-only"), acceptOfficialEngram: flags.includes("--accept-official-engram"), acceptEngramProtocolRemoval: flags.includes("--accept-engram-protocol-removal") });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics]");
+    console.error(error.recoveryPath ? `Adoption failed; recovery retained at ${error.recoveryPath}` : "Adoption failed. Check refs, compatibility and checkout cleanliness. Usage: --pi-dir ABS --version X.Y.Z [--apply] [--accept-devtools-handoff] [--accept-playwright-handoff] [--accept-pi-version X.Y.Z] [--accept-playwright-skill-removal] [--accept-modular-system-prompts] [--accept-context7-http] [--accept-permissions-policy] [--accept-experience-defaults] [--accept-initialization-diagnostics] [--accept-permissions-upgrade] [--accept-engram-child-only]");
     process.exitCode = 1;
   }
 }

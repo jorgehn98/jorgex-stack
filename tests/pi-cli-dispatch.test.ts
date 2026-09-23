@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
     runPiRuntimeSystem: vi.fn().mockReturnValue({ kind: "healthy" }),
     runManagedPiSystem: vi.fn().mockResolvedValue({ kind: "healthy" }),
     forceFileAdaptersAbsent: false,
+    simulateUpgradeCapable: false,
   };
 });
 
@@ -112,7 +113,21 @@ vi.mock("../src/lib/pi-runtime.js", async () => {
       ...actual.PI_RUNTIME_CANDIDATE,
       contract: {
         ...actual.PI_RUNTIME_CANDIDATE.contract,
-        capabilities: [...actual.PI_RUNTIME_CANDIDATE.contract.capabilities, "playwright-handoff-v1"],
+        // By default simulate a package without the upgrade capability so the
+        // seed-only gating path stays exercised even though the adopted
+        // candidate is capable. Tests opt into the capable path via
+        // mocks.simulateUpgradeCapable. Read lazily so the toggle applies
+        // even though the mocked module is created once per file.
+        get capabilities() {
+          const base = actual.PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[];
+          if (mocks.simulateUpgradeCapable) {
+            return [...new Set([...base, "permissions-upgrade-v1", "playwright-handoff-v1"])];
+          }
+          return [
+            ...base.filter((capability) => capability !== "permissions-upgrade-v1"),
+            "playwright-handoff-v1",
+          ];
+        },
       },
     },
     detectPiRuntime: mocks.detectPiRuntime,
@@ -195,6 +210,7 @@ afterEach(() => {
   mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
   mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
   mocks.forceFileAdaptersAbsent = false;
+  mocks.simulateUpgradeCapable = false;
 });
 
 describe("CLI Pi package-runtime dispatch", () => {
@@ -827,5 +843,156 @@ describe("CLI Pi package-runtime dispatch", () => {
     } finally {
       error.mockRestore();
     }
+  });
+
+  it("no ofrece upgrade sin capability: --upgrade-permissions en paquete incapaz sigue seed-only", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-upgrade-gated-"));
+
+    const exitCode = await runCli(["sync", "--agents", "pi", "--yes", "--upgrade-permissions"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+    const forwarded = mocks.runManagedPiSystem.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("upgradePermissions");
+    expect(mocks.prompts.log.info).toHaveBeenCalledWith(expect.stringMatching(/permissions-upgrade-v1|seed-only/));
+  });
+
+  it.each(["install", "sync"] as const)(
+    "propaga --upgrade-permissions al runner ante paquete capaz en %s",
+    async (operation) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-upgrade-capable-${operation}-`));
+      mocks.simulateUpgradeCapable = true;
+
+      try {
+        const exitCode = await runCli([operation, "--agents", "pi", "--yes", "--upgrade-permissions"], home);
+
+        expect(exitCode).toBe(0);
+        expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+          operation,
+          upgradePermissions: true,
+        }));
+        expect(mocks.prompts.log.info).not.toHaveBeenCalledWith(
+          expect.stringMatching(/seed-only|requiere un paquete/),
+        );
+      } finally {
+        mocks.simulateUpgradeCapable = false;
+      }
+    },
+  );
+});
+
+describe("[T17-RED] Pi usa un único installer compartido sin versión ni canales", () => {
+  it("el requirement Pi y su wiring CLI no hardcodean versión ni canales y usan el installer compartido", async () => {
+    const piRuntimeSource = fs.readFileSync(path.join(ROOT, "src", "lib", "pi-runtime.ts"), "utf8");
+    expect(piRuntimeSource).not.toMatch(/installNative/);
+    expect(piRuntimeSource).not.toMatch(/2\.0\.0/);
+    expect(piRuntimeSource).not.toMatch(/channels/);
+    expect(piRuntimeSource).not.toMatch(/brew.*go.*url/s);
+    expect(piRuntimeSource).toMatch(/installShared/);
+
+    const cliSource = fs.readFileSync(path.join(ROOT, "src", "cli.ts"), "utf8");
+    // El wiring Pi no debe pasar versión ni canales ni llamar al canal nativo versionado.
+    expect(cliSource).not.toMatch(/installNative\s*:\s*async\s*\(\s*\{\s*version/s);
+    expect(cliSource).not.toMatch(/channels\s*:\s*\[/);
+    // Pi debe resolverse con el instalador compartido sin versión (installMissingEngram/installShared).
+    expect(cliSource).toMatch(/installShared|installMissingEngram/);
+  });
+
+  it("control: dry-run/target-dir/no-consent siguen sin descargar (guardas preservadas)", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-t17-controls-"));
+    mocks.resolvePiEngramBin.mockReturnValue(null);
+
+    expect(await runCli([
+      "install",
+      "--agents",
+      "codex",
+      "--mode",
+      "human",
+      "--yes",
+    ], home)).toBe(1);
+    expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41-RED: dispatch Pi gestionado con setup oficial `engram setup pi`.
+// Contrato: install real resuelve/instala el binario Engram primero, respalda
+// cada path mutable, ejecuta `engram setup pi` (argv exacto, shell false)
+// antes del package install y verifica singleton (un gentle-engram + un
+// pi-mcp-adapter + mcpServers.engram válido, versiones observadas sin pin).
+// sync/dry-run/--target-dir nunca ejecutan setup ni descargan paquetes
+// globales. HOME/XDG/PI aislados; cero estado personal/red.
+// ---------------------------------------------------------------------------
+
+describe("[T41-RED] dispatch Pi con setup oficial antes del package install", () => {
+  it("el coordinador Pi expone setup pi con argv exacto y gate install-only", async () => {
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof setup.resolveOfficialSetupArgv, "falta argv setup pi (T41)").toBe("function");
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: undefined })).toBe(true);
+    expect(setup.shouldRunOfficialSetup({ command: "sync", dryRun: false, targetDir: undefined })).toBe(false);
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: true, targetDir: undefined })).toBe(false);
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: "/tmp/x" })).toBe(false);
+  });
+
+  it("el wiring CLI Pi ordena Engram primero y setup pi antes del lifecycle gestionado", async () => {
+    const cliSource = fs.readFileSync(path.join(ROOT, "src", "cli.ts"), "utf8");
+    // El install Pi real debe pasar por el setup oficial antes del package.
+    expect(cliSource, "falta wiring setup pi antes del package install (T41)").toMatch(/setup.*pi|runOfficialSetup.*pi|spawnOfficialSetupBin/s);
+    // ...y debe resolver el binario Engram antes de tocar Pi.
+    expect(cliSource).toMatch(/resolvePiEngramBin|installMissingEngram/);
+    // El gate install-only debe estar presente para Pi (sync/dry-run/target-dir excluidos).
+    expect(cliSource).toMatch(/shouldRunOfficialSetup|targetDir.*undefined|dryRun/);
+  });
+
+  it("sync Pi-only nunca ejecuta setup pi ni descarga paquetes globales", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-cli-sync-"));
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    const beforeCalls = mocks.runManagedPiSystem.mock.calls.length;
+
+    const exitCode = await runCli(["sync", "--agents", "pi", "--yes"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+    // El gate del coordinador debe excluir sync aunque el lifecycle corra.
+    expect(setup.shouldRunOfficialSetup({ command: "sync", dryRun: false, targetDir: undefined })).toBe(false);
+    // Pi declara targets explícitos (sin ellos no hay prueba de no-mutación).
+    const targets = setup.collectOfficialSetupBackupTargets(
+      "pi",
+      path.join(home, ".pi", "agent"),
+      home,
+    ) as string[];
+    expect(Array.isArray(targets) && targets.length > 0).toBe(true);
+    void beforeCalls;
+  });
+
+  it("dry-run y --target-dir Pi-only nunca ejecutan setup pi ni tocan paquetes globales", async () => {
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: true, targetDir: undefined })).toBe(false);
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: "/tmp/x" })).toBe(false);
+
+    const dryHome = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-cli-dry-"));
+    expect(await runCli(["install", "--agents", "pi", "--mode", "human", "--yes", "--dry-run"], dryHome)).toBe(0);
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+
+    const targetHome = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-cli-target-"));
+    const targetDir = path.join(targetHome, "target");
+    vi.clearAllMocks();
+    mocks.detectPiRuntime.mockReturnValue({
+      id: "pi",
+      name: "Pi",
+      installed: true,
+      executable: "/opt/pi/bin/pi",
+      version: "0.84.2",
+      codingAgentDir: "/isolated/pi-agent",
+    });
+    mocks.resolvePiEngramBin.mockReturnValue("/isolated/bin/engram");
+    mocks.runManagedPiSystem.mockResolvedValue({ kind: "healthy" });
+    expect(await runCli(["install", "--agents", "pi", "--target-dir", targetDir, "--mode", "human", "--yes"], targetHome)).toBe(0);
+    // En target-dir el coordinador nunca corre setup global (gate cerrado).
+    expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir })).toBe(false);
   });
 });

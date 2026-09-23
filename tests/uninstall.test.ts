@@ -20,11 +20,13 @@ const OPEN_CODE_MODELS = {
 
 describe("removeMarkdownSection", () => {
   it("install → uninstall deja el contenido del usuario intacto", () => {
+    // T43 provider-only: el ejemplo ya no usa la sección Stack retirada;
+    // writing-style sigue gestionada y preserva contenido ajeno.
     const user = "# Mis notas\n\nContenido propio.\n";
     let doc = upsertMarkdownSection(user, "system-prompt", "PROMPT DEL STACK");
-    doc = upsertMarkdownSection(doc, "engram-protocol", "PROTOCOLO");
+    doc = upsertMarkdownSection(doc, "writing-style", "ESTILO");
     let out = removeMarkdownSection(doc, "system-prompt");
-    out = removeMarkdownSection(out, "engram-protocol");
+    out = removeMarkdownSection(out, "writing-style");
     expect(out).toContain("Contenido propio.");
     expect(out).not.toContain("PROMPT DEL STACK");
     expect(out).not.toContain("jorgex:");
@@ -402,5 +404,24 @@ describe("paridad entre adapters (los 14 agentes canónicos reales)", () => {
     expect(cc.map((o) => o.kind)).toEqual(["output-style"]);
     const cx = codexAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP.codex);
     expect(cx.map((o) => o.kind)).toEqual(["profile"]);
+  });
+});
+
+describe("T43 provider-only: uninstall sin sección Stack y con oficial preservado", () => {
+  it("el inventario gestionado excluye engram-protocol; el oficial se preserva", async () => {
+    const { SYSTEM_PROMPT_SECTIONS } = await import("../src/lib/system-prompt-sections.js");
+    expect(SYSTEM_PROMPT_SECTIONS).not.toContain("engram-protocol");
+    // Context7/browser/writing-style siguen gestionados.
+    expect(SYSTEM_PROMPT_SECTIONS).toContain("context7");
+    expect(SYSTEM_PROMPT_SECTIONS).toContain("writing-style");
+    const { removeSystemPromptSections } = await import("../src/lib/system-prompt-sections.js");
+    const legacy = [
+      "# Usuario\n",
+      "<!-- jorgex:system-prompt -->",
+      "base",
+      "<!-- /jorgex:system-prompt -->",
+      "",
+    ].join("\n");
+    expect(removeSystemPromptSections(legacy)).not.toContain("jorgex:engram-protocol");
   });
 });

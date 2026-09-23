@@ -11,6 +11,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import {
   readTomlSection,
   hasTomlChildSection,
+  headerName as tomlHeaderName,
   multilineStringMask,
   hasTomlRootKey,
   removeMarkdownSection,
@@ -21,6 +22,7 @@ import {
 } from "../lib/filemerge.js";
 import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
+import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
 function tomlString(value: string): string {
@@ -66,28 +68,17 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], s
 }
 
 /**
- * Plugin de marketplace engram ACTIVO: provee las MCP tools, así que registrar
- * el MCP además duplicaría. Un plugin presente pero `enabled = false` NO
- * cuenta: en ese caso el MCP manual es la integración real y debe conservarse.
+ * Plugin de marketplace engram ACTIVO: sus hooks y skill de memoria son la
+ * integración del plugin; el setup oficial registra aparte un MCP user
+ * (`engram setup codex`) que Stack no posee ni muta. Un plugin presente pero
+ * `enabled = false` NO cuenta: en ese caso el MCP manual es la integración
+ * real y debe conservarse.
  */
 function hasActiveEngramPlugin(configDir: string): boolean {
   const config = readTextIfExists(path.join(configDir, "config.toml"));
   if (config === null) return false;
   const match = /\[plugins\."engram@[^"]*"\]([^[]*)/.exec(config);
   return match !== null && !/enabled\s*=\s*false/.test(match[1]!);
-}
-
-/**
- * Protocolo de memoria ya presente por otra vía: plugin activo, o un
- * engram-instructions.md de `engram setup codex` (en configDir o referenciado
- * como model_instructions_file en config.toml). En ese caso no se inyecta la
- * sección engram-protocol en AGENTS.md para no duplicarlo.
- */
-function hasEngramProtocol(configDir: string): boolean {
-  if (hasActiveEngramPlugin(configDir)) return true;
-  if (fs.existsSync(path.join(configDir, "engram-instructions.md"))) return true;
-  const config = readTextIfExists(path.join(configDir, "config.toml"));
-  return config !== null && /engram-instructions\.md/.test(config);
 }
 
 const CODEX_JSON_STRING = String.raw`"(?:\\.|[^"\\\r\n])*"`;
@@ -181,16 +172,10 @@ const CODEX_PERMISSION_PROFILE = {
   base: [["extends", ":workspace"]],
   filesystem: [
     [":root", "read"],
-    ["*.env", "deny"],
-    ["*.env.*", "deny"],
     ["~/.ssh/**", "deny"],
     ["~/.aws/credentials", "deny"],
     ["~/.npmrc", "deny"],
     ["~/.git-credentials", "deny"],
-    ["**/id_rsa", "deny"],
-    ["**/id_ed25519", "deny"],
-    ["**/*.pem", "deny"],
-    ["**/*.key", "deny"],
   ],
   workspaceRoots: [
     [".", "write"],
@@ -218,6 +203,76 @@ function renderCodexPermissionEntries(
   quoteKeys: boolean,
 ): string {
   return entries.map(([key, value]) => `${quoteKeys ? JSON.stringify(key) : key} = ${JSON.stringify(value)}`).join("\n");
+}
+
+const CODEX_STALE_PERMISSIONS_WARNING =
+  "Codex: permission profile differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.";
+
+/** Header normalizado (segmentos sin comillas) para comparar/leer secciones. */
+function codexNormalizedHeader(header: string): string {
+  return tomlHeaderName(`[${header}]`) ?? header;
+}
+
+/** Valor string de una clave escalar del root TOML (ignora comentarios); undefined si ausente o no escalar. */
+function readCodexRootValue(config: string, key: string): string | undefined {
+  const lines = config.replace(/\r\n/g, "\n").split("\n");
+  const mask = multilineStringMask(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
+  for (const [index, line] of lines.entries()) {
+    if (mask[index]) continue;
+    if (line.trim().startsWith("[")) break;
+    if (!keyPattern.test(line)) continue;
+    const match = CODEX_ASSIGNMENT.exec(line.trim());
+    return match === null ? undefined : parseTomlString(match[2]);
+  }
+  return undefined;
+}
+
+/** Fija una clave escalar del root TOML en su sitio (conserva indentación y comentario); la añade si falta. */
+function setCodexRootKey(config: string, key: string, value: string): string {
+  const eol = config.includes("\r\n") ? "\r\n" : "\n";
+  const lines = config.replace(/\r\n/g, "\n").split("\n");
+  const mask = multilineStringMask(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
+  const assignment = new RegExp(
+    `^(\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=\\s*)(${CODEX_JSON_STRING_ARRAY}|${CODEX_JSON_VALUE})(\\s*(?:#.*)?)$`,
+  );
+  for (const [index, line] of lines.entries()) {
+    if (mask[index]) continue;
+    if (line.trim().startsWith("[")) break;
+    if (!keyPattern.test(line)) continue;
+    const match = assignment.exec(line);
+    lines[index] = match === null ? `${key} = ${value}` : `${match[1]}${value}${match[3]}`;
+    return lines.join(eol);
+  }
+  return upsertTomlRootKeyIfMissing(config, key, value);
+}
+
+function isCodexPermissionBlockCurrent(config: string, defaults: Record<string, unknown>): boolean {
+  const expectedApproval = defaults["approval_policy"];
+  const expectedDefault = defaults["default_permissions"];
+  if (typeof expectedApproval !== "string" || typeof expectedDefault !== "string") return true;
+  if (readCodexRootValue(config, "approval_policy") !== expectedApproval) return false;
+  if (readCodexRootValue(config, "default_permissions") !== expectedDefault) return false;
+  return CODEX_PERMISSION_SECTIONS.every(({ header, entries, quoteKeys }) =>
+    (readTomlSection(config, codexNormalizedHeader(header)) ?? "").trim()
+      === renderCodexPermissionEntries(entries, quoteKeys).trim(),
+  );
+}
+
+/**
+ * Reemplazo entero del bloque gestionado (claves root + secciones del
+ * perfil). Nunca toca sandbox_mode, model, MCP ni secciones ajenas.
+ */
+function reseedCodexPermissionBlock(config: string, defaults: Record<string, unknown>): string {
+  let out = setCodexRootKey(config, "approval_policy", tomlString(String(defaults["approval_policy"])));
+  out = setCodexRootKey(out, "default_permissions", tomlString(String(defaults["default_permissions"])));
+  for (const { header, entries, quoteKeys } of CODEX_PERMISSION_SECTIONS) {
+    out = upsertTomlSection(out, header, renderCodexPermissionEntries(entries, quoteKeys));
+  }
+  return out;
 }
 
 function parseCodexKey(raw: string): string | null {
@@ -365,10 +420,6 @@ export const codexAdapter: Adapter = {
     ]);
   },
 
-  injectEngramProtocol(ctx) {
-    return !hasEngramProtocol(ctx.configDir);
-  },
-
   paths(configDir) {
     // Skills: estándar agentskills.io en ~/.agents/skills (NO ~/.codex/skills).
     // Con el configDir real (aunque venga de CODEX_HOME) el ancla es HOME — la
@@ -506,6 +557,22 @@ export const codexAdapter: Adapter = {
       ].join("\n");
     }
 
+    // Config existente: el bloque gestionado se compara contra el default
+    // canónico. Sin flag se preserva byte a byte y solo se avisa cuando
+    // difiere; con --upgrade-permissions se reemplaza entero (claves root +
+    // secciones del perfil; sandbox_mode y el resto intactos). El pipeline
+    // hace backup antes de escribir.
+    if (contentSource !== null) {
+      const codexDefaults = loadCanonicalDefaults(ctx.stackDir)["codex"];
+      if (codexDefaults !== undefined && !isCodexPermissionBlockCurrent(contentSource, codexDefaults)) {
+        if (ctx.upgradePermissions === true) {
+          content = reseedCodexPermissionBlock(content!, codexDefaults);
+        } else {
+          ctx.warnings.push(CODEX_STALE_PERMISSIONS_WARNING);
+        }
+      }
+    }
+
     if (!hasTomlRootKey(content, PRIMARY_MODEL_FIELD)) {
       content = upsertTomlRootKeyIfMissing(content, PRIMARY_MODEL_FIELD, PRIMARY_MODEL);
       if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) !== true) {
@@ -520,6 +587,19 @@ export const codexAdapter: Adapter = {
     }
 
     for (const [name, server] of Object.entries(canonical.servers)) {
+      // Plugin oficial activo: sus hooks y skill no incluyen este MCP; el
+      // setup (`engram setup codex`) registra un MCP user separado.
+      // Preservar cualquier `engram` existente (oficial o ajeno), liberar
+      // ownership previo del Stack si lo tiene y no recrearlo si falta.
+      if (name === "engram" && hasActiveEngramPlugin(ctx.configDir)) {
+        if (ctx.ownedMcpServers?.has(name) === true) {
+          mcpOwnership.push({ server: name, owned: false });
+        }
+        ctx.warnings.push(
+          "Codex: plugin oficial de Engram activo — sus hooks y skill no incluyen el MCP; el setup registra un MCP user separado que Stack no posee ni muta.",
+        );
+        continue;
+      }
       const section = `mcp_servers.${name}`;
       const existing = readTomlSection(content, section);
       const owned = ctx.ownedMcpServers?.has(name) === true;
@@ -547,15 +627,6 @@ export const codexAdapter: Adapter = {
         }
       }
       if (server.transport === "stdio") {
-        // Con el plugin de marketplace ACTIVO, el MCP duplicaría las tools.
-        // Si un sync anterior (pre-plugin) lo registró, se retira.
-        if (server.command === "{{ENGRAM_BIN}}" && hasActiveEngramPlugin(ctx.configDir)) {
-          if (content !== null) content = removeTomlSection(content, section);
-          ctx.warnings.push(
-            "Codex: Engram ya está integrado vía plugin de marketplace — no se registra el MCP para no duplicar las tools de memoria.",
-          );
-          continue;
-        }
         if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
           ctx.warnings.push(
             "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
@@ -643,6 +714,15 @@ export const codexAdapter: Adapter = {
           }
           continue;
         }
+        // Oficial preservado: con plugin Engram activo el MCP es oficial
+        // (`engram setup codex`), no legacy del Stack. Uninstall lo conserva
+        // incluso con --remove-engram; ese flag solo retira legacy aún propio.
+        if (name === "engram" && hasActiveEngramPlugin(ctx.configDir)) {
+          ctx.warnings.push(
+            "Codex: MCP 'engram' oficial (plugin) se conserva; usa el desinstalador oficial de Engram para retirarlo.",
+          );
+          continue;
+        }
         if (!server.optional) {
           content = removeTomlSection(content, section);
           continue;
@@ -675,3 +755,114 @@ export const codexAdapter: Adapter = {
     return actions;
   },
 };
+
+/**
+ * Verificador oficial Codex por capas (solo lectura).
+ *
+ * Lee filesystem/config real, sin refs declarativas:
+ * - plugin: header `[plugins."engram@<ref>"]` sin `enabled = false`. La ref
+ *   rolling `main` es la vía oficial aprobada; se deriva de config.toml y se
+ *   devuelve como `acceptedRef`.
+ * - mcp: sección `[mcp_servers.engram]` exacta (command == engramBin,
+ *   args == ["mcp","--tools=agent"]). Un MCP que apunta a otro binario es
+ *   conflicto: falla sin reescribir y preserva bloques ajenos.
+ * - instructions/compact: archivos de `model_instructions_file` y
+ *   `experimental_compact_prompt_file` (o defaults `engram-instructions.md` /
+ *   `engram-compact-prompt.md`) existentes y no vacíos.
+ *
+ * No escribe ni reclama nada; `[mcp_servers.ajeno]` y resto ajeno intactos.
+ */
+function parseCodexEngramPluginRef(config: string): string | null {
+  const header = /\[plugins\."engram@([^"]+)"\]/.exec(config);
+  if (header === null) return null;
+  const block = /\[plugins\."engram@[^"]*"\]([^[]*)/.exec(config);
+  if (block !== null && /enabled\s*=\s*false/.test(block[1]!)) return null;
+  return header[1]!;
+}
+
+function isExactCodexEngramMcp(section: string | null, engramBin: string): boolean {
+  if (section === null) return false;
+  const command = parseTomlString(tomlAssignment(section, "command").raw);
+  if (command !== engramBin) return false;
+  const argsRaw = tomlAssignment(section, "args").raw;
+  if (argsRaw === undefined) return false;
+  try {
+    const args = JSON.parse(argsRaw) as unknown;
+    return Array.isArray(args) && args.length === 2 && args[0] === "mcp" && args[1] === "--tools=agent";
+  } catch {
+    return false;
+  }
+}
+
+function resolveCodexInstructionPath(
+  config: string | null,
+  configDir: string,
+  key: string,
+  fallback: string,
+): string {
+  const ref = config !== null ? readCodexRootValue(config, key) : undefined;
+  const rel = typeof ref === "string" && ref.trim() !== "" ? ref.trim() : fallback;
+  return path.isAbsolute(rel) ? rel : path.join(configDir, rel);
+}
+
+function isNonEmptyFile(file: string): boolean {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size === 0) return false;
+    return fs.readFileSync(file, "utf8").trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyOfficialSetup(args: { configDir: string; engramBin: string }): Promise<{
+  ok: boolean;
+  layers: string[];
+  acceptedRef?: string;
+  duplicates: boolean;
+  reason?: string;
+}> {
+  const config = readTextIfExists(path.join(args.configDir, "config.toml"));
+  const pluginRef = config !== null ? parseCodexEngramPluginRef(config) : null;
+  const mcpSection = config !== null ? readTomlSection(config, "mcp_servers.engram") : null;
+  const hasMcp = mcpSection !== null && typeof args.engramBin === "string" && args.engramBin !== ""
+    ? isExactCodexEngramMcp(mcpSection, args.engramBin)
+    : false;
+  const mcpPresentButForeign = mcpSection !== null && !hasMcp;
+  const instructionsFile = resolveCodexInstructionPath(config, args.configDir, "model_instructions_file", "engram-instructions.md");
+  const compactFile = resolveCodexInstructionPath(
+    config,
+    args.configDir,
+    "experimental_compact_prompt_file",
+    "engram-compact-prompt.md",
+  );
+  const hasInstructions = isNonEmptyFile(instructionsFile);
+  const hasCompact = isNonEmptyFile(compactFile);
+
+  const passed: string[] = [];
+  const missing: string[] = [];
+  if (pluginRef !== null) passed.push("plugin");
+  else missing.push("plugin:missing");
+  if (hasMcp) passed.push("mcp");
+  else missing.push(mcpPresentButForeign ? "mcp:conflict" : "mcp:missing");
+  if (hasInstructions) passed.push("instructions");
+  else missing.push("instructions:missing");
+  if (hasCompact) passed.push("compact");
+  else missing.push("compact:missing");
+
+  if (missing.length === 0) {
+    return { ok: true, layers: passed, acceptedRef: pluginRef!, duplicates: false };
+  }
+  const detail = mcpPresentButForeign
+    ? `MCP 'engram' en conflicto (no apunta al binario oficial ${args.engramBin}); se preserva la config ajena sin reescribir.`
+    : `Codex: setup oficial Engram incompleto (falta: ${missing.join(", ")}).`;
+  return {
+    ok: false,
+    layers: [...passed, ...missing],
+    ...(pluginRef !== null ? { acceptedRef: pluginRef } : {}),
+    duplicates: false,
+    reason: detail,
+  };
+}
+
+registerOfficialSetupVerifier("codex", verifyOfficialSetup);

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
+import { LEGACY_SYSTEM_PROMPT_SECTIONS } from "../adapters/types.js";
 import { DEVTOOLS_MCP_SERVER } from "../lib/canonical.js";
 import { removeMarkdownSection, stripLeadingHtmlComments, upsertMarkdownSection } from "../lib/filemerge.js";
 import { composeProgrammaticSystemPrompt } from "../lib/mode-composition.js";
@@ -22,7 +23,6 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
   );
   const modules: SystemPromptSections = {
     "system-prompt": composeProgrammaticSystemPrompt(ctx.stackDir, readModule("AGENTS.md"), ctx.mode),
-    "engram-protocol": adapter.injectEngramProtocol(ctx) ? readModule("engram-protocol.md") : undefined,
     context7: readModule("context7.md"),
     playwright: ctx.playwrightCliEnabled ? readModule("browser-playwright.md") : undefined,
     "chrome-devtools": ctx.enabledMcpServers?.has(DEVTOOLS_MCP_SERVER) ? readModule("browser-chrome-devtools.md") : undefined,
@@ -33,6 +33,12 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
   for (const section of SYSTEM_PROMPT_SECTIONS) {
     const body = sections[section];
     content = body ? upsertMarkdownSection(content, section, body) : removeMarkdownSection(content, section);
+  }
+  // Provider-only: las secciones retiradas ya no se inyectan; los bloques que
+  // versiones anteriores instalaron se eliminan idempotentemente aquí (y en
+  // uninstall vía removeSystemPromptSections).
+  for (const section of LEGACY_SYSTEM_PROMPT_SECTIONS) {
+    content = removeMarkdownSection(content, section);
   }
   return [{ kind: "write", target, content }];
 }

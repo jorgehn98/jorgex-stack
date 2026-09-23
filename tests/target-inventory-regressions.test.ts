@@ -177,7 +177,9 @@ describe("target inventory regressions", () => {
             runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
           })).resolves.toBe(0);
 
-          expect(fs.existsSync(path.join(configDir, "plugins", "engram.ts"))).toBe(true);
+          // El plugin legacy ya no se despliega (lo provee `engram setup
+          // opencode`); hooks/worktree siguen Stack-owned.
+          expect(fs.existsSync(path.join(configDir, "plugins", "engram.ts"))).toBe(false);
           expect(fs.existsSync(path.join(configDir, "plugins", "hooks.ts"))).toBe(true);
           expect(fs.existsSync(path.join(configDir, "plugins", "worktree.ts"))).toBe(true);
           expect(fs.existsSync(path.join(configDir, "plugins", "goal-plugin.ts"))).toBe(false);
@@ -266,7 +268,9 @@ describe("target inventory regressions", () => {
           }
           expect(fs.readFileSync(foreignGoalModule, "utf8")).toBe("// foreign nested plugin\n");
           expect(fs.readFileSync(foreignPlugin, "utf8")).toBe("// foreign plugin\n");
-          expect(fs.readFileSync(engramPlugin, "utf8")).toContain("C:/mock/engram.exe");
+          // Stack ya no gestiona plugins/engram.ts (oficial vía setup); el
+          // legacy preexistente se preserva byte a byte, sin reescribir.
+          expect(fs.readFileSync(engramPlugin, "utf8")).toBe("// legacy Engram placeholder\n");
           expect(fs.readFileSync(engramPlaceholder, "utf8")).toBe("Engram placeholder\n");
           expect(fs.readFileSync(goalDatabase, "utf8")).toBe("not a real SQLite database\n");
           expect(fs.readFileSync(goalHistory, "utf8")).toBe("{\"history\":true}\n");
@@ -433,7 +437,9 @@ describe("target inventory regressions", () => {
         ).resolves.toBe(0);
 
         const { runDoctor } = await import("../src/doctor.js");
-        await expect(runDoctor()).resolves.toBe(0);
+        // Contrato oficial (PR03): setup oficial incompleto (sin `engram setup`,
+        // solo Stack) cuenta como problema en doctor aunque no haya drift.
+        await expect(runDoctor()).resolves.toBe(1);
         expect(mocks.prompts.log.warn).not.toHaveBeenCalledWith(
           expect.stringMatching(/OpenCode: .*desactualizados o ausentes/i),
         );

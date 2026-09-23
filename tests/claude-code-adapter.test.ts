@@ -47,10 +47,11 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(style.content).not.toContain("## Phases");
   });
 
-  it("subagente readonly con git-read: allowlist con Skill, Bash y tools de memoria", () => {
+  it("subagente readonly con git-read: allowlist con Skill y Bash, sin tools de memoria (provider-only)", () => {
     const [out] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
     expect(out!.kind).toBe("agent");
-    expect(out!.content).toContain("tools: Read, Grep, Glob, Skill, Bash, mcp__engram__mem_save");
+    expect(out!.content).toContain("tools: Read, Grep, Glob, Skill, Bash");
+    expect(out!.content).not.toContain("mcp__engram__");
     expect(out!.content).toContain("model: fable");
   });
 
@@ -68,12 +69,13 @@ describe("claudeCodeAdapter.renderAgent", () => {
     expect(other!.content).toContain("model: fable");
   });
 
-  it("el agente engram recibe solo tools de lectura de memoria (sin mem_save)", () => {
+  it("el agente engram omite tools y hereda todo del provider oficial", () => {
     const [out] = claudeCodeAdapter.renderAgent(
       agent({ name: "engram", readonly: true, bash: "none", tier: "cheap" }),
       MODELS,
     );
-    expect(out!.content).toContain("mcp__engram__mem_get_observation");
+    expect(out!.content).not.toMatch(/^tools:/m);
+    expect(out!.content).not.toContain("mcp__engram__");
     expect(out!.content).not.toContain("mem_save");
     expect(out!.content).not.toContain("Bash");
   });
@@ -141,20 +143,72 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     expect(servers.context7!.type).toBe("http");
   });
 
-  it("con el plugin engram presente NO registra el MCP, retira uno previo y avisa", () => {
-    // installed_plugins.json con la clave del plugin: la vía de detección frágil.
+  it("con plugin oficial activo y MCP oficial exacto preserva bytes y libera ownership (idempotente)", () => {
+    // Plugin oficial presente (registry v2 engram@engram) + MCP exacto de
+    // `engram setup claude-code`. El plugin NO trae MCP bundled: el setup
+    // registra un MCP user separado que el sync debe preservar.
     fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "plugins", "installed_plugins.json"),
-      JSON.stringify({ version: 2, plugins: { "engram@engram": [{ version: "0.1.0" }] } }),
+      JSON.stringify({ version: 2, plugins: { "engram@engram": [{ scope: "user", version: "0.1.3" }] } }),
     );
-    // un engram registrado por un sync pre-plugin debe desaparecer.
-    fs.writeFileSync(mainFile, JSON.stringify({ mcpServers: { engram: { type: "stdio", command: "old" } } }));
-    const ctx = makeCtx();
+    const engramBin = "/opt/engram";
+    const previous = {
+      mcpServers: {
+        engram: { type: "stdio", command: engramBin, args: ["mcp", "--tools=agent"] },
+        ajeno: { type: "http", url: "https://x" },
+      },
+    };
+    fs.writeFileSync(mainFile, JSON.stringify(previous));
+    const ctx = makeCtx({ engramBin, ownedMcpServers: new Set(["engram"]) });
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+    if (action?.kind !== "write") throw new Error("Expected a config write");
+    const servers = (JSON.parse(action.content) as { mcpServers: Record<string, unknown> }).mcpServers;
+    // Preserva, no borra; libera el ownership previo del Stack.
+    expect(servers["engram"]).toEqual(previous.mcpServers.engram);
+    expect(servers["ajeno"]).toEqual(previous.mcpServers.ajeno);
+    expect(action.mcpOwnership).toEqual(expect.arrayContaining([{ server: "engram", owned: false }]));
+    // Idempotente tras el setup oficial real: el siguiente sync no muta.
+    fs.writeFileSync(mainFile, action.content);
+    const ctx2 = makeCtx({ engramBin, ownedMcpServers: new Set() });
+    const [action2] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx2);
+    if (action2?.kind !== "write") throw new Error("Expected a config write");
+    expect(action2.content).toBe(action.content);
+    expect((JSON.parse(action2.content) as { mcpServers: Record<string, unknown> }).mcpServers["engram"]).toEqual(
+      previous.mcpServers.engram,
+    );
+  });
+
+  it("con plugin oficial activo y MCP ausente no lo recrea (setup incompleto lo cubre doctor/install)", () => {
+    fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "plugins", "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: { "engram@engram": [{ scope: "user", version: "0.1.3" }] } }),
+    );
+    fs.writeFileSync(mainFile, JSON.stringify({ mcpServers: { ajeno: { type: "http", url: "https://x" } } }));
+    const ctx = makeCtx({ engramBin: "/opt/engram" });
     const { servers } = run(ctx);
-    expect(servers.engram).toBeUndefined();
-    expect(servers.context7!.type).toBe("http"); // el http no depende del plugin
-    expect(ctx.warnings.join("\n")).toContain("plugin");
+    expect(servers["engram"]).toBeUndefined();
+    expect(servers["ajeno"]).toEqual({ type: "http", url: "https://x" });
+  });
+
+  it("con plugin oficial activo y MCP foráneo lo preserva", () => {
+    fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "plugins", "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: { "engram@engram": [{ scope: "user", version: "0.1.3" }] } }),
+    );
+    const foreign = { type: "stdio", command: "/foreign/bin", args: ["mcp", "--tools=agent"] };
+    fs.writeFileSync(
+      mainFile,
+      JSON.stringify({ mcpServers: { engram: foreign, ajeno: { type: "http", url: "https://x" } } }),
+    );
+    const ctx = makeCtx({ engramBin: "/opt/engram", ownedMcpServers: new Set(["engram"]) });
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+    if (action?.kind !== "write") throw new Error("Expected a config write");
+    const servers = (JSON.parse(action.content) as { mcpServers: Record<string, unknown> }).mcpServers;
+    expect(servers["engram"]).toEqual(foreign);
+    expect(servers["ajeno"]).toEqual({ type: "http", url: "https://x" });
   });
 
   it("sin binario de Engram (engramBin null) NO registra el MCP y avisa", () => {

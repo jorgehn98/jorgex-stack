@@ -70,6 +70,14 @@ export interface InstallContext {
   /** Campos del primary model que una escritura previa del stack creó. */
   ownedPrimaryModelFields?: ReadonlySet<string>;
   /**
+   * Opt-in para re-aplicar el bloque de permisos gestionados sobre una
+   * config existente: sin flag se preserva byte a byte y solo se avisa
+   * cuando difiere; con flag se reemplaza el bloque entero (con backup
+   * previo en el pipeline). Nunca default — lo fija runInstall desde
+   * InstallOptions.
+   */
+  upgradePermissions?: boolean;
+  /**
    * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,
    * plugin engram.ts, entrada en configs). Es el default — desregistrar
    * Engram exige el sí explícito del usuario. Las memorias (~/.engram) y el
@@ -93,6 +101,15 @@ export interface AdapterPaths {
 }
 
 /**
+ * Secciones retiradas (provider-only): Stack ya no las inyecta en ningún
+ * runtime — el provider oficial (`engram setup` + plugin/MCP/skills oficiales)
+ * es el único owner. Lista acotada SOLO para migración: sync/install/uninstall
+ * eliminan idempotentemente los bloques que versiones anteriores instalaron.
+ * No añadir secciones activas aquí.
+ */
+export const LEGACY_SYSTEM_PROMPT_SECTIONS = ["engram-protocol"] as const;
+
+/**
  * Contrato mínimo de los recursos que todos los runtimes pueden proyectar.
  * Pi lo usa sin participar aún en el ciclo de vida completo de Adapter.
  */
@@ -101,8 +118,6 @@ export interface SharedProjectionAdapter {
   paths(configDir: string): AdapterPaths;
   /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
   renderCommand(file: string, content: string): { file: string; content: string };
-  /** Decide si el system prompt debe incluir el protocolo Engram. */
-  injectEngramProtocol(ctx: InstallContext): boolean;
   /** Adapta los bloques a un formato legado cuando el runtime aún lo requiere. */
   adaptSystemPromptSections?(sections: SystemPromptSections): SystemPromptSections;
 }
@@ -110,6 +125,8 @@ export interface SharedProjectionAdapter {
 export interface Adapter extends SharedProjectionAdapter {
   id: RuntimeId;
   name: string;
+  /** Basenames de plugins que este runtime excluye del plan Stack (p.ej. legacy retirado). */
+  excludedPluginBasenames?: readonly string[];
   detect(): RuntimeDetection;
   /** Diagnóstico local de capabilities; nunca certifica enforcement del runtime. */
   reportCapabilities(configDir: string): LocalQualityCapabilityReport;

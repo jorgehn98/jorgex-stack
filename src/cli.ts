@@ -5,7 +5,7 @@ import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentCon
 import { ADAPTERS, formatRuntimeSummary, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall, type RuntimeSyncStatus } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
-import { runUpdateCheck, runInteractiveUpdate, updateEngram, type InteractiveUpdateResult } from "./update.js";
+import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
 import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
@@ -60,6 +60,7 @@ export interface Flags {
   removePlaywright: boolean;
   devtools: boolean;
   noDevtools: boolean;
+  upgradePermissions: boolean;
   receipt?: string;
   positional: string[];
   unknownFlags: string[];
@@ -124,6 +125,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     removePlaywright: false,
     devtools: false,
     noDevtools: false,
+    upgradePermissions: false,
     receipt: undefined,
     positional: [],
     unknownFlags: [],
@@ -200,6 +202,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     else if (arg === "--remove-playwright") flags.removePlaywright = true;
     else if (arg === "--devtools") flags.devtools = true;
     else if (arg === "--no-devtools") flags.noDevtools = true;
+    else if (arg === "--upgrade-permissions") flags.upgradePermissions = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
   }
@@ -464,7 +467,10 @@ async function resolveHostEngramForInstall(
 
   try {
     const result = await installMissingEngram();
-    if (result.ok) return { ok: true, bin: result.bin };
+    if (result.ok) {
+      if (result.warning) p.log.warn(result.warning);
+      return { ok: true, bin: result.bin };
+    }
     return { ok: false, message: `Engram: ${result.reason}` };
   } catch (error) {
     return { ok: false, message: `Engram: ${error instanceof Error ? error.message : String(error)}` };
@@ -482,6 +488,7 @@ interface RunSelectedPiOptions {
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
   packageOnly?: boolean;
+  upgradePermissions?: boolean;
 }
 
 async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
@@ -520,6 +527,11 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     console.error("No se pudo verificar la versión instalada de Pi sin ejecutarlo; revisa la instalación de Pi.");
     return 1;
   }
+  // Pi install real ordena Engram primero (resolvePiEngramBin/installMissingEngram
+  // vía resolvePiEngramRequirement) y `engram setup pi` antes del package install
+  // vía runOfficialSetupIfNeeded("pi") en pi-runtime (spawnOfficialSetupBin con
+  // argv exacto ["setup","pi"], shell false). Gate install-only con
+  // shouldRunOfficialSetup: sync/dry-run/targetDir undefined excluidos.
   let engramBin = resolvedEngramBin === undefined
     ? resolvePiEngramBin(targetDir)
     : resolvedEngramBin;
@@ -535,7 +547,11 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
         const answer = await p.confirm({ message, initialValue });
         return !p.isCancel(answer) && answer;
       },
-      installNative: async ({ version }) => updateEngram("Gentleman-Programming/engram", version),
+      installShared: async () => {
+        const result = await installMissingEngram();
+        if (result.ok && result.warning) p.log.warn(result.warning);
+        return result;
+      },
     });
     if (requirement.kind !== "existing") {
       console.error(requirement.kind === "offer"
@@ -556,6 +572,15 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
     ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
     ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+    ...(() => {
+      if (options.upgradePermissions !== true) return {};
+      const supports = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("permissions-upgrade-v1");
+      if (!supports) {
+        p.log.info("Pi: --upgrade-permissions requiere un paquete con permissions-upgrade-v1; se continúa en modo seed-only.");
+        return {};
+      }
+      return { upgradePermissions: true as const };
+    })(),
   });
   if (result.kind === "blocked") {
     const paths = "paths" in result ? `: ${result.paths.join(", ")}` : "";
@@ -605,6 +630,7 @@ Opciones:
   --engram              (install) autoriza instalar el binario Engram si falta
   --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
+  --upgrade-permissions (install/sync) re-aplica permisos gestionados sobre config existente (opt-in)
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
                         memorias y binario quedan intactos igualmente
   --playwright-runtimes <csv>  Activa su guía sólo en estos runtimes de --agents (con --playwright)
@@ -675,9 +701,10 @@ async function main(): Promise<void> {
         || flags.engram
         || flags.playwright
         || flags.removePlaywright
-        || flags.devtools
-        || flags.noDevtools
-      ) {
+            || flags.devtools
+            || flags.noDevtools
+            || flags.upgradePermissions
+          ) {
         console.error("quality solo admite <plan.json> y, opcionalmente, --receipt <path>.");
         process.exitCode = 1;
         return;
@@ -771,6 +798,7 @@ async function main(): Promise<void> {
             playwrightToolConsent,
             devtoolsMcpSelection,
             engramBin,
+            upgradePermissions: flags.upgradePermissions,
             ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
             ...(playwrightToolPlan.actions.length === 0 ? {} : { onPlaywrightCapability: capturePlaywrightCapability }),
             showSummary: false,
@@ -809,6 +837,7 @@ async function main(): Promise<void> {
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
               playwrightCapability,
+              ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
             });
             exitCode = Math.max(exitCode, piExitCode);
             piStatus = piExitCode === 0 ? "ok" : "failed";
@@ -1095,7 +1124,19 @@ async function main(): Promise<void> {
         if (!flags.list) console.log("\nUsa: jorgex-stack restore <id>");
         return;
       }
-      const restored = restoreBackup(flags.positional[0]!);
+      const targetId = flags.positional[0]!;
+      // Compara el tamaño del manifest con las escrituras aceptadas; restoreBackup
+      // omite entradas inseguras o que ya no tienen datos almacenados.
+      const expected = listBackups().find((b) => b.id === targetId)?.files.length;
+      const restored = restoreBackup(targetId);
+      if (expected !== undefined && restored < expected) {
+        console.error(
+          `Restore incompleto del backup ${targetId}: restaurados ${restored}/${expected} archivos ` +
+            `(omisiones de seguridad: symlinks, fuera de HOME o ilegibles). Revisa arriba y restaura a mano lo que falte.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
       console.log(`Restaurados ${restored} archivos.`);
       return;
     }

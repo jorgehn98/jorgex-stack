@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { EngramInstallResult } from "../src/lib/engram-install.js";
 
 type EngramDecision =
   | { kind: "existing"; bin: string; scope: "host" | "target-dir" }
@@ -12,22 +13,22 @@ type PiEngramRequirement = {
       detectHost(): string | null;
       detectTarget(targetDir: string): string | null;
       confirm(input: { message: string; initialValue: false }): Promise<boolean>;
-      installNative(input: { version: "1.20.0"; channels: ["brew", "go", "url"] }): Promise<boolean>;
+      installShared(): Promise<EngramInstallResult>;
     },
   ): Promise<EngramDecision>;
 };
 
 async function requirement(): Promise<PiEngramRequirement> {
-  const mod = await import("../src/lib/pi-runtime.js") as Partial<PiEngramRequirement>;
+  const mod = await import("../src/lib/pi-runtime.js") as unknown as Partial<PiEngramRequirement>;
   expect(mod.resolvePiEngramRequirement).toBeTypeOf("function");
-  return mod as PiEngramRequirement;
+  return mod as unknown as PiEngramRequirement;
 }
 
 function deps(overrides: Partial<{
   host: string | null;
   target: string | null;
   accepted: boolean;
-  installed: boolean;
+  installResult: EngramInstallResult;
   redetected: string | null;
 }> = {}) {
   const events: string[] = [];
@@ -49,9 +50,10 @@ function deps(overrides: Partial<{
         expect(input.message).toMatch(/engram/i);
         return overrides.accepted ?? false;
       },
-      async installNative(input: { version: "1.20.0"; channels: ["brew", "go", "url"] }) {
-        events.push(`install:${input.version}:${input.channels.join(",")}`);
-        return overrides.installed ?? true;
+      async installShared(...args: unknown[]) {
+        events.push("install-shared");
+        expect(args).toEqual([]);
+        return overrides.installResult ?? { ok: true, bin: "/opt/engram/bin/engram" };
       },
     },
   };
@@ -105,13 +107,20 @@ describe("Pi Engram requirement", () => {
     }
   });
 
-  it("offers native installation only to an interactive user, defaults to No, and re-detects once after acceptance", async () => {
+  it("offers the single shared versionless installation only to an interactive user, defaults to No, and re-detects once after acceptance", async () => {
     const { resolvePiEngramRequirement } = await requirement();
     const declined = deps();
+    expect(declined.api).not.toHaveProperty("installNative");
+    expect("version" in declined.api).toBe(false);
     await expect(resolvePiEngramRequirement({ interactive: true, yes: false }, declined.api)).resolves.toEqual({ kind: "offer", accepted: false });
     expect(declined.events).toEqual(["detect-host", "confirm:false"]);
 
-    const accepted = deps({ accepted: true, installed: true, redetected: "/opt/engram/bin/engram" });
+    const accepted = deps({
+      accepted: true,
+      installResult: { ok: true, bin: "/opt/engram/bin/engram" },
+      redetected: "/opt/engram/bin/engram",
+    });
+    expect(accepted.api).not.toHaveProperty("installNative");
     await expect(resolvePiEngramRequirement({ interactive: true, yes: false }, accepted.api)).resolves.toEqual({
       kind: "existing",
       bin: "/opt/engram/bin/engram",
@@ -120,8 +129,83 @@ describe("Pi Engram requirement", () => {
     expect(accepted.events).toEqual([
       "detect-host",
       "confirm:false",
-      "install:1.20.0:brew,go,url",
+      "install-shared",
       "detect-host",
     ]);
+  });
+
+  it("carries a structured installer failure reason into the blocked remedy", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const detail = "simulated installer boom: ECONNRESET";
+    const failed = deps({
+      accepted: true,
+      installResult: { ok: false, reason: detail },
+      redetected: null,
+    });
+    await expect(
+      resolvePiEngramRequirement({ interactive: true, yes: false }, failed.api),
+    ).resolves.toMatchObject({
+      kind: "blocked",
+      reason: "engram-install-failed",
+      remedy: expect.stringContaining(detail),
+    });
+    expect(failed.events).toEqual(["detect-host", "confirm:false", "install-shared"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T41-RED: el install Pi gestionado exige el binario Engram antes del setup.
+// Contrato: install real resuelve/instala el binario primero (requirement
+// existente), con binario absoluto; solo entonces respalda cada path mutable,
+// ejecuta `engram setup pi` (argv exacto) y verifica singleton antes del
+// package install. Sin binario absoluto no hay backup/spawn/verify ni package.
+// Aislado, sin HOME real/red.
+// ---------------------------------------------------------------------------
+
+describe("[T41-RED] Pi install exige Engram absoluto antes del setup pi", () => {
+  it("el requirement resuelto es un binario absoluto reutilizable por el setup", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const state = deps({ host: "/isolated/bin/engram" });
+
+    const decision = await resolvePiEngramRequirement({ interactive: true, yes: false }, state.api);
+    expect(decision).toEqual({ kind: "existing", bin: "/isolated/bin/engram", scope: "host" });
+    expect((decision as { bin: string }).bin.startsWith("/")).toBe(true);
+    expect(state.events).toEqual(["detect-host"]);
+  });
+
+  it("el setup pi posterior usa ese binario absoluto con argv exacto y targets explícitos", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const state = deps({ host: "/isolated/bin/engram" });
+    const decision = await resolvePiEngramRequirement({ interactive: true, yes: false }, state.api);
+    expect(decision).toMatchObject({ kind: "existing" });
+    const bin = (decision as { bin: string }).bin;
+
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    expect(typeof setup.resolveOfficialSetupArgv, "falta argv setup pi tras Engram (T41)").toBe("function");
+    expect(setup.resolveOfficialSetupArgv("pi")).toEqual(["setup", "pi"]);
+    expect(bin.startsWith("/")).toBe(true);
+
+    const targets = setup.collectOfficialSetupBackupTargets("pi", "/isolated/pi-agent", "/isolated/home") as string[];
+    expect(Array.isArray(targets) && targets.length > 0, "Pi debe declarar backup targets tras Engram").toBe(true);
+    expect(targets.join("\n")).not.toMatch(/\.engram\/engram\.db|engram\.db/);
+  });
+
+  it("sin binario absoluto no hay setup pi: falla cerrado antes de backup/spawn", async () => {
+    const { resolvePiEngramRequirement } = await requirement();
+    const missing = deps();
+    const decision = await resolvePiEngramRequirement({ interactive: false, yes: false }, missing.api);
+    expect(decision).toMatchObject({ kind: "blocked", reason: "engram-required" });
+    expect(missing.events).toEqual(["detect-host"]);
+
+    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
+    // Sin engramBin absoluto el núcleo debe exigirlo antes de mutar.
+    await expect(setup.runOfficialSetup("pi", {
+      homeDir: "/isolated/home",
+      engramBin: null,
+      targets: ["/isolated/pi-agent/settings.json"],
+      backup: async () => ({ id: "must-not-run" }),
+      spawn: async () => { throw new Error("must-not-spawn-without-engram"); },
+      verify: async () => ({ ok: true }),
+    })).rejects.toThrow(/engramBin absoluto/i);
   });
 });

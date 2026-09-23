@@ -17,6 +17,13 @@ export interface RuntimeManifest {
   configDir: string;
   /** Rutas absolutas resueltas de los archivos enteramente nuestros. */
   owned: string[];
+  /**
+   * Rutas que el plan ya no reclama y cuyo borrado queda pendiente. Siguen
+   * en `owned` para que una próxima pasada pueda reintentarlo; solo se
+   * retiran de ambos campos tras borrado verificado. Ausente equivale a sin
+   * pendientes.
+   */
+  pendingOrphans?: string[];
   updatedAt: string;
 }
 

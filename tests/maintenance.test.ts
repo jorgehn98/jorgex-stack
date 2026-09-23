@@ -130,13 +130,6 @@ const MULTI_PR_LIFECYCLE_CASES = [
     ],
   },
   {
-    relativePath: "system-prompt/engram-protocol.md",
-    fragments: [
-      "PR checkpoints",
-      "final outcome in `work/{name}/done` only after the last PR",
-    ],
-  },
-  {
     relativePath: "skills/work-lifecycle/references/plan-template.md",
     fragments: [
       "## PR Roadmap",
@@ -267,27 +260,67 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(fresh.permission).toMatchObject({
       external_directory: { "*": "allow" },
       read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+      edit: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+      glob: "allow",
+      grep: "allow",
+      lsp: "allow",
       webfetch: "allow",
       websearch: "allow",
+      task: "allow",
+      skill: "allow",
+      todowrite: "allow",
+      question: "allow",
       bash: {
         "*": "allow",
-        "rm *": "ask",
-        "del *": "ask",
-        "rmdir *": "ask",
-        "git *push*": "ask",
+        "git rebase": "ask",
+        "git rebase *": "ask",
+        "git reset --hard": "ask",
+        "git reset --hard *": "ask",
+        "ssh": "ask",
+        "ssh *": "ask",
+        "scp": "ask",
+        "scp *": "ask",
+        "sftp": "ask",
+        "sftp *": "ask",
+        "rsync": "ask",
+        "rsync *": "ask",
+        "format": "deny",
         "format *": "deny",
+        "*/format": "deny",
+        "*/format *": "deny",
+        "mkfs": "deny",
         "mkfs *": "deny",
+        "*/mkfs": "deny",
+        "*/mkfs *": "deny",
+        "mkfs.*": "deny",
+        "*/mkfs.*": "deny",
+        "dd": "deny",
         "dd *": "deny",
+        "*/dd": "deny",
+        "*/dd *": "deny",
+        "shred": "deny",
         "shred *": "deny",
+        "*/shred": "deny",
+        "*/shred *": "deny",
       },
     });
-    expect(fresh.permission.edit).toMatchObject({ "*": "allow", "*.env": "deny" });
-    expect(fresh.permission.bash["git *reset*"]).toBe("ask");
-    expect(fresh.permission.bash["git *restore*"]).toBe("ask");
-    expect(fresh.permission.bash["git *checkout*--*"]).toBe("ask");
-    expect(fresh.permission.bash["git *switch*--discard-changes*"]).toBe("ask");
-    expect(fresh.permission.bash["git *rebase*"]).toBe("ask");
-    expect(fresh.permission.bash["rm * /"]).toBe("deny");
+    // Sin fricción para trabajo ordinario: ni ask global ni reglas de push/rm/lenguajes.
+    expect(fresh.permission["*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *push*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *reset*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *restore*"]).toBeUndefined();
+    expect(fresh.permission.bash["git *rebase*"]).toBeUndefined();
+    expect(fresh.permission.bash["rm *"]).toBeUndefined();
+    expect(fresh.permission.bash["rm * /"]).toBeUndefined();
+    expect(fresh.permission.bash["node *"]).toBeUndefined();
+    expect(fresh.permission.bash["python *"]).toBeUndefined();
+    expect(fresh.permission.bash["sudo *"]).toBeUndefined();
+    expect(fresh.permission.bash["pnpm dlx*"]).toBeUndefined();
+    // Sin claves muertas ni allowlist por herramienta MCP.
+    expect(fresh.permission.list).toBeUndefined();
+    expect(fresh.permission.todoread).toBeUndefined();
+    expect(fresh.permission["engram_*"]).toBeUndefined();
+    expect(fresh.permission["context7_*"]).toBeUndefined();
   });
 
   it("opencode: una config no vacía sin permission no recibe permission", () => {
@@ -453,7 +486,7 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(fresh).not.toContain('sandbox_mode = "workspace-write"');
     expect(readTomlSection(fresh, "permissions.jorgex-read-anywhere")?.trimEnd()).toBe('extends = ":workspace"');
     expect(readTomlSection(fresh, "permissions.jorgex-read-anywhere.filesystem")?.trimEnd()).toBe(
-      '":root" = "read"\n"*.env" = "deny"\n"*.env.*" = "deny"\n"~/.ssh/**" = "deny"\n"~/.aws/credentials" = "deny"\n"~/.npmrc" = "deny"\n"~/.git-credentials" = "deny"\n"**/id_rsa" = "deny"\n"**/id_ed25519" = "deny"\n"**/*.pem" = "deny"\n"**/*.key" = "deny"',
+      '":root" = "read"\n"~/.ssh/**" = "deny"\n"~/.aws/credentials" = "deny"\n"~/.npmrc" = "deny"\n"~/.git-credentials" = "deny"',
     );
     expect(readTomlSection(fresh, 'permissions.jorgex-read-anywhere.filesystem.:workspace_roots')?.trimEnd()).toBe(
       '"." = "write"\n"*.env" = "deny"\n"*.env.*" = "deny"\n".ssh/**" = "deny"\n".aws/credentials" = "deny"\n".npmrc" = "deny"\n".git-credentials" = "deny"\n"**/id_rsa" = "deny"\n"**/id_ed25519" = "deny"\n"**/*.pem" = "deny"\n"**/*.key" = "deny"',
@@ -549,7 +582,7 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
 });
 
 describe("planPlugins: placeholders resueltos", () => {
-  it("engram.ts recibe el protocolo canónico y el binario, sin placeholders", async () => {
+  it("T14: engram.ts legacy no se despliega (oficial vía setup); hooks/worktree siguen Stack-owned", async () => {
     const ctx = {
       stackDir: stackRoot(),
       configDir: tmp,
@@ -558,13 +591,11 @@ describe("planPlugins: placeholders resueltos", () => {
       warnings: [],
     };
     const actions = planPlugins(opencodeAdapter, ctx);
-    const engram = actions.find((a) => a.target.endsWith("engram.ts"))!;
-    expect(engram.kind).toBe("write");
-    const content = (engram as { content: string }).content;
-    expect(content).toContain("Engram Memory Protocol"); // protocolo canónico inyectado
-    expect(content).toContain("engram.exe");
-    expect(content).not.toContain("{{ENGRAM_PROTOCOL}}");
-    expect(content).not.toContain("{{ENGRAM_BIN}}");
+    // El plugin legacy no se empaqueta ni despliega: sync no lo recrea.
+    expect(actions.some((a) => a.target.endsWith("engram.ts"))).toBe(false);
+    // hooks.ts/worktree.ts siguen Stack-owned y se siguen desplegando.
+    expect(actions.some((a) => a.target.endsWith("hooks.ts"))).toBe(true);
+    expect(actions.some((a) => a.target.endsWith("worktree.ts"))).toBe(true);
   });
 });
 
@@ -975,13 +1006,15 @@ describe("work backlog mutation contract", () => {
       "concurrent",
     ];
 
+    // T43 provider-only: el contrato backlog vive solo en skills propias;
+    // Stack ya no distribuye fuente de protocolo Engram.
     for (const relativePath of [
       "skills/orchestrator/SKILL.md",
       "skills/work-lifecycle/SKILL.md",
-      "system-prompt/engram-protocol.md",
     ]) {
       expectFragments(readStackFile(relativePath), fragments);
     }
+    expect(fs.existsSync(path.join(stackRoot(), "system-prompt", "engram-protocol.md"))).toBe(false);
 
     const basePrompt = readStackFile("system-prompt/AGENTS.md");
     expectFragments(basePrompt, ["work-lifecycle", "single writer", "project backlog"]);
@@ -998,6 +1031,32 @@ describe("work backlog mutation contract", () => {
       "verificar",
       "concurrentes",
     ]);
+  });
+});
+
+describe("T43 provider-only: sin fuente/sección/placeholder/interfaz Engram Stack", () => {
+  it("elimina fuente, sección, placeholder e interfaz sin tocar Context7/browser/writing-style", () => {
+    const root = stackRoot();
+    // Fuente eliminada.
+    expect(fs.existsSync(path.join(root, "system-prompt", "engram-protocol.md"))).toBe(false);
+    // Inventario de secciones sin protocolo; Context7/browser/writing-style intactos.
+    const sections = fs.readFileSync(path.join(root, "..", "src", "lib", "system-prompt-sections.ts"), "utf8");
+    expect(sections).not.toContain("engram-protocol");
+    expect(sections).toContain("context7");
+    expect(sections).toContain("playwright");
+    expect(sections).toContain("chrome-devtools");
+    expect(sections).toContain("writing-style");
+    // Placeholder eliminado del puente de plugins.
+    const plugins = fs.readFileSync(path.join(root, "..", "src", "components", "plugins.ts"), "utf8");
+    expect(plugins).not.toContain("{{ENGRAM_PROTOCOL}}");
+    expect(plugins).not.toContain("engram-protocol.md");
+    // Interfaz eliminada del contrato de adapters.
+    const types = fs.readFileSync(path.join(root, "..", "src", "adapters", "types.ts"), "utf8");
+    expect(types).not.toContain("injectEngramProtocol");
+    // Módulo system-prompt sin rama de protocolo.
+    const systemPrompt = fs.readFileSync(path.join(root, "..", "src", "components", "system-prompt.ts"), "utf8");
+    expect(systemPrompt).not.toContain("engram-protocol");
+    expect(systemPrompt).not.toContain("injectEngramProtocol");
   });
 });
 

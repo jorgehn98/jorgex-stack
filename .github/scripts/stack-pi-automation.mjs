@@ -24,6 +24,34 @@ const repository = (direction) => direction === 'snapshot' ? PI : STACK;
 const prefix = (direction) => `codex/stack-pi-${direction}-`;
 const branch = (p) => `${prefix(p.direction)}${p.sourceSha}${p.version === null ? '' : `-v${p.version}`}`;
 
+export function classifyAdoptionIdentity({ version, tagCommit, pinVersion, pinCommit }) {
+  assert(full(VERSION, version), 'Invalid published version');
+  assert(full(SHA, tagCommit), 'Invalid published tag commit');
+  assert(full(VERSION, pinVersion), 'Invalid pin version');
+  assert(full(SHA, pinCommit), 'Invalid pin provenance commit');
+  if (version !== pinVersion) return { status: 'proceed', version, sourceSha: tagCommit };
+  assert.equal(tagCommit, pinCommit, 'Same published version with a different tag commit; refusing mutable tag without fetching');
+  return { status: 'unchanged', version, sourceSha: tagCommit };
+}
+
+export function classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch }) {
+  assert(full(SHA, parityCommit), 'Invalid parity source commit');
+  assert(typeof stackDiff === 'string', 'Invalid stack diff');
+  assert(full(SHA, lastTouch), 'Invalid stack source commit');
+  if (stackDiff.trim() === '') return { status: 'unchanged', sourceSha: parityCommit };
+  return { status: 'proceed', sourceSha: lastTouch };
+}
+
+function readBoundedJson(file, label) {
+  const stat = lstatSync(file);
+  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_BYTES, label);
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+
+function readBoundedJsonFile(file) {
+  return readBoundedJson(file, 'Invalid identity file');
+}
+
 export function validateWake(eventName, event) {
   assert.equal(event?.repository?.full_name, STACK, 'Unexpected event repository');
   if (eventName === 'push' || eventName === 'workflow_dispatch') {
@@ -175,9 +203,7 @@ async function boundedJson(response) {
 }
 
 function readEnvelope(file) {
-  const stat = lstatSync(file);
-  assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_BYTES, 'Invalid proposal file');
-  const data = JSON.parse(readFileSync(file, 'utf8'));
+  const data = readBoundedJson(file, 'Invalid proposal file');
   if (data.status === 'prepared') {
     exact(data, ['status', 'proposal']);
     validateProposal(data.proposal);
@@ -196,7 +222,14 @@ function report(result) {
   console.log(JSON.stringify(result));
 }
 
-async function prepare(stackRoot, piRoot, output) {
+function reportUnchanged(output, actual, expected, message) {
+  assert.equal(actual, expected, message);
+  mkdirSync(output, { recursive: true });
+  writeFileSync(join(output, 'proposal.json'), JSON.stringify({ status: 'unchanged' }));
+  report({ status: 'unchanged' });
+}
+
+export async function prepare(stackRoot, piRoot, output) {
   validateWake(process.env.GITHUB_EVENT_NAME, JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')));
   assert(!process.env.AUTOMATION_TOKEN, 'Preparation must not receive the App token');
   const direction = process.env.AUTOMATION_DIRECTION;
@@ -210,12 +243,31 @@ async function prepare(stackRoot, piRoot, output) {
   const baseSha = git(target, ['rev-parse', 'HEAD']).trim();
   let sourceSha, version = null;
   if (direction === 'snapshot') {
-    sourceSha = git(stackRoot, ['log', '--first-parent', '-1', '--format=%H', 'origin/main', '--', 'stack/']).trim();
+    const parityCommit = readBoundedJsonFile(join(piRoot, 'contract/parity.v2.json'))?.source?.commit;
+    assert(full(SHA, parityCommit), 'Invalid parity source commit');
+    git(stackRoot, ['cat-file', '-e', `${parityCommit}^{commit}`]);
+    git(stackRoot, ['merge-base', '--is-ancestor', parityCommit, 'origin/main']);
+    const stackDiff = git(stackRoot, ['diff', '--name-only', `${parityCommit}..origin/main`, '--', 'stack/']);
+    const lastTouch = git(stackRoot, ['log', '--first-parent', '-1', '--format=%H', 'origin/main', '--', 'stack/']).trim();
+    const decision = classifySnapshotIdentity({ parityCommit, stackDiff, lastTouch });
+    if (decision.status === 'unchanged') {
+      reportUnchanged(output, decision.sourceSha, parityCommit, 'Snapshot noop must keep parity identity');
+      return;
+    }
+    git(stackRoot, ['merge-base', '--is-ancestor', parityCommit, decision.sourceSha]);
+    sourceSha = decision.sourceSha;
   } else {
     const tags = git(piRoot, ['tag', '--merged', 'origin/main', '--sort=-version:refname']).trim().split('\n');
     version = tags.find((tag) => tag.startsWith('v') && full(VERSION, tag.slice(1)))?.slice(1);
     assert(version, 'No published version tag available');
     sourceSha = git(piRoot, ['rev-parse', `refs/tags/v${version}^{commit}`]).trim();
+    assert(full(SHA, sourceSha));
+    const pin = readBoundedJsonFile(join(stackRoot, 'src/lib/pi-runtime-pin.json'));
+    const decision = classifyAdoptionIdentity({ version, tagCommit: sourceSha, pinVersion: pin?.package?.version, pinCommit: pin?.provenance?.commit });
+    if (decision.status === 'unchanged') {
+      reportUnchanged(output, decision.sourceSha, sourceSha, 'Adoption noop must keep tag identity');
+      return;
+    }
   }
   assert(full(SHA, sourceSha));
   mkdirSync(output, { recursive: true });
@@ -228,7 +280,7 @@ async function prepare(stackRoot, piRoot, output) {
       : await import(pathToFileURL(join(stackRoot, '.github/scripts/prepare-pi-adoption.mjs')).href);
     result = direction === 'snapshot'
       ? await helper.prepareStackSnapshot({ root: piRoot, stackDir: stackRoot, sourceCommit: sourceSha, apply: true })
-      : await helper.preparePiAdoption({ root: stackRoot, piDir: piRoot, version, apply: true, acceptInitializationDiagnostics: true });
+      : await helper.preparePiAdoption({ root: stackRoot, piDir: piRoot, version, apply: true, acceptInitializationDiagnostics: true, acceptEngramChildOnly: true, acceptOfficialEngram: true, acceptEngramProtocolRemoval: true });
   }
   let envelope = { status: result.status };
   if (result.status === 'prepared') {

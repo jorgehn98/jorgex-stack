@@ -44,9 +44,15 @@ La adopción de `permissions-policy-v1` requiere además `--accept-permissions-p
 
 La adopción de `experience-defaults-v1` requiere además `--accept-experience-defaults`; sin esa opción se rechaza. La transición exacta añade una escritura nueva (el receipt de lifecycle) y deja siete escrituras externas en total, conserva las seis rutas previas de paquete y permisos, y valida el módulo/binario de experiencia, contratos, bytes, hashes e inventario frente al productor publicado. Los defaults `theme=JorgeX`, `quietStartup=true` y `hideThinkingBlock=true` se siembran solo en la primera inicialización y en campos ausentes; cambios o borrados del usuario no se resembran. `hideThinkingBlock` afecta la presentación, no `defaultThinkingLevel` ni el razonamiento.
 
+La adopción oficial de Engram requiere `--accept-official-engram`; sin esa opción se rechaza por defecto. Solo acepta el delta revisado que mantiene el comportamiento del provider y elimina la proyección Stack-owned del protocolo y del filtrado de herramientas. El preparador conserva las comprobaciones de contrato, inventario, bytes, tamaño, SRI, SHA e integridad del tarball; el flag no es un bypass ni instala Engram.
+
 ## Recuperación y rollback
 
 Si el coordinador falla cerrado por un contrato no soportado y no crea una PR, no se debe reintentar a ciegas. Para esta adopción de `initialization-diagnostics-v1`, tras comprobar el estado de runs y PRs se requirió el preparador manual verificado con `--accept-initialization-diagnostics`, seguido de una PR manual con la base actual, review y gates.
+
+El run [`35705370190`](https://github.com/jorgehn98/jorgex-stack/actions/runs/35705370190) falló cerrado antes de crear la PR porque requería la revisión contractual de la adopción oficial. Pi `0.8.28` ya estaba publicado y verificado; por tanto, la recuperación usa el preparador local desde un checkout limpio de Stack y el checkout productor de Pi, con la versión exacta publicada y `--accept-official-engram`. Después se abre una PR manual con la base actual y se ejecutan review y gates. No se vuelve a publicar Pi, no se editan pines ni hashes manualmente y no se convierte esta recuperación en una instalación personal. El seguimiento de la automatización queda en [issue #147](https://github.com/jorgehn98/jorgex-stack/issues/147).
+
+La automatización pasa permanentemente `acceptOfficialEngram` al preparador de adopción para poder reconciliar esa transición cuando el diff real coincide; esa configuración permanente no fuerza la aceptación: el preparador solo activa el delta cuando el estado real coincide exactamente con la transición revisada. Cualquier cambio posterior vuelve a requerir revisión manual.
 
 - **Notificación fallida:** corrige la causa y usa `workflow_dispatch` del coordinador, sin reejecutar el publisher mutable. El dispatch recupera notificaciones o reconcilia nuevas entradas; no recrea propuestas cerradas de la misma identidad, aunque elimines su rama.
 - **PR o rama ya existente:** inspecciona la propuesta y su estado; no la sobreescribas ni fuerces la referencia.

@@ -3,12 +3,19 @@
 Esta referencia describe los defaults que `pnpm dlx jorgex-stack install` (o
 `sync`) siembra en una configuración fresca o vacía. La política común es
 semántica: el trabajo ordinario se permite, las operaciones legítimas pero
-sensibles o irreversibles piden aprobación, y los secretos y la destrucción
-evidente se deniegan. Cuando no existe una regla específica, el fallback es
-`ask`.
+sensible o irreversibles piden aprobación, y los secretos y la destrucción
+evidente se deniegan. En OpenCode fresco no hay regla global `"*"`: lo que
+no tiene regla específica cae al default nativo (`allow`), así que el
+trabajo ordinario —incluido cualquier MCP, conocido o futuro— funciona sin
+prompts. En Claude Code y Codex, lo no listado sigue pidiendo aprobación.
 
-Una configuración existente se conserva completa. El stack no reimpone ni
-migra sus permisos, aunque la configuración coincida con un default anterior.
+La regla fresh-only sigue siendo el default: una configuración existente
+se conserva completa y el stack no reimpone ni migra sus permisos solo. La
+única excepción es el opt-in explícito `install`/`sync
+--upgrade-permissions`, que reemplaza el bloque gestionado entero cuando
+difiere del default, con backup automático previo en instalaciones reales. Sin ese flag, una config
+existente que difiera solo avisa (warn-only-by-default); una config al día
+queda en silencio.
 
 > Fuente canónica: `stack/config/defaults.json`. Los detalles de la limitación
 > posicional del matching de `Bash` en Claude Code viven en
@@ -24,17 +31,18 @@ migra sus permisos, aunque la configuración coincida con un default anterior.
 | Claude Code  | `~/.claude/settings.json`        | `permissions`                                           |
 | Codex CLI    | `~/.codex/config.toml`           | `approval_policy` + `default_permissions` + perfil      |
 
-Pi mantiene una política separada en `PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json`, con receipt en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json` y backups en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-backups`. Pi solo posee la copia de configuración que creó y cuyo ownership registra en su receipt y backups; una configuración ajena no pasa a ser propiedad de Pi y Stack nunca la reclama. El módulo solo siembra una configuración ausente mediante publicación exclusiva; una configuración existente o un JSON legible pero inválido se conserva sin ownership y `doctor` lo marca como error. Un archivo ilegible o no regular bloquea la operación cerrada. `sync` no reimpone la política y `cleanup` solo retira una copia exacta que el receipt identifique como creada por Pi.
+Pi mantiene una política separada en `PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json`, con receipt en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json` y backups en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-backups`. Pi solo posee la copia de configuración que creó y cuyo ownership registra en su receipt y backups; una configuración ajena no pasa a ser propiedad de Pi y Stack nunca la reclama. Por defecto Stack es solo-diagnóstico con Pi: `sync` siembra solo si la configuración está ausente (seed-only) y nunca reescribe, retira ni reimpone su estado. Con `sync/install --upgrade-permissions`, Stack reenvía el flag al comando `upgrade` del paquete Pi, pero solo si el candidato adoptado anuncia la capability `permissions-upgrade-v1`; sin esa capability se continúa en modo seed-only. El `upgrade` del paquete reemplaza únicamente la copia gestionada receipt-owned que difiera del default, con backup previo, y siembra si está ausente; una configuración ajena, inválida o editada por el usuario se conserva (la edición libera ownership) y nunca se fusiona ni repara. Una política existente sin receipt se conserva y `doctor` la marca como aviso (warn-only); un JSON legible pero inválido o un estado ilegible se conserva y `doctor` lo marca como error. `cleanup` solo retira una copia exacta que el receipt identifique como creada por Pi. Ante contención (el runner devuelve salida 1 con `CONFIG_LOCKED`), Stack reintenta el `upgrade` hasta dos veces y luego falla de forma visible; ninguna otra señal se reintenta. Tras liberar ownership (edición del usuario o fichero owned ausente, sin resembrado), el siguiente `upgrade` es no-op (`changed: false` sin acciones).
 
-Cada adapter escribe su bloque **solo** en config fresca o vacía (el
-archivo de usuario no existe o está vacío). Una config existente — sea
-custom o coincidente con el legacy exacto — se preserva tal cual; el
-adapter no la toca, no la re-impone y no la migra automáticamente. Una
-vez escrita (en la primera instalación), esa sección pasa a ser
-**config del usuario**: quitarla o editarla a mano es seguro, y el
-próximo `sync` ya no la sobrescribirá porque ya no es "fresca". Esta
-es la regla de que el default solo se siembra en un archivo fresco y las
-decisiones posteriores quedan bajo control del usuario.
+Cada adapter siembra su bloque en config fresca o vacía (el archivo de
+usuario no existe o está vacío). Una config existente — sea custom o
+coincidente con el legacy exacto — se preserva byte a byte por defecto;
+el adapter no la toca sin el opt-in. Una vez escrita (en la primera
+instalación), esa sección pasa a ser **config del usuario**: quitarla o
+editarla a mano es seguro, y el próximo `sync` sin
+`--upgrade-permissions` no la sobrescribirá porque ya no es "fresca".
+Esta es la regla fresh-only: el default se siembra en un archivo fresco
+y las decisiones posteriores quedan bajo control del usuario, salvo el
+opt-in explícito del §5.
 
 > **"Fresco o vacío" se evalúa sobre el archivo entero, no sobre la
 > clave.** `isFreshConfig` significa que `~/.config/opencode/opencode.json`
@@ -43,8 +51,10 @@ decisiones posteriores quedan bajo control del usuario.
 > atajos, etc.) y solo borras la sub-clave `permission` / `permissions`
 > / las secciones `[permissions.*]`, el archivo **sigue no estando
 > fresco**: el adapter respeta tu archivo y no siembra el default. Para
-> forzar el default hace falta o bien editar el bloque a mano, o bien
-> dejar el archivo ausente/vacío antes del `sync`. Ver §5.
+> alinear el bloque con el default, edita a mano o usa
+> `--upgrade-permissions` (ver §5); vaciar el archivo entero antes del
+> `sync` sigue siendo una migración puntual válida pero ya no es la vía
+> recomendada.
 
 **Aviso en config fresca.** Cuando el adapter siembra el bloque en
 instalación fresca, además de escribirlo deja constancia en
@@ -62,20 +72,46 @@ instalación fresca, además de escribirlo deja constancia en
   jorgex-read-anywhere permission profile; broad local reads can expose
   secrets not covered by deny rules.`
 
-Estos mensajes **no** aparecen en configs existentes — son parte del
-"acto de siembra", no del respeto a la config del usuario.
+Los mensajes de siembra **no** aparecen en configs existentes. En una
+config existente cuyo bloque difiera del default canónico, el adapter en
+cambio emite un aviso stale (uno por runtime, solo-si-difiere, sin
+volcar el contenido del bloque):
+
+- OpenCode → `OpenCode: permission block differs from the stack
+  default and was left untouched; re-run with --upgrade-permissions to
+  replace it (a backup is created first), or edit it by hand.`
+- Claude Code → `Claude Code: permissions block differs from the stack
+  default and was left untouched; re-run with --upgrade-permissions to
+  replace it (a backup is created first), or edit it by hand.`
+- Codex → `Codex: permission profile differs from the stack default and
+  was left untouched; re-run with --upgrade-permissions to replace it (a
+  backup is created first), or edit it by hand.`
+
+Una config existente ya al día no emite ningún aviso de permisos. Con
+`--upgrade-permissions`, el bloque que difiera se reemplaza entero por
+el canon (OpenCode: clave `permission`; Claude Code: clave
+`permissions` vía el hooks-path, nunca vía main-config; Codex: claves
+root `approval_policy` + `default_permissions` y secciones del perfil,
+dejando intactos `sandbox_mode`, `model`, MCP y secciones ajenas),
+preservando el resto del archivo; en instalaciones reales el pipeline crea
+el backup automático antes de escribir (`restore --list` / `restore <id>`
+para revertir). En `--dry-run` no se escribe nada ni se crean backups. `doctor` reemite el
+mismo aviso stale sin volcar el bloque y con el remedio exacto:
+`jorgex-stack sync --upgrade-permissions --dry-run` para previsualizar.
 
 ---
 
 ## 2. OpenCode — `permission`
 
-Extracto del bloque escrito bajo la clave `permission` **solo en config fresca
-o vacía**. El JSON canónico contiene además las variantes equivalentes para
-comandos sin argumentos y rutas de sistema:
+Bloque completo escrito bajo la clave `permission` **solo en config fresca
+o vacía**, tal cual vive en `stack/config/defaults.json`. Es un overlay
+mínimo estilo gentle-ai: permite el trabajo ordinario sin prompts, pide solo
+lo sensible mínimo y deniega la destrucción evidente y los secretos. El JSON
+incluye variantes con y sin argumentos (`git rebase` / `git rebase *`) y
+variantes de ruta (`*/format`) para la destrucción:
 
 ```jsonc
 {
-  "*": "ask",
   "edit": {
     "*": "allow",
     "*.env": "deny",
@@ -107,110 +143,99 @@ comandos sin argumentos y rutas de sistema:
   "external_directory": { "*": "allow" },
   "glob": "allow",
   "grep": "allow",
-  "list": "allow",
   "lsp": "allow",
   "webfetch": "allow",
   "websearch": "allow",
   "task": "allow",
   "skill": "allow",
   "todowrite": "allow",
-  "todoread": "allow",
   "question": "allow",
   "bash": {
     "*": "allow",
-    "rm *": "ask",
-    "rmdir *": "ask",
-    "del *": "ask",
-    "unlink *": "ask",
-    "sudo *": "ask",
-    "doas *": "ask",
-    "runas *": "ask",
-    "su *": "ask",
-    "env *": "ask",
-    "eval *": "ask",
-    "exec *": "ask",
-    "xargs *": "ask",
-    "sh *": "ask",
-    "bash *": "ask",
-    "zsh *": "ask",
-    "fish *": "ask",
-    "pwsh *": "ask",
-    "powershell *": "ask",
-    "python *": "ask",
-    "python3 *": "ask",
-    "node *": "ask",
-    "ruby *": "ask",
-    "perl *": "ask",
-    "deno *": "ask",
-    "git *reset*": "ask",
-    "git *clean*": "ask",
-    "git *push*": "ask",
-    "git *checkout*--*": "ask",
-    "git *checkout* -f*": "ask",
-    "git *restore*": "ask",
-    "git *switch*--discard-changes*": "ask",
-    "git *rebase*": "ask",
-    "git -c *": "ask",
-    "git * -c *": "ask",
-    "git --config-env*": "ask",
-    "git *--output*": "ask",
-    "git *--ext-diff*": "ask",
-    "git *--textconv*": "ask",
-    "git *--show-signature*": "ask",
-    "git *%G*": "ask",
-    "pnpm exec*": "ask",
-    "pnpm dlx*": "ask",
+    "git rebase": "ask",
+    "git rebase *": "ask",
+    "git reset --hard": "ask",
+    "git reset --hard *": "ask",
+    "ssh": "ask",
+    "ssh *": "ask",
+    "scp": "ask",
+    "scp *": "ask",
+    "sftp": "ask",
+    "sftp *": "ask",
+    "rsync": "ask",
+    "rsync *": "ask",
+    "format": "deny",
     "format *": "deny",
+    "*/format": "deny",
+    "*/format *": "deny",
+    "mkfs": "deny",
     "mkfs *": "deny",
+    "*/mkfs": "deny",
+    "*/mkfs *": "deny",
+    "dd": "deny",
     "dd *": "deny",
-    "shred *": "deny"
+    "*/dd": "deny",
+    "*/dd *": "deny",
+    "shred": "deny",
+    "shred *": "deny",
+    "*/shred": "deny",
+    "*/shred *": "deny",
+    "mkfs.*": "deny",
+    "*/mkfs.*": "deny"
   }
 }
 ```
 
-- **`* = ask`**: herramientas o formas sin una regla específica piden
-  aprobación.
-- **Trabajo ordinario**: `read`, `edit`, `glob`, `grep`, `list`, `lsp`,
-  `external_directory`, `webfetch`, `websearch` y las herramientas de apoyo
-  reciben `allow`, con las excepciones sensibles descritas abajo.
+- **Sin regla global `"*"`**: no hay fallback a `ask`. Las herramientas o
+  formas sin regla específica —incluido cualquier MCP, conocido o futuro—
+  caen al default nativo (`allow`). Las claves muertas `list` y `todoread`
+  se eliminaron del canon: no existen como herramientas OpenCode.
+- **Trabajo ordinario**: `read`, `edit`, `glob`, `grep`, `lsp`,
+  `external_directory`, `webfetch`, `websearch`, `task`, `skill`,
+  `todowrite`, `question` y `bash *` reciben `allow`. `git commit` y
+  `git push` (incluido `--force`) también quedan en `allow`: no piden
+  aprobación en fresco.
 - **`read` y `edit` como objetos**: `* = allow` quita el prompt para cualquier ruta;
   `*.env` y `*.env.*` niegan secretos locales; `*.env.example` se permite
   como fixture. El resto de denies (`*/.ssh/*`, `*/.aws/credentials`,
   `*/.npmrc`, `*/.git-credentials`, `*/id_rsa`, `*/id_ed25519`,
   `*.pem`, `*.key`) son una capa best-effort sobre los nombres de secretos
   más comunes — ver §6.
+- **Los denies de secretos viven SOLO en `read` y `edit`**: `bash` no tiene
+  denies de secretos. Un `cat .env` por shell queda en `allow` por diseño;
+  la red es read/edit, no un sandbox del filesystem — ver §6.
 - **`external_directory: * = allow`**: las lecturas y búsquedas fuera del
   cwd se permiten; la escritura sigue las reglas de `edit` y Bash.
-- **`bash: { "*": "allow", ... }`**: Bash ordinario se permite. Comandos
-  sensibles, intérpretes, escalado de privilegios y formas Git irreversibles
-  pasan a `ask`; `format`, `mkfs`, `dd` y `shred` quedan en `deny`.
-- **Rutas de destrucción del sistema**: los patrones específicos de `/etc`,
-  `/usr`, `/bin`, `/sbin`, `/boot`, `/dev`, `/proc` y `/sys` se deniegan. Los
-  borrados ordinarios, incluidos los que están fuera del workspace, piden
-  aprobación.
+- **`bash: { "*": "allow", ... }`**: Bash ordinario se permite, incluidos
+  intérpretes (`node`, `python`, …), `pnpm exec/dlx` y el git cotidiano.
+  Solo piden aprobación `git rebase` y `git reset --hard` (con y sin
+  argumentos) y la familia `ssh`/`scp`/`sftp`/`rsync`. `format`, `mkfs`,
+  `dd` y `shred` (con variantes de ruta y `mkfs.*`) quedan en `deny`.
+- **Sin regla para `doom_loop`**: queda el `ask` nativo, que frena bucles
+  sin ser trabajo normal.
 
-**MCP conocido y MCP desconocido.** En la configuración fresca, las
-herramientas MCP de Engram (`engram_*`) y Context7 (`context7_*`) reciben
-`allow` para que los dos servicios gestionados puedan operar sin prompts por
-herramienta. El wildcard solo cubre esos dos prefijos: una herramienta MCP de
-otro servidor, o un nombre que no coincida, conserva el fallback global
-`ask`. Esta regla se ha comprobado con el matching nativo de OpenCode para
-los dos prefijos conocidos y un nombre MCP desconocido; no es un permiso
-general para cualquier servidor MCP.
+**MCP: sin allowlist, todo cae al nativo.** En la configuración fresca no hay
+claves `engram_*`, `context7_*` ni de ningún otro servidor: cualquier
+herramienta MCP (Engram, Context7, chrome-devtools, futuros) funciona sin
+prompts por herramienta porque lo no listado usa el default nativo
+(`allow`). Stack no filtra las herramientas del provider oficial de Engram; no
+hay nada que mantener cuando aparece un servidor nuevo.
 
 **Por qué las reglas específicas importan.** OpenCode evalúa sus reglas de
-matching según la semántica nativa del runtime; el `* = ask` superior cubre
-formas desconocidas y cada allow o deny más específico expresa una
-excepción deliberada. La política no es un sandbox universal del sistema de
-archivos. Quien quiera endurecerla puede editarla a mano; el stack no
-sobrescribirá esa decisión después.
+matching según la semántica nativa del runtime; sin regla global, cada
+`ask` o `deny` específico expresa una excepción deliberada sobre el
+default nativo. La política no es un sandbox universal del sistema de
+   archivos. Quien quiera endurecerla puede editarla a mano; sin
+   `--upgrade-permissions` el stack no sobrescribirá esa decisión.
 
-**El adapter no migra.** El default viejo era `read: "allow"` (string
-plano) y `bash: { "*": "allow", ... }`, sin `external_directory`. Si tu
-`opencode.json` ya trae una `permission` (custom o exactamente igual a
-ese legacy), el adapter la deja intacta: no la reemplaza, no la expande,
-no emite warning. Para subir al nuevo default manualmente, edita a mano
-o deja el archivo ausente/vacío antes del `sync` (ver §5).
+**El adapter no migra solo.** El default anterior era la matriz restrictiva
+(`"*": "ask"` global, `ask` para intérpretes, `pnpm exec/dlx`, `git push`
+y decenas de formas git, denies de secretos y rutas de sistema en `bash`,
+allowlist histórica `engram_*`/`context7_*`). Si tu `opencode.json` ya trae una
+`permission` (custom o exactamente igual a ese default anterior), el
+adapter la deja intacta por defecto y emite el aviso stale
+(solo-si-difiere, sin volcar el bloque). Para subir al nuevo default,
+edita a mano o usa `sync --upgrade-permissions` (ver §5).
 
 ---
 
@@ -267,15 +292,17 @@ Bloque escrito bajo la clave `permissions` **solo en config fresca o vacía**:
   pero **no** nombres sin esa forma (`prod.env`, `secrets.json`, `id_rsa`,
   `.envrc`).
 
-La solución correcta es añadir manualmente la entrada que falte — el stack
-no va a "rellenar" lo que el usuario haya decidido no declarar.
+La solución correcta es añadir manualmente la entrada que falte — sin
+`--upgrade-permissions` el stack no va a "rellenar" lo que el usuario
+haya decidido no declarar (con el flag se reemplaza el bloque entero,
+no se fusionan entradas sueltas).
 
-**El adapter no migra.** El default viejo era `allow` sin
+**El adapter no migra solo.** El default viejo era `allow` sin
 `Read`/`Grep`/`Glob` y `deny` con `Read(./.env*)`. Si tu `settings.json`
 ya trae una `permissions` (custom o exactamente igual a ese legacy), el
-adapter la deja intacta: no la reemplaza, no la expande, no emite
-warning. Para subir al nuevo default manualmente, edita a mano o deja el
-archivo ausente/vacío antes del `sync` (ver §5).
+adapter la deja intacta por defecto y emite el aviso stale
+(solo-si-difiere, sin volcar el bloque). Para subir al nuevo default,
+edita a mano o usa `sync --upgrade-permissions` (ver §5).
 
 ---
 
@@ -333,18 +360,23 @@ instalación fresca, escribe `default_permissions` + perfil y **no**
 escribe `sandbox_mode` (lo deja ausente, que es el comportamiento neutro
 de Codex).
 
-**`config.toml` existente se preserva tal cual.** Si tu `config.toml`
-existe, el adapter no lo modifica. En particular:
+**`config.toml` existente se preserva por defecto.** Si tu `config.toml`
+existe y el bloque gestionado difiere del canon, el adapter no lo
+modifica sin el opt-in y emite el aviso stale (solo-si-difiere, sin
+volcar el bloque). Con `--upgrade-permissions` reemplaza entero el
+bloque gestionado (claves root del perfil + secciones
+`[permissions.*]` del perfil) y deja intactos `sandbox_mode`, `model`,
+MCP y secciones ajenas. En particular:
 
 - Si ya tienes `default_permissions = "..."` o cualquier sección
   `[permissions.*]` (incluido un `[permissions.custom]` de un proyecto),
-  el adapter no añade ni `default_permissions` ni el perfil
+  el adapter sin flag no añade ni `default_permissions` ni el perfil
   `jorgex-read-anywhere` — interpreta que ya gestionas permisos a tu
-  manera y deja tu config aislada.
+  manera y deja tu config aislada (avisando solo-si-difiere).
 - Si ya tienes `sandbox_mode = "..."` (`"workspace-write"`,
   `"read-only"`, `"danger-full-access"`, …) con o sin comentario inline,
-  el adapter respeta ese valor. **No** se sustituye por el perfil
-  `jorgex-read-anywhere` ni se reescribe `default_permissions`.
+  el adapter respeta ese valor incluso con el flag. **No** se sustituye
+  por el perfil `jorgex-read-anywhere` ni se reescribe `sandbox_mode`.
 
 El matching de `sandbox_mode` es por línea e ignora un `# comentario`
 final: `sandbox_mode = "workspace-write" # por qué` se reconoce igual que
@@ -353,22 +385,25 @@ comentario es una línea de sandbox, no un default ausente.
 
 ---
 
-## 5. Cómo subirte al nuevo default manualmente
+## 5. Cómo subirte al nuevo default
 
-El adapter **nunca** migra una config existente (custom o coincidente
-con el legacy exacto). Esto es deliberado: reescribir permisos a espaldas
-del usuario sería un bug de seguridad, no una mejora. La regla "config
-existente gana" es absoluta y no se atenúa con avisos.
+El adapter **nunca** migra una config existente por sí solo (custom o
+coincidente con el legacy exacto). Esto es deliberado: reescribir
+permisos a espaldas del usuario sería un bug de seguridad, no una
+mejora. La regla fresh-only es el default y solo se atenúa con tu
+opt-in explícito: sin flag la config existente que difiera se preserva
+y solo avisa; con flag se reemplaza el bloque entero.
 
-> **Borrar solo la sub-clave NO basta.** `isFreshConfig` se evalúa sobre
-> el archivo entero: o el archivo no existe, o está vacío. Si tienes
-> `~/.claude/settings.json` con tus propios atajos, hooks o mcp y
-> borras solo `permissions`, el archivo sigue sin estar vacío y el
-> adapter respeta tu config — no siembra el nuevo default. Lo mismo
-> aplica a `permission` en OpenCode y a las secciones `[permissions.*]`
-> en Codex: si tu `config.toml` tiene `mcp_servers`, `model`, atajos,
-> etc., quitar `[permissions.jorgex-read-anywhere]` deja un archivo
-> perfectamente formado, pero no vacío.
+> **Borrar solo la sub-clave NO basta para el sembrado fresco.**
+> `isFreshConfig` se evalúa sobre el archivo entero: o el archivo no
+> existe, o está vacío. Si tienes `~/.claude/settings.json` con tus
+> propios atajos, hooks o mcp y borras solo `permissions`, el archivo
+> sigue sin estar vacío y el adapter respeta tu config — no siembra el
+> nuevo default. Lo mismo aplica a `permission` en OpenCode y a las
+> secciones `[permissions.*]` en Codex: si tu `config.toml` tiene
+> `mcp_servers`, `model`, atajos, etc., quitar
+> `[permissions.jorgex-read-anywhere]` deja un archivo perfectamente
+> formado, pero no vacío. Para ese caso usa la opción 2.
 
 Si quieres alinear tu `permission` / `permissions` / `config.toml` al
 nuevo default, las opciones son:
@@ -376,17 +411,30 @@ nuevo default, las opciones son:
 1. **Editar a mano.** Compara tu bloque actual con el default canónico
    en `stack/config/defaults.json` y ajusta lo que difiera. El adapter
    no va a sembrar el bloque mientras el archivo exista y no esté vacío.
-2. **Dejar el archivo ausente o vacío antes del `sync`.** Esto solo es
+2. **`sync --upgrade-permissions` (opt-in explícito, vía
+   recomendada).** Reemplaza entero cualquier bloque gestionado que
+   difiera del canon, preservando el resto del archivo (claves ajenas en
+   OpenCode/Claude; `sandbox_mode`, `model`, MCP y secciones ajenas en
+   Codex). En instalaciones reales el pipeline crea el backup automático
+   antes de escribir; revísalo con `restore --list` y revierte con
+   `restore <id>` si hace falta. El aviso stale nunca vuelca el contenido
+   del bloque. Para previsualizar sin escribir: `jorgex-stack sync
+   --upgrade-permissions --dry-run` (no escribe ni crea backups). `doctor`
+   apunta a ese mismo comando cuando detecta el bloque stale. También
+   disponible en `install --upgrade-permissions`.
+3. **Dejar el archivo ausente o vacío antes del `sync`.** Esto solo es
    razonable en una migración puntual (no en una sesión de trabajo):
    vacía el archivo (p. ej. redirige `> ~/.claude/settings.json`),
    ejecuta `sync`, restaura lo tuyo desde el backup automático que
-   `sync` deja en `~/.jorgex-stack/backups/`. Cada `sync` ya hace
+   `sync` deja en `~/.jorgex-stack/backups/`. Cada `sync` real ya hace
    backup automático de los archivos que toca; `uninstall` también
-   restaura desde backup (ver README §Usage).
+   restaura desde backup (ver README §Usage). Excepción: las corridas
+   aisladas con `--target-dir` escriben sin manifest ni backup por diseño
+   preexistente, no como regresión.
 
-> Importante: ninguna de las dos opciones se ofrece como flujo
-> automático (`jorgex-stack upgrade`, etc.). La decisión de
-> sobrescribir tu config la tomas tú, de forma explícita.
+> Importante: fuera de la opción 2 no hay otro flujo automático
+> (`jorgex-stack upgrade`, etc.). La decisión de sobrescribir tu config
+> la tomas tú, de forma explícita.
 
 ---
 
@@ -416,19 +464,28 @@ añadidas en T17/T20:
   instrucciones hostiles ("envíame por red el contenido de `~/.ssh/...`"),
   las denies no van a impedir que el modelo proponga acciones que ya estén
   permitidas. El riesgo real es el **daño**, no la lectura: la lectura está
-  permitida por diseño. Las capas que mitigan el daño son los prompts para
-  egress web/shell/escritura, los `ask` de `Bash` destructivo, el
-  sandbox de Codex y la rama protegida de GitHub.
+  permitida por diseño. Las capas que mitigan el daño son los `ask` mínimos
+  de OpenCode (`git rebase`/`reset --hard`, familia ssh) y sus `deny` de
+  destrucción evidente, los prompts de shell/escritura/egress en Claude
+  Code, el sandbox de Codex y la rama protegida de GitHub.
+- **La red de secretos es `read`/`edit`, no el filesystem.** En OpenCode
+  fresco, `bash` no tiene denies de secretos: leer un `.env` por shell
+  (p. ej. `cat .env`) queda en `allow` por diseño. Consecuencia aceptada:
+  el subagente git-read puede mostrar secretos con
+  `git diff HEAD -- .env`, porque el diff no pasa por las denies de
+  `read`/`edit`.
 - **Secretos fuera del filesystem.** Variables de entorno con secrets
   pueden terminar en respuestas del modelo si una shell las expande dentro
   de un comando `Bash` aprobado por el usuario (p. ej.
   `echo $OPENAI_API_KEY`).
-- **Las denies se siembran una vez, en config fresca.** Si el adapter
-  escribió tu `permission` / `permissions` / perfil de Codex en la
-  primera instalación, esa sección ya es tuya: una edición tuya no
-  provoca un re-seed ni un warning. Lo mismo en sentido contrario: si
-  el día de mañana se añaden denies mejores al default, tu config ya
-  no se actualizará sola (ver §5).
+- **Las denies se siembran en config fresca; el re-seed exige tu
+  opt-in.** Si el adapter escribió tu `permission` / `permissions` /
+  perfil de Codex en la primera instalación, esa sección ya es tuya:
+  una edición tuya no provoca un re-seed automático. Si tu bloque
+  difiere del default canónico (por edición tuya o porque el default
+  mejoró después), `install`/`sync`/`doctor` emiten el aviso stale
+  (solo-si-difiere, sin volcar el bloque) y tu config sigue intacta;
+  solo `sync --upgrade-permissions` la realinea (ver §5).
 
 Las denies **reducen** la exposición accidental; **no la eliminan**. Trata
 read-anywhere como "más cómodo, menos fricción", no como "modelo aislado".

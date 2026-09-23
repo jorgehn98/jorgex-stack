@@ -22,10 +22,11 @@ export const PI_RUNTIME_CANDIDATE = {
       "structured-questions-v1",
       "web-access-v1",
       "goal-continuation-v1",
-      "mcp-adapter-v1",
+      "engram-official-bridge-v1",
       "engram-runtime-tools-v1",
       "context7-http-v1",
       "permissions-policy-v1",
+      "permissions-upgrade-v1",
       "experience-defaults-v1",
       "chrome-devtools-handoff-v1",
       "playwright-handoff-v1",
@@ -38,7 +39,7 @@ export const PI_RUNTIME_CANDIDATE = {
     ],
     runner: {
       bin: "jorgex-pi",
-      commands: ["status", "doctor", "models", "sync", "cleanup"],
+      commands: ["status", "doctor", "models", "sync", "upgrade", "cleanup"],
       schemaVersion: 1,
       maxStdoutBytes: 65_536,
     },
@@ -193,24 +194,12 @@ export const PI_RUNTIME_ARCHIVE = {
     "pi-subagents",
     "pi-web-access",
     "@narumitw/pi-goal",
-    "pi-mcp-adapter",
+    "strip-json-comments",
   ],
   closurePackageManifests: [
-    "@napi-rs/keyring",
     "tree-sitter-bash",
   ],
   nativeBindings: [
-    "@napi-rs/keyring-darwin-arm64/keyring.darwin-arm64.node",
-    "@napi-rs/keyring-darwin-x64/keyring.darwin-x64.node",
-    "@napi-rs/keyring-linux-arm-gnueabihf/keyring.linux-arm-gnueabihf.node",
-    "@napi-rs/keyring-linux-arm64-gnu/keyring.linux-arm64-gnu.node",
-    "@napi-rs/keyring-linux-arm64-musl/keyring.linux-arm64-musl.node",
-    "@napi-rs/keyring-linux-riscv64-gnu/keyring.linux-riscv64-gnu.node",
-    "@napi-rs/keyring-linux-x64-gnu/keyring.linux-x64-gnu.node",
-    "@napi-rs/keyring-linux-x64-musl/keyring.linux-x64-musl.node",
-    "@napi-rs/keyring-win32-arm64-msvc/keyring.win32-arm64-msvc.node",
-    "@napi-rs/keyring-win32-ia32-msvc/keyring.win32-ia32-msvc.node",
-    "@napi-rs/keyring-win32-x64-msvc/keyring.win32-x64-msvc.node",
     "tree-sitter-bash/prebuilds/darwin-arm64/tree-sitter-bash.node",
     "tree-sitter-bash/prebuilds/darwin-x64/tree-sitter-bash.node",
     "tree-sitter-bash/prebuilds/linux-arm64/tree-sitter-bash.node",
@@ -221,3 +210,16 @@ export const PI_RUNTIME_ARCHIVE = {
 } as const;
 
 export type PiRuntimeCandidate = typeof PI_RUNTIME_CANDIDATE;
+
+/**
+ * T43 provider-only: Stack nunca es fuente de protocolo Engram. El provider
+ * oficial (`engram setup` + gentle-engram/pi-mcp-adapter) owns
+ * prompt/tools/capture/hooks en los cuatro runtimes. Este fixture congela la
+ * lista de artefactos que Stack no debe volver a distribuir.
+ */
+export const STACK_ENGRAM_PROVIDER_ONLY = {
+  forbiddenSource: "stack/system-prompt/engram-protocol.md",
+  forbiddenSection: "jorgex:engram-protocol",
+  forbiddenPlaceholder: "{{ENGRAM_PROTOCOL}}",
+  forbiddenInterface: "injectEngramProtocol",
+} as const;
