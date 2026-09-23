@@ -39,6 +39,14 @@ import { inspectStagedPiNpm } from "../src/lib/pi-staged-lock.js";
  *   reject a foreign absolute/symlink backupDir.
  * - Negative drift modifies ACTUAL on-disk state with the SAME receipt
  *   (lock bytes tampered), not only the receipt digest.
+ * - Offline doctor of a provider-selected managed release (synthetic 9.9.9
+ *   test-only, never a factual npm release) whose parent is not in the fresh
+ *   frozen registry (.29 current only): `verifyManagedArtifact` callback
+ *   (cached tarball bytes/SRI, no network) runs only AFTER managed
+ *   link/realpath/lock/tree/deps + scope/source/engram validate; missing or
+ *   false blocks `receipt-untrusted` without invoking the runner; on true the
+ *   runner identity derives from the receipt parent plus registry
+ *   runner/contract policy with actual realpath/version parsing.
  */
 
 const STAGED_DEP_NAMES = [
@@ -74,7 +82,7 @@ type ManagedOperationModule = {
     input: {
       operation: "doctor";
       interactive: boolean;
-      registry: { id: "pi"; kind: "package-managed"; candidate: unknown };
+      registry: { id: "pi"; kind: "package-managed"; candidate: unknown; acceptedCandidates?: readonly unknown[] };
       detected: { executable: string; packageRunner: string; settingsJson: string };
       engramBin: string | null;
       receiptJson: string | null;
@@ -87,6 +95,7 @@ type ManagedOperationModule = {
     },
     deps: {
       backupSettings(): void;
+      verifyManagedArtifact?(receipt: unknown): boolean;
       run(invocation: { executable: string; args: string[]; environment: Record<string, string> }): {
         exitCode: number;
         stdout: string;
@@ -102,6 +111,42 @@ async function loadOperations(): Promise<ManagedOperationModule> {
   const mod = (await import("../src/lib/pi-package-lifecycle.js")) as Partial<ManagedOperationModule>;
   expect(mod.runPiPackageManagedOperation).toBeTypeOf("function");
   return mod as ManagedOperationModule;
+}
+
+type ManagedSyncModule = {
+  runPiPackageManagedSync: (
+    input: {
+      operation: "sync";
+      interactive: boolean;
+      registry: { id: "pi"; kind: "package-managed"; candidate: unknown; acceptedCandidates?: readonly unknown[] };
+      detected: { executable: string; packageRunner: string; settingsJson: string };
+      engramBin: string | null;
+      receiptJson: string | null;
+      paths: {
+        targetDir: boolean;
+        codingAgentDir: string;
+        receiptPath: string;
+        environment: Record<string, string>;
+      };
+    },
+    deps: {
+      backupSettings(): void;
+      verifyManagedArtifact?(receipt: unknown): boolean;
+      run(invocation: { executable: string; args: string[]; environment: Record<string, string> }): {
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+      };
+      isPackageAbsent(): boolean;
+      deleteReceipt(): void;
+    },
+  ) => { kind: string; actions?: unknown[]; packageSource?: string; reason?: string };
+};
+
+async function loadManagedSync(): Promise<ManagedSyncModule> {
+  const mod = (await import("../src/lib/pi-package-lifecycle.js")) as Partial<ManagedSyncModule>;
+  expect(mod.runPiPackageManagedSync).toBeTypeOf("function");
+  return mod as ManagedSyncModule;
 }
 
 const sandboxes: string[] = [];
@@ -134,6 +179,7 @@ type ManagedSandbox = {
   receiptPath: string;
   environment: Record<string, string>;
   releaseLockPath: string;
+  tarballPath: string;
 };
 
 function setupValidManagedSandbox(): ManagedSandbox {
@@ -275,6 +321,7 @@ function setupValidManagedSandbox(): ManagedSandbox {
     receiptPath,
     environment,
     releaseLockPath: path.join(releaseDir, "package-lock.json"),
+    tarballPath,
   };
 }
 
@@ -313,6 +360,37 @@ function doctorRunnerJson(sandbox: ManagedSandbox, realRoot: string): string {
     package: { name: "jorgex-pi", version: sandbox.candidate.package.version, root: realRoot },
     result: { healthy: true },
   })}\n`;
+}
+
+function syncRunnerJson(sandbox: ManagedSandbox, realRoot: string): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    command: "sync",
+    ok: true,
+    package: { name: "jorgex-pi", version: sandbox.candidate.package.version, root: realRoot },
+    result: { changed: false, actions: [] },
+  })}\n`;
+}
+
+function verifyingArtifactCallback(sandbox: ManagedSandbox, verifyCalls: string[]): (receipt: unknown) => boolean {
+  return (receipt: unknown) => {
+    verifyCalls.push("verify");
+    try {
+      const r = receipt as {
+        candidate?: { package?: { name?: unknown; source?: unknown }; tarball?: { bytes?: unknown; sha256?: unknown; sha512?: unknown } };
+      };
+      const bytes = fs.readFileSync(sandbox.tarballPath);
+      return (
+        r.candidate?.package?.name === "jorgex-pi" &&
+        r.candidate?.package?.source === sandbox.candidate.package.source &&
+        r.candidate?.tarball?.bytes === bytes.byteLength &&
+        r.candidate?.tarball?.sha256 === createHash("sha256").update(bytes).digest("hex") &&
+        r.candidate?.tarball?.sha512 === createHash("sha512").update(bytes).digest("hex")
+      );
+    } catch {
+      return false;
+    }
+  };
 }
 
 describe("managed private-release realpath RED (T05 for T07, valid evidence)", () => {
@@ -436,5 +514,295 @@ describe("managed private-release realpath RED (T05 for T07, valid evidence)", (
     );
 
     expect(result).toMatchObject({ kind: "blocked" });
+  });
+
+  it("supports offline doctor of a provider-selected managed release via verifyManagedArtifact despite frozen registry", async () => {
+    const { runPiPackageManagedOperation } = await loadOperations();
+    const sandbox = setupValidManagedSandbox();
+    const realRoot = fs.realpathSync(sandbox.linkPath);
+    // Synthetic 9.9.9 test-only receipt; never a factual npm release claim.
+    expect(sandbox.candidate.package.version).toBe("9.9.9");
+    expect(PI_RUNTIME_CANDIDATE.package.version).not.toBe("9.9.9");
+    expect(fs.existsSync(sandbox.tarballPath)).toBe(true);
+
+    const runCalls: string[] = [];
+    const verifyCalls: string[] = [];
+    const result = runPiPackageManagedOperation(
+      {
+        operation: "doctor",
+        interactive: false,
+        // Fresh frozen registry: .29 current only, no acceptedCandidates.
+        registry: { id: "pi", kind: "package-managed", candidate: PI_RUNTIME_CANDIDATE },
+        detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+        engramBin: sandbox.engramBin,
+        receiptJson: managedReceipt(sandbox),
+        paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+      },
+      {
+        backupSettings() {},
+        verifyManagedArtifact(receipt: unknown) {
+          verifyCalls.push("verify");
+          try {
+            const r = receipt as {
+              candidate?: { package?: { name?: unknown; source?: unknown }; tarball?: { bytes?: unknown; sha256?: unknown; sha512?: unknown } };
+            };
+            const bytes = fs.readFileSync(sandbox.tarballPath);
+            return (
+              r.candidate?.package?.name === "jorgex-pi" &&
+              r.candidate?.package?.source === sandbox.candidate.package.source &&
+              r.candidate?.tarball?.bytes === bytes.byteLength &&
+              r.candidate?.tarball?.sha256 === createHash("sha256").update(bytes).digest("hex") &&
+              r.candidate?.tarball?.sha512 === createHash("sha512").update(bytes).digest("hex")
+            );
+          } catch {
+            return false;
+          }
+        },
+        run() {
+          runCalls.push("run");
+          return { exitCode: 0, stdout: doctorRunnerJson(sandbox, realRoot), stderr: "" };
+        },
+        isPackageAbsent() {
+          return true;
+        },
+        deleteReceipt() {},
+      },
+    );
+
+    expect(result).toEqual({ kind: "healthy" });
+  });
+
+  it("blocks offline doctor when the artifact callback is missing/false or evidence drifted, without invoking the runner", async () => {
+    const { runPiPackageManagedOperation } = await loadOperations();
+
+    const baseRegistry = { id: "pi" as const, kind: "package-managed" as const, candidate: PI_RUNTIME_CANDIDATE };
+
+    // Missing callback: must block receipt-untrusted with no runner call.
+    {
+      const sandbox = setupValidManagedSandbox();
+      const runCalls: string[] = [];
+      const result = runPiPackageManagedOperation(
+        {
+          operation: "doctor",
+          interactive: false,
+          registry: baseRegistry,
+          detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+          engramBin: sandbox.engramBin,
+          receiptJson: managedReceipt(sandbox),
+          paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+        },
+        {
+          backupSettings() {},
+          run() {
+            runCalls.push("run");
+            return { exitCode: 0, stdout: doctorRunnerJson(sandbox, fs.realpathSync(sandbox.linkPath)), stderr: "" };
+          },
+          isPackageAbsent() {
+            return true;
+          },
+          deleteReceipt() {},
+        },
+      );
+      expect(result).toMatchObject({ kind: "blocked", reason: "receipt-untrusted" });
+      expect(runCalls).toEqual([]);
+    }
+
+    // False callback: must block receipt-untrusted with no runner call.
+    {
+      const sandbox = setupValidManagedSandbox();
+      const runCalls: string[] = [];
+      const verifyCalls: string[] = [];
+      const result = runPiPackageManagedOperation(
+        {
+          operation: "doctor",
+          interactive: false,
+          registry: baseRegistry,
+          detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+          engramBin: sandbox.engramBin,
+          receiptJson: managedReceipt(sandbox),
+          paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+        },
+        {
+          backupSettings() {},
+          verifyManagedArtifact() {
+            verifyCalls.push("verify");
+            return false;
+          },
+          run() {
+            runCalls.push("run");
+            return { exitCode: 0, stdout: doctorRunnerJson(sandbox, fs.realpathSync(sandbox.linkPath)), stderr: "" };
+          },
+          isPackageAbsent() {
+            return true;
+          },
+          deleteReceipt() {},
+        },
+      );
+      expect(result).toMatchObject({ kind: "blocked", reason: "receipt-untrusted" });
+      expect(runCalls).toEqual([]);
+    }
+
+    // Drifted on-disk lock with the SAME receipt: must block before the
+    // callback, with neither callback nor runner invoked.
+    {
+      const sandbox = setupValidManagedSandbox();
+      const receiptJson = managedReceipt(sandbox);
+      fs.appendFileSync(sandbox.releaseLockPath, " ");
+      expect(createHash("sha256").update(fs.readFileSync(sandbox.releaseLockPath)).digest("hex")).not.toBe(
+        sandbox.lockSha256,
+      );
+      const runCalls: string[] = [];
+      const verifyCalls: string[] = [];
+      const result = runPiPackageManagedOperation(
+        {
+          operation: "doctor",
+          interactive: false,
+          registry: baseRegistry,
+          detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+          engramBin: sandbox.engramBin,
+          receiptJson,
+          paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+        },
+        {
+          backupSettings() {},
+          verifyManagedArtifact() {
+            verifyCalls.push("verify");
+            return true;
+          },
+          run() {
+            runCalls.push("run");
+            return { exitCode: 0, stdout: doctorRunnerJson(sandbox, fs.realpathSync(sandbox.linkPath)), stderr: "" };
+          },
+          isPackageAbsent() {
+            return true;
+          },
+          deleteReceipt() {},
+        },
+      );
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(verifyCalls).toEqual([]);
+      expect(runCalls).toEqual([]);
+    }
+  });
+
+  it("syncs a verified managed release offline via runPiPackageManagedSync despite frozen registry", async () => {
+    const { runPiPackageManagedSync } = await loadManagedSync();
+    const sandbox = setupValidManagedSandbox();
+    const realRoot = fs.realpathSync(sandbox.linkPath);
+    // Synthetic 9.9.9 test-only; frozen registry stays .29 current only.
+    expect(sandbox.candidate.package.version).toBe("9.9.9");
+    expect(PI_RUNTIME_CANDIDATE.package.version).not.toBe("9.9.9");
+    expect(fs.existsSync(sandbox.tarballPath)).toBe(true);
+
+    const runCalls: string[] = [];
+    const verifyCalls: string[] = [];
+    const result = runPiPackageManagedSync(
+      {
+        operation: "sync",
+        interactive: false,
+        registry: { id: "pi", kind: "package-managed", candidate: PI_RUNTIME_CANDIDATE },
+        detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+        engramBin: sandbox.engramBin,
+        receiptJson: managedReceipt(sandbox),
+        paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+      },
+      {
+        backupSettings() {},
+        verifyManagedArtifact: verifyingArtifactCallback(sandbox, verifyCalls),
+        run() {
+          runCalls.push("run");
+          return { exitCode: 0, stdout: syncRunnerJson(sandbox, realRoot), stderr: "" };
+        },
+        isPackageAbsent() {
+          return true;
+        },
+        deleteReceipt() {},
+      },
+    );
+
+    expect(result).toEqual({ kind: "synced", actions: [], packageSource: sandbox.candidate.package.source });
+    expect(sandbox.candidate.package.source).not.toBe(PI_RUNTIME_CANDIDATE.package.source);
+    expect(runCalls).toEqual(["run"]);
+  });
+
+  it("blocks managed sync when the artifact callback fails or the on-disk lock drifted, without invoking the runner", async () => {
+    const { runPiPackageManagedSync } = await loadManagedSync();
+    const baseRegistry = { id: "pi" as const, kind: "package-managed" as const, candidate: PI_RUNTIME_CANDIDATE };
+
+    // False callback with valid evidence: block with no runner call.
+    {
+      const sandbox = setupValidManagedSandbox();
+      const runCalls: string[] = [];
+      const verifyCalls: string[] = [];
+      const result = runPiPackageManagedSync(
+        {
+          operation: "sync",
+          interactive: false,
+          registry: baseRegistry,
+          detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+          engramBin: sandbox.engramBin,
+          receiptJson: managedReceipt(sandbox),
+          paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+        },
+        {
+          backupSettings() {},
+          verifyManagedArtifact() {
+            verifyCalls.push("verify");
+            return false;
+          },
+          run() {
+            runCalls.push("run");
+            return { exitCode: 0, stdout: syncRunnerJson(sandbox, fs.realpathSync(sandbox.linkPath)), stderr: "" };
+          },
+          isPackageAbsent() {
+            return true;
+          },
+          deleteReceipt() {},
+        },
+      );
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(result).not.toHaveProperty("packageSource");
+      expect(runCalls).toEqual([]);
+    }
+
+    // Drifted on-disk lock with the SAME receipt and a trusting callback:
+    // block before the callback and the runner.
+    {
+      const sandbox = setupValidManagedSandbox();
+      const receiptJson = managedReceipt(sandbox);
+      fs.appendFileSync(sandbox.releaseLockPath, " ");
+      expect(createHash("sha256").update(fs.readFileSync(sandbox.releaseLockPath)).digest("hex")).not.toBe(
+        sandbox.lockSha256,
+      );
+      const runCalls: string[] = [];
+      const verifyCalls: string[] = [];
+      const result = runPiPackageManagedSync(
+        {
+          operation: "sync",
+          interactive: false,
+          registry: baseRegistry,
+          detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+          engramBin: sandbox.engramBin,
+          receiptJson,
+          paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+        },
+        {
+          backupSettings() {},
+          verifyManagedArtifact: verifyingArtifactCallback(sandbox, verifyCalls),
+          run() {
+            runCalls.push("run");
+            return { exitCode: 0, stdout: syncRunnerJson(sandbox, fs.realpathSync(sandbox.linkPath)), stderr: "" };
+          },
+          isPackageAbsent() {
+            return true;
+          },
+          deleteReceipt() {},
+        },
+      );
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(result).not.toHaveProperty("packageSource");
+      expect(verifyCalls).toEqual([]);
+      expect(runCalls).toEqual([]);
+    }
   });
 });

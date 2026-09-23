@@ -2,9 +2,17 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import pin from "./pi-runtime-pin.json" with { type: "json" };
+import history from "./pi-runtime-history.json" with { type: "json" };
 import { dataDir } from "./paths.js";
+import { preparePiManagedInstall, type PiInstallPreflightResult } from "./pi-install-preflight.js";
+import {
+  activatePreparedPiInstall,
+  type PreparedPiInstallEvidence,
+} from "./pi-install-activation.js";
+import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
+import { smokeStagedPiRuntime } from "./pi-stage-smoke.js";
+import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { detectEngram, lookPath, planDetectedBinCommand } from "./detect.js";
@@ -13,6 +21,8 @@ import {
   executePiPackageLifecycle,
   planPiPackageLifecycle,
   runPiPackageManagedOperation,
+  runPiPackageManagedSync,
+  type PiAcceptedCandidate,
   type PiPackageReceipt,
   type PiRuntimeCandidate,
 } from "./pi-package-lifecycle.js";
@@ -109,7 +119,15 @@ export const PI_RUNTIME_REGISTRY = {
     tarball: PI_RUNTIME_CANDIDATE.tarball,
     pi: PI_RUNTIME_CANDIDATE.pi,
     candidate: PI_RUNTIME_CANDIDATE,
-    acceptedCandidates: [PI_RUNTIME_CANDIDATE],
+    // Offline RECOVERY identity only from immutable Stack tag
+    // v1.9.51:src/lib/pi-runtime-pin.json (jorgex-pi@0.8.24). Never a next
+    // install candidate or URL; the productive selector stays 0.8.29. Old Pi
+    // 0.8.24 runner is schema1/bin jorgex-pi/maxStdout65536 with
+    // status,doctor,models,sync,cleanup (no upgrade) and legacy
+    // mcp-adapter-v1 (not engram-official-bridge-v1/permissions-upgrade-v1).
+    // Minimal PiAcceptedCandidate (package/tarball/provenance/runner only);
+    // the current PiRuntimeCandidate remains structurally assignable.
+    acceptedCandidates: [PI_RUNTIME_CANDIDATE, ...(history.acceptedCandidates as readonly PiAcceptedCandidate[])],
   },
 } as const;
 
@@ -178,6 +196,20 @@ export interface PiRuntimeInput {
   detected: { executable: string; version: string };
   engramBin: string | null;
   verifiedArtifact?: { bytes: number; sha256: string; sha512: string };
+  /**
+   * Injected Pi runtime candidate (resolver + verified stage). Required for
+   * deliberate install: without it install blocks before any prepare/execute
+   * and never falls back to the static pin. Non-install flows keep the static
+   * registry until the T07 offline-receipt work.
+   */
+  candidate?: PiRuntimeCandidate;
+  /**
+   * Trusted preflight proof (output of preparePiManagedInstall, threaded by
+   * the wrapper, never user CLI input). Install with a matching candidate
+   * routes this prepared stage to activation; without it install stays
+   * stage-unverified and the old static acquisition never runs.
+   */
+  prepared?: PiInstallPreflightResult;
   /** Explicit opt-in to rewrite owned/absent Pi policy. Seed-only unless true with the upgrade capability. */
   upgradePermissions?: boolean;
 }
@@ -470,18 +502,26 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
       remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
     };
   }
+  if (input.operation === "install" && input.candidate === undefined) {
+    return {
+      kind: "blocked",
+      reason: "candidate-missing",
+      remedy: "Aporta el candidato Pi verificado (resolver + stage) antes de reintentar; install deliberado nunca usa el pin estático.",
+    };
+  }
   if (input.operation === "install" && input.verifiedArtifact === undefined) {
     return { kind: "blocked", reason: "tarball-integrity" };
   }
 
+  const candidate = input.candidate ?? PI_RUNTIME_CANDIDATE;
   const paths = input.targetDir === undefined
     ? userPaths(input.engramBin, input.detected.executable)
     : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
   const settingsJson = deps.readSettings(path.join(paths.codingAgentDir, "settings.json"));
   const receiptJson = deps.readReceipt(paths.receiptPath);
   const lifecycleInput = {
-    candidate: PI_RUNTIME_CANDIDATE,
-    observedTarball: input.verifiedArtifact ?? PI_RUNTIME_CANDIDATE.tarball,
+    candidate,
+    observedTarball: input.verifiedArtifact ?? candidate.tarball,
     pi: {
       executable: input.detected.executable,
       version: input.detected.version,
@@ -506,7 +546,7 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
     const result = deps.execute({
       operation: input.operation,
       plan,
-      candidate: PI_RUNTIME_CANDIDATE,
+      candidate,
       packageRunner: paths.packageRunner,
       environment: paths.environment,
       ...(input.upgradePermissions === true ? { upgradePermissions: true as const } : {}),
@@ -518,7 +558,14 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
   const result = deps.operate({
     operation: input.operation,
     interactive: false,
-    registry: PI_RUNTIME_REGISTRY.pi,
+    registry: input.candidate === undefined ? PI_RUNTIME_REGISTRY.pi : {
+      ...PI_RUNTIME_REGISTRY.pi,
+      source: candidate.package.source,
+      tarball: candidate.tarball,
+      pi: candidate.pi,
+      candidate,
+      acceptedCandidates: [candidate],
+    },
     detected: {
       executable: input.detected.executable,
       packageRunner: paths.packageRunner,
@@ -532,7 +579,7 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
       receiptPath: paths.receiptPath,
       environment: paths.environment,
     },
-    removeArgs: ["remove", PI_RUNTIME_CANDIDATE.package.source, "--no-approve"],
+    removeArgs: ["remove", candidate.package.source, "--no-approve"],
   });
   persistReturnedReceipt(result, paths, deps);
   return result;
@@ -617,70 +664,12 @@ function readOptional(file: string, fallback: string | null): string | null {
   }
 }
 
-function hashPiTarball(file: string): { path: string; bytes: number; sha256: string; sha512: string } {
-  const descriptor = fs.openSync(file, "r");
-  const sha256 = createHash("sha256");
-  const sha512 = createHash("sha512");
-  const buffer = Buffer.allocUnsafe(1024 * 1024);
-  let bytes = 0;
-  try {
-    while (true) {
-      const read = fs.readSync(descriptor, buffer, 0, buffer.length, null);
-      if (read === 0) break;
-      bytes += read;
-      const chunk = buffer.subarray(0, read);
-      sha256.update(chunk);
-      sha512.update(chunk);
-    }
-  } finally {
-    fs.closeSync(descriptor);
-  }
-  return { path: file, bytes, sha256: sha256.digest("hex"), sha512: sha512.digest("hex") };
-}
-
-async function acquirePiTarball(destination: string): Promise<{ path: string; bytes: number; sha256: string; sha512: string }> {
-  const existing = fs.statSync(destination, { throwIfNoEntry: false });
-  if (existing?.isFile()) {
-    const observed = hashPiTarball(destination);
-    if (observed.bytes === PI_RUNTIME_CANDIDATE.tarball.bytes
-      && observed.sha256 === PI_RUNTIME_CANDIDATE.tarball.sha256
-      && observed.sha512 === PI_RUNTIME_CANDIDATE.tarball.sha512) {
-      return observed;
-    }
-    fs.rmSync(destination, { force: true });
-  }
-
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  const partial = `${destination}.partial-${process.pid}`;
-  const response = await fetch(`https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`, {
-    redirect: "error",
-    headers: { accept: "application/octet-stream" },
-  });
-  if (!response.ok || response.body === null) throw new Error(`No se pudo descargar jorgex-pi@${PI_RUNTIME_CANDIDATE.package.version} (${response.status}).`);
-  const descriptor = fs.openSync(partial, "wx", 0o600);
-  let bytes = 0;
-  try {
-    for await (const chunk of response.body) {
-      const buffer = Buffer.from(chunk);
-      bytes += buffer.length;
-      if (bytes > PI_RUNTIME_CANDIDATE.tarball.bytes) throw new Error("El tarball de jorgex-pi excede el tamaño fijado.");
-      let offset = 0;
-      while (offset < buffer.length) offset += fs.writeSync(descriptor, buffer, offset);
-    }
-  } catch (error) {
-    fs.closeSync(descriptor);
-    fs.rmSync(partial, { force: true });
-    throw error;
-  }
-  fs.closeSync(descriptor);
-  fs.renameSync(partial, destination);
-  return hashPiTarball(destination);
-}
-
 function runProcess(invocation: {
   executable: string;
   args: string[];
   environment: Record<string, string | undefined>;
+  /** Isolated stage cwd only; never the active tree. */
+  cwd?: string;
 }): { exitCode: number; stdout: string; stderr: string } {
   const planned = /\.mjs$/i.test(invocation.executable)
     ? { command: process.execPath, args: [invocation.executable, ...invocation.args] }
@@ -689,6 +678,7 @@ function runProcess(invocation: {
   const result = spawnSync(planned.command, planned.args, {
     encoding: "utf8",
     env: invocation.environment,
+    ...(invocation.cwd === undefined ? {} : { cwd: invocation.cwd }),
     shell: false,
     timeout: 120_000,
     maxBuffer: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes + 1,
@@ -728,6 +718,337 @@ function setupPiFailedRemedy(setup: {
   return `${detail}. Sin recuperación automática${id}; revisa manualmente el estado y corrige la causa antes de reintentar; Pi no quedó activado.`;
 }
 
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sortedDepIdentities(
+  deps: readonly { readonly name: string; readonly version: string; readonly integrity: string }[],
+): string {
+  return JSON.stringify([...deps]
+    .map((dep) => ({ name: dep.name, version: dep.version, integrity: dep.integrity }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
+}
+
+/**
+ * Pre-activation proof for a prepared install: the injected candidate must
+ * equal the prepared candidate (package/tarball/provenance), the prepared
+ * artifact must equal the candidate tarball (bytes/SHA), the release must
+ * carry the candidate version with matching SRI, the stage must keep the
+ * isolated layout, and the evidence must hold six distinct deps with
+ * canonical SRI. Returns a visible mismatch description, null when matching.
+ * Pure, no FS/network.
+ */
+function preparedInstallMismatch(candidate: PiRuntimeCandidate, prepared: PiInstallPreflightResult): string | null {
+  const preparedCandidate = prepared?.candidate;
+  if (preparedCandidate === undefined || preparedCandidate === null || typeof preparedCandidate !== "object") {
+    return "prepared sin candidato";
+  }
+  if (!sameJsonValue(preparedCandidate.package, candidate.package)
+    || !sameJsonValue(preparedCandidate.tarball, candidate.tarball)
+    || !sameJsonValue(preparedCandidate.provenance, candidate.provenance)) {
+    return "el candidato preparado no coincide con el candidato inyectado (package/tarball/provenance)";
+  }
+  const artifact = prepared?.artifact;
+  if (artifact === undefined || artifact === null
+    || artifact.bytes !== candidate.tarball.bytes
+    || artifact.sha256 !== candidate.tarball.sha256
+    || artifact.sha512 !== candidate.tarball.sha512) {
+    return "el artefacto preparado no coincide con el tarball del candidato (bytes/SHA)";
+  }
+  if (typeof candidate.tarball.sha512 !== "string" || !/^[0-9a-f]{128}$/.test(candidate.tarball.sha512)) {
+    return "el tarball del candidato no trae SHA-512 hexadecimal válido";
+  }
+  const expectedIntegrity = `sha512-${Buffer.from(candidate.tarball.sha512, "hex").toString("base64")}`;
+  const release = prepared?.release;
+  if (release === undefined || release === null
+    || release.version !== candidate.package.version || release.integrity !== expectedIntegrity) {
+    return "la release preparada no coincide con la versión/SRI del candidato";
+  }
+  const stageDir = prepared?.stageDir;
+  if (typeof stageDir !== "string" || stageDir === ""
+    || !/(^|[\\/])stage-[0-9a-f]{32}[\\/]pi-agent$/.test(path.resolve(stageDir))) {
+    return "el stage preparado no tiene el layout aislado esperado (stage-<hex>/pi-agent)";
+  }
+  const evidence = prepared?.evidence;
+  if (evidence === undefined || evidence === null
+    || typeof evidence.lockSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.lockSha256)
+    || typeof evidence.treeSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.treeSha256)
+    || !Array.isArray(evidence.dependencies) || evidence.dependencies.length !== 6) {
+    return "la evidencia del stage no trae seis dependencias con digests hexadecimales";
+  }
+  const names = new Set<string>();
+  for (const dep of evidence.dependencies) {
+    if (dep === null || typeof dep !== "object" || Array.isArray(dep)
+      || typeof (dep as { name?: unknown }).name !== "string" || (dep as { name: string }).name === ""
+      || typeof (dep as { version?: unknown }).version !== "string" || (dep as { version: string }).version === ""
+      || typeof (dep as { integrity?: unknown }).integrity !== "string"
+      || !/^sha512-[A-Za-z0-9+/]{86}==$/.test((dep as { integrity: string }).integrity)) {
+      return "la evidencia del stage trae una dependencia sin identidad/SRI canónico";
+    }
+    names.add((dep as { name: string }).name);
+  }
+  if (names.size !== 6) {
+    return "la evidencia del stage trae dependencias duplicadas";
+  }
+  return null;
+}
+
+/**
+ * True when settings.json already registers a JorgeX Pi package entry
+ * (string or {source} shape). Throws on illegible shapes so the caller
+ * fails closed instead of treating them as "no entry".
+ */
+function hasInstalledPiEntry(settingsJson: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(settingsJson);
+  } catch {
+    throw new Error("pi-prepared-install: settings.json ilegible; sin activación parcial");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("pi-prepared-install: settings.json inválido; sin activación parcial");
+  }
+  const packages = Reflect.get(parsed, "packages");
+  if (packages === undefined) return false;
+  if (!Array.isArray(packages)) {
+    throw new Error("pi-prepared-install: packages inválido en settings.json; sin activación parcial");
+  }
+  return packages.some((entry) => {
+    const source = typeof entry === "string"
+      ? entry
+      : entry !== null && typeof entry === "object" && !Array.isArray(entry)
+        && typeof Reflect.get(entry, "source") === "string"
+        ? Reflect.get(entry, "source") as string
+        : null;
+    return source !== null && source.includes("jorgex-pi");
+  });
+}
+
+/**
+ * Post-promotion proof for a prepared install: the published link must
+ * resolve to the promoted release, the receipt must keep the prepared
+ * candidate plus the managed fields, and the release inventory recomputed
+ * after promotion must match the evidence. Throws on any mismatch so the
+ * activation rolls back; pure reads, no writes.
+ */
+function verifyActivePiRelease(input: {
+  agentDir: string;
+  receiptPath: string;
+  candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
+  evidence: PreparedPiInstallEvidence;
+}): void {
+  const agentDir = path.resolve(input.agentDir);
+  const npmDir = path.join(agentDir, "npm");
+  const managedRoot = path.join(npmDir, "jorgex-pi-managed");
+  let receiptRaw: string;
+  try {
+    receiptRaw = fs.readFileSync(input.receiptPath, "utf8");
+  } catch {
+    throw new Error(`pi-verify-active: no se pudo leer el receipt promovido: ${input.receiptPath}`);
+  }
+  let receipt: unknown;
+  try {
+    receipt = JSON.parse(receiptRaw);
+  } catch {
+    throw new Error("pi-verify-active: el receipt promovido no es JSON válido");
+  }
+  if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) {
+    throw new Error("pi-verify-active: el receipt promovido es inválido");
+  }
+  const record = receipt as Record<string, unknown>;
+  if (record["schemaVersion"] !== 1) {
+    throw new Error("pi-verify-active: el receipt promovido no tiene schemaVersion 1");
+  }
+  const receiptCandidate = record["candidate"];
+  if (receiptCandidate === null || typeof receiptCandidate !== "object" || Array.isArray(receiptCandidate)) {
+    throw new Error("pi-verify-active: el receipt promovido no conserva el candidato");
+  }
+  const candidateRecord = receiptCandidate as Record<string, unknown>;
+  if (!sameJsonValue(candidateRecord["package"], input.candidate.package)
+    || !sameJsonValue(candidateRecord["tarball"], input.candidate.tarball)
+    || !sameJsonValue(candidateRecord["provenance"], input.candidate.provenance)) {
+    throw new Error("pi-verify-active: el receipt promovido no conserva el candidato preparado");
+  }
+  const managed = record["managedPackage"];
+  if (managed === null || typeof managed !== "object" || Array.isArray(managed)) {
+    throw new Error("pi-verify-active: el receipt promovido no trae managedPackage");
+  }
+  const managedRecord = managed as Record<string, unknown>;
+  if (managedRecord["lockSha256"] !== input.evidence.lockSha256
+    || managedRecord["treeSha256"] !== input.evidence.treeSha256) {
+    throw new Error("pi-verify-active: el receipt promovido no conserva los digests de la evidencia");
+  }
+  const receiptDeps = managedRecord["dependencies"];
+  if (!Array.isArray(receiptDeps)
+    || sortedDepIdentities(receiptDeps as { name: string; version: string; integrity: string }[])
+    !== sortedDepIdentities(input.evidence.dependencies)) {
+    throw new Error("pi-verify-active: el receipt promovido no conserva las seis dependencias de la evidencia");
+  }
+  const linkPath: unknown = managedRecord["linkPath"];
+  if (typeof linkPath !== "string" || !path.isAbsolute(linkPath)) {
+    throw new Error("pi-verify-active: el receipt promovido no trae un linkPath absoluto");
+  }
+  const linkResolved = path.resolve(linkPath);
+  if (linkResolved !== path.join(npmDir, "node_modules", "jorgex-pi")) {
+    throw new Error("pi-verify-active: el enlace publicado sale del entry propio");
+  }
+  const releaseDir: unknown = managedRecord["releaseDir"];
+  if (typeof releaseDir !== "string" || !path.isAbsolute(releaseDir)) {
+    throw new Error("pi-verify-active: el receipt promovido no trae un releaseDir absoluto");
+  }
+  const releaseResolved = path.resolve(releaseDir);
+  const releaseRel = path.relative(managedRoot, releaseResolved);
+  if (releaseRel === "" || releaseRel === ".." || releaseRel.startsWith(`..${path.sep}`) || path.isAbsolute(releaseRel)) {
+    throw new Error("pi-verify-active: el release promovido sale del root gestionado");
+  }
+  let target: string;
+  try {
+    const linkStat = fs.lstatSync(linkResolved);
+    if (!linkStat.isSymbolicLink()) {
+      throw new Error("pi-verify-active: el entry publicado no es un enlace");
+    }
+    target = fs.readlinkSync(linkResolved);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("pi-verify-active: ")) throw error;
+    throw new Error("pi-verify-active: no se pudo leer el enlace publicado");
+  }
+  const packageRoot = path.join(releaseResolved, "node_modules", "jorgex-pi");
+  if (target === "" || path.isAbsolute(target)
+    || path.resolve(path.dirname(linkResolved), target) !== packageRoot) {
+    throw new Error("pi-verify-active: el enlace publicado no apunta al release promovido");
+  }
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(linkResolved);
+  } catch {
+    throw new Error("pi-verify-active: no se pudo resolver el realpath del enlace publicado");
+  }
+  if (realRoot !== packageRoot) {
+    throw new Error("pi-verify-active: el realpath del runner no coincide con el release promovido");
+  }
+  let recomputed: string;
+  try {
+    recomputed = inventoryTreeSha256(releaseResolved);
+  } catch {
+    throw new Error("pi-verify-active: no se pudo reinventariar el release promovido");
+  }
+  if (recomputed !== input.evidence.treeSha256) {
+    throw new Error("pi-verify-active: el inventario del release promovido difiere de la evidencia");
+  }
+}
+
+export type PiRuntimePreflightOk = { candidate: PiRuntimeCandidate; prepared: PiInstallPreflightResult };
+export type PiRuntimePreflightOut =
+  | PiRuntimePreflightOk
+  | { kind: "blocked"; reason: string; remedy: string };
+
+function isStrictChildPath(child: string, root: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(child));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+/**
+ * T06 CLI-to-preflight: deliberate install resolves the live provider
+ * candidate through the isolated managed-install preflight, without touching
+ * the active npm tree, settings, receipt, official Engram setup, or the
+ * static pin. Only explicit real install (targetDir undefined, Engram
+ * present, absolute Pi executable) reaches the network; every other shape
+ * fails closed before any download. Preflight throws stay visible and keep
+ * the stage for diagnostics; the caller never falls back to static bytes.
+ */
+export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiRuntimePreflightOut> {
+  if (input.operation !== "install") {
+    return {
+      kind: "blocked",
+      reason: "preflight-unsupported-operation",
+      remedy: "El preflight Pi solo cubre install deliberado; sin red ni cambios.",
+    };
+  }
+  if (input.targetDir !== undefined) {
+    return {
+      kind: "blocked",
+      reason: "target-dir-preflight-unsupported",
+      remedy: "La instalación con --target-dir nunca ejecuta preflight de red; aporta un stage preverificado o usa install real.",
+    };
+  }
+  if (input.engramBin === null) {
+    return {
+      kind: "blocked",
+      reason: "engram-required",
+      remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
+    };
+  }
+  const piExecutable = input.detected.executable;
+  if (typeof piExecutable !== "string" || piExecutable === "" || !path.isAbsolute(piExecutable)) {
+    return {
+      kind: "blocked",
+      reason: "pi-executable-missing",
+      remedy: "No se detectó el ejecutable Pi absoluto; instala Pi antes de reintentar.",
+    };
+  }
+  if (piExecutable === "npm") {
+    return {
+      kind: "blocked",
+      reason: "pi-executable-missing",
+      remedy: "El ejecutable Pi debe ser el CLI Pi detectado, nunca npm.",
+    };
+  }
+  const homeDir = os.homedir();
+  const agentDir = userPaths(input.engramBin, piExecutable).codingAgentDir;
+  const downloadsDir = path.join(dataDir(), "packages");
+  if (!isStrictChildPath(agentDir, homeDir)) {
+    return {
+      kind: "blocked",
+      reason: "agent-dir-outside-home",
+      remedy: `PI_CODING_AGENT_DIR (${agentDir}) está fuera de la frontera de restore HOME (${homeDir}); corrige el destino antes de reintentar; Pi no quedó activado.`,
+    };
+  }
+  try {
+    fs.mkdirSync(downloadsDir, { recursive: true });
+  } catch (error) {
+    return {
+      kind: "blocked",
+      reason: "preflight-failed",
+      remedy: `No se pudo preparar el directorio de descargas Stack: ${error instanceof Error ? error.message : String(error)}. Pi no quedó activado.`,
+    };
+  }
+  const fetchImpl = (globalThis as { fetch?: typeof fetch }).fetch;
+  if (typeof fetchImpl !== "function") {
+    return {
+      kind: "blocked",
+      reason: "preflight-failed",
+      remedy: "Sin fetch global disponible para el preflight Pi; Pi no quedó activado.",
+    };
+  }
+  try {
+    const result = await preparePiManagedInstall(
+      { homeDir, agentDir, piExecutable, downloadsDir },
+      {
+        fetchImpl: fetchImpl as typeof fetch,
+        run: (executable, args, options) => runProcess({
+          executable,
+          args,
+          environment: options.env,
+          cwd: options.cwd,
+        }),
+      },
+    );
+    return { candidate: result.candidate, prepared: result };
+  } catch (error) {
+    const stageDir = (error as { stageDir?: unknown }).stageDir;
+    const message = error instanceof Error ? error.message : String(error);
+    const stageSuffix = typeof stageDir === "string" && stageDir !== ""
+      ? ` Stage conservado en ${stageDir} para diagnóstico.`
+      : " Stage conservado para diagnóstico cuando exista.";
+    return {
+      kind: "blocked",
+      reason: "preflight-failed",
+      remedy: `${message}.${stageSuffix} Corrige la causa y reintenta; Pi no quedó activado.`,
+    };
+  }
+}
+
 export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<RuntimeResult> {
   // Pi install real ordena Engram absoluto primero → `engram setup pi`
   // (backup/setup/verify singleton via runOfficialSetupIfNeeded("pi"),
@@ -747,22 +1068,75 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
     ? userPaths(input.engramBin, input.detected.executable)
     : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
   if (input.operation === "install") {
-    if (input.engramBin === null) {
+    // T06/T07 deliberate install: the injected candidate plus the trusted
+    // preflight proof route to prepared activation. The old static
+    // acquisition/native install branch is gone: no fallback, no fetch here.
+    // Every mismatch blocks before fetch, setup, or activation.
+    const engramBin = input.engramBin;
+    if (engramBin === null) {
       return {
         kind: "blocked",
         reason: "engram-required",
         remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
       };
     }
-    // Setup oficial solo en install real (targetDir undefined). Con
-    // --target-dir se omite (no-op global) y el package usa su destino aislado.
+    const candidate = input.candidate;
+    if (candidate === undefined) {
+      return {
+        kind: "blocked",
+        reason: "candidate-missing",
+        remedy: "Aporta el candidato Pi verificado (resolver + stage) antes de reintentar; install deliberado nunca usa el pin estático.",
+      };
+    }
+    const prepared = input.prepared;
+    if (prepared === undefined) {
+      return {
+        kind: "blocked",
+        reason: "stage-unverified",
+        remedy: "El install Pi exige el stage preverificado del preflight (prepared); un candidato del resolver solo nunca activa.",
+      };
+    }
+    const mismatch = preparedInstallMismatch(candidate, prepared);
+    if (mismatch !== null) {
+      return {
+        kind: "blocked",
+        reason: "prepared-mismatch",
+        remedy: `${mismatch}; Pi no quedó activado y no se descargó ni modificó nada.`,
+      };
+    }
+    const settingsPath = path.join(paths.codingAgentDir, "settings.json");
+    const settingsJson = readOptional(settingsPath, '{"packages":[]}')!;
+    const receiptJson = readOptional(paths.receiptPath, null);
+    let piEntry = false;
+    try {
+      piEntry = hasInstalledPiEntry(settingsJson);
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "settings-corrupt",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
+    }
+    if (receiptJson !== null || piEntry) {
+      // No legacy migration yet and no raw receipt trust: a preexisting
+      // receipt or Pi package entry needs the later verified update path,
+      // never silent reuse. Nothing is touched.
+      return {
+        kind: "blocked",
+        reason: "verified-update-required",
+        remedy: "Ya existe un receipt o registro Pi instalado; la migración verificada aún no está disponible. No se modificó nada; Pi no quedó activado.",
+      };
+    }
+    // Setup oficial solo en install real (targetDir undefined), tras la
+    // prueba del stage y antes de activar. Con --target-dir se omite
+    // (no-op global) y todo queda en el destino aislado.
     if (input.targetDir === undefined) {
       const { runOfficialSetupIfNeeded } = await import("./official-engram-setup.js");
       const setup = await runOfficialSetupIfNeeded("pi", {
         command: "install",
         dryRun: false,
         targetDir: undefined,
-        engramBin: input.engramBin,
+        engramBin,
         configDir: paths.codingAgentDir,
         homeDir: os.homedir(),
       });
@@ -781,43 +1155,122 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         };
       }
     }
-    const destination = input.targetDir === undefined
-      ? path.join(dataDir(), "packages", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`)
-      : path.join(path.resolve(input.targetDir), "downloads", `jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}.tgz`);
-    let artifact: ReturnType<typeof hashPiTarball>;
+    const homeDir = input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir);
+    const agentDir = paths.codingAgentDir;
+    const receiptPath = paths.receiptPath;
+    const stageDir = prepared.stageDir;
+    const evidence: PreparedPiInstallEvidence = {
+      lockSha256: prepared.evidence.lockSha256,
+      treeSha256: prepared.evidence.treeSha256,
+      dependencies: [...prepared.evidence.dependencies],
+    };
+    const activationCandidate = prepared.candidate;
+    const verifyStage = async (dir: string, proof: PreparedPiInstallEvidence): Promise<void> => {
+      const observed = await inspectStagedPiNpm({
+        stageDir: dir,
+        tarballPath: prepared.artifact.path,
+        release: prepared.release,
+      });
+      if (observed.lockSha256 !== proof.lockSha256 || observed.treeSha256 !== proof.treeSha256) {
+        throw new Error("pi-prepared-install: el stage observado no coincide con la evidencia preparada (lock/tree); posible stage obsoleto");
+      }
+      if (sortedDepIdentities(observed.dependencies) !== sortedDepIdentities(proof.dependencies)) {
+        throw new Error("pi-prepared-install: las dependencias observadas no coinciden con la evidencia preparada");
+      }
+    };
+    const smokeStage = async (dir: string): Promise<void> => {
+      await smokeStagedPiRuntime({ piExecutable: input.detected.executable, stageDir: dir });
+    };
+    const verifyActive = (): void => {
+      verifyActivePiRelease({ agentDir, receiptPath, candidate: activationCandidate, evidence });
+    };
     try {
-      artifact = await acquirePiTarball(destination);
+      return await activatePreparedPiInstall(
+        {
+          homeDir,
+          agentDir,
+          receiptPath,
+          engramBin,
+          prepared: { candidate: activationCandidate, stageDir, evidence },
+          settingsJson,
+          previousSource: null,
+          scopeKind: input.targetDir === undefined ? "real" : "target-dir",
+        },
+        { verifyStage, smokeStage, verifyActive },
+      );
     } catch (error) {
-      return { kind: "blocked", reason: "tarball-download", remedy: error instanceof Error ? error.message : String(error) };
+      return {
+        kind: "blocked",
+        reason: "activation-failed",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
     }
-    return installPiFromVerifiedTarball({
-      targetDir: input.targetDir,
-      piExecutable: input.detected.executable,
-      engramBin: input.engramBin,
-      candidate: {
-        source: PI_RUNTIME_CANDIDATE.package.source,
-        ...PI_RUNTIME_CANDIDATE.tarball,
-        package: PI_RUNTIME_CANDIDATE.package,
-        provenance: PI_RUNTIME_CANDIDATE.provenance,
-        capabilities: PI_RUNTIME_CANDIDATE.contract.capabilities,
-      },
-    }, {
-      download: () => artifact,
-      backupSettings: () => createBackup(
-        [path.join(paths.codingAgentDir, "settings.json")],
-        "pi-package-install",
-        input.targetDir === undefined ? undefined : path.join(path.resolve(input.targetDir), "backups"),
-      ),
-      run: runProcess,
-      readSettings: () => readOptional(path.join(paths.codingAgentDir, "settings.json"), '{"packages":[]}')!,
-      rewriteSettings: (content) => writeText(path.join(paths.codingAgentDir, "settings.json"), `${content}\n`),
-      writeReceiptAtomic: (content) => writeText(paths.receiptPath, content),
-    });
   }
   const packageRoot = path.dirname(path.dirname(paths.packageRunner));
   const writeReceipt = (receipt: PiPackageReceipt): void => {
     writeText(paths.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   };
+  if (input.operation === "sync") {
+    // T07 offline managed sync: schemaVersion 1 receipt with managedPackage
+    // routes to the authenticated managed sync, never the legacy resolver
+    // plan. Registry stays current+historical identity, never a next install
+    // selector; host testedVersions must not block this path. Invalid JSON
+    // or legacy v1 without managedPackage falls through to the fail-closed
+    // legacy path; raw-field presence alone never proves ownership (callee
+    // validates scope/settings/link/lock/tree/cache/runner thoroughly).
+    const settingsJson = readOptional(path.join(paths.codingAgentDir, "settings.json"), '{"packages":[]}')!;
+    const receiptJson = readOptional(paths.receiptPath, null);
+    if (receiptJson !== null) {
+      let routesManaged = false;
+      try {
+        const parsed: unknown = JSON.parse(receiptJson);
+        routesManaged = parsed !== null
+          && typeof parsed === "object"
+          && !Array.isArray(parsed)
+          && Reflect.get(parsed, "schemaVersion") === 1
+          && Reflect.get(parsed, "managedPackage") !== null
+          && typeof Reflect.get(parsed, "managedPackage") === "object"
+          && !Array.isArray(Reflect.get(parsed, "managedPackage"));
+      } catch {
+        routesManaged = false;
+      }
+      if (routesManaged) {
+        return runPiPackageManagedSync(
+          {
+            operation: "sync",
+            interactive: false,
+            registry: PI_RUNTIME_REGISTRY.pi,
+            detected: {
+              executable: input.detected.executable,
+              packageRunner: paths.packageRunner,
+              settingsJson,
+            },
+            engramBin: input.engramBin,
+            receiptJson,
+            paths: {
+              targetDir: input.targetDir !== undefined,
+              codingAgentDir: paths.codingAgentDir,
+              receiptPath: paths.receiptPath,
+              environment: paths.environment,
+            },
+          },
+          {
+            backupSettings: () => undefined,
+            run: runProcess,
+            verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({
+              receipt,
+              homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
+              downloadsDir: input.targetDir === undefined
+                ? path.join(dataDir(), "packages")
+                : path.join(path.resolve(input.targetDir), "downloads"),
+            }),
+            isPackageAbsent: () => !fs.existsSync(packageRoot),
+            deleteReceipt: () => fs.rmSync(paths.receiptPath, { force: true }),
+          },
+        );
+      }
+    }
+  }
   const deps: PiRuntimeDeps = {
     readSettings: (file) => readOptional(file, '{"packages":[]}')!,
     readReceipt: (file) => readOptional(file, null),
@@ -836,6 +1289,13 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
           input.targetDir === undefined ? undefined : path.join(path.resolve(input.targetDir), "backups"),
         ),
         run: runProcess,
+        verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({
+          receipt,
+          homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
+          downloadsDir: input.targetDir === undefined
+            ? path.join(dataDir(), "packages")
+            : path.join(path.resolve(input.targetDir), "downloads"),
+        }),
         isPackageAbsent: () => !fs.existsSync(packageRoot),
         deleteReceipt: () => fs.rmSync(paths.receiptPath, { force: true }),
       },

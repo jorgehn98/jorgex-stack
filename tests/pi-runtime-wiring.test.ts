@@ -53,6 +53,7 @@ type PiRuntimeModule = {
       detected: { executable: string; version: string };
       engramBin: string | null;
       verifiedArtifact?: unknown;
+      candidate?: unknown;
     },
     deps: {
       readSettings(path: string): string;
@@ -149,8 +150,34 @@ describe("Pi runtime wiring", () => {
       tarball: PI_RUNTIME_CANDIDATE.tarball,
       pi: PI_RUNTIME_CANDIDATE.pi,
     });
-    expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).toEqual([PI_RUNTIME_CANDIDATE]);
-    expect(PI_RUNTIME_REGISTRY.pi.acceptedCandidates).not.toContainEqual(PI_RUNTIME_PREVIOUS_CANDIDATE);
+    const accepted = PI_RUNTIME_REGISTRY.pi.acceptedCandidates ?? [];
+    expect(accepted[0]).toEqual(PI_RUNTIME_CANDIDATE);
+    expect(PI_RUNTIME_REGISTRY.pi.candidate).toEqual(PI_RUNTIME_CANDIDATE);
+    expect(PI_RUNTIME_REGISTRY.pi.source).toBe(PI_RUNTIME_CANDIDATE.package.source);
+    const historicalRecovery = accepted.find(
+      (entry) => (entry as { package?: { version?: unknown } }).package?.version === "0.8.24",
+    );
+    expect(historicalRecovery).toMatchObject({
+      package: { name: "jorgex-pi", version: "0.8.24", source: "npm:jorgex-pi@0.8.24" },
+      provenance: { commit: "652d7e445e6f184c4543593c115026aa2f71e761" },
+      tarball: {
+        bytes: 89140631,
+        sha256: "6f67e546c86f21f9b5ff139f429551e696be4a8389ce4a6262e137dcce923a5f",
+        sha512: "1ce4bfc316f1635c5e498af7134ae16f430a4f6a3d2c99c7aa6fc31b76ce18684759c6480f506b5de45aa5b5b682e03f68d10fc77c83ae1679006dab679d9aa4",
+      },
+      contract: {
+        runner: {
+          bin: "jorgex-pi",
+          commands: ["status", "doctor", "models", "sync", "cleanup"],
+          schemaVersion: 1,
+          maxStdoutBytes: 65536,
+        },
+      },
+    });
+    expect((historicalRecovery as { package: { source: string } }).package.source).not.toBe(
+      PI_RUNTIME_REGISTRY.pi.source,
+    );
+    expect(accepted).not.toContainEqual(PI_RUNTIME_PREVIOUS_CANDIDATE);
     expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("modular-system-prompts-v1");
     expect(PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities).toContain("context7-http-v1");
     expect(PI_RUNTIME_PREVIOUS_CANDIDATE.contract.capabilities).toContain("modular-system-prompts-v1");
@@ -174,6 +201,7 @@ describe("Pi runtime wiring", () => {
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
       engramBin: environment.ENGRAM_BIN,
       verifiedArtifact: PI_RUNTIME_REGISTRY.pi.tarball,
+      candidate: PI_RUNTIME_CANDIDATE,
     };
 
     expect(runPiRuntime({ ...common, operation: "install" }, deps)).toMatchObject({ kind: "installed" });
@@ -339,8 +367,9 @@ describe("[T41-RED] wiring install Pi real con setup oficial verificado", () => 
     const { runPiRuntime, PI_RUNTIME_REGISTRY } = await runtime();
     // El wiring real debe correr el setup pi antes de prepare/execute; el trace
     // permite detectar si se altera ese orden.
-    // runPiRuntime exige verifiedArtifact en install (tarball-integrity); se
-    // aporta el tarball canónico para que prepare bloquee con setup-pi-missing.
+    // runPiRuntime exige candidate + verifiedArtifact en install; se aportan
+    // el candidato fixture y el tarball canónico para que prepare bloquee con
+    // setup-pi-missing.
     const events: string[] = [];
     const deps = harness(events);
     const failingPrepare = () => {
@@ -353,6 +382,7 @@ describe("[T41-RED] wiring install Pi real con setup oficial verificado", () => 
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
       engramBin: path.join(home, ".local", "bin", "engram"),
       verifiedArtifact: PI_RUNTIME_REGISTRY.pi.tarball,
+      candidate: PI_RUNTIME_CANDIDATE,
     }, { ...deps, prepare: failingPrepare });
     expect(result).toMatchObject({ kind: "blocked", reason: "setup-pi-missing" });
     expect(events).toContain("prepare");
@@ -622,8 +652,41 @@ async function t50SetupPiFailedRemedy(setupResult: Record<string, unknown>): Pro
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t50-pi-remedy-"));
   const isolatedAgentDir = path.join(tmp, "pi-agent");
   fs.mkdirSync(isolatedAgentDir, { recursive: true });
+  // Valid synthetic prepared stub from the known current fixture (no invented
+  // hashes) so install reaches the setup seam instead of candidate-missing.
+  const stageDir = path.join(isolatedAgentDir, `stage-${"b".repeat(32)}`, "pi-agent");
+  fs.mkdirSync(stageDir, { recursive: true });
+  const candidate = PI_RUNTIME_CANDIDATE;
+  const preparedIntegrity = `sha512-${Buffer.from(candidate.tarball.sha512, "hex").toString("base64")}`;
+  const preparedDeps = [
+    { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
+    { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
+    { name: "pi-subagents", version: "9.9.12", integrity: `sha512-${Buffer.alloc(64, 13).toString("base64")}` },
+    { name: "pi-web-access", version: "9.9.13", integrity: `sha512-${Buffer.alloc(64, 14).toString("base64")}` },
+    { name: "@narumitw/pi-goal", version: "9.9.14", integrity: `sha512-${Buffer.alloc(64, 15).toString("base64")}` },
+    { name: "strip-json-comments", version: "9.9.15", integrity: `sha512-${Buffer.alloc(64, 16).toString("base64")}` },
+  ];
+  const artifactPath = path.join(tmp, "downloads", `jorgex-pi-${candidate.package.version}.tgz`);
+  const prepared = {
+    candidate,
+    release: {
+      version: candidate.package.version,
+      tarballUrl: `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${candidate.package.version}.tgz`,
+      integrity: preparedIntegrity,
+    },
+    artifact: {
+      path: artifactPath,
+      bytes: candidate.tarball.bytes,
+      sha256: candidate.tarball.sha256,
+      sha512: candidate.tarball.sha512,
+    },
+    stageDir,
+    evidence: { lockSha256: "c".repeat(64), treeSha256: "d".repeat(64), dependencies: preparedDeps },
+    sourceAlias: `npm:jorgex-pi@file:${artifactPath}`,
+  };
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+  const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(tmp);
   vi.resetModules();
   vi.doMock("../src/lib/official-engram-setup.js", async () => {
     const actual = await vi.importActual<typeof import("../src/lib/official-engram-setup.js")>("../src/lib/official-engram-setup.js");
@@ -635,9 +698,12 @@ async function t50SetupPiFailedRemedy(setupResult: Record<string, unknown>): Pro
       operation: "install",
       detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
       engramBin: "/isolated/bin/engram",
+      candidate,
+      prepared,
     });
     return result;
   } finally {
+    homedirSpy.mockRestore();
     vi.doUnmock("../src/lib/official-engram-setup.js");
     vi.resetModules();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -759,5 +825,422 @@ describe("[T52-RED] contrato runtime Pi 0.8.29 con bridge oficial", () => {
     expect(capabilities).toContain("engram-official-bridge-v1");
     expect(capabilities).not.toContain("mcp-adapter-v1");
     expect(capabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T05/T06-RED] seam de inyección del consumidor Stack en runPiRuntime.
+// Contrato: PiRuntimeInput puede aportar `candidate` (PiRuntimeCandidate del
+// resolver+stage verificado) y cuando está presente toda la planificación y
+// ejecución del package usan ese candidato inyectado exacto, nunca el pin
+// estático. Control existente: observedTarball divergente sigue bloqueado en
+// pi-package-lifecycle (tarball-integrity).
+// ---------------------------------------------------------------------------
+
+describe("[T05/T06-RED] runPiRuntime usa el candidato inyectado", () => {
+  it("install con candidate inyectado lo propaga a prepare/execute y nunca usa el pin estático", async () => {
+    const { runPiRuntime, PI_RUNTIME_REGISTRY } = await runtime();
+    const staticSource = PI_RUNTIME_REGISTRY.pi.source;
+    // Candidato sintético solo-test, estable y distinto del pin estático,
+    // con forma válida y sin afirmar ningún release publicado factual.
+    const injectedCandidate = {
+      ...PI_RUNTIME_CANDIDATE,
+      package: {
+        name: "jorgex-pi",
+        version: "9.9.9",
+        source: "npm:jorgex-pi@9.9.9",
+      },
+      provenance: { commit: "0".repeat(40) },
+      tarball: { bytes: 1234567, sha256: "a".repeat(64), sha512: "b".repeat(128) },
+    } as const;
+    expect(injectedCandidate.package.source).not.toBe(staticSource);
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t05-injected-"));
+    T41_WIRING_ROOTS.push(sandbox);
+    const engramBin = path.join(sandbox, "bin", "engram");
+    let prepared: unknown;
+    let executed: unknown;
+    const deps = {
+      readSettings: () => JSON.stringify({ packages: [] }),
+      readReceipt: () => null,
+      writeReceiptAtomic: () => undefined,
+      prepare: (value: unknown) => {
+        prepared = value;
+        return { kind: "ready" };
+      },
+      execute: (value: unknown) => {
+        executed = value;
+        return { kind: "installed", receipt: { state: "installed" } };
+      },
+      operate: () => ({ kind: "healthy" }),
+    };
+    const input = {
+      operation: "install",
+      targetDir: sandbox,
+      detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+      engramBin,
+      verifiedArtifact: { ...injectedCandidate.tarball },
+      candidate: injectedCandidate,
+    } as unknown as Parameters<typeof runPiRuntime>[0];
+    const result = runPiRuntime(input, deps);
+    expect(result).toMatchObject({ kind: "installed" });
+    const preparedCandidate = (prepared as { candidate?: unknown }).candidate;
+    const executedCandidate = (executed as { candidate?: unknown }).candidate;
+    expect(preparedCandidate).toEqual(injectedCandidate);
+    expect(executedCandidate).toEqual(injectedCandidate);
+    expect((preparedCandidate as { package: { source: string } }).package.source).not.toBe(staticSource);
+    expect((executedCandidate as { package: { source: string } }).package.source).not.toBe(staticSource);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T05/T06-RED] runPiRuntimeSystem routes prepared verified stage to activation.
+// Contract (coordinator-closed, internal only): PiRuntimeInput gains
+// `prepared?: {candidate,release,artifact,stageDir,evidence,sourceAlias}`
+// (prepared output of preparePiManagedInstall, not user CLI input). When
+// operation install AND candidate===prepared.candidate by exact identity AND
+// prepared.artifact digests===candidate.tarball, system must call
+// activatePreparedPiInstall instead of static acquisition/native install.
+// Without prepared, block before download/setup/active writes; targetDir
+// stays no-network. Synthetic 9.9.x only, tmpdir sandbox, fetch 0. Stage
+// fixtures use the real layout agentDir/stage-<32hex>/pi-agent, canonical
+// base64 SRI, and six synthetic companion identities; the verifying
+// inspector boundary is explicitly mocked via activatePreparedPiInstall
+// (authoritative stage/inspector tests live separately), so no on-disk
+// tarball re-hash or published-release claim here. No HOME, no real Pi run.
+// ---------------------------------------------------------------------------
+
+describe("[T05/T06-RED] runPiRuntimeSystem routes prepared stage to activation", () => {
+  it("install with matching prepared stage calls activatePreparedPiInstall without network or static pin", async () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t05-prepared-system-"));
+    T41_WIRING_ROOTS.push(sandbox);
+    const agentDir = path.join(sandbox, "pi-agent");
+    const stageHex = "b".repeat(32);
+    const stageDir = path.join(agentDir, `stage-${stageHex}`, "pi-agent");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const engramBin = path.join(sandbox, "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
+    // Synthetic stable candidate, no published-release claim.
+    const syntheticCandidate = {
+      ...PI_RUNTIME_CANDIDATE,
+      package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" },
+      provenance: { commit: "0".repeat(40) },
+      tarball: { bytes: 1234567, sha256: "a".repeat(64), sha512: "b".repeat(128) },
+    } as const;
+    const syntheticIntegrity = `sha512-${Buffer.from(syntheticCandidate.tarball.sha512, "hex").toString("base64")}`;
+    const syntheticDeps = [
+      { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
+      { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
+      { name: "pi-subagents", version: "9.9.12", integrity: `sha512-${Buffer.alloc(64, 13).toString("base64")}` },
+      { name: "pi-web-access", version: "9.9.13", integrity: `sha512-${Buffer.alloc(64, 14).toString("base64")}` },
+      { name: "@narumitw/pi-goal", version: "9.9.14", integrity: `sha512-${Buffer.alloc(64, 15).toString("base64")}` },
+      { name: "strip-json-comments", version: "9.9.15", integrity: `sha512-${Buffer.alloc(64, 16).toString("base64")}` },
+    ];
+    const prepared = {
+      candidate: syntheticCandidate,
+      release: {
+        version: "9.9.9",
+        tarballUrl: "https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-9.9.9.tgz",
+        integrity: syntheticIntegrity,
+      },
+      artifact: {
+        path: path.join(sandbox, "downloads", "jorgex-pi-9.9.9.tgz"),
+        bytes: 1234567,
+        sha256: "a".repeat(64),
+        sha512: "b".repeat(128),
+      },
+      stageDir,
+      evidence: { lockSha256: "c".repeat(64), treeSha256: "d".repeat(64), dependencies: syntheticDeps },
+      sourceAlias: `npm:jorgex-pi@file:${path.join(sandbox, "downloads", "jorgex-pi-9.9.9.tgz")}`,
+    };
+    const installedReceipt = {
+      schemaVersion: 1,
+      state: "installed",
+      candidate: {
+        package: syntheticCandidate.package,
+        tarball: syntheticCandidate.tarball,
+        provenance: syntheticCandidate.provenance,
+      },
+      scope: { kind: "target-dir", codingAgentDir: path.join(sandbox, "pi-agent") },
+      engram: { binary: engramBin },
+    } as const;
+    const fixtureEvidence = {
+      lockSha256: "c".repeat(64),
+      treeSha256: "d".repeat(64),
+      dependencies: syntheticDeps,
+    };
+    const activateCalls: unknown[] = [];
+    const inspectorCalls: unknown[] = [];
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(sandbox, "pi-agent");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-staged-lock.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/pi-staged-lock.js")>(
+        "../src/lib/pi-staged-lock.js",
+      );
+      return {
+        ...actual,
+        inspectStagedPiNpm: (input: unknown) => {
+          inspectorCalls.push(input);
+          return {
+            lockSha256: fixtureEvidence.lockSha256,
+            treeSha256: fixtureEvidence.treeSha256,
+            dependencies: [...fixtureEvidence.dependencies],
+          };
+        },
+      };
+    });
+    vi.doMock("../src/lib/pi-install-activation.js", () => ({
+      activatePreparedPiInstall: async (input: unknown, deps: unknown) => {
+        activateCalls.push(input);
+        const verifyStage = (deps as any)?.verifyStage;
+        if (typeof verifyStage !== "function") {
+          throw new Error("activation mock requires deps.verifyStage(stageDir, evidence)");
+        }
+        await verifyStage((input as any).prepared.stageDir, (input as any).prepared.evidence);
+        return { kind: "installed", receipt: installedReceipt };
+      },
+    }));
+    try {
+      const { runPiRuntimeSystem } = (await import("../src/lib/pi-runtime.js")) as any;
+      const input = {
+        operation: "install",
+        targetDir: sandbox,
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin,
+        candidate: syntheticCandidate,
+        prepared,
+        verifiedArtifact: { ...syntheticCandidate.tarball },
+      } as any;
+      const result = await runPiRuntimeSystem(input);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(activateCalls).toHaveLength(1);
+      const seen = activateCalls[0] as any;
+      const seenCandidate = seen?.prepared?.candidate ?? seen?.candidate;
+      const seenStage = seen?.prepared?.stageDir ?? seen?.stageDir;
+      expect(seenCandidate).toEqual(syntheticCandidate);
+      expect(seenStage).toBe(stageDir);
+      expect(inspectorCalls).toHaveLength(1);
+      const inspectorInput = inspectorCalls[0] as any;
+      expect(inspectorInput?.stageDir ?? inspectorInput?.prepared?.stageDir).toBe(stageDir);
+      expect(JSON.stringify(inspectorInput)).toContain("9.9.9");
+      expect(JSON.stringify(inspectorInput)).toContain(prepared.artifact.path);
+      expect(result).toMatchObject({ kind: "installed", receipt: installedReceipt });
+      expect(JSON.stringify(result)).toContain("9.9.9");
+      expect(JSON.stringify(result)).not.toContain("0.8.29");
+    } finally {
+      fetchSpy.mockRestore();
+      vi.doUnmock("../src/lib/pi-install-activation.js");
+      vi.doUnmock("../src/lib/pi-staged-lock.js");
+      vi.resetModules();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
+  });
+
+  it("install with candidate/prepared mismatch stays blocked without activation, fetch, or static pin", async () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t05-prepared-mismatch-"));
+    T41_WIRING_ROOTS.push(sandbox);
+    const agentDir = path.join(sandbox, "pi-agent");
+    const stageHex = "c".repeat(32);
+    const stageDir = path.join(agentDir, `stage-${stageHex}`, "pi-agent");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const engramBin = path.join(sandbox, "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
+    // Synthetic stable versions, test-only, no published-release claim.
+    const candidate = {
+      ...PI_RUNTIME_CANDIDATE,
+      package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" },
+      provenance: { commit: "0".repeat(40) },
+      tarball: { bytes: 1234567, sha256: "a".repeat(64), sha512: "b".repeat(128) },
+    } as const;
+    const mismatchedCandidate = {
+      ...PI_RUNTIME_CANDIDATE,
+      package: { name: "jorgex-pi", version: "9.9.8", source: "npm:jorgex-pi@9.9.8" },
+      provenance: { commit: "1".repeat(40) },
+      tarball: { bytes: 7654321, sha256: "e".repeat(64), sha512: "f".repeat(128) },
+    } as const;
+    const mismatchedIntegrity = `sha512-${Buffer.from(mismatchedCandidate.tarball.sha512, "hex").toString("base64")}`;
+    const mismatchedDeps = [
+      { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
+      { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
+      { name: "pi-subagents", version: "9.9.12", integrity: `sha512-${Buffer.alloc(64, 13).toString("base64")}` },
+      { name: "pi-web-access", version: "9.9.13", integrity: `sha512-${Buffer.alloc(64, 14).toString("base64")}` },
+      { name: "@narumitw/pi-goal", version: "9.9.14", integrity: `sha512-${Buffer.alloc(64, 15).toString("base64")}` },
+      { name: "strip-json-comments", version: "9.9.15", integrity: `sha512-${Buffer.alloc(64, 16).toString("base64")}` },
+    ];
+    const prepared = {
+      candidate: mismatchedCandidate,
+      release: {
+        version: "9.9.8",
+        tarballUrl: "https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-9.9.8.tgz",
+        integrity: mismatchedIntegrity,
+      },
+      artifact: {
+        path: path.join(sandbox, "downloads", "jorgex-pi-9.9.8.tgz"),
+        bytes: 7654321,
+        sha256: "e".repeat(64),
+        sha512: "f".repeat(128),
+      },
+      stageDir,
+      evidence: { lockSha256: "c".repeat(64), treeSha256: "d".repeat(64), dependencies: mismatchedDeps },
+      sourceAlias: `npm:jorgex-pi@file:${path.join(sandbox, "downloads", "jorgex-pi-9.9.8.tgz")}`,
+    };
+    const activateCalls: unknown[] = [];
+    const inspectorCalls: unknown[] = [];
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = path.join(sandbox, "pi-agent");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-staged-lock.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/pi-staged-lock.js")>(
+        "../src/lib/pi-staged-lock.js",
+      );
+      return {
+        ...actual,
+        inspectStagedPiNpm: (input: unknown) => {
+          inspectorCalls.push(input);
+          return {
+            lockSha256: "c".repeat(64),
+            treeSha256: "d".repeat(64),
+            dependencies: [...mismatchedDeps],
+          };
+        },
+      };
+    });
+    vi.doMock("../src/lib/pi-install-activation.js", () => ({
+      activatePreparedPiInstall: async (input: unknown) => {
+        activateCalls.push(input);
+        return { kind: "installed", receipt: {} };
+      },
+    }));
+    try {
+      const { runPiRuntimeSystem } = (await import("../src/lib/pi-runtime.js")) as any;
+      const input = {
+        operation: "install",
+        targetDir: sandbox,
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin,
+        candidate,
+        prepared,
+        verifiedArtifact: { ...candidate.tarball },
+      } as any;
+      const result = await runPiRuntimeSystem(input);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(activateCalls).toHaveLength(0);
+      expect(inspectorCalls).toHaveLength(0);
+      expect(result.kind).toBe("blocked");
+      expect(result).not.toMatchObject({ kind: "installed" });
+      expect(JSON.stringify(result)).not.toContain("0.8.29");
+    } finally {
+      fetchSpy.mockRestore();
+      vi.doUnmock("../src/lib/pi-install-activation.js");
+      vi.doUnmock("../src/lib/pi-staged-lock.js");
+      vi.resetModules();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [T05/T07-RED] runPiRuntimeSystem offline managed sync path.
+// Contract: system `sync` with a schemaVersion1 managed receipt (synthetic
+// 9.9.9 parent, never a published-release claim) and the exact managed
+// settings object must route to `runPiPackageManagedSync` offline, threading
+// its authenticated `{kind:'synced',actions,packageSource}` without global
+// fetch, pi install, or projection writes. Ownership validation lives in the
+// package module (covered separately); this seam only proves the system
+// route. Current system still calls legacy planPiPackageLifecycle and never
+// invokes the managed sync, so this RED fails on zero calls/blocked.
+// Isolated targetDir under os.tmpdir only; no personal HOME.
+// ---------------------------------------------------------------------------
+
+describe("[T05/T07-RED] runPiRuntimeSystem routes managed sync offline", () => {
+  it("invokes runPiPackageManagedSync and threads its authenticated source with zero network", async () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t05-t07-managed-sync-"));
+    T41_WIRING_ROOTS.push(sandbox);
+    const codingAgentDir = path.join(sandbox, "pi-agent");
+    const stateDir = path.join(sandbox, "state");
+    const binDir = path.join(sandbox, "bin");
+    fs.mkdirSync(codingAgentDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    const engramBin = path.join(binDir, "engram");
+    fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
+    const managedSource = "npm:jorgex-pi@9.9.9";
+    fs.writeFileSync(
+      path.join(codingAgentDir, "settings.json"),
+      JSON.stringify({ packages: [{ source: managedSource, skills: [], prompts: [] }] }),
+    );
+    const releaseId = "e".repeat(64);
+    const stageHex = "b".repeat(32);
+    const receipt = {
+      schemaVersion: 1,
+      state: "installed",
+      candidate: {
+        package: { name: "jorgex-pi", version: "9.9.9", source: managedSource },
+        tarball: { bytes: 1234567, sha256: "a".repeat(64), sha512: "b".repeat(128) },
+        provenance: { commit: "0".repeat(40) },
+      },
+      scope: { kind: "target-dir", codingAgentDir },
+      engram: { binary: engramBin },
+      managedPackage: {
+        releaseDir: path.join(codingAgentDir, "npm", "jorgex-pi-managed", "releases", releaseId),
+        linkPath: path.join(codingAgentDir, "npm", "node_modules", "jorgex-pi"),
+        backupDir: path.join(codingAgentDir, `stage-${stageHex}`, "pi-agent", ".activate-backup"),
+        lockSha256: "c".repeat(64),
+        treeSha256: "d".repeat(64),
+        dependencies: [
+          { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
+          { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
+          { name: "pi-subagents", version: "9.9.12", integrity: `sha512-${Buffer.alloc(64, 13).toString("base64")}` },
+          { name: "pi-web-access", version: "9.9.13", integrity: `sha512-${Buffer.alloc(64, 14).toString("base64")}` },
+          { name: "@narumitw/pi-goal", version: "9.9.14", integrity: `sha512-${Buffer.alloc(64, 15).toString("base64")}` },
+          { name: "strip-json-comments", version: "9.9.15", integrity: `sha512-${Buffer.alloc(64, 16).toString("base64")}` },
+        ],
+      },
+    };
+    fs.writeFileSync(path.join(stateDir, "pi-receipt.json"), `${JSON.stringify(receipt)}\n`);
+
+    const managedSyncCalls: unknown[] = [];
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = codingAgentDir;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-package-lifecycle.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/pi-package-lifecycle.js")>(
+        "../src/lib/pi-package-lifecycle.js",
+      );
+      return {
+        ...actual,
+        runPiPackageManagedSync: (input: unknown) => {
+          managedSyncCalls.push(input);
+          return { kind: "synced", actions: [], packageSource: managedSource };
+        },
+      };
+    });
+    try {
+      const { runPiRuntimeSystem } = (await import("../src/lib/pi-runtime.js")) as any;
+      const result = await runPiRuntimeSystem({
+        operation: "sync",
+        targetDir: sandbox,
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin,
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(managedSyncCalls).toHaveLength(1);
+      expect(result).toMatchObject({ kind: "synced", actions: [], packageSource: managedSource });
+      expect(JSON.stringify(result)).toContain("9.9.9");
+      expect(JSON.stringify(result)).not.toContain("0.8.29");
+    } finally {
+      fetchSpy.mockRestore();
+      vi.doUnmock("../src/lib/pi-package-lifecycle.js");
+      vi.resetModules();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    }
   });
 });

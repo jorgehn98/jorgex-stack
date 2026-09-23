@@ -80,6 +80,31 @@ const previousEnvironment: Environment = {
   ENGRAM_BIN: "/tmp/pi-previous-target/bin/engram",
 };
 
+// T05 RED: owned v1 historical receipt for jorgex-pi@0.8.24 from immutable
+// Stack tag v1.9.51. Independent literal identity (never an install selector,
+// never a re-pin); pi/contract scaffolding follows the immutable Pi producer
+// v0.8.24 contract (runner schema1/bin jorgex-pi/maxStdout65536, commands
+// status,doctor,models,sync,cleanup without upgrade; legacy mcp-adapter-v1
+// without engram-official-bridge-v1/permissions-upgrade-v1), observed via the
+// previous legacy candidate shape.
+const HISTORICAL_PI_0_8_24_IDENTITY = {
+  package: { name: "jorgex-pi", version: "0.8.24", source: "npm:jorgex-pi@0.8.24" },
+  provenance: { commit: "652d7e445e6f184c4543593c115026aa2f71e761" },
+  tarball: {
+    bytes: 89140631,
+    sha256: "6f67e546c86f21f9b5ff139f429551e696be4a8389ce4a6262e137dcce923a5f",
+    sha512: "1ce4bfc316f1635c5e498af7134ae16f430a4f6a3d2c99c7aa6fc31b76ce18684759c6480f506b5de45aa5b5b682e03f68d10fc77c83ae1679006dab679d9aa4",
+  },
+} as const;
+const HISTORICAL_CANDIDATE = {
+  ...PI_RUNTIME_PREVIOUS_CANDIDATE,
+  ...HISTORICAL_PI_0_8_24_IDENTITY,
+} as unknown as Candidate;
+const historicalSource = HISTORICAL_PI_0_8_24_IDENTITY.package.source;
+const historicalRoot = "/tmp/pi-target/pi-agent/packages/jorgex-pi-0.8.24";
+const historicalRunner = `${historicalRoot}/bin/jorgex-pi.mjs`;
+const historicalManagedProjectedPackage = { source: historicalSource, skills: [], prompts: [] } as const;
+
 function receiptFor(candidate: Candidate, candidateEnvironment: Environment): Receipt {
   return {
     schemaVersion: 1,
@@ -371,5 +396,123 @@ describe("Pi package-managed operations", () => {
       remedy: expect.stringMatching(/previous|anterior|reinstall/i),
     });
     expect(events).toEqual([]);
+  });
+
+  it("accepts the owned v1 historical receipt via the old runner without re-pinning the next install", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    const historicalReceiptJson = JSON.stringify(receiptFor(HISTORICAL_CANDIDATE, environment));
+    const historicalSettingsJson = JSON.stringify({ packages: [historicalManagedProjectedPackage] });
+    const historicalInput = {
+      operation: "doctor" as const,
+      interactive: false,
+      registry: {
+        id: "pi" as const,
+        kind: "package-managed" as const,
+        candidate: PI_RUNTIME_CANDIDATE,
+        acceptedCandidates: [PI_RUNTIME_CANDIDATE, HISTORICAL_CANDIDATE] as readonly Candidate[],
+      },
+      detected: {
+        executable: "/opt/pi/bin/pi",
+        packageRunner: historicalRunner,
+        settingsJson: historicalSettingsJson,
+      },
+      engramBin: environment.ENGRAM_BIN,
+      receiptJson: historicalReceiptJson,
+      paths: {
+        targetDir: true,
+        codingAgentDir: environment.PI_CODING_AGENT_DIR,
+        receiptPath: "/tmp/pi-target/state/pi-receipt.json",
+        environment,
+      },
+    };
+    const historicalExpected = { runner: historicalRunner, environment };
+
+    const events: string[] = [];
+    const result = runPiPackageManagedOperation(historicalInput, deps(events, {
+      doctor: {
+        exitCode: 0,
+        stdout: runnerJsonFor(HISTORICAL_CANDIDATE, historicalRoot, "doctor", { healthy: true }),
+        stderr: "",
+      },
+    }, true, historicalExpected));
+
+    expect(result).toEqual({ kind: "healthy" });
+    expect(events).toEqual(["runner:doctor --json"]);
+
+    const historicalReceipt = receiptFor(HISTORICAL_CANDIDATE, environment);
+    const tamperedReceiptJson = JSON.stringify({
+      ...historicalReceipt,
+      candidate: {
+        ...HISTORICAL_PI_0_8_24_IDENTITY,
+        tarball: { ...HISTORICAL_PI_0_8_24_IDENTITY.tarball, sha256: "0".repeat(64) },
+      },
+    });
+    const tamperedEvents: string[] = [];
+    expect(runPiPackageManagedOperation(
+      { ...historicalInput, receiptJson: tamperedReceiptJson },
+      deps(tamperedEvents, {}, true, historicalExpected),
+    )).toEqual({ kind: "blocked", reason: "receipt-untrusted" });
+    expect(tamperedEvents).toEqual([]);
+
+    const foreignEvents: string[] = [];
+    expect(runPiPackageManagedOperation(
+      {
+        ...historicalInput,
+        detected: {
+          ...historicalInput.detected,
+          settingsJson: JSON.stringify({ packages: [historicalSource] }),
+        },
+      },
+      deps(foreignEvents, {}, true, historicalExpected),
+    )).toEqual({ kind: "blocked", reason: "source-divergent" });
+    expect(foreignEvents).toEqual([]);
+  });
+
+  it("productive registry retains the historical 0.8.24 recovery anchor without re-pinning the next install", async () => {
+    const prod = await import("../src/lib/pi-runtime.js") as {
+      PI_RUNTIME_CANDIDATE: { package: { version: string; source: string } };
+      PI_RUNTIME_REGISTRY: {
+        pi: {
+          source: string;
+          candidate: { package: { version: string; source: string } };
+          acceptedCandidates: readonly {
+            package: unknown;
+            tarball: unknown;
+            provenance: unknown;
+            contract?: {
+              runner?: {
+                schemaVersion?: unknown;
+                bin?: unknown;
+                commands?: unknown;
+                maxStdoutBytes?: unknown;
+              };
+            };
+          }[];
+        };
+      };
+    };
+
+    // Recovery evidence, NOT next release pin: the productive selector stays current.
+    expect(prod.PI_RUNTIME_CANDIDATE.package.version).not.toBe(HISTORICAL_PI_0_8_24_IDENTITY.package.version);
+    expect(prod.PI_RUNTIME_REGISTRY.pi.candidate.package.version).not.toBe(
+      HISTORICAL_PI_0_8_24_IDENTITY.package.version,
+    );
+    expect(prod.PI_RUNTIME_REGISTRY.pi.source).not.toBe(historicalSource);
+    expect(prod.PI_RUNTIME_REGISTRY.pi.source).toBe(prod.PI_RUNTIME_CANDIDATE.package.source);
+
+    const match = prod.PI_RUNTIME_REGISTRY.pi.acceptedCandidates.find(
+      (entry) =>
+        JSON.stringify(entry.package) === JSON.stringify(HISTORICAL_PI_0_8_24_IDENTITY.package) &&
+        JSON.stringify(entry.tarball) === JSON.stringify(HISTORICAL_PI_0_8_24_IDENTITY.tarball) &&
+        JSON.stringify(entry.provenance) === JSON.stringify(HISTORICAL_PI_0_8_24_IDENTITY.provenance),
+    );
+    expect(match).toBeDefined();
+
+    const runner = match?.contract?.runner;
+    expect(runner?.schemaVersion).toBe(1);
+    expect(runner?.bin).toBe("jorgex-pi");
+    expect(runner?.maxStdoutBytes).toBe(65_536);
+    expect(runner?.commands).toEqual(["status", "doctor", "models", "sync", "cleanup"]);
+    expect(runner?.commands).not.toContain("upgrade");
   });
 });

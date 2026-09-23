@@ -44,6 +44,26 @@ export interface PiRuntimeCandidate {
   };
 }
 
+/**
+ * Offline recovery identity for a previously accepted Pi release.
+ * Contains package/tarball/provenance/runner only; never pretends the old
+ * release has current capabilities. A full PiRuntimeCandidate is
+ * structurally assignable to this minimal shape.
+ */
+export interface PiAcceptedCandidate {
+  readonly package: CandidatePackage;
+  readonly provenance: CandidateProvenance;
+  readonly tarball: CandidateTarball;
+  readonly contract: {
+    readonly runner: {
+      readonly bin: string;
+      readonly commands: readonly string[];
+      readonly schemaVersion: number;
+      readonly maxStdoutBytes: number;
+    };
+  };
+}
+
 export interface PiPackageManagedDependency {
   name: string;
   version: string;
@@ -333,6 +353,174 @@ function expectedReceipt(
   };
 }
 
+export interface CreateManagedPiReceiptInput {
+  readonly candidate: Pick<PiRuntimeCandidate, "package" | "tarball" | "provenance">;
+  readonly scope: { readonly kind: "real" | "target-dir"; readonly codingAgentDir: string };
+  readonly engramBin: string;
+  readonly stageDir: string;
+  readonly releaseId: string;
+  readonly evidence: {
+    readonly lockSha256: string;
+    readonly treeSha256: string;
+    readonly dependencies: readonly PiPackageManagedDependency[];
+  };
+  readonly state: PiPackageReceipt["state"];
+}
+
+function assertPureAbsolutePath(raw: unknown, label: string): string {
+  if (typeof raw !== "string" || raw === "") {
+    throw new Error(`${label} must be a non-empty absolute path`);
+  }
+  if (raw.includes("\0") || raw.includes("\n") || raw.includes("\r")) {
+    throw new Error(`${label} contains symlink path literal or escape`);
+  }
+  if (!path.isAbsolute(raw)) {
+    throw new Error(`${label} must be an absolute directory: ${raw}`);
+  }
+  if (raw.split(/[\\/]/).includes("..")) {
+    throw new Error(`${label} must not contain escape segments (..): ${raw}`);
+  }
+  return path.resolve(raw);
+}
+
+/**
+ * Pure managed receipt builder (T07 GREEN, no FS/network).
+ *
+ * Returns the schemaVersion 1 receipt (accepted by published Pi 0.8.31
+ * `mcp-engram.ts`, which rejects schema 2 and ignores the additional
+ * `managedPackage` field) with strictly validated `managedPackage` derived
+ * from the isolated stage: releaseDir under
+ * `npm/jorgex-pi-managed/releases/<64hex>`, linkPath at
+ * `npm/node_modules/jorgex-pi`, backupDir at `stageDir/.activate-backup`
+ * with stageDir exactly `agentDir/stage-<32hex>/pi-agent`, plus observed
+ * lock/tree digests and six distinct deps with canonical sha512 SRI.
+ * Throws before returning on any invalid absolute dir, symlink literal or
+ * escape, bad id, dep, or field. Reuses `expectedReceipt`, `isHex64`,
+ * `isCanonicalSha512` and `isStrictChild`; no filesystem or network access,
+ * never a future version selector.
+ */
+export function createManagedPiReceipt(input: CreateManagedPiReceiptInput): PiPackageReceipt {
+  if (!isObjectRecord(input)) throw new Error("input must be an object");
+  const { candidate, scope, engramBin, stageDir, releaseId, evidence, state } = input as Record<string, unknown>;
+
+  if (!isObjectRecord(candidate)) throw new Error("candidate must be an object");
+  const pkg = (candidate as Record<string, unknown>)["package"];
+  const tarball = (candidate as Record<string, unknown>)["tarball"];
+  const provenance = (candidate as Record<string, unknown>)["provenance"];
+  if (!isObjectRecord(pkg) || pkg["name"] !== "jorgex-pi") {
+    throw new Error("candidate.package.name must be jorgex-pi");
+  }
+  const version = pkg["version"];
+  if (typeof version !== "string" || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+    throw new Error(`candidate.package.version must be stable semver, got ${String(version)}`);
+  }
+  if (pkg["source"] !== `npm:jorgex-pi@${version}`) {
+    throw new Error(`candidate.package.source must be npm:jorgex-pi@${version}`);
+  }
+  if (!isObjectRecord(tarball)) throw new Error("candidate.tarball must be an object");
+  const bytes = tarball["bytes"];
+  if (typeof bytes !== "number" || !Number.isInteger(bytes) || bytes <= 0) {
+    throw new Error("candidate.tarball.bytes must be a positive integer");
+  }
+  if (!isHex64(tarball["sha256"])) {
+    throw new Error("candidate.tarball.sha256 must be 64 lowercase hex");
+  }
+  if (typeof tarball["sha512"] !== "string" || !/^[a-f0-9]{128}$/.test(tarball["sha512"] as string)) {
+    throw new Error("candidate.tarball.sha512 must be 128 lowercase hex");
+  }
+  if (!isObjectRecord(provenance) || typeof provenance["commit"] !== "string" || !/^[a-f0-9]{40}$/.test(provenance["commit"] as string)) {
+    throw new Error("candidate.provenance.commit must be 40 lowercase hex");
+  }
+
+  if (!isObjectRecord(scope)) throw new Error("scope must be an object");
+  const kind = (scope as Record<string, unknown>)["kind"];
+  if (kind !== "real" && kind !== "target-dir") throw new Error("scope.kind must be real or target-dir");
+  const agentDir = assertPureAbsolutePath(
+    (scope as Record<string, unknown>)["codingAgentDir"],
+    "scope.codingAgentDir (agentDir)",
+  );
+
+  const engramResolved = assertPureAbsolutePath(engramBin, "engramBin");
+  if (state !== "installing" && state !== "installed") {
+    throw new Error("state must be installing or installed");
+  }
+
+  const stageResolved = assertPureAbsolutePath(stageDir, "stageDir");
+  if (!isStrictChild(agentDir, stageResolved)) {
+    throw new Error(`stageDir must be a strict child of the agentDir scope: ${String(stageDir)}`);
+  }
+  const stageRel = path.relative(agentDir, stageResolved);
+  const stageParts = stageRel.split(path.sep);
+  if (stageParts.length !== 2 || !/^stage-[0-9a-f]{32}$/.test(stageParts[0] ?? "") || stageParts[1] !== "pi-agent") {
+    throw new Error(`stageDir must be exactly agentDir/stage-<32hex>/pi-agent: ${String(stageDir)}`);
+  }
+
+  if (typeof releaseId !== "string" || !isHex64(releaseId)) {
+    throw new Error(`releaseId must be 64 lowercase hex: ${String(releaseId)}`);
+  }
+
+  if (!isObjectRecord(evidence)) throw new Error("evidence must be an object");
+  const ev = evidence as Record<string, unknown>;
+  if (!isHex64(ev["lockSha256"])) throw new Error("evidence.lockSha256 must be 64 lowercase hex");
+  if (!isHex64(ev["treeSha256"])) throw new Error("evidence.treeSha256 must be 64 lowercase hex");
+  const deps = ev["dependencies"];
+  if (!Array.isArray(deps) || deps.length !== 6) {
+    throw new Error(`evidence.dependencies must contain exactly six observed dependencies, got ${Array.isArray(deps) ? deps.length : String(deps)}`);
+  }
+  const seen = new Set<string>();
+  for (const dep of deps) {
+    if (!isObjectRecord(dep)) throw new Error("evidence.dependencies entry must be an object");
+    const { name, version: depVersion, integrity } = dep as Record<string, unknown>;
+    if (typeof name !== "string" || name === "" || /\s/.test(name)) {
+      throw new Error(`evidence.dependencies entry has an invalid name: ${String(name)}`);
+    }
+    if (typeof depVersion !== "string" || depVersion === "" || /\s/.test(depVersion as string)) {
+      throw new Error(`evidence.dependencies entry ${String(name)} has an invalid version`);
+    }
+    if (!isCanonicalSha512(integrity)) {
+      throw new Error(`evidence.dependencies entry ${String(name)} integrity must be canonical sha512 SRI`);
+    }
+    if (seen.has(name as string)) throw new Error(`evidence.dependencies duplicate name: ${String(name)}`);
+    seen.add(name as string);
+  }
+
+  const npmDir = path.join(agentDir, "npm");
+  const managedRoot = path.join(npmDir, "jorgex-pi-managed");
+  const releaseDir = path.join(managedRoot, "releases", releaseId as string);
+  const linkPath = path.join(npmDir, "node_modules", "jorgex-pi");
+  const backupDir = path.join(stageResolved, ".activate-backup");
+  if (!isStrictChild(managedRoot, path.resolve(releaseDir))) {
+    throw new Error(`releaseDir escapes its managed root (symlink escape rejected): ${releaseDir}`);
+  }
+  if (path.resolve(linkPath) !== linkPath || path.resolve(linkPath) !== path.join(npmDir, "node_modules", "jorgex-pi")) {
+    throw new Error(`linkPath escapes its npm root (symlink escape rejected): ${linkPath}`);
+  }
+  if (!isStrictChild(agentDir, path.resolve(backupDir)) || path.resolve(backupDir) !== backupDir) {
+    throw new Error(`backupDir escapes its agentDir scope (symlink escape rejected): ${backupDir}`);
+  }
+  if (backupDir === npmDir || isStrictChild(npmDir, backupDir)) {
+    throw new Error(`backupDir must live under the stage dir, outside the npm root: ${backupDir}`);
+  }
+
+  const base = expectedReceipt(
+    candidate as unknown as PiRuntimeCandidate,
+    state as PiPackageReceipt["state"],
+    { kind: kind as "real" | "target-dir", codingAgentDir: agentDir },
+    engramResolved,
+  );
+  return {
+    ...base,
+    managedPackage: {
+      releaseDir,
+      linkPath,
+      backupDir,
+      lockSha256: ev["lockSha256"] as string,
+      treeSha256: ev["treeSha256"] as string,
+      dependencies: (deps as PiPackageManagedDependency[]).map((dep) => ({ ...dep })),
+    },
+  };
+}
+
 type ReceiptParseResult = PiPackageReceipt | "upgrade-required" | null;
 
 function parseReceiptShape(receiptJson: string): ReceiptParseResult {
@@ -516,7 +704,7 @@ function parseRunnerRecord(
   stdout: string,
   stderr: string,
   command: RunnerCommand,
-  candidate: PiRuntimeCandidate,
+  candidate: PiAcceptedCandidate,
   packageRunner: string,
 ): RunnerRecord | null {
   if (stderr !== "" || !stdout.endsWith("\n") || Buffer.byteLength(stdout) > candidate.contract.runner.maxStdoutBytes) {
@@ -692,7 +880,7 @@ export interface PiPackageRegistry {
   id: "pi";
   kind: "package-managed";
   candidate: PiRuntimeCandidate;
-  acceptedCandidates?: readonly PiRuntimeCandidate[];
+  acceptedCandidates?: readonly PiAcceptedCandidate[];
 }
 
 export interface PiPackageManagedOperationInput {
@@ -716,6 +904,8 @@ export interface PiPackageManagedOperationInput {
 
 export interface PiPackageManagedOperationDeps {
   backupSettings(): void;
+  /** Offline cache check for a provider-selected managed parent (tarball bytes/SRI, no network). Doctor-only. */
+  verifyManagedArtifact?(receipt: PiPackageReceipt): boolean;
   run(invocation: {
     executable: string;
     args: string[];
@@ -730,7 +920,7 @@ export type PiPackageManagedOperationResult =
   | { kind: "uninstalled" }
   | { kind: "blocked"; reason: string; remedy?: string };
 
-function receiptUpgradeRequired(): PiPackageManagedOperationResult {
+function receiptUpgradeRequired(): Extract<PiPackageManagedOperationResult, { kind: "blocked" }> {
   return {
     kind: "blocked",
     reason: "receipt-upgrade-required",
@@ -738,9 +928,15 @@ function receiptUpgradeRequired(): PiPackageManagedOperationResult {
   };
 }
 
+type OwnedOperationState = {
+  receipt: PiPackageReceipt;
+  source: string;
+  matchedCandidate: PiAcceptedCandidate;
+};
+
 function validateOwnedOperationState(
   input: PiPackageManagedOperationInput,
-): { receipt: PiPackageReceipt; source: string } | PiPackageManagedOperationResult {
+): OwnedOperationState | PiPackageManagedOperationResult {
   const sources = parsePackageSources(input.detected.settingsJson);
   if (sources === null) return { kind: "blocked", reason: "settings-corrupt" };
   const matchingSources = sources.filter(({ source }) => isJorgeXPiSource(source));
@@ -759,11 +955,12 @@ function validateOwnedOperationState(
   const receipt = parsedReceipt;
   if (receipt.state !== "installed") return { kind: "blocked", reason: "partial-state" };
   const accepted = input.registry.acceptedCandidates ?? [input.registry.candidate];
-  if (!accepted.some((candidate) => sameRecord(receipt.candidate, {
+  const matchedCandidate = accepted.find((candidate) => sameRecord(receipt.candidate, {
     package: candidate.package,
     tarball: candidate.tarball,
     provenance: candidate.provenance,
-  }))) {
+  }));
+  if (matchedCandidate === undefined) {
     return { kind: "blocked", reason: "receipt-untrusted" };
   }
   if (receipt.scope.kind !== (input.paths.targetDir ? "target-dir" : "real")
@@ -781,11 +978,11 @@ function validateOwnedOperationState(
     || !isExactManagedPackage(matchingSource.entry, source)) {
     return { kind: "blocked", reason: "source-divergent" };
   }
-  return { receipt, source };
+  return { receipt, source, matchedCandidate };
 }
 
 function operationWasBlocked(
-  value: { receipt: PiPackageReceipt; source: string } | PiPackageManagedOperationResult,
+  value: OwnedOperationState | PiPackageManagedOperationResult,
 ): value is PiPackageManagedOperationResult {
   return "kind" in value;
 }
@@ -794,6 +991,7 @@ function runManagedRunner(
   input: PiPackageManagedOperationInput,
   deps: PiPackageManagedOperationDeps,
   command: RunnerCommand,
+  candidate: PiAcceptedCandidate = input.registry.candidate,
 ): RunnerRecord | PiPackageManagedOperationResult {
   const result = deps.run({
     executable: input.detected.packageRunner,
@@ -805,7 +1003,7 @@ function runManagedRunner(
     result.stdout,
     result.stderr,
     command,
-    input.registry.candidate,
+    candidate,
     input.detected.packageRunner,
   );
   return parsed ?? { kind: "blocked", reason: "runner-output" };
@@ -848,7 +1046,7 @@ type ManagedDoctorCheck =
   | { kind: "blocked"; reason: string };
 
 function checkManagedPackageForDoctor(
-  input: PiPackageManagedOperationInput,
+  input: Pick<PiPackageManagedOperationInput, "paths">,
   managedRaw: unknown,
 ): ManagedDoctorCheck {
   if (!isObjectRecord(managedRaw)) return { kind: "blocked", reason: "receipt-corrupt" };
@@ -1037,6 +1235,199 @@ function parseManagedDoctorRunner(
   }
 }
 
+function parseOfflineManagedDoctorRunner(
+  stdout: string,
+  stderr: string,
+  receipt: PiPackageReceipt,
+  registryCandidate: PiRuntimeCandidate,
+  expectedRoot: string,
+): RunnerRecord | null {
+  if (stderr !== "" || !stdout.endsWith("\n") || Buffer.byteLength(stdout) > registryCandidate.contract.runner.maxStdoutBytes) {
+    return null;
+  }
+  const body = stdout.slice(0, -1);
+  if (body === "" || body.includes("\n") || body.includes("\r")) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isObjectRecord(parsed)) return null;
+    const record = parsed as Partial<RunnerRecord>;
+    if (record.schemaVersion !== registryCandidate.contract.runner.schemaVersion
+      || record.command !== "doctor"
+      || record.ok !== true
+      || !isObjectRecord(record.package)
+      || record.package["name"] !== receipt.candidate.package.name
+      || record.package["version"] !== receipt.candidate.package.version
+      || typeof record.package["root"] !== "string"
+      || !path.isAbsolute(record.package["root"] as string)
+      || path.resolve(record.package["root"] as string) !== expectedRoot) {
+      return null;
+    }
+    return record as RunnerRecord;
+  } catch {
+    return null;
+  }
+}
+
+function parseOfflineManagedSyncRunner(
+  stdout: string,
+  stderr: string,
+  receipt: PiPackageReceipt,
+  registryCandidate: PiRuntimeCandidate,
+  expectedRoot: string,
+): RunnerRecord | null {
+  if (stderr !== "" || !stdout.endsWith("\n") || Buffer.byteLength(stdout) > registryCandidate.contract.runner.maxStdoutBytes) {
+    return null;
+  }
+  const body = stdout.slice(0, -1);
+  if (body === "" || body.includes("\n") || body.includes("\r")) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isObjectRecord(parsed)) return null;
+    const record = parsed as Partial<RunnerRecord>;
+    if (record.schemaVersion !== registryCandidate.contract.runner.schemaVersion
+      || record.command !== "sync"
+      || record.ok !== true
+      || !isObjectRecord(record.package)
+      || record.package["name"] !== receipt.candidate.package.name
+      || record.package["version"] !== receipt.candidate.package.version
+      || typeof record.package["root"] !== "string"
+      || !path.isAbsolute(record.package["root"] as string)
+      || path.resolve(record.package["root"] as string) !== expectedRoot) {
+      return null;
+    }
+    return record as RunnerRecord;
+  } catch {
+    return null;
+  }
+}
+
+type OfflineManagedCheck =
+  | { kind: "ok"; receipt: PiPackageReceipt; realRoot: string }
+  | Extract<PiPackageManagedOperationResult, { kind: "blocked" }>;
+
+/**
+ * Shared offline gate for a provider-selected managed release: authenticates
+ * the schema1 managedPackage receipt (scope/engram/exact managed source),
+ * validates link/backup/lock/tree evidence, then requires the cached-tgz
+ * callback. Never accepts a legacy receipt without managedPackage and never
+ * consults the current pin identity; the caller parses the runner with the
+ * receipt identity plus the registry runner policy.
+ */
+function checkOfflineManagedRelease(
+  input: Pick<PiPackageManagedOperationInput, "detected" | "engramBin" | "receiptJson" | "paths">,
+  deps: PiPackageManagedOperationDeps,
+): OfflineManagedCheck {
+  const sources = parsePackageSources(input.detected.settingsJson);
+  if (sources === null) return { kind: "blocked", reason: "settings-corrupt" };
+  const matchingSources = sources.filter(({ source }) => isJorgeXPiSource(source));
+  if (matchingSources.length > 1) return { kind: "blocked", reason: "duplicate-package" };
+  if (input.receiptJson === null) return { kind: "blocked", reason: "receipt-untrusted" };
+  const parsedReceipt = parseReceiptShape(input.receiptJson);
+  if (parsedReceipt === "upgrade-required") return receiptUpgradeRequired();
+  if (parsedReceipt === null) return { kind: "blocked", reason: "receipt-corrupt" };
+  const receipt = parsedReceipt;
+  if (receipt.state !== "installed") return { kind: "blocked", reason: "partial-state" };
+  const managedRaw = (receipt as { managedPackage?: unknown }).managedPackage;
+  if (managedRaw === undefined) return { kind: "blocked", reason: "receipt-untrusted" };
+  if (receipt.scope.kind !== (input.paths.targetDir ? "target-dir" : "real")
+    || path.resolve(receipt.scope.codingAgentDir) !== path.resolve(input.paths.codingAgentDir)) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  if (input.engramBin !== null && path.resolve(receipt.engram.binary) !== path.resolve(input.engramBin)) {
+    return { kind: "blocked", reason: "receipt-corrupt" };
+  }
+  const source = receipt.candidate.package.source;
+  const matchingSource = matchingSources[0];
+  if (matchingSources.length !== 1
+    || matchingSource === undefined
+    || matchingSource.source !== source
+    || !isExactManagedPackage(matchingSource.entry, source)) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  const checked = checkManagedPackageForDoctor(input, managedRaw);
+  if (checked.kind === "blocked") return checked;
+  if (typeof deps.verifyManagedArtifact !== "function") {
+    return { kind: "blocked", reason: "receipt-untrusted" };
+  }
+  let verified = false;
+  try {
+    verified = deps.verifyManagedArtifact(receipt) === true;
+  } catch {
+    return { kind: "blocked", reason: "receipt-untrusted" };
+  }
+  if (!verified) return { kind: "blocked", reason: "receipt-untrusted" };
+  return { kind: "ok", receipt, realRoot: checked.realRoot };
+}
+
+function runOfflineManagedDoctor(
+  input: PiPackageManagedOperationInput,
+  deps: PiPackageManagedOperationDeps,
+): PiPackageManagedOperationResult {
+  const validated = checkOfflineManagedRelease(input, deps);
+  if (validated.kind === "blocked") return validated;
+  const raw = deps.run({
+    executable: input.detected.packageRunner,
+    args: ["doctor", "--json"],
+    environment: input.paths.environment,
+  });
+  if (raw.exitCode !== 0) return { kind: "blocked", reason: "runner-unhealthy" };
+  const doctor = parseOfflineManagedDoctorRunner(raw.stdout, raw.stderr, validated.receipt, input.registry.candidate, validated.realRoot);
+  if (doctor === null) return { kind: "blocked", reason: "runner-output" };
+  const result = doctor.result;
+  return result !== null && typeof result === "object" && Reflect.get(result, "healthy") === true
+    ? { kind: "healthy" }
+    : { kind: "blocked", reason: "runner-unhealthy" };
+}
+
+export type PiPackageManagedSyncInput = Omit<PiPackageManagedOperationInput, "operation"> & {
+  operation: "sync";
+};
+
+export type PiPackageManagedSyncResult =
+  | { kind: "synced"; actions: unknown[]; packageSource: string }
+  | { kind: "blocked"; reason: string; remedy?: string };
+
+/**
+ * Offline sync for a verified managed private release. Shares the offline
+ * gate with doctor (receipt auth, evidence, cached-tgz callback) and parses
+ * the `sync` runner record with the receipt parent identity plus the
+ * registry runner policy. Never a future version selector.
+ */
+export function runPiPackageManagedSync(
+  input: PiPackageManagedSyncInput,
+  deps: PiPackageManagedOperationDeps,
+): PiPackageManagedSyncResult {
+  if (input.engramBin === null) {
+    return {
+      kind: "blocked",
+      reason: "engram-missing",
+      remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
+    };
+  }
+  const validated = checkOfflineManagedRelease(input, deps);
+  if (validated.kind === "blocked") return validated;
+  const raw = deps.run({
+    executable: input.detected.packageRunner,
+    args: ["sync", "--json"],
+    environment: input.paths.environment,
+  });
+  if (raw.exitCode !== 0) return { kind: "blocked", reason: "runner-unhealthy" };
+  const synced = parseOfflineManagedSyncRunner(raw.stdout, raw.stderr, validated.receipt, input.registry.candidate, validated.realRoot);
+  if (synced === null) return { kind: "blocked", reason: "runner-output" };
+  const result = synced.result;
+  if (result === null
+    || typeof result !== "object"
+    || (Reflect.get(result, "changed") !== true && Reflect.get(result, "changed") !== false)
+    || !Array.isArray(Reflect.get(result, "actions"))) {
+    return { kind: "blocked", reason: "runner-unhealthy" };
+  }
+  return {
+    kind: "synced",
+    actions: Reflect.get(result, "actions") as unknown[],
+    packageSource: validated.receipt.candidate.package.source,
+  };
+}
+
 export function runPiPackageManagedOperation(
   input: PiPackageManagedOperationInput,
   deps: PiPackageManagedOperationDeps,
@@ -1058,18 +1449,23 @@ export function runPiPackageManagedOperation(
     }
   }
   const owned = validateOwnedOperationState(input);
-  if (operationWasBlocked(owned)) return owned;
+  if (operationWasBlocked(owned)) {
+    if (input.operation === "doctor" && owned.kind === "blocked" && owned.reason === "receipt-untrusted") {
+      return runOfflineManagedDoctor(input, deps);
+    }
+    return owned;
+  }
 
   if (input.operation === "doctor") {
-    if (!sameRecord(owned.receipt.candidate, {
-      package: input.registry.candidate.package,
-      tarball: input.registry.candidate.tarball,
-      provenance: input.registry.candidate.provenance,
-    })) {
-      return { kind: "blocked", reason: "source-divergent" };
-    }
     const managedRaw = (owned.receipt as { managedPackage?: unknown }).managedPackage;
     if (managedRaw !== undefined) {
+      if (!sameRecord(owned.receipt.candidate, {
+        package: input.registry.candidate.package,
+        tarball: input.registry.candidate.tarball,
+        provenance: input.registry.candidate.provenance,
+      })) {
+        return { kind: "blocked", reason: "source-divergent" };
+      }
       const checked = checkManagedPackageForDoctor(input, managedRaw);
       if (checked.kind === "blocked") return checked;
       const raw = deps.run({
@@ -1085,7 +1481,7 @@ export function runPiPackageManagedOperation(
         ? { kind: "healthy" }
         : { kind: "blocked", reason: "runner-unhealthy" };
     }
-    const doctor = runManagedRunner(input, deps, "doctor");
+    const doctor = runManagedRunner(input, deps, "doctor", owned.matchedCandidate);
     if (managedRunnerWasBlocked(doctor)) return doctor;
     const result = doctor.result;
     return result !== null && typeof result === "object" && Reflect.get(result, "healthy") === true
