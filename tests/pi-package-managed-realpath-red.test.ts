@@ -9,16 +9,20 @@ import { inspectStagedPiNpm } from "../src/lib/pi-staged-lock.js";
 /**
  * T05 RED for T07 extended Stack receipt / runner realpath (tests only, fix).
  *
- * Previous revision claimed doctor healthy on fabricated digests
- * (`synthetic-dep-*`, invalid SRI, no lock file) that a correct verifier must
- * reject. This revision uses a complete synthetic *valid* staged tree:
+ * Previous revision invented `npm/jorgex-pi-managed/backups/<id>` which the
+ * real lifecycle never produces: `activateVerifiedPiRelease` retains the old
+ * backup at `<stageDir>/.activate-backup` where the real stage is
+ * `agentDir/stage-<hex>/pi-agent` (outside npm). This revision uses that real
+ * post-promotion topology:
+ * - stage root `agentDir/stage-<32hex>/pi-agent` with staged `npm/` +
+ *   `downloads/`; valid evidence via real `inspectStagedPiNpm`, then the
+ *   staged npm tree is moved into the private release and exposed via the
+ *   single relative link `npm/node_modules/jorgex-pi`;
+ * - `backupDir = stageDir/.activate-backup` created as a real directory
+ *   (retained post-promotion until explicit rollback-window close);
  * - six companion names frozen with tests/fixtures/pi-runtime.ts shape,
  *   synthetic 9.9.x versions with canonical registry URLs and canonical
  *   sha512 SRIs, lock v3, synthetic tarball bytes;
- * - evidence {lockSha256,treeSha256,dependencies} obtained via the real
- *   `inspectStagedPiNpm` (no hand-rolled digests), then the staged npm tree
- *   is moved into the private release and exposed via the single relative
- *   link `npm/node_modules/jorgex-pi`;
  * - synthetic candidate 9.9.9 test-only (contract cloned from the verified
  *   registry fixture for realistic runner/capabilities, package/tarball/
  *   provenance overridden for internal consistency). Never a claim about any
@@ -29,6 +33,10 @@ import { inspectStagedPiNpm } from "../src/lib/pi-staged-lock.js";
  * - Pi native reports release REALPATH in `package.root`. Doctor is healthy
  *   only when the relative link, runner realpath bounded in the npm root,
  *   and lock/tree evidence all match the receipt under owned scope.
+ * - Current product `checkManagedPackageForDoctor` wrongly requires
+ *   backupDir under `npm/jorgex-pi-managed`, so the real stage backup REDs
+ *   with `source-divergent`; GREEN must accept the stage backup yet still
+ *   reject a foreign absolute/symlink backupDir.
  * - Negative drift modifies ACTUAL on-disk state with the SAME receipt
  *   (lock bytes tampered), not only the receipt digest.
  */
@@ -107,6 +115,7 @@ function syntheticHex(seed: string): string {
 
 type ManagedSandbox = {
   agentDir: string;
+  stageDir: string;
   npmDir: string;
   releaseDir: string;
   packageRoot: string;
@@ -132,7 +141,9 @@ function setupValidManagedSandbox(): ManagedSandbox {
   sandboxes.push(sandbox);
   const agentDir = path.join(sandbox, "agent");
   const npmDir = path.join(agentDir, "npm");
-  const stageDir = path.join(agentDir, "stage-isolated");
+  // Real stage topology: agentDir/stage-<32hex>/pi-agent (outside npm).
+  const stageHex = syntheticHex("jorgex-pi-managed-stage-root").slice(0, 32);
+  const stageDir = path.join(agentDir, `stage-${stageHex}`, "pi-agent");
   const stagedNpm = path.join(stageDir, "npm");
   const downloadsDir = path.join(stageDir, "downloads");
   fs.mkdirSync(stagedNpm, { recursive: true });
@@ -218,7 +229,9 @@ function setupValidManagedSandbox(): ManagedSandbox {
   const relative = path.relative(path.dirname(linkPath), packageRoot);
   expect(relative.startsWith("..")).toBe(true);
   fs.symlinkSync(relative, linkPath, "dir");
-  const backupDir = path.join(npmDir, "jorgex-pi-managed", "backups", releaseId);
+  // Real post-promotion backup retained under the stage, outside npm, until
+  // the lifecycle explicitly closes the rollback window.
+  const backupDir = path.join(stageDir, ".activate-backup");
   fs.mkdirSync(backupDir, { recursive: true });
 
   // Synthetic candidate internally consistent with the staged tree
@@ -247,6 +260,7 @@ function setupValidManagedSandbox(): ManagedSandbox {
   };
   return {
     agentDir,
+    stageDir,
     npmDir,
     releaseDir,
     packageRoot,
@@ -307,6 +321,14 @@ describe("managed private-release realpath RED (T05 for T07, valid evidence)", (
     const sandbox = setupValidManagedSandbox();
 
     expect(sandbox.dependencies).toHaveLength(6);
+    // Real post-promotion topology: stageDir is agentDir/stage-<hex>/pi-agent
+    // (outside npm) and the retained backup lives at stageDir/.activate-backup.
+    expect(path.basename(sandbox.stageDir)).toBe("pi-agent");
+    expect(path.basename(path.dirname(sandbox.stageDir))).toMatch(/^stage-[0-9a-f]{32}$/);
+    expect(sandbox.backupDir).toBe(path.join(sandbox.stageDir, ".activate-backup"));
+    expect(path.relative(sandbox.npmDir, sandbox.backupDir).startsWith("..")).toBe(true);
+    expect(fs.lstatSync(sandbox.backupDir).isDirectory()).toBe(true);
+    expect(fs.lstatSync(sandbox.backupDir).isSymbolicLink()).toBe(false);
     expect(fs.lstatSync(sandbox.linkPath).isSymbolicLink()).toBe(true);
     const target = fs.readlinkSync(sandbox.linkPath);
     expect(path.isAbsolute(target)).toBe(false);
@@ -377,5 +399,42 @@ describe("managed private-release realpath RED (T05 for T07, valid evidence)", (
     );
 
     expect(runPiPackageManagedOperation(input, deps)).toMatchObject({ kind: "blocked" });
+  });
+
+  it("blocks doctor when backupDir is a foreign absolute path outside the lifecycle", async () => {
+    const { runPiPackageManagedOperation } = await loadOperations();
+    const sandbox = setupValidManagedSandbox();
+    const realRoot = fs.realpathSync(sandbox.linkPath);
+
+    const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-foreign-backup-"));
+    // Tracked for cleanup, never real HOME.
+    sandboxes.push(foreignDir);
+
+    const foreignReceipt = JSON.stringify({ ...JSON.parse(managedReceipt(sandbox)), managedPackage: { ...JSON.parse(managedReceipt(sandbox)).managedPackage, backupDir: foreignDir } });
+    expect(path.resolve(foreignDir)).not.toBe(path.resolve(sandbox.backupDir));
+
+    const result = runPiPackageManagedOperation(
+      {
+        operation: "doctor",
+        interactive: false,
+        registry: { id: "pi", kind: "package-managed", candidate: sandbox.candidate },
+        detected: { executable: "/opt/pi/bin/pi", packageRunner: sandbox.linkBin, settingsJson: managedSettings(sandbox) },
+        engramBin: sandbox.engramBin,
+        receiptJson: foreignReceipt,
+        paths: { targetDir: true, codingAgentDir: sandbox.agentDir, receiptPath: sandbox.receiptPath, environment: sandbox.environment },
+      },
+      {
+        backupSettings() {},
+        run() {
+          return { exitCode: 0, stdout: doctorRunnerJson(sandbox, realRoot), stderr: "" };
+        },
+        isPackageAbsent() {
+          return true;
+        },
+        deleteReceipt() {},
+      },
+    );
+
+    expect(result).toMatchObject({ kind: "blocked" });
   });
 });

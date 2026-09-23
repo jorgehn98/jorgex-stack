@@ -839,7 +839,23 @@ function checkManagedPackageForDoctor(
   const releaseResolved = path.resolve(releaseDir);
   const linkResolved = path.resolve(linkPath);
   const backupResolved = path.resolve(backupDir);
-  if (!isStrictChild(managedRoot, releaseResolved) || !isStrictChild(managedRoot, backupResolved)) {
+  if (!isStrictChild(managedRoot, releaseResolved)) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  if (!isStrictChild(agentDir, backupResolved)) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  const backupRel = path.relative(agentDir, backupResolved);
+  const backupParts = backupRel.split(path.sep);
+  if (
+    backupParts.length !== 3
+    || !/^stage-[0-9a-f]{32}$/.test(backupParts[0] ?? "")
+    || backupParts[1] !== "pi-agent"
+    || backupParts[2] !== ".activate-backup"
+  ) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  if (backupResolved === npmDir || isStrictChild(npmDir, backupResolved)) {
     return { kind: "blocked", reason: "source-divergent" };
   }
   if (linkResolved !== path.join(npmDir, "node_modules", "jorgex-pi")) {
@@ -847,17 +863,27 @@ function checkManagedPackageForDoctor(
   }
 
   let releaseStat: fs.Stats | null = null;
-  let backupStat: fs.Stats | null = null;
   try {
     releaseStat = fs.lstatSync(releaseResolved);
-    backupStat = fs.lstatSync(backupResolved);
   } catch {
     return { kind: "blocked", reason: "link-drift" };
   }
-  if (
-    releaseStat === null || !releaseStat.isDirectory() || releaseStat.isSymbolicLink()
-    || backupStat === null || !backupStat.isDirectory() || backupStat.isSymbolicLink()
-  ) {
+  if (releaseStat === null || !releaseStat.isDirectory() || releaseStat.isSymbolicLink()) {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+  try {
+    let cur = backupResolved;
+    for (;;) {
+      const st = fs.lstatSync(cur);
+      if (!st.isDirectory() || st.isSymbolicLink()) {
+        return { kind: "blocked", reason: "link-drift" };
+      }
+      if (cur === agentDir) break;
+      const parent = path.dirname(cur);
+      if (parent === cur) return { kind: "blocked", reason: "source-divergent" };
+      cur = parent;
+    }
+  } catch {
     return { kind: "blocked", reason: "link-drift" };
   }
 
