@@ -486,7 +486,7 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
-  it.each(["install", "sync", "models", "doctor", "uninstall", "update"] as const)(
+  it.each(["install", "sync", "models", "update"] as const)(
     "blocks %s before package, projection, detection, or preference persistence for an untested Pi version",
     async (operation) => {
       const runPiRuntimeSystem = vi.fn(async () => ({ kind: "installed" as const }));
@@ -557,6 +557,84 @@ describe("Pi managed package and projection coordination", () => {
         expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
         expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
         expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+      } finally {
+        vi.doUnmock("../src/lib/pi-runtime.js");
+        vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+        vi.doUnmock("../src/lib/tool-preferences.js");
+        vi.doUnmock("../src/lib/external-tools.js");
+        vi.resetModules();
+      }
+    },
+  );
+
+  // T05-RED: recovery (doctor/uninstall) on the observed Pi 0.87.1 host must
+  // reach the receipt-aware package run instead of the obsolete global gate.
+  // The mocked package stands in for ownership validation (owned → success,
+  // foreign → receipt-untrusted); real ownership stays pinned by pi-package-operations tests.
+  it.each([
+    ["owned doctor", "doctor", { kind: "healthy" }, { kind: "healthy" }],
+    ["owned uninstall", "uninstall", { kind: "uninstalled" }, { kind: "uninstalled" }],
+    ["foreign doctor", "doctor", { kind: "blocked", reason: "receipt-untrusted" }, { kind: "blocked", reason: "receipt-untrusted" }],
+    ["foreign uninstall", "uninstall", { kind: "blocked", reason: "receipt-untrusted" }, { kind: "blocked", reason: "receipt-untrusted" }],
+  ] as const)(
+    "passes %s on the observed Pi 0.87.1 host through to the receipt-aware package run",
+    async (_label, operation, packageResult, expected) => {
+      const runPiRuntimeSystem = vi.fn(async () => packageResult);
+      const runPiProjectionLifecycleSystem = vi.fn((input: { operation: string }) =>
+        input.operation === "doctor" ? { kind: "healthy" as const } : { kind: "uninstalled" as const },
+      );
+      const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+      const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+      const detectPlaywrightCli = vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      }));
+      const resolvePnpmBin = vi.fn(() => "/isolated/bin/pnpm");
+      const loadPlaywrightCliPreference = vi.fn(() => false);
+      const loadDevtoolsMcpPreference = vi.fn(() => false);
+      const savePlaywrightCliPreference = vi.fn();
+      const saveDevtoolsMcpPreference = vi.fn();
+
+      vi.resetModules();
+      vi.doMock("../src/lib/pi-runtime.js", () => ({
+        PI_RUNTIME_CANDIDATE: {
+          package: { source: "npm:jorgex-pi@test" },
+          pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+          contract: { capabilities: ["playwright-handoff-v1"] },
+        },
+        runPiRuntimeSystem,
+      }));
+      vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+        runPiProjectionLifecycleSystem,
+        preparePiProjectionUninstallSystem,
+        completePiProjectionUninstallSystem,
+      }));
+      vi.doMock("../src/lib/tool-preferences.js", () => ({
+        loadPlaywrightCliPreference,
+        playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+        savePlaywrightCliPreference,
+        devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+        loadDevtoolsMcpPreference,
+        saveDevtoolsMcpPreference,
+      }));
+      vi.doMock("../src/lib/external-tools.js", () => ({
+        detectPlaywrightCli,
+        resolvePnpmBin,
+      }));
+
+      try {
+        const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+        const result = await mod.runManagedPiSystem({
+          operation,
+          detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+          engramBin: "/isolated/bin/engram",
+          writingStyle: FORWARDING_STYLE,
+        });
+
+        expect(result).toEqual(expected);
+        expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+        expect(runPiRuntimeSystem).toHaveBeenCalled();
       } finally {
         vi.doUnmock("../src/lib/pi-runtime.js");
         vi.doUnmock("../src/lib/pi-projection-lifecycle.js");

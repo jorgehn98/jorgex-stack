@@ -173,7 +173,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   upgradePermissions?: boolean;
 }): Promise<PiManagedOperationResult> {
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
-  if (!supportedVersions.includes(input.detected.version)) {
+  if (input.operation !== "doctor" && input.operation !== "uninstall" && !supportedVersions.includes(input.detected.version)) {
     return {
       kind: "blocked",
       reason: "unsupported-pi-version",
