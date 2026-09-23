@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
+import { inventoryTreeSha256 } from "./pi-staged-lock.js";
 
 type CandidatePackage = {
   readonly name: string;
@@ -41,6 +44,21 @@ export interface PiRuntimeCandidate {
   };
 }
 
+export interface PiPackageManagedDependency {
+  name: string;
+  version: string;
+  integrity: string;
+}
+
+export interface PiPackageManagedEvidence {
+  releaseDir: string;
+  linkPath: string;
+  backupDir: string;
+  lockSha256: string;
+  treeSha256: string;
+  dependencies: PiPackageManagedDependency[];
+}
+
 export interface PiPackageReceipt {
   schemaVersion: 1;
   state: "installing" | "installed";
@@ -56,6 +74,7 @@ export interface PiPackageReceipt {
   engram: {
     binary: string;
   };
+  managedPackage?: PiPackageManagedEvidence;
 }
 
 export interface PiPackageEnvironment {
@@ -755,6 +774,200 @@ function managedRunnerWasBlocked(
   return "kind" in value;
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStrictChild(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+function isHex64(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isCanonicalSha512(value: unknown): value is string {
+  if (typeof value !== "string" || !value.startsWith("sha512-")) return false;
+  const b64 = value.slice("sha512-".length);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(b64, "base64");
+  } catch {
+    return false;
+  }
+  return bytes.length === 64 && bytes.toString("base64") === b64;
+}
+
+type ManagedDoctorCheck =
+  | { kind: "ok"; packageRoot: string; realRoot: string }
+  | { kind: "blocked"; reason: string };
+
+function checkManagedPackageForDoctor(
+  input: PiPackageManagedOperationInput,
+  managedRaw: unknown,
+): ManagedDoctorCheck {
+  if (!isObjectRecord(managedRaw)) return { kind: "blocked", reason: "receipt-corrupt" };
+  const { releaseDir, linkPath, backupDir, lockSha256, treeSha256, dependencies } = managedRaw;
+  if (
+    typeof releaseDir !== "string" || !path.isAbsolute(releaseDir)
+    || typeof linkPath !== "string" || !path.isAbsolute(linkPath)
+    || typeof backupDir !== "string" || !path.isAbsolute(backupDir)
+    || !isHex64(lockSha256)
+    || !isHex64(treeSha256)
+    || !Array.isArray(dependencies)
+    || dependencies.length !== 6
+  ) {
+    return { kind: "blocked", reason: "receipt-corrupt" };
+  }
+  const seen = new Set<string>();
+  for (const dep of dependencies) {
+    if (!isObjectRecord(dep)) return { kind: "blocked", reason: "receipt-corrupt" };
+    const { name, version, integrity } = dep;
+    if (typeof name !== "string" || name === "" || typeof version !== "string" || version === "" || /\s/.test(version)) {
+      return { kind: "blocked", reason: "receipt-corrupt" };
+    }
+    if (!isCanonicalSha512(integrity)) return { kind: "blocked", reason: "receipt-corrupt" };
+    if (seen.has(name)) return { kind: "blocked", reason: "receipt-corrupt" };
+    seen.add(name);
+  }
+
+  const agentDir = path.resolve(input.paths.codingAgentDir);
+  const npmDir = path.join(agentDir, "npm");
+  const managedRoot = path.join(npmDir, "jorgex-pi-managed");
+  const releaseResolved = path.resolve(releaseDir);
+  const linkResolved = path.resolve(linkPath);
+  const backupResolved = path.resolve(backupDir);
+  if (!isStrictChild(managedRoot, releaseResolved) || !isStrictChild(managedRoot, backupResolved)) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+  if (linkResolved !== path.join(npmDir, "node_modules", "jorgex-pi")) {
+    return { kind: "blocked", reason: "source-divergent" };
+  }
+
+  let releaseStat: fs.Stats | null = null;
+  let backupStat: fs.Stats | null = null;
+  try {
+    releaseStat = fs.lstatSync(releaseResolved);
+    backupStat = fs.lstatSync(backupResolved);
+  } catch {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+  if (
+    releaseStat === null || !releaseStat.isDirectory() || releaseStat.isSymbolicLink()
+    || backupStat === null || !backupStat.isDirectory() || backupStat.isSymbolicLink()
+  ) {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+
+  const packageRoot = path.join(releaseResolved, "node_modules", "jorgex-pi");
+  let linkStat: fs.Stats | null = null;
+  try {
+    linkStat = fs.lstatSync(linkResolved);
+  } catch {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+  if (linkStat === null || !linkStat.isSymbolicLink()) return { kind: "blocked", reason: "link-drift" };
+  let target: string;
+  try {
+    target = fs.readlinkSync(linkResolved);
+  } catch {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+  if (target === "" || path.isAbsolute(target)) return { kind: "blocked", reason: "link-drift" };
+  if (path.resolve(path.dirname(linkResolved), target) !== packageRoot) {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(linkResolved);
+  } catch {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+  if (realRoot !== packageRoot || !isStrictChild(npmDir, realRoot)) {
+    return { kind: "blocked", reason: "link-drift" };
+  }
+
+  const lockPath = path.join(releaseResolved, "package-lock.json");
+  let lockStat: fs.Stats | null = null;
+  try {
+    lockStat = fs.lstatSync(lockPath);
+  } catch {
+    return { kind: "blocked", reason: "lock-drift" };
+  }
+  if (lockStat === null || !lockStat.isFile() || lockStat.isSymbolicLink()) {
+    return { kind: "blocked", reason: "lock-drift" };
+  }
+  let lockBytes: Buffer;
+  try {
+    lockBytes = fs.readFileSync(lockPath);
+  } catch {
+    return { kind: "blocked", reason: "lock-drift" };
+  }
+  if (createHash("sha256").update(lockBytes).digest("hex") !== lockSha256) {
+    return { kind: "blocked", reason: "lock-drift" };
+  }
+  let lockJson: unknown;
+  try {
+    lockJson = JSON.parse(lockBytes.toString("utf8")) as unknown;
+  } catch {
+    return { kind: "blocked", reason: "lock-drift" };
+  }
+  if (!isObjectRecord(lockJson) || !isObjectRecord(lockJson["packages"])) {
+    return { kind: "blocked", reason: "lock-drift" };
+  }
+  const packages = lockJson["packages"] as Record<string, unknown>;
+  for (const dep of dependencies as PiPackageManagedDependency[]) {
+    const entry = packages[`node_modules/${dep.name}`];
+    if (!isObjectRecord(entry) || entry["version"] !== dep.version || entry["integrity"] !== dep.integrity) {
+      return { kind: "blocked", reason: "receipt-corrupt" };
+    }
+  }
+
+  let recomputed: string;
+  try {
+    recomputed = inventoryTreeSha256(releaseResolved);
+  } catch {
+    return { kind: "blocked", reason: "tree-drift" };
+  }
+  if (recomputed !== treeSha256) return { kind: "blocked", reason: "tree-drift" };
+
+  return { kind: "ok", packageRoot, realRoot };
+}
+
+function parseManagedDoctorRunner(
+  stdout: string,
+  stderr: string,
+  candidate: PiRuntimeCandidate,
+  expectedRoot: string,
+): RunnerRecord | null {
+  if (stderr !== "" || !stdout.endsWith("\n") || Buffer.byteLength(stdout) > candidate.contract.runner.maxStdoutBytes) {
+    return null;
+  }
+  const body = stdout.slice(0, -1);
+  if (body === "" || body.includes("\n") || body.includes("\r")) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isObjectRecord(parsed)) return null;
+    const record = parsed as Partial<RunnerRecord>;
+    if (record.schemaVersion !== candidate.contract.runner.schemaVersion
+      || record.command !== "doctor"
+      || record.ok !== true
+      || !isObjectRecord(record.package)
+      || record.package["name"] !== candidate.package.name
+      || record.package["version"] !== candidate.package.version
+      || typeof record.package["root"] !== "string"
+      || !path.isAbsolute(record.package["root"] as string)
+      || path.resolve(record.package["root"] as string) !== expectedRoot) {
+      return null;
+    }
+    return record as RunnerRecord;
+  } catch {
+    return null;
+  }
+}
+
 export function runPiPackageManagedOperation(
   input: PiPackageManagedOperationInput,
   deps: PiPackageManagedOperationDeps,
@@ -785,6 +998,23 @@ export function runPiPackageManagedOperation(
       provenance: input.registry.candidate.provenance,
     })) {
       return { kind: "blocked", reason: "source-divergent" };
+    }
+    const managedRaw = (owned.receipt as { managedPackage?: unknown }).managedPackage;
+    if (managedRaw !== undefined) {
+      const checked = checkManagedPackageForDoctor(input, managedRaw);
+      if (checked.kind === "blocked") return checked;
+      const raw = deps.run({
+        executable: input.detected.packageRunner,
+        args: ["doctor", "--json"],
+        environment: input.paths.environment,
+      });
+      if (raw.exitCode !== 0) return { kind: "blocked", reason: "runner-unhealthy" };
+      const doctor = parseManagedDoctorRunner(raw.stdout, raw.stderr, input.registry.candidate, checked.realRoot);
+      if (doctor === null) return { kind: "blocked", reason: "runner-output" };
+      const result = doctor.result;
+      return result !== null && typeof result === "object" && Reflect.get(result, "healthy") === true
+        ? { kind: "healthy" }
+        : { kind: "blocked", reason: "runner-unhealthy" };
     }
     const doctor = runManagedRunner(input, deps, "doctor");
     if (managedRunnerWasBlocked(doctor)) return doctor;

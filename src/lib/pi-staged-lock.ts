@@ -348,7 +348,7 @@ type InventoryEntry =
   | { rel: string; kind: "symlink"; target: string };
 
 /** Deterministic sorted inventory of the staged npm tree for receipt v2. */
-function inventoryTreeSha256(npmDir: string): string {
+export function inventoryTreeSha256(npmDir: string): string {
   const root = path.resolve(npmDir);
   const entries: InventoryEntry[] = [];
   const stack: string[] = [root];
