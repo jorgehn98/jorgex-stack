@@ -622,4 +622,98 @@ describe("pi private-release activation (T05 fix-check for T07)", () => {
     expect(fs.existsSync(path.join(agentDir, "npm", "jorgex-pi-managed", "releases", RELEASE_ID2))).toBe(false);
     expect(fs.readFileSync(foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
   });
+
+  it("restores the first private-release symlink/settings/receipt byte-identically when verify fails during a second update with an existing private symlink", async () => {
+    expect(RELEASE_ID).toMatch(/^[0-9a-f]{64}$/);
+    expect(RELEASE_ID2).toMatch(/^[0-9a-f]{64}$/);
+    expect(RELEASE_ID2).not.toBe(RELEASE_ID);
+    const { homeDir, agentDir, stageDir, receiptPath, linkPath, foreignIndex } = setupSandbox();
+    expect(path.relative(agentDir, stageDir).startsWith("..")).toBe(false);
+    expectHomeBoundary(homeDir, agentDir, receiptPath);
+    const { activateVerifiedPiRelease } = await loadModule();
+    const managedRoot = path.join(agentDir, "npm", "jorgex-pi-managed");
+    const nodeModulesDir = path.join(agentDir, "npm", "node_modules");
+
+    // Stage 1: initial activation from the real owned directory succeeds.
+    await activateVerifiedPiRelease({
+      homeDir,
+      agentDir,
+      stageDir,
+      releaseId: RELEASE_ID,
+      receiptPath,
+      nextSettings: NEXT_SETTINGS,
+      nextReceipt: NEXT_RECEIPT,
+      verify: () => undefined,
+    });
+
+    const releaseEntry1 = path.join(managedRoot, "releases", RELEASE_ID, "node_modules", "jorgex-pi");
+    const oldLinkTarget = expectedLinkTarget();
+    expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(linkPath)).toBe(oldLinkTarget);
+    expect(fs.realpathSync(linkPath)).toBe(releaseEntry1);
+    const oldSettings = fs.readFileSync(path.join(agentDir, "settings.json"), "utf8");
+    const oldReceipt = fs.readFileSync(receiptPath, "utf8");
+    expect(oldSettings).toBe(NEXT_SETTINGS);
+    expect(oldReceipt).toBe(NEXT_RECEIPT);
+    expect(fs.readFileSync(path.join(releaseEntry1, "index.js"), "utf8")).toBe(NEW_PI_INDEX);
+    expect(fs.readFileSync(foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
+    expect(fs.existsSync(path.join(managedRoot, "active-transaction.json"))).toBe(false);
+    expect(fs.existsSync(path.join(managedRoot, "transaction.lock"))).toBe(false);
+
+    // Stage 2: verified new release; verify runs only after the new link is published.
+    const stage2 = path.join(agentDir, "stage-second");
+    writeValidStagedTree(stage2);
+    const stage2PiIndex = path.join(stage2, "npm", "node_modules", "jorgex-pi", "index.js");
+    const stage2HoistedIndex = path.join(stage2, "npm", "node_modules", "fake-hoisted-dep", "index.js");
+    expect(fs.readFileSync(stage2PiIndex, "utf8")).toBe(NEW_PI_INDEX);
+    const expectedStage2Target = `../jorgex-pi-managed/releases/${RELEASE_ID2}/node_modules/jorgex-pi`;
+    const secondSettings = `${JSON.stringify({ packages: ["managed:jorgex-pi-release-stage2"], scope: "managed" }, null, 2)}\n`;
+    const secondReceipt = `${JSON.stringify({ schemaVersion: 2, release: "private-stage2", package: "jorgex-pi@0.8.31" }, null, 2)}\n`;
+    expect(secondSettings).not.toBe(oldSettings);
+    expect(secondReceipt).not.toBe(oldReceipt);
+
+    let observedNewLink: string | null = null;
+    const failingVerify = () => {
+      // Guard-runtime ordering proof: the second link is already published.
+      observedNewLink = fs.readlinkSync(linkPath);
+      expect(observedNewLink).toBe(expectedStage2Target);
+      throw new Error("second-smoke-boom");
+    };
+
+    await expect(
+      activateVerifiedPiRelease({
+        homeDir,
+        agentDir,
+        stageDir: stage2,
+        releaseId: RELEASE_ID2,
+        receiptPath,
+        nextSettings: secondSettings,
+        nextReceipt: secondReceipt,
+        verify: failingVerify,
+      }),
+    ).rejects.toThrow(/second-smoke-boom/);
+    expect(observedNewLink).toBe(expectedStage2Target);
+
+    // Rollback restored the first private release byte-identically.
+    expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(linkPath)).toBe(oldLinkTarget);
+    expect(fs.realpathSync(linkPath)).toBe(releaseEntry1);
+    expect(fs.readFileSync(path.join(releaseEntry1, "index.js"), "utf8")).toBe(NEW_PI_INDEX);
+    expect(
+      fs.readFileSync(path.join(path.dirname(fs.realpathSync(linkPath)), "fake-hoisted-dep", "index.js"), "utf8"),
+    ).toBe(HOISTED_INDEX);
+    expect(fs.readFileSync(path.join(agentDir, "settings.json"), "utf8")).toBe(oldSettings);
+    expect(fs.readFileSync(receiptPath, "utf8")).toBe(oldReceipt);
+
+    // Foreign npm root untouched and no marker/lock left behind.
+    expect(fs.lstatSync(nodeModulesDir).isDirectory()).toBe(true);
+    expect(fs.lstatSync(path.dirname(foreignIndex)).isDirectory()).toBe(true);
+    expect(fs.readFileSync(foreignIndex, "utf8")).toBe(FOREIGN_INDEX);
+    expect(fs.existsSync(path.join(managedRoot, "active-transaction.json"))).toBe(false);
+    expect(fs.existsSync(path.join(managedRoot, "transaction.lock"))).toBe(false);
+
+    // Second stage npm tree restored/preserved with exact bytes.
+    expect(fs.readFileSync(stage2PiIndex, "utf8")).toBe(NEW_PI_INDEX);
+    expect(fs.readFileSync(stage2HoistedIndex, "utf8")).toBe(HOISTED_INDEX);
+  });
 });

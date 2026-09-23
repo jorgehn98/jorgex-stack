@@ -230,37 +230,140 @@ describe("Pi package-managed operations", () => {
 
   it("cleans up before exact removal, verifies absence before dropping its receipt, and preserves it when verification fails", async () => {
     const { runPiPackageManagedOperation } = await operations();
-    const cleanup = { exitCode: 0, stdout: runnerJson("cleanup", { changed: false, actions: [] }), stderr: "" };
-    const remove = { exitCode: 0, stdout: "", stderr: "" };
+    // Safe legacy v1 uninstall: verifyLegacyPackage(receipt) before
+    // backup/runner, re-read settings, deactivateLegacyRelease, never pi remove.
+    expect(JSON.stringify(receipt())).not.toContain("managedPackage");
+    const gentleEntry = { source: "npm:gentle-engram@9.9.99", skills: [], prompts: [] } as const;
+    const foreignEntry = { source: "npm:foreign@1.0.0", skills: [], prompts: [] } as const;
+    const ownedSettingsJson = JSON.stringify({ packages: [managedProjectedPackage, gentleEntry, foreignEntry] });
+    const uninstallInput = input("uninstall", { settingsJson: ownedSettingsJson });
+    function legacyUninstallDeps(events: string[], opts: { verify: boolean | "missing" }) {
+      const base = deps(events, {
+        cleanup: { exitCode: 0, stdout: runnerJson("cleanup", { changed: false, actions: [] }), stderr: "" },
+      });
+      const extended = {
+        ...base,
+        readSettings() {
+          events.push("read-settings");
+          return ownedSettingsJson;
+        },
+        deactivateLegacyRelease(receipt: unknown, nextSettings: string) {
+          events.push("deactivate-legacy");
+          const parsed = JSON.parse(nextSettings) as { packages: unknown[] };
+          expect(parsed.packages).toHaveLength(2);
+          expect(nextSettings).not.toContain(source);
+          expect(nextSettings).toContain("npm:gentle-engram@9.9.99");
+          expect(nextSettings).toContain("npm:foreign@1.0.0");
+          expect(JSON.stringify(receipt)).toContain(source);
+          return { kind: "uninstalled" } as const;
+        },
+      };
+      if (opts.verify === "missing") return extended;
+      return {
+        ...extended,
+        verifyLegacyPackage(receipt: unknown) {
+          events.push("verify-legacy");
+          expect(JSON.stringify(receipt)).toContain(source);
+          return opts.verify;
+        },
+      };
+    }
 
     const events: string[] = [];
-    expect(runPiPackageManagedOperation(input("uninstall"), deps(events, { cleanup, remove }))).toEqual({ kind: "uninstalled" });
+    expect(runPiPackageManagedOperation(uninstallInput, legacyUninstallDeps(events, { verify: true }))).toEqual({ kind: "uninstalled" });
     expect(events).toEqual([
-      "runner:cleanup --json",
+      "verify-legacy",
       "backup-settings",
-      `pi:remove ${source} --no-approve`,
-      "verify-absent",
-      "delete-receipt",
+      "runner:cleanup --json",
+      "read-settings",
+      "deactivate-legacy",
     ]);
+    expect(events.join(" ")).not.toContain("pi:remove");
+    expect(events).not.toContain("verify-absent");
+    expect(events).not.toContain("delete-receipt");
 
-    const failedEvents: string[] = [];
-    expect(runPiPackageManagedOperation(input("uninstall"), deps(failedEvents, { cleanup, remove }, false))).toEqual({
+    const deniedEvents: string[] = [];
+    expect(runPiPackageManagedOperation(uninstallInput, legacyUninstallDeps(deniedEvents, { verify: false }))).toEqual({
       kind: "blocked",
-      reason: "absence-unverified",
+      reason: "receipt-untrusted",
     });
-    expect(failedEvents).not.toContain("delete-receipt");
+    expect(deniedEvents).toEqual(["verify-legacy"]);
+    expect(deniedEvents).not.toContain("runner:cleanup --json");
+    expect(deniedEvents).not.toContain("deactivate-legacy");
+    expect(deniedEvents.join(" ")).not.toContain("pi:remove");
+
+    const missingEvents: string[] = [];
+    expect(runPiPackageManagedOperation(uninstallInput, legacyUninstallDeps(missingEvents, { verify: "missing" }))).toEqual({
+      kind: "blocked",
+      reason: "receipt-untrusted",
+    });
+    expect(missingEvents).toEqual([]);
+    expect(missingEvents.join(" ")).not.toContain("pi:remove");
 
     const missingEngramEvents: string[] = [];
     expect(runPiPackageManagedOperation(
-      input("uninstall", { engramBin: null }),
-      deps(missingEngramEvents, { cleanup, remove }),
+      input("uninstall", { settingsJson: ownedSettingsJson, engramBin: null }),
+      legacyUninstallDeps(missingEngramEvents, { verify: true }),
     )).toEqual({ kind: "uninstalled" });
     expect(missingEngramEvents).toEqual([
-      "runner:cleanup --json",
+      "verify-legacy",
       "backup-settings",
-      `pi:remove ${source} --no-approve`,
-      "verify-absent",
-      "delete-receipt",
+      "runner:cleanup --json",
+      "read-settings",
+      "deactivate-legacy",
+    ]);
+    expect(missingEngramEvents.join(" ")).not.toContain("pi:remove");
+
+    // T07 RED: legacy helper throwing after verification/cleanup must surface
+    // recovery-incomplete explicitly, not opaque remove-failed. Thrown
+    // recovery:'complete' may stay remove-failed (rollback already done).
+    const incompleteEvents: string[] = [];
+    const incompleteFailure = Object.assign(
+      new Error("external drift during uninstall, refusing to touch foreign state (recovery incomplete)"),
+      { recovery: "incomplete" as const },
+    );
+    const incompleteDeps = {
+      ...legacyUninstallDeps(incompleteEvents, { verify: true }),
+      deactivateLegacyRelease() {
+        incompleteEvents.push("deactivate-legacy");
+        throw incompleteFailure;
+      },
+    };
+    const incompleteResult = runPiPackageManagedOperation(uninstallInput, incompleteDeps);
+    expect(incompleteResult).toMatchObject({ kind: "blocked" });
+    expect((incompleteResult as { reason?: unknown }).reason).toMatch(/recovery-incomplete/i);
+    expect((incompleteResult as { reason?: unknown }).reason).not.toBe("remove-failed");
+    expect(String((incompleteResult as { remedy?: unknown }).remedy ?? "")).toMatch(/backup|marker|lock/i);
+    expect(incompleteEvents).toEqual([
+      "verify-legacy",
+      "backup-settings",
+      "runner:cleanup --json",
+      "read-settings",
+      "deactivate-legacy",
+    ]);
+    expect(incompleteEvents.join(" ")).not.toContain("pi:remove");
+
+    const completeEvents: string[] = [];
+    const completeFailure = Object.assign(new Error("verify failed after removal, rolled back"), {
+      recovery: "complete" as const,
+    });
+    const completeDeps = {
+      ...legacyUninstallDeps(completeEvents, { verify: true }),
+      deactivateLegacyRelease() {
+        completeEvents.push("deactivate-legacy");
+        throw completeFailure;
+      },
+    };
+    expect(runPiPackageManagedOperation(uninstallInput, completeDeps)).toMatchObject({
+      kind: "blocked",
+      reason: "remove-failed",
+    });
+    expect(completeEvents).toEqual([
+      "verify-legacy",
+      "backup-settings",
+      "runner:cleanup --json",
+      "read-settings",
+      "deactivate-legacy",
     ]);
   });
 
@@ -318,7 +421,50 @@ describe("Pi package-managed operations", () => {
     expect(newContext.receiptJson).toBe(previousReceiptInCurrentScope);
     expect(newContext.detected.settingsJson).toBe(previousPackageSettings);
 
+    // Safe legacy v1 rollback: verifyLegacyPackage(receipt) before
+    // backup/runner, re-read settings, deactivateLegacyRelease, never pi remove.
+    const rollbackGentle = { source: "npm:gentle-engram@9.9.99", skills: [], prompts: [] } as const;
+    const rollbackForeign = { source: "npm:foreign@1.0.0", skills: [], prompts: [] } as const;
+    const rollbackSettingsJson = JSON.stringify({
+      packages: [previousManagedProjectedPackage, rollbackGentle, rollbackForeign],
+    });
     const rollbackReceipt = JSON.stringify(previousReceipt());
+    expect(rollbackReceipt).not.toContain("managedPackage");
+    function rollbackDeps(events: string[], opts: { verify: boolean | "missing" }) {
+      const base = deps(events, {
+        cleanup: {
+          exitCode: 0,
+          stdout: runnerJsonFor(PI_RUNTIME_PREVIOUS_CANDIDATE, previousRoot, "cleanup", { changed: false, actions: [] }),
+          stderr: "",
+        },
+      }, true, { runner: previousRunner, environment: previousEnvironment });
+      const extended = {
+        ...base,
+        readSettings() {
+          events.push("read-settings");
+          return rollbackSettingsJson;
+        },
+        deactivateLegacyRelease(receipt: unknown, nextSettings: string) {
+          events.push("deactivate-legacy");
+          const parsed = JSON.parse(nextSettings) as { packages: unknown[] };
+          expect(parsed.packages).toHaveLength(2);
+          expect(nextSettings).not.toContain(previousSource);
+          expect(nextSettings).toContain("npm:gentle-engram@9.9.99");
+          expect(nextSettings).toContain("npm:foreign@1.0.0");
+          expect(JSON.stringify(receipt)).toContain(previousSource);
+          return { kind: "uninstalled" } as const;
+        },
+      };
+      if (opts.verify === "missing") return extended;
+      return {
+        ...extended,
+        verifyLegacyPackage(receipt: unknown) {
+          events.push("verify-legacy");
+          expect(JSON.stringify(receipt)).toContain(previousSource);
+          return opts.verify;
+        },
+      };
+    }
     const rollbackEvents: string[] = [];
     const rollback = runPiPackageManagedOperation({
       operation: "uninstall",
@@ -331,7 +477,7 @@ describe("Pi package-managed operations", () => {
       detected: {
         executable: "/opt/pi/bin/pi",
         packageRunner: previousRunner,
-        settingsJson: previousPackageSettings,
+        settingsJson: rollbackSettingsJson,
       },
       engramBin: previousEnvironment.ENGRAM_BIN,
       receiptJson: rollbackReceipt,
@@ -341,23 +487,50 @@ describe("Pi package-managed operations", () => {
         receiptPath: "/tmp/pi-previous-target/state/pi-receipt.json",
         environment: previousEnvironment,
       },
-    }, deps(rollbackEvents, {
-      cleanup: {
-        exitCode: 0,
-        stdout: runnerJsonFor(PI_RUNTIME_PREVIOUS_CANDIDATE, previousRoot, "cleanup", { changed: false, actions: [] }),
-        stderr: "",
-      },
-      remove: { exitCode: 0, stdout: "", stderr: "" },
-    }, true, { runner: previousRunner, environment: previousEnvironment }));
+    }, rollbackDeps(rollbackEvents, { verify: true }));
 
     expect(rollback).toEqual({ kind: "uninstalled" });
     expect(rollbackEvents).toEqual([
-      "runner:cleanup --json",
+      "verify-legacy",
       "backup-settings",
-      `pi:remove ${previousSource} --no-approve`,
-      "verify-absent",
-      "delete-receipt",
+      "runner:cleanup --json",
+      "read-settings",
+      "deactivate-legacy",
     ]);
+    expect(rollbackEvents.join(" ")).not.toContain("pi:remove");
+    expect(rollbackEvents).not.toContain("verify-absent");
+    expect(rollbackEvents).not.toContain("delete-receipt");
+
+    const rollbackDeniedEvents: string[] = [];
+    expect(runPiPackageManagedOperation({
+      operation: "uninstall",
+      interactive: false,
+      registry: {
+        id: "pi",
+        kind: "package-managed",
+        candidate: PI_RUNTIME_PREVIOUS_CANDIDATE,
+      },
+      detected: {
+        executable: "/opt/pi/bin/pi",
+        packageRunner: previousRunner,
+        settingsJson: rollbackSettingsJson,
+      },
+      engramBin: previousEnvironment.ENGRAM_BIN,
+      receiptJson: rollbackReceipt,
+      paths: {
+        targetDir: true,
+        codingAgentDir: previousEnvironment.PI_CODING_AGENT_DIR,
+        receiptPath: "/tmp/pi-previous-target/state/pi-receipt.json",
+        environment: previousEnvironment,
+      },
+    }, rollbackDeps(rollbackDeniedEvents, { verify: false }))).toEqual({
+      kind: "blocked",
+      reason: "receipt-untrusted",
+    });
+    expect(rollbackDeniedEvents).toEqual(["verify-legacy"]);
+    expect(rollbackDeniedEvents).not.toContain("runner:cleanup --json");
+    expect(rollbackDeniedEvents).not.toContain("deactivate-legacy");
+    expect(rollbackDeniedEvents.join(" ")).not.toContain("pi:remove");
   });
 
   it.each([
@@ -466,6 +639,145 @@ describe("Pi package-managed operations", () => {
       deps(foreignEvents, {}, true, historicalExpected),
     )).toEqual({ kind: "blocked", reason: "source-divergent" });
     expect(foreignEvents).toEqual([]);
+  });
+
+  it("uninstalls the owned legacy 0.8.24 receipt offline without migrating or invoking pi remove", async () => {
+    const { runPiPackageManagedOperation } = await operations();
+    // Controls: legacy v1 receipt carries no managedPackage; old runner offers no upgrade.
+    expect(HISTORICAL_CANDIDATE.contract.runner.commands).not.toContain("upgrade");
+    const legacyReceiptJson = JSON.stringify(receiptFor(HISTORICAL_CANDIDATE, environment));
+    expect(legacyReceiptJson).not.toContain("managedPackage");
+
+    const gentleEntry = { source: "npm:gentle-engram@9.9.99", skills: [], prompts: [] } as const;
+    const foreignEntry = { source: "npm:foreign@1.0.0", skills: [], prompts: [] } as const;
+    const legacySettingsJson = JSON.stringify({
+      packages: [historicalManagedProjectedPackage, gentleEntry, foreignEntry],
+    });
+    const legacyUninstallInput = {
+      operation: "uninstall" as const,
+      interactive: false,
+      registry: {
+        id: "pi" as const,
+        kind: "package-managed" as const,
+        candidate: PI_RUNTIME_CANDIDATE,
+        acceptedCandidates: [PI_RUNTIME_CANDIDATE, HISTORICAL_CANDIDATE] as readonly Candidate[],
+      },
+      detected: {
+        executable: "/opt/pi/bin/pi",
+        packageRunner: historicalRunner,
+        settingsJson: legacySettingsJson,
+      },
+      engramBin: environment.ENGRAM_BIN,
+      receiptJson: legacyReceiptJson,
+      paths: {
+        targetDir: true,
+        codingAgentDir: environment.PI_CODING_AGENT_DIR,
+        receiptPath: "/tmp/pi-target/state/pi-receipt.json",
+        environment,
+      },
+    };
+    const legacyExpected = { runner: historicalRunner, environment };
+
+    function legacyDeps(events: string[], opts: { verify: boolean | "missing"; settingsJson?: string }) {
+      const base = deps(events, {
+        cleanup: {
+          exitCode: 0,
+          stdout: runnerJsonFor(HISTORICAL_CANDIDATE, historicalRoot, "cleanup", { changed: false, actions: [] }),
+          stderr: "",
+        },
+      }, true, legacyExpected);
+      const extended = {
+        ...base,
+        readSettings() {
+          events.push("read-settings");
+          return opts.settingsJson ?? legacySettingsJson;
+        },
+        deactivateLegacyRelease(receipt: unknown, nextSettings: string) {
+          events.push("deactivate-legacy");
+          const parsed = JSON.parse(nextSettings) as { packages: unknown[] };
+          expect(parsed.packages).toHaveLength(2);
+          expect(nextSettings).not.toContain(historicalSource);
+          expect(nextSettings).toContain("npm:gentle-engram@9.9.99");
+          expect(nextSettings).toContain("npm:foreign@1.0.0");
+          expect(JSON.stringify(receipt)).toContain("0.8.24");
+          return { kind: "uninstalled" } as const;
+        },
+      };
+      if (opts.verify === "missing") return extended;
+      return {
+        ...extended,
+        verifyLegacyPackage(receipt: unknown) {
+          events.push("verify-legacy");
+          expect(JSON.stringify(receipt)).toContain("0.8.24");
+          return opts.verify;
+        },
+      };
+    }
+
+    const events: string[] = [];
+    const result = runPiPackageManagedOperation(
+      legacyUninstallInput,
+      legacyDeps(events, { verify: true }),
+    );
+    expect(result).toEqual({ kind: "uninstalled" });
+    expect(events).toEqual([
+      "verify-legacy",
+      "backup-settings",
+      "runner:cleanup --json",
+      "read-settings",
+      "deactivate-legacy",
+    ]);
+    expect(events.join(" ")).not.toContain("pi:remove");
+
+    const legacyReceipt = receiptFor(HISTORICAL_CANDIDATE, environment);
+    const tamperedReceiptJson = JSON.stringify({
+      ...legacyReceipt,
+      candidate: {
+        ...HISTORICAL_PI_0_8_24_IDENTITY,
+        tarball: { ...HISTORICAL_PI_0_8_24_IDENTITY.tarball, sha256: "0".repeat(64) },
+      },
+    });
+    const tamperedEvents: string[] = [];
+    expect(runPiPackageManagedOperation(
+      { ...legacyUninstallInput, receiptJson: tamperedReceiptJson },
+      legacyDeps(tamperedEvents, { verify: true }),
+    )).toEqual({ kind: "blocked", reason: "receipt-untrusted" });
+    expect(tamperedEvents).not.toContain("runner:cleanup --json");
+    expect(tamperedEvents).not.toContain("deactivate-legacy");
+    expect(tamperedEvents.join(" ")).not.toContain("pi:remove");
+
+    const manualEvents: string[] = [];
+    expect(runPiPackageManagedOperation(
+      {
+        ...legacyUninstallInput,
+        detected: {
+          ...legacyUninstallInput.detected,
+          settingsJson: JSON.stringify({ packages: [historicalSource] }),
+        },
+      },
+      legacyDeps(manualEvents, { verify: true }),
+    )).toEqual({ kind: "blocked", reason: "source-divergent" });
+    expect(manualEvents).not.toContain("runner:cleanup --json");
+    expect(manualEvents).not.toContain("deactivate-legacy");
+    expect(manualEvents.join(" ")).not.toContain("pi:remove");
+
+    const deniedEvents: string[] = [];
+    expect(runPiPackageManagedOperation(
+      legacyUninstallInput,
+      legacyDeps(deniedEvents, { verify: false }),
+    )).toMatchObject({ kind: "blocked" });
+    expect(deniedEvents).not.toContain("runner:cleanup --json");
+    expect(deniedEvents).not.toContain("deactivate-legacy");
+    expect(deniedEvents.join(" ")).not.toContain("pi:remove");
+
+    const missingEvents: string[] = [];
+    expect(runPiPackageManagedOperation(
+      legacyUninstallInput,
+      legacyDeps(missingEvents, { verify: "missing" }),
+    )).toMatchObject({ kind: "blocked" });
+    expect(missingEvents).not.toContain("runner:cleanup --json");
+    expect(missingEvents).not.toContain("deactivate-legacy");
+    expect(missingEvents.join(" ")).not.toContain("pi:remove");
   });
 
   it("productive registry retains the historical 0.8.24 recovery anchor without re-pinning the next install", async () => {
