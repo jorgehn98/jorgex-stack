@@ -13,6 +13,7 @@ import {
 import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { smokeStagedPiRuntime } from "./pi-stage-smoke.js";
 import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
+import { deactivateVerifiedLegacyPiEntry, deactivateVerifiedPiRelease } from "./pi-private-release.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { detectEngram, lookPath, planDetectedBinCommand } from "./detect.js";
@@ -20,12 +21,24 @@ import type { EngramInstallResult } from "./engram-install.js";
 import {
   executePiPackageLifecycle,
   planPiPackageLifecycle,
+  preparePiLegacyMigration,
+  runPiPackageManagedModels as runLifecycleManagedModels,
   runPiPackageManagedOperation,
   runPiPackageManagedSync,
+  verifyOfflineManagedPiRelease,
   type PiAcceptedCandidate,
   type PiPackageReceipt,
   type PiRuntimeCandidate,
 } from "./pi-package-lifecycle.js";
+
+/**
+ * Managed models validator for the offline system route (T07). Re-exports
+ * the authenticated lifecycle handler so the system models branch and
+ * external callers share one implementation: schemaVersion 1 receipt with
+ * managedPackage, validated offline with the verifyCachedPiArtifact callback
+ * and the current scope. Never a static future candidate selector.
+ */
+export const runPiPackageManagedModels = runLifecycleManagedModels;
 
 export const PI_RUNTIME_CANDIDATE = {
   ...pin,
@@ -826,6 +839,67 @@ function hasInstalledPiEntry(settingsJson: string): boolean {
 }
 
 /**
+ * Light shape probe for the T07 legacy path: schemaVersion 1 WITHOUT
+ * managedPackage. No trust implied; the pure preparePiLegacyMigration guard
+ * authenticates everything. Anything else (managed, foreign schema,
+ * corrupt) is not migration-eligible.
+ */
+function isLegacyUnmanagedReceipt(receiptJson: string | null): boolean {
+  if (receiptJson === null) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(receiptJson);
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const record = parsed as Record<string, unknown>;
+  return record["schemaVersion"] === 1 && Reflect.get(record, "managedPackage") === undefined;
+}
+
+/**
+ * Sorted JorgeX Pi sources registered in settings.json, or null when
+ * illegible. Used to prove no unexpected Pi registration appeared across
+ * the official setup; the guard authenticates ownership separately.
+ */
+function piSources(settingsJson: string): string[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(settingsJson);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const packages = Reflect.get(parsed, "packages");
+  if (!Array.isArray(packages)) return null;
+  const sources: string[] = [];
+  for (const entry of packages) {
+    const source = typeof entry === "string"
+      ? entry
+      : entry !== null && typeof entry === "object" && !Array.isArray(entry)
+        && typeof Reflect.get(entry, "source") === "string"
+        ? Reflect.get(entry, "source") as string
+        : null;
+    if (source !== null && source.includes("jorgex-pi")) sources.push(source);
+  }
+  return sources.sort();
+}
+
+/**
+ * Snapshots the pre-activation legacy state (owned settings + old receipt)
+ * for rollback. Only those two owned files are touched; throws when no
+ * backup could be taken so the caller fails closed before activation.
+ */
+function backupLegacyMigrationState(settingsPath: string, receiptPath: string, backupRoot: string | undefined): void {
+  const backup = backupRoot === undefined
+    ? createBackup([settingsPath, receiptPath], "pi-legacy-migration")
+    : createBackup([settingsPath, receiptPath], "pi-legacy-migration", backupRoot);
+  if (backup === null) {
+    throw new Error("pi-legacy-migration: no se pudo respaldar el estado legacy previo; sin activación");
+  }
+}
+
+/**
  * Post-promotion proof for a prepared install: the published link must
  * resolve to the promoted release, the receipt must keep the prepared
  * candidate plus the managed fields, and the release inventory recomputed
@@ -958,12 +1032,149 @@ function isStrictChildPath(child: string, root: string): boolean {
  * the stage for diagnostics; the caller never falls back to static bytes.
  */
 export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiRuntimePreflightOut> {
-  if (input.operation !== "install") {
+  if (input.operation !== "install" && input.operation !== "update") {
     return {
       kind: "blocked",
       reason: "preflight-unsupported-operation",
-      remedy: "El preflight Pi solo cubre install deliberado; sin red ni cambios.",
+      remedy: "El preflight Pi solo cubre install/update deliberado; sin red ni cambios.",
     };
+  }
+  if (input.operation === "update") {
+    if (input.targetDir !== undefined) {
+      return {
+        kind: "blocked",
+        reason: "target-dir-preflight-unsupported",
+        remedy: "El update con --target-dir nunca ejecuta preflight de red; aporta un stage preverificado o usa update real.",
+      };
+    }
+    if (typeof input.engramBin !== "string" || input.engramBin === "" || !path.isAbsolute(input.engramBin)) {
+      return {
+        kind: "blocked",
+        reason: "engram-required",
+        remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
+      };
+    }
+    const updateExecutable = input.detected.executable;
+    if (typeof updateExecutable !== "string" || updateExecutable === "" || !path.isAbsolute(updateExecutable)) {
+      return {
+        kind: "blocked",
+        reason: "pi-executable-missing",
+        remedy: "No se detectó el ejecutable Pi absoluto; instala Pi antes de reintentar.",
+      };
+    }
+    if (updateExecutable === "npm") {
+      return {
+        kind: "blocked",
+        reason: "pi-executable-missing",
+        remedy: "El ejecutable Pi debe ser el CLI Pi detectado, nunca npm.",
+      };
+    }
+    const updateHomeDir = os.homedir();
+    if (typeof updateHomeDir !== "string" || updateHomeDir === "" || !path.isAbsolute(updateHomeDir)) {
+      return {
+        kind: "blocked",
+        reason: "preflight-failed",
+        remedy: "HOME ilegible para el preflight Pi; Pi no quedó activado.",
+      };
+    }
+    const updateAgentDir = process.env.PI_CODING_AGENT_DIR ?? path.join(updateHomeDir, ".pi", "agent");
+    const updateReceiptPath = path.join(updateHomeDir, ".jorgex-stack", "pi-receipt.json");
+    const updateDownloadsDir = path.join(updateHomeDir, ".jorgex-stack", "packages");
+    if (!isStrictChildPath(updateAgentDir, updateHomeDir)) {
+      return {
+        kind: "blocked",
+        reason: "agent-dir-outside-home",
+        remedy: `PI_CODING_AGENT_DIR (${updateAgentDir}) está fuera de la frontera de restore HOME (${updateHomeDir}); corrige el destino antes de reintentar; Pi no quedó activado.`,
+      };
+    }
+    const updateSettingsPath = path.join(updateAgentDir, "settings.json");
+    let updateReceiptRaw: string | null;
+    let updateSettingsRaw: string;
+    try {
+      updateReceiptRaw = readOptional(updateReceiptPath, null);
+      updateSettingsRaw = readOptional(updateSettingsPath, '{"packages":[]}')!;
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "settings-corrupt",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
+    }
+    const stripUpdateGateNewline = (value: string): string => (value.endsWith("\n") ? value.slice(0, -1) : value);
+    const updateReceiptJson = updateReceiptRaw === null ? null : stripUpdateGateNewline(updateReceiptRaw);
+    const updateSettingsJson = stripUpdateGateNewline(updateSettingsRaw);
+    const updatePackageRunner = path.join(updateAgentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
+    const updateGate = verifyOfflineManagedPiRelease(
+      {
+        detected: {
+          executable: updateExecutable,
+          packageRunner: updatePackageRunner,
+          settingsJson: updateSettingsJson,
+        },
+        engramBin: input.engramBin,
+        receiptJson: updateReceiptJson,
+        paths: {
+          targetDir: false,
+          codingAgentDir: updateAgentDir,
+          receiptPath: updateReceiptPath,
+          environment: {
+            HOME: updateHomeDir,
+            PI_CODING_AGENT_DIR: updateAgentDir,
+          },
+        },
+      },
+      {
+        verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({ receipt, homeDir: updateHomeDir, downloadsDir: updateDownloadsDir }),
+      },
+    );
+    if (updateGate.kind === "blocked") {
+      return "remedy" in updateGate && typeof (updateGate as { remedy?: unknown }).remedy === "string"
+        ? updateGate as { kind: "blocked"; reason: string; remedy: string }
+        : { kind: "blocked", reason: updateGate.reason, remedy: `Verificación offline del receipt Pi falló (${updateGate.reason}); sin preflight ni cambios. Pi no quedó activado.` };
+    }
+    try {
+      fs.mkdirSync(updateDownloadsDir, { recursive: true });
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "preflight-failed",
+        remedy: `No se pudo preparar el directorio de descargas Stack: ${error instanceof Error ? error.message : String(error)}. Pi no quedó activado.`,
+      };
+    }
+    const updateFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+    if (typeof updateFetch !== "function") {
+      return {
+        kind: "blocked",
+        reason: "preflight-failed",
+        remedy: "Sin fetch global disponible para el preflight Pi; Pi no quedó activado.",
+      };
+    }
+    try {
+      const updateResult = await preparePiManagedInstall(
+        { homeDir: updateHomeDir, agentDir: updateAgentDir, piExecutable: updateExecutable, downloadsDir: updateDownloadsDir },
+        {
+          fetchImpl: updateFetch as typeof fetch,
+          run: (executable, args, options) => runProcess({
+            executable,
+            args,
+            environment: options.env,
+            cwd: options.cwd,
+          }),
+        },
+      );
+      return { candidate: updateResult.candidate, prepared: updateResult };
+    } catch (error) {
+      const stageDir = (error as { stageDir?: unknown }).stageDir;
+      const message = error instanceof Error ? error.message : String(error);
+      const stageSuffix = typeof stageDir === "string" && stageDir !== ""
+        ? ` Stage conservado en ${stageDir} para diagnóstico.`
+        : " Stage conservado para diagnóstico cuando exista.";
+      return {
+        kind: "blocked",
+        reason: "preflight-failed",
+        remedy: `${message}.${stageSuffix} Corrige la causa y reintenta; Pi no quedó activado.`,
+      };
+    }
   }
   if (input.targetDir !== undefined) {
     return {
@@ -1105,27 +1316,57 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
       };
     }
     const settingsPath = path.join(paths.codingAgentDir, "settings.json");
-    const settingsJson = readOptional(settingsPath, '{"packages":[]}')!;
+    // Pre-setup bytes: FRESH gate only. The POST-setup re-read below is the
+    // source of truth passed to activation; this stale object never is.
+    let settingsJson = readOptional(settingsPath, '{"packages":[]}')!;
     const receiptJson = readOptional(paths.receiptPath, null);
-    let piEntry = false;
-    try {
-      piEntry = hasInstalledPiEntry(settingsJson);
-    } catch (error) {
-      return {
-        kind: "blocked",
-        reason: "settings-corrupt",
-        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
-      };
-    }
-    if (receiptJson !== null || piEntry) {
-      // No legacy migration yet and no raw receipt trust: a preexisting
-      // receipt or Pi package entry needs the later verified update path,
-      // never silent reuse. Nothing is touched.
-      return {
-        kind: "blocked",
-        reason: "verified-update-required",
-        remedy: "Ya existe un receipt o registro Pi instalado; la migración verificada aún no está disponible. No se modificó nada; Pi no quedó activado.",
-      };
+    const scopeKind = input.targetDir === undefined ? "real" : "target-dir";
+    // T07 owned legacy migration: a preexisting schema1 receipt WITHOUT
+    // managedPackage plus the exact owned settings entry authenticates via
+    // the pure preparePiLegacyMigration guard BEFORE any setup/activation.
+    // Blocked/tampered/manual returns the visible guard reason with zero
+    // side effects; raw JSON is never trusted here.
+    let previousSource: string | null = null;
+    let migrationReceipt: string | null = null;
+    if (receiptJson !== null && isLegacyUnmanagedReceipt(receiptJson)) {
+      const guard = preparePiLegacyMigration({
+        receiptJson,
+        settingsJson,
+        codingAgentDir: paths.codingAgentDir,
+        engramBin,
+        scopeKind,
+        acceptedCandidates: PI_RUNTIME_REGISTRY.pi.acceptedCandidates,
+      });
+      if ("kind" in guard) {
+        return {
+          kind: "blocked",
+          reason: guard.reason,
+          remedy: `La migración del receipt legacy Pi no se autenticó (${guard.reason}); sin setup ni activación. Pi no quedó activado.`,
+        };
+      }
+      previousSource = guard.previousSource;
+      migrationReceipt = JSON.stringify(guard.receipt);
+    } else {
+      let piEntry = false;
+      try {
+        piEntry = hasInstalledPiEntry(settingsJson);
+      } catch (error) {
+        return {
+          kind: "blocked",
+          reason: "settings-corrupt",
+          remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+        };
+      }
+      if (receiptJson !== null || piEntry) {
+        // No raw receipt trust: a managed, foreign-schema, corrupt, or
+        // receipt-less Pi state needs the explicit managed update flow,
+        // never silent reuse. Nothing is touched.
+        return {
+          kind: "blocked",
+          reason: "verified-update-required",
+          remedy: "Ya existe un receipt o registro Pi instalado; la migración verificada aún no está disponible. No se modificó nada; Pi no quedó activado.",
+        };
+      }
     }
     // Setup oficial solo en install real (targetDir undefined), tras la
     // prueba del stage y antes de activar. Con --target-dir se omite
@@ -1152,6 +1393,94 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
           kind: "blocked",
           reason: "setup-pi-failed",
           remedy: setupPiFailedRemedy(setup),
+        };
+      }
+      // POST-setup source of truth: the official setup owns settings.json
+      // writes (provider pair, foreign entries), so re-read both files.
+      // Fresh path fails closed if a Pi registration or receipt appeared;
+      // migration path re-runs the guard and requires same source/receipt
+      // plus no unexpected Pi registration. Never reuse stale pre-setup
+      // bytes, never strip provider entries here.
+      let postSettings: string;
+      let postReceipt: string | null;
+      try {
+        postSettings = readOptional(settingsPath, '{"packages":[]}')!;
+        postReceipt = readOptional(paths.receiptPath, null);
+      } catch (error) {
+        return {
+          kind: "blocked",
+          reason: "settings-corrupt",
+          remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+        };
+      }
+      if (previousSource !== null) {
+        const reguard = preparePiLegacyMigration({
+          receiptJson: postReceipt,
+          settingsJson: postSettings,
+          codingAgentDir: paths.codingAgentDir,
+          engramBin,
+          scopeKind,
+          acceptedCandidates: PI_RUNTIME_REGISTRY.pi.acceptedCandidates,
+        });
+        if ("kind" in reguard) {
+          return {
+            kind: "blocked",
+            reason: reguard.reason,
+            remedy: `La revalidación legacy tras el setup no se autenticó (${reguard.reason}); sin activación. Pi no quedó activado.`,
+          };
+        }
+        if (reguard.previousSource !== previousSource || JSON.stringify(reguard.receipt) !== migrationReceipt) {
+          return {
+            kind: "blocked",
+            reason: "receipt-untrusted",
+            remedy: "El estado legacy cambió durante el setup oficial (fuente/receipt distintos); sin activación parcial. Pi no quedó activado.",
+          };
+        }
+        const preSources = piSources(settingsJson);
+        const postSources = piSources(postSettings);
+        if (preSources === null || postSources === null
+          || JSON.stringify(preSources) !== JSON.stringify(postSources)
+          || !postSources.includes(previousSource)) {
+          return {
+            kind: "blocked",
+            reason: "source-divergent",
+            remedy: "Apareció un registro Pi inesperado durante el setup oficial; sin activación parcial. Pi no quedó activado.",
+          };
+        }
+        settingsJson = postSettings;
+      } else {
+        try {
+          if (postReceipt !== null || hasInstalledPiEntry(postSettings)) {
+            return {
+              kind: "blocked",
+              reason: "verified-update-required",
+              remedy: "El setup oficial registró un receipt o entrada Pi durante la instalación; sin activación parcial. No se modificó nada; Pi no quedó activado.",
+            };
+          }
+          settingsJson = postSettings;
+        } catch (error) {
+          return {
+            kind: "blocked",
+            reason: "settings-corrupt",
+            remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+          };
+        }
+      }
+    }
+    if (previousSource !== null) {
+      // Snapshot the owned legacy state (settings + old receipt only) for
+      // rollback before activation mutates anything.
+      try {
+        backupLegacyMigrationState(
+          settingsPath,
+          paths.receiptPath,
+          input.targetDir === undefined ? undefined : path.join(path.resolve(input.targetDir), "backups"),
+        );
+      } catch (error) {
+        return {
+          kind: "blocked",
+          reason: "backup-failed",
+          remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
         };
       }
     }
@@ -1193,12 +1522,240 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
           engramBin,
           prepared: { candidate: activationCandidate, stageDir, evidence },
           settingsJson,
-          previousSource: null,
-          scopeKind: input.targetDir === undefined ? "real" : "target-dir",
+          previousSource,
+          scopeKind,
         },
         { verifyStage, smokeStage, verifyActive },
       );
     } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "activation-failed",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
+    }
+  }
+  if (input.operation === "update") {
+    const engramBinForUpdate = input.engramBin;
+    if (engramBinForUpdate === null || !path.isAbsolute(engramBinForUpdate)) {
+      return {
+        kind: "blocked",
+        reason: "engram-required",
+        remedy: "Instala Engram o configura un ENGRAM_BIN absoluto antes de reintentar.",
+      };
+    }
+    const updateCandidate = input.candidate;
+    if (updateCandidate === undefined) {
+      return {
+        kind: "blocked",
+        reason: "candidate-missing",
+        remedy: "Aporta el candidato Pi verificado (resolver + stage) antes de reintentar; update deliberado nunca usa el pin estático.",
+      };
+    }
+    const updatePrepared = input.prepared;
+    if (updatePrepared === undefined) {
+      return {
+        kind: "blocked",
+        reason: "stage-unverified",
+        remedy: "El update Pi exige el stage preverificado del preflight (prepared); un candidato del resolver solo nunca activa.",
+      };
+    }
+    const updateMismatch = preparedInstallMismatch(updateCandidate, updatePrepared);
+    if (updateMismatch !== null) {
+      return {
+        kind: "blocked",
+        reason: "prepared-mismatch",
+        remedy: `${updateMismatch}; Pi no quedó activado y no se descargó ni modificó nada.`,
+      };
+    }
+    const updateSettingsPath = path.join(paths.codingAgentDir, "settings.json");
+    const updateScopeKind = input.targetDir === undefined ? "real" : "target-dir";
+    const updateHomeDir = input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir);
+    const updateDownloadsDir = input.targetDir === undefined
+      ? path.join(dataDir(), "packages")
+      : path.join(path.resolve(input.targetDir), "downloads");
+    const stripUpdateNewline = (value: string): string => value.endsWith("\n") ? value.slice(0, -1) : value;
+    let updateSettingsRaw: string;
+    let updateReceiptRaw: string | null;
+    try {
+      updateSettingsRaw = readOptional(updateSettingsPath, '{"packages":[]}')!;
+      updateReceiptRaw = readOptional(paths.receiptPath, null);
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "settings-corrupt",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
+    }
+    if (updateReceiptRaw === null) {
+      return {
+        kind: "blocked",
+        reason: "receipt-untrusted",
+        remedy: "Sin receipt gestionado previo; el update exige un receipt schema1 con managedPackage. No se modificó nada; Pi no quedó activado.",
+      };
+    }
+    const updateVerifyArtifact = (receipt: PiPackageReceipt): boolean => verifyCachedPiArtifact({
+      receipt,
+      homeDir: updateHomeDir,
+      downloadsDir: updateDownloadsDir,
+    });
+    const updateGateInput = {
+      detected: {
+        executable: input.detected.executable,
+        packageRunner: paths.packageRunner,
+        settingsJson: stripUpdateNewline(updateSettingsRaw),
+      },
+      engramBin: engramBinForUpdate,
+      receiptJson: stripUpdateNewline(updateReceiptRaw),
+      paths: {
+        targetDir: input.targetDir !== undefined,
+        codingAgentDir: paths.codingAgentDir,
+        receiptPath: paths.receiptPath,
+        environment: paths.environment,
+      },
+    };
+    const updateValidated = verifyOfflineManagedPiRelease(updateGateInput, {
+      verifyManagedArtifact: updateVerifyArtifact,
+    });
+    if (updateValidated.kind === "blocked") {
+      return updateValidated;
+    }
+    let updateObserved: { lockSha256: string; treeSha256: string; dependencies: readonly { name: string; version: string; integrity: string }[] };
+    try {
+      updateObserved = await inspectStagedPiNpm({
+        stageDir: updatePrepared.stageDir,
+        tarballPath: updatePrepared.artifact.path,
+        release: updatePrepared.release,
+      });
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "stage-unverified",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
+    }
+    if (updateObserved.lockSha256 !== updatePrepared.evidence.lockSha256
+      || updateObserved.treeSha256 !== updatePrepared.evidence.treeSha256
+      || sortedDepIdentities(updateObserved.dependencies) !== sortedDepIdentities([...updatePrepared.evidence.dependencies])) {
+      return {
+        kind: "blocked",
+        reason: "prepared-mismatch",
+        remedy: "el stage observado no coincide con la evidencia preparada (lock/tree/deps); Pi no quedó activado y no se modificó nada.",
+      };
+    }
+    const updateOldManaged = (updateValidated.receipt as unknown as {
+      managedPackage?: { lockSha256: string; treeSha256: string; dependencies: { name: string; version: string; integrity: string }[] };
+    }).managedPackage;
+    if (updateOldManaged === undefined) {
+      return {
+        kind: "blocked",
+        reason: "receipt-untrusted",
+        remedy: "El receipt previo no trae managedPackage; el update legacy sigue bloqueado en otro paso. No se modificó nada; Pi no quedó activado.",
+      };
+    }
+    if (sameJsonValue(updateValidated.receipt.candidate.package, updateCandidate.package)
+      && sameJsonValue(updateValidated.receipt.candidate.tarball, updateCandidate.tarball)
+      && sameJsonValue(updateValidated.receipt.candidate.provenance, updateCandidate.provenance)
+      && updateOldManaged.lockSha256 === updatePrepared.evidence.lockSha256
+      && updateOldManaged.treeSha256 === updatePrepared.evidence.treeSha256
+      && Array.isArray(updateOldManaged.dependencies)
+      && updateOldManaged.dependencies.length === 6
+      && sortedDepIdentities(updateOldManaged.dependencies) === sortedDepIdentities([...updatePrepared.evidence.dependencies])) {
+      return { kind: "healthy", packageSource: updateValidated.receipt.candidate.package.source };
+    }
+    let updateFreshSettingsRaw: string;
+    let updateFreshReceiptRaw: string | null;
+    try {
+      updateFreshSettingsRaw = readOptional(updateSettingsPath, '{"packages":[]}')!;
+      updateFreshReceiptRaw = readOptional(paths.receiptPath, null);
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "settings-corrupt",
+        remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+      };
+    }
+    if (updateFreshSettingsRaw !== updateSettingsRaw || updateFreshReceiptRaw !== updateReceiptRaw) {
+      return {
+        kind: "blocked",
+        reason: "recovery-incomplete",
+        remedy: "El estado gestionado cambió durante la verificación del stage (drift en receipt/settings); sin activación parcial. Conserva backup/indicador y revisa manualmente; Pi no quedó activado.",
+      };
+    }
+    const updateRegate = verifyOfflineManagedPiRelease({
+      detected: {
+        executable: input.detected.executable,
+        packageRunner: paths.packageRunner,
+        settingsJson: stripUpdateNewline(updateFreshSettingsRaw),
+      },
+      engramBin: engramBinForUpdate,
+      receiptJson: updateFreshReceiptRaw === null ? null : stripUpdateNewline(updateFreshReceiptRaw),
+      paths: {
+        targetDir: input.targetDir !== undefined,
+        codingAgentDir: paths.codingAgentDir,
+        receiptPath: paths.receiptPath,
+        environment: paths.environment,
+      },
+    }, {
+      verifyManagedArtifact: updateVerifyArtifact,
+    });
+    if (updateRegate.kind === "blocked") {
+      return {
+        kind: "blocked",
+        reason: "recovery-incomplete",
+        remedy: `Revalidación previa a activación falló (${updateRegate.reason}); sin activación parcial. Conserva backup/indicador y revisa manualmente; Pi no quedó activado.`,
+      };
+    }
+    const updateEvidence: PreparedPiInstallEvidence = {
+      lockSha256: updatePrepared.evidence.lockSha256,
+      treeSha256: updatePrepared.evidence.treeSha256,
+      dependencies: [...updatePrepared.evidence.dependencies],
+    };
+    const updateActivationCandidate = updatePrepared.candidate;
+    const updateAgentDir = paths.codingAgentDir;
+    const updateReceiptPath = paths.receiptPath;
+    const updateVerifyStage = async (dir: string, proof: PreparedPiInstallEvidence): Promise<void> => {
+      const observedInner = await inspectStagedPiNpm({
+        stageDir: dir,
+        tarballPath: updatePrepared.artifact.path,
+        release: updatePrepared.release,
+      });
+      if (observedInner.lockSha256 !== proof.lockSha256 || observedInner.treeSha256 !== proof.treeSha256) {
+        throw new Error("pi-prepared-install: el stage observado no coincide con la evidencia preparada (lock/tree); posible stage obsoleto");
+      }
+      if (sortedDepIdentities(observedInner.dependencies) !== sortedDepIdentities(proof.dependencies)) {
+        throw new Error("pi-prepared-install: las dependencias observadas no coinciden con la evidencia preparada");
+      }
+    };
+    const updateSmokeStage = async (dir: string): Promise<void> => {
+      await smokeStagedPiRuntime({ piExecutable: input.detected.executable, stageDir: dir });
+    };
+    const updateVerifyActive = (): void => {
+      verifyActivePiRelease({ agentDir: updateAgentDir, receiptPath: updateReceiptPath, candidate: updateActivationCandidate, evidence: updateEvidence });
+    };
+    try {
+      const updateActivated = await activatePreparedPiInstall(
+        {
+          homeDir: updateHomeDir,
+          agentDir: updateAgentDir,
+          receiptPath: updateReceiptPath,
+          engramBin: engramBinForUpdate,
+          prepared: { candidate: updateActivationCandidate, stageDir: updatePrepared.stageDir, evidence: updateEvidence },
+          settingsJson: stripUpdateNewline(updateFreshSettingsRaw),
+          previousSource: updateValidated.receipt.candidate.package.source,
+          scopeKind: updateScopeKind,
+        },
+        { verifyStage: updateVerifyStage, smokeStage: updateSmokeStage, verifyActive: updateVerifyActive },
+      );
+      return { kind: "updated", receipt: updateActivated.receipt, packageSource: updateActivationCandidate.package.source };
+    } catch (error) {
+      if (error !== null && typeof error === "object" && Reflect.get(error as object, "recovery") === "incomplete") {
+        return {
+          kind: "blocked",
+          reason: "recovery-incomplete",
+          remedy: `${error instanceof Error ? error.message : String(error)}; recuperación incompleta, conserva backup/indicador y revisa manualmente; Pi no quedó activado.`,
+        };
+      }
       return {
         kind: "blocked",
         reason: "activation-failed",
@@ -1214,14 +1771,24 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
     // T07 offline managed sync: schemaVersion 1 receipt with managedPackage
     // routes to the authenticated managed sync, never the legacy resolver
     // plan. Registry stays current+historical identity, never a next install
-    // selector; host testedVersions must not block this path. Invalid JSON
-    // or legacy v1 without managedPackage falls through to the fail-closed
-    // legacy path; raw-field presence alone never proves ownership (callee
-    // validates scope/settings/link/lock/tree/cache/runner thoroughly).
+    // selector; host testedVersions must not block this path. Missing,
+    // corrupt, legacy, or non-managed receipts block here with an explicit
+    // verified install/migration remedy before any static plan, native Pi
+    // install, or network, preserving foreign/manual state; raw-field
+    // presence alone never proves ownership (callee validates
+    // scope/settings/link/lock/tree/cache/runner thoroughly).
     const settingsJson = readOptional(path.join(paths.codingAgentDir, "settings.json"), '{"packages":[]}')!;
     const receiptJson = readOptional(paths.receiptPath, null);
-    if (receiptJson !== null) {
+    if (receiptJson === null) {
+      return {
+        kind: "blocked",
+        reason: "verified-install-required",
+        remedy: "Sin receipt gestionado Pi; sync exige una instalación gestionada verificada. Ejecuta un install Pi verificado antes de reintentar; no se ejecutó runner ni red y no se modificó nada; Pi no quedó activado.",
+      };
+    }
+    {
       let routesManaged = false;
+      let receiptCorrupt = false;
       try {
         const parsed: unknown = JSON.parse(receiptJson);
         routesManaged = parsed !== null
@@ -1233,6 +1800,14 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
           && !Array.isArray(Reflect.get(parsed, "managedPackage"));
       } catch {
         routesManaged = false;
+        receiptCorrupt = true;
+      }
+      if (receiptCorrupt) {
+        return {
+          kind: "blocked",
+          reason: "receipt-untrusted",
+          remedy: "El receipt Pi no es JSON válido; sync exige un receipt gestionado schema1 con managedPackage. Ejecuta un install/migración Pi verificado antes de reintentar; no se ejecutó runner ni red y no se modificó nada; Pi no quedó activado. Se preserva el estado foreign/manual.",
+        };
       }
       if (routesManaged) {
         return runPiPackageManagedSync(
@@ -1269,7 +1844,86 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
           },
         );
       }
+      return {
+        kind: "blocked",
+        reason: "verified-install-required",
+        remedy: "El receipt Pi no es gestionado schema1 con managedPackage (ausente/legacy/foráneo); sync no usa el plan estático ni instala. Ejecuta un install/migración Pi verificado antes de reintentar; no se ejecutó runner ni red y no se modificó nada; Pi no quedó activado. Se preserva el estado foreign/manual.",
+      };
     }
+  }
+  if (input.operation === "models") {
+    // T07 offline managed models: schemaVersion 1 receipt with managedPackage
+    // routes to the authenticated managed models handler, never the legacy
+    // static .29 plan/execute. Registry stays current .29 runner policy,
+    // never a next install selector; the dynamic receipt is the source of
+    // truth. Absent/corrupt/legacy receipts block visibly here without
+    // falling through to runPiRuntime, Pi install, or any network.
+    const settingsJson = readOptional(path.join(paths.codingAgentDir, "settings.json"), '{"packages":[]}')!;
+    const receiptJson = readOptional(paths.receiptPath, null);
+    if (receiptJson === null) {
+      return {
+        kind: "blocked",
+        reason: "receipt-untrusted",
+        remedy: "Sin receipt gestionado schema1 con managedPackage; models exige una instalación gestionada verificada. No se ejecutó runner ni red; Pi no quedó activado.",
+      };
+    }
+    let routesManaged = false;
+    try {
+      const parsed: unknown = JSON.parse(receiptJson);
+      routesManaged = parsed !== null
+        && typeof parsed === "object"
+        && !Array.isArray(parsed)
+        && Reflect.get(parsed, "schemaVersion") === 1
+        && Reflect.get(parsed, "managedPackage") !== null
+        && typeof Reflect.get(parsed, "managedPackage") === "object"
+        && !Array.isArray(Reflect.get(parsed, "managedPackage"));
+    } catch {
+      return {
+        kind: "blocked",
+        reason: "receipt-corrupt",
+        remedy: "El receipt Pi no es JSON válido; models exige un receipt gestionado schema1 con managedPackage. No se ejecutó runner ni red; Pi no quedó activado.",
+      };
+    }
+    if (!routesManaged) {
+      return {
+        kind: "blocked",
+        reason: "receipt-untrusted",
+        remedy: "El receipt Pi no es gestionado schema1 con managedPackage (ausente/legacy/foráneo); models no usa el plan estático ni instala. No se ejecutó runner ni red; Pi no quedó activado.",
+      };
+    }
+    return runPiPackageManagedModels(
+      {
+        operation: "models",
+        interactive: false,
+        registry: PI_RUNTIME_REGISTRY.pi,
+        detected: {
+          executable: input.detected.executable,
+          packageRunner: paths.packageRunner,
+          settingsJson,
+        },
+        engramBin: input.engramBin,
+        receiptJson,
+        paths: {
+          targetDir: input.targetDir !== undefined,
+          codingAgentDir: paths.codingAgentDir,
+          receiptPath: paths.receiptPath,
+          environment: paths.environment,
+        },
+      },
+      {
+        backupSettings: () => undefined,
+        run: runProcess,
+        verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({
+          receipt,
+          homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
+          downloadsDir: input.targetDir === undefined
+            ? path.join(dataDir(), "packages")
+            : path.join(path.resolve(input.targetDir), "downloads"),
+        }),
+        isPackageAbsent: () => !fs.existsSync(packageRoot),
+        deleteReceipt: () => fs.rmSync(paths.receiptPath, { force: true }),
+      },
+    );
   }
   const deps: PiRuntimeDeps = {
     readSettings: (file) => readOptional(file, '{"packages":[]}')!,
@@ -1296,6 +1950,135 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
             ? path.join(dataDir(), "packages")
             : path.join(path.resolve(input.targetDir), "downloads"),
         }),
+        readSettings: () => fs.readFileSync(path.join(paths.codingAgentDir, "settings.json"), "utf8"),
+        verifyLegacyPackage: (receipt) => {
+          const op = value as {
+            receiptJson: string | null;
+            detected: { settingsJson: string };
+            paths: { codingAgentDir: string; targetDir: boolean };
+            engramBin: string | null;
+          };
+          let effectiveEngram = op.engramBin;
+          if (effectiveEngram === null) {
+            if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) return false;
+            const engram = Reflect.get(receipt as object, "engram");
+            if (engram === null || typeof engram !== "object" || Array.isArray(engram)) return false;
+            const binary = Reflect.get(engram as object, "binary");
+            if (typeof binary !== "string" || binary === "" || !path.isAbsolute(binary)) return false;
+            effectiveEngram = binary;
+          }
+          if (typeof effectiveEngram !== "string" || effectiveEngram === "") return false;
+          const receiptJson = typeof op.receiptJson === "string" ? op.receiptJson : JSON.stringify(receipt);
+          const guard = preparePiLegacyMigration({
+            receiptJson,
+            settingsJson: op.detected.settingsJson,
+            codingAgentDir: op.paths.codingAgentDir,
+            engramBin: effectiveEngram,
+            scopeKind: op.paths.targetDir ? "target-dir" : "real",
+            acceptedCandidates: PI_RUNTIME_REGISTRY.pi.acceptedCandidates,
+          });
+          return !("kind" in guard);
+        },
+        deactivateLegacyRelease: (receipt, nextSettings) => {
+          const op = value as { receiptJson: string | null };
+          const candidate = (receipt as { candidate?: { package?: { source?: unknown } } }).candidate;
+          const source = candidate?.package?.source;
+          if (typeof source !== "string" || source === "") {
+            return { kind: "blocked", reason: "remove-failed" };
+          }
+          let currentReceiptRaw: string | null = null;
+          try {
+            currentReceiptRaw = fs.readFileSync(paths.receiptPath, "utf8");
+          } catch {
+            return { kind: "blocked", reason: "remove-failed" };
+          }
+          if (typeof op.receiptJson === "string" && currentReceiptRaw !== op.receiptJson) {
+            return { kind: "blocked", reason: "receipt-untrusted" };
+          }
+          const settingsPath = path.join(paths.codingAgentDir, "settings.json");
+          const legacyEntry = path.join(paths.codingAgentDir, "npm", "node_modules", "jorgex-pi");
+          return deactivateVerifiedLegacyPiEntry({
+            homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
+            agentDir: paths.codingAgentDir,
+            receiptPath: paths.receiptPath,
+            source,
+            nextSettings,
+            verify: () => {
+              let entryStat: fs.Stats | null = null;
+              try {
+                entryStat = fs.lstatSync(legacyEntry);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+              if (entryStat !== null) throw new Error("managed entry still present after uninstall");
+              let receiptStat: fs.Stats | null = null;
+              try {
+                receiptStat = fs.lstatSync(paths.receiptPath);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+              if (receiptStat !== null) throw new Error("receipt still present after uninstall");
+              if (fs.readFileSync(settingsPath, "utf8") !== nextSettings) {
+                throw new Error("settings mismatch after uninstall");
+              }
+            },
+          });
+        },
+        deactivateManagedRelease: (receipt, nextSettings) => {
+          const managedPackage = (receipt as { managedPackage?: unknown }).managedPackage;
+          if (managedPackage === null
+            || typeof managedPackage !== "object"
+            || Array.isArray(managedPackage)) {
+            return { kind: "blocked", reason: "remove-failed" };
+          }
+          const mp = managedPackage as {
+            releaseDir: string;
+            linkPath: string;
+            backupDir: string;
+            lockSha256: string;
+            treeSha256: string;
+            dependencies: { name: string; version: string; integrity: string }[];
+          };
+          if (typeof mp.releaseDir !== "string"
+            || typeof mp.linkPath !== "string"
+            || typeof mp.backupDir !== "string") {
+            return { kind: "blocked", reason: "remove-failed" };
+          }
+          const settingsPath = path.join(paths.codingAgentDir, "settings.json");
+          return deactivateVerifiedPiRelease({
+            homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
+            agentDir: paths.codingAgentDir,
+            receiptPath: paths.receiptPath,
+            managedPackage: mp,
+            nextSettings,
+            verify: () => {
+              let entryStat: fs.Stats | null = null;
+              try {
+                entryStat = fs.lstatSync(mp.linkPath);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+              if (entryStat !== null) throw new Error("managed entry still present after uninstall");
+              let releaseStat: fs.Stats | null = null;
+              try {
+                releaseStat = fs.lstatSync(mp.releaseDir);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+              if (releaseStat !== null) throw new Error("managed release still present after uninstall");
+              let receiptStat: fs.Stats | null = null;
+              try {
+                receiptStat = fs.lstatSync(paths.receiptPath);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+              if (receiptStat !== null) throw new Error("receipt still present after uninstall");
+              if (fs.readFileSync(settingsPath, "utf8") !== nextSettings) {
+                throw new Error("settings mismatch after uninstall");
+              }
+            },
+          });
+        },
         isPackageAbsent: () => !fs.existsSync(packageRoot),
         deleteReceipt: () => fs.rmSync(paths.receiptPath, { force: true }),
       },

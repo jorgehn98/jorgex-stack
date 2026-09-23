@@ -172,13 +172,13 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   packageOnly?: boolean;
   upgradePermissions?: boolean;
 }): Promise<PiManagedOperationResult> {
-  // T06 deliberate install: the real CLI never passes a caller candidate, so
+  // T06 deliberate install/update: the real CLI never passes a caller stage, so
   // resolve the live provider preflight before the obsolete host gate. TargetDir
   // never runs preflight network; injected candidate/prepared skip it.
   // Blocked/throwing preflight fails closed before package/projection/prefs.
   let effectiveCandidate = input.candidate;
   let effectivePrepared = input.prepared;
-  if (input.operation === "install" && input.targetDir === undefined && effectiveCandidate === undefined && effectivePrepared === undefined) {
+  if ((input.operation === "install" || input.operation === "update") && input.targetDir === undefined && effectiveCandidate === undefined && effectivePrepared === undefined) {
     let preflight: unknown;
     try {
       const prepare = preparePiRuntimeSystem as unknown as ((value: PiRuntimeInput) => Promise<unknown>) | undefined;
@@ -208,7 +208,10 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   }
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
   const hasStagedCandidate = input.operation === "install" && effectiveCandidate !== undefined;
-  if (!hasStagedCandidate && input.operation !== "doctor" && input.operation !== "uninstall" && !supportedVersions.includes(input.detected.version)) {
+  const hasStagedUpdate = input.operation === "update" && effectiveCandidate !== undefined && effectivePrepared !== undefined;
+  const bypassHostGate =
+    hasStagedCandidate || hasStagedUpdate || input.operation === "sync" || input.operation === "doctor" || input.operation === "uninstall" || input.operation === "models";
+  if (!bypassHostGate && !supportedVersions.includes(input.detected.version)) {
     return {
       kind: "blocked",
       reason: "unsupported-pi-version",
@@ -283,7 +286,9 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         operation,
         ...(upgradePermissions ? { upgradePermissions: true as const } : {}),
       });
-      if (operation === "install" && effectiveCandidate !== undefined && raw.kind === "installed") {
+      if (effectiveCandidate !== undefined
+        && ((operation === "install" && raw.kind === "installed")
+          || (operation === "update" && raw.kind === "updated"))) {
         const expected = effectiveCandidate.package;
         const receipt = raw.receipt as
           | { candidate?: { package?: { name?: unknown; version?: unknown; source?: unknown } }; package?: { name?: unknown; version?: unknown; source?: unknown } }
@@ -302,7 +307,13 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         }
         effectivePackageSource = observed.source as string;
       }
-      if (operation === "sync" && raw.kind === "synced" && "packageSource" in raw && raw.packageSource !== undefined) {
+      if (
+        ((operation === "sync" && raw.kind === "synced") ||
+          (operation === "doctor" && raw.kind === "healthy") ||
+          (operation === "update" && raw.kind === "healthy")) &&
+        "packageSource" in raw &&
+        raw.packageSource !== undefined
+      ) {
         const provided = raw.packageSource;
         if (
           typeof provided !== "string" ||
