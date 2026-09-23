@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
- * [T06/T09-RED] Pi CI observed artifact replaces the static pin reader.
+ * Pi CI artifact records the verified provider release observed for this run.
  *
  * Intended code-facing contract (no production change here):
  * - `prepareObservedPiCiArtifact({ tarballPath, candidatePath, fetchImpl })`
@@ -155,7 +155,7 @@ function expectPrivateCandidateFile(candidatePath: string, expected: PiCiArtifac
   });
 }
 
-describe("[T06/T09-RED] pi CI observed artifact replaces static pin selection", () => {
+describe("pi CI observed release artifact", () => {
   it("observes two distinct dist-tags.latest candidates with verified tarball + private candidate JSON", async () => {
     const { prepareObservedPiCiArtifact } = await loadArtifact();
 

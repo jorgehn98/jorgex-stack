@@ -1,4 +1,4 @@
-// T05 RED for T07 managed update via runPiRuntimeSystem (tests only, no prod change).
+// Coverage for managed update via runPiRuntimeSystem.
 //
 // Desired contract (GREEN in src/lib/pi-runtime.ts, operation "update"):
 // - runPiRuntimeSystem({ operation: "update", targetDir: tempSandbox, detected: Pi 0.87.1,
@@ -22,10 +22,6 @@
 //   backup under stage/.activate-backup outside npm); a foreign package file must survive.
 // - NEW stage is agentDir/stage-<32hex>/pi-agent with a dummy verified tgz; candidate 9.9.9
 //   test-only (contract cloned from the verified fixture, never a published claim).
-// - RED currently: update ignores candidate/prepared and returns blocked
-//   "verified-update-required" (or "receipt-untrusted" via the frozen registry), so the
-//   "updated"/"healthy" expectations below fail for the intended behavioral reason.
-//   Typecheck stays green.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -330,7 +326,7 @@ function snapshotFiles(sandbox: UpdateSandbox): { receipt: string; settings: str
   };
 }
 
-describe("pi runtime managed update RED (T05 for T07)", () => {
+describe("pi runtime managed update", () => {
   it("authenticates the old managed receipt before activation and returns updated with the new receipt/source", async () => {
     const sandbox = setupUpdateSandbox();
     expect(sandbox.oldCandidate.package.source).toBe(OLD_SOURCE);
@@ -347,7 +343,7 @@ describe("pi runtime managed update RED (T05 for T07)", () => {
     const originalFetch = holder.fetch;
     (holder as Record<string, unknown>)["fetch"] = (...args: unknown[]) => {
       fetchCalls.push(String((args[0] as string | undefined) ?? "fetch"));
-      throw new Error("network forbidden in managed update RED");
+      throw new Error("network forbidden in managed update test");
     };
 
     // Unit gate is already real-FS tested: this spy only proves ordering for the

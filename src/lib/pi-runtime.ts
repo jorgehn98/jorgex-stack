@@ -133,8 +133,9 @@ export const PI_RUNTIME_REGISTRY = {
     pi: PI_RUNTIME_CANDIDATE.pi,
     candidate: PI_RUNTIME_CANDIDATE,
     // Offline RECOVERY identity only from immutable Stack tag
-    // v1.9.51:src/lib/pi-runtime-pin.json (jorgex-pi@0.8.24). Never a next
-    // install candidate or URL; the productive selector stays 0.8.29. Old Pi
+    // v1.9.51:src/lib/pi-runtime-pin.json (jorgex-pi@0.8.24), never a
+    // next-install candidate or URL. Deliberate install/update resolve the
+    // published provider version dynamically. Old Pi
     // 0.8.24 runner is schema1/bin jorgex-pi/maxStdout65536 with
     // status,doctor,models,sync,cleanup (no upgrade) and legacy
     // mcp-adapter-v1 (not engram-official-bridge-v1/permissions-upgrade-v1).
@@ -210,10 +211,9 @@ export interface PiRuntimeInput {
   engramBin: string | null;
   verifiedArtifact?: { bytes: number; sha256: string; sha512: string };
   /**
-   * Injected Pi runtime candidate (resolver + verified stage). Required for
-   * deliberate install: without it install blocks before any prepare/execute
-   * and never falls back to the static pin. Non-install flows keep the static
-   * registry until the T07 offline-receipt work.
+   * Injected Pi runtime candidate (resolver + verified stage). The real CLI
+   * obtains it through preflight for deliberate install/update; absent injected
+   * input, offline operations use the registry's compatibility identity.
    */
   candidate?: PiRuntimeCandidate;
   /**
@@ -1023,10 +1023,10 @@ function isStrictChildPath(child: string, root: string): boolean {
 }
 
 /**
- * T06 CLI-to-preflight: deliberate install resolves the live provider
+ * CLI-to-preflight: deliberate install/update resolves the live provider
  * candidate through the isolated managed-install preflight, without touching
  * the active npm tree, settings, receipt, official Engram setup, or the
- * static pin. Only explicit real install (targetDir undefined, Engram
+ * static pin. Only explicit real install/update (targetDir undefined, Engram
  * present, absolute Pi executable) reaches the network; every other shape
  * fails closed before any download. Preflight throws stay visible and keep
  * the stage for diagnostics; the caller never falls back to static bytes.

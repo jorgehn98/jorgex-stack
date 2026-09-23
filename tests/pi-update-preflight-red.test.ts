@@ -1,4 +1,4 @@
-// T07 RED: safe deliberate `update --agents pi` via preparePiRuntimeSystem (tests only, no prod change).
+// Coverage for safe deliberate `update --agents pi` preflight.
 //
 // Desired GREEN contract in src/lib/pi-runtime.ts `preparePiRuntimeSystem` for
 // operation "update" with targetDir undefined:
@@ -32,9 +32,6 @@
 //   ordering plus no-downloads-mkdir on denied prove gate-before-mkdir/network
 //   without spying ESM fs (vitest cannot spy node:fs mkdirSync).
 //
-// RED currently: update returns blocked "preflight-unsupported-operation"
-// before any gate/preflight, so the ok/denied/targetDir expectations below
-// fail for the intended behavioral reason. Typecheck stays green.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -212,7 +209,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("pi update preflight RED (preparePiRuntimeSystem update)", () => {
+describe("pi update preflight (preparePiRuntimeSystem update)", () => {
   it("authenticates the existing managed receipt before any mkdir/download/network and returns candidate+prepared on ok", async () => {
     const sandbox = setupSandbox();
     process.env["PI_CODING_AGENT_DIR"] = sandbox.fakeAgentDir;
@@ -223,7 +220,7 @@ describe("pi update preflight RED (preparePiRuntimeSystem update)", () => {
     holder.fetch = (...args: unknown[]) => {
       events.push("fetch");
       fetchCalls.push(String((args[0] as string | undefined) ?? "fetch"));
-      throw new Error("network forbidden in update preflight RED");
+      throw new Error("network forbidden in update preflight test");
     };
 
     const synthCandidate = { package: { name: "jorgex-pi", version: NEW_VERSION, source: `npm:jorgex-pi@${NEW_VERSION}` } };
@@ -276,8 +273,7 @@ describe("pi update preflight RED (preparePiRuntimeSystem update)", () => {
     expect(fetchCalls).toEqual([]);
     expect(events).not.toContain("fetch");
 
-    // GREEN returns { candidate: result.candidate, prepared: result }; RED
-    // currently blocks preflight-unsupported-operation before any gate/preflight.
+    // Return both the resolved candidate and its verified prepared stage.
     expect(result).toEqual({ candidate: synthPrepared.candidate, prepared: synthPrepared });
     expect(sandbox.fakeHome.startsWith(path.resolve(os.tmpdir()))).toBe(true);
   });
@@ -295,7 +291,7 @@ describe("pi update preflight RED (preparePiRuntimeSystem update)", () => {
     holder.fetch = (...args: unknown[]) => {
       events.push("fetch");
       fetchCalls.push(String((args[0] as string | undefined) ?? "fetch"));
-      throw new Error("network forbidden in update preflight RED");
+      throw new Error("network forbidden in update preflight test");
     };
 
     mocks.verifyOfflineManagedPiRelease.mockImplementation(() => {
