@@ -833,3 +833,137 @@ describe("Stack–Pi coordinator prepare no-op wiring", () => {
     assertPrepareNoOp(sandbox, fetchCalls);
   });
 });
+
+describe("Stack–Pi adoption retirement (snapshot-only scheduling)", () => {
+  // Historical proposal validators/functions above remain as documented legacy
+  // (validateWake/validateProposal/publishProposal/classify*); no scheduled
+  // adoption path may remain. Stack install/update now dynamically resolve the
+  // provider, so auto-adoption by rotating pi-runtime-pin.json would reintroduce
+  // a future selector. Only the snapshot parity direction stays scheduled.
+  const temporaryRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of temporaryRoots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function workflowSource(): string {
+    const workflowPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".github", "workflows", "stack-pi-automation.yml");
+    return fs.readFileSync(workflowPath, "utf8");
+  }
+
+  type PrepareFn = (stackRoot: string, piRoot: string, output: string) => Promise<unknown>;
+
+  async function loadPrepare(): Promise<PrepareFn> {
+    const module = await import(/* @vite-ignore */ automationModuleUrl) as { prepare?: unknown };
+    expect(module.prepare).toBeTypeOf("function");
+    return module.prepare as PrepareFn;
+  }
+
+  function writePushEvent(file: string): void {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ ref: "refs/heads/main", repository: { full_name: "jorgehn98/jorgex-stack" } }),
+      "utf8",
+    );
+  }
+
+  function stubFetchNoApi(): { count: () => number; restore: () => void } {
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      throw new Error(`GitHub API must not be called for retired adoption (call ${calls})`);
+    }) as typeof globalThis.fetch;
+    return { count: () => calls, restore: () => { globalThis.fetch = original; } };
+  }
+
+  it("schedules only the snapshot direction", () => {
+    const source = workflowSource();
+
+    expect(source).toContain("snapshot");
+    expect(source, "workflow must not schedule adoption (snapshot-only)").not.toContain("adoption");
+  });
+
+  it("contains zero adoption pi-pin.mjs download", () => {
+    const source = workflowSource();
+
+    expect(source, "workflow must not download adoption artifacts via pi-pin.mjs").not.toContain("pi-pin.mjs");
+  });
+
+  it("prepare with adoption direction and a newer Pi tag returns unchanged without PR or pin mutation", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "retire-adoption-newer-"));
+    temporaryRoots.push(parent);
+    const stackRoot = path.join(parent, "stack");
+    const piRoot = path.join(parent, "pi");
+    const outputDir = path.join(parent, "output");
+    const eventFile = path.join(parent, "event.json");
+    const githubOutput = path.join(parent, "github-output.txt");
+    const stepSummary = path.join(parent, "step-summary.md");
+
+    // Pi publishes a newer exact tag while the Stack pin still points at the old version.
+    initRepo(piRoot);
+    fs.writeFileSync(path.join(piRoot, "package.json"), '{"name":"jorgex-pi"}\n', "utf8");
+    const producer = commitAll(piRoot, "pi: 0.8.30");
+    git(piRoot, ["tag", "v0.8.30", producer]);
+    const newerTagCommit = git(piRoot, ["rev-parse", "refs/tags/v0.8.30^{commit}"]);
+    git(piRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    // Old pin deliberately differs: adoption must still stay a no-op.
+    initRepo(stackRoot);
+    writeJson(stackRoot, "package.json", { name: "jorgex-stack", private: true, type: "module" });
+    const oldPin = pinFixture("0.8.29", "c".repeat(40));
+    expect((oldPin.package as { version: string }).version).not.toBe("0.8.30");
+    writeJson(stackRoot, "src/lib/pi-runtime-pin.json", oldPin);
+    commitAll(stackRoot, "stack: pin 0.8.29");
+    git(stackRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    const pinBefore = fs.readFileSync(path.join(stackRoot, "src/lib/pi-runtime-pin.json"), "utf8");
+
+    expect(newerTagCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(piRoot, ["status", "--porcelain"])).toBe("");
+    expect(fs.existsSync(path.join(outputDir, "proposal.json"))).toBe(false);
+
+    // Even a manually set adoption direction must not prepare or publish.
+    writePushEvent(eventFile);
+    const fetchGuard = stubFetchNoApi();
+    const savedEnv = {
+      GITHUB_EVENT_NAME: process.env.GITHUB_EVENT_NAME,
+      GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+      AUTOMATION_DIRECTION: process.env.AUTOMATION_DIRECTION,
+      AUTOMATION_TOKEN: process.env.AUTOMATION_TOKEN,
+      GITHUB_OUTPUT: process.env.GITHUB_OUTPUT,
+      GITHUB_STEP_SUMMARY: process.env.GITHUB_STEP_SUMMARY,
+    };
+    process.env.GITHUB_EVENT_NAME = "push";
+    process.env.GITHUB_EVENT_PATH = eventFile;
+    process.env.AUTOMATION_DIRECTION = "adoption";
+    delete process.env.AUTOMATION_TOKEN;
+    process.env.GITHUB_OUTPUT = githubOutput;
+    process.env.GITHUB_STEP_SUMMARY = stepSummary;
+    try {
+      const prepare = await loadPrepare();
+
+      await prepare(stackRoot, piRoot, outputDir);
+
+      expect(fetchGuard.count(), "retired adoption must not query GitHub").toBe(0);
+      expect(JSON.parse(fs.readFileSync(path.join(outputDir, "proposal.json"), "utf8"))).toEqual({
+        status: "unchanged",
+      });
+      expect(fs.readFileSync(githubOutput, "utf8")).toContain("status=unchanged");
+      expect(fs.readdirSync(outputDir).sort()).toEqual(["proposal.json"]);
+      expect(git(stackRoot, ["status", "--porcelain"])).toBe("");
+      expect(git(piRoot, ["status", "--porcelain"])).toBe("");
+      expect(git(stackRoot, ["diff", "--cached", "--name-only"])).toBe("");
+      expect(git(piRoot, ["diff", "--cached", "--name-only"])).toBe("");
+      expect(fs.readFileSync(path.join(stackRoot, "src/lib/pi-runtime-pin.json"), "utf8")).toBe(pinBefore);
+    } finally {
+      fetchGuard.restore();
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});

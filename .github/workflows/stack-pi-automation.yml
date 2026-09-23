@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 
-# Both directions reconcile current published/merged state, not event order.
+# Snapshot reconciles current published/merged state, not event order.
 # This also catches up after merging a proposal while another change was pending.
 concurrency:
   group: stack-pi-proposals
@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        direction: [snapshot, adoption]
+        direction: [snapshot]
     env:
       AUTOMATION_DIRECTION: ${{ matrix.direction }}
     steps:
@@ -67,21 +67,6 @@ jobs:
           pnpm test
           node --test tests/cross-repo/snapshot-parity.test.mjs
           pnpm pack --pack-destination "$RUNNER_TEMP"
-      - name: Verify prepared adoption
-        if: steps.prepare.outputs.status == 'prepared' && matrix.direction == 'adoption'
-        working-directory: stack
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          pnpm typecheck
-          node .github/scripts/pi-pin.mjs > "$RUNNER_TEMP/pi-pin.txt"
-          url="$(sed -n 's/^url=//p' "$RUNNER_TEMP/pi-pin.txt")"
-          bytes="$(sed -n 's/^bytes=//p' "$RUNNER_TEMP/pi-pin.txt")"
-          tarball="$RUNNER_TEMP/jorgex-pi.tgz"
-          curl --fail --show-error --silent --connect-timeout 15 --max-time 120 --max-filesize "$bytes" --remove-on-error --output "$tarball" "$url"
-          test "$(wc -c < "$tarball")" -eq "$bytes"
-          JORGEX_PI_TARBALL="$tarball" pnpm test
-          pnpm build
       - name: Bind verified files to the proposal
         if: steps.prepare.outputs.status == 'prepared'
         run: node control/.github/scripts/stack-pi-automation.mjs seal stack pi proposal
@@ -103,8 +88,6 @@ jobs:
         include:
           - direction: snapshot
             repository: jorgex-pi
-          - direction: adoption
-            repository: jorgex-stack
     steps:
       # Fresh job: never execute the generated tree or install its dependencies.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd

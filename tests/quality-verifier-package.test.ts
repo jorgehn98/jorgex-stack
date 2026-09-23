@@ -14,6 +14,7 @@ const PACKAGE_PATH = path.join(ROOT, "package.json");
 
 const EXPECTED_ENTRIES = {
   cli: "src/cli.ts",
+  "pi-ci-artifact": "src/lib/pi-ci-artifact.ts",
   "quality-verifier": "src/lib/quality-verifier.ts",
 };
 
@@ -189,6 +190,14 @@ describe("T37 package contract", () => {
     }
   }, 15_000);
 });
+
+  it("no expone el entry interno pi-ci-artifact en exports ni bin", () => {
+    const packageJson = readPackageJson();
+
+    expect(packageJson.exports?.["./pi-ci-artifact"]).toBeUndefined();
+    expect(packageJson.exports?.["./quality-verifier"]).toBeDefined();
+    expect(packageJson.bin?.["pi-ci-artifact"]).toBeUndefined();
+  });
 
 describe("T37 tsup contract", () => {
   it("declara semánticamente los aliases de entry y habilita dts", () => {

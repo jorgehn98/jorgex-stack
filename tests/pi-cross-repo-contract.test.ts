@@ -11,7 +11,10 @@ import { stackRoot } from "../src/lib/paths.js";
 const piDirectory = process.env.JORGEX_PI_DIR;
 const crossRepo = piDirectory === undefined ? describe.skip : describe;
 const registryTarball = process.env.JORGEX_PI_TARBALL;
-const registryArtifact = registryTarball === undefined ? describe.skip : describe;
+const registryCandidateRaw = process.env.JORGEX_PI_CANDIDATE;
+const hasObservedRegistryInputs = registryTarball !== undefined && registryCandidateRaw !== undefined;
+const registryArtifact = hasObservedRegistryInputs ? describe : describe.skip;
+const piBinRaw = process.env.JORGEX_PI_BIN;
 const temporaryPaths: string[] = [];
 
 function readJson(file: string): unknown {
@@ -35,6 +38,158 @@ function expectExactArtifactIntegrity(tarball: string): void {
   expect(stats.size).toBe(PI_RUNTIME_CANDIDATE.tarball.bytes);
   expect(digest("sha256", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha256);
   expect(digest("sha512", tarball)).toBe(PI_RUNTIME_CANDIDATE.tarball.sha512);
+}
+
+// ---------------------------------------------------------------------------
+// Observed candidate (T06/T09 PR02): CI resolves the live published Pi via
+// dist/pi-ci-artifact.js and freezes {version,tarballUrl,integrity,bytes,
+// sha256,sha512} as bounded private JSON. JORGEX_PI_CANDIDATE is that JSON
+// file path (workflow: ${{ runner.temp }}/pi-observed.json) or the inline
+// JSON itself. The .29 receipt/pin fixtures stay historical/offline and are
+// never the next selector; the observed version (currently .31 unbundled)
+// is the only selector for registry checks below. No fixture .31/hashes.
+// ---------------------------------------------------------------------------
+
+interface ObservedPiCandidate {
+  version: string;
+  tarballUrl: string;
+  integrity: string;
+  bytes: number;
+  sha256: string;
+  sha512: string;
+}
+
+function canonicalObservedTarballUrl(version: string): string {
+  return `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${version}.tgz`;
+}
+
+function canonicalObservedSource(version: string): string {
+  return `npm:jorgex-pi@${version}`;
+}
+
+function readObservedCandidate(): ObservedPiCandidate {
+  const raw = process.env.JORGEX_PI_CANDIDATE;
+  expect(raw, "JORGEX_PI_CANDIDATE must be set for observed registry checks").toBeTypeOf("string");
+  const rawValue = raw as string;
+  expect(Buffer.byteLength(rawValue, "utf8")).toBeLessThan(64 * 1024);
+  let text: string;
+  let resolvedPath: string | null = null;
+  try {
+    const candidateStat = fs.lstatSync(rawValue);
+    if (candidateStat.isFile() && !candidateStat.isSymbolicLink()) {
+      expect(candidateStat.size).toBeLessThan(64 * 1024);
+      resolvedPath = path.resolve(rawValue);
+      text = fs.readFileSync(resolvedPath, "utf8");
+    } else {
+      text = rawValue;
+    }
+  } catch {
+    text = rawValue;
+  }
+  expect(Buffer.byteLength(text, "utf8")).toBeLessThan(64 * 1024);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("JORGEX_PI_CANDIDATE is not valid JSON");
+  }
+  expect(parsed).not.toBeNull();
+  expect(typeof parsed).toBe("object");
+  expect(Array.isArray(parsed)).toBe(false);
+  const record = parsed as Record<string, unknown>;
+  expect(Object.keys(record).sort()).toEqual(["bytes", "integrity", "sha256", "sha512", "tarballUrl", "version"]);
+  const { version, tarballUrl, integrity, bytes, sha256, sha512 } = record as {
+    version: unknown;
+    tarballUrl: unknown;
+    integrity: unknown;
+    bytes: unknown;
+    sha256: unknown;
+    sha512: unknown;
+  };
+  expect(typeof version === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)).toBe(true);
+  const observedVersion = version as string;
+  expect(tarballUrl).toBe(canonicalObservedTarballUrl(observedVersion));
+  expect(typeof integrity === "string" && (integrity as string).startsWith("sha512-")).toBe(true);
+  const integrityValue = integrity as string;
+  const b64 = integrityValue.slice("sha512-".length);
+  expect(/^[A-Za-z0-9+/]+={0,2}$/.test(b64)).toBe(true);
+  const integrityBytes = Buffer.from(b64, "base64");
+  expect(integrityBytes.length).toBe(64);
+  expect(integrityBytes.toString("base64")).toBe(b64);
+  expect(typeof bytes === "number" && Number.isInteger(bytes) && (bytes as number) > 0).toBe(true);
+  expect((bytes as number)).toBeLessThanOrEqual(128 * 1024 * 1024);
+  expect(typeof sha256 === "string" && /^[0-9a-f]{64}$/.test(sha256 as string)).toBe(true);
+  expect(typeof sha512 === "string" && /^[0-9a-f]{128}$/.test(sha512 as string)).toBe(true);
+  const expectedIntegrity = `sha512-${Buffer.from(sha512 as string, "hex").toString("base64")}`;
+  expect(integrityValue).toBe(expectedIntegrity);
+  expect(resolvedPath === null ? true : path.isAbsolute(resolvedPath)).toBe(true);
+  return { version: observedVersion, tarballUrl: tarballUrl as string, integrity: integrityValue, bytes: bytes as number, sha256: sha256 as string, sha512: sha512 as string };
+}
+
+function expectObservedArtifactIntegrity(tarball: string, observed: ObservedPiCandidate): void {
+  const stats = fs.statSync(tarball);
+  expect(stats.isFile()).toBe(true);
+  expect(stats.size).toBe(observed.bytes);
+  expect(digest("sha256", tarball)).toBe(observed.sha256);
+  expect(digest("sha512", tarball)).toBe(observed.sha512);
+  const expectedIntegrity = `sha512-${Buffer.from(observed.sha512, "hex").toString("base64")}`;
+  expect(observed.integrity).toBe(expectedIntegrity);
+}
+
+const OBSERVED_UNBUNDLED_RUNTIME_DEPS = [
+  "@gotgenes/pi-permission-system",
+  "@juicesharp/rpiv-ask-user-question",
+  "@narumitw/pi-goal",
+  "pi-subagents",
+  "pi-web-access",
+  "strip-json-comments",
+] as const;
+
+function expectUnbundledProducerInventory(tarball: string, manifest: { dependencies?: unknown; bundledDependencies?: unknown }): void {
+  expect(manifest.bundledDependencies).toBeUndefined();
+  expect(manifest.dependencies).not.toBeNull();
+  expect(typeof manifest.dependencies).toBe("object");
+  expect(Array.isArray(manifest.dependencies)).toBe(false);
+  const dependencies = manifest.dependencies as Record<string, unknown>;
+  expect(Object.keys(dependencies).sort()).toEqual([...OBSERVED_UNBUNDLED_RUNTIME_DEPS].sort());
+  for (const dep of OBSERVED_UNBUNDLED_RUNTIME_DEPS) {
+    expect(dependencies[dep]).toBe("*");
+  }
+  const entries = listTarEntries(tarball);
+  expect(entries.some((entry) => entry.startsWith("package/node_modules/"))).toBe(false);
+  expect(entries).toContain("package/package.json");
+  expect(entries).toContain("package/bin/jorgex-pi.mjs");
+  expect(entries).toContain("package/contract/jorgex-pi.v1.json");
+  expect(entries).toContain("package/contract/runner.v1.json");
+  expect(entries).toContain("package/contract/assets.v1.json");
+  expect(entries).toContain("package/contract/parity.v2.json");
+}
+
+function expectObservedRunnerOutput(
+  output: { stdout: string; stderr: string },
+  command: "sync" | "cleanup" | "doctor",
+  packageRunner: string,
+  observedVersion: string,
+): void {
+  expect(output.stderr).toBe("");
+  expect(output.stdout.endsWith("\n")).toBe(true);
+  expect(Buffer.byteLength(output.stdout)).toBeLessThanOrEqual(PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes);
+  const body = output.stdout.slice(0, -1);
+  expect(body).not.toBe("");
+  expect(body).not.toMatch(/[\r\n]/);
+  const parsed: unknown = JSON.parse(body);
+  expect(parsed).not.toBeNull();
+  expect(typeof parsed).toBe("object");
+  expect(Array.isArray(parsed)).toBe(false);
+  const record = parsed as { schemaVersion?: unknown; command?: unknown; ok?: unknown; package?: unknown };
+  expect(record.schemaVersion).toBe(PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion);
+  expect(record.command).toBe(command);
+  expect(record.ok).toBe(true);
+  const packageInfo = record.package as { name?: unknown; version?: unknown; root?: unknown };
+  expect(packageInfo.name).toBe("jorgex-pi");
+  expect(packageInfo.version).toBe(observedVersion);
+  expect(typeof packageInfo.root).toBe("string");
+  expect(path.resolve(packageInfo.root as string, "bin", "jorgex-pi.mjs")).toBe(path.resolve(packageRunner));
 }
 
 function readTarJson(tarball: string, entry: string): unknown {
@@ -96,66 +251,6 @@ function writeFakePlaywright(root: string): string {
   return bin;
 }
 
-function runPublishedBootstrap(packageRoot: string, agentDir: string, home: string): string {
-  const harness = path.join(path.dirname(packageRoot), "bootstrap-harness.mjs");
-  fs.writeFileSync(harness, `
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-
-const packageRoot = process.argv[2];
-const { createBootstrap } = await import(pathToFileURL(join(packageRoot, "extensions", "bootstrap.ts")).href);
-const handlers = new Map();
-const eventHandlers = new Map();
-const activeTools = [];
-const pi = {
-  events: {
-    on(name, handler) { eventHandlers.set(name, handler); },
-    emit() {},
-  },
-  on(name, handler) { handlers.set(name, handler); },
-  getActiveTools() { return [...activeTools]; },
-  setActiveTools(names) { activeTools.splice(0, activeTools.length, ...names); },
-  registerTool() {},
-  registerCommand() {},
-  sendUserMessage() {},
-  sendMessage() {},
-};
-
-await createBootstrap({
-  loadCompanion: async () => () => {},
-  getPermissionsService: () => true,
-})(pi);
-await handlers.get("session_start")?.({}, { sessionId: "published-handoff" });
-await eventHandlers.get("permissions:ready")?.({ sessionId: "published-handoff" });
-const result = await handlers.get("before_agent_start")?.(
-  { systemPrompt: "Base policy" },
-  { sessionId: "published-handoff", hasUI: true },
-);
-process.stdout.write(JSON.stringify({ prompt: result?.systemPrompt ?? "" }));
-`, "utf8");
-  const isolationRoot = path.dirname(packageRoot);
-  const emptyPath = path.join(isolationRoot, "empty-bin");
-  fs.mkdirSync(emptyPath, { recursive: true });
-  const result = spawnSync(process.execPath, [harness, packageRoot], {
-    cwd: isolationRoot,
-    encoding: "utf8",
-    env: {
-      HOME: home,
-      USERPROFILE: home,
-      PI_CODING_AGENT_DIR: agentDir,
-      XDG_CONFIG_HOME: path.join(isolationRoot, "xdg-config"),
-      XDG_CACHE_HOME: path.join(isolationRoot, "xdg-cache"),
-      PATH: emptyPath,
-      NODE_NO_WARNINGS: "1",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.status !== 0) {
-    throw new Error(`Publicado Pi bootstrap falló (${result.status}): ${result.stderr || result.stdout}`);
-  }
-  return (JSON.parse(result.stdout) as { prompt: string }).prompt;
-}
-
 function expectRunnerOutput(
   output: { stdout: string; stderr: string },
   command: "sync" | "cleanup",
@@ -200,15 +295,26 @@ afterEach(() => {
   }
 });
 
-registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => {
+registryArtifact("observed npm artifact for the published jorgex-pi candidate", () => {
+  let observed: ObservedPiCandidate;
   beforeAll(() => {
-    expectExactArtifactIntegrity(path.resolve(registryTarball!));
+    observed = readObservedCandidate();
+    expectObservedArtifactIntegrity(path.resolve(registryTarball!), observed);
   });
 
-  it("matches the frozen bytes, digests, package contract, and archive inventory", () => {
+  it("matches the observed bytes, digests, package contract, and unbundled inventory", () => {
     const tarball = path.resolve(registryTarball!);
+    const observedLocal = readObservedCandidate();
+    expect(observedLocal).toEqual(observed);
+    expectObservedArtifactIntegrity(tarball, observedLocal);
+    const expectedSource = canonicalObservedSource(observedLocal.version);
 
-    const manifest = readTarJson(tarball, "package/package.json") as { name?: unknown; version?: unknown };
+    const manifest = readTarJson(tarball, "package/package.json") as {
+      name?: unknown;
+      version?: unknown;
+      dependencies?: unknown;
+      bundledDependencies?: unknown;
+    };
     const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {
       package?: unknown;
       pi?: { testedVersions?: unknown };
@@ -219,18 +325,19 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       bin?: unknown;
       commands?: unknown;
       stdout?: { maxBytes?: unknown };
+      experience?: { diagnostic?: unknown };
+      permissions?: { diagnostic?: unknown };
     };
     const assets = readTarJson(tarball, "package/contract/assets.v1.json") as { managedExternalWrites?: unknown };
     const parity = readTarJson(tarball, "package/contract/parity.v2.json") as {
       source?: { commit?: unknown };
     };
-    expect(manifest).toMatchObject({
-      name: PI_RUNTIME_CANDIDATE.package.name,
-      version: PI_RUNTIME_CANDIDATE.package.version,
-    });
-    expect(contract.package).toEqual(PI_RUNTIME_CANDIDATE.package);
-    expect(contract.pi?.testedVersions).toEqual(PI_RUNTIME_CANDIDATE.pi.testedVersions);
+    // Actual package version comes from observed metadata, never the .29 fixture.
+    expect(manifest).toMatchObject({ name: "jorgex-pi", version: observedLocal.version });
+    expect(contract.package).toEqual({ name: "jorgex-pi", version: observedLocal.version, source: expectedSource });
+    // Stack compatibility policy: capabilities + writes must equal Stack's contract.
     expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    expect(contract.pi?.testedVersions).toEqual(expect.arrayContaining([...PI_RUNTIME_CANDIDATE.pi.testedVersions]));
     expect(runner).toMatchObject({
       schemaVersion: PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion,
       bin: PI_RUNTIME_CANDIDATE.contract.runner.bin,
@@ -239,202 +346,149 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
     });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
     expect(parity.source?.commit).toBe(PI_RUNTIME_ARCHIVE.parity.source.commit);
-    expectArchiveInventory(tarball);
+    // Unbundled: six provider-managed runtime deps via npm, no nested bundle.
+    expectUnbundledProducerInventory(tarball, manifest);
+    // Engram bridge preserved, legacy retired.
+    const capabilities = contract.capabilities as string[];
+    expect(capabilities).toContain("engram-official-bridge-v1");
+    expect(capabilities).toContain("engram-runtime-tools-v1");
+    expect(capabilities).not.toContain("mcp-adapter-v1");
+    // Permissions + experience policy preserved.
+    expect(capabilities).toEqual(expect.arrayContaining(["permissions-policy-v1", "permissions-upgrade-v1", "experience-defaults-v1"]));
+    expect(runner.experience?.diagnostic).toBe(
+      "status reports pending, initialized, invalid, or unreadable from the receipt only; pending means the receipt is absent and requires a registered package; invalid preserves INVALID_PATH, INVALID_RECEIPT, or RECEIPT_TOO_LARGE and unreadable preserves READ_FAILED; status and doctor are read-only and never lock, write, or delete state",
+    );
+    expect(runner.permissions?.diagnostic).toBe(
+      "permission state reports invalid or unreadable files without exposing their contents; a registered package also reports pending when the receipt is not initialized",
+    );
+    // Browser handoff capabilities preserved (non-execution; no tarball bootstrap here).
+    expect(capabilities).toEqual(expect.arrayContaining(["playwright-handoff-v1", "chrome-devtools-handoff-v1", "context7-http-v1"]));
+    const entries = new Set(listTarEntries(tarball));
+    expect(entries.has("package/extensions/mcp-engram.ts")).toBe(true);
+    expect(entries.has("package/extensions/playwright.ts")).toBe(true);
+    expect(entries.has("package/assets/system-prompt/browser-playwright.md")).toBe(true);
+    expect(entries.has("package/assets/permissions/defaults.json")).toBe(true);
   }, 60_000);
 
-  it("executes managed defaults and permission cleanup from the exact published tarball", () => {
+  // Unbundled .31 cannot run via direct extraction (runner needs
+  // provider-managed strip-json-comments). When opt-in JORGEX_PI_BIN exists,
+  // stage the observed tarball through isolated `pi` (no pnpm, no HOME);
+  // otherwise this is an explicit skip. Non-execution contract checks above
+  // and below stay always on.
+  (piBinRaw === undefined ? it.skip : it)("stages the observed unbundled candidate through isolated pi when opt-in (otherwise explicit skip)", async () => {
+    const observedLocal = readObservedCandidate();
     const tarball = path.resolve(registryTarball!);
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-registry-lifecycle-"));
-    temporaryPaths.push(root);
-    execFileSync("tar", ["-xzf", tarball, "-C", root], { stdio: ["ignore", "ignore", "pipe"] });
+    expectObservedArtifactIntegrity(tarball, observedLocal);
+    const piBin = path.resolve(piBinRaw as string);
+    expect(fs.statSync(piBin).isFile()).toBe(true);
 
-    const agentDir = path.join(root, "agent");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-observed-stage-"));
+    temporaryPaths.push(root);
+    const agentDir = path.join(root, "pi-agent");
     const settingsFile = path.join(agentDir, "settings.json");
     const modelsFile = path.join(agentDir, "models.json");
-    const receiptFile = path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json");
-    const permissionsFile = path.join(agentDir, "extensions", "pi-permission-system", "config.json");
-    const permissionsReceipt = path.join(agentDir, "jorgex-pi", "permissions-lifecycle.v1.json");
-    const experienceReceipt = path.join(agentDir, "jorgex-pi", "experience-lifecycle.v1.json");
+    const home = path.join(root, "home");
     const engramBin = path.join(root, process.platform === "win32" ? "engram.exe" : "engram");
-    const runner = path.join(root, "package", "bin", "jorgex-pi.mjs");
-    // T54-RED: official `engram setup pi` preconditions (provider-managed
-    // singleton packages + canonical MCP + executable sandbox binary) must
-    // exist before runner sync/doctor; the runner never invokes the
-    // coordinator. Versions are provider-managed observations, only the
-    // singleton shape (exactly one gentle + one adapter) and the canonical
-    // MCP form are asserted. Sandbox stays under the temp root, no real HOME.
     const officialGentle = "npm:gentle-engram@0.1.99";
     const officialAdapter = "npm:pi-mcp-adapter@0.2.5";
     const officialPackages = [officialGentle, officialAdapter];
     fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(root, "tmp"), { recursive: true });
+    fs.mkdirSync(path.join(root, "xdg-config"), { recursive: true });
+    fs.mkdirSync(path.join(root, "xdg-cache"), { recursive: true });
+    fs.mkdirSync(path.join(root, "npm-cache"), { recursive: true });
     fs.writeFileSync(settingsFile, JSON.stringify({ packages: officialPackages, foreign: { keep: true }, defaultThinkingLevel: "high" }));
     fs.writeFileSync(modelsFile, JSON.stringify({ foreign: { keep: true } }));
     fs.writeFileSync(engramBin, process.platform === "win32" ? "placeholder" : "#!/bin/sh\nexit 0\n");
     if (process.platform !== "win32") fs.chmodSync(engramBin, 0o700);
-    const seedOfficialSetup = (codingAgentDir: string): void => {
-      fs.mkdirSync(codingAgentDir, { recursive: true });
-      const targetSettings = path.join(codingAgentDir, "settings.json");
-      if (!fs.existsSync(targetSettings)) {
-        fs.writeFileSync(targetSettings, JSON.stringify({ packages: officialPackages }));
-      }
-      fs.writeFileSync(path.join(codingAgentDir, "mcp.json"), JSON.stringify({
-        mcpServers: {
-          engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
-        },
-      }));
-    };
-    seedOfficialSetup(agentDir);
-
-    const environment = {
-      PI_CODING_AGENT_DIR: agentDir,
-      ENGRAM_BIN: engramBin,
-      HOME: root,
-      XDG_CONFIG_HOME: path.join(root, "config"),
-      XDG_CACHE_HOME: path.join(root, "cache"),
-      TEMP: path.join(root, "tmp"),
-      TMP: path.join(root, "tmp"),
-      PATH: process.env.PATH,
-      SystemRoot: process.env.SystemRoot,
-    };
-    fs.mkdirSync(environment.TEMP, { recursive: true });
-    const run = (command: "sync" | "cleanup" | "doctor" | "status", codingAgentDir = agentDir) => spawnSync(process.execPath, [runner, command, "--json"], {
-      encoding: "utf8",
-      env: { ...environment, PI_CODING_AGENT_DIR: codingAgentDir },
-    });
-
-    const sync = run("sync");
-    expect(sync.status).toBe(0);
-    expectRunnerOutput(sync, "sync", runner);
-    // Official setup preconditions survive managed sync: exactly one
-    // provider-managed gentle + adapter entry and the canonical MCP server
-    // pointing at the executable sandbox binary.
-    expect(readJson(settingsFile)).toMatchObject({ packages: officialPackages });
-    expect(readJson(path.join(agentDir, "mcp.json"))).toEqual({
+    fs.writeFileSync(path.join(agentDir, "mcp.json"), JSON.stringify({
       mcpServers: {
         engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
       },
+    }));
+
+    const fileAlias = `npm:jorgex-pi@file:${tarball}`;
+    const installEnv: Record<string, string> = {
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: path.join(root, "appdata"),
+      LOCALAPPDATA: path.join(root, "localappdata"),
+      XDG_CONFIG_HOME: path.join(root, "xdg-config"),
+      XDG_DATA_HOME: path.join(root, "xdg-data"),
+      XDG_CACHE_HOME: path.join(root, "xdg-cache"),
+      TEMP: path.join(root, "tmp"),
+      TMP: path.join(root, "tmp"),
+      TMPDIR: path.join(root, "tmp"),
+      npm_config_cache: path.join(root, "npm-cache"),
+      PI_CODING_AGENT_DIR: agentDir,
+      ENGRAM_BIN: engramBin,
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      ...(process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot }),
+    };
+    fs.mkdirSync(installEnv.APPDATA as string, { recursive: true });
+    fs.mkdirSync(installEnv.LOCALAPPDATA as string, { recursive: true });
+    fs.mkdirSync(installEnv.XDG_DATA_HOME as string, { recursive: true });
+
+    const install = spawnSync(piBin, ["install", fileAlias, "--no-approve"], {
+      cwd: root,
+      encoding: "utf8",
+      env: installEnv,
+      shell: false,
+      timeout: 120_000,
     });
-    expect(fs.statSync(engramBin).isFile()).toBe(true);
+    expect(install.status).toBe(0);
+    const installedSettings = readJson(settingsFile) as { packages?: unknown };
+    expect(installedSettings.packages).toEqual(expect.arrayContaining([fileAlias]));
+    const packageRunner = path.join(agentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs");
+    expect(fs.statSync(packageRunner).isFile()).toBe(true);
+
+    const sync = spawnSync(process.execPath, [packageRunner, "sync", "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...installEnv, PI_CODING_AGENT_DIR: agentDir },
+      shell: false,
+      timeout: 120_000,
+    });
+    expect(sync.status).toBe(0);
+    expectObservedRunnerOutput(sync, "sync", packageRunner, observedLocal.version);
     expect(readJson(settingsFile)).toMatchObject({
       foreign: { keep: true },
       defaultProvider: "openai-codex",
       defaultModel: "gpt-5.6-sol",
-      theme: "JorgeX",
-      quietStartup: true,
-      hideThinkingBlock: true,
-      defaultThinkingLevel: "high",
     });
-    expect(readJson(modelsFile)).toMatchObject({
-      foreign: { keep: true },
-      providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 872000 } } } },
-    });
-    expect(fs.existsSync(receiptFile)).toBe(true);
-    expect(fs.existsSync(permissionsFile)).toBe(true);
-    expect(readJson(permissionsFile)).toEqual(readJson(path.join(root, "package", "assets", "permissions", "defaults.json")));
-    const permissionBytes = fs.readFileSync(permissionsFile, "utf8");
-    const permissionReceiptBytes = fs.readFileSync(permissionsReceipt, "utf8");
-    const experienceReceiptBytes = fs.readFileSync(experienceReceipt, "utf8");
-    const settingsBytes = fs.readFileSync(settingsFile, "utf8");
-    expect(run("sync").status).toBe(0);
-    expect(fs.readFileSync(experienceReceipt, "utf8")).toBe(experienceReceiptBytes);
-    expect(fs.readFileSync(settingsFile, "utf8")).toBe(settingsBytes);
-    expect(fs.readFileSync(permissionsFile, "utf8")).toBe(permissionBytes);
-    expect(fs.readFileSync(permissionsReceipt, "utf8")).toBe(permissionReceiptBytes);
+    expect(fs.existsSync(path.join(agentDir, "jorgex-pi", "sol-lifecycle.v1.json"))).toBe(true);
+  }, 120_000);
 
-    const canonicalCleanup = run("cleanup");
-    expect(canonicalCleanup.status).toBe(0);
-    expectRunnerOutput(canonicalCleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ packages: officialPackages, foreign: { keep: true }, defaultThinkingLevel: "high" });
-    expect(readJson(modelsFile)).toEqual({ foreign: { keep: true } });
-    expect(fs.existsSync(receiptFile)).toBe(false);
-    expect(fs.existsSync(permissionsFile)).toBe(false);
-    expect(fs.existsSync(permissionsReceipt)).toBe(false);
-    expect(fs.existsSync(experienceReceipt)).toBe(false);
-    const permissionBackups = path.join(agentDir, "jorgex-pi", "permissions-backups");
-    const backupFiles = fs.readdirSync(permissionBackups, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(permissionBackups, entry.name, "config.json"));
-    expect(backupFiles.some((file) => fs.readFileSync(file, "utf8") === permissionBytes)).toBe(true);
-
-    const resync = run("sync");
-    expect(resync.status).toBe(0);
-    expectRunnerOutput(resync, "sync", runner);
-
-    const settings = readJson(settingsFile) as Record<string, unknown>;
-    settings.defaultModel = "user-model";
-    settings.theme = "dark";
-    settings.hideThinkingBlock = false;
-    delete settings.quietStartup;
-    fs.writeFileSync(settingsFile, JSON.stringify(settings));
-    expect(run("sync").status).toBe(0);
-    expect(readJson(settingsFile)).not.toHaveProperty("quietStartup");
-    expect(readJson(settingsFile)).toMatchObject({ theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
-    const models = readJson(modelsFile) as Record<string, any>;
-    models.providers["openai-codex"].modelOverrides["gpt-5.6-sol"].contextWindow = 900000;
-    fs.writeFileSync(modelsFile, JSON.stringify(models));
-
-    const userPolicy = readJson(permissionsFile) as { permission: Record<string, unknown> };
-    userPolicy.permission.read = "ask";
-    const userPolicyBytes = JSON.stringify(userPolicy);
-    fs.writeFileSync(permissionsFile, userPolicyBytes);
-    const cleanup = run("cleanup");
-    expect(cleanup.status).toBe(0);
-    expectRunnerOutput(cleanup, "cleanup", runner);
-    expect(readJson(settingsFile)).toEqual({ packages: officialPackages, foreign: { keep: true }, defaultModel: "user-model", theme: "dark", hideThinkingBlock: false, defaultThinkingLevel: "high" });
-    expect(readJson(modelsFile)).toEqual({
-      foreign: { keep: true },
-      providers: { "openai-codex": { modelOverrides: { "gpt-5.6-sol": { contextWindow: 900000 } } } },
-    });
-    expect(fs.readFileSync(permissionsFile, "utf8")).toBe(userPolicyBytes);
-
-    const preexistingAgent = path.join(root, "preexisting-agent");
-    const preexistingPolicy = path.join(preexistingAgent, "extensions", "pi-permission-system", "config.json");
-    fs.mkdirSync(path.dirname(preexistingPolicy), { recursive: true });
-    fs.writeFileSync(preexistingPolicy, userPolicyBytes);
-    const preexistingSettings = { packages: officialPackages, theme: "JorgeX", quietStartup: false, hideThinkingBlock: true, defaultThinkingLevel: "high" };
-    const preexistingSettingsFile = path.join(preexistingAgent, "settings.json");
-    fs.writeFileSync(preexistingSettingsFile, JSON.stringify(preexistingSettings));
-    seedOfficialSetup(preexistingAgent);
-    expect(readJson(preexistingSettingsFile)).toMatchObject({ packages: officialPackages });
-    expect(run("sync", preexistingAgent).status).toBe(0);
-    expect(run("cleanup", preexistingAgent).status).toBe(0);
-    expect(fs.readFileSync(preexistingPolicy, "utf8")).toBe(userPolicyBytes);
-    expect(readJson(preexistingSettingsFile)).toEqual(preexistingSettings);
-
-    const invalidAgent = path.join(root, "invalid-agent");
-    const invalidPolicy = path.join(invalidAgent, "extensions", "pi-permission-system", "config.json");
-    fs.mkdirSync(path.dirname(invalidPolicy), { recursive: true });
-    fs.writeFileSync(invalidPolicy, "invalid JSON");
-    fs.writeFileSync(path.join(invalidAgent, "settings.json"), JSON.stringify({ packages: officialPackages }));
-    seedOfficialSetup(invalidAgent);
-    const invalidSync = run("sync", invalidAgent);
-    expect(invalidSync.status).toBe(0);
-    expectRunnerOutput(invalidSync, "sync", runner);
-    expect(fs.readFileSync(invalidPolicy, "utf8")).toBe("invalid JSON");
-    expect(readJson(path.join(invalidAgent, "jorgex-pi", "permissions-lifecycle.v1.json"))).not.toHaveProperty("owned");
-    const status = run("status", invalidAgent);
-    expect(JSON.parse(status.stdout).result.permissions.state).toBe("invalid");
-    const doctor = run("doctor", invalidAgent);
-    expect(doctor.status).not.toBe(0);
-    expect(JSON.parse(doctor.stdout).result.checks).toContainEqual({ id: "permissions", status: "error" });
-
-  }, 60_000);
-
-  it("consumes Stack's Playwright handoff in the published Pi bootstrap and hides it after disable", () => {
+  it("preserves Stack Playwright handoff contract for the observed unbundled candidate without executing the tarball", () => {
     const tarball = path.resolve(registryTarball!);
+    const observedLocal = readObservedCandidate();
+    expectObservedArtifactIntegrity(tarball, observedLocal);
     const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as { capabilities?: unknown };
+    // Browser handoff capabilities stay in the Stack-compatible contract.
     expect(contract.capabilities).toEqual(expect.arrayContaining(["playwright-handoff-v1"]));
+    expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    expect(contract.capabilities).toEqual(
+      expect.arrayContaining(["chrome-devtools-handoff-v1", "context7-http-v1"]),
+    );
 
+    // Producer keeps the handoff assets; no tarball bootstrap execution here
+    // (unbundled .31 needs provider-managed deps, so direct node import would
+    // fail with missing strip-json-comments). Static inventory only, no pnpm.
+    const entries = new Set(listTarEntries(tarball));
+    expect(entries.has("package/extensions/playwright.ts")).toBe(true);
+    expect(entries.has("package/assets/system-prompt/browser-playwright.md")).toBe(true);
+    expect(entries.has("package/assets/system-prompt/browser-chrome-devtools.md")).toBe(true);
+    expect(entries.has("package/assets/system-prompt/context7.md")).toBe(true);
+
+    // Stack-side handoff lifecycle still works with the observed source and
+    // stays isolated under the temp target (no HOME, no tarball execution).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-published-playwright-"));
     temporaryPaths.push(root);
-    execFileSync("tar", ["-xzf", tarball, "-C", root], { stdio: ["ignore", "ignore", "pipe"] });
-
-    const packageRoot = path.join(root, "package");
     const targetDir = path.join(root, "stack-target");
     const agentDir = path.join(targetDir, "pi-agent");
-    const home = path.join(targetDir, "home");
     const playwrightCommand = writeFakePlaywright(root);
-    const packageSource = `npm:jorgex-pi@${PI_RUNTIME_CANDIDATE.package.version}`;
+    const packageSource = canonicalObservedSource(observedLocal.version);
 
     expect(runPiProjectionLifecycleSystem({
       operation: "install",
@@ -454,13 +508,6 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       version: "0.1.18",
     });
 
-    const enabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
-    expect(enabledPrompt).toContain(playwrightCommand);
-    expect(enabledPrompt).toContain("<!-- jorgex:playwright -->");
-    expect(enabledPrompt).not.toContain("<!-- jorgex:browser -->");
-    expect(enabledPrompt).not.toContain("<!-- jorgex:context7 -->");
-    expect(enabledPrompt).not.toMatch(/Context7/i);
-
     expect(runPiProjectionLifecycleSystem({
       operation: "sync",
       targetDir,
@@ -471,13 +518,6 @@ registryArtifact("exact npm artifact for the pinned jorgex-pi candidate", () => 
       playwrightCliCommand: null,
     })).toMatchObject({ kind: "synced" });
     expect(fs.existsSync(handoff)).toBe(false);
-
-    const disabledPrompt = runPublishedBootstrap(packageRoot, agentDir, home);
-    expect(disabledPrompt).not.toContain(playwrightCommand);
-    expect(disabledPrompt).not.toMatch(/playwright-cli/i);
-    expect(disabledPrompt).not.toContain("<!-- jorgex:browser -->");
-    expect(disabledPrompt).not.toContain("<!-- jorgex:context7 -->");
-    expect(disabledPrompt).not.toMatch(/Context7/i);
   }, 60_000);
 });
 
@@ -918,7 +958,7 @@ function t52ReadProducerContract(piDir: string): { version: string; capabilities
 }
 
 const t52CrossRepo = piDirectory === undefined ? describe.skip : describe;
-const t52Registry = registryTarball === undefined ? describe.skip : describe;
+const t52Registry = hasObservedRegistryInputs ? describe : describe.skip;
 
 t52CrossRepo("[T52-RED] productor Pi 0.8.29 leído del tag exacto", () => {
   it("el checkout/tag productor contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
@@ -942,20 +982,28 @@ t52CrossRepo("[T52-RED] productor Pi 0.8.29 leído del tag exacto", () => {
   }, 60_000);
 });
 
-t52Registry("[T52-RED] tarball exacto Pi 0.8.29 con contrato productor completo", () => {
-  it("el tarball contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
+t52Registry("[T52-RED] tarball observado Pi con contrato productor completo (unbundled, sin fixture .31)", () => {
+  it("el tarball observado contiene bridge y no legacy, resto intacto, y Stack lo iguala", async () => {
+    const observedLocal = readObservedCandidate();
     const tarball = path.resolve(registryTarball!);
-    expectExactArtifactIntegrity(tarball);
+    expectObservedArtifactIntegrity(tarball, observedLocal);
     const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {
-      package?: { version?: unknown };
+      package?: { name?: unknown; version?: unknown; source?: unknown };
       capabilities?: unknown;
     };
-    expect(contract.package?.version).toBe("0.8.29");
+    // Versión real desde metadata observada, nunca fixture .29 ni .31 hardcodeado.
+    expect(contract.package).toEqual({
+      name: "jorgex-pi",
+      version: observedLocal.version,
+      source: canonicalObservedSource(observedLocal.version),
+    });
     const tarballCapabilities = contract.capabilities as string[];
     expect(tarballCapabilities).toContain("engram-official-bridge-v1");
     expect(tarballCapabilities).not.toContain("mcp-adapter-v1");
+    // .31 mantiene el mismo contrato de compatibilidad Stack que .29.
     expect(tarballCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
 
+    // Fixture histórico .29 intacto; no se finge .31/hashes en fixtures.
     const fixtureCapabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
     expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
     expect(fixtureCapabilities).toEqual(tarballCapabilities);

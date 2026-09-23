@@ -240,6 +240,10 @@ export async function prepare(stackRoot, piRoot, output) {
     assert.equal(git(root, ['status', '--porcelain']).trim(), '', 'Checkout must be clean');
     git(root, ['checkout', '--detach', 'origin/main']);
   }
+  if (direction === 'adoption') {
+    reportUnchanged(output, direction, 'adoption', 'Adoption retired; snapshot-only scheduling');
+    return;
+  }
   const baseSha = git(target, ['rev-parse', 'HEAD']).trim();
   let sourceSha, version = null;
   if (direction === 'snapshot') {
@@ -256,18 +260,6 @@ export async function prepare(stackRoot, piRoot, output) {
     }
     git(stackRoot, ['merge-base', '--is-ancestor', parityCommit, decision.sourceSha]);
     sourceSha = decision.sourceSha;
-  } else {
-    const tags = git(piRoot, ['tag', '--merged', 'origin/main', '--sort=-version:refname']).trim().split('\n');
-    version = tags.find((tag) => tag.startsWith('v') && full(VERSION, tag.slice(1)))?.slice(1);
-    assert(version, 'No published version tag available');
-    sourceSha = git(piRoot, ['rev-parse', `refs/tags/v${version}^{commit}`]).trim();
-    assert(full(SHA, sourceSha));
-    const pin = readBoundedJsonFile(join(stackRoot, 'src/lib/pi-runtime-pin.json'));
-    const decision = classifyAdoptionIdentity({ version, tagCommit: sourceSha, pinVersion: pin?.package?.version, pinCommit: pin?.provenance?.commit });
-    if (decision.status === 'unchanged') {
-      reportUnchanged(output, decision.sourceSha, sourceSha, 'Adoption noop must keep tag identity');
-      return;
-    }
   }
   assert(full(SHA, sourceSha));
   mkdirSync(output, { recursive: true });
