@@ -271,6 +271,49 @@ export function filterProjectedPiPackage(settingsJson: string, source: string): 
   }
 }
 
+/**
+ * Pure settings planner for the managed Pi entry. The caller authenticates
+ * the old receipt separately; a bare string entry never counts as owned.
+ * Fresh appends only when no JorgeX Pi entry exists; owned migration
+ * replaces only the one exact managed object. Fail-closed, no FS access.
+ */
+export function planPiManagedSettings(
+  settingsJson: string,
+  previousSource: string | null,
+  nextSource: string,
+): string | null {
+  if (typeof settingsJson !== "string" || typeof nextSource !== "string" || nextSource === "") return null;
+  if (previousSource !== null && (typeof previousSource !== "string" || previousSource === "")) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(settingsJson);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const packages = Reflect.get(parsed, "packages");
+  if (!Array.isArray(packages)) return null;
+  const sources = packages.map((entry) => packageSource(entry));
+  if (sources.some((source) => source === null)) return null;
+  const piIndexes: number[] = [];
+  for (let index = 0; index < sources.length; index += 1) {
+    const source = sources[index];
+    if (typeof source === "string" && isJorgeXPiSource(source)) piIndexes.push(index);
+  }
+  if (previousSource === null) {
+    if (piIndexes.length !== 0) return null;
+    packages.push({ source: nextSource, skills: [], prompts: [] });
+    return JSON.stringify(parsed);
+  }
+  if (piIndexes.length !== 1) return null;
+  const index = piIndexes[0];
+  if (index === undefined || sources[index] !== previousSource) return null;
+  if (!isExactManagedPackage(packages[index], previousSource)) return null;
+  if (nextSource === previousSource) return JSON.stringify(parsed);
+  packages[index] = { source: nextSource, skills: [], prompts: [] };
+  return JSON.stringify(parsed);
+}
+
 function expectedReceipt(
   candidate: PiRuntimeCandidate,
   state: PiPackageReceipt["state"],
