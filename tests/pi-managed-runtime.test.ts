@@ -187,6 +187,13 @@ describe("Pi managed package and projection coordination", () => {
       expect(projectionInputs).toEqual([expect.objectContaining({
         operation: "install",
         devtoolsMcpEnabled: true,
+      }), expect.objectContaining({
+        operation: "sync",
+        devtoolsMcpEnabled: true,
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+        targetDir: undefined,
       })]);
 
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", true);
@@ -323,6 +330,13 @@ describe("Pi managed package and projection coordination", () => {
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
           playwrightCliCommand: "/isolated/bin/playwright-cli",
+        }),
+        expect.objectContaining({
+          operation: "sync",
+          playwrightCliEnabled: true,
+          playwrightHandoffEnabled: true,
+          playwrightCliCommand: "/isolated/bin/playwright-cli",
+          targetDir: undefined,
         }),
         expect.objectContaining({
           operation: "sync",
@@ -531,6 +545,13 @@ describe("Pi managed package and projection coordination", () => {
       expect(loadPlaywrightCliPreference).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
       expect(projectionInputs).toEqual([expect.objectContaining({
+        operation: "install",
+        targetDir: "/isolated/target",
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+      }), expect.objectContaining({
+        operation: "sync",
         targetDir: "/isolated/target",
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: false,
@@ -1307,20 +1328,24 @@ describe("Pi managed package and projection coordination", () => {
   // T07-RED (managed update): update on the observed Pi 0.87.1 host with a
   // fully prepared synthetic candidate+prepared must bypass the obsolete host
   // allowlist, forward operation:'update' to the package, require the package
-  // updated receipt, and project the receipt-authenticated packageSource via
-  // sync. No Pi setup nor preflight since the stage is supplied; without
-  // candidate+prepared the host gate must still block (covered by the
+  // updated receipt, and reconcile via package:update → projection:sync →
+  // package:sync → projection:sync with the receipt-authenticated
+  // packageSource. No Pi setup nor preflight since the stage is supplied;
+  // without candidate+prepared the host gate must still block (covered by the
   // models/update gate test) with no network asserted here.
   it("allows prepared update on Pi 0.87.1 and projects the authenticated packageSource", async () => {
     const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
     const SYNTH_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } };
     const SYNTH_PREPARED = { stageDir: "/isolated/pi-stage" };
+    const packageInputs: unknown[] = [];
     const projectionInputs: unknown[] = [];
     const preparePiRuntimeSystem = vi.fn(async () => {
       throw new Error("update with supplied stage must not run preflight");
     });
     const runPiRuntimeSystem = vi.fn(
       async (input: { operation: string; candidate?: { package?: { source?: string } }; prepared?: unknown }) => {
+        packageInputs.push(input);
+        if (input.operation === "sync") return { kind: "synced" as const, packageSource: DYNAMIC_SOURCE };
         if (input.operation !== "update") return { kind: "blocked" as const, reason: "unexpected-operation" };
         if (input.candidate?.package?.source !== DYNAMIC_SOURCE || input.prepared === undefined) {
           return { kind: "blocked" as const, reason: "candidate-missing" };
@@ -1341,6 +1366,8 @@ describe("Pi managed package and projection coordination", () => {
     });
     const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
     const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
 
     vi.resetModules();
     vi.doMock("../src/lib/pi-runtime.js", () => ({
@@ -1360,10 +1387,10 @@ describe("Pi managed package and projection coordination", () => {
     vi.doMock("../src/lib/tool-preferences.js", () => ({
       loadPlaywrightCliPreference: vi.fn(() => false),
       playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
-      savePlaywrightCliPreference: vi.fn(),
+      savePlaywrightCliPreference,
       devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
       loadDevtoolsMcpPreference: vi.fn(() => false),
-      saveDevtoolsMcpPreference: vi.fn(),
+      saveDevtoolsMcpPreference,
     }));
     vi.doMock("../src/lib/external-tools.js", () => ({
       detectPlaywrightCli: vi.fn(() => ({
@@ -1390,8 +1417,11 @@ describe("Pi managed package and projection coordination", () => {
       expect(preparePiRuntimeSystem).not.toHaveBeenCalled();
       expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
       expect(result).toMatchObject({ kind: "updated" });
-      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
-      expect(runPiRuntimeSystem).toHaveBeenCalledWith(
+      // Changed-candidate update reconciles via package:update →
+      // projection:sync → package:sync → projection:sync.
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(2);
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({
           operation: "update",
           candidate: expect.objectContaining({
@@ -1400,9 +1430,24 @@ describe("Pi managed package and projection coordination", () => {
           prepared: SYNTH_PREPARED,
         }),
       );
-      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(1);
-      expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ operation: "sync" }),
+      );
+      expect(packageInputs[1]).toEqual(
+        expect.objectContaining({
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+        }),
+      );
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(2);
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }));
+      expect(projectionInputs[1]).toEqual(expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }));
       expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect((projectionInputs[1] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("../src/lib/pi-runtime.js");
       vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
@@ -1416,7 +1461,8 @@ describe("Pi managed package and projection coordination", () => {
   // update, so runManagedPiSystem on Pi 0.87.1 with no candidate/prepared must
   // await the mocked preparePiRuntimeSystem preflight FIRST (operation update,
   // isolated synthetic 9.9.9 test-only, no network/HOME), then call the
-  // package with exactly that {candidate, prepared} and project sync with the
+  // package with exactly that {candidate, prepared} and reconcile via
+  // package:update → projection:sync → package:sync → projection:sync with the
   // exact updated receipt source — never the static candidate. No static host
   // gate first and no unverified fallback. Blocked old gate (no old receipt)
   // is owned by the models/update gate test above: preflight reason with no
@@ -1425,6 +1471,7 @@ describe("Pi managed package and projection coordination", () => {
     const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
     const SYNTH_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } };
     const SYNTH_PREPARED = { stageDir: "/isolated/pi-stage" };
+    const packageInputs: unknown[] = [];
     const projectionInputs: unknown[] = [];
     const preparePiRuntimeSystem = vi.fn(async (_input: unknown) => ({
       candidate: SYNTH_CANDIDATE,
@@ -1432,6 +1479,8 @@ describe("Pi managed package and projection coordination", () => {
     }));
     const runPiRuntimeSystem = vi.fn(
       async (input: { operation: string; candidate?: { package?: { source?: string } }; prepared?: unknown }) => {
+        packageInputs.push(input);
+        if (input.operation === "sync") return { kind: "synced" as const, packageSource: DYNAMIC_SOURCE };
         if (input.operation !== "update") return { kind: "blocked" as const, reason: "unexpected-operation" };
         if (input.candidate?.package?.source !== DYNAMIC_SOURCE || input.prepared === undefined) {
           return { kind: "blocked" as const, reason: "candidate-missing" };
@@ -1452,6 +1501,8 @@ describe("Pi managed package and projection coordination", () => {
     });
     const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
     const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
 
     vi.resetModules();
     vi.doMock("../src/lib/pi-runtime.js", () => ({
@@ -1471,10 +1522,10 @@ describe("Pi managed package and projection coordination", () => {
     vi.doMock("../src/lib/tool-preferences.js", () => ({
       loadPlaywrightCliPreference: vi.fn(() => false),
       playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
-      savePlaywrightCliPreference: vi.fn(),
+      savePlaywrightCliPreference,
       devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
       loadDevtoolsMcpPreference: vi.fn(() => false),
-      saveDevtoolsMcpPreference: vi.fn(),
+      saveDevtoolsMcpPreference,
     }));
     vi.doMock("../src/lib/external-tools.js", () => ({
       detectPlaywrightCli: vi.fn(() => ({
@@ -1498,8 +1549,11 @@ describe("Pi managed package and projection coordination", () => {
 
       expect(preparePiRuntimeSystem).toHaveBeenCalledTimes(1);
       expect(preparePiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "update" }));
-      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
-      expect(runPiRuntimeSystem).toHaveBeenCalledWith(
+      // Changed-candidate update reconciles via package:update →
+      // projection:sync → package:sync → projection:sync.
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(2);
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({
           operation: "update",
           candidate: expect.objectContaining({
@@ -1508,16 +1562,33 @@ describe("Pi managed package and projection coordination", () => {
           prepared: SYNTH_PREPARED,
         }),
       );
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ operation: "sync" }),
+      );
+      expect(packageInputs[1]).toEqual(
+        expect.objectContaining({
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+        }),
+      );
       expect(preparePiRuntimeSystem.mock.invocationCallOrder[0]).toBeLessThan(
         runPiRuntimeSystem.mock.invocationCallOrder[0]!,
       );
       expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version|candidate-missing/);
       expect(result).toMatchObject({ kind: "updated" });
-      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(1);
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(2);
       expect(projectionInputs[0]).toEqual(
         expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }),
       );
+      expect(projectionInputs[1]).toEqual(
+        expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }),
+      );
       expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect((projectionInputs[1] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("../src/lib/pi-runtime.js");
       vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
@@ -1885,8 +1956,10 @@ describe("Pi managed package and projection coordination", () => {
     expect(trace).toEqual(projectionOperation === undefined
       ? [`package:${packageOperation}`]
       : operation === "install"
-        ? ["package:install", "projection:install", "package:sync"]
-        : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
+        ? ["package:install", "projection:install", "package:sync", "projection:sync"]
+        : operation === "update"
+          ? ["package:update", "projection:sync", "package:sync", "projection:sync"]
+          : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
   });
 
   it("blocks doctor on projection drift while preserving diagnostic paths and remedy", async () => {
@@ -2353,6 +2426,85 @@ describe("Pi managed install post-projection initialization", () => {
     expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
     expect(result.kind).toBe("blocked");
   });
+
+  // Live repro: isolated `install --agents pi` reports installed but immediate
+  // `doctor --agents pi` reports `projection-drift settings.json`; an explicit
+  // `sync --agents pi` then heals doctor. Hypothesis: install order
+  // package:install → projection:install → package:sync leaves the projection
+  // stale after the final runner sync mutates settings/receipt. Install must
+  // reconcile with a final projection:sync only after package sync succeeds,
+  // so install returns installed AND immediate doctor stays healthy without a
+  // user extra sync. Failure semantics unchanged: no final projection sync
+  // when package sync fails (covered above).
+  it("reconciles package sync settings mutation with a final projection sync so immediate doctor stays healthy", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+    let projectionDirty = false;
+
+    const deps = withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") return { kind: "installed" };
+        if (next === "sync") {
+          projectionDirty = true;
+          return { kind: "synced" };
+        }
+        if (next === "doctor") return { kind: "healthy" };
+        throw new Error(`unexpected package operation: ${next}`);
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        if (next === "sync") {
+          projectionDirty = false;
+          return { kind: "synced", changed: true };
+        }
+        if (next === "doctor") {
+          if (projectionDirty) {
+            return {
+              kind: "drift",
+              paths: ["settings.json"],
+              remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            };
+          }
+          return { kind: "healthy" };
+        }
+        return projectionSuccess(next);
+      },
+    });
+
+    const installResult = await runManagedPiOperation("install", deps);
+    expect(installResult).toEqual({ kind: "installed" });
+    expect(trace).toEqual([
+      "package:install",
+      "projection:install",
+      "package:sync",
+      "projection:sync",
+    ]);
+
+    const doctorTrace: string[] = [];
+    const doctorDeps = withUninstallLifecycle({
+      async runPackage(next) {
+        doctorTrace.push(`package:${next}`);
+        return { kind: "healthy" };
+      },
+      async runProjection(next) {
+        doctorTrace.push(`projection:${next}`);
+        if (projectionDirty) {
+          return {
+            kind: "drift",
+            paths: ["settings.json"],
+            remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+          };
+        }
+        return { kind: "healthy" };
+      },
+    });
+    // Immediate doctor observes the reconciled projection without a user extra
+    // sync: shared dirty flag proves the final projection:sync cleared it.
+    const doctorResult = await runManagedPiOperation("doctor", doctorDeps);
+    expect(doctorResult).toEqual({ kind: "healthy" });
+    expect(doctorTrace).toEqual(["package:doctor", "projection:doctor"]);
+  });
 });
 
 describe("Pi managed install with provisional initialization diagnostics", () => {
@@ -2442,7 +2594,7 @@ describe("Pi managed install with provisional initialization diagnostics", () =>
       },
     });
 
-    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync", "projection:sync"]);
     expect(result).toEqual({ kind: "installed" });
   });
 });
@@ -2966,4 +3118,153 @@ it("forwards authenticated update-healthy packageSource to projection instead of
     vi.doUnmock("../src/lib/external-tools.js");
     vi.resetModules();
   }
+});
+
+describe("Pi managed update post-projection initialization", () => {
+  // Live repro: install final projection sync fixed, but deliberate managed
+  // update with changed candidate returns {kind:'updated'} after ONE
+  // projection sync without running new package sync --json; stage smoke
+  // doesn't initialize active Pi settings/receipt; subsequent doctor may
+  // report pending/drift. Changed-candidate update must reconcile with
+  // package:update → projection:sync → package:sync → projection:sync, then
+  // immediate doctor stays healthy. Same-candidate healthy keeps one
+  // projection sync; blocked projection/package sync must not report updated.
+  it("reconciles changed-candidate update settings mutation with package sync and final projection sync so immediate doctor stays healthy", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+    let initialized = false;
+    let projectionDirty = false;
+
+    const deps = withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "update") return { kind: "updated" };
+        if (next === "sync") {
+          initialized = true;
+          projectionDirty = true;
+          return { kind: "synced" };
+        }
+        if (next === "doctor") return { kind: "healthy" };
+        throw new Error(`unexpected package operation: ${next}`);
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        if (next === "sync") {
+          projectionDirty = false;
+          return { kind: "synced", changed: true };
+        }
+        if (next === "doctor") {
+          if (!initialized || projectionDirty) {
+            return {
+              kind: "drift",
+              paths: ["settings.json"],
+              remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            };
+          }
+          return { kind: "healthy" };
+        }
+        return projectionSuccess(next);
+      },
+    });
+
+    const updateResult = await runManagedPiOperation("update", deps);
+    expect(updateResult).toEqual({ kind: "updated" });
+    expect(trace).toEqual([
+      "package:update",
+      "projection:sync",
+      "package:sync",
+      "projection:sync",
+    ]);
+
+    // Immediate doctor observes the reconciled projection without a user extra
+    // sync: shared flags prove package sync initialized and the final
+    // projection sync cleared the settings mutation.
+    const doctorTrace: string[] = [];
+    const doctorResult = await runManagedPiOperation(
+      "doctor",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          doctorTrace.push(`package:${next}`);
+          return { kind: "healthy" };
+        },
+        async runProjection(next) {
+          doctorTrace.push(`projection:${next}`);
+          if (!initialized || projectionDirty) {
+            return {
+              kind: "drift",
+              paths: ["settings.json"],
+              remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            };
+          }
+          return { kind: "healthy" };
+        },
+      }),
+    );
+    expect(doctorResult).toEqual({ kind: "healthy" });
+    expect(doctorTrace).toEqual(["package:doctor", "projection:doctor"]);
+
+    // Control: same-candidate update {kind:'healthy'} keeps one projection
+    // sync with no extra package sync.
+    const healthyTrace: string[] = [];
+    const healthyResult = await runManagedPiOperation(
+      "update",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          healthyTrace.push(`package:${next}`);
+          if (next === "update") return { kind: "healthy" };
+          throw new Error(`unexpected package operation: ${next}`);
+        },
+        async runProjection(next) {
+          healthyTrace.push(`projection:${next}`);
+          return { kind: "synced", changed: false };
+        },
+      }),
+    );
+    expect(healthyResult).toEqual({ kind: "healthy" });
+    expect(healthyTrace).toEqual(["package:update", "projection:sync"]);
+
+    // Control: blocked package sync after update must not report updated.
+    const blockedPackageSyncTrace: string[] = [];
+    const blockedPackageSyncResult = await runManagedPiOperation(
+      "update",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          blockedPackageSyncTrace.push(`package:${next}`);
+          if (next === "update") return { kind: "updated" };
+          if (next === "sync") return { kind: "blocked", reason: "runner-unhealthy" };
+          throw new Error(`unexpected package operation: ${next}`);
+        },
+        async runProjection(next) {
+          blockedPackageSyncTrace.push(`projection:${next}`);
+          return { kind: "synced", changed: true };
+        },
+      }),
+    );
+    expect(blockedPackageSyncResult).toMatchObject({ kind: "blocked", reason: "runner-unhealthy" });
+    expect(blockedPackageSyncResult).not.toEqual({ kind: "updated" });
+    expect(blockedPackageSyncTrace).toEqual([
+      "package:update",
+      "projection:sync",
+      "package:sync",
+    ]);
+
+    // Control: blocked projection after update must not report updated.
+    const blockedProjectionTrace: string[] = [];
+    const blockedProjectionResult = await runManagedPiOperation(
+      "update",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          blockedProjectionTrace.push(`package:${next}`);
+          if (next === "update") return { kind: "updated" };
+          throw new Error(`unexpected package operation: ${next}`);
+        },
+        async runProjection(next) {
+          blockedProjectionTrace.push(`projection:${next}`);
+          return { kind: "blocked", reason: "projection-backup-failed" };
+        },
+      }),
+    );
+    expect(blockedProjectionResult).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
+    expect(blockedProjectionTrace).toEqual(["package:update", "projection:sync"]);
+  });
 });

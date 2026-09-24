@@ -94,15 +94,23 @@ function withInstallInitRemedy(
     : result;
 }
 
-async function completeInstallWithInitialization(
+async function completeWithInitialization(
   packageResult: PiManagedPackageOutcome,
   deps: PiManagedRuntimeDeps,
+  initialProjection: PiProjectionOperation = "install",
 ): Promise<PiManagedOperationResult> {
-  const projected = await completeProjection("install", packageResult, deps);
+  const projected = await completeProjection(initialProjection, packageResult, deps);
   if (projected.kind === "blocked") return projected;
   const fallbackRemedy = deps.installInitRemedy ?? INSTALL_INIT_REMEDY;
   const initResult = await deps.runPackage("sync");
-  if (initResult.kind === "synced") return packageResult;
+  if (initResult.kind === "synced") {
+    const reconciled = await completeProjection("sync", packageResult, deps);
+    if (reconciled.kind === "blocked") {
+      if ("remedy" in reconciled && reconciled.remedy !== undefined) return reconciled;
+      return { ...reconciled, remedy: fallbackRemedy };
+    }
+    return packageResult;
+  }
   if (initResult.kind === "manual-existing") return manualExistingResult(initResult);
   if (initResult.kind === "blocked") return withInstallInitRemedy(initResult, fallbackRemedy);
   return { kind: "blocked", reason: "runner-unhealthy", remedy: fallbackRemedy };
@@ -127,7 +135,11 @@ export async function runManagedPiOperation(
   if (operation === "models") return packageResult;
 
   if (operation === "install" && packageResult.kind !== "blocked") {
-    return completeInstallWithInitialization(packageResult, deps);
+    return completeWithInitialization(packageResult, deps);
+  }
+
+  if (operation === "update" && packageResult.kind === "updated") {
+    return completeWithInitialization(packageResult, deps, "sync");
   }
 
   const nextProjectionOperation = projectionOperation(operation);
