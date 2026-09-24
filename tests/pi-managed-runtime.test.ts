@@ -1,7 +1,15 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Integration fixtures carry synthetic tarball bytes; the isolated CLI probe
+// has its own artifact tests and explicit success/failure flow doubles below.
+vi.mock("../src/lib/browser-provider.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/browser-provider.js")>()),
+  verifyDevtoolsCliArtifact: vi.fn(async () => ({ binPath: "/isolated/stage/bin", version: DEVTOOLS_VERSION })),
+}));
 
 type Operation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type ProjectionOperation = Exclude<Operation, "models" | "update">;
@@ -158,6 +166,7 @@ describe("Pi managed package and projection coordination", () => {
       loadPlaywrightCliPreference: vi.fn(() => false),
       devtoolsMcpPreferenceFile: vi.fn(() => devtoolsPreferenceFile),
       loadDevtoolsMcpPreference,
+      loadDevtoolsMcpObservation: vi.fn(() => null),
       saveDevtoolsMcpPreference,
     }));
     vi.doMock("../src/lib/external-tools.js", () => ({
@@ -166,6 +175,8 @@ describe("Pi managed package and projection coordination", () => {
 
     try {
       const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      const fetchEvents: string[] = [];
+      stubDevtoolsFetch(fetchEvents);
       const result = await mod.runManagedPiSystem({
         operation: "install",
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
@@ -176,6 +187,9 @@ describe("Pi managed package and projection coordination", () => {
 
       // The installed result now carries the authenticated receipt (new
       // contract); the forwarding assertions below are this test's seam.
+      // Explicit install verifies the stubbed provider: metadata, tarball,
+      // then the persisted observation travels with the save.
+      expect(fetchEvents).toEqual([`fetch ${DEVTOOLS_METADATA}`, `fetch ${DEVTOOLS_TARBALL}`]);
       expect(result).toMatchObject({ kind: "installed" });
       expect(packageInputs).toEqual([expect.objectContaining({
         operation: "install",
@@ -196,7 +210,7 @@ describe("Pi managed package and projection coordination", () => {
         targetDir: undefined,
       })]);
 
-      expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", true);
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", true, DEVTOOLS_OBSERVED);
 
       await mod.runManagedPiSystem({
         operation: "sync",
@@ -228,6 +242,7 @@ describe("Pi managed package and projection coordination", () => {
       });
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
     } finally {
+      vi.unstubAllGlobals();
       vi.doUnmock("../src/lib/pi-runtime.js");
       vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
       vi.doUnmock("../src/lib/tool-preferences.js");
@@ -854,6 +869,7 @@ describe("Pi managed package and projection coordination", () => {
       savePlaywrightCliPreference,
       devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
       loadDevtoolsMcpPreference,
+      loadDevtoolsMcpObservation: vi.fn(() => null),
       saveDevtoolsMcpPreference,
     }));
     vi.doMock("../src/lib/external-tools.js", () => ({
@@ -3266,5 +3282,524 @@ describe("Pi managed update post-projection initialization", () => {
     );
     expect(blockedProjectionResult).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
     expect(blockedProjectionTrace).toEqual(["package:update", "projection:sync"]);
+  });
+});
+
+// Synthetic test-only DevTools provider release shared by the Pi-only
+// acquisition tracer and the older forwarding tests, so no test ever hits
+// live npm. Fixture, never a version selector: the exact version/URL/SRI
+// travel together from the stubbed registry.
+const DEVTOOLS_VERSION = "9.9.20";
+const DEVTOOLS_TARBALL = "https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-9.9.20.tgz";
+const DEVTOOLS_BYTES = Buffer.from("synthetic-chrome-devtools-mcp-tarball-9.9.20\n");
+const DEVTOOLS_INTEGRITY = `sha512-${createHash("sha512").update(DEVTOOLS_BYTES).digest("base64")}`;
+const DEVTOOLS_METADATA = "https://registry.npmjs.org/chrome-devtools-mcp";
+const DEVTOOLS_OBSERVED = { version: DEVTOOLS_VERSION, integrity: DEVTOOLS_INTEGRITY };
+
+function devtoolsPackument(): unknown {
+  return {
+    name: "chrome-devtools-mcp",
+    "dist-tags": { latest: DEVTOOLS_VERSION },
+    versions: {
+      [DEVTOOLS_VERSION]: {
+        name: "chrome-devtools-mcp",
+        version: DEVTOOLS_VERSION,
+        dist: { tarball: DEVTOOLS_TARBALL, integrity: DEVTOOLS_INTEGRITY },
+      },
+    },
+  };
+}
+
+function stubDevtoolsFetch(events: string[]): void {
+  const stub = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    events.push(`fetch ${url}`);
+    if (url === DEVTOOLS_TARBALL) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(DEVTOOLS_BYTES.slice());
+          controller.close();
+        },
+      });
+      const tarball = new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      Object.defineProperty(tarball, "url", { value: url });
+      return tarball;
+    }
+    if (url === DEVTOOLS_METADATA) {
+      const metadata = new Response(JSON.stringify(devtoolsPackument()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+      Object.defineProperty(metadata, "url", { value: url });
+      return metadata;
+    }
+    return new Response("not found", { status: 404 });
+  };
+  vi.stubGlobal("fetch", stub);
+}
+
+describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
+  // The Pi package itself stays mocked (no Pi execution) with a matching
+  // receipt; only the DevTools provider is stubbed above.
+  const PI_SOURCE = "npm:jorgex-pi@9.9.9";
+  const PI_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: PI_SOURCE } };
+
+  async function withTempPiHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
+    const previousHome = process.env.HOME;
+    const previousProfile = process.env.USERPROFILE;
+    const previousPiDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      vi.resetModules();
+      return await run();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousProfile;
+      if (previousPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousPiDir;
+      vi.resetModules();
+    }
+  }
+
+  function mockPiPackage() {
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: PI_CANDIDATE,
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string; reason?: string; receipt?: unknown }> => {
+      if (input.operation === "sync") return { kind: "synced" };
+      return {
+        kind: "installed",
+        receipt: {
+          schemaVersion: 1,
+          state: "installed",
+          candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: PI_SOURCE } },
+        },
+      };
+    });
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: PI_SOURCE },
+        pi: { testedVersions: ["0.84.2"] },
+        contract: { capabilities: [] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    return { preparePiRuntimeSystem, runPiRuntimeSystem };
+  }
+
+  function mockPiProjection(events: string[], projectionInputs: unknown[]) {
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown): { kind: string; reason?: string } => {
+      events.push(`projection ${(input as { operation: string }).operation}`);
+      projectionInputs.push(input);
+      return { kind: "installed" };
+    });
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+    return { runPiProjectionLifecycleSystem };
+  }
+
+  function unmockPiSystem(): void {
+    vi.doUnmock("../src/lib/pi-runtime.js");
+    vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+    vi.doUnmock("../src/lib/external-tools.js");
+    vi.doUnmock("../src/lib/browser-provider.js");
+  }
+
+  function mockSmokeProvider(
+    events: string[],
+    smokeCalls: unknown[][],
+    behavior: "resolve" | "reject",
+  ): void {
+    vi.doMock("../src/lib/browser-provider.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/lib/browser-provider.js")>("../src/lib/browser-provider.js")),
+      verifyDevtoolsCliArtifact: (...args: unknown[]) => {
+        smokeCalls.push(args);
+        events.push("smoke");
+        if (behavior === "reject") {
+          return Promise.reject(new Error("DevTools CLI smoke: missing mandatory flag --isolated"));
+        }
+        return Promise.resolve({ binPath: "/isolated/stage/bin", version: DEVTOOLS_VERSION });
+      },
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+  }
+
+  function preferenceFile(homeDir: string): string {
+    return path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+  }
+
+  it("verifies the published DevTools candidate before Pi projection and persists the observation only on success", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-acquisition-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        mockSmokeProvider(events, [], "resolve");
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            const result = await mod.runManagedPiSystem({
+              operation: "install",
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: true,
+              writingStyle: FORWARDING_STYLE,
+            });
+
+            expect(result).toMatchObject({ kind: "installed" });
+            expect(events[0]).toBe(`fetch ${DEVTOOLS_METADATA}`);
+            expect(events[1]).toBe(`fetch ${DEVTOOLS_TARBALL}`);
+            expect(events[2]).toBe("smoke");
+            expect(events.findIndex((event) => event.startsWith("projection "))).toBe(3);
+            expect(projectionInputs[0]).toMatchObject({
+              operation: "install",
+              devtoolsMcpEnabled: true,
+              devtoolsMcpVersion: DEVTOOLS_VERSION,
+            });
+            const raw = fs.readFileSync(preferenceFile(homeDir), "utf8");
+            expect(JSON.parse(raw)).toMatchObject({ enabled: { pi: true } });
+            expect(raw).toContain(DEVTOOLS_VERSION);
+            expect(raw).toContain(DEVTOOLS_INTEGRITY);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the preference unmarked when the Pi package is blocked", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-package-blocked-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        const { runPiRuntimeSystem } = mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        runPiRuntimeSystem.mockResolvedValueOnce({ kind: "blocked", reason: "runner-unhealthy" });
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            const result = await mod.runManagedPiSystem({
+              operation: "install",
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: true,
+              writingStyle: FORWARDING_STYLE,
+            });
+
+            expect(result).toMatchObject({ kind: "blocked" });
+            expect(fs.existsSync(preferenceFile(homeDir))).toBe(false);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies before projection yet leaves the preference unmarked when the projection is blocked", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-projection-blocked-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        const { runPiProjectionLifecycleSystem } = mockPiProjection(events, projectionInputs);
+        mockSmokeProvider(events, [], "resolve");
+        runPiProjectionLifecycleSystem.mockImplementationOnce((input: unknown) => {
+          events.push(`projection ${(input as { operation: string }).operation}`);
+          projectionInputs.push(input);
+          return { kind: "blocked", reason: "projection-write-failed" };
+        });
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            const result = await mod.runManagedPiSystem({
+              operation: "install",
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: true,
+              writingStyle: FORWARDING_STYLE,
+            });
+
+            expect(result).toMatchObject({ kind: "blocked" });
+            expect(events[0]).toBe(`fetch ${DEVTOOLS_METADATA}`);
+            expect(events[1]).toBe(`fetch ${DEVTOOLS_TARBALL}`);
+            expect(projectionInputs[0]).toMatchObject({ devtoolsMcpVersion: DEVTOOLS_VERSION });
+            expect(fs.existsSync(preferenceFile(homeDir))).toBe(false);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("performs no provider fetch for a target-dir install with DevTools enabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-target-dir-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const targetDir = path.join(root, "target");
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            await mod.runManagedPiSystem({
+              operation: "install",
+              targetDir,
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: true,
+              writingStyle: FORWARDING_STYLE,
+            });
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
+  });
+
+  it("performs no provider fetch without a DevTools opt-in", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-no-optin-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            await mod.runManagedPiSystem({
+              operation: "install",
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: false,
+              writingStyle: FORWARDING_STYLE,
+            });
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
+  });
+
+  it("proves the privacy flags on the staged artifact after verification and before Pi projection", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-flag-smoke-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+    const smokeCalls: unknown[][] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        mockSmokeProvider(events, smokeCalls, "resolve");
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            const result = await mod.runManagedPiSystem({
+              operation: "install",
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: true,
+              writingStyle: FORWARDING_STYLE,
+            });
+
+            expect(result).toMatchObject({ kind: "installed" });
+            expect(smokeCalls).toHaveLength(1);
+            const input = smokeCalls[0]?.[0] as {
+              artifactPath?: unknown;
+              stageDir?: unknown;
+              pnpmBin?: unknown;
+              release?: unknown;
+            };
+            expect(input).toMatchObject({
+              pnpmBin: "/isolated/bin/pnpm",
+              release: {
+                version: DEVTOOLS_VERSION,
+                tarballUrl: DEVTOOLS_TARBALL,
+                integrity: DEVTOOLS_INTEGRITY,
+              },
+            });
+            expect(typeof input?.artifactPath === "string" && path.isAbsolute(input.artifactPath)).toBe(true);
+            expect(typeof input?.stageDir === "string" && path.isAbsolute(input.stageDir)).toBe(true);
+            const metaIdx = events.indexOf(`fetch ${DEVTOOLS_METADATA}`);
+            const tarballIdx = events.indexOf(`fetch ${DEVTOOLS_TARBALL}`);
+            const smokeIdx = events.indexOf("smoke");
+            const projectionIdx = events.findIndex((event) => event.startsWith("projection "));
+            expect(metaIdx).toBeGreaterThanOrEqual(0);
+            expect(tarballIdx).toBeGreaterThan(metaIdx);
+            expect(smokeIdx).toBeGreaterThan(tarballIdx);
+            expect(projectionIdx).toBeGreaterThan(smokeIdx);
+            expect(projectionInputs[0]).toMatchObject({ devtoolsMcpVersion: DEVTOOLS_VERSION });
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks the Pi install without projection or preference mark when the flag smoke rejects", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-smoke-reject-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+    const smokeCalls: unknown[][] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        mockSmokeProvider(events, smokeCalls, "reject");
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            const result = await mod.runManagedPiSystem({
+              operation: "install",
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: true,
+              writingStyle: FORWARDING_STYLE,
+            });
+
+            expect(result).toMatchObject({ kind: "blocked" });
+            expect(smokeCalls).toHaveLength(1);
+            expect(projectionInputs).toEqual([]);
+            expect(events.filter((event) => event.startsWith("projection "))).toEqual([]);
+            expect(fs.existsSync(preferenceFile(homeDir))).toBe(false);
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["target-dir", "no-opt-in"] as const)("invokes neither smoke nor provider fetch for Pi %s", async (kind) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-smoke-guards-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const targetDir = path.join(root, "target");
+    const events: string[] = [];
+    const projectionInputs: unknown[] = [];
+    const smokeCalls: unknown[][] = [];
+
+    try {
+      await withTempPiHome(homeDir, async () => {
+        mockPiPackage();
+        mockPiProjection(events, projectionInputs);
+        mockSmokeProvider(events, smokeCalls, "resolve");
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          stubDevtoolsFetch(events);
+          try {
+            await mod.runManagedPiSystem({
+              operation: "install",
+              ...(kind === "target-dir" ? { targetDir } : {}),
+              detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+              engramBin: "/isolated/bin/engram",
+              devtoolsMcpEnabled: kind !== "no-opt-in",
+              writingStyle: FORWARDING_STYLE,
+            }).then(
+              () => undefined,
+              () => undefined,
+            );
+          } finally {
+            vi.unstubAllGlobals();
+          }
+        } finally {
+          unmockPiSystem();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(smokeCalls).toEqual([]);
+    expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
   });
 });

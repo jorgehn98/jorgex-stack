@@ -1,11 +1,30 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   loadPlaywrightCliPreference,
   savePlaywrightCliPreference,
 } from "../src/lib/tool-preferences.js";
+import { inspectPlaywrightCapability } from "../src/lib/playwright-capability.js";
+
+const capabilityMocks = vi.hoisted(() => ({
+  detectPlaywrightCli: vi.fn(),
+  isPlaywrightBrowserReady: vi.fn(),
+  resolvePnpmBin: vi.fn(),
+  verifyPlaywrightBrowser: vi.fn(),
+}));
+
+vi.mock("../src/lib/external-tools.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/external-tools.js")>();
+  return {
+    ...actual,
+    detectPlaywrightCli: capabilityMocks.detectPlaywrightCli,
+    isPlaywrightBrowserReady: capabilityMocks.isPlaywrightBrowserReady,
+    resolvePnpmBin: capabilityMocks.resolvePnpmBin,
+    verifyPlaywrightBrowser: capabilityMocks.verifyPlaywrightBrowser,
+  };
+});
 
 const RUNTIMES = ["opencode", "claude-code", "codex", "pi"] as const;
 type Runtime = (typeof RUNTIMES)[number];
@@ -28,6 +47,10 @@ function readPreference(file: string): unknown {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  capabilityMocks.detectPlaywrightCli.mockReset();
+  capabilityMocks.isPlaywrightBrowserReady.mockReset();
+  capabilityMocks.resolvePnpmBin.mockReset();
+  capabilityMocks.verifyPlaywrightBrowser.mockReset();
 });
 
 describe("Playwright CLI preference by runtime", () => {
@@ -116,5 +139,65 @@ describe("Playwright CLI preference by runtime", () => {
     expect(loadPlaywrightCliPreference(file, "opencode")).toBeUndefined();
     expect(() => savePlaywrightCliPreference(file, true, { pi: true })).toThrow(/preferencia.*inv[aá]lida/i);
     expect(fs.readFileSync(file, "utf8")).toBe(raw);
+  });
+});
+
+describe("Playwright capability observed version [T14-RED]", () => {
+  // The observed record stands for the preference observation (see
+  // browser-preferences-safety); only its version reaches the detector/verifier.
+  const OBSERVED = {
+    version: "9.9.10",
+    integrity: `sha512-${Buffer.alloc(64, 13).toString("base64")}`,
+  };
+
+  type InspectWithObserved = (options?: {
+    browserVerified?: boolean;
+    env?: NodeJS.ProcessEnv;
+    expectedVersion?: string;
+  }) => {
+    cli: { status: string; detectedVersion: string | null };
+    browserVerified: boolean;
+    effective: boolean;
+  };
+
+  const inspectWithObserved = inspectPlaywrightCapability as unknown as InspectWithObserved;
+
+  function seenVersion(calls: unknown[][]): string | null {
+    return JSON.stringify(calls).includes(OBSERVED.version) ? OBSERVED.version : null;
+  }
+
+  it("forwards the observed version to the detector/verifier and reports effective", () => {
+    capabilityMocks.detectPlaywrightCli.mockImplementation((...args: unknown[]) => (
+      JSON.stringify(args).includes(OBSERVED.version)
+        ? { status: "current", binPath: "/g/bin", detectedVersion: OBSERVED.version }
+        : { status: "outdated", binPath: "/g/bin", detectedVersion: "0.1.18" }
+    ));
+    capabilityMocks.isPlaywrightBrowserReady.mockReturnValue({ status: "ready", path: "/cache" });
+    capabilityMocks.resolvePnpmBin.mockReturnValue("/usr/bin/pnpm");
+    capabilityMocks.verifyPlaywrightBrowser.mockImplementation((...args: unknown[]) => (
+      JSON.stringify(args).includes(OBSERVED.version)
+    ));
+
+    const snapshot = inspectWithObserved({ expectedVersion: OBSERVED.version });
+
+    expect(snapshot.cli).toMatchObject({ status: "current", detectedVersion: OBSERVED.version });
+    expect(snapshot.browserVerified).toBe(true);
+    expect(snapshot.effective).toBe(true);
+    expect(seenVersion(capabilityMocks.detectPlaywrightCli.mock.calls)).toBe(OBSERVED.version);
+    expect(seenVersion(capabilityMocks.verifyPlaywrightBrowser.mock.calls)).toBe(OBSERVED.version);
+  });
+
+  it("never reports effective from a legacy enabled executable without an observed version", () => {
+    capabilityMocks.detectPlaywrightCli.mockReturnValue({
+      status: "current",
+      binPath: "/g/bin",
+      detectedVersion: "0.1.18",
+    });
+    capabilityMocks.isPlaywrightBrowserReady.mockReturnValue({ status: "ready", path: "/cache" });
+    capabilityMocks.resolvePnpmBin.mockReturnValue("/usr/bin/pnpm");
+    capabilityMocks.verifyPlaywrightBrowser.mockReturnValue(true);
+
+    expect(inspectWithObserved().effective).toBe(false);
+    expect(inspectWithObserved({}).effective).toBe(false);
   });
 });

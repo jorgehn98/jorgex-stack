@@ -6,6 +6,8 @@ import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliState,
 } from "./external-tools.js";
+import { loadPlaywrightCliObservation } from "./tool-preferences.js";
+import { isStableSemverVersion } from "./npm-provider.js";
 
 /** Snapshot efímera de la capacidad global compartida de Playwright. */
 export interface PlaywrightCapabilitySnapshot {
@@ -28,28 +30,40 @@ export interface VerifiedPlaywrightCapabilitySnapshot extends PlaywrightCapabili
  * La existencia de la caché no certifica que Chromium pueda arrancar.
  */
 export function inspectPlaywrightCapability(options: {
+  expectedVersion?: string;
   browserVerified?: boolean;
   env?: NodeJS.ProcessEnv;
 } = {}): PlaywrightCapabilitySnapshot {
   const env = options.env ?? process.env;
-  const cli = options.env === undefined ? detectPlaywrightCli() : detectPlaywrightCli(env);
+  const isDefaultRuntime = options.env === undefined;
+  let expectedVersion = options.expectedVersion;
+  if (expectedVersion === undefined && isDefaultRuntime) {
+    const observed = loadPlaywrightCliObservation();
+    if (observed) expectedVersion = observed.version;
+  }
+  const hasStableExpected = isStableSemverVersion(expectedVersion);
+  const cli = options.env === undefined
+    ? detectPlaywrightCli(undefined, expectedVersion)
+    : detectPlaywrightCli(env, expectedVersion);
   const browserCache = options.env === undefined ? isPlaywrightBrowserReady() : isPlaywrightBrowserReady(env);
   let browserVerified = false;
 
-  if (cli.status === "current" && browserCache.status === "ready") {
+  if (hasStableExpected && cli.status === "current" && browserCache.status === "ready") {
     if (options.browserVerified === true) {
       browserVerified = true;
     } else {
       const pnpmBin = options.env === undefined ? resolvePnpmBin() : resolvePnpmBin(env);
       if (pnpmBin !== null) {
-        try { browserVerified = verifyPlaywrightBrowser(pnpmBin, env); }
+        try { browserVerified = verifyPlaywrightBrowser(pnpmBin, env, undefined, expectedVersion); }
         catch { browserVerified = false; }
       }
     }
   }
 
-  const effective = cli.status === "current"
+  const effective = hasStableExpected
+    && cli.status === "current"
     && cli.binPath !== null
+    && cli.detectedVersion === expectedVersion
     && (options.browserVerified === true || browserCache.status === "ready")
     && browserVerified;
   return { cli, browserCache, browserVerified, effective };

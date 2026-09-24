@@ -29,6 +29,15 @@ afterEach(() => {
 });
 
 describe("Playwright pnpm execution on Windows", () => {
+  // Synthetic test-only verified candidate shared by this file's Windows
+  // contract. Fixture, never a version selector: the exact version travels
+  // with its canonical scoped URL and SRI into the executed argv.
+  const VERIFIED_CANDIDATE = {
+    version: "9.9.10",
+    tarballUrl: "https://registry.npmjs.org/@playwright/cli/-/cli-9.9.10.tgz",
+    integrity: `sha512-${Buffer.alloc(64, 10).toString("base64")}`,
+  };
+
   it.skipIf(process.platform !== "win32")("runs an injected real pnpm.cmd shim through cmd.exe without shell:true", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-pnpm-cmd-"));
     tempDirs.push(dir);
@@ -48,11 +57,11 @@ describe("Playwright pnpm execution on Windows", () => {
     mocks.execFileSync.mockImplementation(actualChildProcess.execFileSync);
     const { executePlaywrightToolAction } = await import("../src/install.js");
 
-    expect(executePlaywrightToolAction("install")).toEqual({ ok: true });
-    expect(fs.readFileSync(observedArgs, "utf8").trim()).toBe("add --global @playwright/cli@0.1.18");
+    expect(executePlaywrightToolAction("install", undefined, undefined, VERIFIED_CANDIDATE)).toEqual({ ok: true });
+    expect(fs.readFileSync(observedArgs, "utf8").trim()).toBe("add --global @playwright/cli@9.9.10");
 
     const mutationCall = mocks.execFileSync.mock.calls.find(([, args]) =>
-      Array.isArray(args) && args.at(-1)?.includes("add --global @playwright/cli@0.1.18"),
+      Array.isArray(args) && args.at(-1)?.includes("add --global @playwright/cli@9.9.10"),
     );
     expect(mutationCall).toBeDefined();
     const [command, args, options] = mutationCall as [string, string[], { shell?: boolean }];

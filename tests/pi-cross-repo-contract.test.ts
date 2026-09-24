@@ -498,6 +498,7 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       playwrightCliEnabled: true,
       playwrightHandoffEnabled: true,
       playwrightCliCommand: playwrightCommand,
+      playwrightCliVersion: "0.1.18", // version emitted by this fixture's fake CLI, not a release selector
     })).toMatchObject({ kind: "installed" });
 
     const handoff = path.join(agentDir, "jorgex-pi", "playwright.v1.json");

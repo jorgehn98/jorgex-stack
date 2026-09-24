@@ -453,7 +453,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       p.log.error(`Playwright CLI: no se puede leer la caché de navegadores en ${playwright.path} (${playwright.errorCode}) → revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
       problems++;
     } else {
-      p.log.warn("Playwright CLI: versión distinta del pin aprobado → ejecuta 'jorgex-stack update' o 'install --playwright'.");
+      p.log.warn("Playwright CLI: versión local distinta de la observada o sin verificación del proveedor → ejecuta 'jorgex-stack update' o 'install --playwright'.");
       problems++;
     }
   }

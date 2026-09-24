@@ -3,7 +3,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import type { FileAction, RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildContentPlan, makeContext } from "./install.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
@@ -164,7 +164,11 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
 
     let unmerge: FileAction[];
     try {
-      unmerge = adapter.planUnmerge(mcpForUnmerge, hooks, ctx);
+      const devtools = mcpForUnmerge.servers[DEVTOOLS_MCP_SERVER];
+      const scopedMcp = devtools !== undefined && ctx.ownedMcpServers?.has(DEVTOOLS_MCP_SERVER)
+        ? { servers: { ...mcpForUnmerge.servers, [DEVTOOLS_MCP_SERVER]: materializeCanonicalDevtoolsServerForRemoval(devtools, ctx.devtoolsMcpObservedVersion) } }
+        : mcpForUnmerge;
+      unmerge = adapter.planUnmerge(scopedMcp, hooks, ctx);
     } catch (error) {
       p.log.error(`${adapter.name}: no se pudo planificar la limpieza en ${configDir} — ${error instanceof Error ? error.message : String(error)}.`);
       exitCode = 1;
