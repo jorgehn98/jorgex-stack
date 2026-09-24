@@ -291,8 +291,8 @@ function evaluateExpression(raw: string, fixture: EventFixture): unknown {
 }
 
 function isExpensiveStep(step: WorkflowStep): boolean {
-  const description = `${step.name ?? ""}\n${step.run ?? ""}`;
-  return /Download the exact JorgeX Pi artifact|Verify the exact JorgeX Pi artifact contract|pnpm test(?:\s|$)|pnpm build(?:\s|$)/i.test(description);
+  const description = `${step.name ?? ""}\n${step.run ?? ""}\n${step.raw ?? ""}`;
+  return /pnpm build(?:\s|$)|dist\/pi-ci-artifact\.js|pi-cross-repo-contract|pnpm test(?:\s|$)/i.test(description);
 }
 
 const EVENT_MATRIX: EventFixture[] = [
@@ -309,30 +309,30 @@ const EVENT_MATRIX: EventFixture[] = [
   { eventName: "pull_request", action: "opened", full: true },
 ];
 
+const OBSERVED_TARBALL_ENV = "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz";
+const OBSERVED_CANDIDATE_ENV = "JORGEX_PI_CANDIDATE: ${{ runner.temp }}/pi-observed.json";
+const OBSERVED_RUN = 'node dist/pi-ci-artifact.js "$JORGEX_PI_TARBALL" "$JORGEX_PI_CANDIDATE"';
+const CONTRACT_RUN = "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts";
+
 describe("JorgeX Pi artifact pull-request gate", () => {
-  it("resuelve metadata Pi validada y conserva el gate antes de la suite completa", () => {
+  it("resuelve el latest publicado observado con el resolver producto y ordena build antes de adquirir", () => {
     const workflow = readWorkflow();
-    const { jobs } = readWorkflowShape(workflow);
-    const [job] = jobs;
-    const pinStep = (job?.steps ?? []).find((step) => step.name === "Resolve the exact JorgeX Pi pin");
 
-    expect(pinStep, "Falta el paso que resuelve el pin de JorgeX Pi.").toBeDefined();
-    if (pinStep === undefined) throw new Error("Falta el paso que resuelve el pin de JorgeX Pi.");
-
-    expect(pinStep.raw).toContain("id: pi-pin");
-    expect(extractRunScript(pinStep)).toBe('node .github/scripts/pi-pin.mjs >> "$GITHUB_OUTPUT"\n');
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("permissions:\n  contents: read");
     expect(workflow).toContain("permissions:\n      contents: read");
     expect(workflow).toContain("actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd");
     expect(workflow).toContain("pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320");
     expect(workflow).toContain("actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38");
-    expect(workflow).toContain("curl --fail");
-    expect(workflow).toContain("--connect-timeout 15");
-    expect(workflow).toMatch(/(?:^|\s)--max-time\s+120(?:\s|$)/);
-    expect(workflow).toContain("PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}");
-    expect(workflow).toContain("PI_TARBALL_BYTES: ${{ steps.pi-pin.outputs.bytes }}");
-    expect(workflow).toContain("JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz");
+    expect(workflow).toContain(OBSERVED_TARBALL_ENV);
+    expect(workflow).toContain(OBSERVED_CANDIDATE_ENV);
+    expect(workflow).toContain(OBSERVED_RUN);
+    expect(workflow).toContain(CONTRACT_RUN);
+    expect(workflow).not.toContain(".github/scripts/pi-pin.mjs");
+    expect(workflow).not.toContain("steps.pi-pin.outputs");
+    expect(workflow).not.toContain("PI_TARBALL_URL");
+    expect(workflow).not.toContain("PI_TARBALL_BYTES");
+    expect(workflow).not.toContain("curl --fail");
     expect(workflow).not.toContain("GITHUB_ENV");
     expect(workflow).not.toContain("0.8.7");
     expect(workflow).not.toContain("89142426");
@@ -343,62 +343,53 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expectInOrder(workflow, [
       "pnpm install --frozen-lockfile",
       "pnpm typecheck",
-      'node .github/scripts/pi-pin.mjs >> "$GITHUB_OUTPUT"',
-      "PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}",
-      "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz",
-      "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts",
-      "pnpm test",
       "pnpm build",
+      OBSERVED_RUN,
+      OBSERVED_TARBALL_ENV,
+      OBSERVED_CANDIDATE_ENV,
+      CONTRACT_RUN,
+      "pnpm test",
     ]);
   });
 
-  it("acota la descarga de Pi a los outputs validados y verifica su tamaño antes del contrato", () => {
+  it("adquiere el tarball verificado con args absolutos temporales mediante el dist construido", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
     const [job] = jobs;
-    const downloadStep = (job?.steps ?? []).find((step) => step.name === "Download the exact JorgeX Pi artifact");
+    const resolveStep = (job?.steps ?? []).find((step) => step.raw.includes("dist/pi-ci-artifact.js"));
 
-    expect(downloadStep, "Falta el paso de descarga del artefacto Pi.").toBeDefined();
-    if (downloadStep === undefined) throw new Error("Falta el paso de descarga del artefacto Pi.");
+    expect(resolveStep, "Falta el paso que adquiere el artefacto Pi observado.").toBeDefined();
+    if (resolveStep === undefined) throw new Error("Falta el paso que adquiere el artefacto Pi observado.");
 
-    const script = extractRunScript(downloadStep);
-    const actualSizeCapture = 'actual_bytes="$(wc -c < "$tarball")"';
-
-    expect(downloadStep.raw).toContain("PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}");
-    expect(downloadStep.raw).toContain("PI_TARBALL_BYTES: ${{ steps.pi-pin.outputs.bytes }}");
-    expect(script).toContain('tarball="$RUNNER_TEMP/jorgex-pi.tgz"');
-    expect(script).toContain('"$PI_TARBALL_URL"');
-    expect(script).toContain("--retry 3");
-    expect(script).toContain("--connect-timeout 15");
-    expect(script).toMatch(/(?:^|\s)--max-time\s+120(?:\s|$)/);
-    expect(script).toMatch(/(?:^|\s)--retry-max-time\s+180(?:\s|$)/);
-    expect(script).toContain("--remove-on-error");
-    expect(script).toContain('--max-filesize "$PI_TARBALL_BYTES"');
-    expect(script).not.toMatch(/\s(?:--location(?:-trusted)?|-L)(?:\s|$)/);
-    expect(script).not.toContain("--retry-all-errors");
-    expectInOrder(workflow, [actualSizeCapture, "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts"]);
+    expect(resolveStep.name, "El paso de adquisición observada debe tener nombre.").toBeDefined();
+    expect(resolveStep.name?.trim().length ?? 0).toBeGreaterThan(0);
+    expect(resolveStep.if, "Falta if FULL en la adquisición observada.").toBeDefined();
+    expect(normalizeExpression(expressionBody(resolveStep.if ?? ""))).toBe(normalizeExpression(FULL_EXPRESSION));
+    expect(resolveStep.raw).toContain(OBSERVED_TARBALL_ENV);
+    expect(resolveStep.raw).toContain(OBSERVED_CANDIDATE_ENV);
+    expect(resolveStep.run).toBe(OBSERVED_RUN);
+    expect(resolveStep.raw).not.toContain("curl --fail");
+    expect(resolveStep.raw).not.toContain("PI_TARBALL_URL");
+    expect(resolveStep.raw).not.toContain("PI_TARBALL_BYTES");
+    expect(resolveStep.raw).not.toContain("GITHUB_OUTPUT");
+    expectInOrder(workflow, ["pnpm build", OBSERVED_RUN, CONTRACT_RUN]);
   });
 
-  it("diagnostica y limpia un artefacto Pi cuyo tamaño no coincide con el output validado", () => {
+  it("el contrato consume ambos observados y precede a la suite completa", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
     const [job] = jobs;
-    const downloadStep = (job?.steps ?? []).find((step) => step.name === "Download the exact JorgeX Pi artifact");
+    const contractStep = (job?.steps ?? []).find((step) => (step.run ?? "").includes("tests/pi-cross-repo-contract.test.ts"));
 
-    expect(downloadStep, "Falta el paso de descarga del artefacto Pi.").toBeDefined();
-    if (downloadStep === undefined) throw new Error("Falta el paso de descarga del artefacto Pi.");
+    expect(contractStep, "Falta el paso de contrato del artefacto Pi.").toBeDefined();
+    if (contractStep === undefined) throw new Error("Falta el paso de contrato del artefacto Pi.");
 
-    const script = extractRunScript(downloadStep);
-    const invalidSizeBranch = [
-      'actual_bytes="$(wc -c < "$tarball")"',
-      'if [[ "$actual_bytes" -ne "$PI_TARBALL_BYTES" ]]; then',
-      'echo "JorgeX Pi artifact size mismatch: expected=$PI_TARBALL_BYTES received=$actual_bytes" >&2',
-      'rm -f -- "$tarball"',
-      "exit 1",
-    ];
-
-    expectInOrder(script, invalidSizeBranch);
-    expectInOrder(workflow, [...invalidSizeBranch, "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts"]);
+    expect(contractStep.if, "Falta if FULL en el contrato Pi.").toBeDefined();
+    expect(normalizeExpression(expressionBody(contractStep.if ?? ""))).toBe(normalizeExpression(FULL_EXPRESSION));
+    expect(contractStep.raw).toContain(OBSERVED_TARBALL_ENV);
+    expect(contractStep.raw).toContain(OBSERVED_CANDIDATE_ENV);
+    expect(contractStep.run).toBe(CONTRACT_RUN);
+    expectInOrder(workflow, [OBSERVED_RUN, CONTRACT_RUN, "pnpm test"]);
   });
   it("desactiva la caché automática de setup-node y conserva la caché pnpm explícita", () => {
     const workflow = readWorkflow();
@@ -521,14 +512,15 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     const gateCommands = [
       "pnpm install --frozen-lockfile",
       "pnpm typecheck",
-      "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts",
-      "pnpm test",
       "pnpm build",
+      OBSERVED_RUN,
+      CONTRACT_RUN,
+      "pnpm test",
     ];
     const scalarRuns = (job?.steps ?? [])
       .map((step) => step.run)
       .filter((run): run is string => run !== undefined && run !== "|");
-    const gateRunPrefix = /^pnpm (?:install|typecheck|exec vitest run tests\/pi-cross-repo-contract\.test\.ts|test|build)\b/;
+    const gateRunPrefix = /^(?:pnpm (?:install|typecheck|exec vitest run tests\/pi-cross-repo-contract\.test\.ts|test|build)\b|node dist\/pi-ci-artifact\.js\b)/;
     expect(scalarRuns.filter((run) => gateRunPrefix.test(run))).toEqual(gateCommands);
 
     if (identityStep === undefined) {

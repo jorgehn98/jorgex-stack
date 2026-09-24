@@ -114,9 +114,25 @@ describe("Pi managed package and projection coordination", () => {
     const devtoolsPreferenceFile = "/isolated/state/devtools-mcp.json";
     const loadDevtoolsMcpPreference = vi.fn(() => false);
     const saveDevtoolsMcpPreference = vi.fn();
-    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string; reason?: string }> => {
+    // FIX (deliberate-install contract): real installs preflight first, so the
+    // fixture supplies a synthetic prepared stage and a matching receipt.
+    const SYNTHETIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTHETIC_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } };
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: SYNTHETIC_CANDIDATE,
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string; reason?: string; receipt?: unknown }> => {
       packageInputs.push(input);
-      return input.operation === "sync" ? { kind: "synced" } : { kind: "installed" };
+      if (input.operation === "sync") return { kind: "synced" };
+      return {
+        kind: "installed",
+        receipt: {
+          schemaVersion: 1,
+          state: "installed",
+          candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } },
+        },
+      };
     });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown): { kind: string; reason?: string } => {
       projectionInputs.push(input);
@@ -130,6 +146,7 @@ describe("Pi managed package and projection coordination", () => {
         pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
         contract: { capabilities: [] },
       },
+      preparePiRuntimeSystem,
       runPiRuntimeSystem,
     }));
     vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
@@ -157,7 +174,9 @@ describe("Pi managed package and projection coordination", () => {
         writingStyle: FORWARDING_STYLE,
       });
 
-      expect(result).toEqual({ kind: "installed" });
+      // The installed result now carries the authenticated receipt (new
+      // contract); the forwarding assertions below are this test's seam.
+      expect(result).toMatchObject({ kind: "installed" });
       expect(packageInputs).toEqual([expect.objectContaining({
         operation: "install",
       }), expect.objectContaining({
@@ -168,6 +187,13 @@ describe("Pi managed package and projection coordination", () => {
       expect(projectionInputs).toEqual([expect.objectContaining({
         operation: "install",
         devtoolsMcpEnabled: true,
+      }), expect.objectContaining({
+        operation: "sync",
+        devtoolsMcpEnabled: true,
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+        targetDir: undefined,
       })]);
 
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", true);
@@ -219,9 +245,27 @@ describe("Pi managed package and projection coordination", () => {
       .mockReturnValueOnce({ status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" })
       .mockReturnValueOnce({ status: "not-in-path", binPath: "/isolated/pnpm/playwright-cli", detectedVersion: null })
       .mockReturnValueOnce({ status: "absent", binPath: null, detectedVersion: null });
-    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string }> => {
+    // FIX (deliberate-install contract): see DevTools test above.
+    const SYNTHETIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTHETIC_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } };
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: SYNTHETIC_CANDIDATE,
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string; receipt?: unknown }> => {
       packageInputs.push(input);
-      return input.operation === "sync" ? { kind: "synced" } : { kind: "installed" };
+      if (input.operation === "sync") return { kind: "synced" };
+      // Only install carries a receipt: other operations keep their plain
+      // shapes so their exact assertions stay meaningful.
+      if (input.operation !== "install") return { kind: "installed" };
+      return {
+        kind: "installed",
+        receipt: {
+          schemaVersion: 1,
+          state: "installed",
+          candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } },
+        },
+      };
     });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown): { kind: string; reason?: string } => {
       projectionInputs.push(input);
@@ -235,6 +279,7 @@ describe("Pi managed package and projection coordination", () => {
         pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
         contract: { capabilities: ["playwright-handoff-v1"] },
       },
+      preparePiRuntimeSystem,
       runPiRuntimeSystem,
     }));
     vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
@@ -272,7 +317,8 @@ describe("Pi managed package and projection coordination", () => {
         effective: true,
       };
       const verifiedInput = { ...input, playwrightCapability: capability };
-      await expect(mod.runManagedPiSystem(verifiedInput)).resolves.toEqual({ kind: "installed" });
+      // Installed results now carry the authenticated receipt (new contract).
+      await expect(mod.runManagedPiSystem(verifiedInput)).resolves.toMatchObject({ kind: "installed" });
       await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toEqual({ kind: "synced" });
       await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "doctor", playwrightCapability: { ...capability, browserVerified: false, effective: false } })).resolves.toEqual({ kind: "installed" });
 
@@ -290,6 +336,13 @@ describe("Pi managed package and projection coordination", () => {
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
           playwrightCliCommand: "/isolated/bin/playwright-cli",
+          targetDir: undefined,
+        }),
+        expect.objectContaining({
+          operation: "sync",
+          playwrightCliEnabled: true,
+          playwrightHandoffEnabled: true,
+          playwrightCliCommand: "/isolated/bin/playwright-cli",
         }),
         expect.objectContaining({
           operation: "doctor",
@@ -301,7 +354,7 @@ describe("Pi managed package and projection coordination", () => {
       expect(detectPlaywrightCli).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).toHaveBeenCalledWith(playwrightPreferenceFile, true, { pi: true });
 
-      await expect(mod.runManagedPiSystem(input)).resolves.toEqual({ kind: "installed" });
+      await expect(mod.runManagedPiSystem(input)).resolves.toMatchObject({ kind: "installed" });
       expect(projectionInputs.at(-1)).toEqual(expect.objectContaining({
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: false,
@@ -347,9 +400,27 @@ describe("Pi managed package and projection coordination", () => {
       binPath: "/isolated/bin/playwright-cli",
       detectedVersion: "0.1.18",
     }));
-    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string }> => {
+    // FIX (deliberate-install contract): the no-targetDir case preflights
+    // first, so the fixture supplies a synthetic prepared stage and receipt.
+    // The targetDir case skips preflight; the shared fake stays harmless
+    // there because the wrapper only authenticates receipts with a candidate.
+    const SYNTHETIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTHETIC_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } };
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: SYNTHETIC_CANDIDATE,
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }): Promise<{ kind: string; receipt?: unknown }> => {
       packageInputs.push(input);
-      return input.operation === "sync" ? { kind: "synced" } : { kind: "installed" };
+      if (input.operation === "sync") return { kind: "synced" };
+      return {
+        kind: "installed",
+        receipt: {
+          schemaVersion: 1,
+          state: "installed",
+          candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } },
+        },
+      };
     });
     const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
       projectionInputs.push(input);
@@ -363,6 +434,7 @@ describe("Pi managed package and projection coordination", () => {
         pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
         contract: { capabilities: [] },
       },
+      preparePiRuntimeSystem,
       runPiRuntimeSystem,
     }));
     vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
@@ -392,7 +464,8 @@ describe("Pi managed package and projection coordination", () => {
         engramBin: "/isolated/bin/engram",
         playwrightCliEnabled: true,
         writingStyle: FORWARDING_STYLE,
-      })).resolves.toEqual({ kind: "installed" });
+      // Installed results now carry the authenticated receipt (new contract).
+      })).resolves.toMatchObject({ kind: "installed" });
 
       expect(packageInputs[0]).not.toHaveProperty("playwrightCliEnabled");
       expect(projectionInputs[0]).toEqual(expect.objectContaining({
@@ -472,6 +545,13 @@ describe("Pi managed package and projection coordination", () => {
       expect(loadPlaywrightCliPreference).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
       expect(projectionInputs).toEqual([expect.objectContaining({
+        operation: "install",
+        targetDir: "/isolated/target",
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: false,
+        playwrightCliCommand: null,
+      }), expect.objectContaining({
+        operation: "sync",
         targetDir: "/isolated/target",
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: false,
@@ -486,9 +566,24 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
-  it.each(["install", "sync", "models", "doctor", "uninstall", "update"] as const)(
-    "blocks %s before package, projection, detection, or preference persistence for an untested Pi version",
-    async (operation) => {
+  // FIX (deliberate-install contract): install preflights before the host
+  // gate and a prepared stage bypasses it by design. Deliberate update also
+  // preflights (old receipt gate) before any static allowlist, so this gate
+  // test owns update via preflight. Models now hands off to the
+  // receipt-authenticated package run (T07 offline gate); install is owned
+  // by the deliberate-install tests; sync reaches the package layer by
+  // design (ownership seam test below).
+  it(
+    "blocks update before package, projection, detection, or preference persistence for an untested Pi version",
+    async () => {
+      // Mocked preflight: no network/HOME, isolated synthetic only. Update
+      // with no old receipt blocks here (old gate) instead of the static
+      // allowlist.
+      const preparePiRuntimeSystem = vi.fn(async (_input: unknown) => ({
+        kind: "blocked" as const,
+        reason: "receipt-untrusted",
+        remedy: "No old managed receipt for update; preflight blocked without network.",
+      }));
       const runPiRuntimeSystem = vi.fn(async () => ({ kind: "installed" as const }));
       const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
       const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
@@ -501,6 +596,332 @@ describe("Pi managed package and projection coordination", () => {
       const resolvePnpmBin = vi.fn(() => "/isolated/bin/pnpm");
       const loadPlaywrightCliPreference = vi.fn(() => true);
       const loadDevtoolsMcpPreference = vi.fn(() => true);
+      const savePlaywrightCliPreference = vi.fn();
+      const saveDevtoolsMcpPreference = vi.fn();
+
+      vi.resetModules();
+      vi.doMock("../src/lib/pi-runtime.js", () => ({
+        PI_RUNTIME_CANDIDATE: {
+          package: { source: "npm:jorgex-pi@test" },
+          pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+          contract: { capabilities: ["playwright-handoff-v1"] },
+        },
+        preparePiRuntimeSystem,
+        runPiRuntimeSystem,
+      }));
+      vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+        runPiProjectionLifecycleSystem,
+        preparePiProjectionUninstallSystem,
+        completePiProjectionUninstallSystem,
+      }));
+      vi.doMock("../src/lib/tool-preferences.js", () => ({
+        loadPlaywrightCliPreference,
+        playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+        savePlaywrightCliPreference,
+        devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+        loadDevtoolsMcpPreference,
+        saveDevtoolsMcpPreference,
+      }));
+      vi.doMock("../src/lib/external-tools.js", () => ({
+        detectPlaywrightCli,
+        resolvePnpmBin,
+      }));
+
+      try {
+        const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+        const result = await mod.runManagedPiSystem({
+          operation: "update",
+          detected: { executable: "/opt/pi/bin/pi", version: "99.0.0" },
+          engramBin: "/isolated/bin/engram",
+          devtoolsMcpEnabled: true,
+          playwrightCliEnabled: true,
+        });
+
+        // Deliberate update: real preflight branch, no static host gate
+        // first and no unverified fallback. Blocked old gate (no old
+        // receipt) returns its reason with no package/projection.
+        expect(preparePiRuntimeSystem).toHaveBeenCalledTimes(1);
+        expect(preparePiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "update" }));
+        expect(result).toMatchObject({ kind: "blocked", reason: "receipt-untrusted" });
+        expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+        expect(runPiRuntimeSystem).not.toHaveBeenCalled();
+        expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+        expect(preparePiProjectionUninstallSystem).not.toHaveBeenCalled();
+        expect(completePiProjectionUninstallSystem).not.toHaveBeenCalled();
+        expect(detectPlaywrightCli).not.toHaveBeenCalled();
+        expect(resolvePnpmBin).not.toHaveBeenCalled();
+        expect(loadPlaywrightCliPreference).not.toHaveBeenCalled();
+        expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
+        expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+        expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+      } finally {
+        vi.doUnmock("../src/lib/pi-runtime.js");
+        vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+        vi.doUnmock("../src/lib/tool-preferences.js");
+        vi.doUnmock("../src/lib/external-tools.js");
+        vi.resetModules();
+      }
+    },
+  );
+
+  // T07-RED (models handoff): models on a new host must hand off to the
+  // receipt-authenticated package run instead of the static host allowlist.
+  // The mocked package stands in for a valid fake receipt (controlled here);
+  // an arbitrary host is NOT compatible by itself — the authenticated
+  // receipt + actual runner remains the gate inside runPiRuntimeSystem
+  // (offline managed models). No projection/preflight/Engram setup: models
+  // never projects and never preflights.
+  it("hands off models on a new host to the receipt-authenticated package run", async () => {
+    const MODELS_RESULT = {
+      kind: "models" as const,
+      models: { mode: "inherit-session" as const, tiers: ["strong", "standard", "cheap"] as ["strong", "standard", "cheap"] },
+    };
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      expect(input.operation).toBe("models");
+      return MODELS_RESULT;
+    });
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      const result = await mod.runManagedPiSystem({
+        operation: "models",
+        detected: { executable: "/opt/pi/bin/pi", version: "99.0.0" },
+        engramBin: "/isolated/bin/engram",
+      });
+
+      expect(result).toEqual(MODELS_RESULT);
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "models" }));
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+      expect(preparePiProjectionUninstallSystem).not.toHaveBeenCalled();
+      expect(completePiProjectionUninstallSystem).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T07-RED (models negative): a blocked package models result surfaces
+  // unchanged on a new host — no static unsupported-pi-version block. Same
+  // isolation as the positive: mock package controlled, no
+  // projection/preflight/Engram setup; the package offline gate owns auth.
+  it("reports a blocked package models result unchanged without a static host block", async () => {
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      expect(input.operation).toBe("models");
+      return { kind: "blocked" as const, reason: "receipt-untrusted" };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      const result = await mod.runManagedPiSystem({
+        operation: "models",
+        detected: { executable: "/opt/pi/bin/pi", version: "99.0.0" },
+        engramBin: "/isolated/bin/engram",
+      });
+
+      expect(result).toMatchObject({ kind: "blocked", reason: "receipt-untrusted" });
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+      expect(preparePiProjectionUninstallSystem).not.toHaveBeenCalled();
+      expect(completePiProjectionUninstallSystem).not.toHaveBeenCalled();
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05 ownership seam: sync intentionally bypasses the static host gate so
+  // a verified schema1 managed receipt can run on newer hosts. An untrusted
+  // host99 with no receipt is therefore blocked at the package layer — not
+  // by the allowlist — and the wrapper surfaces the package verdict without
+  // projecting or persisting preferences.
+  it("blocks sync on untrusted host99 at the package layer without projecting or persisting", async () => {
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      expect(input.operation).toBe("sync");
+      return { kind: "blocked" as const, reason: "receipt-untrusted" };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const detectPlaywrightCli = vi.fn(() => ({
+      status: "current" as const,
+      binPath: "/isolated/bin/playwright-cli",
+      detectedVersion: "0.1.18",
+    }));
+    const resolvePnpmBin = vi.fn(() => "/isolated/bin/pnpm");
+    const loadPlaywrightCliPreference = vi.fn(() => true);
+    const loadDevtoolsMcpPreference = vi.fn(() => true);
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference,
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference,
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli,
+      resolvePnpmBin,
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+      const result = await mod.runManagedPiSystem({
+        operation: "sync",
+        detected: { executable: "/opt/pi/bin/pi", version: "99.0.0" },
+        engramBin: "/isolated/bin/engram",
+        devtoolsMcpEnabled: true,
+        playwrightCliEnabled: true,
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(result).toMatchObject({ kind: "blocked", reason: "receipt-untrusted" });
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+      expect(preparePiProjectionUninstallSystem).not.toHaveBeenCalled();
+      expect(completePiProjectionUninstallSystem).not.toHaveBeenCalled();
+      expect(detectPlaywrightCli).not.toHaveBeenCalled();
+      // NOTE: loadPlaywrightCliPreference IS consulted eagerly by the
+      // wrapper even with an explicit flag (persistedPlaywright is not
+      // short-circuited); only persistence and projection must not happen.
+      // loadDevtoolsMcpPreference stays short-circuited by ?? on explicit.
+      expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED: recovery (doctor/uninstall) on the observed Pi 0.87.1 host must
+  // reach the receipt-aware package run instead of the obsolete global gate.
+  // The mocked package stands in for ownership validation (owned → success,
+  // foreign → receipt-untrusted); real ownership stays pinned by pi-package-operations tests.
+  it.each([
+    ["owned doctor", "doctor", { kind: "healthy" }, { kind: "healthy" }],
+    ["owned uninstall", "uninstall", { kind: "uninstalled" }, { kind: "uninstalled" }],
+    ["foreign doctor", "doctor", { kind: "blocked", reason: "receipt-untrusted" }, { kind: "blocked", reason: "receipt-untrusted" }],
+    ["foreign uninstall", "uninstall", { kind: "blocked", reason: "receipt-untrusted" }, { kind: "blocked", reason: "receipt-untrusted" }],
+  ] as const)(
+    "passes %s on the observed Pi 0.87.1 host through to the receipt-aware package run",
+    async (_label, operation, packageResult, expected) => {
+      const runPiRuntimeSystem = vi.fn(async () => packageResult);
+      const runPiProjectionLifecycleSystem = vi.fn((input: { operation: string }) =>
+        input.operation === "doctor" ? { kind: "healthy" as const } : { kind: "uninstalled" as const },
+      );
+      const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+      const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+      const detectPlaywrightCli = vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      }));
+      const resolvePnpmBin = vi.fn(() => "/isolated/bin/pnpm");
+      const loadPlaywrightCliPreference = vi.fn(() => false);
+      const loadDevtoolsMcpPreference = vi.fn(() => false);
       const savePlaywrightCliPreference = vi.fn();
       const saveDevtoolsMcpPreference = vi.fn();
 
@@ -535,28 +956,14 @@ describe("Pi managed package and projection coordination", () => {
         const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
         const result = await mod.runManagedPiSystem({
           operation,
-          detected: { executable: "/opt/pi/bin/pi", version: "99.0.0" },
+          detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
           engramBin: "/isolated/bin/engram",
-          devtoolsMcpEnabled: true,
-          playwrightCliEnabled: true,
+          writingStyle: FORWARDING_STYLE,
         });
 
-        expect(result).toMatchObject({
-          kind: "blocked",
-          reason: "unsupported-pi-version",
-          remedy: expect.stringContaining("99.0.0"),
-        });
-        expect(result).toMatchObject({ remedy: expect.stringContaining("0.84.2") });
-        expect(runPiRuntimeSystem).not.toHaveBeenCalled();
-        expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
-        expect(preparePiProjectionUninstallSystem).not.toHaveBeenCalled();
-        expect(completePiProjectionUninstallSystem).not.toHaveBeenCalled();
-        expect(detectPlaywrightCli).not.toHaveBeenCalled();
-        expect(resolvePnpmBin).not.toHaveBeenCalled();
-        expect(loadPlaywrightCliPreference).not.toHaveBeenCalled();
-        expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
-        expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
-        expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+        expect(result).toEqual(expected);
+        expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+        expect(runPiRuntimeSystem).toHaveBeenCalled();
       } finally {
         vi.doUnmock("../src/lib/pi-runtime.js");
         vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
@@ -566,6 +973,962 @@ describe("Pi managed package and projection coordination", () => {
       }
     },
   );
+
+  // T05-RED: stage-verified install on the observed Pi 0.87.1 host must reach
+  // the package (stage smoke owns compatibility) and project the dynamic
+  // receipt-authenticated source, not the static candidate. Keeps the
+  // untested host99 activation block untouched until stage is verified.
+  it("allows stage-verified install on Pi 0.87.1 and projects the dynamic authenticated source", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    // Mocked stage seam: isolated stage+smoke already produced the
+    // provider-selected synthetic candidate; the package fake below only
+    // authenticates when that staged candidate reaches it.
+    const stageSeam = vi.fn(() => ({
+      candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } },
+    }));
+    const staged = stageSeam();
+    const projectionInputs: unknown[] = [];
+    const runPiRuntimeSystem = vi.fn(
+      async (input: { operation: string; candidate?: { package?: { source?: string } } }) => {
+        if (input.operation === "sync") return { kind: "synced" as const };
+        if (input.operation !== "install") return { kind: "blocked" as const, reason: "unexpected-operation" };
+        if (input.candidate?.package?.source !== DYNAMIC_SOURCE) {
+          return { kind: "blocked" as const, reason: "candidate-missing" };
+        }
+        return {
+          kind: "installed" as const,
+          receipt: {
+            schemaVersion: 1,
+            state: "installed",
+            candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } },
+          },
+        };
+      },
+    );
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "installed" as const };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+        candidate: (staged as { candidate: unknown }).candidate,
+      });
+
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "install",
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+        }),
+      );
+      expect(result).toMatchObject({ kind: "installed" });
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalled();
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED (negative): install must authenticate the installed receipt
+  // against the staged input candidate before projecting. Input candidate A
+  // vs installed receipt B (e.g. cache race) must fail closed BEFORE
+  // projection, without persisting Playwright/DevTools preferences and
+  // without falling back to the static pin. Uses the tested host 0.84.2 so
+  // the obsolete global gate cannot mask the mismatch (0.87.1 would block
+  // first for the wrong reason); host99 controls stay untouched.
+  it("fails closed before projection when the installed receipt source mismatches the staged candidate", async () => {
+    const CANDIDATE_SOURCE_A = "npm:jorgex-pi@9.9.8";
+    const RECEIPT_SOURCE_B = "npm:jorgex-pi@9.9.9";
+    const runPiRuntimeSystem = vi.fn(
+      async (input: { operation: string; candidate?: { package?: { source?: string } } }) => {
+        if (input.operation === "sync") return { kind: "synced" as const };
+        if (input.operation !== "install") return { kind: "blocked" as const, reason: "unexpected-operation" };
+        return {
+          kind: "installed" as const,
+          receipt: {
+            schemaVersion: 1,
+            state: "installed",
+            candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: RECEIPT_SOURCE_B } },
+          },
+        };
+      },
+    );
+    const runPiProjectionLifecycleSystem = vi.fn((_input: unknown) => ({ kind: "installed" as const }));
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+        devtoolsMcpEnabled: true,
+        playwrightCliEnabled: true,
+        candidate: { package: { name: "jorgex-pi", version: "9.9.8", source: CANDIDATE_SOURCE_A } },
+      });
+
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(JSON.stringify(result)).not.toMatch(/npm:jorgex-pi@test/);
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "install",
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: CANDIDATE_SOURCE_A }),
+          }),
+        }),
+      );
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED (sync): sync must project the authenticated packageSource from
+  // the new runPiPackageManagedSync result, not the static candidate.
+  // Blocked packages never reach projection (covered by "does not project
+  // when package %s is blocked"); this is the positive threading case only.
+  // Uses the tested host 0.84.2 so the global host gate cannot mask the
+  // wiring; no candidate injection on sync.
+  it("projects the authenticated sync packageSource instead of the static candidate", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const projectionInputs: unknown[] = [];
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation !== "sync") return { kind: "blocked" as const, reason: "unexpected-operation" };
+      return { kind: "synced" as const, actions: [], packageSource: DYNAMIC_SOURCE };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "synced" as const, changed: false };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "sync",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(result).toMatchObject({ kind: "synced" });
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(1);
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+      expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED (bug regression): a real isolated Pi install succeeds, but sync
+  // on the observed Pi 0.87.1 host is rejected by the global testedVersions
+  // gate before the package layer runs. Sync must reach the package and
+  // project the authenticated packageSource, as on the tested host. No
+  // candidate injection on sync; host99 controls stay untouched.
+  it("allows sync on Pi 0.87.1 and projects the authenticated packageSource", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const projectionInputs: unknown[] = [];
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation !== "sync") return { kind: "blocked" as const, reason: "unexpected-operation" };
+      return { kind: "synced" as const, actions: [], packageSource: DYNAMIC_SOURCE };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "synced" as const, changed: false };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "sync",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(result).toMatchObject({ kind: "synced" });
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(1);
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T07-RED (managed update): update on the observed Pi 0.87.1 host with a
+  // fully prepared synthetic candidate+prepared must bypass the obsolete host
+  // allowlist, forward operation:'update' to the package, require the package
+  // updated receipt, and reconcile via package:update → projection:sync →
+  // package:sync → projection:sync with the receipt-authenticated
+  // packageSource. No Pi setup nor preflight since the stage is supplied;
+  // without candidate+prepared the host gate must still block (covered by the
+  // models/update gate test) with no network asserted here.
+  it("allows prepared update on Pi 0.87.1 and projects the authenticated packageSource", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTH_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } };
+    const SYNTH_PREPARED = { stageDir: "/isolated/pi-stage" };
+    const packageInputs: unknown[] = [];
+    const projectionInputs: unknown[] = [];
+    const preparePiRuntimeSystem = vi.fn(async () => {
+      throw new Error("update with supplied stage must not run preflight");
+    });
+    const runPiRuntimeSystem = vi.fn(
+      async (input: { operation: string; candidate?: { package?: { source?: string } }; prepared?: unknown }) => {
+        packageInputs.push(input);
+        if (input.operation === "sync") return { kind: "synced" as const, packageSource: DYNAMIC_SOURCE };
+        if (input.operation !== "update") return { kind: "blocked" as const, reason: "unexpected-operation" };
+        if (input.candidate?.package?.source !== DYNAMIC_SOURCE || input.prepared === undefined) {
+          return { kind: "blocked" as const, reason: "candidate-missing" };
+        }
+        return {
+          kind: "updated" as const,
+          receipt: {
+            schemaVersion: 1,
+            state: "installed",
+            candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } },
+          },
+        };
+      },
+    );
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "synced" as const, changed: false };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "update",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+        candidate: SYNTH_CANDIDATE,
+        prepared: SYNTH_PREPARED,
+      });
+
+      expect(preparePiRuntimeSystem).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version/);
+      expect(result).toMatchObject({ kind: "updated" });
+      // Changed-candidate update reconciles via package:update →
+      // projection:sync → package:sync → projection:sync.
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(2);
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          operation: "update",
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+          prepared: SYNTH_PREPARED,
+        }),
+      );
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ operation: "sync" }),
+      );
+      expect(packageInputs[1]).toEqual(
+        expect.objectContaining({
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+        }),
+      );
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(2);
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }));
+      expect(projectionInputs[1]).toEqual(expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }));
+      expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect((projectionInputs[1] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T07-RED (deliberate update): the real CLI never passes a caller stage for
+  // update, so runManagedPiSystem on Pi 0.87.1 with no candidate/prepared must
+  // await the mocked preparePiRuntimeSystem preflight FIRST (operation update,
+  // isolated synthetic 9.9.9 test-only, no network/HOME), then call the
+  // package with exactly that {candidate, prepared} and reconcile via
+  // package:update → projection:sync → package:sync → projection:sync with the
+  // exact updated receipt source — never the static candidate. No static host
+  // gate first and no unverified fallback. Blocked old gate (no old receipt)
+  // is owned by the models/update gate test above: preflight reason with no
+  // package/projection.
+  it("deliberate update without caller stage prepares first, updates with proof, and projects the authenticated source", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTH_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } };
+    const SYNTH_PREPARED = { stageDir: "/isolated/pi-stage" };
+    const packageInputs: unknown[] = [];
+    const projectionInputs: unknown[] = [];
+    const preparePiRuntimeSystem = vi.fn(async (_input: unknown) => ({
+      candidate: SYNTH_CANDIDATE,
+      prepared: SYNTH_PREPARED,
+    }));
+    const runPiRuntimeSystem = vi.fn(
+      async (input: { operation: string; candidate?: { package?: { source?: string } }; prepared?: unknown }) => {
+        packageInputs.push(input);
+        if (input.operation === "sync") return { kind: "synced" as const, packageSource: DYNAMIC_SOURCE };
+        if (input.operation !== "update") return { kind: "blocked" as const, reason: "unexpected-operation" };
+        if (input.candidate?.package?.source !== DYNAMIC_SOURCE || input.prepared === undefined) {
+          return { kind: "blocked" as const, reason: "candidate-missing" };
+        }
+        return {
+          kind: "updated" as const,
+          receipt: {
+            schemaVersion: 1,
+            state: "installed",
+            candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } },
+          },
+        };
+      },
+    );
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "synced" as const, changed: false };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "update",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(preparePiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(preparePiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "update" }));
+      // Changed-candidate update reconciles via package:update →
+      // projection:sync → package:sync → projection:sync.
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(2);
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          operation: "update",
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+          prepared: SYNTH_PREPARED,
+        }),
+      );
+      expect(runPiRuntimeSystem).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ operation: "sync" }),
+      );
+      expect(packageInputs[1]).toEqual(
+        expect.objectContaining({
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+        }),
+      );
+      expect(preparePiRuntimeSystem.mock.invocationCallOrder[0]).toBeLessThan(
+        runPiRuntimeSystem.mock.invocationCallOrder[0]!,
+      );
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version|candidate-missing/);
+      expect(result).toMatchObject({ kind: "updated" });
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(2);
+      expect(projectionInputs[0]).toEqual(
+        expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }),
+      );
+      expect(projectionInputs[1]).toEqual(
+        expect.objectContaining({ operation: "sync", packageSource: DYNAMIC_SOURCE }),
+      );
+      expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect((projectionInputs[1] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED (bug regression): doctor on Pi 0.87.1 reaches the package (the
+  // host gate exempts doctor) but projects the static candidate source, so
+  // a healthy managed install reports projection-drift. Doctor must project
+  // the authenticated package source from the package result instead.
+  it("projects the authenticated doctor packageSource instead of the static candidate", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const projectionInputs: unknown[] = [];
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation !== "doctor") return { kind: "blocked" as const, reason: "unexpected-operation" };
+      return { kind: "healthy" as const, packageSource: DYNAMIC_SOURCE };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "healthy" as const };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "doctor",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(result).toMatchObject({ kind: "healthy" });
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(1);
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+      expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED (deliberate install): the real CLI (src/cli.ts) never passes a
+  // caller-supplied candidate, so runManagedPiSystem on install must await
+  // the mocked preparePiRuntimeSystem preflight (exact provider artifact +
+  // isolated native Pi stage, synthetic 9.9.9 test-only), then call the
+  // package with {candidate, prepared} and project the authenticated
+  // installed receipt source — never the static candidate. No FS/HOME/net.
+  it("deliberate install without caller candidate prepares, installs with proof, and projects the authenticated source", async () => {
+    const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTH_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } };
+    const SYNTH_PREPARED = { stageDir: "/isolated/pi-stage" };
+    const projectionInputs: unknown[] = [];
+    const preparePiRuntimeSystem = vi.fn(async (_input: unknown) => ({
+      candidate: SYNTH_CANDIDATE,
+      prepared: SYNTH_PREPARED,
+    }));
+    const runPiRuntimeSystem = vi.fn(
+      async (input: { operation: string; candidate?: { package?: { source?: string } }; prepared?: unknown }) => {
+        if (input.operation === "sync") return { kind: "synced" as const };
+        if (input.operation !== "install") return { kind: "blocked" as const, reason: "unexpected-operation" };
+        if (input.candidate?.package?.source !== DYNAMIC_SOURCE || input.prepared === undefined) {
+          return { kind: "blocked" as const, reason: "candidate-missing" };
+        }
+        return {
+          kind: "installed" as const,
+          receipt: {
+            schemaVersion: 1,
+            state: "installed",
+            candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } },
+          },
+        };
+      },
+    );
+    const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+      projectionInputs.push(input);
+      return { kind: "installed" as const };
+    });
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(preparePiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(preparePiRuntimeSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "install" }));
+      expect(runPiRuntimeSystem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "install",
+          candidate: expect.objectContaining({
+            package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+          }),
+          prepared: SYNTH_PREPARED,
+        }),
+      );
+      expect(JSON.stringify(result)).not.toMatch(/unsupported-pi-version|candidate-missing/);
+      expect(result).toMatchObject({ kind: "installed" });
+      expect(runPiProjectionLifecycleSystem).toHaveBeenCalled();
+      expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05-RED (negative): a blocked or throwing preflight must fail closed
+  // before package install, projection, and preference persistence.
+  const PREFLIGHT_FAILURES: Array<[string, { kind: "blocked"; reason: string } | Error]> = [
+    ["blocked preflight", { kind: "blocked", reason: "preflight-unavailable" }],
+    ["throwing preflight", new Error("preflight exploded")],
+  ];
+  it.each(PREFLIGHT_FAILURES)("does not install, project, or persist preferences on %s", async (_label, outcome) => {
+    const preparePiRuntimeSystem = vi.fn(async (_input: unknown) => {
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    });
+    const runPiRuntimeSystem = vi.fn(async () => ({ kind: "installed" as const }));
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+    const savePlaywrightCliPreference = vi.fn();
+    const saveDevtoolsMcpPreference = vi.fn();
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference,
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference,
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+        devtoolsMcpEnabled: true,
+        playwrightCliEnabled: true,
+      });
+
+      expect(preparePiRuntimeSystem).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(runPiRuntimeSystem).not.toHaveBeenCalled();
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).not.toHaveBeenCalled();
+      expect(savePlaywrightCliPreference).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
+
+  // T05 guard (targetDir, distinct rule): install with targetDir must block
+  // without preflight network and without projection. Tested host 0.84.2
+  // isolates the targetDir rule from the host gate. Green before (via
+  // install gates) and after (via the targetDir rule); locks the invariant
+  // for GREEN rather than proving new wiring.
+  it("blocks targetDir install without preflight network or projection", async () => {
+    const preparePiRuntimeSystem = vi.fn(async (_input: unknown) => ({
+      candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" } },
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation === "install") return { kind: "blocked" as const, reason: "candidate-missing" };
+      return { kind: "blocked" as const, reason: "unexpected-operation" };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+    const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+    const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: ["playwright-handoff-v1"] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem,
+      completePiProjectionUninstallSystem,
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      detectPlaywrightCli: vi.fn(() => ({
+        status: "current" as const,
+        binPath: "/isolated/bin/playwright-cli",
+        detectedVersion: "0.1.18",
+      })),
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        targetDir: "/isolated/target",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(preparePiRuntimeSystem).not.toHaveBeenCalled();
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+    }
+  });
 
   it.each([
     ["models", "models", undefined],
@@ -593,8 +1956,10 @@ describe("Pi managed package and projection coordination", () => {
     expect(trace).toEqual(projectionOperation === undefined
       ? [`package:${packageOperation}`]
       : operation === "install"
-        ? ["package:install", "projection:install", "package:sync"]
-        : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
+        ? ["package:install", "projection:install", "package:sync", "projection:sync"]
+        : operation === "update"
+          ? ["package:update", "projection:sync", "package:sync", "projection:sync"]
+          : [`package:${packageOperation}`, `projection:${projectionOperation}`]);
   });
 
   it("blocks doctor on projection drift while preserving diagnostic paths and remedy", async () => {
@@ -952,9 +2317,26 @@ describe("Pi managed install post-projection initialization", () => {
   });
 
   it("requires preserving --target-dir when initialization sync is blocked under targetDir", async () => {
+    // FIX (deliberate-install contract): the real (non-targetDir) install
+    // preflights first, so the fixture supplies a synthetic prepared stage
+    // and a matching receipt. The targetDir call skips preflight; the
+    // shared receipt is harmless there (no candidate to authenticate).
+    const SYNTHETIC_SOURCE = "npm:jorgex-pi@9.9.9";
+    const SYNTHETIC_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } };
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: SYNTHETIC_CANDIDATE,
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
     const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
       if (input.operation === "sync") return { kind: "blocked" as const, reason: "runner-unhealthy" };
-      return { kind: "installed" as const };
+      return {
+        kind: "installed" as const,
+        receipt: {
+          schemaVersion: 1,
+          state: "installed",
+          candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: SYNTHETIC_SOURCE } },
+        },
+      };
     });
     const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
 
@@ -965,6 +2347,7 @@ describe("Pi managed install post-projection initialization", () => {
         pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
         contract: { capabilities: [] },
       },
+      preparePiRuntimeSystem,
       runPiRuntimeSystem,
     }));
     vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
@@ -1042,6 +2425,85 @@ describe("Pi managed install post-projection initialization", () => {
 
     expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
     expect(result.kind).toBe("blocked");
+  });
+
+  // Live repro: isolated `install --agents pi` reports installed but immediate
+  // `doctor --agents pi` reports `projection-drift settings.json`; an explicit
+  // `sync --agents pi` then heals doctor. Hypothesis: install order
+  // package:install → projection:install → package:sync leaves the projection
+  // stale after the final runner sync mutates settings/receipt. Install must
+  // reconcile with a final projection:sync only after package sync succeeds,
+  // so install returns installed AND immediate doctor stays healthy without a
+  // user extra sync. Failure semantics unchanged: no final projection sync
+  // when package sync fails (covered above).
+  it("reconciles package sync settings mutation with a final projection sync so immediate doctor stays healthy", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+    let projectionDirty = false;
+
+    const deps = withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "install") return { kind: "installed" };
+        if (next === "sync") {
+          projectionDirty = true;
+          return { kind: "synced" };
+        }
+        if (next === "doctor") return { kind: "healthy" };
+        throw new Error(`unexpected package operation: ${next}`);
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        if (next === "sync") {
+          projectionDirty = false;
+          return { kind: "synced", changed: true };
+        }
+        if (next === "doctor") {
+          if (projectionDirty) {
+            return {
+              kind: "drift",
+              paths: ["settings.json"],
+              remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            };
+          }
+          return { kind: "healthy" };
+        }
+        return projectionSuccess(next);
+      },
+    });
+
+    const installResult = await runManagedPiOperation("install", deps);
+    expect(installResult).toEqual({ kind: "installed" });
+    expect(trace).toEqual([
+      "package:install",
+      "projection:install",
+      "package:sync",
+      "projection:sync",
+    ]);
+
+    const doctorTrace: string[] = [];
+    const doctorDeps = withUninstallLifecycle({
+      async runPackage(next) {
+        doctorTrace.push(`package:${next}`);
+        return { kind: "healthy" };
+      },
+      async runProjection(next) {
+        doctorTrace.push(`projection:${next}`);
+        if (projectionDirty) {
+          return {
+            kind: "drift",
+            paths: ["settings.json"],
+            remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+          };
+        }
+        return { kind: "healthy" };
+      },
+    });
+    // Immediate doctor observes the reconciled projection without a user extra
+    // sync: shared dirty flag proves the final projection:sync cleared it.
+    const doctorResult = await runManagedPiOperation("doctor", doctorDeps);
+    expect(doctorResult).toEqual({ kind: "healthy" });
+    expect(doctorTrace).toEqual(["package:doctor", "projection:doctor"]);
   });
 });
 
@@ -1132,7 +2594,7 @@ describe("Pi managed install with provisional initialization diagnostics", () =>
       },
     });
 
-    expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
+    expect(trace).toEqual(["package:install", "projection:install", "package:sync", "projection:sync"]);
     expect(result).toEqual({ kind: "installed" });
   });
 });
@@ -1454,7 +2916,45 @@ describe("[T50-RED] managed Pi fuera de HOME con frontera de restore", () => {
     process.env.PI_CODING_AGENT_DIR = outsideAgentDir;
     process.env.HOME = home;
     process.env.USERPROFILE = home;
+    // FIX (deliberate-install contract): real installs preflight first. The
+    // fixture mocks only the preflight with a synthetic prepared stage that
+    // satisfies the prepared-proof (candidate/artifact/release/evidence),
+    // while the REAL package runtime still runs so the official-setup
+    // destination boundary outside HOME is genuinely exercised. No network:
+    // the mock never fetches and the stage dir is never touched.
+    const T50_SHA256 = "a".repeat(64);
+    const T50_SHA512 = "b".repeat(128);
+    const T50_CANDIDATE = {
+      package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" },
+      tarball: { bytes: 99, sha256: T50_SHA256, sha512: T50_SHA512 },
+      provenance: { commit: "c".repeat(40) },
+    };
+    const T50_PREPARED = {
+      candidate: T50_CANDIDATE,
+      artifact: { path: "/isolated/downloads/jorgex-pi-9.9.9.tgz", bytes: 99, sha256: T50_SHA256, sha512: T50_SHA512 },
+      release: {
+        version: "9.9.9",
+        tarballUrl: "https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-9.9.9.tgz",
+        integrity: `sha512-${Buffer.from(T50_SHA512, "hex").toString("base64")}`,
+      },
+      stageDir: `/isolated/stage-${"d".repeat(32)}/pi-agent`,
+      evidence: {
+        lockSha256: "e".repeat(64),
+        treeSha256: "f".repeat(64),
+        dependencies: ["one", "two", "three", "four", "five", "six"].map((name) => ({
+          name,
+          version: "9.9.9",
+          integrity: `sha512-${"A".repeat(86)}==`,
+        })),
+      },
+      sourceAlias: "npm:jorgex-pi@file:/isolated/downloads/jorgex-pi-9.9.9.tgz",
+    };
+    const preparePiRuntimeSystem = vi.fn(async () => ({ candidate: T50_CANDIDATE, prepared: T50_PREPARED }));
     vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", async (importOriginal) => ({
+      ...((await importOriginal()) as Record<string, unknown>),
+      preparePiRuntimeSystem,
+    }));
     vi.doMock("../src/lib/tool-preferences.js", () => ({
       loadDevtoolsMcpPreference: vi.fn(() => false),
       devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
@@ -1477,6 +2977,9 @@ describe("[T50-RED] managed Pi fuera de HOME con frontera de restore", () => {
       }) as { kind: string; reason?: string; remedy?: string };
 
       expect(result.kind).toBe("blocked");
+      // Proves the mocked preflight carried through to the REAL official
+      // setup boundary (not the earlier preflight agent-dir block).
+      expect(result).toMatchObject({ reason: "setup-pi-failed" });
       const remedy = String((result as any).remedy ?? (result as any).reason ?? "");
       expect(remedy).toMatch(/restore|frontera/i);
       expect(remedy).toMatch(/PI_CODING_AGENT_DIR/);
@@ -1506,5 +3009,262 @@ describe("[T50-RED] managed Pi fuera de HOME con frontera de restore", () => {
     fs.mkdirSync(insideAgentDir, { recursive: true });
     const mod = await import("../src/lib/official-engram-setup.js") as any;
     expect(mod.validateOfficialSetupDestination("pi", insideAgentDir, home)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live repro: freshly installed jorgex-pi@0.8.31, `update --agents pi --yes`
+// reports Pi: source-divergent when candidate/lock/tree unchanged. Suspect:
+// runManagedPiSystem forwards authenticated packageSource on sync/doctor but
+// NOT on update {kind:'healthy', packageSource} (no-change path), so the
+// projection sync receives the static candidate (.29) and blocks.
+// Tight RED: injected candidate+prepared, Pi 0.87.1, package update returns
+// healthy+DYNAMIC_SOURCE, projection blocks source-divergent unless it sees
+// DYNAMIC_SOURCE. Expect healthy + correct projection source. Isolated
+// synthetic 9.9.9 only; no HOME/network.
+// ---------------------------------------------------------------------------
+it("forwards authenticated update-healthy packageSource to projection instead of the static candidate", async () => {
+  const DYNAMIC_SOURCE = "npm:jorgex-pi@9.9.9";
+  const SYNTH_CANDIDATE = { package: { name: "jorgex-pi", version: "9.9.9", source: DYNAMIC_SOURCE } };
+  const SYNTH_PREPARED = { stageDir: "/isolated/pi-stage" };
+  const projectionInputs: unknown[] = [];
+  const preparePiRuntimeSystem = vi.fn(async () => {
+    throw new Error("update with supplied stage must not run preflight");
+  });
+  const runPiRuntimeSystem = vi.fn(
+    async (input: { operation: string; candidate?: { package?: { source?: string } }; prepared?: unknown }) => {
+      if (input.operation !== "update") return { kind: "blocked" as const, reason: "unexpected-operation" };
+      if (input.candidate?.package?.source !== DYNAMIC_SOURCE || input.prepared === undefined) {
+        return { kind: "blocked" as const, reason: "candidate-missing" };
+      }
+      // No-change update path: candidate/lock/tree unchanged, no new receipt.
+      return { kind: "healthy" as const, packageSource: DYNAMIC_SOURCE };
+    },
+  );
+  const runPiProjectionLifecycleSystem = vi.fn((input: unknown) => {
+    projectionInputs.push(input);
+    const source = (input as { packageSource?: unknown }).packageSource;
+    if (source !== DYNAMIC_SOURCE) return { kind: "blocked" as const, reason: "source-divergent" };
+    return { kind: "synced" as const, changed: false };
+  });
+  const preparePiProjectionUninstallSystem = vi.fn(() => ({ kind: "prepared" as const, plan: "token" }));
+  const completePiProjectionUninstallSystem = vi.fn(() => ({ kind: "uninstalled" as const }));
+
+  vi.resetModules();
+  vi.doMock("../src/lib/pi-runtime.js", () => ({
+    PI_RUNTIME_CANDIDATE: {
+      package: { source: "npm:jorgex-pi@test" },
+      pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+      contract: { capabilities: ["playwright-handoff-v1"] },
+    },
+    preparePiRuntimeSystem,
+    runPiRuntimeSystem,
+  }));
+  vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+    runPiProjectionLifecycleSystem,
+    preparePiProjectionUninstallSystem,
+    completePiProjectionUninstallSystem,
+  }));
+  vi.doMock("../src/lib/tool-preferences.js", () => ({
+    loadPlaywrightCliPreference: vi.fn(() => false),
+    playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+    savePlaywrightCliPreference: vi.fn(),
+    devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+    loadDevtoolsMcpPreference: vi.fn(() => false),
+    saveDevtoolsMcpPreference: vi.fn(),
+  }));
+  vi.doMock("../src/lib/external-tools.js", () => ({
+    detectPlaywrightCli: vi.fn(() => ({
+      status: "current" as const,
+      binPath: "/isolated/bin/playwright-cli",
+      detectedVersion: "0.1.18",
+    })),
+    resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+  }));
+
+  try {
+    const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+      runManagedPiSystem(input: unknown): Promise<unknown>;
+    };
+    const result = await mod.runManagedPiSystem({
+      operation: "update",
+      detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+      engramBin: "/isolated/bin/engram",
+      writingStyle: FORWARDING_STYLE,
+      candidate: SYNTH_CANDIDATE,
+      prepared: SYNTH_PREPARED,
+    });
+
+    expect(preparePiRuntimeSystem).not.toHaveBeenCalled();
+    expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
+    expect(runPiRuntimeSystem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "update",
+        candidate: expect.objectContaining({
+          package: expect.objectContaining({ source: DYNAMIC_SOURCE }),
+        }),
+        prepared: SYNTH_PREPARED,
+      }),
+    );
+    expect(result).toMatchObject({ kind: "healthy" });
+    expect(JSON.stringify(result)).not.toMatch(/source-divergent/);
+    expect(runPiProjectionLifecycleSystem).toHaveBeenCalledTimes(1);
+    expect(projectionInputs[0]).toEqual(expect.objectContaining({ packageSource: DYNAMIC_SOURCE }));
+    expect((projectionInputs[0] as { packageSource: string }).packageSource).not.toBe("npm:jorgex-pi@test");
+  } finally {
+    vi.doUnmock("../src/lib/pi-runtime.js");
+    vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+    vi.doUnmock("../src/lib/tool-preferences.js");
+    vi.doUnmock("../src/lib/external-tools.js");
+    vi.resetModules();
+  }
+});
+
+describe("Pi managed update post-projection initialization", () => {
+  // Live repro: install final projection sync fixed, but deliberate managed
+  // update with changed candidate returns {kind:'updated'} after ONE
+  // projection sync without running new package sync --json; stage smoke
+  // doesn't initialize active Pi settings/receipt; subsequent doctor may
+  // report pending/drift. Changed-candidate update must reconcile with
+  // package:update → projection:sync → package:sync → projection:sync, then
+  // immediate doctor stays healthy. Same-candidate healthy keeps one
+  // projection sync; blocked projection/package sync must not report updated.
+  it("reconciles changed-candidate update settings mutation with package sync and final projection sync so immediate doctor stays healthy", async () => {
+    const { runManagedPiOperation } = await managedRuntime();
+    const trace: string[] = [];
+    let initialized = false;
+    let projectionDirty = false;
+
+    const deps = withUninstallLifecycle({
+      async runPackage(next) {
+        trace.push(`package:${next}`);
+        if (next === "update") return { kind: "updated" };
+        if (next === "sync") {
+          initialized = true;
+          projectionDirty = true;
+          return { kind: "synced" };
+        }
+        if (next === "doctor") return { kind: "healthy" };
+        throw new Error(`unexpected package operation: ${next}`);
+      },
+      async runProjection(next) {
+        trace.push(`projection:${next}`);
+        if (next === "sync") {
+          projectionDirty = false;
+          return { kind: "synced", changed: true };
+        }
+        if (next === "doctor") {
+          if (!initialized || projectionDirty) {
+            return {
+              kind: "drift",
+              paths: ["settings.json"],
+              remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            };
+          }
+          return { kind: "healthy" };
+        }
+        return projectionSuccess(next);
+      },
+    });
+
+    const updateResult = await runManagedPiOperation("update", deps);
+    expect(updateResult).toEqual({ kind: "updated" });
+    expect(trace).toEqual([
+      "package:update",
+      "projection:sync",
+      "package:sync",
+      "projection:sync",
+    ]);
+
+    // Immediate doctor observes the reconciled projection without a user extra
+    // sync: shared flags prove package sync initialized and the final
+    // projection sync cleared the settings mutation.
+    const doctorTrace: string[] = [];
+    const doctorResult = await runManagedPiOperation(
+      "doctor",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          doctorTrace.push(`package:${next}`);
+          return { kind: "healthy" };
+        },
+        async runProjection(next) {
+          doctorTrace.push(`projection:${next}`);
+          if (!initialized || projectionDirty) {
+            return {
+              kind: "drift",
+              paths: ["settings.json"],
+              remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            };
+          }
+          return { kind: "healthy" };
+        },
+      }),
+    );
+    expect(doctorResult).toEqual({ kind: "healthy" });
+    expect(doctorTrace).toEqual(["package:doctor", "projection:doctor"]);
+
+    // Control: same-candidate update {kind:'healthy'} keeps one projection
+    // sync with no extra package sync.
+    const healthyTrace: string[] = [];
+    const healthyResult = await runManagedPiOperation(
+      "update",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          healthyTrace.push(`package:${next}`);
+          if (next === "update") return { kind: "healthy" };
+          throw new Error(`unexpected package operation: ${next}`);
+        },
+        async runProjection(next) {
+          healthyTrace.push(`projection:${next}`);
+          return { kind: "synced", changed: false };
+        },
+      }),
+    );
+    expect(healthyResult).toEqual({ kind: "healthy" });
+    expect(healthyTrace).toEqual(["package:update", "projection:sync"]);
+
+    // Control: blocked package sync after update must not report updated.
+    const blockedPackageSyncTrace: string[] = [];
+    const blockedPackageSyncResult = await runManagedPiOperation(
+      "update",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          blockedPackageSyncTrace.push(`package:${next}`);
+          if (next === "update") return { kind: "updated" };
+          if (next === "sync") return { kind: "blocked", reason: "runner-unhealthy" };
+          throw new Error(`unexpected package operation: ${next}`);
+        },
+        async runProjection(next) {
+          blockedPackageSyncTrace.push(`projection:${next}`);
+          return { kind: "synced", changed: true };
+        },
+      }),
+    );
+    expect(blockedPackageSyncResult).toMatchObject({ kind: "blocked", reason: "runner-unhealthy" });
+    expect(blockedPackageSyncResult).not.toEqual({ kind: "updated" });
+    expect(blockedPackageSyncTrace).toEqual([
+      "package:update",
+      "projection:sync",
+      "package:sync",
+    ]);
+
+    // Control: blocked projection after update must not report updated.
+    const blockedProjectionTrace: string[] = [];
+    const blockedProjectionResult = await runManagedPiOperation(
+      "update",
+      withUninstallLifecycle({
+        async runPackage(next) {
+          blockedProjectionTrace.push(`package:${next}`);
+          if (next === "update") return { kind: "updated" };
+          throw new Error(`unexpected package operation: ${next}`);
+        },
+        async runProjection(next) {
+          blockedProjectionTrace.push(`projection:${next}`);
+          return { kind: "blocked", reason: "projection-backup-failed" };
+        },
+      }),
+    );
+    expect(blockedProjectionResult).toEqual({ kind: "blocked", reason: "projection-backup-failed" });
+    expect(blockedProjectionTrace).toEqual(["package:update", "projection:sync"]);
   });
 });

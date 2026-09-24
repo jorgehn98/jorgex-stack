@@ -1,0 +1,27 @@
+{
+  "acceptedCandidates": [
+    {
+      "package": {
+        "name": "jorgex-pi",
+        "version": "0.8.24",
+        "source": "npm:jorgex-pi@0.8.24"
+      },
+      "provenance": {
+        "commit": "652d7e445e6f184c4543593c115026aa2f71e761"
+      },
+      "tarball": {
+        "bytes": 89140631,
+        "sha256": "6f67e546c86f21f9b5ff139f429551e696be4a8389ce4a6262e137dcce923a5f",
+        "sha512": "1ce4bfc316f1635c5e498af7134ae16f430a4f6a3d2c99c7aa6fc31b76ce18684759c6480f506b5de45aa5b5b682e03f68d10fc77c83ae1679006dab679d9aa4"
+      },
+      "contract": {
+        "runner": {
+          "bin": "jorgex-pi",
+          "commands": ["status", "doctor", "models", "sync", "cleanup"],
+          "schemaVersion": 1,
+          "maxStdoutBytes": 65536
+        }
+      }
+    }
+  ]
+}

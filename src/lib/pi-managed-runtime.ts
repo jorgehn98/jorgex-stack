@@ -6,7 +6,7 @@ import {
   preparePiProjectionUninstallSystem,
   runPiProjectionLifecycleSystem,
 } from "./pi-projection-lifecycle.js";
-import { PI_RUNTIME_CANDIDATE, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
+import { PI_RUNTIME_CANDIDATE, preparePiRuntimeSystem, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
 import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
 import { resolvePnpmBin } from "./external-tools.js";
 import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
@@ -94,15 +94,23 @@ function withInstallInitRemedy(
     : result;
 }
 
-async function completeInstallWithInitialization(
+async function completeWithInitialization(
   packageResult: PiManagedPackageOutcome,
   deps: PiManagedRuntimeDeps,
+  initialProjection: PiProjectionOperation = "install",
 ): Promise<PiManagedOperationResult> {
-  const projected = await completeProjection("install", packageResult, deps);
+  const projected = await completeProjection(initialProjection, packageResult, deps);
   if (projected.kind === "blocked") return projected;
   const fallbackRemedy = deps.installInitRemedy ?? INSTALL_INIT_REMEDY;
   const initResult = await deps.runPackage("sync");
-  if (initResult.kind === "synced") return packageResult;
+  if (initResult.kind === "synced") {
+    const reconciled = await completeProjection("sync", packageResult, deps);
+    if (reconciled.kind === "blocked") {
+      if ("remedy" in reconciled && reconciled.remedy !== undefined) return reconciled;
+      return { ...reconciled, remedy: fallbackRemedy };
+    }
+    return packageResult;
+  }
   if (initResult.kind === "manual-existing") return manualExistingResult(initResult);
   if (initResult.kind === "blocked") return withInstallInitRemedy(initResult, fallbackRemedy);
   return { kind: "blocked", reason: "runner-unhealthy", remedy: fallbackRemedy };
@@ -127,7 +135,11 @@ export async function runManagedPiOperation(
   if (operation === "models") return packageResult;
 
   if (operation === "install" && packageResult.kind !== "blocked") {
-    return completeInstallWithInitialization(packageResult, deps);
+    return completeWithInitialization(packageResult, deps);
+  }
+
+  if (operation === "update" && packageResult.kind === "updated") {
+    return completeWithInitialization(packageResult, deps, "sync");
   }
 
   const nextProjectionOperation = projectionOperation(operation);
@@ -172,8 +184,46 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   packageOnly?: boolean;
   upgradePermissions?: boolean;
 }): Promise<PiManagedOperationResult> {
+  // T06 deliberate install/update: the real CLI never passes a caller stage, so
+  // resolve the live provider preflight before the obsolete host gate. TargetDir
+  // never runs preflight network; injected candidate/prepared skip it.
+  // Blocked/throwing preflight fails closed before package/projection/prefs.
+  let effectiveCandidate = input.candidate;
+  let effectivePrepared = input.prepared;
+  if ((input.operation === "install" || input.operation === "update") && input.targetDir === undefined && effectiveCandidate === undefined && effectivePrepared === undefined) {
+    let preflight: unknown;
+    try {
+      const prepare = preparePiRuntimeSystem as unknown as ((value: PiRuntimeInput) => Promise<unknown>) | undefined;
+      if (typeof prepare !== "function") throw new Error("pi-install-preflight: preparePiRuntimeSystem no disponible");
+      preflight = await prepare(input);
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "preflight-failed",
+        remedy: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (preflight !== null && typeof preflight === "object" && "kind" in preflight
+      && (preflight as { kind: unknown }).kind === "blocked") {
+      return preflight as { kind: "blocked"; reason: string; remedy?: string };
+    }
+    const ok = preflight as { candidate?: PiRuntimeInput["candidate"]; prepared?: PiRuntimeInput["prepared"] };
+    if (ok.candidate === undefined || ok.prepared === undefined) {
+      return {
+        kind: "blocked",
+        reason: "preflight-failed",
+        remedy: "El preflight Pi no devolvió candidato preparado; revisa el stage y reintenta.",
+      };
+    }
+    effectiveCandidate = ok.candidate;
+    effectivePrepared = ok.prepared;
+  }
   const supportedVersions: readonly string[] = PI_RUNTIME_CANDIDATE.pi.testedVersions;
-  if (!supportedVersions.includes(input.detected.version)) {
+  const hasStagedCandidate = input.operation === "install" && effectiveCandidate !== undefined;
+  const hasStagedUpdate = input.operation === "update" && effectiveCandidate !== undefined && effectivePrepared !== undefined;
+  const bypassHostGate =
+    hasStagedCandidate || hasStagedUpdate || input.operation === "sync" || input.operation === "doctor" || input.operation === "uninstall" || input.operation === "models";
+  if (!bypassHostGate && !supportedVersions.includes(input.detected.version)) {
     return {
       kind: "blocked",
       reason: "unsupported-pi-version",
@@ -225,6 +275,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
     ? playwrightCapability?.cli.binPath ?? null
     : null;
+  let effectivePackageSource: string = PI_RUNTIME_CANDIDATE.package.source;
   const projectionInput = {
     writingStyle,
     targetDir: input.targetDir,
@@ -240,16 +291,61 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const result = await runManagedPiOperation(input.operation, {
     installInitRemedy: input.targetDir === undefined ? undefined : INSTALL_INIT_TARGET_REMEDY,
     async runPackage(operation) {
-      return managedPackageResult(await runPiRuntimeSystem({
+      const raw = await runPiRuntimeSystem({
         ...runtimeInput,
+        candidate: effectiveCandidate,
+        ...(effectivePrepared === undefined ? {} : { prepared: effectivePrepared }),
         operation,
         ...(upgradePermissions ? { upgradePermissions: true as const } : {}),
-      }));
+      });
+      if (effectiveCandidate !== undefined
+        && ((operation === "install" && raw.kind === "installed")
+          || (operation === "update" && raw.kind === "updated"))) {
+        const expected = effectiveCandidate.package;
+        const receipt = raw.receipt as
+          | { candidate?: { package?: { name?: unknown; version?: unknown; source?: unknown } }; package?: { name?: unknown; version?: unknown; source?: unknown } }
+          | undefined;
+        const observed = receipt?.candidate?.package ?? receipt?.package;
+        if (
+          observed?.name !== expected.name ||
+          observed?.version !== expected.version ||
+          observed?.source !== expected.source
+        ) {
+          return {
+            kind: "blocked",
+            reason: "receipt-mismatch",
+            remedy: "El receipt instalado no coincide con el candidato preparado; revisa el stage y reintenta.",
+          } as const;
+        }
+        effectivePackageSource = observed.source as string;
+      }
+      if (
+        ((operation === "sync" && raw.kind === "synced") ||
+          (operation === "doctor" && raw.kind === "healthy") ||
+          (operation === "update" && raw.kind === "healthy")) &&
+        "packageSource" in raw &&
+        raw.packageSource !== undefined
+      ) {
+        const provided = raw.packageSource;
+        if (
+          typeof provided !== "string" ||
+          !/^npm:jorgex-pi@((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))$/.test(provided)
+        ) {
+          return {
+            kind: "blocked",
+            reason: "package-source-invalid",
+            remedy: "La fuente del paquete sincronizado es inválida; revisa el receipt y reintenta.",
+          } as const;
+        }
+        effectivePackageSource = provided;
+      }
+      return managedPackageResult(raw);
     },
     runProjection(operation) {
       const result = runPiProjectionLifecycleSystem({
         operation,
         ...projectionInput,
+        packageSource: effectivePackageSource,
       });
       return Promise.resolve(result.kind === "drift"
         ? {

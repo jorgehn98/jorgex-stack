@@ -67,39 +67,22 @@ jobs:
 
       - run: pnpm typecheck
 
-      - name: Resolve the exact JorgeX Pi pin
-        id: pi-pin
+      - run: pnpm build
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
-        shell: bash
-        run: |
-          node .github/scripts/pi-pin.mjs >> "$GITHUB_OUTPUT"
 
-      - name: Download the exact JorgeX Pi artifact
-        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
-        env:
-          PI_TARBALL_URL: ${{ steps.pi-pin.outputs.url }}
-          PI_TARBALL_BYTES: ${{ steps.pi-pin.outputs.bytes }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tarball="$RUNNER_TEMP/jorgex-pi.tgz"
-          curl --fail --show-error --silent --retry 3 --retry-max-time 180 --connect-timeout 15 --max-time 120 --max-filesize "$PI_TARBALL_BYTES" --remove-on-error --output "$tarball" \
-            "$PI_TARBALL_URL"
-          actual_bytes="$(wc -c < "$tarball")"
-          if [[ "$actual_bytes" -ne "$PI_TARBALL_BYTES" ]]; then
-            echo "JorgeX Pi artifact size mismatch: expected=$PI_TARBALL_BYTES received=$actual_bytes" >&2
-            rm -f -- "$tarball"
-            exit 1
-          fi
-
-      - name: Verify the exact JorgeX Pi artifact contract
+      - name: Resolve and verify observed Pi artifact
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
         env:
           JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz
+          JORGEX_PI_CANDIDATE: ${{ runner.temp }}/pi-observed.json
+        run: node dist/pi-ci-artifact.js "$JORGEX_PI_TARBALL" "$JORGEX_PI_CANDIDATE"
+
+      - name: Verify the observed JorgeX Pi artifact contract
+        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
+        env:
+          JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tgz
+          JORGEX_PI_CANDIDATE: ${{ runner.temp }}/pi-observed.json
         run: pnpm exec vitest run tests/pi-cross-repo-contract.test.ts
 
       - run: pnpm test
-        if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
-
-      - run: pnpm build
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}

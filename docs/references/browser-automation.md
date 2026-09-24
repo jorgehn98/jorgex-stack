@@ -155,7 +155,7 @@ La guía de navegador y el handoff son controles separados: `playwrightCliEnable
 
 El receipt `~/.jorgex-stack/pi-projection-receipt.json` admite los campos opcionales `devtools.sha256` y `playwright.sha256`. Las formas legacy (sin handoff), DevTools-only, Playwright-only y ambas se conservan mediante el esquema existente. Un handoff ajeno al receipt, con contenido modificado o con un digest distinto falla cerrado. `uninstall` valida primero ambos handoffs y sus digests, crea los backups y vuelve a validar antes de eliminar cada archivo; un conflicto conserva el archivo para revisión.
 
-La adopción del capability se mantiene separada de la actualización del pin. El preparador admite `--accept-playwright-handoff` únicamente para añadir exactamente `playwright-handoff-v1` y `package/extensions/playwright.ts` cuando verifica el conjunto exacto de archivos frente al tarball Pi previo, cuyos hashes están fijados, y comprueba los bytes del nuevo módulo contra el commit productor de Pi. Conserva las comprobaciones de contratos e integridad restantes. La identidad, procedencia y digests del paquete adoptado siguen siendo autoritativos en `src/lib/pi-runtime-pin.json`.
+La descripción del preparador y la actualización del pin corresponde al flujo histórico de adopción; no es el procedimiento vigente para instalar una versión Pi. El runtime gestionado observa el candidato publicado y valida el handoff con el paquete/receipt verificados. Esto no implica que la activación dinámica del navegador ya esté implementada para cada integración: la adopción de capacidades nuevas y cualquier cambio de handoff siguen sujetos a revisión del contrato y la publicación compatible.
 
 ---
 

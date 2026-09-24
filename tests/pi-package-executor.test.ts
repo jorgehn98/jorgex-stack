@@ -31,7 +31,14 @@ type Plan = {
 type ExecutorResult =
   | { kind: "installed"; receipt: Receipt }
   | { kind: "synced"; actions: [] }
-  | { kind: "models"; models: { mode: "inherit-session"; tiers: ["strong", "standard", "cheap"] } }
+  | {
+    kind: "models";
+    models: {
+      mode: "managed-primary";
+      primary: { provider: "openai-codex"; model: "gpt-5.6-sol"; contextWindow: 872000 };
+      tiers: ["strong", "standard", "cheap"];
+    };
+  }
   | { kind: "manual-existing" }
   | { kind: "blocked"; reason: "pi-install-failed" | "runner-output" | "runner-unhealthy" };
 
@@ -90,7 +97,11 @@ function runnerResponse(command: "doctor" | "sync" | "models"): string {
     ? { healthy: true, checks: [{ id: "package", status: "ok" }, { id: "engram", status: "ok" }] }
     : command === "sync"
       ? { changed: false, actions: [] }
-      : { mode: "inherit-session", tiers: ["strong", "standard", "cheap"] };
+      : {
+        mode: "managed-primary",
+        primary: { provider: "openai-codex", model: "gpt-5.6-sol", contextWindow: 872000 },
+        tiers: ["strong", "standard", "cheap"],
+      };
   return JSON.stringify({
     schemaVersion: 1,
     command,
@@ -101,6 +112,20 @@ function runnerResponse(command: "doctor" | "sync" | "models"): string {
       root: `/tmp/target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`,
     },
     result,
+  });
+}
+
+function modelsEnvelope(resultPayload: unknown): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    command: "models",
+    ok: true,
+    package: {
+      name: "jorgex-pi",
+      version: PI_RUNTIME_CANDIDATE.package.version,
+      root: `/tmp/target/pi-agent/packages/jorgex-pi-${PI_RUNTIME_CANDIDATE.package.version}`,
+    },
+    result: resultPayload,
   });
 }
 
@@ -213,12 +238,61 @@ describe("Pi package executor", () => {
     };
 
     expect(executePiPackageLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", actions: [] });
+    // Canonical producer contract/schemas/runner-response.v1.schema.json lines
+    // 279-293 pins this exact managed-primary + primary shape.
     expect(executePiPackageLifecycle({ ...input, operation: "models" }, deps)).toEqual({
       kind: "models",
-      models: { mode: "inherit-session", tiers: ["strong", "standard", "cheap"] },
+      models: {
+        mode: "managed-primary",
+        primary: { provider: "openai-codex", model: "gpt-5.6-sol", contextWindow: 872000 },
+        tiers: ["strong", "standard", "cheap"],
+      },
     });
+
+    const modelsInput = { ...input, operation: "models" as const };
+    function blockedFor(resultPayload: unknown) {
+      return executePiPackageLifecycle(modelsInput, {
+        writeReceipt(next: Receipt) {
+          receiptWrites.push(next);
+        },
+        run(invocation: { executable: string; args: string[]; environment: PiPackageEnvironment }) {
+          calls.push(invocation);
+          return { exitCode: 0, stdout: `${modelsEnvelope(resultPayload)}\n`, stderr: "" };
+        },
+      });
+    }
+
+    expect(blockedFor({
+      mode: "managed-primary",
+      primary: { provider: "other-provider", model: "gpt-5.6-sol", contextWindow: 872000 },
+      tiers: ["strong", "standard", "cheap"],
+    })).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+    expect(blockedFor({
+      mode: "managed-primary",
+      primary: { provider: "openai-codex", model: "other-model", contextWindow: 872000 },
+      tiers: ["strong", "standard", "cheap"],
+    })).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+    expect(blockedFor({
+      mode: "managed-primary",
+      primary: { provider: "openai-codex", model: "gpt-5.6-sol", contextWindow: 1 },
+      tiers: ["strong", "standard", "cheap"],
+    })).toEqual({ kind: "blocked", reason: "runner-unhealthy" });
+    expect(blockedFor({ mode: "managed-primary", tiers: ["strong", "standard", "cheap"] })).toEqual({
+      kind: "blocked",
+      reason: "runner-unhealthy",
+    });
+    expect(blockedFor({ mode: "inherit-session", tiers: ["strong", "standard", "cheap"] })).toEqual({
+      kind: "blocked",
+      reason: "runner-unhealthy",
+    });
+
     expect(calls).toEqual([
       { executable: packageRunner, args: ["sync", "--json"], environment },
+      { executable: packageRunner, args: ["models", "--json"], environment },
+      { executable: packageRunner, args: ["models", "--json"], environment },
+      { executable: packageRunner, args: ["models", "--json"], environment },
+      { executable: packageRunner, args: ["models", "--json"], environment },
+      { executable: packageRunner, args: ["models", "--json"], environment },
       { executable: packageRunner, args: ["models", "--json"], environment },
     ]);
     expect(receiptWrites).toEqual([]);
