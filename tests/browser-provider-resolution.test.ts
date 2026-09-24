@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
  * T14 RED: minimal generic npm provider resolver for browser opt-ins.
@@ -350,5 +354,394 @@ describe("[T14-RED] browser provider resolves distinct stable latest to exact ca
     await expect(resolveLatestNpmPackageRelease(packageName, fetch)).rejects.toThrow(/npm-provider:/);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(seen[0]?.redirect).toBe("error");
+  });
+});
+
+type NpmTarballArtifact = {
+  path: string;
+  bytes: number;
+  sha256: string;
+  sha512: string;
+};
+
+type NpmTarballDownloadModule = {
+  downloadVerifiedNpmPackageTarball(
+    packageName: string,
+    release: NpmPackageRelease,
+    destination: string,
+    fetchImpl: typeof fetch,
+  ): Promise<NpmTarballArtifact>;
+};
+
+async function loadDownload(): Promise<NpmTarballDownloadModule> {
+  const mod = (await import(/* @vite-ignore */ resolverSpecifier)) as Partial<NpmTarballDownloadModule>;
+  expect(
+    mod.downloadVerifiedNpmPackageTarball,
+    "downloadVerifiedNpmPackageTarball must be exported from src/lib/npm-provider.ts",
+  ).toBeTypeOf("function");
+  return mod as NpmTarballDownloadModule;
+}
+
+const downloadSandboxes: string[] = [];
+
+function downloadSandbox(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-npm-tarball-"));
+  downloadSandboxes.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of downloadSandboxes.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function syntheticTarballBytes(packageName: string, version: string): Buffer {
+  return Buffer.from(`synthetic-${packageName}-tarball-${version}\n`.repeat(128));
+}
+
+function syntheticTarballRelease(packageName: string, version: string, bytes: Buffer): NpmPackageRelease {
+  return {
+    version,
+    tarballUrl: canonicalTarballFor(packageName, version),
+    integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+  };
+}
+
+function serveTarballBytes(
+  bytes: Uint8Array,
+  tarballUrl: string,
+  seen: Array<{ url: string; redirect?: string }>,
+  opts?: { urlOverride?: string; status?: number; contentLength?: string },
+): typeof fetch {
+  const tarballFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    seen.push({ url, redirect: init?.redirect });
+    const headers: Record<string, string> = { "Content-Type": "application/octet-stream" };
+    if (opts?.contentLength !== undefined) headers["Content-Length"] = opts.contentLength;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice());
+        controller.close();
+      },
+    });
+    const response = new Response(body, { status: opts?.status ?? 200, headers });
+    Object.defineProperty(response, "url", { value: opts?.urlOverride ?? url });
+    return response;
+  });
+  return tarballFetch as unknown as typeof fetch;
+}
+
+describe("[T14-RED] browser provider tarball acquisition verifies before publishing", () => {
+  it("persists verified @playwright/cli bytes with observed size and digests", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.10";
+    const bytes = syntheticTarballBytes(PLAYWRIGHT_PKG, version);
+    const release = syntheticTarballRelease(PLAYWRIGHT_PKG, version, bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `cli-${version}.tgz`);
+    const seen: Array<{ url: string; redirect?: string }> = [];
+    const fetch = serveTarballBytes(bytes, release.tarballUrl, seen, {
+      contentLength: String(bytes.byteLength),
+    });
+
+    const result = await downloadVerifiedNpmPackageTarball(PLAYWRIGHT_PKG, release, destination, fetch);
+
+    expect(result).toEqual({
+      path: destination,
+      bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sha512: createHash("sha512").update(bytes).digest("hex"),
+    });
+    expect(fs.readFileSync(destination)).toEqual(bytes);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(seen[0]?.url).toBe(release.tarballUrl);
+    expect(seen[0]?.redirect).toBe("error");
+    expect(fs.readdirSync(dir)).toEqual([path.basename(destination)]);
+  });
+
+  it("persists verified chrome-devtools-mcp bytes with observed size and digests", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.20";
+    const bytes = syntheticTarballBytes(DEVTOOLS_PKG, version);
+    const release = syntheticTarballRelease(DEVTOOLS_PKG, version, bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `chrome-devtools-mcp-${version}.tgz`);
+    const seen: Array<{ url: string; redirect?: string }> = [];
+    const fetch = serveTarballBytes(bytes, release.tarballUrl, seen, {
+      contentLength: String(bytes.byteLength),
+    });
+
+    const result = await downloadVerifiedNpmPackageTarball(DEVTOOLS_PKG, release, destination, fetch);
+
+    expect(result).toEqual({
+      path: destination,
+      bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sha512: createHash("sha512").update(bytes).digest("hex"),
+    });
+    expect(fs.readFileSync(destination)).toEqual(bytes);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(seen[0]?.url).toBe(release.tarballUrl);
+    expect(seen[0]?.redirect).toBe("error");
+    expect(fs.readdirSync(dir)).toEqual([path.basename(destination)]);
+  });
+
+  it("rejects an SRI mismatch without publishing and leaves no file or temp", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.10";
+    const bytes = syntheticTarballBytes(PLAYWRIGHT_PKG, version);
+    const release = syntheticTarballRelease(PLAYWRIGHT_PKG, version, bytes);
+    const wrongIntegrity = `sha512-${createHash("sha512").update("unrelated-test-bytes").digest("base64")}`;
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `cli-${version}.tgz`);
+    const fetch = serveTarballBytes(bytes, release.tarballUrl, [], {
+      contentLength: String(bytes.byteLength),
+    });
+
+    await expect(
+      downloadVerifiedNpmPackageTarball(
+        PLAYWRIGHT_PKG,
+        { ...release, integrity: wrongIntegrity },
+        destination,
+        fetch,
+      ),
+    ).rejects.toThrow(/npm-provider:/);
+    expect(fs.existsSync(destination)).toBe(false);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("rejects a redirected response url without publishing", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.20";
+    const bytes = syntheticTarballBytes(DEVTOOLS_PKG, version);
+    const release = syntheticTarballRelease(DEVTOOLS_PKG, version, bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `chrome-devtools-mcp-${version}.tgz`);
+    const fetch = serveTarballBytes(bytes, release.tarballUrl, [], {
+      urlOverride: `${release.tarballUrl}?redirected=1`,
+    });
+
+    await expect(
+      downloadVerifiedNpmPackageTarball(DEVTOOLS_PKG, release, destination, fetch),
+    ).rejects.toThrow(/npm-provider:/);
+    expect(fs.existsSync(destination)).toBe(false);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("leaves a preexisting divergent file untouched", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.10";
+    const bytes = syntheticTarballBytes(PLAYWRIGHT_PKG, version);
+    const release = syntheticTarballRelease(PLAYWRIGHT_PKG, version, bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `cli-${version}.tgz`);
+    fs.writeFileSync(destination, "unrelated\n");
+    const fetch = serveTarballBytes(bytes, release.tarballUrl, [], {
+      contentLength: String(bytes.byteLength),
+    });
+
+    await expect(
+      downloadVerifiedNpmPackageTarball(PLAYWRIGHT_PKG, release, destination, fetch),
+    ).rejects.toThrow(/npm-provider:/);
+    expect(fs.readFileSync(destination, "utf8")).toBe("unrelated\n");
+  });
+
+  it("rejects a symlink destination even when its target bytes exactly match", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.10";
+    const bytes = syntheticTarballBytes(PLAYWRIGHT_PKG, version);
+    const release = syntheticTarballRelease(PLAYWRIGHT_PKG, version, bytes);
+    const dir = downloadSandbox();
+    const targetDir = path.join(dir, "target");
+    fs.mkdirSync(targetDir);
+    const targetFile = path.join(targetDir, `cli-${version}.tgz`);
+    fs.writeFileSync(targetFile, bytes);
+    const destination = path.join(dir, `cli-${version}.tgz`);
+    fs.symlinkSync(targetFile, destination);
+    let called = 0;
+    const symlinkFetch = (async (): Promise<Response> => {
+      called += 1;
+      throw new Error("fetch must not be called for symlink destination");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      downloadVerifiedNpmPackageTarball(PLAYWRIGHT_PKG, release, destination, symlinkFetch),
+    ).rejects.toThrow(/npm-provider:/);
+    expect(called).toBe(0);
+    expect(fs.lstatSync(destination).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(destination)).toBe(targetFile);
+    expect(fs.readFileSync(targetFile)).toEqual(bytes);
+    expect(fs.readFileSync(destination)).toEqual(bytes);
+    expect(fs.readdirSync(dir).sort()).toEqual([`cli-${version}.tgz`, "target"].sort());
+    expect(fs.readdirSync(targetDir)).toEqual([`cli-${version}.tgz`]);
+  });
+
+  it("reuses exact existing bytes offline without fetch", async () => {
+    const { downloadVerifiedNpmPackageTarball } = await loadDownload();
+    const version = "9.9.20";
+    const bytes = syntheticTarballBytes(DEVTOOLS_PKG, version);
+    const release = syntheticTarballRelease(DEVTOOLS_PKG, version, bytes);
+    const dir = downloadSandbox();
+    const destination = path.join(dir, `chrome-devtools-mcp-${version}.tgz`);
+    fs.writeFileSync(destination, bytes);
+    let called = 0;
+    const offlineFetch = (async (): Promise<Response> => {
+      called += 1;
+      throw new Error("fetch must not be called for exact reuse");
+    }) as unknown as typeof fetch;
+
+    const result = await downloadVerifiedNpmPackageTarball(DEVTOOLS_PKG, release, destination, offlineFetch);
+
+    expect(result).toEqual({
+      path: destination,
+      bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sha512: createHash("sha512").update(bytes).digest("hex"),
+    });
+    expect(called).toBe(0);
+    expect(fs.readFileSync(destination)).toEqual(bytes);
+  });
+});
+
+type BrowserProviderModule = {
+  prepareVerifiedBrowserRelease(
+    packageName: string,
+    options: { fetchImpl: typeof fetch; stageParent: string },
+  ): Promise<NpmPackageRelease>;
+};
+
+const browserProviderSpecifier = new URL("../src/lib/browser-provider.js", import.meta.url).href;
+
+async function loadBrowserProvider(): Promise<BrowserProviderModule> {
+  const mod = (await import(/* @vite-ignore */ browserProviderSpecifier)) as Partial<BrowserProviderModule>;
+  expect(
+    mod.prepareVerifiedBrowserRelease,
+    "prepareVerifiedBrowserRelease must be exported from src/lib/browser-provider.ts",
+  ).toBeTypeOf("function");
+  return mod as BrowserProviderModule;
+}
+
+const stageParents: string[] = [];
+
+function stageParent(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-stage-"));
+  stageParents.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of stageParents.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function providerFetch(
+  pack: unknown,
+  bytes: Uint8Array,
+  tarballUrl: string,
+  seen: string[],
+  opts?: { urlOverride?: string },
+): typeof fetch {
+  const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input);
+    seen.push(url);
+    if (url === tarballUrl) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes.slice());
+          controller.close();
+        },
+      });
+      const tarball = new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      Object.defineProperty(tarball, "url", { value: opts?.urlOverride ?? url });
+      return tarball;
+    }
+    const metadata = new Response(JSON.stringify(pack), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    Object.defineProperty(metadata, "url", { value: url });
+    return metadata;
+  });
+  return fetch as unknown as typeof fetch;
+}
+
+/**
+ * T14-RED composition seam: one shared acquisition replacing the
+ * metadata/download/stage logic reimplemented per caller. Returns the
+ * observed release (not a tarball path) because callers only pass the exact
+ * package version to pnpm after verification; the stage is always removed.
+ */
+describe("[T14-RED] shared verified browser release composes resolve plus verified bytes", () => {
+  it("returns the observed Playwright release only after verified bytes and removes its own stage", async () => {
+    const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
+    const version = "9.9.10";
+    const bytes = syntheticTarballBytes(PLAYWRIGHT_PKG, version);
+    const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    const tarball = canonicalTarballFor(PLAYWRIGHT_PKG, version);
+    const parent = stageParent();
+    fs.writeFileSync(path.join(parent, "sentinel"), "keep\n");
+    const seen: string[] = [];
+    const fetch = providerFetch(syntheticPackument(PLAYWRIGHT_PKG, version, integrity), bytes, tarball, seen);
+
+    const release = await prepareVerifiedBrowserRelease(PLAYWRIGHT_PKG, { fetchImpl: fetch, stageParent: parent });
+
+    expect(release).toEqual({ version, tarballUrl: tarball, integrity });
+    expect(seen).toEqual([`https://registry.npmjs.org/${PLAYWRIGHT_PKG}`, tarball]);
+    expect(fs.readdirSync(parent)).toEqual(["sentinel"]);
+  });
+
+  it("returns the observed DevTools release only after verified bytes and removes its own stage", async () => {
+    const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
+    const version = "9.9.20";
+    const bytes = syntheticTarballBytes(DEVTOOLS_PKG, version);
+    const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    const tarball = canonicalTarballFor(DEVTOOLS_PKG, version);
+    const parent = stageParent();
+    const seen: string[] = [];
+    const fetch = providerFetch(syntheticPackument(DEVTOOLS_PKG, version, integrity), bytes, tarball, seen);
+
+    const release = await prepareVerifiedBrowserRelease(DEVTOOLS_PKG, { fetchImpl: fetch, stageParent: parent });
+
+    expect(release).toEqual({ version, tarballUrl: tarball, integrity });
+    expect(seen).toEqual([`https://registry.npmjs.org/${DEVTOOLS_PKG}`, tarball]);
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+
+  it("throws on an SRI mismatch without keeping temp or returning a release", async () => {
+    const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
+    const version = "9.9.10";
+    const bytes = syntheticTarballBytes(PLAYWRIGHT_PKG, version);
+    const wrongIntegrity = `sha512-${createHash("sha512").update("unrelated-test-bytes").digest("base64")}`;
+    const tarball = canonicalTarballFor(PLAYWRIGHT_PKG, version);
+    const parent = stageParent();
+    fs.writeFileSync(path.join(parent, "sentinel"), "keep\n");
+    const seen: string[] = [];
+    const fetch = providerFetch(syntheticPackument(PLAYWRIGHT_PKG, version, wrongIntegrity), bytes, tarball, seen);
+
+    await expect(
+      prepareVerifiedBrowserRelease(PLAYWRIGHT_PKG, { fetchImpl: fetch, stageParent: parent }),
+    ).rejects.toThrow(/browser-provider:/);
+    expect(seen).toEqual([`https://registry.npmjs.org/${PLAYWRIGHT_PKG}`, tarball]);
+    expect(fs.readdirSync(parent)).toEqual(["sentinel"]);
+  });
+
+  it("throws on a redirected tarball without keeping temp or returning a release", async () => {
+    const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
+    const version = "9.9.20";
+    const bytes = syntheticTarballBytes(DEVTOOLS_PKG, version);
+    const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    const tarball = canonicalTarballFor(DEVTOOLS_PKG, version);
+    const parent = stageParent();
+    const seen: string[] = [];
+    const fetch = providerFetch(syntheticPackument(DEVTOOLS_PKG, version, integrity), bytes, tarball, seen, {
+      urlOverride: `${tarball}?redirected=1`,
+    });
+
+    await expect(
+      prepareVerifiedBrowserRelease(DEVTOOLS_PKG, { fetchImpl: fetch, stageParent: parent }),
+    ).rejects.toThrow(/browser-provider:/);
+    expect(seen).toEqual([`https://registry.npmjs.org/${DEVTOOLS_PKG}`, tarball]);
+    expect(fs.readdirSync(parent)).toEqual([]);
   });
 });
