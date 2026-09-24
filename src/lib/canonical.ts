@@ -183,6 +183,15 @@ export function materializeCanonicalDevtoolsArgsForVersion(
   return ["dlx", `${DEVTOOLS_VERSION_PREFIX}${version}`, ...DEVTOOLS_EXPECTED_FLAGS];
 }
 
+/** El único paquete legacy sin observación fue 1.6.0; solo permite retirar su entrada owned exacta. */
+export function materializeCanonicalDevtoolsServerForRemoval(
+  server: CanonicalMcpServer & Record<string, unknown>,
+  observed?: DevtoolsMcpObservedVersion,
+): CanonicalMcpServer & Record<string, unknown> {
+  if (observed !== undefined) return materializeCanonicalDevtoolsServer(server, observed);
+  return { ...server, args: materializeCanonicalDevtoolsArgsForVersion(server, "1.6.0") };
+}
+
 /** Los MCP opcionales no entran en un plan salvo selección explícita por runtime. */
 export function isCanonicalMcpServerEnabled(
   name: string,

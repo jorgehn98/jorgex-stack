@@ -22,7 +22,7 @@ import {
   type OfficialSetupIfNeededResult,
 } from "./lib/official-engram-setup.js";
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
-import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, type CanonicalMcp } from "./lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, materializeCanonicalDevtoolsServerForRemoval, type CanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
@@ -172,6 +172,7 @@ export interface PlaywrightToolPlanDeps {
     candidate?: PlaywrightCliCandidate,
   ) => Promise<boolean | PlaywrightToolActionResult>;
   persistEnabled: (enabled: boolean, observed?: ObservedVersion) => void;
+  verify?: (candidate?: PlaywrightCliCandidate) => boolean;
   setupPnpm?: (pnpmBin: string) => PnpmSetupResult;
 }
 
@@ -179,7 +180,7 @@ export type PlaywrightToolPlanResult =
   | { ok: true }
   | {
       ok: false;
-      failedAction: PlaywrightInstallAction | "persist";
+      failedAction: PlaywrightInstallAction | "verify" | "persist";
       reason?: PlaywrightToolActionFailureReason;
     };
 
@@ -212,6 +213,13 @@ export async function runPlaywrightToolPlan(
       if (result !== true && !result.ok) return { ok: false, failedAction: action, reason: result.reason };
     } catch {
       return { ok: false, failedAction: action };
+    }
+  }
+  if (deps.verify !== undefined) {
+    try {
+      if (!deps.verify(candidate)) return { ok: false, failedAction: "verify" };
+    } catch {
+      return { ok: false, failedAction: "verify" };
     }
   }
   if (plan.persistEnabledOnSuccess) {
@@ -262,11 +270,10 @@ function persistConfigurationOwnershipChanges(runtime: RuntimeId, configDir: str
 
 /** Materializa el canon para unmerge con la misma observación del plan donde exista. */
 function canonicalMcpForUnmerge(base: CanonicalMcp, observed?: ObservedVersion): CanonicalMcp {
-  if (observed === undefined) return base;
   const server = base.servers[DEVTOOLS_MCP_SERVER];
   if (server === undefined) return base;
   try {
-    const materialized = materializeCanonicalDevtoolsServer(server, observed);
+    const materialized = materializeCanonicalDevtoolsServerForRemoval(server, observed);
     return { servers: { ...base.servers, [DEVTOOLS_MCP_SERVER]: materialized } };
   } catch {
     return base;
@@ -291,7 +298,7 @@ export function makeContext(
       const persisted = loadDevtoolsMcpObservation(devtoolsMcpPreferenceFile());
       if (persisted !== null) devtoolsMcpObservedVersion = persisted;
     } catch {
-      // Sin observación: planMcp falla cerrado sin fallback (legacy).
+      // Sin observación: enable falla cerrado; disable retira el legacy owned exacto.
     }
   }
   return {
@@ -936,6 +943,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         exitCode = 1;
       }
       if (candidate !== undefined) {
+      let setupAttempted = false;
+      let preparedEnv: NodeJS.ProcessEnv | undefined;
+      let verifiedCapability: VerifiedPlaywrightCapabilitySnapshot | undefined;
       const baseDeps = opts.playwrightToolDeps ?? {
         run: async (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv, runCandidate?: PlaywrightCliCandidate) => {
           const pnpmBin = resolvePnpmBin();
@@ -947,10 +957,18 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             : Object.fromEntries(Object.entries(selected).filter(([runtime]) => runtime !== "pi"));
           savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection, observed);
         },
+        verify: (selected?: PlaywrightCliCandidate) => {
+          if (selected === undefined) return false;
+          const snapshot = preparedEnv === undefined
+            ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: selected.version })
+            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: selected.version });
+          if (!snapshot.effective || snapshot.cli.status !== "current" || snapshot.cli.binPath === null
+            || snapshot.cli.detectedVersion !== selected.version || snapshot.browserCache.status !== "ready") return false;
+          verifiedCapability = snapshot as VerifiedPlaywrightCapabilitySnapshot;
+          return true;
+        },
         setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
       } satisfies PlaywrightToolPlanDeps;
-      let setupAttempted = false;
-      let preparedEnv: NodeJS.ProcessEnv | undefined;
       const result = await runPlaywrightToolPlan(toolPlan, {
         ...baseDeps,
         run: async (action, _env?, runCandidate?) => {
@@ -980,9 +998,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }, candidate);
       if (!result.ok) {
         const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
-        const reason = result.reason === "pnpm-global-bin"
-          ? `la configuración global de pnpm no está lista. ${pnpmRemedy}`
-          : pnpmRemedy ?? (result.failedAction === "install"
+        let reason: string;
+        if (result.reason === "pnpm-global-bin") reason = `la configuración global de pnpm no está lista. ${pnpmRemedy}`;
+        else if (result.failedAction === "verify") reason = "el ejecutable de PATH no coincide con la versión verificada del proveedor o Chromium no está listo";
+        else reason = pnpmRemedy ?? (result.failedAction === "install"
           ? "no se pudo instalar el paquete global"
           : result.failedAction === "install-browser"
             ? "no se pudo descargar el navegador"
@@ -1019,9 +1038,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           exitCode = 1;
           p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
         } else {
-          const verified = preparedEnv === undefined
+          const verified = verifiedCapability ?? (preparedEnv === undefined
             ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
-            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version });
+            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version }));
           if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
             && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
             opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);

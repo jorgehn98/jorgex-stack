@@ -706,6 +706,39 @@ describe("Playwright verified-provider install [T14-RED]", () => {
     ]);
   });
 
+  it("does not enable Playwright when the executable in PATH fails final verification", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-shadowed-bin-"));
+    const homeDir = path.join(root, "home");
+    const events: string[] = [];
+    const persistEnabled = vi.fn();
+    const verify = vi.fn(() => false);
+    try {
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        stubProviderFetch(events, OBSERVED_BYTES);
+        try {
+          const deps = {
+            run: async () => true,
+            persistEnabled,
+            verify,
+          };
+          await expect(install.runInstall({
+            runtimes: [], dryRun: false, yes: true,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+            playwrightToolConsent: explicitConsent(),
+            playwrightToolDeps: deps,
+          })).resolves.toBe(1);
+          expect(verify).toHaveBeenCalledOnce();
+          expect(persistEnabled).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("runs no pnpm action and marks no preference when the tarball integrity mismatches", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-provider-sri-mismatch-"));
     const homeDir = path.join(root, "home");

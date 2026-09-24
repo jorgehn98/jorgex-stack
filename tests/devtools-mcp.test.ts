@@ -495,6 +495,30 @@ describe("optional Chrome DevTools MCP", () => {
     expectUserConfigPreserved(runtime, uninstalledContent);
   });
 
+  it.each(RUNTIMES)("%s disables a legacy owned server without an observed version", (runtime) => {
+    const root = tempDir();
+    const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
+    const file = configFile(runtime, configDir);
+    const adapter = adapterFor(runtime);
+    writeUserConfig(runtime, file);
+    const oldObserved = { ...OBSERVED_DEVTOOLS, version: "1.6.0" };
+    const legacyCanonical = loadCanonicalMcp(stackRoot());
+    const legacyServer = materializeCanonicalDevtoolsServer(legacyCanonical.servers[DEVTOOLS_SERVER]!, oldObserved);
+    const [installed] = adapter.planMainConfig({ servers: { ...legacyCanonical.servers, [DEVTOOLS_SERVER]: legacyServer } }, {
+      ...context(runtime, configDir, true), devtoolsMcpObservedVersion: oldObserved,
+    });
+    expect(installed).toMatchObject({ kind: "write" });
+    fs.writeFileSync(file, (installed as { content: string }).content);
+
+    const disabled = context(runtime, configDir, false, true);
+    const actions = planMcp(adapter, disabled);
+    const configAction = actions.find((action) => action.kind === "write" && action.target === file);
+    expect(configAction).toBeDefined();
+    const content = (configAction as { content: string }).content;
+    expectDevToolsAbsent(runtime, content);
+    expectUserConfigPreserved(runtime, content);
+  });
+
   it.each(RUNTIMES)("%s releases ownership but preserves a formerly owned server extended by the user", (runtime) => {
     const root = tempDir();
     const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
@@ -856,10 +880,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
       try {
         stubFlowFetch(fetchEvents, FLOW_BYTES);
         try {
-          // Outcome-agnostic by design: these modes must never reach the
-          // provider either by skipping verification or by failing closed
-          // before it. The contract under test is strictly "no fetch".
-          await install.runInstall({
+          const code = await install.runInstall({
             runtimes: ["opencode"],
             ...(kind === "target-dir" ? { targetDir } : {}),
             dryRun: kind === "dry-run",
@@ -867,10 +888,11 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
             mode: { mode: "human", subagentConcurrency: "serial" },
             ...(kind === "sync" ? { command: "sync" as const } : {}),
             devtoolsMcpSelection: { opencode: true },
-          }).then(
-            () => undefined,
-            () => undefined,
-          );
+          });
+          expect(code).toBe(kind === "target-dir" ? 1 : 0);
+          if (kind === "sync") {
+            expectDevToolsServer("opencode", fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
+          }
         } finally {
           vi.unstubAllGlobals();
         }
@@ -1054,7 +1076,7 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
         const originalDetect = adapter.detect;
         adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
         try {
-          await install.runInstall({
+          const code = await install.runInstall({
             runtimes: ["opencode"],
             ...(kind === "target-dir" ? { targetDir } : {}),
             dryRun: kind === "dry-run",
@@ -1062,10 +1084,8 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
             mode: { mode: "human", subagentConcurrency: "serial" },
             ...(kind === "sync" ? { command: "sync" as const } : {}),
             ...(kind === "no-opt-in" ? {} : { devtoolsMcpSelection: { opencode: true } }),
-          }).then(
-            () => undefined,
-            () => undefined,
-          );
+          });
+          expect(code).toBe(kind === "no-opt-in" ? 0 : 1);
         } finally {
           adapter.detect = originalDetect;
         }

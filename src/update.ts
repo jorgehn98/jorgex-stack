@@ -970,6 +970,9 @@ export async function runInteractiveUpdate(
     } catch {
       upstream = null;
     }
+    if (upstream === null) {
+      p.log.warn("Playwright CLI: no se pudo consultar npm; no se ha comprobado si hay una versión nueva. Revisa la conexión y reintenta 'jorgex-stack update'.");
+    }
     const stale = cliState.status !== "current";
     const newer = upstream !== null && observedVersion !== null && upstream !== observedVersion;
     if (stale || newer) {
@@ -981,7 +984,7 @@ export async function runInteractiveUpdate(
         label: `Playwright CLI: ${current} → ${target}`,
         hint: "pnpm add --global @playwright/cli (verificado)",
       });
-    } else {
+    } else if (upstream !== null) {
       const report = resolvePlaywrightUpdateCheck({ enabled: true, cli: cliState, observedVersion });
       if (report) p.log[report.level](report.message);
       else p.log.success(`Playwright CLI: ${observedVersion ?? cliState.detectedVersion ?? "desconocido"} — al día.`);

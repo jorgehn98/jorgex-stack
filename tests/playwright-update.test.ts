@@ -214,6 +214,42 @@ afterEach(() => {
 });
 
 describe("Playwright update", () => {
+  it("reports unavailable provider discovery instead of calling an observed local version current", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-discovery-offline-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    try {
+      await withTempHome(homeDir, async () => {
+        vi.doMock("../src/lib/external-tools.js", async (importOriginal) => ({
+          ...(await importOriginal<typeof import("../src/lib/external-tools.js")>()),
+          detectPlaywrightCli: () => ({
+            status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: PREVIOUS_OBSERVED.version,
+          }),
+        }));
+        const { runInteractiveUpdate } = await import("../src/update.js");
+        vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url.endsWith("/@playwright/cli/latest")) return new Response("unavailable", { status: 503 });
+          return new Response(JSON.stringify({ version: "1.1.0" }), { status: 200 });
+        });
+        try {
+          await withTty(() => runInteractiveUpdate("1.1.0", false));
+          expect(mocks.prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining("no se pudo consultar npm"));
+        } finally {
+          vi.unstubAllGlobals();
+          vi.doMock("../src/lib/external-tools.js", async (importOriginal) => ({
+            ...(await importOriginal<typeof import("../src/lib/external-tools.js")>()),
+            detectPlaywrightCli: () => ({
+              status: "outdated", binPath: "C:/pnpm/playwright-cli.cmd", detectedVersion: "0.1.16",
+            }),
+          }));
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("updates the pinned package and browser without requiring a runtime sync", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-update-sandbox-"));
     const homeDir = path.join(root, "home");

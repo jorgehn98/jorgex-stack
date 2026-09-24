@@ -478,6 +478,15 @@ describe("Playwright prompt install ordering", () => {
         executePlaywrightToolAction: vi.fn(() => ({ ok: true })),
         resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
       }));
+      vi.doMock("../src/lib/playwright-capability.js", async () => ({
+        ...(await vi.importActual<typeof import("../src/lib/playwright-capability.js")>("../src/lib/playwright-capability.js")),
+        inspectPlaywrightCapability: vi.fn(() => ({
+          cli: { status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: PLAYWRIGHT_OBSERVED.version },
+          browserCache: { status: "ready", path: "/isolated/cache" },
+          browserVerified: true,
+          effective: true,
+        })),
+      }));
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, path.join(configRoot, "opencode"));
       const fetchEvents: string[] = [];
@@ -512,6 +521,7 @@ describe("Playwright prompt install ordering", () => {
         restoreDetect();
         vi.unstubAllGlobals();
         vi.doUnmock("../src/lib/external-tools.js");
+        vi.doUnmock("../src/lib/playwright-capability.js");
       }
     });
   });

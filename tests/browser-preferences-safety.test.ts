@@ -600,6 +600,41 @@ describe("browser preference safety", () => {
     }
   });
 
+  it("uninstalls an exact legacy DevTools entry without an observed version", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-legacy-uninstall-"));
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const preference = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+    try {
+      writeModelMap(homeDir);
+      fs.writeFileSync(preference, JSON.stringify({
+        version: 1, enabled: { opencode: true }, owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+      }) + "\n");
+      const configFile = writeDevtoolsConfig(configDir);
+      const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as { mcp: Record<string, { command: string[] }> };
+      config.mcp[DEVTOOLS_SERVER]!.command = [
+        "pnpm", "dlx", "chrome-devtools-mcp@1.6.0", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+      ];
+      fs.writeFileSync(configFile, JSON.stringify(config) + "\n");
+
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        const { runUninstall } = await import("../src/uninstall.js");
+        const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+        try {
+          await expect(runUninstall({
+            runtimes: ["opencode"], dryRun: false, yes: true, removeEngram: false, removePlaywright: false,
+          })).resolves.toBe(0);
+          expect(hasDevtoolsServer(configFile)).toBe(false);
+        } finally {
+          restoreDetect();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps DevTools ownership when its runtime config is unreadable", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-uninstall-unreadable-"));
     const homeDir = path.join(root, "home");
