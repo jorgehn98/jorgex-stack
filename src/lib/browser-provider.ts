@@ -311,8 +311,9 @@ async function runDevtoolsCli(
 }
 
 /**
- * Install the exact local DevTools tarball isolated and prove the mandatory
- * privacy flags via `--help`. Fails closed (without config writes outside
+ * Install the exact local DevTools tarball in isolation, check that `--help`
+ * advertises the mandatory privacy flags, and probe the parser to prove their
+ * effects. Fails closed (without config writes outside
  * the stage) on a non-regular artifact, an escaping stage, a manifest
  * name/version mismatch against the provided release, a missing or escaping
  * stage-local bin, a nonzero help status, an over-bound or flag-incomplete
