@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { resolveLatestNpmPackageRelease } from "./npm-provider.js";
 
 export interface PiReleaseCandidate {
   version: string;
@@ -8,9 +9,7 @@ export interface PiReleaseCandidate {
   integrity: string;
 }
 
-const REGISTRY_URL = "https://registry.npmjs.org/jorgex-pi";
 const REGISTRY_HOST = "registry.npmjs.org";
-const ACCEPT = "application/vnd.npm.install-v1+json";
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -73,72 +72,24 @@ function assertCanonicalIntegrity(integrity: unknown): asserts integrity is stri
 /**
  * T06 tracer: resolve the exact stable `dist-tags.latest` candidate from the
  * official npm packument. Metadata only — no download, install, or staging.
+ * Thin wrapper over the generic npm provider; maps provider errors to the
+ * prior `pi-release-resolver:` prefix.
  */
 export async function resolveLatestPiRelease(
   fetchImpl: typeof fetch,
 ): Promise<PiReleaseCandidate> {
-  const response = await fetchImpl(REGISTRY_URL, {
-    headers: { Accept: ACCEPT },
-    redirect: "error",
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) fail(`registry responded ${response.status}`);
-  if (response.url !== REGISTRY_URL) fail(`unexpected response URL ${response.url}`);
-
-  const lengthHeader = response.headers.get("content-length");
-  if (lengthHeader !== null) {
-    const trimmed = lengthHeader.trim();
-    if (!/^\d+$/.test(trimmed)) fail("invalid content-length");
-    if (Number(trimmed) > MAX_METADATA_BYTES) fail("metadata exceeds 4 MiB");
-  }
-  const text = await readBoundedText(response);
-
-  let data: unknown;
   try {
-    data = JSON.parse(text) as unknown;
-  } catch {
-    fail("malformed packument JSON");
+    return await resolveLatestNpmPackageRelease("jorgex-pi", fetchImpl);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("pi-release-resolver: ")) throw error;
+    if (error instanceof Error) {
+      const detail = error.message.startsWith("npm-provider: ")
+        ? error.message.slice("npm-provider: ".length)
+        : error.message;
+      throw new Error(`pi-release-resolver: ${detail}`);
+    }
+    throw new Error(`pi-release-resolver: ${String(error)}`);
   }
-  if (!isRecord(data) || data["name"] !== "jorgex-pi") fail("malformed packument name");
-
-  const tags = data["dist-tags"];
-  if (!isRecord(tags) || typeof tags["latest"] !== "string") fail("missing dist-tags.latest");
-  const latest = tags["latest"] as string;
-  if (!STABLE_SEMVER.test(latest)) fail(`unstable or malformed version ${latest}`);
-
-  const versions = data["versions"];
-  if (!isRecord(versions)) fail("missing versions map");
-  const entry = versions[latest];
-  if (!isRecord(entry)) fail(`missing versions[${latest}]`);
-  if (entry["name"] !== "jorgex-pi" || entry["version"] !== latest) {
-    fail("version mismatch in versions entry");
-  }
-  if (entry["deprecated"] !== undefined) fail(`version ${latest} is deprecated`);
-
-  const dist = entry["dist"];
-  if (!isRecord(dist)) fail("missing dist");
-  const { tarball, integrity } = dist;
-  if (typeof tarball !== "string" || typeof integrity !== "string") {
-    fail("missing dist.tarball/integrity");
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(tarball);
-  } catch {
-    fail("foreign tarball URL");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.host !== REGISTRY_HOST ||
-    tarball !== canonicalTarballUrl(latest)
-  ) {
-    fail("foreign tarball URL");
-  }
-
-  assertCanonicalIntegrity(integrity);
-
-  return { version: latest, tarballUrl: tarball, integrity };
 }
 
 export interface PiTarballArtifact {
