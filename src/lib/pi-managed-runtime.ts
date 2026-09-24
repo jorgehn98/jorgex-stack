@@ -279,11 +279,11 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   let devtoolsVerifiedForPersist: ObservedVersion | undefined;
   if (needsDevtoolsObservation) {
     if (input.targetDir !== undefined) {
-       devtoolsMcpObservedVersion = isValidObservedVersion(injectedDevtoolsObserved)
+      devtoolsMcpObservedVersion = isValidObservedVersion(injectedDevtoolsObserved)
         ? { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity }
         : null;
     } else if ((input.operation === "install" || input.operation === "update") && explicitDevtools === true) {
-       if (isValidObservedVersion(injectedDevtoolsObserved)) {
+      if (isValidObservedVersion(injectedDevtoolsObserved)) {
         devtoolsMcpObservedVersion = { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity };
         devtoolsVerifiedForPersist = devtoolsMcpObservedVersion;
       } else {
@@ -305,7 +305,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
           };
         }
         const observed = { version: release.version, integrity: release.integrity };
-       if (!isValidObservedVersion(observed)) {
+        if (!isValidObservedVersion(observed)) {
           return {
             kind: "blocked",
             reason: "devtools-verification-failed",
