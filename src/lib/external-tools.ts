@@ -7,9 +7,56 @@ import { lookPath, planDetectedBinCommand, runDetectedBin } from "./detect.js";
 export const PLAYWRIGHT_CLI = {
   packageName: "@playwright/cli",
   bin: "playwright-cli",
-  version: "0.1.18",
   browserInstallAction: "install-browser",
 } as const;
+
+export interface PlaywrightCliCandidate {
+  version: string;
+  tarballUrl: string;
+  integrity: string;
+}
+
+const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+function canonicalPlaywrightCliTarballUrl(version: string): string {
+  const packageName = PLAYWRIGHT_CLI.packageName;
+  const shortName = packageName.includes("/")
+    ? packageName.slice(packageName.lastIndexOf("/") + 1)
+    : packageName;
+  return `https://registry.npmjs.org/${packageName}/-/${shortName}-${version}.tgz`;
+}
+
+function isCanonicalSha512Integrity(integrity: unknown): integrity is string {
+  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) return false;
+  const b64 = integrity.slice("sha512-".length);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(b64, "base64");
+  } catch {
+    return false;
+  }
+  return bytes.length === 64 && bytes.toString("base64") === b64;
+}
+
+function isValidPlaywrightCliCandidate(candidate: unknown): candidate is PlaywrightCliCandidate {
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  const record = candidate as Record<string, unknown>;
+  const { version, tarballUrl, integrity } = record;
+  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) return false;
+  if (typeof tarballUrl !== "string" || tarballUrl !== canonicalPlaywrightCliTarballUrl(version)) return false;
+  if (!isCanonicalSha512Integrity(integrity)) return false;
+  return true;
+}
+
+function assertValidPlaywrightCliCandidate(
+  candidate: unknown,
+  action: string,
+): asserts candidate is PlaywrightCliCandidate {
+  if (!isValidPlaywrightCliCandidate(candidate)) {
+    throw new Error(`playwright-cli: ${action} requires an explicit verified candidate (version/tarballUrl/integrity)`);
+  }
+}
 
 export type PlaywrightCliStatus = "absent" | "broken" | "current" | "outdated" | "not-in-path";
 
@@ -84,21 +131,30 @@ function parsePlaywrightCliVersion(output: string | null): string | null {
 }
 
 /** Resuelve el estado desde valores inyectables para no acoplarlo a PATH ni a procesos. */
-export function resolvePlaywrightCliState({ binPath, versionOutput }: PlaywrightCliDetectionInput): PlaywrightCliState {
+export function resolvePlaywrightCliState(
+  { binPath, versionOutput }: PlaywrightCliDetectionInput,
+  expectedVersion: string | undefined,
+): PlaywrightCliState {
   if (binPath === null) return { status: "absent", binPath: null, detectedVersion: null };
 
   const detectedVersion = parsePlaywrightCliVersion(versionOutput);
   if (detectedVersion === null) return { status: "broken", binPath, detectedVersion: null };
 
+  // Fail closed: without an explicit observed version there is no safe
+  // "current" — never silently accept a fixed pin such as the old 0.1.18.
+  if (typeof expectedVersion !== "string" || !STABLE_SEMVER.test(expectedVersion)) {
+    return { status: "outdated", binPath, detectedVersion };
+  }
+
   return {
-    status: detectedVersion === PLAYWRIGHT_CLI.version ? "current" : "outdated",
+    status: detectedVersion === expectedVersion ? "current" : "outdated",
     binPath,
     detectedVersion,
   };
 }
 
 /** Detecta la herramienta con el mismo acceso seguro a PATH/procesos que el resto del CLI. */
-export function detectPlaywrightCli(env?: NodeJS.ProcessEnv): PlaywrightCliState {
+export function detectPlaywrightCli(env?: NodeJS.ProcessEnv, expectedVersion?: string): PlaywrightCliState {
   const actualEnv = env ?? process.env;
   const binPath = env === undefined
     ? lookPath(PLAYWRIGHT_CLI.bin)
@@ -113,7 +169,7 @@ export function detectPlaywrightCli(env?: NodeJS.ProcessEnv): PlaywrightCliState
   return resolvePlaywrightCliState({
     binPath,
     versionOutput: binPath ? runDetectedBin(binPath, ["--version"], 5_000, { ...actualEnv, NO_UPDATE_NOTIFIER: "1" }) : null,
-  });
+  }, expectedVersion);
 }
 
 /** Resuelve pnpm para que los callers ejecuten el plan sin shell. */
@@ -201,15 +257,22 @@ export function isPlaywrightBrowserReady(
 }
 
 /** Planifica argv directo y pinneado; la ejecución pertenece al flujo que lo solicita. */
-export function planPlaywrightCliCommand(action: PlaywrightCliAction, pnpmBin: string): CommandPlan {
-  const pinnedPackage = `${PLAYWRIGHT_CLI.packageName}@${PLAYWRIGHT_CLI.version}`;
+export function planPlaywrightCliCommand(
+  action: PlaywrightCliAction,
+  pnpmBin: string,
+  candidate: PlaywrightCliCandidate | undefined,
+): CommandPlan {
+  if (action === "remove") {
+    return { command: pnpmBin, args: ["remove", "--global", PLAYWRIGHT_CLI.packageName] };
+  }
+
+  assertValidPlaywrightCliCandidate(candidate, action);
+  const pinnedPackage = `${PLAYWRIGHT_CLI.packageName}@${candidate.version}`;
 
   switch (action) {
     case "install":
     case "update":
       return { command: pnpmBin, args: ["add", "--global", pinnedPackage] };
-    case "remove":
-      return { command: pnpmBin, args: ["remove", "--global", PLAYWRIGHT_CLI.packageName] };
     case "install-browser":
       return { command: pnpmBin, args: ["dlx", pinnedPackage, PLAYWRIGHT_CLI.browserInstallAction, "chromium"] };
   }
@@ -218,19 +281,23 @@ export function planPlaywrightCliCommand(action: PlaywrightCliAction, pnpmBin: s
 /** Comprueba que Chromium del CLI global puede arrancar en un perfil efímero, sin abrir sitios externos. */
 export function verifyPlaywrightBrowser(
   pnpmBin: string,
-  env: NodeJS.ProcessEnv = process.env,
-  cwd?: string,
+  env: NodeJS.ProcessEnv | undefined,
+  cwd: string | undefined,
+  expectedVersion: string | undefined,
 ): boolean {
+  if (typeof pnpmBin !== "string" || pnpmBin === "") return false;
+  if (typeof expectedVersion !== "string" || !STABLE_SEMVER.test(expectedVersion)) return false;
+  const actualEnv = env ?? process.env;
   const rootCommand = planDetectedBinCommand(pnpmBin, ["root", "--global"]);
   if (rootCommand === null) return false;
   try {
     const root = execFileSync(rootCommand.command, rootCommand.args, {
-      encoding: "utf8", timeout: 5_000, env, cwd, stdio: ["ignore", "pipe", "inherit"],
+      encoding: "utf8", timeout: 5_000, env: actualEnv, cwd, stdio: ["ignore", "pipe", "inherit"],
     }).trim();
     if (!path.isAbsolute(root)) return false;
     const packageFile = fs.realpathSync(path.join(root, "@playwright", "cli", "package.json"));
     const installed = JSON.parse(fs.readFileSync(packageFile, "utf8")) as { name?: string; version?: string };
-    if (installed.name !== PLAYWRIGHT_CLI.packageName || installed.version !== PLAYWRIGHT_CLI.version) return false;
+    if (installed.name !== PLAYWRIGHT_CLI.packageName || installed.version !== expectedVersion) return false;
     const probe = `
       const { createRequire } = require('node:module');
       const { chromium } = createRequire(process.argv[1])('playwright');
@@ -243,7 +310,7 @@ export function verifyPlaywrightBrowser(
       })().catch(error => { console.error(error.message); process.exitCode = 1; });
     `;
     execFileSync(process.execPath, ["-e", probe, packageFile], {
-      timeout: 25_000, stdio: "inherit", cwd, env: { ...env, NO_UPDATE_NOTIFIER: "1" },
+      timeout: 25_000, stdio: "inherit", cwd, env: { ...actualEnv, NO_UPDATE_NOTIFIER: "1" },
     });
     return true;
   } catch {
@@ -254,9 +321,14 @@ export function verifyPlaywrightBrowser(
 /** Ejecuta el plan pinneado sin shell y reutiliza el puente seguro para shims Windows. */
 export function executePlaywrightToolAction(
   action: PlaywrightCliAction,
-  pnpmBin = resolvePnpmBin(),
-  env?: NodeJS.ProcessEnv,
+  pnpmBin: string | null,
+  env: NodeJS.ProcessEnv | undefined,
+  candidate: PlaywrightCliCandidate | undefined,
 ): PlaywrightToolActionResult {
+  if (action !== "remove" && !isValidPlaywrightCliCandidate(candidate)) {
+    return { ok: false, reason: "action-failed" };
+  }
+
   if (pnpmBin === null) return { ok: false, reason: "pnpm-unavailable" };
 
   if (action !== "install-browser") {
@@ -274,7 +346,12 @@ export function executePlaywrightToolAction(
     }
   }
 
-  const command = planPlaywrightCliCommand(action, pnpmBin);
+  let command: CommandPlan;
+  try {
+    command = planPlaywrightCliCommand(action, pnpmBin, candidate);
+  } catch {
+    return { ok: false, reason: "action-failed" };
+  }
   const invocation = planDetectedBinCommand(command.command, command.args);
   if (invocation === null) return { ok: false, reason: "pnpm-command" };
 
@@ -285,7 +362,10 @@ export function executePlaywrightToolAction(
     execFileSync(invocation.command, invocation.args, {
       stdio: "inherit", env: childEnv, ...(cwd === undefined ? {} : { cwd }),
     });
-    if (action === "install-browser" && !verifyPlaywrightBrowser(pnpmBin, childEnv, cwd)) {
+    if (
+      action === "install-browser"
+      && !verifyPlaywrightBrowser(pnpmBin, childEnv, cwd, (candidate as PlaywrightCliCandidate).version)
+    ) {
       return { ok: false, reason: "browser-launch" };
     }
     return { ok: true };

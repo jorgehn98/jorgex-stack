@@ -52,15 +52,105 @@ vi.mock("../src/lib/external-tools.js", async (importOriginal) => {
   };
 });
 
+// Unconditional test guard: no save may reach the real HOME. Every
+// savePlaywrightCliPreference/saveDevtoolsMcpPreference/saveDevtoolsMcpOwnership
+// call must target a strict child of the currently active fake HOME when a
+// sandbox is active, or an explicit temp file under os.tmpdir() otherwise.
+// Direct temp file helper tests remain allowed; default destinations outside
+// the active temp home are refused before delegating to the real save.
+const guard = vi.hoisted(() => ({ allowedHome: null as string | null }));
+
+vi.mock("../src/lib/paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/paths.js")>();
+  const pathMod = await import("node:path");
+  return {
+    ...actual,
+    get HOME() {
+      return guard.allowedHome !== null ? pathMod.resolve(guard.allowedHome) : actual.HOME;
+    },
+    dataDir: () => {
+      if (guard.allowedHome !== null) return pathMod.join(pathMod.resolve(guard.allowedHome), ".jorgex-stack");
+      return actual.dataDir();
+    },
+  };
+});
+
+vi.mock("../src/lib/tool-preferences.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/tool-preferences.js")>();
+  const pathMod = await import("node:path");
+  const osMod = await import("node:os");
+  function isStrictChildOf(child: string, root: string): boolean {
+    const relative = pathMod.relative(pathMod.resolve(root), pathMod.resolve(child));
+    return relative !== ""
+      && relative !== ".."
+      && !relative.startsWith(`..${pathMod.sep}`)
+      && !pathMod.isAbsolute(relative);
+  }
+  function assertSandboxed(file: string, fn: string): void {
+    const allowed = guard.allowedHome;
+    const normalizedFile = pathMod.resolve(file);
+    if (allowed !== null) {
+      if (!isStrictChildOf(normalizedFile, pathMod.resolve(allowed))) {
+        throw new Error(`test guard: ${fn} blocked outside sandbox: ${file} not under ${allowed}`);
+      }
+      return;
+    }
+    const tmp = pathMod.resolve(osMod.tmpdir());
+    if (!isStrictChildOf(normalizedFile, tmp)) {
+      throw new Error(`test guard: ${fn} blocked outside sandbox (no allowedHome) for ${file}`);
+    }
+  }
+  function sandboxedStateDir(explicit?: string): string | undefined {
+    if (explicit !== undefined) return explicit;
+    if (guard.allowedHome !== null) return pathMod.join(pathMod.resolve(guard.allowedHome), ".jorgex-stack");
+    return undefined;
+  }
+  return {
+    ...actual,
+    playwrightCliPreferenceFile: (stateDir?: string) => {
+      const resolved = sandboxedStateDir(stateDir);
+      return resolved === undefined ? actual.playwrightCliPreferenceFile() : actual.playwrightCliPreferenceFile(resolved);
+    },
+    devtoolsMcpPreferenceFile: (stateDir?: string) => {
+      const resolved = sandboxedStateDir(stateDir);
+      return resolved === undefined ? actual.devtoolsMcpPreferenceFile() : actual.devtoolsMcpPreferenceFile(resolved);
+    },
+    savePlaywrightCliPreference: (...args: Parameters<typeof actual.savePlaywrightCliPreference>) => {
+      assertSandboxed(args[0], "savePlaywrightCliPreference");
+      return actual.savePlaywrightCliPreference(...args);
+    },
+    saveDevtoolsMcpPreference: (...args: Parameters<typeof actual.saveDevtoolsMcpPreference>) => {
+      assertSandboxed(args[0], "saveDevtoolsMcpPreference");
+      return actual.saveDevtoolsMcpPreference(...args);
+    },
+    saveDevtoolsMcpOwnership: (...args: Parameters<typeof actual.saveDevtoolsMcpOwnership>) => {
+      assertSandboxed(args[0], "saveDevtoolsMcpOwnership");
+      return actual.saveDevtoolsMcpOwnership(...args);
+    },
+  };
+});
+
+function isStrictChild(child: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(child));
+  return relative !== ""
+    && relative !== ".."
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
   const originalHome = process.env.HOME;
   const originalUserProfile = process.env.USERPROFILE;
+  const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(homeDir);
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
+  guard.allowedHome = path.resolve(homeDir);
   try {
     vi.resetModules();
     return await run();
   } finally {
+    guard.allowedHome = null;
+    homedirSpy.mockRestore();
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     if (originalUserProfile === undefined) delete process.env.USERPROFILE;
@@ -110,12 +200,21 @@ function setOnlyOpenCodeDetected(install: typeof import("../src/install.js"), co
   };
 }
 
+async function assertPreferencesSandboxed(homeDir: string): Promise<void> {
+  const { dataDir } = await import("../src/lib/paths.js");
+  const { playwrightCliPreferenceFile, devtoolsMcpPreferenceFile } = await import("../src/lib/tool-preferences.js");
+  expect(isStrictChild(playwrightCliPreferenceFile(dataDir()), homeDir)).toBe(true);
+  expect(isStrictChild(devtoolsMcpPreferenceFile(dataDir()), homeDir)).toBe(true);
+}
+
 afterEach(() => {
   mocks.detectPlaywrightCli.mockClear();
   mocks.isPlaywrightBrowserReady.mockClear();
   mocks.executePlaywrightToolAction.mockClear();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  guard.allowedHome = null;
+  vi.resetModules();
 });
 
 describe("browser preference safety", () => {
@@ -176,6 +275,7 @@ describe("browser preference safety", () => {
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
         const { runUninstall } = await import("../src/uninstall.js");
+        await assertPreferencesSandboxed(homeDir);
         const restoreDetect = setOnlyOpenCodeDetected(install, targetDir);
         try {
           const configFile = writeDevtoolsConfig(targetDir);
@@ -201,6 +301,7 @@ describe("browser preference safety", () => {
           fs.writeFileSync(devtoolsPreference, devtoolsState);
           fs.writeFileSync(playwrightPreference, playwrightState);
           writeDevtoolsConfig(targetDir);
+          await assertPreferencesSandboxed(homeDir);
           const uninstallCode = await runUninstall({
             runtimes: ["opencode"],
             targetDir,
@@ -241,6 +342,7 @@ describe("browser preference safety", () => {
       writeModelMap(homeDir);
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
+        await assertPreferencesSandboxed(homeDir);
         const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
         try {
           await expect(install.runInstall({
@@ -305,6 +407,7 @@ describe("browser preference safety", () => {
         const install = await import("../src/install.js");
         const { runUpdateCheck } = await import("../src/update.js");
         const { runUninstall } = await import("../src/uninstall.js");
+        await assertPreferencesSandboxed(homeDir);
 
         const installCode = await install.runInstall({
           runtimes: [],
@@ -337,6 +440,7 @@ describe("browser preference safety", () => {
     try {
       await withTempHome(homeDir, async () => {
         const { runInstall } = await import("../src/install.js");
+        await assertPreferencesSandboxed(homeDir);
 
         await expect(runInstall({
           runtimes: [],
@@ -374,6 +478,7 @@ describe("browser preference safety", () => {
     try {
       await withTempHome(homeDir, async () => {
         const { runInstall } = await import("../src/install.js");
+        await assertPreferencesSandboxed(homeDir);
 
         await expect(runInstall({
           runtimes: [],
@@ -425,6 +530,7 @@ describe("browser preference safety", () => {
 
       await withTempHome(homeDir, async () => {
         const { runInstall } = await import("../src/install.js");
+        await assertPreferencesSandboxed(homeDir);
         await expect(runInstall({
           runtimes: [],
           dryRun: false,
@@ -470,6 +576,7 @@ describe("browser preference safety", () => {
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
         const { runUninstall } = await import("../src/uninstall.js");
+        await assertPreferencesSandboxed(homeDir);
         const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
         try {
           await expect(runUninstall({
@@ -512,6 +619,7 @@ describe("browser preference safety", () => {
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
         const { runUninstall } = await import("../src/uninstall.js");
+        await assertPreferencesSandboxed(homeDir);
         const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
         try {
           await expect(runUninstall({
@@ -542,7 +650,16 @@ describe("browser preference safety", () => {
     const stateDir = path.join(homeDir, ".jorgex-stack");
     const devtoolsPreference = path.join(stateDir, "devtools-mcp.json");
     const playwrightPreference = path.join(stateDir, "playwright-cli.json");
-    const devtoolsState = JSON.stringify({ version: 1, enabled: { opencode: true }, owned: { opencode: { [DEVTOOLS_SERVER]: true } } }) + "\n";
+    const devtoolsObserved = {
+      version: "9.9.20",
+      integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}`,
+    };
+    const devtoolsState = JSON.stringify({
+      version: 1,
+      enabled: { opencode: true },
+      owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+      observed: devtoolsObserved,
+    }) + "\n";
     const playwrightState = JSON.stringify({ version: 1, enabled: true }) + "\n";
     const installActions: string[] = [];
 
@@ -554,6 +671,7 @@ describe("browser preference safety", () => {
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
         const { runUninstall } = await import("../src/uninstall.js");
+        await assertPreferencesSandboxed(homeDir);
         const restoreDetect = setOnlyOpenCodeDetected(install, targetDir);
         try {
           writeDevtoolsConfig(targetDir);
@@ -579,6 +697,7 @@ describe("browser preference safety", () => {
               persistEnabled: () => undefined,
             },
           });
+          await assertPreferencesSandboxed(homeDir);
           const uninstallCode = await runUninstall({
             runtimes: ["opencode"],
             targetDir,
@@ -600,6 +719,186 @@ describe("browser preference safety", () => {
           restoreDetect();
         }
       });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("browser observed-version preferences [T14-RED]", () => {
+  type Observed = { version: string; integrity: string };
+  const PLAYWRIGHT_OBSERVED: Observed = {
+    version: "9.9.10",
+    integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}`,
+  };
+  const DEVTOOLS_OBSERVED: Observed = {
+    version: "9.9.20",
+    integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}`,
+  };
+
+  type ObservationPrefs = {
+    savePlaywrightCliPreference(
+      file: string,
+      enabled: boolean,
+      selection?: Record<string, boolean>,
+      observed?: Observed,
+    ): void;
+    loadPlaywrightCliObservation(file: string): Observed | null;
+    loadPlaywrightCliPreference(file: string, runtime?: string): boolean | undefined;
+    saveDevtoolsMcpPreference(
+      file: string,
+      runtime: string,
+      enabled: boolean,
+      observed?: Observed,
+    ): void;
+    loadDevtoolsMcpObservation(file: string): Observed | null;
+    loadDevtoolsMcpPreference(file: string, runtime: string): boolean;
+    loadDevtoolsMcpOwnership(file: string, runtime: string, server: string): boolean;
+  };
+
+  async function loadObservationPrefs(): Promise<ObservationPrefs> {
+    const mod = (await import("../src/lib/tool-preferences.js")) as unknown as Partial<ObservationPrefs>;
+    expect(
+      mod.loadPlaywrightCliObservation,
+      "loadPlaywrightCliObservation must be exported from src/lib/tool-preferences.ts",
+    ).toBeTypeOf("function");
+    expect(
+      mod.loadDevtoolsMcpObservation,
+      "loadDevtoolsMcpObservation must be exported from src/lib/tool-preferences.ts",
+    ).toBeTypeOf("function");
+    return mod as ObservationPrefs;
+  }
+
+  it("records the observed Playwright candidate while preserving other runtimes and migrating v1", async () => {
+    const prefs = await loadObservationPrefs();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-observed-"));
+    try {
+      const file = path.join(root, "playwright-cli.json");
+      fs.writeFileSync(file, JSON.stringify({ version: 2, enabled: { opencode: true, codex: false } }) + "\n");
+
+      prefs.savePlaywrightCliPreference(file, true, { pi: true }, PLAYWRIGHT_OBSERVED);
+
+      expect(prefs.loadPlaywrightCliPreference(file, "pi")).toBe(true);
+      expect(prefs.loadPlaywrightCliPreference(file, "opencode")).toBe(true);
+      expect(prefs.loadPlaywrightCliPreference(file, "codex")).toBe(false);
+      expect(prefs.loadPlaywrightCliObservation(file)).toEqual(PLAYWRIGHT_OBSERVED);
+
+      fs.writeFileSync(file, JSON.stringify({ version: 1, enabled: true }) + "\n");
+      prefs.savePlaywrightCliPreference(file, true, { pi: true }, PLAYWRIGHT_OBSERVED);
+
+      expect(prefs.loadPlaywrightCliPreference(file, "pi")).toBe(true);
+      expect(prefs.loadPlaywrightCliObservation(file)).toEqual(PLAYWRIGHT_OBSERVED);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an invalid observed Playwright candidate without mutation", async () => {
+    const prefs = await loadObservationPrefs();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-observed-invalid-"));
+    try {
+      const file = path.join(root, "playwright-cli.json");
+      const initial = JSON.stringify({ version: 2, enabled: { opencode: true } }) + "\n";
+      fs.writeFileSync(file, initial);
+      const prerelease: Observed = {
+        version: "9.9.10-beta.1",
+        integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}`,
+      };
+      const malformed: Observed = { version: "9.9.10", integrity: "sha512-!!not-base64!!" };
+
+      expect(() => prefs.savePlaywrightCliPreference(file, true, { pi: true }, prerelease)).toThrow();
+      expect(fs.readFileSync(file, "utf8")).toBe(initial);
+      expect(() => prefs.savePlaywrightCliPreference(file, true, { pi: true }, malformed)).toThrow();
+      expect(fs.readFileSync(file, "utf8")).toBe(initial);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a legacy Playwright enabled record parseable with a null observation", async () => {
+    const prefs = await loadObservationPrefs();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-observed-legacy-"));
+    try {
+      const file = path.join(root, "playwright-cli.json");
+      fs.writeFileSync(file, JSON.stringify({ version: 2, enabled: { opencode: true } }) + "\n");
+
+      expect(prefs.loadPlaywrightCliPreference(file, "opencode")).toBe(true);
+      expect(prefs.loadPlaywrightCliObservation(file)).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records the observed DevTools candidate while preserving owned and enabled state", async () => {
+    const prefs = await loadObservationPrefs();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-observed-"));
+    try {
+      const file = path.join(root, "devtools-mcp.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          enabled: { opencode: true },
+          owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+        }) + "\n",
+      );
+
+      prefs.saveDevtoolsMcpPreference(file, "pi", true, DEVTOOLS_OBSERVED);
+
+      expect(prefs.loadDevtoolsMcpPreference(file, "pi")).toBe(true);
+      expect(prefs.loadDevtoolsMcpPreference(file, "opencode")).toBe(true);
+      expect(prefs.loadDevtoolsMcpOwnership(file, "opencode", DEVTOOLS_SERVER)).toBe(true);
+      expect(prefs.loadDevtoolsMcpOwnership(file, "pi", DEVTOOLS_SERVER)).toBe(false);
+      expect(prefs.loadDevtoolsMcpObservation(file)).toEqual(DEVTOOLS_OBSERVED);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an invalid observed DevTools candidate without mutation", async () => {
+    const prefs = await loadObservationPrefs();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-observed-invalid-"));
+    try {
+      const file = path.join(root, "devtools-mcp.json");
+      const initial =
+        JSON.stringify({
+          version: 1,
+          enabled: { opencode: true },
+          owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+        }) + "\n";
+      fs.writeFileSync(file, initial);
+      const prerelease: Observed = {
+        version: "9.9.20-beta.1",
+        integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}`,
+      };
+      const malformed: Observed = { version: "9.9.20", integrity: "sha512-!!not-base64!!" };
+
+      expect(() => prefs.saveDevtoolsMcpPreference(file, "pi", true, prerelease)).toThrow();
+      expect(fs.readFileSync(file, "utf8")).toBe(initial);
+      expect(() => prefs.saveDevtoolsMcpPreference(file, "pi", true, malformed)).toThrow();
+      expect(fs.readFileSync(file, "utf8")).toBe(initial);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a legacy DevTools enabled record parseable with a null observation", async () => {
+    const prefs = await loadObservationPrefs();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-observed-legacy-"));
+    try {
+      const file = path.join(root, "devtools-mcp.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          enabled: { opencode: true },
+          owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+        }) + "\n",
+      );
+
+      expect(prefs.loadDevtoolsMcpPreference(file, "opencode")).toBe(true);
+      expect(prefs.loadDevtoolsMcpOwnership(file, "opencode", DEVTOOLS_SERVER)).toBe(true);
+      expect(prefs.loadDevtoolsMcpObservation(file)).toBeNull();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -745,3 +745,320 @@ describe("[T14-RED] shared verified browser release composes resolve plus verifi
     expect(fs.readdirSync(parent)).toEqual([]);
   });
 });
+
+/**
+ * T14-RED artifact seam: SRI alone cannot prove a future DevTools CLI still
+ * accepts the four mandatory privacy flags. Evidence from the isolated
+ * published v1.10.1 (installed via `pnpm add --ignore-scripts <tarball>`
+ * under temp HOME; `<bin> --isolated --redact-network-headers
+ * --no-performance-crux --no-usage-statistics --help` exited 0 listing all
+ * flags, no Chrome launched): install the exact local tarball isolated, then
+ * invoke the stage-local executable with the fixed flags plus --help and
+ * require all four flags in bounded exit-0 output. Both child calls must run
+ * with a sanitized stage-scoped env (no ambient marker, HOME, profiles, or
+ * credentials leak through). Returns the release only after that proof;
+ * wrong version/missing flag/nonzero/spawn failure block without config
+ * writes. No real processes, HOME, or credentials here: the injected run
+ * double owns the stage filesystem.
+ */
+type ArtifactEvent = {
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+type ArtifactRun = (
+  command: string,
+  args: string[],
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+) => Promise<{ status: number; stdout: string }>;
+
+type VerifyArtifactModule = {
+  verifyDevtoolsCliArtifact(
+    input: { artifactPath: string; stageDir: string; pnpmBin: string; release: NpmPackageRelease },
+    deps: { run: ArtifactRun },
+  ): Promise<unknown>;
+};
+
+async function loadVerifyArtifact(): Promise<VerifyArtifactModule> {
+  const mod = (await import(/* @vite-ignore */ browserProviderSpecifier)) as Partial<VerifyArtifactModule>;
+  expect(
+    mod.verifyDevtoolsCliArtifact,
+    "verifyDevtoolsCliArtifact must be exported from src/lib/browser-provider.ts",
+  ).toBeTypeOf("function");
+  return mod as VerifyArtifactModule;
+}
+
+const ARTIFACT_VERSION = "9.9.20";
+const ARTIFACT_PNPM_BIN = "/isolated/bin/pnpm";
+const ARTIFACT_PRIVACY_FLAGS = [
+  "--isolated",
+  "--redact-network-headers",
+  "--no-performance-crux",
+  "--no-usage-statistics",
+];
+const ARTIFACT_FULL_HELP = [
+  `chrome-devtools-mcp ${ARTIFACT_VERSION}`,
+  ...ARTIFACT_PRIVACY_FLAGS.map((flag) => `  ${flag}  synthetic help text`),
+  "  --help  synthetic help text",
+].join("\n");
+
+const artifactParents: string[] = [];
+
+function artifactParent(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-artifact-"));
+  artifactParents.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of artifactParents.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function artifactRunFake(opts: {
+  events: ArtifactEvent[];
+  stageDir: string;
+  manifest: { name: string; version: string; bin?: unknown };
+  helpStdout: string;
+  helpStatus: number;
+  spawnError?: string;
+  missingBin?: boolean;
+  missingParser?: boolean;
+  parserOutput?: string;
+}): ArtifactRun {
+  return (async (command: string, args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+    opts.events.push({ command, args, cwd: options?.cwd, env: options?.env });
+    if (opts.spawnError !== undefined) throw new Error(opts.spawnError);
+    if (args[0] === "add") {
+      const packageDir = path.join(opts.stageDir, "node_modules", "chrome-devtools-mcp");
+      fs.mkdirSync(path.join(packageDir, "bin"), { recursive: true });
+      fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({
+        ...opts.manifest,
+        bin: opts.manifest.bin ?? { "chrome-devtools-mcp": "bin/cli.js" },
+      }));
+      fs.writeFileSync(path.join(packageDir, "bin", "cli.js"), "#!/usr/bin/env node\n");
+      const configDir = path.join(packageDir, "build", "src", "config");
+      if (!opts.missingParser) {
+        fs.mkdirSync(configDir, { recursive: true });
+        fs.writeFileSync(path.join(configDir, "mcp-options.js"), "// synthetic parser fixture\n");
+      }
+      if (!opts.missingBin) {
+        const binDir = path.join(opts.stageDir, "node_modules", ".bin");
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.symlinkSync(path.join(packageDir, "bin", "cli.js"), path.join(binDir, "chrome-devtools-mcp"));
+      }
+      return { status: 0, stdout: "" };
+    }
+    if (args[0] === "--input-type=module") {
+      return { status: 0, stdout: opts.parserOutput ?? "[true,true,false,false]\n" };
+    }
+    // pnpm's .bin is a shell shim requiring sed/dirname/uname, unavailable in
+    // the restricted PATH. The smoke must invoke the declared JS bin via Node.
+    if (command !== process.execPath || args[0] !== path.join(opts.stageDir, "node_modules", "chrome-devtools-mcp", "bin", "cli.js")) {
+      return { status: 1, stdout: "" };
+    }
+    return { status: opts.helpStatus, stdout: opts.helpStdout };
+  }) as ArtifactRun;
+}
+
+function artifactRelease(): NpmPackageRelease {
+  return {
+    version: ARTIFACT_VERSION,
+    tarballUrl: canonicalTarballFor(DEVTOOLS_PKG, ARTIFACT_VERSION),
+    integrity: `sha512-${Buffer.alloc(64, 15).toString("base64")}`,
+  };
+}
+
+describe("[T14-RED] DevTools artifact keeps the mandatory privacy flags", () => {
+  it("installs the exact local tarball isolated and proves all four flags via --help", async () => {
+    const { verifyDevtoolsCliArtifact } = await loadVerifyArtifact();
+    const parent = artifactParent();
+    const stageDir = path.join(parent, "stage");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const artifactPath = path.join(parent, "chrome-devtools-mcp.tgz");
+    fs.writeFileSync(artifactPath, "synthetic-tarball-bytes\n");
+    const events: ArtifactEvent[] = [];
+    const run = artifactRunFake({
+      events,
+      stageDir,
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+    });
+    const previousMarker = process.env.JX_UNRELATED_MARKER;
+    process.env.JX_UNRELATED_MARKER = "test-only";
+
+    try {
+      await verifyDevtoolsCliArtifact(
+        { artifactPath, stageDir, pnpmBin: ARTIFACT_PNPM_BIN, release: artifactRelease() },
+        { run },
+      );
+    } finally {
+      if (previousMarker === undefined) delete process.env.JX_UNRELATED_MARKER;
+      else process.env.JX_UNRELATED_MARKER = previousMarker;
+    }
+
+    const pnpmCall = events.find((event) => event.args[0] === "add");
+    expect(pnpmCall).toMatchObject({
+      command: ARTIFACT_PNPM_BIN,
+      args: ["add", "--ignore-scripts", artifactPath],
+      cwd: stageDir,
+    });
+    const helpCall = events.find((event) => event.args.includes("--help"));
+    expect(helpCall?.command).toBe(process.execPath);
+    expect(helpCall?.args).toEqual([
+      path.join(stageDir, "node_modules", "chrome-devtools-mcp", "bin", "cli.js"),
+      ...ARTIFACT_PRIVACY_FLAGS,
+      "--help",
+    ]);
+    for (const flag of ARTIFACT_PRIVACY_FLAGS) expect(ARTIFACT_FULL_HELP).toContain(flag);
+    expect(JSON.stringify(events)).not.toContain("registry.npmjs.org");
+    expect(JSON.stringify(events)).not.toContain("@latest");
+    expect(process.env.JX_UNRELATED_MARKER).toBe(previousMarker);
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    expect(events.some((event) => event.args[0] === "--input-type=module")).toBe(true);
+    for (const event of events) {
+      const env = event.env;
+      expect(env).toBeDefined();
+      for (const key of ["HOME", "USERPROFILE", "PNPM_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR"] as const) {
+        expect(typeof env?.[key]).toBe("string");
+        expect(env?.[key]?.startsWith(stageDir)).toBe(true);
+      }
+      expect(typeof env?.PATH).toBe("string");
+      for (const entry of (env?.PATH ?? "").split(path.delimiter)) {
+        expect(entry.startsWith(stageDir)).toBe(true);
+      }
+      expect("JX_UNRELATED_MARKER" in (env ?? {})).toBe(false);
+      for (const value of Object.values(env ?? {})) {
+        if (typeof value !== "string") continue;
+        expect(value).not.toContain("ms-playwright");
+      }
+    }
+  });
+
+  it("refuses to execute a tarball without an observed release", async () => {
+    const { verifyDevtoolsCliArtifact } = await loadVerifyArtifact();
+    const parent = artifactParent();
+    const stageDir = path.join(parent, "stage");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const artifactPath = path.join(parent, "chrome-devtools-mcp.tgz");
+    fs.writeFileSync(artifactPath, "synthetic-tarball-bytes\n");
+    const events: ArtifactEvent[] = [];
+    const run = artifactRunFake({
+      events,
+      stageDir,
+      manifest: { name: "other-package", version: "0.0.0" },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+    });
+
+    await expect(verifyDevtoolsCliArtifact(
+      { artifactPath, stageDir, pnpmBin: ARTIFACT_PNPM_BIN } as Parameters<typeof verifyDevtoolsCliArtifact>[0],
+      { run },
+    )).rejects.toThrow(/invalid release/);
+    expect(events).toEqual([]);
+  });
+
+  it("blocks a package whose parser ignores redaction even when --help lists it", async () => {
+    const { verifyDevtoolsCliArtifact } = await loadVerifyArtifact();
+    const parent = artifactParent();
+    const stageDir = path.join(parent, "stage");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const artifactPath = path.join(parent, "chrome-devtools-mcp.tgz");
+    fs.writeFileSync(artifactPath, "synthetic-tarball-bytes\n");
+    const events: ArtifactEvent[] = [];
+    const run = artifactRunFake({
+      events, stageDir,
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+      parserOutput: "[true,false,false,false]\n",
+    });
+
+    await expect(verifyDevtoolsCliArtifact(
+      { artifactPath, stageDir, pnpmBin: ARTIFACT_PNPM_BIN, release: artifactRelease() },
+      { run },
+    )).rejects.toThrow(/redact|parser/i);
+  });
+
+  const blockCases: Array<{
+    name: string;
+    manifest: { name: string; version: string; bin?: unknown };
+    helpStdout: string;
+    helpStatus: number;
+    spawnError?: string;
+    missingBin?: boolean;
+    missingParser?: boolean;
+    parserOutput?: string;
+  }> = [
+    {
+      name: "wrong manifest version",
+      manifest: { name: "chrome-devtools-mcp", version: "0.0.0" },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+    },
+    {
+      name: "help text missing a required flag",
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP.split("\n")
+        .filter((line) => !line.includes("--no-performance-crux"))
+        .join("\n"),
+      helpStatus: 0,
+    },
+    {
+      name: "nonzero help status",
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 1,
+    },
+    {
+      name: "spawn failure",
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+      spawnError: "spawn ENOENT",
+    },
+    {
+      name: "missing stage-local executable",
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+      missingBin: true,
+    },
+    {
+      name: "escaping package bin entry",
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION, bin: { "chrome-devtools-mcp": "../../outside.js" } },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+    },
+    {
+      name: "missing package parser",
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP,
+      helpStatus: 0,
+      missingParser: true,
+    },
+  ];
+
+  it.each(blockCases)("blocks $name without config writes", async ({ manifest, helpStdout, helpStatus, spawnError, missingBin, missingParser }) => {
+    const { verifyDevtoolsCliArtifact } = await loadVerifyArtifact();
+    const parent = artifactParent();
+    fs.writeFileSync(path.join(parent, "sentinel"), "keep\n");
+    const stageDir = path.join(parent, "stage");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const artifactPath = path.join(parent, "chrome-devtools-mcp.tgz");
+    fs.writeFileSync(artifactPath, "synthetic-tarball-bytes\n");
+    const events: ArtifactEvent[] = [];
+    const run = artifactRunFake({ events, stageDir, manifest, helpStdout, helpStatus, spawnError, missingBin, missingParser });
+
+    await expect(
+      verifyDevtoolsCliArtifact(
+        { artifactPath, stageDir, pnpmBin: ARTIFACT_PNPM_BIN, release: artifactRelease() },
+        { run },
+      ),
+    ).rejects.toThrow(/browser-provider:/);
+    expect(fs.readdirSync(parent).sort()).toEqual(["chrome-devtools-mcp.tgz", "sentinel", "stage"]);
+    expect(fs.readFileSync(path.join(parent, "sentinel"), "utf8")).toBe("keep\n");
+  });
+});

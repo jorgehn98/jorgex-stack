@@ -22,10 +22,17 @@ function rateLimitHint(prefix: string): string {
 }
 import { diffSkillDirs, renderSkillDiff, replaceSkill, type SkillUpstreamInfo } from "./lib/skill-update.js";
 import { isContainedIn } from "./lib/fsx.js";
-import { detectPlaywrightCli, PLAYWRIGHT_CLI, resolvePnpmFailureRemedy, type PlaywrightCliState } from "./lib/external-tools.js";
+import { detectPlaywrightCli, resolvePnpmFailureRemedy, type PlaywrightCliCandidate, type PlaywrightCliState } from "./lib/external-tools.js";
 import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
-import { browserPreferenceErrors, loadPlaywrightCliPreference } from "./lib/tool-preferences.js";
+import {
+  browserPreferenceErrors,
+  loadPlaywrightCliObservation,
+  loadPlaywrightCliPreference,
+  playwrightCliPreferenceFile,
+  savePlaywrightCliPreference,
+} from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
+import { prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
 
 export interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
@@ -207,30 +214,51 @@ async function latestNpmVersion(pkg: string): Promise<string | null> {
   }
 }
 
+const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
 export interface PlaywrightUpdateCheckReport {
   level: "success" | "warn";
   message: string;
 }
 
-/** Resume el estado local frente al pin aprobado, sin consultar npm. */
+/**
+ * Resume el estado local frente a la versión realmente observada, sin
+ * consultar npm y sin versión estática. Sano solo cuando la observación es un
+ * semver estable y el CLI detectado coincide (`status: current` + misma
+ * versión); legacy sin observación válida y desactualizado real avisan.
+ */
 export function resolvePlaywrightUpdateCheck(input: {
   enabled: boolean | undefined;
   cli: PlaywrightCliState;
+  observedVersion?: string | null;
 }): PlaywrightUpdateCheckReport | null {
   if (input.enabled !== true) return null;
 
-  if (input.cli.status === "current") {
+  const observed = typeof input.observedVersion === "string" && STABLE_SEMVER.test(input.observedVersion)
+    ? input.observedVersion
+    : null;
+  const local = input.cli.detectedVersion ?? (input.cli.status === "absent" ? "no instalado" : "no verificable");
+
+  if (observed === null) {
     return {
-      level: "success",
-      message: `Playwright CLI: ${PLAYWRIGHT_CLI.version} — al día con el pin aprobado.`,
+      level: "warn",
+      message:
+        `Playwright CLI: ${local} local, sin versión observada verificada (legacy) → ` +
+        "ejecuta 'jorgex-stack update' o 'jorgex-stack install --playwright'.",
     };
   }
 
-  const local = input.cli.detectedVersion ?? (input.cli.status === "absent" ? "no instalado" : "no verificable");
+  if (input.cli.status === "current" && input.cli.detectedVersion === observed) {
+    return {
+      level: "success",
+      message: `Playwright CLI: ${observed} — al día (versión observada).`,
+    };
+  }
+
   return {
     level: "warn",
     message:
-      `Playwright CLI: ${local} local, pin aprobado ${PLAYWRIGHT_CLI.version} → ` +
+      `Playwright CLI: ${local} local, versión observada ${observed} → ` +
       "ejecuta 'jorgex-stack update' o 'jorgex-stack install --playwright'.",
   };
 }
@@ -280,10 +308,15 @@ export async function runUpdateCheck(localVersion: string, includeBrowserState =
   }
 
   // 3. Playwright CLI: es opcional; solo se inspecciona tras consentimiento explícito.
+  // Discovery-only: inspecciona el candidato local via observación + detección,
+  // nunca tarball/install ni versión estática.
   if (includeBrowserState && loadPlaywrightCliPreference() === true) {
+    const observed = loadPlaywrightCliObservation();
+    const cli = detectPlaywrightCli(undefined, observed?.version);
     const playwright = resolvePlaywrightUpdateCheck({
       enabled: true,
-      cli: detectPlaywrightCli(),
+      cli,
+      observedVersion: observed?.version ?? null,
     });
     if (playwright) p.log[playwright.level](playwright.message);
   }
@@ -921,19 +954,37 @@ export async function runInteractiveUpdate(
 
   // Playwright CLI: solo se consulta/ofrece si el usuario lo habilitó antes.
   // No se infiere consentimiento de que el binario aparezca casualmente en PATH.
+  // Sin versión estática: el estado local se inspecciona via observación +
+  // detección, y el upstream solo via consulta ligera /latest (nunca tarball).
+  // Se ofrece si el upstream observado es más nuevo O el estado instalado está
+  // sin verificar/desactualizado. El tarball solo se toca tras picker +
+  // segunda confirmación, en FASE 4 via prepareVerifiedBrowserRelease.
   let playwrightNeedsUpdate = false;
   if (includeBrowserState && loadPlaywrightCliPreference() === true) {
-    const playwright = detectPlaywrightCli();
-    if (playwright.status === "current") {
-      p.log.success("Playwright CLI: al día.");
-    } else {
+    const observation = loadPlaywrightCliObservation();
+    const observedVersion = observation?.version ?? null;
+    const cliState = detectPlaywrightCli(undefined, observedVersion ?? undefined);
+    let upstream: string | null = null;
+    try {
+      upstream = await latestNpmVersion("@playwright/cli");
+    } catch {
+      upstream = null;
+    }
+    const stale = cliState.status !== "current";
+    const newer = upstream !== null && observedVersion !== null && upstream !== observedVersion;
+    if (stale || newer) {
       playwrightNeedsUpdate = true;
-      const current = playwright.detectedVersion ?? playwright.status;
+      const current = cliState.detectedVersion ?? cliState.status;
+      const target = newer && upstream !== null ? upstream : "versión verificada del proveedor";
       updateItems.push({
         value: "playwright-cli",
-        label: `Playwright CLI: ${current} → pin aprobado`,
-        hint: "pnpm add --global @playwright/cli@0.1.18",
+        label: `Playwright CLI: ${current} → ${target}`,
+        hint: "pnpm add --global @playwright/cli (verificado)",
       });
+    } else {
+      const report = resolvePlaywrightUpdateCheck({ enabled: true, cli: cliState, observedVersion });
+      if (report) p.log[report.level](report.message);
+      else p.log.success(`Playwright CLI: ${observedVersion ?? cliState.detectedVersion ?? "desconocido"} — al día.`);
     }
   }
 
@@ -1112,34 +1163,80 @@ export async function runInteractiveUpdate(
 
   // 4c. Playwright CLI: el multiselect selecciona el binario, pero una segunda
   // confirmación evita que una opción preseleccionada modifique software global.
+  // El candidato solo se resuelve tras ambas confirmaciones via
+  // prepareVerifiedBrowserRelease (metadata + SRI + bytes verificados). Fail
+  // closed antes de cualquier pnpm global ante SRI incorrecta; el mismo
+  // candidato se pasa a update + install-browser, se verifica el navegador y
+  // solo entonces se persiste la versión observada, preservando selecciones.
   if (playwrightNeedsUpdate && sel.includes("playwright-cli")) {
     const confirmPlaywright = await p.confirm({
-      message: "Actualizar Playwright CLI global al pin aprobado con pnpm add --global?",
+      message: "Actualizar Playwright CLI global a la versión verificada del proveedor con pnpm add --global?",
       initialValue: true,
     });
     if (p.isCancel(confirmPlaywright) || !confirmPlaywright) {
       p.log.info("Playwright CLI: actualización omitida.");
     } else {
-      const packageResult = executePlaywrightToolAction("update");
-      const browserResult = packageResult.ok
-        ? executePlaywrightToolAction("install-browser")
-        : null;
-      if (packageResult.ok && browserResult?.ok) {
-        p.log.success("Playwright CLI actualizado al pin aprobado.");
-        appliedUpdates = true;
-        updated.push("playwright-cli");
-        playwrightCapability = inspectPlaywrightCapability({ browserVerified: true });
-      } else {
-        const failedResult = packageResult.ok ? browserResult : packageResult;
-        const pnpmRemedy = failedResult && !failedResult.ok
-          ? resolvePnpmFailureRemedy(failedResult.reason)
-          : null;
-        const recovery = pnpmRemedy === null
-          ? "Ejecuta 'jorgex-stack install --playwright' para reintentar el paquete y el navegador."
-          : `${pnpmRemedy} Después, ejecuta 'jorgex-stack update' para reintentar.`;
-        const failedStep = packageResult.ok ? "descargar el navegador" : "actualizar el paquete global";
-        p.log.error(`Playwright CLI: no se pudo ${failedStep}. ${recovery}`);
+      let candidate: PlaywrightCliCandidate | undefined;
+      try {
+        const release = await prepareVerifiedBrowserRelease("@playwright/cli", { fetchImpl: globalThis.fetch });
+        candidate = { version: release.version, tarballUrl: release.tarballUrl, integrity: release.integrity };
+      } catch (err) {
+        p.log.error(
+          `Playwright CLI: no se pudo verificar el paquete del proveedor (${err instanceof Error ? err.message : err}). Revisa tu conexión y la metadata oficial antes de reintentar; no se ha modificado nada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`,
+        );
         exitCode = 1;
+      }
+      if (candidate !== undefined) {
+        const updateCandidate = candidate;
+        const packageResult = executePlaywrightToolAction("update", undefined, undefined, updateCandidate);
+        const browserResult = packageResult.ok
+          ? executePlaywrightToolAction("install-browser", undefined, undefined, updateCandidate)
+          : null;
+        if (packageResult.ok && browserResult?.ok) {
+          const verified = inspectPlaywrightCapability({ browserVerified: true, expectedVersion: updateCandidate.version });
+          if (verified.effective && verified.cli.status === "current" && verified.browserVerified) {
+            let persisted = true;
+            try {
+              // Ruta explícita desde el dataDir fresco del coordinador: la
+              // preferencia mockeada en tests cierra sobre un HOME anterior y
+              // el default escribiría en el HOME real en lugar del temporal.
+              savePlaywrightCliPreference(
+                playwrightCliPreferenceFile(dataDir()),
+                true,
+                undefined,
+                { version: updateCandidate.version, integrity: updateCandidate.integrity },
+              );
+            } catch (persistErr) {
+              persisted = false;
+              p.log.error(
+                `Playwright CLI: paquete y navegador actualizados a ${updateCandidate.version}, pero no se pudo guardar la versión observada (${persistErr instanceof Error ? persistErr.message : persistErr}). Ejecuta 'jorgex-stack install --playwright' para reintentar el registro.`,
+              );
+              exitCode = 1;
+            }
+            if (persisted) {
+              p.log.success(`Playwright CLI actualizado a ${updateCandidate.version} (verificado).`);
+              appliedUpdates = true;
+              updated.push("playwright-cli");
+              playwrightCapability = verified;
+            }
+          } else {
+            p.log.error(
+              "Playwright CLI: el navegador no superó la verificación tras actualizar. Ejecuta 'jorgex-stack install --playwright' para reintentar el paquete y el navegador.",
+            );
+            exitCode = 1;
+          }
+        } else {
+          const failedResult = packageResult.ok ? browserResult : packageResult;
+          const pnpmRemedy = failedResult && !failedResult.ok
+            ? resolvePnpmFailureRemedy(failedResult.reason)
+            : null;
+          const recovery = pnpmRemedy === null
+            ? "Ejecuta 'jorgex-stack install --playwright' para reintentar el paquete y el navegador."
+            : `${pnpmRemedy} Después, ejecuta 'jorgex-stack update' para reintentar.`;
+          const failedStep = packageResult.ok ? "descargar el navegador" : "actualizar el paquete global";
+          p.log.error(`Playwright CLI: no se pudo ${failedStep}. ${recovery}`);
+          exitCode = 1;
+        }
       }
     }
   }

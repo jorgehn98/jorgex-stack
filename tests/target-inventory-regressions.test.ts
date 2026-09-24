@@ -1149,6 +1149,7 @@ describe("target inventory regressions", () => {
           operation: "install",
           devtoolsMcpEnabled: true,
           pnpmBin,
+          devtoolsMcpVersion: "9.9.20",
         })).toMatchObject({ kind: "installed" });
         expect(readRealPiProjectionOwned()).toMatchObject({
           kind: "valid",

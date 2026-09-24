@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -250,6 +251,8 @@ describe("Playwright lifecycle contracts", () => {
           return seen.length === 1 ? { ok: false, reason: "pnpm-global-bin" } : true;
         });
         const persistEnabled = vi.fn();
+        const fetchEvents: string[] = [];
+        stubProviderFetch(fetchEvents, OBSERVED_BYTES);
 
         try {
           await expect(install.runInstall({
@@ -270,6 +273,7 @@ describe("Playwright lifecycle contracts", () => {
         } finally {
           promptMocks.confirm.mockReset().mockResolvedValue(false);
           resolvePnpmBin.mockRestore();
+          vi.unstubAllGlobals();
         }
 
         expect(setupPnpm).toHaveBeenCalledWith("/isolated/pnpm");
@@ -278,7 +282,8 @@ describe("Playwright lifecycle contracts", () => {
           { action: "install", env: preparedEnv },
           { action: "install-browser", env: preparedEnv },
         ]);
-        expect(persistEnabled).toHaveBeenCalledWith(true);
+        expect(persistEnabled).toHaveBeenCalledWith(true, OBSERVED_RECORD);
+        expect(fetchEvents).toEqual([`fetch ${METADATA_URL}`, `fetch ${OBSERVED_TARBALL}`]);
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -300,7 +305,7 @@ describe("Playwright lifecycle contracts", () => {
       effective: false,
     };
     const freshCapability = {
-      cli: { status: "current" as const, binPath: playwrightBin, detectedVersion: "0.1.18" },
+      cli: { status: "current" as const, binPath: playwrightBin, detectedVersion: OBSERVED_VERSION },
       browserCache: { status: "ready" as const, path: path.join(root, "browser-cache") },
       browserVerified: true,
       effective: true,
@@ -313,9 +318,12 @@ describe("Playwright lifecycle contracts", () => {
         const inspectPlaywrightCapability = vi.fn((options?: {
           browserVerified?: boolean;
           env?: NodeJS.ProcessEnv;
+          expectedVersion?: string;
         }) => options?.env?.PATH === preparedEnv.PATH ? freshCapability : staleCapability);
         vi.doMock("../src/lib/playwright-capability.js", () => ({ inspectPlaywrightCapability }));
         const install = await import("../src/install.js");
+        const fetchEvents: string[] = [];
+        stubProviderFetch(fetchEvents, OBSERVED_BYTES);
         promptMocks.confirm.mockResolvedValue(true);
         const setupPnpm = vi.fn().mockReturnValue({ ok: true, env: preparedEnv });
         const run = vi.fn(async (
@@ -352,6 +360,7 @@ describe("Playwright lifecycle contracts", () => {
         } finally {
           promptMocks.confirm.mockReset().mockResolvedValue(false);
           vi.doUnmock("../src/lib/playwright-capability.js");
+          vi.unstubAllGlobals();
         }
 
         expect(seen).toEqual([
@@ -362,7 +371,9 @@ describe("Playwright lifecycle contracts", () => {
         expect(inspectPlaywrightCapability).toHaveBeenCalledWith({
           browserVerified: true,
           env: preparedEnv,
+          expectedVersion: OBSERVED_VERSION,
         });
+        expect(fetchEvents).toEqual([`fetch ${METADATA_URL}`, `fetch ${OBSERVED_TARBALL}`]);
         expect(handedOff).toEqual(freshCapability);
         expect(handedOff?.cli.binPath).toBe(playwrightBin);
         expect(path.isAbsolute(handedOff?.cli.binPath ?? "")).toBe(true);
@@ -563,5 +574,223 @@ describe("Playwright lifecycle contracts", () => {
       { actions: [], preserveBrowserData: true },
       { actions: ["remove"], preserveBrowserData: true },
     ]);
+  });
+});
+
+// Synthetic test-only Playwright provider release shared by every test in
+// this file, so no test ever hits live npm. Fixture, never a version
+// selector: the exact version/URL/SRI travel together from the stubbed
+// registry through verification into global actions and persisted records.
+const OBSERVED_VERSION = "9.9.10";
+const OBSERVED_TARBALL = "https://registry.npmjs.org/@playwright/cli/-/cli-9.9.10.tgz";
+const OBSERVED_BYTES = Buffer.from("synthetic-playwright-cli-tarball-9.9.10\n");
+const OBSERVED_INTEGRITY = `sha512-${createHash("sha512").update(OBSERVED_BYTES).digest("base64")}`;
+const OBSERVED_CANDIDATE = {
+  version: OBSERVED_VERSION,
+  tarballUrl: OBSERVED_TARBALL,
+  integrity: OBSERVED_INTEGRITY,
+};
+const OBSERVED_RECORD = { version: OBSERVED_VERSION, integrity: OBSERVED_INTEGRITY };
+const METADATA_URL = "https://registry.npmjs.org/@playwright/cli";
+
+function packument(): unknown {
+  return {
+    name: "@playwright/cli",
+    "dist-tags": { latest: OBSERVED_VERSION },
+    versions: {
+      [OBSERVED_VERSION]: {
+        name: "@playwright/cli",
+        version: OBSERVED_VERSION,
+        dist: { tarball: OBSERVED_TARBALL, integrity: OBSERVED_INTEGRITY },
+      },
+    },
+  };
+}
+
+function stubProviderFetch(events: string[], tarballBytes: Buffer): void {
+  const stub = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    events.push(`fetch ${url}`);
+    if (url === OBSERVED_TARBALL) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(tarballBytes.slice());
+          controller.close();
+        },
+      });
+      const tarball = new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      Object.defineProperty(tarball, "url", { value: url });
+      return tarball;
+    }
+    const metadata = new Response(JSON.stringify(packument()), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    Object.defineProperty(metadata, "url", { value: url });
+    return metadata;
+  };
+  vi.stubGlobal("fetch", stub);
+}
+
+describe("Playwright verified-provider install [T14-RED]", () => {
+  function explicitConsent(overrides: Partial<PlaywrightToolConsent> = {}): PlaywrightToolConsent {
+    return {
+      command: "install",
+      interactive: false,
+      yes: true,
+      targetDir: false,
+      explicitToolSelection: true,
+      confirmed: false,
+      ...overrides,
+    };
+  }
+
+  it("verifies the provider release before any global pnpm action and persists only the observed candidate", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-verified-provider-"));
+    const homeDir = path.join(root, "home");
+    const events: string[] = [];
+    const runCalls: Array<{ action: string; env?: NodeJS.ProcessEnv; candidate?: unknown }> = [];
+    const persistCalls: Array<{ enabled: boolean; observed?: unknown }> = [];
+    let code: number | undefined;
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        stubProviderFetch(events, OBSERVED_BYTES);
+        try {
+          code = await install.runInstall({
+            runtimes: [],
+            dryRun: false,
+            yes: true,
+            mode: { mode: "human" as const, subagentConcurrency: "serial" as const },
+            playwrightToolConsent: explicitConsent(),
+            playwrightToolDeps: {
+              run: async (
+                action: Exclude<PlaywrightToolAction, "remove">,
+                env?: NodeJS.ProcessEnv,
+                candidate?: unknown,
+              ) => {
+                runCalls.push({ action, env, candidate });
+                events.push(`run ${action}`);
+                return true;
+              },
+              persistEnabled: (enabled: boolean, observed?: unknown) => {
+                persistCalls.push({ enabled, observed });
+              },
+            },
+          });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(code).toBe(0);
+    expect(events).toEqual([
+      `fetch ${METADATA_URL}`,
+      `fetch ${OBSERVED_TARBALL}`,
+      "run install",
+      "run install-browser",
+    ]);
+    expect(runCalls).toEqual([
+      { action: "install", env: undefined, candidate: OBSERVED_CANDIDATE },
+      { action: "install-browser", env: undefined, candidate: OBSERVED_CANDIDATE },
+    ]);
+    expect(persistCalls).toEqual([
+      { enabled: true, observed: { version: OBSERVED_VERSION, integrity: OBSERVED_INTEGRITY } },
+    ]);
+  });
+
+  it("runs no pnpm action and marks no preference when the tarball integrity mismatches", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-provider-sri-mismatch-"));
+    const homeDir = path.join(root, "home");
+    const events: string[] = [];
+    const runCalls: Array<{ action: string; candidate?: unknown }> = [];
+    const persistCalls: Array<{ enabled: boolean; observed?: unknown }> = [];
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        stubProviderFetch(events, Buffer.from("tampered-tarball-bytes\n"));
+        try {
+          await install.runInstall({
+            runtimes: [],
+            dryRun: false,
+            yes: true,
+            mode: { mode: "human" as const, subagentConcurrency: "serial" as const },
+            playwrightToolConsent: explicitConsent(),
+            playwrightToolDeps: {
+              run: async (action: Exclude<PlaywrightToolAction, "remove">, _env?: NodeJS.ProcessEnv, candidate?: unknown) => {
+                runCalls.push({ action, candidate });
+                events.push(`run ${action}`);
+                return true;
+              },
+              persistEnabled: (enabled: boolean, observed?: unknown) => {
+                persistCalls.push({ enabled, observed });
+              },
+            },
+          });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(events).toEqual([`fetch ${METADATA_URL}`, `fetch ${OBSERVED_TARBALL}`]);
+    expect(runCalls).toEqual([]);
+    expect(persistCalls).toEqual([]);
+  });
+
+  it.each([
+    { name: "missing opt-in", dryRun: false, consent: explicitConsent({ explicitToolSelection: false }) },
+    { name: "dry-run", dryRun: true, consent: explicitConsent() },
+    { name: "target-dir", dryRun: false, consent: explicitConsent({ targetDir: true }) },
+  ])("performs no provider fetch, pnpm action, or preference mark for $name", async ({ dryRun, consent: toolConsent }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-provider-guards-"));
+    const homeDir = path.join(root, "home");
+    const events: string[] = [];
+    const runCalls: string[] = [];
+    const persistCalls: boolean[] = [];
+
+    try {
+      await withTempHome(homeDir, async () => {
+        const install = await import("../src/install.js");
+        stubProviderFetch(events, OBSERVED_BYTES);
+        try {
+          await install.runInstall({
+            runtimes: [],
+            dryRun,
+            yes: true,
+            mode: { mode: "human" as const, subagentConcurrency: "serial" as const },
+            playwrightToolConsent: toolConsent,
+            playwrightToolDeps: {
+              run: async (action: Exclude<PlaywrightToolAction, "remove">) => {
+                runCalls.push(action);
+                events.push(`run ${action}`);
+                return true;
+              },
+              persistEnabled: (enabled: boolean) => {
+                persistCalls.push(enabled);
+              },
+            },
+          });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(events).toEqual([]);
+    expect(runCalls).toEqual([]);
+    expect(persistCalls).toEqual([]);
   });
 });

@@ -63,6 +63,12 @@ export interface InstallContext {
   warnings: string[];
   /** MCPs opcionales habilitados explícitamente para este runtime. */
   enabledMcpServers?: ReadonlySet<string>;
+  /**
+   * Versión DevTools realmente observada y verificada (devtools-mcp.json).
+   * Se exige cuando el MCP opcional chrome-devtools está habilitado para
+   * materializar el template canónico `chrome-devtools-mcp@{{VERSION}}`.
+   */
+  devtoolsMcpObservedVersion?: { version: string; integrity: string };
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
   playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */
