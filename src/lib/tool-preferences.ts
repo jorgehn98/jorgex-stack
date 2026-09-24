@@ -3,6 +3,7 @@ import path from "node:path";
 import type { RuntimeId, SelectableRuntimeId } from "../adapters/types.js";
 import { writeText } from "./fsx.js";
 import { dataDir } from "./paths.js";
+import { isValidObservedVersion } from "./npm-provider.js";
 
 const PLAYWRIGHT_CLI_PREFERENCE_VERSION = 1;
 const DEVTOOLS_MCP_PREFERENCE_VERSION = 1;
@@ -17,33 +18,12 @@ type PlaywrightCliPreference =
   | { version: 1; enabled: boolean; observed?: ObservedVersion }
   | { version: 2; enabled: PlaywrightRuntimeSelection; observed?: ObservedVersion };
 const PLAYWRIGHT_RUNTIMES: SelectableRuntimeId[] = ["opencode", "claude-code", "codex", "pi"];
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 interface DevtoolsMcpPreference {
   version: typeof DEVTOOLS_MCP_PREFERENCE_VERSION;
   enabled: Partial<Record<SelectableRuntimeId, boolean>>;
   owned: Partial<Record<RuntimeId, Record<string, true>>>;
   observed?: ObservedVersion;
-}
-
-function isCanonicalSha512Integrity(integrity: unknown): integrity is string {
-  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) return false;
-  const b64 = integrity.slice("sha512-".length);
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(b64, "base64");
-  } catch {
-    return false;
-  }
-  return bytes.length === 64 && bytes.toString("base64") === b64;
-}
-
-function isValidObservedVersion(value: unknown): value is ObservedVersion {
-  if (!isRecord(value)) return false;
-  return typeof value.version === "string"
-    && STABLE_SEMVER.test(value.version)
-    && isCanonicalSha512Integrity(value.integrity);
 }
 
 function assertValidObservedVersion(value: unknown, label: string): asserts value is ObservedVersion {

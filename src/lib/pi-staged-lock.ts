@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isStableSemverVersion } from "./npm-provider.js";
 
 export interface StagedPiRelease {
   version: string;
@@ -61,7 +62,6 @@ export interface InspectStagedPiNpmResult {
 const REGISTRY_HOST = "registry.npmjs.org";
 const PARENT_NAME = "jorgex-pi";
 const LOCK_ROOT_NAME = "pi-extensions";
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 const MAX_LOCK_BYTES = 4 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1 * 1024 * 1024;
@@ -128,7 +128,7 @@ function assertCanonicalSha512(integrity: unknown, label: string): Buffer {
 function validateRelease(release: unknown): { expectedSha512: Buffer; version: string } {
   if (!isRecord(release)) fail("release must be an object");
   const { version, tarballUrl, integrity } = release;
-  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) {
+  if (!isStableSemverVersion(version)) {
     fail(`invalid release version ${String(version)}`);
   }
   if (typeof tarballUrl !== "string") fail("foreign release tarball URL");

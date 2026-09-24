@@ -33,6 +33,7 @@ import {
 } from "./lib/tool-preferences.js";
 import { executePlaywrightToolAction } from "./install.js";
 import { prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
+import { isStableSemverVersion } from "./lib/npm-provider.js";
 
 export interface Upstreams {
   tools: Record<string, { source: string; kind?: string }>;
@@ -214,7 +215,6 @@ async function latestNpmVersion(pkg: string): Promise<string | null> {
   }
 }
 
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export interface PlaywrightUpdateCheckReport {
   level: "success" | "warn";
@@ -234,7 +234,7 @@ export function resolvePlaywrightUpdateCheck(input: {
 }): PlaywrightUpdateCheckReport | null {
   if (input.enabled !== true) return null;
 
-  const observed = typeof input.observedVersion === "string" && STABLE_SEMVER.test(input.observedVersion)
+  const observed = isStableSemverVersion(input.observedVersion)
     ? input.observedVersion
     : null;
   const local = input.cli.detectedVersion ?? (input.cli.status === "absent" ? "no instalado" : "no verificable");

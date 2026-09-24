@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { PI_RUNTIME_CANDIDATE } from "./pi-runtime.js";
+import { isStableSemverVersion } from "./npm-provider.js";
 import type { PiRuntimeCandidate } from "./pi-package-lifecycle.js";
 
 export interface StagedPiCandidateRelease {
@@ -32,7 +33,6 @@ export interface BuildStagedPiCandidateInput {
   evidence: StagedPiCandidateEvidence;
 }
 
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const REGISTRY_HOST = "registry.npmjs.org";
 const PACKAGE_NAME = "jorgex-pi";
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -126,7 +126,7 @@ function readBoundedJson(file: string, label: string): unknown {
 function assertValidRelease(release: unknown): { version: string; expectedSha512: Buffer } {
   if (!isRecord(release)) fail("release must be an object");
   const { version, tarballUrl, integrity } = release;
-  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) {
+  if (!isStableSemverVersion(version)) {
     fail(`invalid release version ${String(version)}`);
   }
   if (typeof tarballUrl !== "string") fail("foreign release tarball URL");

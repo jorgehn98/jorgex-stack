@@ -7,8 +7,7 @@ import {
   type PlaywrightCliState,
 } from "./external-tools.js";
 import { loadPlaywrightCliObservation } from "./tool-preferences.js";
-
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+import { isStableSemverVersion } from "./npm-provider.js";
 
 /** Snapshot efímera de la capacidad global compartida de Playwright. */
 export interface PlaywrightCapabilitySnapshot {
@@ -42,7 +41,7 @@ export function inspectPlaywrightCapability(options: {
     const observed = loadPlaywrightCliObservation();
     if (observed) expectedVersion = observed.version;
   }
-  const hasStableExpected = typeof expectedVersion === "string" && STABLE_SEMVER.test(expectedVersion);
+  const hasStableExpected = isStableSemverVersion(expectedVersion);
   const cli = options.env === undefined
     ? detectPlaywrightCli(undefined, expectedVersion)
     : detectPlaywrightCli(env, expectedVersion);

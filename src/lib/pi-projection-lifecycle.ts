@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { WritingStyleSnapshot } from "./writing-style.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalMcp, materializeCanonicalDevtoolsArgsForVersion } from "./canonical.js";
+import { isStableSemverVersion } from "./npm-provider.js";
 import { piAdapter, piSystemPromptFile } from "../adapters/pi.js";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
 import { planCommands } from "../components/commands.js";
@@ -16,7 +17,6 @@ import { DEFAULT_MODEL_MAP } from "./model-map.js";
 import { dataDir, HOME, stackRoot } from "./paths.js";
 import { filterProjectedPiPackage } from "./pi-package-lifecycle.js";
 
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export type PiProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
 
@@ -182,7 +182,7 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
     ...planCommands(adapter, ctx),
   ];
   if (input.devtoolsMcpEnabled && input.pnpmBin
-    && typeof input.devtoolsMcpVersion === "string" && STABLE_SEMVER.test(input.devtoolsMcpVersion)) {
+    && isStableSemverVersion(input.devtoolsMcpVersion)) {
     const server = loadCanonicalMcp(input.stackDir).servers[DEVTOOLS_MCP_SERVER];
     if (server === undefined) throw new Error("Falta la configuración canónica de DevTools.");
     const args = materializeCanonicalDevtoolsArgsForVersion(server, input.devtoolsMcpVersion);
@@ -191,7 +191,7 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
     }, null, 2)}\n` });
   }
   if (input.playwrightHandoffEnabled && input.playwrightCliCommand
-    && typeof input.playwrightCliVersion === "string" && STABLE_SEMVER.test(input.playwrightCliVersion)) {
+    && isStableSemverVersion(input.playwrightCliVersion)) {
     actions.push({ kind: "write", target: handoffPath(scope, "playwright"), content: `${JSON.stringify({
       schemaVersion: 1, enabled: true, command: input.playwrightCliCommand, version: input.playwrightCliVersion,
     }, null, 2)}\n` });
@@ -662,7 +662,7 @@ export function runPiProjectionLifecycle(
     return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere un ejecutable pnpm absoluto disponible en PATH.");
   }
   if (input.devtoolsMcpEnabled
-    && (typeof input.devtoolsMcpVersion !== "string" || !STABLE_SEMVER.test(input.devtoolsMcpVersion))) {
+    && !isStableSemverVersion(input.devtoolsMcpVersion)) {
     return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere una versión estable observada y verificada. Reintenta tras verificar la versión observada.");
   }
   if (input.playwrightHandoffEnabled && (!input.playwrightCliCommand || !path.isAbsolute(input.playwrightCliCommand)
@@ -670,7 +670,7 @@ export function runPiProjectionLifecycle(
     return blocked("projection-playwright-command", [handoffPath(scope, "playwright")], "Playwright requiere un ejecutable absoluto verificado. Abre una terminal nueva tras pnpm setup y reintenta install --playwright.");
   }
   if (input.playwrightHandoffEnabled
-    && (typeof input.playwrightCliVersion !== "string" || !STABLE_SEMVER.test(input.playwrightCliVersion))) {
+    && !isStableSemverVersion(input.playwrightCliVersion)) {
     return blocked("projection-playwright-command", [handoffPath(scope, "playwright")], "Playwright requiere una versión estable verificada. Reintenta install --playwright tras verificar la versión observada.");
   }
   const plan = projectionPlan(input, scope);

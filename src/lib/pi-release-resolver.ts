@@ -1,4 +1,4 @@
-import { downloadVerifiedNpmPackageTarball, resolveLatestNpmPackageRelease } from "./npm-provider.js";
+import { downloadVerifiedNpmPackageTarball, isStableSemverVersion, resolveLatestNpmPackageRelease } from "./npm-provider.js";
 
 export interface PiReleaseCandidate {
   version: string;
@@ -9,7 +9,6 @@ export interface PiReleaseCandidate {
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
 
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function fail(message: string): never {
   throw new Error(`pi-release-resolver: ${message}`);
@@ -120,7 +119,7 @@ export async function resolvePiProducerCommit(
   version: string,
   fetchImpl: typeof fetch,
 ): Promise<string> {
-  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) fail("invalid producer version");
+  if (!isStableSemverVersion(version)) fail("invalid producer version");
   const url = producerTagUrl(version);
   let response: Response;
   try {

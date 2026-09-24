@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { lookPath, planDetectedBinCommand, runDetectedBin } from "./detect.js";
+import { isCanonicalSha512Integrity, isStableSemverVersion } from "./npm-provider.js";
 
 export const PLAYWRIGHT_CLI = {
   packageName: "@playwright/cli",
@@ -16,7 +17,6 @@ export interface PlaywrightCliCandidate {
   integrity: string;
 }
 
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function canonicalPlaywrightCliTarballUrl(version: string): string {
   const packageName = PLAYWRIGHT_CLI.packageName;
@@ -26,24 +26,11 @@ function canonicalPlaywrightCliTarballUrl(version: string): string {
   return `https://registry.npmjs.org/${packageName}/-/${shortName}-${version}.tgz`;
 }
 
-function isCanonicalSha512Integrity(integrity: unknown): integrity is string {
-  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) return false;
-  const b64 = integrity.slice("sha512-".length);
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(b64, "base64");
-  } catch {
-    return false;
-  }
-  return bytes.length === 64 && bytes.toString("base64") === b64;
-}
-
 function isValidPlaywrightCliCandidate(candidate: unknown): candidate is PlaywrightCliCandidate {
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
   const record = candidate as Record<string, unknown>;
   const { version, tarballUrl, integrity } = record;
-  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) return false;
+  if (!isStableSemverVersion(version)) return false;
   if (typeof tarballUrl !== "string" || tarballUrl !== canonicalPlaywrightCliTarballUrl(version)) return false;
   if (!isCanonicalSha512Integrity(integrity)) return false;
   return true;
@@ -142,7 +129,7 @@ export function resolvePlaywrightCliState(
 
   // Fail closed: without an explicit observed version there is no safe
   // "current" — never silently accept a fixed pin such as the old 0.1.18.
-  if (typeof expectedVersion !== "string" || !STABLE_SEMVER.test(expectedVersion)) {
+  if (!isStableSemverVersion(expectedVersion)) {
     return { status: "outdated", binPath, detectedVersion };
   }
 
@@ -286,7 +273,7 @@ export function verifyPlaywrightBrowser(
   expectedVersion: string | undefined,
 ): boolean {
   if (typeof pnpmBin !== "string" || pnpmBin === "") return false;
-  if (typeof expectedVersion !== "string" || !STABLE_SEMVER.test(expectedVersion)) return false;
+  if (!isStableSemverVersion(expectedVersion)) return false;
   const actualEnv = env ?? process.env;
   const rootCommand = planDetectedBinCommand(pnpmBin, ["root", "--global"]);
   if (rootCommand === null) return false;

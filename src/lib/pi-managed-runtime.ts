@@ -8,34 +8,12 @@ import {
 } from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, preparePiRuntimeSystem, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
 import { devtoolsMcpPreferenceFile, loadDevtoolsMcpObservation, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference, type ObservedVersion } from "./tool-preferences.js";
+import { isValidObservedVersion } from "./npm-provider.js";
 import { resolvePnpmBin } from "./external-tools.js";
 import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
 import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
 import { prepareVerifiedBrowserRelease, verifyDevtoolsCliArtifact } from "./browser-provider.js";
-
-const DEVTOOLS_STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-
-function isCanonicalDevtoolsIntegrity(integrity: unknown): integrity is string {
-  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) return false;
-  const b64 = integrity.slice("sha512-".length);
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(b64, "base64");
-  } catch {
-    return false;
-  }
-  return bytes.length === 64 && bytes.toString("base64") === b64;
-}
-
-function isValidDevtoolsObserved(value: unknown): value is ObservedVersion {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return typeof record.version === "string"
-    && DEVTOOLS_STABLE_SEMVER.test(record.version)
-    && isCanonicalDevtoolsIntegrity(record.integrity);
-}
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -301,11 +279,11 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   let devtoolsVerifiedForPersist: ObservedVersion | undefined;
   if (needsDevtoolsObservation) {
     if (input.targetDir !== undefined) {
-      devtoolsMcpObservedVersion = isValidDevtoolsObserved(injectedDevtoolsObserved)
+       devtoolsMcpObservedVersion = isValidObservedVersion(injectedDevtoolsObserved)
         ? { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity }
         : null;
     } else if ((input.operation === "install" || input.operation === "update") && explicitDevtools === true) {
-      if (isValidDevtoolsObserved(injectedDevtoolsObserved)) {
+       if (isValidObservedVersion(injectedDevtoolsObserved)) {
         devtoolsMcpObservedVersion = { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity };
         devtoolsVerifiedForPersist = devtoolsMcpObservedVersion;
       } else {
@@ -327,7 +305,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
           };
         }
         const observed = { version: release.version, integrity: release.integrity };
-        if (!isValidDevtoolsObserved(observed)) {
+       if (!isValidObservedVersion(observed)) {
           return {
             kind: "blocked",
             reason: "devtools-verification-failed",

@@ -23,6 +23,29 @@ const FETCH_TIMEOUT_MS = 10_000;
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const PACKAGE_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 
+export function isStableSemverVersion(value: unknown): value is string {
+  return typeof value === "string" && STABLE_SEMVER.test(value);
+}
+
+export function isCanonicalSha512Integrity(integrity: unknown): integrity is string {
+  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) return false;
+  const b64 = integrity.slice("sha512-".length);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(b64, "base64");
+  } catch {
+    return false;
+  }
+  return bytes.length === 64 && bytes.toString("base64") === b64;
+}
+
+export function isValidObservedVersion(value: unknown): value is { version: string; integrity: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const observed = value as Record<string, unknown>;
+  return isStableSemverVersion(observed.version) && isCanonicalSha512Integrity(observed.integrity);
+}
+
 function fail(message: string): never {
   throw new Error(`npm-provider: ${message}`);
 }
@@ -68,20 +91,7 @@ async function readBoundedText(response: Response): Promise<string> {
 }
 
 function assertCanonicalIntegrity(integrity: unknown): asserts integrity is string {
-  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) {
-    fail("invalid integrity (expected canonical sha512 SRI)");
-  }
-  const b64 = (integrity as string).slice("sha512-".length);
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) fail("invalid integrity (expected canonical sha512 SRI)");
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(b64, "base64");
-  } catch {
-    fail("invalid integrity (expected canonical sha512 SRI)");
-  }
-  if (bytes.length !== 64 || bytes.toString("base64") !== b64) {
-    fail("invalid integrity (expected canonical sha512 SRI)");
-  }
+  if (!isCanonicalSha512Integrity(integrity)) fail("invalid integrity (expected canonical sha512 SRI)");
 }
 
 /**
@@ -130,7 +140,7 @@ export async function resolveLatestNpmPackageRelease(
   const tags = data["dist-tags"];
   if (!isRecord(tags) || typeof tags["latest"] !== "string") fail("missing dist-tags.latest");
   const latest = tags["latest"] as string;
-  if (!STABLE_SEMVER.test(latest)) fail(`unstable or malformed version ${latest}`);
+  if (!isStableSemverVersion(latest)) fail(`unstable or malformed version ${latest}`);
 
   const versions = data["versions"];
   if (!isRecord(versions)) fail("missing versions map");
@@ -183,7 +193,7 @@ function assertCanonicalReleaseInput(
 ): { tarballUrl: string; expectedSha512: Buffer } {
   if (!isRecord(release)) fail("invalid release");
   const { version, tarballUrl, integrity } = release;
-  if (typeof version !== "string" || !STABLE_SEMVER.test(version)) fail("invalid release version");
+  if (!isStableSemverVersion(version)) fail("invalid release version");
   if (typeof tarballUrl !== "string") fail("foreign tarball URL");
   let parsed: URL;
   try {

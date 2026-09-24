@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { Tier } from "../adapters/types.js";
+import { isCanonicalSha512Integrity, isStableSemverVersion } from "./npm-provider.js";
 
 /** Agente en formato canónico (stack/agents/README.md). */
 export interface CanonicalAgent {
@@ -91,7 +92,6 @@ export interface DevtoolsMcpObservedVersion {
   integrity: string;
 }
 
-const DEVTOOLS_STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const DEVTOOLS_VERSION_TEMPLATE = "chrome-devtools-mcp@{{VERSION}}";
 const DEVTOOLS_VERSION_PREFIX = "chrome-devtools-mcp@";
 const DEVTOOLS_EXPECTED_FLAGS = [
@@ -105,19 +105,6 @@ const DEVTOOLS_EXPECTED_TEMPLATE_ARGS = [
   DEVTOOLS_VERSION_TEMPLATE,
   ...DEVTOOLS_EXPECTED_FLAGS,
 ] as const;
-
-function isCanonicalSha512Integrity(integrity: unknown): integrity is string {
-  if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) return false;
-  const b64 = integrity.slice("sha512-".length);
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return false;
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(b64, "base64");
-  } catch {
-    return false;
-  }
-  return bytes.length === 64 && bytes.toString("base64") === b64;
-}
 
 function assertExactDevtoolsTemplate(server: CanonicalMcpServer): void {
   const args = server.args;
@@ -135,7 +122,7 @@ function assertExactDevtoolsTemplate(server: CanonicalMcpServer): void {
 }
 
 function assertStableDevtoolsVersion(version: unknown): asserts version is string {
-  if (typeof version !== "string" || !DEVTOOLS_STABLE_SEMVER.test(version)) {
+  if (!isStableSemverVersion(version)) {
     throw new Error("DevTools: se requiere una versión observada estable (semver sin prerelease).");
   }
 }
