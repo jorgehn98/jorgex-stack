@@ -112,14 +112,8 @@ function canonicalMetadata(
 ): Record<string, unknown> {
   return {
     name,
-    "dist-tags": { latest: version },
-    versions: {
-      [version]: {
-        name,
-        version,
-        dist: { tarball: tarballUrl, integrity },
-      },
-    },
+    version,
+    dist: { tarball: tarballUrl, integrity },
   };
 }
 
@@ -135,9 +129,8 @@ function metadataFetch(
   return (async (input: RequestInfo | URL) => {
     const url = String(input);
     seen.push(url);
-    const entry = entries.find(({ name }) =>
-      url === `https://registry.npmjs.org/${name}`
-      || url === `https://registry.npmjs.org/${name}/${entries.find((candidate) => candidate.name === name)?.version}`,
+    const entry = entries.find(({ name, version }) =>
+      url === `https://registry.npmjs.org/${name}/${version}`,
     );
     if (entry === undefined) throw new Error(`unexpected official metadata request: ${url}`);
     const response = new Response(
