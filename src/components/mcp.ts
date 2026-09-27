@@ -20,6 +20,10 @@ export function planMcp(adapter: Adapter, ctx: InstallContext): FileAction[] {
     const materialized = enabled
       ? materializeCanonicalDevtoolsServer(server, observed!)
       : materializeCanonicalDevtoolsServerForRemoval(server, observed);
+    if (enabled && ctx.devtoolsMcpInvocation !== undefined) {
+      materialized.command = ctx.devtoolsMcpInvocation.command;
+      materialized.args = [...ctx.devtoolsMcpInvocation.args];
+    }
     return adapter.planMainConfig(
       { servers: { ...canonical.servers, [DEVTOOLS_MCP_SERVER]: materialized } },
       ctx,
