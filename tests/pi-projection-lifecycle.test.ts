@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { stackRoot } from "../src/lib/paths.js";
+import { browserTreeSha256 } from "../src/lib/browser-stage.js";
+import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
 
 type ProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
 
@@ -64,6 +66,7 @@ type PiProjectionLifecycleInput = {
   devtoolsMcpEnabled?: boolean;
   pnpmBin?: string | null;
   devtoolsMcpVersion?: string | null;
+  devtoolsManagedStateDir?: string;
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
   playwrightCliVersion?: string | null;
@@ -328,6 +331,56 @@ function seedTarget(root: string, source: string, scope: ProjectionScope = {
 }
 
 describe("Pi shared projection lifecycle", () => {
+  it("writes the Pi v3 handoff from managed DevTools without requiring pnpm", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-trusted-devtools-"));
+    try {
+      const source = "npm:jorgex-pi@0.8.33";
+      const target = seedTarget(root, source);
+      fs.mkdirSync(target.home, { recursive: true });
+      const stateDir = path.join(target.home, ".jorgex-stack");
+      const stageDir = path.join(root, "stage");
+      const nodeModulesPath = path.join(stageDir, "node_modules");
+      const treePath = path.join(nodeModulesPath, "chrome-devtools-mcp");
+      const entryPath = path.join(treePath, "entry.js");
+      const version = "9.9.20";
+      const integrity = `sha512-${Buffer.alloc(64, 14).toString("base64")}`;
+      fs.mkdirSync(treePath, { recursive: true });
+      fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "chrome-devtools-mcp", version }));
+      fs.writeFileSync(entryPath, "export {};\n");
+      await activateManagedBrowserTree({
+        stateDir,
+        packageName: "chrome-devtools-mcp",
+        release: { version, integrity, tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${version}.tgz` },
+        staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+          closure: [{ name: "chrome-devtools-mcp", version, integrity }] },
+        entryPath,
+      });
+      const events: string[] = [];
+      const result = runPiProjectionLifecycle({
+        operation: "install", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true, devtoolsManagedStateDir: stateDir,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(result.kind).toBe("installed");
+      const handoff = JSON.parse(fs.readFileSync(path.join(target.agentDir, "jorgex-pi", "devtools.v1.json"), "utf8")) as Record<string, unknown>;
+      expect(handoff.schemaVersion).toBe(3);
+      expect(handoff.command).toBe(process.execPath);
+      expect(handoff.args).toEqual([handoff.launcherPath, "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]);
+      expect(events).toContain(`write:${path.join(target.agentDir, "jorgex-pi", "devtools.v1.json")}`);
+      events.length = 0;
+      const escaped = runPiProjectionLifecycle({
+        operation: "sync", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true, devtoolsManagedStateDir: path.join(root, "foreign-state"),
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(escaped).toMatchObject({ kind: "blocked", reason: "projection-devtools-command" });
+      expect(events).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes the owned Pi DevTools handoff, browser policy, and receipt digest idempotently", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-enable-"));
