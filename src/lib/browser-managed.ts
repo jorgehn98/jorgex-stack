@@ -101,6 +101,18 @@ function assertRealDirectory(directory: string, label: string): string {
   return realpathOrFail(directory, label);
 }
 
+function existingRealDirectory(directory: string, label: string): string | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    fail(`cannot inspect ${label}: ${directory}`);
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`${label} must be a real directory`);
+  return realpathOrFail(directory, label);
+}
+
 function isContained(root: string, candidate: string, allowEqual: boolean): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   if (relative === "") return allowEqual;
@@ -443,6 +455,60 @@ function readValidatedActiveBrowser(
   if (expectedReceiptSha256 !== pointer.receiptSha256) fail("active browser pointer receipt hash differs");
   const receipt = validateReceiptObject(parseJsonObject(receiptRaw, "managed receipt"), packageDir, packageName, rootPath);
   return { pointerPath, pointerIdentity, pointerRaw, receiptPath, receiptRaw, receipt };
+}
+
+function assertNoOrphanedManagedBrowserState(packageDir: string, allowActiveLock: boolean): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(packageDir, { withFileTypes: true });
+  } catch {
+    fail(`cannot inspect managed browser package root: ${packageDir}`);
+  }
+  const managedArtifacts = entries.filter((entry) => {
+    if (allowActiveLock && entry.name === LOCK_FILE) return false;
+    return (
+      entry.name === LOCK_FILE ||
+      entry.name === RECEIPT_FILE ||
+      entry.name.startsWith("release-") ||
+      entry.name.startsWith(".pending-") ||
+      entry.name.startsWith(".active-")
+    );
+  });
+  if (managedArtifacts.length > 0) {
+    fail(
+      `orphaned managed browser state without an active pointer: ${managedArtifacts
+        .map((entry) => entry.name)
+        .join(", ")}`,
+    );
+  }
+}
+
+/**
+ * Reads the currently active managed browser receipt without repairing or
+ * creating any state. Existing state is revalidated through the same strict
+ * pointer, receipt, tree and launcher verifier used by activation.
+ */
+export function loadVerifiedManagedBrowserReceipt(
+  stateDir: string,
+  packageName: ManagedBrowserPackageName,
+): ManagedBrowserReceipt | null {
+  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+    fail("unsupported managed browser package");
+  }
+  const statePath = absolutePath(stateDir, "stateDir");
+  const realStateDir = existingRealDirectory(statePath, "stateDir");
+  if (realStateDir === null) return null;
+  const managedRoot = existingRealDirectory(path.join(realStateDir, MANAGED_ROOT), "managed browser root");
+  if (managedRoot === null) return null;
+  const packageDirectory = existingRealDirectory(
+    path.join(managedRoot, packageDirectoryName(packageName)),
+    "managed browser package root",
+  );
+  if (packageDirectory === null) return null;
+  const active = readValidatedActiveBrowser(packageDirectory, packageName);
+  if (active !== null) return active.receipt;
+  assertNoOrphanedManagedBrowserState(packageDirectory, false);
+  return null;
 }
 
 function hashRegularFile(file: string): string {
@@ -808,6 +874,7 @@ export async function activateManagedBrowserTree(
   let publishedIdentity: FileIdentity | null = null;
   try {
     const previous = readValidatedActiveBrowser(packageDirectory, prepared.packageName);
+    if (previous === null) assertNoOrphanedManagedBrowserState(packageDirectory, true);
     if (previous !== null && sameVerifiedCandidate(previous.receipt, prepared)) return previous.receipt;
     pendingRoot = fs.mkdtempSync(path.join(packageDirectory, ".pending-"));
     fs.chmodSync(pendingRoot, 0o700);
