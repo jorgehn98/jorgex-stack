@@ -327,6 +327,42 @@ function readBoundedRegularFile(file: string, label: string, maxBytes: number): 
   }
 }
 
+/** Resolve the executable declared by the verified root package, never by PATH. */
+export function resolveStagedBrowserEntry(
+  staged: StageVerifiedBrowserTreeResult,
+  packageName: ManagedBrowserPackageName,
+): string {
+  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+    fail("unsupported managed browser package");
+  }
+  const root = absolutePath(staged.treePath, "staged.treePath");
+  const realRoot = realpathOrFail(root, "staged root package");
+  const manifestPath = path.join(root, "package.json");
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readBoundedRegularFile(manifestPath, "staged package manifest", 1024 * 1024).toString("utf8"));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("browser-managed: ")) throw error;
+    fail("staged package manifest is invalid JSON");
+  }
+  if (!isRecord(manifest) || manifest.name !== packageName) fail("staged package identity differs");
+  const binName = packageName === "@playwright/cli" ? "playwright-cli" : "chrome-devtools-mcp";
+  const bin = typeof manifest.bin === "string"
+    ? manifest.bin
+    : isRecord(manifest.bin) ? manifest.bin[binName] : undefined;
+  if (typeof bin !== "string" || bin === "" || path.isAbsolute(bin) || CONTROL_CHARACTERS.test(bin)) {
+    fail("staged package bin is invalid");
+  }
+  const entry = path.resolve(root, bin);
+  if (!isContained(root, entry, false)) fail("staged package bin escapes its root");
+  const realEntry = assertContained(realRoot, entry, "staged package bin");
+  const stat = lstatOrFail(entry, "staged package bin");
+  if (!stat.isFile() || stat.isSymbolicLink() || !isContained(realRoot, realEntry, false)) {
+    fail("staged package bin must be a regular file in its root");
+  }
+  return entry;
+}
+
 function readOptionalRegularFile(file: string, label: string, maxBytes: number): Buffer | null {
   let stat: fs.Stats;
   try {
