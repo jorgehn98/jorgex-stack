@@ -3,6 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { planDetectedBinCommand } from "./detect.js";
+import { stageVerifiedBrowserTree } from "./browser-stage.js";
+import {
+  activateManagedBrowserTree,
+  resolveStagedBrowserEntry,
+  type ManagedBrowserReceipt,
+} from "./browser-managed.js";
 import {
   downloadVerifiedNpmPackageTarball,
   resolveLatestNpmPackageRelease,
@@ -20,6 +26,30 @@ export interface BrowserReleaseSmokeContext {
   release: BrowserPackageRelease;
   artifactPath: string;
   stageDir: string;
+}
+
+/** Consume the verified tarball lease and promote its certified dependency closure. */
+export async function activateVerifiedBrowserArtifact(
+  context: BrowserReleaseSmokeContext,
+  options: { stateDir: string; pnpmBin: string; fetchImpl: typeof fetch },
+): Promise<ManagedBrowserReceipt> {
+  assertBrowserPackage(context.packageName);
+  const stageDir = fs.mkdtempSync(path.join(context.stageDir, "managed-"));
+  const staged = await stageVerifiedBrowserTree({
+    artifactPath: context.artifactPath,
+    packageName: context.packageName,
+    release: context.release,
+    stageDir,
+    pnpmBin: options.pnpmBin,
+    fetchImpl: options.fetchImpl,
+  });
+  return activateManagedBrowserTree({
+    stateDir: options.stateDir,
+    packageName: context.packageName,
+    release: context.release,
+    staged,
+    entryPath: resolveStagedBrowserEntry(staged, context.packageName),
+  });
 }
 
 export interface PrepareVerifiedBrowserReleaseOptions {
