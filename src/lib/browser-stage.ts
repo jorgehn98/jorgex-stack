@@ -6,7 +6,6 @@ import { isCanonicalSha512Integrity, isStableSemverVersion } from "./npm-provide
 import { planDetectedBinCommand } from "./detect.js";
 
 const REGISTRY_HOST = "registry.npmjs.org";
-const REGISTRY_ACCEPT = "application/vnd.npm.install-v1+json";
 const STAGE_LOCK_FILE = ".jorgex-browser-lock.json";
 const STAGE_HOOK_FILE = ".pnpmfile.mjs";
 const STAGE_PACKAGE_FILE = "package.json";
@@ -249,11 +248,11 @@ async function readOfficialMetadata(
   version: string,
   fetchImpl: typeof fetch,
 ): Promise<OfficialPackageMetadata> {
-  const url = `https://${REGISTRY_HOST}/${packageName}`;
+  const url = `https://${REGISTRY_HOST}/${packageName}/${version}`;
   let response: Response;
   try {
     response = await fetchImpl(url, {
-      headers: { Accept: REGISTRY_ACCEPT },
+      headers: { Accept: "application/json" },
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
@@ -273,14 +272,10 @@ async function readOfficialMetadata(
     if (error instanceof Error && error.message.startsWith("browser-stage: ")) throw error;
     fail(`malformed registry metadata for ${packageName}`);
   }
-  if (!isRecord(data) || data.name !== packageName || !isRecord(data.versions)) {
-    fail(`malformed registry metadata for ${packageName}`);
-  }
-  const entry = data.versions[version];
-  if (!isRecord(entry) || entry.name !== packageName || entry.version !== version) {
+  if (!isRecord(data) || data.name !== packageName || data.version !== version) {
     fail(`registry metadata misses exact ${packageName}@${version}`);
   }
-  const dist = entry.dist;
+  const dist = data.dist;
   if (!isRecord(dist) || typeof dist.integrity !== "string" || typeof dist.tarball !== "string") {
     fail(`registry metadata misses dist for ${packageName}@${version}`);
   }
