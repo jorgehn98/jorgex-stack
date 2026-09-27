@@ -317,6 +317,46 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     expect(() => resolveEntry!(fixture.staged, PACKAGE_NAME)).toThrow(/bin|entry|symlink/i);
   });
 
+  it("projects Pi's published trusted DevTools handoff from an active verified receipt", async () => {
+    const fixture = writeFixture();
+    const api = await import("../src/lib/pi-projection-lifecycle.js") as Record<string, unknown>;
+    const trusted = api.trustedDevtoolsHandoff as ((stateDir: string) => Record<string, unknown>) | undefined;
+    expect(trusted, "Pi v3 handoff materializer is missing").toBeTypeOf("function");
+    expect(() => trusted!(fixture.stateDir)).toThrow(/missing|absent|receipt/i);
+
+    const devtoolsInput = {
+      ...fixture.input,
+      packageName: "chrome-devtools-mcp" as const,
+      release: {
+        ...fixture.input.release,
+        tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${VERSION}.tgz`,
+      },
+      staged: {
+        ...fixture.staged,
+        closure: fixture.staged.closure.map((item) => item.name === PACKAGE_NAME
+          ? { ...item, name: "chrome-devtools-mcp" } : item),
+      },
+    };
+    const receipt = await activateManagedBrowserTree(devtoolsInput);
+    const handoff = trusted!(fixture.stateDir);
+    expect(Object.keys(handoff).sort()).toEqual([
+      "args", "command", "enabled", "entryPath", "launcherPath", "launcherSha256",
+      "rootPath", "schemaVersion", "treePath", "treeSha256",
+    ].sort());
+    expect(handoff).toEqual({
+      schemaVersion: 3,
+      enabled: true,
+      command: process.execPath,
+      args: [receipt.launcherPath, "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+      entryPath: receipt.entryPath,
+      launcherPath: receipt.launcherPath,
+      launcherSha256: receipt.launcherSha256,
+      rootPath: receipt.rootPath,
+      treePath: receipt.treePath,
+      treeSha256: receipt.treeSha256,
+    });
+  });
+
   it("distinguishes absent state from an orphaned managed release", async () => {
     const absentRoot = sandbox();
     const absentStateDir = path.join(absentRoot, "absent-state");
