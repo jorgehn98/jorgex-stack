@@ -69,6 +69,8 @@ export interface InstallContext {
    * materializar el template canónico `chrome-devtools-mcp@{{VERSION}}`.
    */
   devtoolsMcpObservedVersion?: { version: string; integrity: string };
+  /** Verified Stack-owned Node guard, supplied by the managed browser lifecycle. */
+  devtoolsMcpInvocation?: { command: string; args: readonly string[] };
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
   playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */
