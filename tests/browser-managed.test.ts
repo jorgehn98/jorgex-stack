@@ -295,6 +295,28 @@ function assertStrictReceipt(receipt: ManagedBrowserReceipt, fixture: Fixture): 
 }
 
 describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activation", () => {
+  it("resolves only the declared package bin inside the verified staged root", async () => {
+    const fixture = writeFixture();
+    const api = await import("../src/lib/browser-managed.js") as Record<string, unknown>;
+    const resolveEntry = api.resolveStagedBrowserEntry as
+      | ((staged: Fixture["staged"], packageName: typeof PACKAGE_NAME) => string)
+      | undefined;
+    expect(resolveEntry, "managed browser bin resolver is missing").toBeTypeOf("function");
+    const manifestPath = path.join(fixture.staged.treePath, "package.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.bin = { "playwright-cli": "./index.js" };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+    expect(resolveEntry!(fixture.staged, PACKAGE_NAME)).toBe(fixture.input.entryPath);
+
+    manifest.bin = { "playwright-cli": "../../escape.js" };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+    expect(() => resolveEntry!(fixture.staged, PACKAGE_NAME)).toThrow(/bin|entry|escape|root/i);
+
+    manifest.bin = { "playwright-cli": "./runtime-link" };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+    expect(() => resolveEntry!(fixture.staged, PACKAGE_NAME)).toThrow(/bin|entry|symlink/i);
+  });
+
   it("distinguishes absent state from an orphaned managed release", async () => {
     const absentRoot = sandbox();
     const absentStateDir = path.join(absentRoot, "absent-state");
