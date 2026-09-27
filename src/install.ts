@@ -933,24 +933,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       // escritura de preferencia. Composición compartida con stage aislado
       // en os.tmpdir, sin mutar HOME/Engram antes de verificar; SRI,
       // metadata y red fallan cerrado.
-      let candidate: PlaywrightCliCandidate | undefined;
-      try {
-        const release = await prepareVerifiedBrowserRelease("@playwright/cli", { fetchImpl: fetch });
-        candidate = { version: release.version, tarballUrl: release.tarballUrl, integrity: release.integrity };
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        p.log.error(`Playwright CLI: no se pudo verificar el paquete del proveedor (${detail}). Revisa tu conexión y la metadata oficial antes de reintentar; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
-        exitCode = 1;
-      }
-      if (candidate !== undefined) {
+      type PlaywrightCliCandidateWithArtifact = PlaywrightCliCandidate & { artifactPath: string };
+      let candidate: PlaywrightCliCandidateWithArtifact | undefined;
       let setupAttempted = false;
       let preparedEnv: NodeJS.ProcessEnv | undefined;
       let verifiedCapability: VerifiedPlaywrightCapabilitySnapshot | undefined;
-      const baseDeps = opts.playwrightToolDeps ?? {
-        run: async (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv, runCandidate?: PlaywrightCliCandidate) => {
-          const pnpmBin = resolvePnpmBin();
-          return executePlaywrightToolAction(action, pnpmBin, env, runCandidate);
-        },
+      const hasManagedActivation = opts.playwrightToolDeps !== undefined;
+      const baseDeps: PlaywrightToolPlanDeps = opts.playwrightToolDeps ?? {
+        // The verified root tarball is retained for this callback, but the
+        // transitive closure/managed tree is not certified yet. Do not fall
+        // back to global pnpm/dlx by package name until that later T25 slice.
+        run: async () => ({ ok: false, reason: "action-failed" as const }),
         persistEnabled: (enabled: boolean, observed?: ObservedVersion) => {
           const selected = opts.playwrightToolConsent?.runtimeSelection;
           const fileSelection = selected === undefined ? undefined
@@ -968,11 +961,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           return true;
         },
         setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
-      } satisfies PlaywrightToolPlanDeps;
-      const result = await runPlaywrightToolPlan(toolPlan, {
+      };
+      const activateVerifiedArtifact = async (
+        runCandidate?: PlaywrightCliCandidate,
+      ): Promise<PlaywrightToolPlanResult> => runPlaywrightToolPlan(toolPlan, {
         ...baseDeps,
-        run: async (action, _env?, runCandidate?) => {
-          const first = await baseDeps.run(action, preparedEnv, runCandidate);
+        run: async (action, _env?, candidateForRun?) => {
+          const first = await baseDeps.run(action, preparedEnv, candidateForRun);
           if (first === true || first === false || first.ok || first.reason !== "pnpm-global-bin") return first;
           if (setupAttempted || opts.dryRun || opts.targetDir !== undefined) return first;
           const consent = opts.playwrightToolConsent;
@@ -993,61 +988,83 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           }
           preparedEnv = setup.env;
           p.log.info("pnpm preparado para esta instalación. Abre una terminal nueva al terminar para que otras herramientas y doctor reciban el PATH actualizado.");
-          return baseDeps.run(action, preparedEnv, runCandidate);
+          return baseDeps.run(action, preparedEnv, candidateForRun);
         },
-      }, candidate);
-      if (!result.ok) {
-        const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
-        let reason: string;
-        if (result.reason === "pnpm-global-bin") reason = `la configuración global de pnpm no está lista. ${pnpmRemedy}`;
-        else if (result.failedAction === "verify") reason = "el ejecutable de PATH no coincide con la versión verificada del proveedor o Chromium no está listo";
-        else reason = pnpmRemedy ?? (result.failedAction === "install"
-          ? "no se pudo instalar el paquete global"
-          : result.failedAction === "install-browser"
-            ? "no se pudo descargar el navegador"
-            : "se instalaron los componentes, pero no se pudo guardar la preferencia");
-        p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
+      }, runCandidate);
+      let activationResult: PlaywrightToolPlanResult | undefined;
+      try {
+        await prepareVerifiedBrowserRelease("@playwright/cli", {
+          fetchImpl: fetch,
+          // The stage is a short-lived lease: activation runs before this
+          // helper returns and before its finally block removes the tarball.
+          withVerifiedArtifact: async ({ release, artifactPath }) => {
+            candidate = { version: release.version, tarballUrl: release.tarballUrl, integrity: release.integrity, artifactPath };
+            activationResult = await activateVerifiedArtifact(candidate);
+          },
+        });
+        if (candidate === undefined || activationResult === undefined) {
+          throw new Error("no se ejecutó la activación del artefacto verificado");
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        p.log.error(`Playwright CLI: no se pudo verificar o activar el paquete del proveedor (${detail}). Revisa tu conexión y la metadata oficial antes de reintentar; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
         exitCode = 1;
-      } else {
-        let promptReconciliationFailed = false;
-        for (const { adapter, ctx } of successfulContexts) {
-          const browserCtx: InstallContext = { ...ctx,
-            playwrightCliEnabled: opts.playwrightToolConsent?.runtimeSelection?.[adapter.id] ?? true, warnings: [] };
-          try {
-            const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
-            if (browserChanges.length === 0) continue;
+      }
+      if (candidate !== undefined && activationResult !== undefined) {
+        const result = activationResult;
+        if (!result.ok) {
+          const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
+          let reason: string;
+          if (result.reason === "pnpm-global-bin") reason = `la configuración global de pnpm no está lista. ${pnpmRemedy}`;
+          else if (result.failedAction === "verify") reason = "el ejecutable de PATH no coincide con la versión verificada del proveedor o Chromium no está listo";
+          else if (!hasManagedActivation && result.reason === "action-failed") reason = "todavía no existe un árbol gestionado con cierre transitivo certificado; se ha bloqueado la activación global/dlx";
+          else reason = pnpmRemedy ?? (result.failedAction === "install"
+            ? "no se pudo instalar el paquete global"
+            : result.failedAction === "install-browser"
+              ? "no se pudo descargar el navegador"
+              : "se instalaron los componentes, pero no se pudo guardar la preferencia");
+          p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
+          exitCode = 1;
+        } else {
+          let promptReconciliationFailed = false;
+          for (const { adapter, ctx } of successfulContexts) {
+            const browserCtx: InstallContext = { ...ctx,
+              playwrightCliEnabled: opts.playwrightToolConsent?.runtimeSelection?.[adapter.id] ?? true, warnings: [] };
+            try {
+              const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
+              if (browserChanges.length === 0) continue;
 
-            const browserUpdates = browserChanges.filter((change) => change.status === "update");
-            const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
-            if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
-            applyChanges(browserChanges);
+              const browserUpdates = browserChanges.filter((change) => change.status === "update");
+              const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
+              if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+              applyChanges(browserChanges);
 
-            const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
-              .filter((change) => change.status !== "unchanged");
-            if (dirty.length > 0) {
-              p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+              const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
+                .filter((change) => change.status !== "unchanged");
+              if (dirty.length > 0) {
+                p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+                promptReconciliationFailed = true;
+              }
+            } catch (error) {
+              p.log.error(`${adapter.name}: no se pudo actualizar la guía de navegador (${error instanceof Error ? error.message : String(error)}).`);
+              exitCode = 1;
               promptReconciliationFailed = true;
             }
-          } catch (error) {
-            p.log.error(`${adapter.name}: no se pudo actualizar la guía de navegador (${error instanceof Error ? error.message : String(error)}).`);
+          }
+          if (promptReconciliationFailed) {
             exitCode = 1;
-            promptReconciliationFailed = true;
+            p.log.error("Playwright CLI y navegador se han instalado y la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
+          } else {
+            const verified = verifiedCapability ?? (preparedEnv === undefined
+              ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
+              : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version }));
+            if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
+              && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
+              opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
+            }
+            p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
           }
         }
-        if (promptReconciliationFailed) {
-          exitCode = 1;
-          p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
-        } else {
-          const verified = verifiedCapability ?? (preparedEnv === undefined
-            ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
-            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version }));
-          if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
-            && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
-            opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
-          }
-          p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
-        }
-      }
       }
     }
   } else if (playwrightCapability !== undefined && !playwrightCapability.effective) {
