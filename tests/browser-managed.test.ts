@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 import {
   activateManagedBrowserTree,
+  loadVerifiedManagedBrowserReceipt,
   type ActivateManagedBrowserTreeInput,
   type ManagedBrowserReceipt,
 } from "../src/lib/browser-managed.js";
@@ -276,6 +277,29 @@ function assertStrictReceipt(receipt: ManagedBrowserReceipt, fixture: Fixture): 
 }
 
 describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activation", () => {
+  it("distinguishes absent state from an orphaned managed release", async () => {
+    const absentRoot = sandbox();
+    const absentStateDir = path.join(absentRoot, "absent-state");
+    expect(loadVerifiedManagedBrowserReceipt(absentStateDir, PACKAGE_NAME)).toBeNull();
+
+    const staleRoot = sandbox();
+    const staleStateDir = path.join(staleRoot, "state");
+    const stalePackageDir = path.join(staleStateDir, ".browser-managed", "playwright-cli");
+    fs.mkdirSync(stalePackageDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(stalePackageDir, ".activation.lock"), "stale lock owner\n", { mode: 0o600 });
+    expect(() => loadVerifiedManagedBrowserReceipt(staleStateDir, PACKAGE_NAME)).toThrow(/orphan|lock/i);
+
+    const fixture = writeFixture();
+    const receipt = await activateManagedBrowserTree(fixture.input);
+    expect(loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)).toEqual(receipt);
+
+    fs.unlinkSync(path.join(path.dirname(receipt.rootPath), "active.v1.json"));
+    expect(fs.existsSync(receipt.rootPath)).toBe(true);
+    expect(() => loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)).toThrow(
+      /orphan|partial|active browser pointer|managed browser state/i,
+    );
+  });
+
   it("promotes only the staged bytes, preserves safe symlinks, and persists a strict receipt", async () => {
     const fixture = writeFixture();
     const receipt = await activateManagedBrowserTree(fixture.input);
