@@ -175,6 +175,24 @@ type ActiveBrowserPointer = {
   readonly receiptSha256: string;
 };
 
+type ManagedBrowserInvocationPlan = {
+  command: string;
+  args: string[];
+};
+
+type ManagedBrowserInvocationPlanner = (
+  stateDir: string,
+  packageName: string,
+  runtimeArgs: readonly string[],
+) => ManagedBrowserInvocationPlan;
+
+async function loadManagedBrowserInvocationPlanner(): Promise<ManagedBrowserInvocationPlanner> {
+  const moduleNamespace = await import("../src/lib/browser-managed.js");
+  const planner = Reflect.get(moduleNamespace, "planManagedBrowserInvocation");
+  expect(planner, "planManagedBrowserInvocation must be exported").toBeTypeOf("function");
+  return planner as ManagedBrowserInvocationPlanner;
+}
+
 function readActivePointer(receipt: ManagedBrowserReceipt): {
   path: string;
   raw: Buffer;
@@ -298,6 +316,60 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     expect(() => loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)).toThrow(
       /orphan|partial|active browser pointer|managed browser state/i,
     );
+  });
+
+  it("plans a trusted inline guard that preserves args and blocks launcher/tree tampering", async () => {
+    const planner = await loadManagedBrowserInvocationPlanner();
+    const fixture = writeFixture();
+    const markerPath = path.join(fixture.root, "planned-entry.marker");
+    fs.writeFileSync(
+      fixture.input.entryPath,
+      [
+        'import fs from "node:fs";',
+        `const marker = ${JSON.stringify(markerPath)};`,
+        'fs.writeFileSync(marker, JSON.stringify(process.argv.slice(2)));',
+        "",
+      ].join("\n"),
+    );
+    const staged = {
+      ...fixture.input.staged,
+      treeSha256: browserTreeSha256(
+        fixture.input.staged.nodeModulesPath,
+        path.dirname(fixture.input.staged.nodeModulesPath),
+      ),
+    };
+    const receipt = await activateManagedBrowserTree({ ...fixture.input, staged });
+    const runtimeArgs = ["--from-runtime", "value with spaces"];
+    const plan = planner(fixture.stateDir, PACKAGE_NAME, runtimeArgs);
+
+    expect(plan.command).toBe(process.execPath);
+    expect(plan.args.slice(0, 2)).toEqual(["--input-type=module", "--eval"]);
+    expect(plan.args).toHaveLength(4 + runtimeArgs.length);
+    expect(plan.args[2]).toMatch(/import|digest|tree/);
+    expect(plan.args[3]).toBe(receipt.launcherPath);
+    expect(plan.args.slice(4)).toEqual(runtimeArgs);
+    expect(plan.args[2]).not.toBe(receipt.launcherPath);
+
+    const runPlan = () => spawnSync(plan.command, plan.args, { encoding: "utf8", timeout: 30_000 });
+    const intact = runPlan();
+    expect(intact.error).toBeUndefined();
+    expect(intact.status, intact.stderr ?? "").toBe(0);
+    expect(JSON.parse(fs.readFileSync(markerPath, "utf8"))).toEqual(runtimeArgs);
+
+    const launcherBytes = fs.readFileSync(receipt.launcherPath);
+    fs.rmSync(markerPath);
+    fs.appendFileSync(receipt.launcherPath, "\n// launcher tamper\n");
+    const launcherTampered = runPlan();
+    expect(launcherTampered.error).toBeUndefined();
+    expect(launcherTampered.status).not.toBe(0);
+    expect(fs.existsSync(markerPath)).toBe(false);
+    fs.writeFileSync(receipt.launcherPath, launcherBytes);
+
+    fs.appendFileSync(receipt.entryPath, "\n// tree entry tamper\n");
+    const treeTampered = runPlan();
+    expect(treeTampered.error).toBeUndefined();
+    expect(treeTampered.status).not.toBe(0);
+    expect(fs.existsSync(markerPath)).toBe(false);
   });
 
   it("promotes only the staged bytes, preserves safe symlinks, and persists a strict receipt", async () => {
