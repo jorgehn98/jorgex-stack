@@ -635,6 +635,31 @@ describe("optional Chrome DevTools MCP", () => {
 });
 
 describe("DevTools observed-version materialization [T14-RED]", () => {
+  it.each(RUNTIMES)("projects a supplied verified Node guard for %s without dlx", (runtime) => {
+    const root = tempDir();
+    const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
+    writeUserConfig(runtime, configFile(runtime, configDir));
+    const guard = { command: process.execPath, args: ["--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs", "--isolated"] };
+    const [action] = planMcp(adapterFor(runtime), {
+      ...context(runtime, configDir, true),
+      devtoolsMcpObservedVersion: OBSERVED_DEVTOOLS,
+      devtoolsMcpInvocation: guard,
+    } as DevToolsSelectionContext);
+    expect(action).toMatchObject({ kind: "write" });
+    const content = (action as { content: string }).content;
+    expect(content).not.toContain("dlx");
+    if (runtime === "codex") {
+      const section = readTomlSection(content, `mcp_servers.${DEVTOOLS_SERVER}`);
+      expect(section).toContain(`command = ${JSON.stringify(process.execPath)}`);
+      expect(JSON.parse(/args = (\[.*\])/.exec(section ?? "")?.[1] ?? "null")).toEqual(guard.args);
+    } else {
+      const parsed = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
+      const server = parsed[runtime === "claude-code" ? "mcpServers" : "mcp"]![DEVTOOLS_SERVER]!;
+      expect(server.command).toEqual(runtime === "opencode" ? [process.execPath, ...guard.args] : process.execPath);
+      if (runtime === "claude-code") expect(server.args).toEqual(guard.args);
+    }
+  });
+
   // The observed record stands for the verified per-machine observation in
   // devtools-mcp.json (see browser-preferences-safety); the shared planMcp
   // seam only consumes its version. Integrity proves verified-ness of the
