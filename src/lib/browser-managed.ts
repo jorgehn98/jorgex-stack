@@ -683,6 +683,130 @@ await import(pathToFileURL(entry).href);
 `;
 }
 
+function managedTreeVerifierSource(): string {
+  const source = launcherSource("/jorgex-browser-verifier/node_modules", "/jorgex-browser-verifier/entry.mjs", "0".repeat(64));
+  const start = source.indexOf("function contained(base, candidate, allowEqual)");
+  const end = source.indexOf("if (treeHash(root) !== expected)");
+  if (start < 0 || end < 0 || end <= start) fail("managed browser tree verifier source is unavailable");
+  return source.slice(start, end);
+}
+
+export interface ManagedBrowserInvocationPlan {
+  readonly command: string;
+  readonly args: readonly string[];
+}
+
+const DEVTOOLS_PRIVACY_FLAGS = [
+  "--isolated",
+  "--redact-network-headers",
+  "--no-performance-crux",
+  "--no-usage-statistics",
+] as const;
+
+function invocationGuardSource(
+  receipt: ManagedBrowserReceipt,
+  runtimeArgs: readonly string[],
+): string {
+  const treeVerifier = managedTreeVerifierSource();
+  return `const fs = (await import("node:fs")).default;
+const { createHash } = await import("node:crypto");
+const path = (await import("node:path")).default;
+
+const expectedLauncherPath = ${JSON.stringify(receipt.launcherPath)};
+const expectedLauncherSha256 = ${JSON.stringify(receipt.launcherSha256)};
+const root = ${JSON.stringify(receipt.treePath)};
+const expected = ${JSON.stringify(receipt.treeSha256)};
+const expectedRuntimeArgs = ${JSON.stringify([...runtimeArgs])};
+const MAX_LAUNCHER_BYTES = 4 * 1024 * 1024;
+const MAX_BYTES = ${MAX_TREE_BYTES};
+const MAX_ENTRIES = ${MAX_TREE_ENTRIES};
+const MAX_METADATA_BYTES = ${MAX_TREE_METADATA_BYTES};
+const MAX_PATH_BYTES = ${MAX_TREE_PATH_BYTES};
+const MAX_SYMLINK_BYTES = ${MAX_TREE_SYMLINK_BYTES};
+const CHUNK_BYTES = ${TREE_HASH_CHUNK_BYTES};
+const CONTROL = /[\\u0000-\\u001f\\u007f]/;
+
+${treeVerifier}
+
+function readVerifiedLauncher(file) {
+  let initial;
+  try { initial = fs.lstatSync(file); } catch { throw new Error("managed browser launcher is unavailable"); }
+  if (!initial.isFile() || initial.isSymbolicLink()) throw new Error("managed browser launcher is not a regular file");
+  if (initial.size > MAX_LAUNCHER_BYTES) throw new Error("managed browser launcher exceeds 4 MiB");
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0) | (fs.constants.O_NOFOLLOW || 0);
+  const fd = fs.openSync(file, flags);
+  const chunks = [];
+  let total = 0;
+  let primary = null;
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.size > MAX_LAUNCHER_BYTES) throw new Error("managed browser launcher is invalid");
+    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
+    for (;;) {
+      const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      total += read;
+      if (total > MAX_LAUNCHER_BYTES) throw new Error("managed browser launcher exceeds 4 MiB");
+      chunks.push(Buffer.from(buffer.subarray(0, read)));
+    }
+    const finalStat = fs.fstatSync(fd);
+    if (!finalStat.isFile() || finalStat.size !== total || total !== opened.size) throw new Error("managed browser launcher changed while being read");
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    try { fs.closeSync(fd); } catch (error) { if (primary === null) throw error; }
+  }
+  const bytes = Buffer.concat(chunks);
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("managed browser launcher is not strict UTF-8");
+  if (createHash("sha256").update(bytes).digest("hex") !== expectedLauncherSha256) throw new Error("managed browser launcher digest drifted");
+  return text;
+}
+
+if (process.argv[1] !== expectedLauncherPath) throw new Error("managed browser launcher path changed");
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expectedRuntimeArgs)) throw new Error("managed browser runtime args changed");
+const launcherSource = readVerifiedLauncher(expectedLauncherPath);
+if (treeHash(root) !== expected) throw new Error("managed browser tree digest drifted before launch");
+process.argv[1] = expectedLauncherPath;
+const evaluateVerifiedLauncher = (verifiedSource) => new Function("return (async()=>{\\n" + verifiedSource + "\\n})()")();
+await evaluateVerifiedLauncher(launcherSource);
+`;
+}
+
+export function planManagedBrowserInvocation(
+  stateDir: string,
+  packageName: ManagedBrowserPackageName,
+  runtimeArgs: readonly string[],
+): ManagedBrowserInvocationPlan {
+  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+    fail("unsupported managed browser package");
+  }
+  if (!Array.isArray(runtimeArgs)) fail("runtimeArgs must be an array");
+  if (runtimeArgs.some((arg) => typeof arg !== "string" || CONTROL_CHARACTERS.test(arg))) {
+    fail("runtimeArgs contain an invalid control character");
+  }
+  if (
+    packageName === "chrome-devtools-mcp" &&
+    (runtimeArgs.length !== DEVTOOLS_PRIVACY_FLAGS.length ||
+      runtimeArgs.some((arg, index) => arg !== DEVTOOLS_PRIVACY_FLAGS[index]))
+  ) {
+    fail("chrome-devtools-mcp requires the fixed privacy flags in order");
+  }
+  const receipt = loadVerifiedManagedBrowserReceipt(stateDir, packageName);
+  if (receipt === null) fail("verified managed browser receipt not found");
+  return {
+    command: process.execPath,
+    args: [
+      "--input-type=module",
+      "--eval",
+      invocationGuardSource(receipt, runtimeArgs),
+      receipt.launcherPath,
+      ...runtimeArgs,
+    ],
+  };
+}
+
 function writeNewFile(file: string, content: string, mode: number): void {
   try {
     fs.writeFileSync(file, content, { encoding: "utf8", flag: "wx", mode });
