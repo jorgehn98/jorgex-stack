@@ -686,7 +686,16 @@ export function runPiProjectionLifecycle(
     if (!path.isAbsolute(stateDir) || (scope.kind === "target-dir" && !isInside(scope.home, stateDir))) {
       return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "El receipt gestionado de DevTools debe estar dentro del HOME aislado del target.");
     }
-    try { trustedDevtoolsHandoff(stateDir); }
+    try {
+      if (scope.kind === "target-dir") {
+        const homeStat = fs.lstatSync(scope.home);
+        if (!homeStat.isDirectory() || homeStat.isSymbolicLink()
+          || !isInside(fs.realpathSync(scope.home), fs.realpathSync(stateDir))) {
+          throw new Error("El receipt gestionado de DevTools sale del HOME aislado del target.");
+        }
+      }
+      trustedDevtoolsHandoff(stateDir);
+    }
     catch (error) {
       return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], error instanceof Error ? error.message : String(error));
     }
@@ -794,6 +803,7 @@ export interface PiProjectionLifecycleSystemInput {
   devtoolsMcpEnabled?: boolean;
   pnpmBin?: string | null;
   devtoolsMcpVersion?: string | null;
+  devtoolsManagedStateDir?: string;
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
   playwrightCliVersion?: string | null;
@@ -824,6 +834,7 @@ function systemProjectionLifecycle(
       devtoolsMcpEnabled: input.devtoolsMcpEnabled,
       pnpmBin: input.pnpmBin,
       devtoolsMcpVersion: input.devtoolsMcpVersion,
+      devtoolsManagedStateDir: input.devtoolsManagedStateDir,
       playwrightHandoffEnabled: input.playwrightHandoffEnabled,
       playwrightCliCommand: input.playwrightCliCommand,
       playwrightCliVersion: input.playwrightCliVersion,
