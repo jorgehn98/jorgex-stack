@@ -65,6 +65,7 @@ export interface PiProjectionLifecycleInput {
   devtoolsMcpEnabled?: boolean;
   pnpmBin?: string | null;
   devtoolsMcpVersion?: string | null;
+  devtoolsManagedStateDir?: string;
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
   playwrightCliVersion?: string | null;
@@ -200,7 +201,10 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
     ...planSkills(adapter, ctx),
     ...planCommands(adapter, ctx),
   ];
-  if (input.devtoolsMcpEnabled && input.pnpmBin
+  if (input.devtoolsMcpEnabled && input.devtoolsManagedStateDir !== undefined) {
+    actions.push({ kind: "write", target: handoffPath(scope, "devtools"),
+      content: `${JSON.stringify(trustedDevtoolsHandoff(input.devtoolsManagedStateDir), null, 2)}\n` });
+  } else if (input.devtoolsMcpEnabled && input.pnpmBin
     && isStableSemverVersion(input.devtoolsMcpVersion)) {
     const server = loadCanonicalMcp(input.stackDir).servers[DEVTOOLS_MCP_SERVER];
     if (server === undefined) throw new Error("Falta la configuración canónica de DevTools.");
@@ -677,10 +681,19 @@ export function runPiProjectionLifecycle(
     return blocked("projection-prompt-markers", [prompt], error instanceof Error ? error.message : String(error));
   }
 
-  if (input.devtoolsMcpEnabled && (!input.pnpmBin || !path.isAbsolute(input.pnpmBin))) {
+  if (input.devtoolsMcpEnabled && input.devtoolsManagedStateDir !== undefined) {
+    const stateDir = input.devtoolsManagedStateDir;
+    if (!path.isAbsolute(stateDir) || (scope.kind === "target-dir" && !isInside(scope.home, stateDir))) {
+      return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "El receipt gestionado de DevTools debe estar dentro del HOME aislado del target.");
+    }
+    try { trustedDevtoolsHandoff(stateDir); }
+    catch (error) {
+      return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], error instanceof Error ? error.message : String(error));
+    }
+  } else if (input.devtoolsMcpEnabled && (!input.pnpmBin || !path.isAbsolute(input.pnpmBin))) {
     return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere un ejecutable pnpm absoluto disponible en PATH.");
   }
-  if (input.devtoolsMcpEnabled
+  if (input.devtoolsMcpEnabled && input.devtoolsManagedStateDir === undefined
     && !isStableSemverVersion(input.devtoolsMcpVersion)) {
     return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere una versión estable observada y verificada. Reintenta tras verificar la versión observada.");
   }
