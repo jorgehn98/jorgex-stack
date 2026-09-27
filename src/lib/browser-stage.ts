@@ -797,7 +797,7 @@ function hashTrustedTreeFile(hash: ReturnType<typeof createHash>, filePath: stri
   }
 }
 
-function browserTreeSha256(nodeModulesPath: string, realStage: string): string {
+export function browserTreeSha256(nodeModulesPath: string, realStage: string): string {
   const nodeModulesStat = lstatOrFail(nodeModulesPath, "node_modules");
   if (!nodeModulesStat.isDirectory() || nodeModulesStat.isSymbolicLink()) {
     fail("node_modules must be a real directory");
