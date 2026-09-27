@@ -16,9 +16,15 @@ const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_PACKAGES = 32_768;
 const MAX_FILES = 250_000;
 const RUN_TIMEOUT_MS = 120_000;
+const MAX_TREE_BYTES = 512 * 1024 * 1024;
+const MAX_TREE_ENTRIES = 100_000;
+const MAX_TREE_METADATA_BYTES = 32 * 1024 * 1024;
+const MAX_TREE_PATH_BYTES = 16 * 1024;
+const MAX_TREE_SYMLINK_BYTES = 16 * 1024;
+const TREE_HASH_CHUNK_BYTES = 1024 * 1024;
 const PACKAGE_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 const NPM_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const HEX64 = /^[0-9a-f]{64}$/;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 export interface BrowserStageRelease {
   version: string;
@@ -52,6 +58,8 @@ export interface BrowserClosurePackage {
 
 export interface StageVerifiedBrowserTreeResult {
   treePath: string;
+  nodeModulesPath: string;
+  treeSha256: string;
   closure: BrowserClosurePackage[];
 }
 
@@ -613,6 +621,243 @@ function assertClosureInstalled(
   return treePath;
 }
 
+interface BrowserTreeEntry {
+  kind: "file" | "dir" | "symlink";
+  relativePath: string;
+  filePath?: string;
+  target?: string;
+}
+
+interface TreeMetadataBudget {
+  bytes: number;
+}
+
+function isContainedTreePath(root: string, candidate: string, allowEqual: boolean): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  if (relative === "") return allowEqual;
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function readContainedTreeSymlinkTarget(linkPath: string, root: string, metadata: TreeMetadataBudget): string {
+  let raw: Buffer;
+  try {
+    raw = fs.readlinkSync(linkPath, "buffer") as Buffer;
+  } catch {
+    fail(`cannot read staged symlink: ${linkPath}`);
+  }
+  const target = raw.toString("utf8");
+  if (
+    !Buffer.from(target, "utf8").equals(raw) ||
+    target === "" ||
+    CONTROL_CHARACTERS.test(target) ||
+    raw.byteLength > MAX_TREE_SYMLINK_BYTES ||
+    path.isAbsolute(target) ||
+    (process.platform === "win32" && /^[a-zA-Z]:/.test(target))
+  ) {
+    fail(`staged symlink must be an internal relative UTF-8 target: ${linkPath}`);
+  }
+  const separator = process.platform === "win32" ? /[\\/]+/ : /\/+/;
+  const parts = target.split(separator).filter((part) => part !== "" && part !== ".");
+  if (parts.length === 0) fail(`staged symlink target is empty: ${linkPath}`);
+  let current = path.dirname(path.resolve(linkPath));
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]!;
+    const last = index === parts.length - 1;
+    current = part === ".." ? path.dirname(current) : path.join(current, part);
+    if (!isContainedTreePath(root, current, true)) fail(`staged symlink escapes its tree: ${linkPath}`);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      fail(`staged symlink target is missing: ${linkPath}`);
+    }
+    if (stat.isSymbolicLink()) fail(`staged symlink chain is not allowed: ${linkPath}`);
+    if (last) {
+      if (!stat.isFile() && !stat.isDirectory()) fail(`staged symlink target is not a file or directory: ${linkPath}`);
+    } else if (!stat.isDirectory()) {
+      fail(`staged symlink target traverses a non-directory: ${linkPath}`);
+    }
+  }
+  if (metadata.bytes + raw.byteLength > MAX_TREE_METADATA_BYTES) {
+    fail("staged tree exceeds its metadata bound");
+  }
+  metadata.bytes += raw.byteLength;
+  return target;
+}
+
+function readTreeDirectoryEntries(
+  directoryPath: string,
+  root: string,
+  remainingEntries: number,
+  metadata: TreeMetadataBudget,
+): Array<{ fullPath: string; relativePath: string }> {
+  let directory: fs.Dir;
+  try {
+    directory = fs.opendirSync(directoryPath);
+  } catch {
+    fail(`cannot open staged tree directory: ${directoryPath}`);
+  }
+  const entries: Array<{ fullPath: string; relativePath: string }> = [];
+  let primary: unknown = null;
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      if (entries.length >= remainingEntries) fail("staged tree exceeds its entry bound");
+      const fullPath = path.join(directoryPath, entry.name);
+      const relativePath = path.relative(path.resolve(root), fullPath).split(path.sep).join("/");
+      const pathBytes = Buffer.byteLength(relativePath, "utf8");
+      if (
+        relativePath === "" ||
+        CONTROL_CHARACTERS.test(relativePath) ||
+        pathBytes > MAX_TREE_PATH_BYTES ||
+        metadata.bytes + pathBytes > MAX_TREE_METADATA_BYTES
+      ) {
+        fail(`staged tree contains an invalid or oversized path: ${fullPath}`);
+      }
+      metadata.bytes += pathBytes;
+      entries.push({ fullPath, relativePath });
+    }
+  } catch (error) {
+    primary = error;
+    if (error instanceof Error && error.message.startsWith("browser-stage: ")) throw error;
+    fail(`cannot read staged tree directory: ${directoryPath}`);
+  } finally {
+    try {
+      directory.closeSync();
+    } catch (error) {
+      if (primary === null) fail(`cannot close staged tree directory: ${directoryPath}`);
+    }
+  }
+  return entries;
+}
+
+function openTrustedTreeFile(filePath: string): { fd: number; size: number } {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0);
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, flags);
+  } catch {
+    fail(`cannot open staged tree file: ${filePath}`);
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.fstatSync(fd);
+  } catch {
+    try { fs.closeSync(fd); } catch { /* Preserve the primary failure. */ }
+    fail(`cannot stat staged tree file: ${filePath}`);
+  }
+  if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 0) {
+    try { fs.closeSync(fd); } catch { /* Preserve the primary failure. */ }
+    fail(`staged tree entry is not a regular file: ${filePath}`);
+  }
+  return { fd, size: stat.size };
+}
+
+function hashTrustedTreeFile(hash: ReturnType<typeof createHash>, filePath: string, total: { bytes: number }): void {
+  const opened = openTrustedTreeFile(filePath);
+  let primary: unknown = null;
+  try {
+    if (opened.size > MAX_TREE_BYTES || total.bytes + opened.size > MAX_TREE_BYTES) {
+      fail("staged tree exceeds its byte bound");
+    }
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(opened.size));
+    hash.update(length);
+    const buffer = Buffer.allocUnsafe(TREE_HASH_CHUNK_BYTES);
+    let readTotal = 0;
+    for (;;) {
+      let read: number;
+      try {
+        read = fs.readSync(opened.fd, buffer, 0, buffer.length, null);
+      } catch {
+        fail(`cannot read staged tree file: ${filePath}`);
+      }
+      if (read === 0) break;
+      readTotal += read;
+      if (readTotal > opened.size || total.bytes + readTotal > MAX_TREE_BYTES) {
+        fail(`staged tree file changed or exceeds its byte bound: ${filePath}`);
+      }
+      hash.update(buffer.subarray(0, read));
+    }
+    const finalStat = fs.fstatSync(opened.fd);
+    if (!finalStat.isFile() || finalStat.size !== readTotal || readTotal !== opened.size) {
+      fail(`staged tree file changed while being verified: ${filePath}`);
+    }
+    total.bytes += readTotal;
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    try {
+      fs.closeSync(opened.fd);
+    } catch {
+      if (primary === null) fail(`cannot close staged tree file: ${filePath}`);
+    }
+  }
+}
+
+function browserTreeSha256(nodeModulesPath: string, realStage: string): string {
+  const nodeModulesStat = lstatOrFail(nodeModulesPath, "node_modules");
+  if (!nodeModulesStat.isDirectory() || nodeModulesStat.isSymbolicLink()) {
+    fail("node_modules must be a real directory");
+  }
+  assertContained(realStage, nodeModulesPath, "node_modules");
+  const root = path.resolve(nodeModulesPath);
+  const entries: BrowserTreeEntry[] = [];
+  const pending = [root];
+  const metadata: TreeMetadataBudget = { bytes: 0 };
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const { fullPath, relativePath } of readTreeDirectoryEntries(
+      directory,
+      root,
+      MAX_TREE_ENTRIES - entries.length,
+      metadata,
+    )) {
+      if (entries.length >= MAX_TREE_ENTRIES) fail("staged tree exceeds its entry bound");
+      const stat = lstatOrFail(fullPath, "staged tree entry");
+      if (stat.isSymbolicLink()) {
+        entries.push({
+          kind: "symlink",
+          relativePath,
+          target: readContainedTreeSymlinkTarget(fullPath, root, metadata),
+        });
+      } else if (stat.isDirectory()) {
+        entries.push({ kind: "dir", relativePath });
+        pending.push(fullPath);
+      } else if (stat.isFile()) {
+        entries.push({ kind: "file", relativePath, filePath: fullPath });
+      } else {
+        fail(`staged tree contains an unsupported entry: ${fullPath}`);
+      }
+    }
+  }
+  entries.sort((left, right) =>
+    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
+  );
+  const hash = createHash("sha256");
+  hash.update("browser-v2\0", "utf8");
+  const total = { bytes: 0 };
+  for (const entry of entries) {
+    hash.update(`${entry.kind}\0${entry.relativePath}\0`, "utf8");
+    if (entry.kind === "symlink") {
+      const payload = Buffer.from(entry.target!, "utf8");
+      const length = Buffer.alloc(8);
+      length.writeBigUInt64BE(BigInt(payload.length));
+      hash.update(length);
+      hash.update(payload);
+      total.bytes += payload.length;
+      if (total.bytes > MAX_TREE_BYTES) fail("staged tree exceeds its byte bound");
+    } else if (entry.kind === "dir") {
+      hash.update(Buffer.alloc(8));
+    } else {
+      hashTrustedTreeFile(hash, entry.filePath!, total);
+    }
+  }
+  return hash.digest("hex");
+}
+
 /**
  * Installs an already SRI-verified browser tarball in a private pnpm stage,
  * captures pnpm's resolved lock object through `afterAllResolved`, and checks
@@ -695,6 +940,8 @@ export async function stageVerifiedBrowserTree(
   }
   assertStageTreeFilesystem(stageDir, realStage);
   const treePath = assertClosureInstalled(stageDir, packageName, release, lockPackages, realStage);
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treeSha256 = browserTreeSha256(nodeModulesPath, realStage);
   closure.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
-  return { treePath, closure };
+  return { treePath, nodeModulesPath, treeSha256, closure };
 }
