@@ -16,6 +16,25 @@ import { readManifest } from "./manifest.js";
 import { DEFAULT_MODEL_MAP } from "./model-map.js";
 import { dataDir, HOME, stackRoot } from "./paths.js";
 import { filterProjectedPiPackage } from "./pi-package-lifecycle.js";
+import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+
+/** Pi 0.8.33 validates and launches this exact v3 shape through its own guard. */
+export function trustedDevtoolsHandoff(stateDir: string) {
+  const receipt = loadVerifiedManagedBrowserReceipt(stateDir, "chrome-devtools-mcp");
+  if (receipt === null) throw new Error("DevTools managed receipt is missing for Pi handoff");
+  return {
+    schemaVersion: 3 as const,
+    enabled: true as const,
+    command: process.execPath,
+    args: [receipt.launcherPath, "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+    entryPath: receipt.entryPath,
+    launcherPath: receipt.launcherPath,
+    launcherSha256: receipt.launcherSha256,
+    rootPath: receipt.rootPath,
+    treePath: receipt.treePath,
+    treeSha256: receipt.treeSha256,
+  };
+}
 
 
 export type PiProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
