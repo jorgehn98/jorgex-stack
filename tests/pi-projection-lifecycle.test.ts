@@ -376,6 +376,17 @@ describe("Pi shared projection lifecycle", () => {
       }, temporaryDeps(root, events, { runtimes: {} }));
       expect(escaped).toMatchObject({ kind: "blocked", reason: "projection-devtools-command" });
       expect(events).toEqual([]);
+
+      const externalHome = path.join(root, "moved-home");
+      fs.renameSync(target.home, externalHome);
+      fs.symlinkSync(externalHome, target.home, "dir");
+      const linked = runPiProjectionLifecycle({
+        operation: "sync", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true, devtoolsManagedStateDir: stateDir,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(linked).toMatchObject({ kind: "blocked", reason: "projection-devtools-command" });
+      expect(events).toEqual([]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
