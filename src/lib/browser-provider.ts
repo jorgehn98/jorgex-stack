@@ -32,6 +32,12 @@ export interface PrepareVerifiedBrowserReleaseOptions {
    * privacy-flag proof) without changing this shared acquisition.
    */
   smoke?: (context: BrowserReleaseSmokeContext) => void | Promise<void>;
+  /**
+   * Optional lease hook, invoked after smoke with the verified root tarball
+   * and its private stage alive. The promise must settle before the stage is
+   * cleaned, so callers can activate only the exact bytes that were checked.
+   */
+  withVerifiedArtifact?: (context: BrowserReleaseSmokeContext) => void | Promise<void>;
 }
 
 const PLAYWRIGHT_PKG = "@playwright/cli";
@@ -79,8 +85,9 @@ function resolveStageParent(stageParent: unknown): string {
  * candidate via the generic npm provider, then verifies the tarball SRI in
  * a unique private stage under the provided real absolute parent (default
  * `os.tmpdir()`). Returns only the observed `{ version, tarballUrl,
- * integrity }` after verified bytes; the stage is always removed. An optional
- * smoke hook may execute the verified package inside that private stage.
+ * integrity }` after verified bytes; the stage is always removed after the
+ * optional smoke/lease hooks settle. An optional smoke hook may execute the
+ * verified package inside that private stage.
  */
 export async function prepareVerifiedBrowserRelease(
   packageName: string,
@@ -90,9 +97,12 @@ export async function prepareVerifiedBrowserRelease(
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     fail("invalid options");
   }
-  const { fetchImpl, stageParent, smoke } = options as PrepareVerifiedBrowserReleaseOptions;
+  const { fetchImpl, stageParent, smoke, withVerifiedArtifact } = options as PrepareVerifiedBrowserReleaseOptions;
   if (typeof fetchImpl !== "function") fail("fetchImpl must be a function");
   if (smoke !== undefined && typeof smoke !== "function") fail("smoke must be a function");
+  if (withVerifiedArtifact !== undefined && typeof withVerifiedArtifact !== "function") {
+    fail("withVerifiedArtifact must be a function");
+  }
   const parent = resolveStageParent(stageParent);
 
   let stageDir: string | null = null;
@@ -125,9 +135,17 @@ export async function prepareVerifiedBrowserRelease(
     } catch (error) {
       throw asBrowserError(error);
     }
+    const context: BrowserReleaseSmokeContext = { packageName, release, artifactPath, stageDir };
     if (smoke !== undefined) {
       try {
-        await smoke({ packageName, release, artifactPath, stageDir });
+        await smoke(context);
+      } catch (error) {
+        throw asBrowserError(error);
+      }
+    }
+    if (withVerifiedArtifact !== undefined) {
+      try {
+        await withVerifiedArtifact(context);
       } catch (error) {
         throw asBrowserError(error);
       }
