@@ -420,6 +420,8 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
       launcherPath: receipt.launcherPath, launcherSha256: receipt.launcherSha256,
       treeSha256: receipt.treeSha256,
     });
+    fs.chmodSync(receipt.launcherPath, 0o755);
+    expect(() => trustedPlaywrightHandoff(fixture.stateDir, receipt.launcherPath)).toThrow(/dispatcher.*outside|outside.*release/i);
   });
 
 

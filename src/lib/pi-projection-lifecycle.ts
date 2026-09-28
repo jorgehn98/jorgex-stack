@@ -23,6 +23,11 @@ export function trustedPlaywrightHandoff(stateDir: string, commandPath: string) 
   const receipt = loadVerifiedManagedBrowserReceipt(stateDir, "@playwright/cli");
   if (receipt === null) throw new Error("Playwright managed receipt is missing for Pi handoff");
   const command = fs.realpathSync(commandPath);
+  const relativeCommand = path.relative(receipt.rootPath, command);
+  if (relativeCommand === "" || (relativeCommand !== ".."
+    && !relativeCommand.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeCommand))) {
+    throw new Error("Playwright Stack dispatcher must remain outside the managed release");
+  }
   const stat = fs.lstatSync(command);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) {
     throw new Error("Playwright Stack dispatcher must be a bounded regular file");
