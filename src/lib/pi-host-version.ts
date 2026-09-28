@@ -99,13 +99,14 @@ function hasManagedPiMarker(resolved: string): boolean {
 }
 
 export function inspectPiHostVersion(executable: string): PiHostVersionInspection {
+  const absoluteExecutable = path.resolve(executable);
   let resolved: string;
   try {
-    resolved = fs.realpathSync(executable);
+    resolved = fs.realpathSync(absoluteExecutable);
   } catch {
     return { version: null, diagnostic: "no se pudo resolver el ejecutable Pi" };
   }
-  if (hasManagedPiMarker(resolved)) return managedPiVersion(executable, resolved);
+  if (hasManagedPiMarker(resolved)) return managedPiVersion(absoluteExecutable, resolved);
   let current = path.dirname(resolved);
   for (let depth = 0; depth < 8; depth += 1) {
     for (const manifest of [

@@ -46,6 +46,13 @@ describe.skipIf(process.platform === "win32")("Pi host version detection", () =>
     expect(fs.existsSync(fixture.marker)).toBe(false);
   });
 
+  it("recognizes a managed launcher reached through a relative PATH entry", () => {
+    const fixture = managedPiFixture();
+    const relativeBin = path.relative(process.cwd(), path.dirname(fixture.executable));
+    process.env.PATH = `${relativeBin}${path.delimiter}${originalPath ?? ""}`;
+    expect(detectPiRuntime().version).toBe("0.87.1");
+  });
+
   it("rejects a release version that differs from the installed Pi package", () => {
     const fixture = managedPiFixture();
     const manifest = path.join(fixture.agentDir, "install", "releases", "0.87.1", "node_modules", "@earendil-works", "pi-coding-agent", "package.json");
