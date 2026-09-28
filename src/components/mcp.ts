@@ -17,10 +17,13 @@ export function planMcp(adapter: Adapter, ctx: InstallContext): FileAction[] {
     if (enabled && observed === undefined) {
       throw new Error("DevTools: falta la versión observada verificada para materializar el servidor habilitado.");
     }
+    if (enabled && ctx.devtoolsMcpInvocation === undefined) {
+      throw new Error("DevTools: falta la invocación gestionada verificada; no se permite dlx.");
+    }
     const materialized = enabled
       ? materializeCanonicalDevtoolsServer(server, observed!)
       : materializeCanonicalDevtoolsServerForRemoval(server, observed);
-    if (enabled && ctx.devtoolsMcpInvocation !== undefined) {
+    if (ctx.devtoolsMcpInvocation !== undefined) {
       materialized.command = ctx.devtoolsMcpInvocation.command;
       materialized.args = [...ctx.devtoolsMcpInvocation.args];
     }
