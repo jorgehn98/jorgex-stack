@@ -27,6 +27,17 @@ const guard = vi.hoisted(() => ({ allowedHome: null as string | null }));
 vi.mock("../src/lib/browser-provider.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/browser-provider.js")>()),
   verifyDevtoolsCliArtifact: vi.fn(async () => ({ binPath: "/isolated/stage/bin", version: FLOW_VERSION })),
+  activateVerifiedBrowserArtifact: vi.fn(async () => ({})),
+}));
+
+vi.mock("../src/lib/browser-managed.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/browser-managed.js")>()),
+  loadVerifiedManagedBrowserReceipt: vi.fn(() => ({ version: OBSERVED_DEVTOOLS.version, integrity: OBSERVED_DEVTOOLS.integrity })),
+  planManagedBrowserInvocation: vi.fn(() => ({
+    command: process.execPath,
+    args: ["--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
+      "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+  })),
 }));
 
 vi.mock("../src/lib/paths.js", async (importOriginal) => {
@@ -343,6 +354,15 @@ function expectDevToolsServer(runtime: RuntimeId, content: string): void {
   }
 }
 
+function expectManagedDevToolsServer(content: string): void {
+  const parsed = JSON.parse(content) as { mcp?: Record<string, { command?: string[] }> };
+  expect(parsed.mcp?.[DEVTOOLS_SERVER]?.command).toEqual([
+    process.execPath, "--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
+    "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+  ]);
+  expect(content).not.toContain("dlx");
+}
+
 function expectDevToolsAbsent(runtime: RuntimeId, content: string): void {
   if (runtime === "codex") {
     expect(readTomlSection(content, `mcp_servers.${DEVTOOLS_SERVER}`)).toBeNull();
@@ -567,7 +587,7 @@ describe("optional Chrome DevTools MCP", () => {
             devtoolsMcpSelection: { opencode: true },
           })).resolves.toBe(0);
 
-          expectDevToolsServer("opencode", fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
+          expectManagedDevToolsServer(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
           const preferenceRaw = fs.readFileSync(path.join(homeDir, ".jorgex-stack", "devtools-mcp.json"), "utf8");
           expect(JSON.parse(preferenceRaw)).toMatchObject({
             enabled: { opencode: true },
@@ -635,6 +655,16 @@ describe("optional Chrome DevTools MCP", () => {
 });
 
 describe("DevTools observed-version materialization [T14-RED]", () => {
+  it("refuses a newly enabled server without an externally verified managed invocation", () => {
+    const root = tempDir();
+    const configDir = path.join(root, "opencode");
+    writeUserConfig("opencode", configFile("opencode", configDir));
+    expect(() => planMcp(opencodeAdapter, {
+      ...context("opencode", configDir, true),
+      devtoolsMcpObservedVersion: OBSERVED_DEVTOOLS,
+    })).toThrow(/invocación gestionada|guard|dlx/i);
+  });
+
   it.each(RUNTIMES)("projects a supplied verified Node guard for %s without dlx", (runtime) => {
     const root = tempDir();
     const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
@@ -660,18 +690,12 @@ describe("DevTools observed-version materialization [T14-RED]", () => {
     }
   });
 
-  // The observed record stands for the verified per-machine observation in
-  // devtools-mcp.json (see browser-preferences-safety); the shared planMcp
-  // seam only consumes its version. Integrity proves verified-ness of the
-  // fixture. Adapters keep formatting already-materialized argv.
+  // The observed record still binds the preference to the managed receipt;
+  // runtime configuration carries the verified Node guard, never dlx.
   const OBSERVED = OBSERVED_DEVTOOLS;
   const EXPECTED_ARGS = [
-    "dlx",
-    `chrome-devtools-mcp@${OBSERVED_DEVTOOLS.version}`,
-    "--isolated",
-    "--redact-network-headers",
-    "--no-performance-crux",
-    "--no-usage-statistics",
+    "--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
+    "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
   ];
 
   function observedContext(
@@ -682,6 +706,7 @@ describe("DevTools observed-version materialization [T14-RED]", () => {
     return {
       ...context(runtime, configDir, true),
       devtoolsMcpObservedVersion: observed,
+      devtoolsMcpInvocation: { command: process.execPath, args: EXPECTED_ARGS },
     } as DevToolsSelectionContext;
   }
 
@@ -704,13 +729,13 @@ describe("DevTools observed-version materialization [T14-RED]", () => {
     const server = parsed[mcpKey]![DEVTOOLS_SERVER]!;
     if (runtime === "opencode") {
       const command = server["command"] as string[];
-      expect(command[0]).toBe("pnpm");
+      expect(command[0]).toBe(process.execPath);
       return command.slice(1);
     }
     return server["args"] as string[];
   }
 
-  it.each(RUNTIMES)("materializes the observed DevTools version for %s", (runtime) => {
+  it.each(RUNTIMES)("materializes the managed DevTools guard for %s", (runtime) => {
     const root = tempDir();
     const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
     const adapter = adapterFor(runtime);
@@ -807,12 +832,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
           const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as {
             mcp?: Record<string, { command?: unknown }>;
           };
-          expect(config.mcp?.[DEVTOOLS_SERVER]?.command).toEqual([
-            "pnpm",
-            "dlx",
-            `chrome-devtools-mcp@${FLOW_VERSION}`,
-            ...FLOW_FLAGS,
-          ]);
+          expectManagedDevToolsServer(fs.readFileSync(configFile, "utf8"));
           expect(JSON.stringify(config.mcp?.[DEVTOOLS_SERVER])).not.toContain("latest");
 
           const preferenceFile = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
@@ -916,7 +936,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
           });
           expect(code).toBe(kind === "target-dir" ? 1 : 0);
           if (kind === "sync") {
-            expectDevToolsServer("opencode", fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
+            expectManagedDevToolsServer(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
           }
         } finally {
           vi.unstubAllGlobals();
@@ -950,11 +970,11 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
   ): Promise<typeof import("../src/install.js")> {
     vi.doMock("../src/lib/browser-provider.js", async () => ({
       ...(await vi.importActual<typeof import("../src/lib/browser-provider.js")>("../src/lib/browser-provider.js")),
-      verifyDevtoolsCliArtifact: (...args: unknown[]) => {
+      activateVerifiedBrowserArtifact: (...args: unknown[]) => {
         smokeCalls.push(args as unknown as SmokeInput[]);
-        events.push("smoke");
-        if (smokeBehavior === "reject") return Promise.reject(new Error("DevTools CLI smoke: missing mandatory flag --isolated"));
-        return Promise.resolve({ binPath: "/isolated/stage/bin", version: FLOW_VERSION });
+        events.push("managed-activation");
+        if (smokeBehavior === "reject") return Promise.reject(new Error("DevTools managed privacy proof: missing mandatory flag --isolated"));
+        return Promise.resolve({});
       },
     }));
     vi.doMock("../src/lib/external-tools.js", async () => ({
@@ -979,7 +999,7 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
     vi.doUnmock("../src/lib/fsx.js");
   }
 
-  it("proves the privacy flags on the staged artifact after verification and before the first config write", async () => {
+  it("activates the verified artifact before the first config write", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
     const configDir = path.join(homeDir, ".config", "opencode");
@@ -1007,22 +1027,22 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
 
           expect(smokeCalls).toHaveLength(1);
           expect(smokeCalls[0]?.[0]).toMatchObject({
-            pnpmBin: "/isolated/bin/pnpm",
             release: { version: FLOW_VERSION, tarballUrl: FLOW_TARBALL, integrity: FLOW_INTEGRITY },
           });
+          expect(smokeCalls[0]?.[1]).toMatchObject({ pnpmBin: "/isolated/bin/pnpm" });
           const input = smokeCalls[0]?.[0] as SmokeInput;
           expect(path.isAbsolute(input.artifactPath)).toBe(true);
           expect(input.artifactPath.endsWith(".tgz")).toBe(true);
           expect(path.isAbsolute(input.stageDir)).toBe(true);
           const metaIdx = events.indexOf(`fetch ${FLOW_METADATA}`);
           const tarballIdx = events.indexOf(`fetch ${FLOW_TARBALL}`);
-          const smokeIdx = events.indexOf("smoke");
+          const smokeIdx = events.indexOf("managed-activation");
           const firstWriteIdx = events.findIndex((event) => event.startsWith("write "));
           expect(metaIdx).toBeGreaterThanOrEqual(0);
           expect(tarballIdx).toBeGreaterThan(metaIdx);
           expect(smokeIdx).toBeGreaterThan(tarballIdx);
           expect(firstWriteIdx).toBeGreaterThan(smokeIdx);
-          expectDevToolsServer("opencode", fs.readFileSync(configFile, "utf8"));
+          expectManagedDevToolsServer(fs.readFileSync(configFile, "utf8"));
           const preferenceRaw = fs.readFileSync(path.join(homeDir, ".jorgex-stack", "devtools-mcp.json"), "utf8");
           expect(preferenceRaw).toContain(FLOW_VERSION);
           expect(preferenceRaw).toContain(FLOW_INTEGRITY);
@@ -1036,7 +1056,7 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
     }
   });
 
-  it("fails the install without config or preference marks when the flag smoke rejects", async () => {
+  it("fails the install without config or preference marks when managed activation rejects", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
     const configDir = path.join(homeDir, ".config", "opencode");
