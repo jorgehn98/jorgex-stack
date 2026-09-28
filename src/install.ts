@@ -7,7 +7,7 @@ import type { Adapter, FileAction, InstallContext, InstallModePreference, Runtim
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
-import { HOME, stackRoot } from "./lib/paths.js";
+import { HOME, dataDir, stackRoot } from "./lib/paths.js";
 import { detectEngram, engramVersion } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
@@ -43,7 +43,8 @@ import {
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
-import { prepareVerifiedBrowserRelease, verifyDevtoolsCliArtifact } from "./lib/browser-provider.js";
+import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
+import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } from "./lib/browser-managed.js";
 import {
   inspectPlaywrightCapability,
   type PlaywrightCapabilitySnapshot,
@@ -344,7 +345,7 @@ export function preflightSelectedMcpConfigs(runtimes: readonly RuntimeId[], targ
     const detection = adapter.detect();
     if (targetDir === undefined && !detection.installed) continue;
     const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined);
-    if (ctx) planMcp(adapter, ctx);
+    if (ctx) planMcp(adapter, { ...ctx, enabledMcpServers: new Set() });
   }
 }
 
@@ -527,19 +528,24 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
   let devtoolsVerifiedObserved: ObservedVersion | undefined;
   let devtoolsTargetDirObserved: ObservedVersion | undefined;
+  let devtoolsManagedInvocation: InstallContext["devtoolsMcpInvocation"];
+  const devtoolsStateDir = opts.targetDir === undefined ? dataDir() : path.join(opts.targetDir, ".jorgex-stack");
   const devtoolsExplicitTrue = opts.runtimes.filter((id) => opts.devtoolsMcpSelection?.[id] === true);
   if (devtoolsExplicitTrue.length > 0) {
     if (isRealDevtoolsInstall) {
       try {
         const pnpmBin = resolvePnpmBin();
-        if (pnpmBin === null) throw new Error("pnpm no disponible para comprobar los flags del CLI de DevTools");
+        if (pnpmBin === null) throw new Error("pnpm no disponible para preparar el árbol gestionado de DevTools");
         const release = await prepareVerifiedBrowserRelease("chrome-devtools-mcp", {
           fetchImpl: globalThis.fetch,
-          smoke: async ({ release, artifactPath, stageDir }) => {
-            await verifyDevtoolsCliArtifact({ release, artifactPath, stageDir, pnpmBin });
+          withVerifiedArtifact: async (context) => {
+            await activateVerifiedBrowserArtifact(context, { stateDir: devtoolsStateDir, pnpmBin, fetchImpl: globalThis.fetch });
           },
         });
         devtoolsVerifiedObserved = { version: release.version, integrity: release.integrity };
+        devtoolsManagedInvocation = planManagedBrowserInvocation(devtoolsStateDir, "chrome-devtools-mcp", [
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+        ]);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         p.log.error(`Chrome DevTools MCP: no se pudo verificar el paquete del proveedor (${detail}). Revisa tu conexión y la metadata oficial antes de reintentar; la preferencia no se ha marcado como habilitada.`);
@@ -569,6 +575,43 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const modeLabel = isSyncCommand ? "sync" : "dry-run";
       p.log.error(`Chrome DevTools MCP: no hay versión observada verificada para materializar el servidor habilitado; ${modeLabel} no resuelve ni descarga del proveedor. Ejecuta 'jorgex-stack install --devtools' para verificar y registrar la versión observada.`);
       if (showSummary) p.outro("Install completado con errores (revisa arriba).");
+      return 1;
+    }
+  }
+  const anyDevtoolsEnabled = opts.runtimes.some((id) =>
+    enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest).has(DEVTOOLS_MCP_SERVER));
+  const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) =>
+    ownedMcpServers(id, true).has(DEVTOOLS_MCP_SERVER));
+  if (anyDevtoolsEnabled && devtoolsManagedInvocation === undefined) {
+    const observed = isDevtoolsTargetDir ? devtoolsTargetDirObserved : devtoolsPersistedObserved;
+    try {
+      const receipt = loadVerifiedManagedBrowserReceipt(devtoolsStateDir, "chrome-devtools-mcp");
+      if (receipt === null || observed === undefined || observed === null
+        || receipt.version !== observed.version || receipt.integrity !== observed.integrity) {
+        throw new Error("falta un receipt DevTools activo que coincida con la versión e integridad observadas");
+      }
+      devtoolsManagedInvocation = planManagedBrowserInvocation(devtoolsStateDir, "chrome-devtools-mcp", [
+        "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+      ]);
+    } catch (error) {
+      p.log.error(`Chrome DevTools MCP: estado gestionado inválido (${error instanceof Error ? error.message : String(error)}). No se usará dlx.`);
+      return 1;
+    }
+  }
+  if (!anyDevtoolsEnabled && anyDevtoolsOwned && devtoolsPersistedObserved !== null) {
+    try {
+      const receipt = loadVerifiedManagedBrowserReceipt(devtoolsStateDir, "chrome-devtools-mcp");
+      if (receipt !== null) {
+        if (receipt.version !== devtoolsPersistedObserved.version
+          || receipt.integrity !== devtoolsPersistedObserved.integrity) {
+          throw new Error("el receipt DevTools no coincide con la observación owned");
+        }
+        devtoolsManagedInvocation = planManagedBrowserInvocation(devtoolsStateDir, "chrome-devtools-mcp", [
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+        ]);
+      }
+    } catch (error) {
+      p.log.error(`Chrome DevTools MCP: no se puede retirar una entrada managed sin validar ownership (${error instanceof Error ? error.message : String(error)}).`);
       return 1;
     }
   }
@@ -691,6 +734,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       upgradePermissions: opts.upgradePermissions === true,
       enabledMcpServers: enabledForRuntime,
       ...(devtoolsObservedForRuntime === undefined ? {} : { devtoolsMcpObservedVersion: devtoolsObservedForRuntime }),
+      ...((enabledForRuntime.has(DEVTOOLS_MCP_SERVER) || ownedForRuntime.has(DEVTOOLS_MCP_SERVER))
+        && devtoolsManagedInvocation !== undefined
+        ? { devtoolsMcpInvocation: devtoolsManagedInvocation } : {}),
       playwrightCliEnabled: projectPlaywrightPrompt
         ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
         : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true
@@ -1053,7 +1099,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           }
           if (promptReconciliationFailed) {
             exitCode = 1;
-            p.log.error("Playwright CLI y navegador se han instalado y la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
+            p.log.error("Playwright CLI y navegador se han instalado y la preferencia quedó activa, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
           } else {
             const verified = verifiedCapability ?? (preparedEnv === undefined
               ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
