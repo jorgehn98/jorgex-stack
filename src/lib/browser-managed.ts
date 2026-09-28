@@ -1164,6 +1164,34 @@ export async function rollbackManagedBrowserActivation(
         fail("active browser pointer changed before rollback");
       }
       fs.unlinkSync(active.pointerPath);
+      const quarantined = path.join(packageDirectory, `.failed-${randomBytes(12).toString("hex")}`);
+      try {
+        fs.renameSync(activated.rootPath, quarantined);
+      } catch (error) {
+        try {
+          writeActivePointerAtomic(packageDirectory, {
+            schemaVersion: 1,
+            packageName,
+            rootPath: activated.rootPath,
+            receiptSha256: createHash("sha256").update(active.receiptRaw).digest("hex"),
+          }, null);
+        } catch (restoreError) {
+          fail(`first browser rollback incomplete at ${activated.rootPath}: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+        }
+        fail(`cannot quarantine failed browser release; candidate pointer restored (${(error as NodeJS.ErrnoException).code ?? "UNKNOWN"})`);
+      }
+      if (!sameFileIdentity(lstatOrFail(quarantined, "quarantined browser release"), activatedIdentity)) {
+        fail(`quarantined browser release changed owner: ${quarantined}`);
+      }
+      try {
+        fs.rmSync(quarantined, { recursive: true, force: false });
+      } catch (error) {
+        fail(`failed browser release quarantined at ${quarantined}; cleanup failed (${(error as NodeJS.ErrnoException).code ?? "UNKNOWN"})`);
+      }
+      if (fs.existsSync(quarantined) || readValidatedActiveBrowser(packageDirectory, packageName) !== null) {
+        fail(`first browser rollback incomplete at ${quarantined}`);
+      }
+      return;
     } else {
       if (path.dirname(previous.rootPath) !== packageDirectory) fail("previous browser release escapes managed root");
       const priorRaw = readBoundedRegularFile(path.join(previous.rootPath, RECEIPT_FILE), "previous managed receipt", 4 * 1024 * 1024);
@@ -1177,7 +1205,7 @@ export async function rollbackManagedBrowserActivation(
       }, active);
     }
     const restored = readValidatedActiveBrowser(packageDirectory, packageName);
-    if (restored?.receipt.rootPath !== previous?.rootPath) {
+    if (restored?.receipt.rootPath !== previous.rootPath) {
       fail("active browser rollback readback differs");
     }
     removeOwnedDirectory(activated.rootPath, activatedIdentity);

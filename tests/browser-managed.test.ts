@@ -684,6 +684,24 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     await expect(activateManagedBrowserTree(fixture.input)).resolves.toMatchObject({ version: VERSION });
   });
 
+  it("keeps a failed first activation recoverable when candidate cleanup cannot finish", async () => {
+    const fixture = writeFixture();
+    const candidate = await activateManagedBrowserTree(fixture.input);
+    const moduleNamespace = await import("../src/lib/browser-managed.js") as Record<string, unknown>;
+    const rollback = moduleNamespace.rollbackManagedBrowserActivation as
+      (stateDir: string, packageName: typeof PACKAGE_NAME, current: ManagedBrowserReceipt,
+        previous: ManagedBrowserReceipt | null) => Promise<void>;
+    const originalRm = fs.rmSync;
+    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target).includes(".failed-")) throw Object.assign(new Error("simulated disk failure"), { code: "ENOSPC" });
+      return originalRm(target, options);
+    });
+
+    await expect(rollback(fixture.stateDir, PACKAGE_NAME, candidate, null)).rejects.toThrow(/quarantin|cleanup|ENOSPC/i);
+    expect(loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)).toBeNull();
+    await expect(activateManagedBrowserTree(fixture.input)).resolves.toMatchObject({ version: VERSION });
+  });
+
   it("blocks an existing foreign active pointer without overwriting it", async () => {
     const fixture = writeFixture();
     const first = await activateManagedBrowserTree(fixture.input);
