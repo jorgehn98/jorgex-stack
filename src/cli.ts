@@ -20,7 +20,7 @@ import {
   saveInstallModePreference,
 } from "./lib/install-mode.js";
 import { browserPreferenceErrors, devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, type PlaywrightRuntimeSelection } from "./lib/tool-preferences.js";
-import { inspectManagedPlaywrightCapability, inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
+import { inspectManagedPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import {
   detectPiRuntime,
   PI_RUNTIME_CANDIDATE,
@@ -291,7 +291,8 @@ async function resolvePlaywrightToolConsent(
   runtimeSelection?: PlaywrightRuntimeSelection;
 } | null> {
   const interactive = Boolean(process.stdout.isTTY);
-  const supported: SelectableRuntimeId[] = runtimes.filter((runtime) => runtime !== "pi");
+  const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  const supported: SelectableRuntimeId[] = runtimes.filter((runtime) => runtime !== "pi" || supportsPiPlaywright);
   if (flags.playwrightRuntimes !== undefined) {
     const requested = flags.playwrightRuntimes;
     let error: string | undefined;
@@ -299,13 +300,13 @@ async function resolvePlaywrightToolConsent(
     for (const runtime of requested) {
       if (!["opencode", "claude-code", "codex", "pi"].includes(runtime)) error = `Runtime Playwright desconocido: ${runtime}.`;
       else if (!runtimes.includes(runtime)) error = `El runtime ${runtime} no está en --agents/destinos de esta instalación.`;
-      else if (!supported.includes(runtime)) error = "Pi Playwright v1 no verifica el launcher ni el árbol: no se permite un opt-in nuevo hasta publicar un handoff confiable.";
+      else if (!supported.includes(runtime)) error = "Pi no declara el handoff Playwright requerido.";
       if (error) break;
     }
     if (error) { console.error(error); process.exitCode = 1; return null; }
   }
   if (command === "install" && flags.playwright && supported.length === 0 && runtimes.includes("pi")) {
-    console.error("Pi Playwright v1 no verifica el launcher ni el árbol; se conserva el soporte histórico, pero no se habilita un opt-in nuevo.");
+    console.error("Pi no declara el handoff Playwright requerido.");
     process.exitCode = 1;
     return null;
   }
@@ -333,9 +334,6 @@ async function resolvePlaywrightToolConsent(
       selected = answer as SelectableRuntimeId[];
     }
     runtimeSelection = Object.fromEntries(supported.map((runtime) => [runtime, selected.includes(runtime)]));
-  }
-  if (command === "install" && approved && runtimes.includes("pi")) {
-    p.log.info("Pi conserva handoffs Playwright v1 históricos; nuevas activaciones esperan un lector que verifique launcher y árbol.");
   }
   return {
     command,
@@ -859,7 +857,7 @@ async function main(): Promise<void> {
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
               playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-                ? inspectPlaywrightCapability() : undefined,
+                ? inspectManagedPlaywrightCapability() : undefined,
               ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
             });
             exitCode = Math.max(exitCode, piExitCode);
@@ -949,7 +947,7 @@ async function main(): Promise<void> {
             targetDir: flags.targetDir,
             modePreference: mode,
             playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-              ? inspectPlaywrightCapability() : undefined,
+              ? inspectManagedPlaywrightCapability() : undefined,
           }));
         }
       }
@@ -1009,7 +1007,7 @@ async function main(): Promise<void> {
           writingStyle,
           modePreference: mode,
           playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-            ? inspectPlaywrightCapability() : undefined,
+            ? inspectManagedPlaywrightCapability() : undefined,
         });
         process.exitCode = piExitCode;
         persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, piExitCode);

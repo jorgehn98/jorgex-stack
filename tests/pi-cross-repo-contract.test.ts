@@ -3,9 +3,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE, STACK_ENGRAM_PROVIDER_ONLY } from "./fixtures/pi-runtime.js";
 import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
+import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
+import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const piDirectory = process.env.JORGEX_PI_DIR;
@@ -519,6 +522,74 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       playwrightCliCommand: null,
     })).toMatchObject({ kind: "synced" });
     expect(fs.existsSync(handoff)).toBe(false);
+  }, 60_000);
+
+  it("projects Playwright v2 from a verified tree for the observed Pi reader", async () => {
+    const tarball = path.resolve(registryTarball!);
+    const observedLocal = readObservedCandidate();
+    expectObservedArtifactIntegrity(tarball, observedLocal);
+    const entries = new Set(listTarEntries(tarball));
+    expect(entries.has("package/extensions/playwright.ts")).toBe(true);
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-observed-playwright-v2-"));
+    temporaryPaths.push(root);
+    const targetDir = path.join(root, "target");
+    const stateDir = path.join(targetDir, "home", ".jorgex-stack");
+    const stageDir = path.join(root, "browser-stage");
+    const nodeModulesPath = path.join(stageDir, "node_modules");
+    const treePath = path.join(nodeModulesPath, "@playwright", "cli");
+    const entryPath = path.join(treePath, "entry.js");
+    const version = "9.9.10";
+    const integrity = `sha512-${Buffer.alloc(64, 23).toString("base64")}`;
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(treePath, { recursive: true });
+    fs.writeFileSync(path.join(treePath, "package.json"), `${JSON.stringify({ name: "@playwright/cli", version })}\n`);
+    fs.writeFileSync(entryPath, "export {};\n");
+    const receipt = await activateManagedBrowserTree({
+      stateDir, packageName: "@playwright/cli",
+      release: { version, integrity, tarballUrl: `https://registry.npmjs.org/@playwright/cli/-/cli-${version}.tgz` },
+      staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+        closure: [{ name: "@playwright/cli", version, integrity }] },
+      entryPath,
+    });
+    const dispatcher = path.join(root, "browser-playwright.js");
+    fs.writeFileSync(dispatcher, `#!${process.execPath}\nprocess.stdout.write("playwright-cli ${version}\\n");\n`);
+    fs.chmodSync(dispatcher, 0o755);
+    const result = runPiProjectionLifecycleSystem({
+      operation: "install", targetDir, packageSource: canonicalObservedSource(observedLocal.version),
+      engramBin: path.join(root, "engram"), playwrightCliEnabled: true,
+      playwrightHandoffEnabled: true, playwrightManagedStateDir: stateDir,
+      playwrightDispatcherPath: dispatcher,
+    });
+    expect(result.kind).toBe("installed");
+    const handoff = readJson(path.join(targetDir, "pi-agent", "jorgex-pi", "playwright.v1.json")) as Record<string, unknown>;
+    expect(Object.keys(handoff).sort()).toEqual([
+      "command", "commandSha256", "enabled", "entryPath", "launcherPath", "launcherSha256",
+      "rootPath", "schemaVersion", "treePath", "treeSha256", "version",
+    ].sort());
+    expect(handoff).toMatchObject({ schemaVersion: 2, enabled: true, command: dispatcher,
+      commandSha256: digest("sha256", dispatcher), version,
+      rootPath: receipt.rootPath, treePath: receipt.treePath, entryPath: receipt.entryPath,
+      launcherPath: receipt.launcherPath, launcherSha256: receipt.launcherSha256,
+      treeSha256: receipt.treeSha256 });
+    const piPackage = path.join(root, "published-pi");
+    const piExtensions = path.join(piPackage, "extensions");
+    fs.mkdirSync(piExtensions, { recursive: true });
+    for (const file of ["playwright.ts", "mcp-engram.ts", "context7-config.mjs"]) {
+      const bytes = execFileSync("tar", ["-xOf", tarball, `package/extensions/${file}`]);
+      fs.writeFileSync(path.join(piExtensions, file), bytes);
+    }
+    const stub = path.join(piPackage, "node_modules", "strip-json-comments");
+    fs.mkdirSync(stub, { recursive: true });
+    fs.writeFileSync(path.join(stub, "package.json"), '{"type":"module","exports":"./index.js"}\n');
+    fs.writeFileSync(path.join(stub, "index.js"), "export default (value) => value;\n");
+    const reader = await import(pathToFileURL(path.join(piExtensions, "playwright.ts")).href) as {
+      resolvePlaywrightCapability(input: { agentDir: string }): { status: string; trusted?: boolean };
+    };
+    const agentDir = path.join(targetDir, "pi-agent");
+    expect(reader.resolvePlaywrightCapability({ agentDir })).toMatchObject({ status: "ready", trusted: true });
+    fs.writeFileSync(receipt.entryPath, "mutated entry\n");
+    expect(reader.resolvePlaywrightCapability({ agentDir }).status).toBe("hidden");
   }, 60_000);
 });
 

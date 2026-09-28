@@ -500,12 +500,14 @@ describe("CLI Pi package-runtime dispatch", () => {
     }
   });
 
-  it("rejects a new Pi-only Playwright opt-in before installing or projecting", async () => {
+  it("passes a new Pi-only Playwright opt-in through managed install and projection", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-"));
 
-    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(1);
-    expect(mocks.runInstall).not.toHaveBeenCalled();
-    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ runtimes: [] }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install", playwrightCliEnabled: true,
+    }));
   });
 
   it("resolves the host Engram before configuring a mixed install", async () => {
@@ -693,14 +695,16 @@ describe("CLI Pi package-runtime dispatch", () => {
     );
   });
 
-  it("rejects explicit Pi Playwright runtime selection before any install", async () => {
+  it("accepts explicit Pi Playwright runtime selection", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-failure-"));
 
     const exitCode = await runCli(["install", "--playwright", "--playwright-runtimes=pi", "--agents", "pi", "--yes"], home);
 
-    expect(exitCode).toBe(1);
-    expect(mocks.runInstall).not.toHaveBeenCalled();
-    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      playwrightToolConsent: expect.objectContaining({ runtimeSelection: { pi: true } }),
+    }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "install" }));
   });
 
   it("preserves an existing Pi Playwright v1 choice when sync projection fails", async () => {
@@ -723,16 +727,18 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(fs.readFileSync(preference, "utf8")).toBe(before);
   });
 
-  it("blocks a Pi-only target-dir Playwright opt-in without touching real preferences", async () => {
+  it("keeps a Pi-only target-dir Playwright opt-in inside the target without touching real preferences", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
     const targetDir = path.join(home, "target");
     writeCorruptBrowserPreference(home);
 
     const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--target-dir", targetDir, "--yes"], home);
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(0);
     expect(mocks.runInstall).not.toHaveBeenCalled();
-    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ targetDir }));
+    expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]).not.toHaveProperty("playwrightCliEnabled");
+    expect(fs.readFileSync(path.join(home, ".jorgex-stack", "playwright-cli.json"), "utf8")).toBe("{not-json\n");
   });
 
   it.each(["install", "sync", "update", "uninstall"] as const)(

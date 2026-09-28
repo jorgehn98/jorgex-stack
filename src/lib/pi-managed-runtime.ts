@@ -15,7 +15,7 @@ import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./browser-provider.js";
 import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
-import { dataDir } from "./paths.js";
+import { dataDir, stackRoot } from "./paths.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -358,12 +358,10 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const playwrightCliEnabled = input.targetDir === undefined && supportsPlaywright
     && selectedPlaywright
     && playwrightCapabilityEffective;
-  const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
-    ? playwrightCapability?.cli.binPath ?? null
-    : null;
-  const playwrightCliVersion = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
-    ? playwrightCapability?.cli.detectedVersion ?? null
-    : null;
+  const playwrightManagedStateDir = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
+    ? dataDir() : undefined;
+  const playwrightDispatcherPath = playwrightManagedStateDir === undefined
+    ? undefined : path.join(path.dirname(stackRoot()), "dist", "browser-playwright.js");
   let effectivePackageSource: string = PI_RUNTIME_CANDIDATE.package.source;
   const projectionInput = {
     writingStyle,
@@ -372,8 +370,10 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     engramBin: input.engramBin,
     playwrightCliEnabled,
     playwrightHandoffEnabled: playwrightCliEnabled,
-    playwrightCliCommand,
-    playwrightCliVersion,
+    playwrightCliCommand: null,
+    playwrightCliVersion: null,
+    playwrightManagedStateDir,
+    playwrightDispatcherPath,
     devtoolsMcpEnabled,
     devtoolsManagedStateDir: needsDevtoolsObservation ? devtoolsManagedStateDir : undefined,
     pnpmBin: null,

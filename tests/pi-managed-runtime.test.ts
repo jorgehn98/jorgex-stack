@@ -257,7 +257,7 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
-  it("forwards a selected Playwright handoff only through a supported Pi candidate, only when its supplied capability is verified", async () => {
+  it("forwards a selected Playwright v2 handoff only through a supported Pi candidate and verified managed capability", async () => {
     const packageInputs: unknown[] = [];
     const projectionInputs: unknown[] = [];
     const playwrightPreferenceFile = "/isolated/state/playwright-cli.json";
@@ -350,20 +350,26 @@ describe("Pi managed package and projection coordination", () => {
           operation: "install",
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
-          playwrightCliCommand: "/isolated/bin/playwright-cli",
+          playwrightManagedStateDir: expect.stringMatching(/\.jorgex-stack$/),
+          playwrightDispatcherPath: expect.stringMatching(/dist[/\\]browser-playwright\.js$/),
+          playwrightCliCommand: null,
         }),
         expect.objectContaining({
           operation: "sync",
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
-          playwrightCliCommand: "/isolated/bin/playwright-cli",
+          playwrightManagedStateDir: expect.stringMatching(/\.jorgex-stack$/),
+          playwrightDispatcherPath: expect.stringMatching(/dist[/\\]browser-playwright\.js$/),
+          playwrightCliCommand: null,
           targetDir: undefined,
         }),
         expect.objectContaining({
           operation: "sync",
           playwrightCliEnabled: true,
           playwrightHandoffEnabled: true,
-          playwrightCliCommand: "/isolated/bin/playwright-cli",
+          playwrightManagedStateDir: expect.stringMatching(/\.jorgex-stack$/),
+          playwrightDispatcherPath: expect.stringMatching(/dist[/\\]browser-playwright\.js$/),
+          playwrightCliCommand: null,
         }),
         expect.objectContaining({
           operation: "doctor",
