@@ -706,7 +706,15 @@ describe("[T14-RED] shared verified browser release composes resolve plus verifi
     await provider.prepareVerifiedBrowserRelease(packageName, {
       fetchImpl: fetch, stageParent: root,
       withVerifiedArtifact: async (context) => {
-        promoted = await provider.activateVerifiedBrowserArtifact(context, { stateDir, pnpmBin: pnpmBin!, fetchImpl: fetch });
+        try {
+          promoted = await provider.activateVerifiedBrowserArtifact(context, { stateDir, pnpmBin: pnpmBin!, fetchImpl: fetch });
+        } catch (error) {
+          const managed = fs.readdirSync(context.stageDir).find((entry) => entry.startsWith("managed-"));
+          const modules = managed === undefined ? null : path.join(context.stageDir, managed, "node_modules");
+          const link = modules === null ? null : path.join(modules, ...packageName.split("/"));
+          const target = link !== null && fs.existsSync(link) ? fs.readlinkSync(link) : "missing";
+          throw new Error(`root link target=${JSON.stringify(target.slice(0, 250))}; virtual=${modules !== null && fs.existsSync(path.join(modules, ".pnpm"))}; ${error instanceof Error ? error.message : String(error)}`);
+        }
       },
     });
     const active = loadVerifiedManagedBrowserReceipt(stateDir, packageName);
