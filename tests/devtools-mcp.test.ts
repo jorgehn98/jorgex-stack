@@ -684,6 +684,8 @@ describe("optional Chrome DevTools MCP", () => {
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
+      const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
+      writeRuntimeManifest("codex", { configDir, owned: [], updatedAt: "legacy" });
       const adapter = install.ADAPTERS.codex!;
       const originalDetect = adapter.detect;
       adapter.detect = () => ({ id: "codex", name: "Codex CLI", installed: true, binPath: null, configDir });
@@ -738,6 +740,39 @@ describe("optional Chrome DevTools MCP", () => {
       } finally {
         adapter.detect = originalDetect;
       }
+    });
+  });
+
+  it("does not transfer Codex DevTools ownership to a different config profile", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const profileA = path.join(homeDir, "profiles", "a");
+    const profileB = path.join(homeDir, "profiles", "b");
+    const configB = configFile("codex", profileB);
+    writeModelMap(homeDir);
+    writeUserConfig("codex", configB);
+    const canonical = loadCanonicalMcp(stackRoot());
+    const [legacyAction] = codexAdapter.planMainConfig(
+      { servers: { ...canonical.servers, [DEVTOOLS_SERVER]: literalLegacyDevtoolsServer(canonical) } },
+      context("codex", profileB, true),
+    );
+    const originalB = (legacyAction as { content: string }).content;
+    fs.writeFileSync(configB, originalB);
+    seedDevtoolsObserved(homeDir, { codex: true });
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+    const preference = JSON.parse(fs.readFileSync(preferenceFile, "utf8")) as Record<string, unknown>;
+    preference.owned = { codex: { [DEVTOOLS_SERVER]: true } };
+    fs.writeFileSync(preferenceFile, JSON.stringify(preference) + "\n");
+
+    await withTempHome(homeDir, async () => {
+      const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
+      const install = await import("../src/install.js");
+      writeRuntimeManifest("codex", { configDir: profileA, owned: [], updatedAt: "previous" });
+      const current = install.makeContext(codexAdapter, profileB);
+      expect(current).not.toBeNull();
+      expect(current?.ownedMcpServers?.has(DEVTOOLS_SERVER)).toBe(false);
+      expect(() => planMcp(codexAdapter, current!)).toThrow(/chrome-devtools.*conflicto/i);
+      expect(fs.readFileSync(configB, "utf8")).toBe(originalB);
     });
   });
 
@@ -1026,6 +1061,8 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
+      const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
+      writeRuntimeManifest("opencode", { configDir, owned: [], updatedAt: "legacy" });
       const adapter = install.ADAPTERS.opencode!;
       const originalDetect = adapter.detect;
       adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });

@@ -7,7 +7,7 @@ import type { Adapter, FileAction, InstallContext, InstallModePreference, Runtim
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
-import { HOME, dataDir, stackRoot } from "./lib/paths.js";
+import { HOME, dataDir, samePath, stackRoot } from "./lib/paths.js";
 import { detectEngram, engramVersion } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
@@ -252,8 +252,10 @@ function enabledMcpServers(
   return devtoolsEnabled ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
 }
 
-function ownedMcpServers(runtime: RuntimeId, useBrowserPreferences = true): ReadonlySet<string> {
+function ownedMcpServers(runtime: RuntimeId, configDir: string, useBrowserPreferences = true): ReadonlySet<string> {
   if (!useBrowserPreferences) return new Set();
+  const recordedDir = readManifest().runtimes[runtime]?.configDir;
+  if (typeof recordedDir !== "string" || !samePath(recordedDir, configDir)) return new Set();
   const file = devtoolsMcpPreferenceFile();
   return new Set([DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server)));
 }
@@ -297,7 +299,7 @@ export function makeContext(
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
   const enabled = enabledMcpServers(adapter.id, undefined, useBrowserPreferences);
-  const owned = ownedMcpServers(adapter.id, useBrowserPreferences);
+  const owned = ownedMcpServers(adapter.id, configDir, useBrowserPreferences);
   let devtoolsMcpObservedVersion: ObservedVersion | undefined;
   let devtoolsMcpInvocation: InstallContext["devtoolsMcpInvocation"];
   if (useBrowserPreferences && (enabled.has(DEVTOOLS_MCP_SERVER) || owned.has(DEVTOOLS_MCP_SERVER))) {
@@ -599,8 +601,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
   const anyDevtoolsEnabled = opts.runtimes.some((id) =>
     enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest).has(DEVTOOLS_MCP_SERVER));
-  const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) =>
-    ownedMcpServers(id, true).has(DEVTOOLS_MCP_SERVER));
+  const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) => {
+    const adapter = ADAPTERS[id];
+    return adapter !== undefined
+      && ownedMcpServers(id, adapter.detect().configDir, true).has(DEVTOOLS_MCP_SERVER);
+  });
   if (anyDevtoolsEnabled && devtoolsManagedInvocation === undefined) {
     const observed = isDevtoolsTargetDir ? devtoolsTargetDirObserved : devtoolsPersistedObserved;
     try {
@@ -723,7 +728,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     }
 
     const enabledForRuntime = enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest);
-    const ownedForRuntime = ownedMcpServers(id, useManifest);
+    const ownedForRuntime = ownedMcpServers(id, configDir, useManifest);
     let devtoolsObservedForRuntime: ObservedVersion | undefined;
     if (isDevtoolsTargetDir) {
       if (enabledForRuntime.has(DEVTOOLS_MCP_SERVER)) {
