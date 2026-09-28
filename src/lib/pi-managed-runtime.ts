@@ -13,7 +13,11 @@ import { resolvePnpmBin } from "./external-tools.js";
 import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
 import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
-import { prepareVerifiedBrowserRelease, verifyDevtoolsCliArtifact } from "./browser-provider.js";
+import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./browser-provider.js";
+import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+import { dataDir } from "./paths.js";
+import fs from "node:fs";
+import path from "node:path";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -277,6 +281,9 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   // never fetch; no opt-in never fetches.
   let devtoolsMcpObservedVersion: ObservedVersion | null = null;
   let devtoolsVerifiedForPersist: ObservedVersion | undefined;
+  const devtoolsManagedStateDir = input.targetDir === undefined
+    ? dataDir()
+    : path.join(input.targetDir, "home", ".jorgex-stack");
   if (needsDevtoolsObservation) {
     if (input.targetDir !== undefined) {
       devtoolsMcpObservedVersion = isValidObservedVersion(injectedDevtoolsObserved)
@@ -290,11 +297,13 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         let release: { version: string; integrity: string };
         try {
           const pnpmBin = resolvePnpmBin();
-          if (pnpmBin === null) throw new Error("pnpm no disponible para comprobar los flags del CLI de DevTools");
+          if (pnpmBin === null) throw new Error("pnpm no disponible para preparar el árbol gestionado de DevTools");
           release = await prepareVerifiedBrowserRelease("chrome-devtools-mcp", {
             fetchImpl: globalThis.fetch,
-            smoke: async ({ release, artifactPath, stageDir }) => {
-              await verifyDevtoolsCliArtifact({ release, artifactPath, stageDir, pnpmBin });
+            withVerifiedArtifact: async (context) => {
+              await activateVerifiedBrowserArtifact(context, {
+                stateDir: devtoolsManagedStateDir, pnpmBin, fetchImpl: globalThis.fetch,
+              });
             },
           });
         } catch (error) {
@@ -317,6 +326,26 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       }
     } else {
       devtoolsMcpObservedVersion = loadDevtoolsMcpObservation();
+    }
+  }
+  if (needsDevtoolsObservation) {
+    try {
+      if (input.targetDir !== undefined) {
+        const target = fs.lstatSync(input.targetDir);
+        const home = fs.lstatSync(path.join(input.targetDir, "home"));
+        if (!target.isDirectory() || target.isSymbolicLink() || !home.isDirectory() || home.isSymbolicLink()) {
+          throw new Error("HOME del target Pi no es un directorio real aislado");
+        }
+      }
+      const receipt = loadVerifiedManagedBrowserReceipt(devtoolsManagedStateDir, "chrome-devtools-mcp");
+      if (receipt === null || devtoolsMcpObservedVersion === null
+        || receipt.version !== devtoolsMcpObservedVersion.version
+        || receipt.integrity !== devtoolsMcpObservedVersion.integrity) {
+        throw new Error("falta un receipt DevTools activo coincidente con la versión e integridad observadas");
+      }
+    } catch (error) {
+      return { kind: "blocked", reason: "devtools-verification-failed",
+        remedy: error instanceof Error ? error.message : String(error) };
     }
   }
   const devtoolsMcpVersion = devtoolsMcpObservedVersion?.version ?? null;
@@ -346,7 +375,8 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     playwrightCliCommand,
     playwrightCliVersion,
     devtoolsMcpEnabled,
-    pnpmBin: devtoolsMcpEnabled && input.operation !== "uninstall" ? resolvePnpmBin() : null,
+    devtoolsManagedStateDir: needsDevtoolsObservation ? devtoolsManagedStateDir : undefined,
+    pnpmBin: null,
     devtoolsMcpVersion,
   };
   if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
