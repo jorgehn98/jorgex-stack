@@ -937,6 +937,40 @@ describe("Playwright prompt install ordering", () => {
     });
   });
 
+  it("uninstalls its managed DevTools registration without deleting the verified tree", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const stateDir = path.join(homeDir, ".jorgex-stack");
+    writeOpenCodeModelMap(homeDir);
+    fs.writeFileSync(path.join(stateDir, "devtools-mcp.json"), JSON.stringify({
+      version: 1, enabled: { opencode: true }, owned: {}, observed: DEVTOOLS_OBSERVED,
+    }) + "\n");
+    await withTempHome(homeDir, async () => {
+      await seedManagedDevtools(stateDir);
+      const install = await import("../src/install.js");
+      const uninstall = await import("../src/uninstall.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"], dryRun: false, yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+        })).resolves.toBe(0);
+        const configFile = path.join(configDir, "opencode.json");
+        expect(JSON.stringify(JSON.parse(fs.readFileSync(configFile, "utf8")))).toContain(DEVTOOLS_SERVER);
+        expect(install.makeContext(install.ADAPTERS.opencode!, configDir)?.devtoolsMcpInvocation?.command).toBe(process.execPath);
+        await expect(uninstall.runUninstall({
+          runtimes: ["opencode"], dryRun: false, yes: true,
+          removeEngram: false, removePlaywright: false,
+        })).resolves.toBe(0);
+        if (fs.existsSync(configFile)) {
+          expect(JSON.stringify(JSON.parse(fs.readFileSync(configFile, "utf8")))).not.toContain(DEVTOOLS_SERVER);
+        }
+        expect(fs.existsSync(path.join(stateDir, ".browser-managed", "chrome-devtools-mcp"))).toBe(true);
+      } finally { restoreDetect(); }
+    });
+  });
+
   it("--target-dir ignores real browser preferences but accepts an explicit DevTools simulation without persisting it", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
