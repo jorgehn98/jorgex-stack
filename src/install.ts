@@ -288,18 +288,32 @@ export function makeContext(
   mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
   useBrowserPreferences = true,
   playwrightCapability?: boolean,
+  resolveManagedBrowser = true,
 ): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
   const enabled = enabledMcpServers(adapter.id, undefined, useBrowserPreferences);
   const owned = ownedMcpServers(adapter.id, useBrowserPreferences);
   let devtoolsMcpObservedVersion: ObservedVersion | undefined;
+  let devtoolsMcpInvocation: InstallContext["devtoolsMcpInvocation"];
   if (useBrowserPreferences && (enabled.has(DEVTOOLS_MCP_SERVER) || owned.has(DEVTOOLS_MCP_SERVER))) {
     try {
       const persisted = loadDevtoolsMcpObservation(devtoolsMcpPreferenceFile());
       if (persisted !== null) devtoolsMcpObservedVersion = persisted;
     } catch {
       // Sin observación: enable falla cerrado; disable retira el legacy owned exacto.
+    }
+  }
+  if (resolveManagedBrowser && devtoolsMcpObservedVersion !== undefined) {
+    const receipt = loadVerifiedManagedBrowserReceipt(dataDir(), "chrome-devtools-mcp");
+    if (receipt !== null) {
+      if (receipt.version !== devtoolsMcpObservedVersion.version
+        || receipt.integrity !== devtoolsMcpObservedVersion.integrity) {
+        throw new Error("DevTools: el receipt gestionado no coincide con la observación persistida.");
+      }
+      devtoolsMcpInvocation = planManagedBrowserInvocation(dataDir(), "chrome-devtools-mcp", [
+        "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+      ]);
     }
   }
   return {
@@ -312,6 +326,7 @@ export function makeContext(
     warnings: [],
     enabledMcpServers: enabled,
     ...(devtoolsMcpObservedVersion === undefined ? {} : { devtoolsMcpObservedVersion }),
+    ...(devtoolsMcpInvocation === undefined ? {} : { devtoolsMcpInvocation }),
     playwrightCliEnabled: useBrowserPreferences
       && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true
       && (playwrightCapability ?? true),
@@ -344,7 +359,7 @@ export function preflightSelectedMcpConfigs(runtimes: readonly RuntimeId[], targ
     if (!adapter) continue;
     const detection = adapter.detect();
     if (targetDir === undefined && !detection.installed) continue;
-    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined);
+    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined, undefined, false);
     if (ctx) planMcp(adapter, { ...ctx, enabledMcpServers: new Set() });
   }
 }
@@ -387,13 +402,13 @@ export function collectAllCurrentTargets(
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) continue;
-    const ctx = makeContext(adapter, detection.configDir, mode, true, playwrightCapability);
-    if (!ctx) {
-      complete = false;
-      warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
-      continue;
-    }
     try {
+      const ctx = makeContext(adapter, detection.configDir, mode, true, playwrightCapability);
+      if (!ctx) {
+        complete = false;
+        warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
+        continue;
+      }
       for (const action of buildPlan(adapter, ctx)) targets.add(path.resolve(action.target));
     } catch (error) {
       complete = false;
