@@ -6,6 +6,8 @@ Stack ofrece dos integraciones independientes y **opt-in**. Playwright CLI sirve
 
 `install --playwright` resuelve el `dist-tags.latest` estable de `@playwright/cli` en ese momento, comprueba metadata y SRI del tarball oficial, instala un stage pnpm privado con cierre transitivo verificable contra el proveedor y promociona **ese árbol** a `~/.jorgex-stack/.browser-managed/`. El receipt fija la versión e integridad observadas, rutas absolutas y SHA-256 del launcher y del árbol `node_modules`. No se elige un número estático para instalaciones futuras. Un release mal formado, una dependencia distinta en un mirror o un conflicto de ownership bloquean la activación; no se adopta el CLI global como fallback.
 
+En Windows el stage usa el linker `hoisted` de pnpm para materializar directorios reales: las junctions del linker aislado pueden salir de `node_modules` antes de volver a entrar y no satisfacen el digest browser-v2 ni el lector Pi. Stack sigue comparando cada paquete físico con el lock y la metadata oficial; no relaja la contención de enlaces para hacerlo pasar.
+
 El árbol aprobado ejecuta `install-browser chromium`; después Stack comprueba su `--version` y un arranque headless local contra `about:blank`. La caché de Chromium es de Playwright, no del receipt: Stack no promete borrar perfiles, cookies, storage state, trazas, vídeos ni capturas. No instala dependencias de sistema para Chromium ni Firefox/WebKit. La preferencia `~/.jorgex-stack/playwright-cli.json` se guarda solo tras completar el plan.
 
 ```bash
@@ -34,6 +36,8 @@ La guía en `stack/system-prompt/browser-playwright.md` pide consultar `jorgex-s
 | `--target-dir` / dry-run | No lee ni modifica el HOME real ni descarga herramientas; solo proyecta lo permitido en el target con evidencia inyectada. |
 
 Ante un error de receipt, launcher, árbol o Chromium, detén las invocaciones y ejecuta `doctor`; reintenta `install --playwright` o un `update` deliberado para reconstruir un candidato verificado. **No** edites hashes, receipts ni el árbol a mano, ni elimines la caché o datos del navegador para hacer pasar la comprobación. Una preferencia ilegible hace fallar las mutaciones antes de tocar estado; `doctor` muestra su ruta y el remedio. Un CLI global presente no repara un receipt gestionado roto.
+
+Si falla Chromium o la persistencia después de promover un candidato, Stack restaura el release activo anterior antes de informar el fallo. En una primera activación sin release anterior, aísla el candidato fallido antes de retirarlo; si la limpieza queda incompleta, informa la ruta `.failed-*` privada para revisión y permite un reintento sin tratarla como release activo.
 
 ### Pi: handoff histórico y confiable
 
