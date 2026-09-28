@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loadVerifiedManagedBrowserReceipt } from "../src/lib/browser-managed.js";
+import { resolvePnpmBin } from "../src/lib/external-tools.js";
 
 /**
  * T14 RED: minimal generic npm provider resolver for browser opt-ins.
@@ -602,12 +605,8 @@ describe("[T14-RED] browser provider tarball acquisition verifies before publish
   });
 });
 
-type BrowserProviderModule = {
-  prepareVerifiedBrowserRelease(
-    packageName: string,
-    options: { fetchImpl: typeof fetch; stageParent: string },
-  ): Promise<NpmPackageRelease>;
-};
+type BrowserProviderModule = Pick<typeof import("../src/lib/browser-provider.js"),
+  "prepareVerifiedBrowserRelease" | "activateVerifiedBrowserArtifact">;
 
 const browserProviderSpecifier = new URL("../src/lib/browser-provider.js", import.meta.url).href;
 
@@ -673,6 +672,48 @@ function providerFetch(
  * package version to pnpm after verification; the stage is always removed.
  */
 describe("[T14-RED] shared verified browser release composes resolve plus verified bytes", () => {
+  it.each([PLAYWRIGHT_PKG, DEVTOOLS_PKG] as const)("promotes the verified %s closure through the real pnpm stage", async (packageName) => {
+    const provider = await loadBrowserProvider();
+    const pnpmBin = resolvePnpmBin();
+    expect(pnpmBin).not.toBeNull();
+    const version = "9.9.10";
+    const root = stageParent();
+    const packageDir = path.join(root, "source", "package");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const bin = "entry.js";
+    fs.writeFileSync(path.join(packageDir, "package.json"), `${JSON.stringify({
+      name: packageName, version, type: "module",
+      bin: { [packageName === PLAYWRIGHT_PKG ? "playwright-cli" : DEVTOOLS_PKG]: `./${bin}` },
+    })}\n`);
+    fs.writeFileSync(path.join(packageDir, bin), packageName === DEVTOOLS_PKG
+      ? 'process.stdout.write("--isolated --redact-network-headers --no-performance-crux --no-usage-statistics\\n");\n'
+      : 'process.stdout.write("playwright-cli 9.9.10\\n");\n');
+    if (packageName === DEVTOOLS_PKG) {
+      const parser = path.join(packageDir, "build", "src", "config");
+      fs.mkdirSync(parser, { recursive: true });
+      fs.writeFileSync(path.join(parser, "mcp-options.js"),
+        "export function parseArguments() { return { isolated: true, redactNetworkHeaders: true, performanceCrux: false, usageStatistics: false }; }\n");
+    }
+    const archive = path.join(root, "package.tgz");
+    execFileSync("tar", ["-czf", archive, "-C", path.join(root, "source"), "package"]);
+    const bytes = fs.readFileSync(archive);
+    const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    const tarball = canonicalTarballFor(packageName, version);
+    const fetch = providerFetch(syntheticPackument(packageName, version, integrity), bytes, tarball, []);
+    const stateDir = path.join(root, "state");
+    fs.mkdirSync(stateDir);
+    let promoted: Awaited<ReturnType<typeof provider.activateVerifiedBrowserArtifact>> | undefined;
+    await provider.prepareVerifiedBrowserRelease(packageName, {
+      fetchImpl: fetch, stageParent: root,
+      withVerifiedArtifact: async (context) => {
+        promoted = await provider.activateVerifiedBrowserArtifact(context, { stateDir, pnpmBin: pnpmBin!, fetchImpl: fetch });
+      },
+    });
+    const active = loadVerifiedManagedBrowserReceipt(stateDir, packageName);
+    expect(active).toMatchObject({ version, integrity, rootPath: promoted?.rootPath,
+      treeSha256: promoted?.treeSha256, launcherSha256: promoted?.launcherSha256 });
+    expect(fs.existsSync(active!.entryPath)).toBe(true);
+  }, 120_000);
   it("returns the observed Playwright release only after verified bytes and removes its own stage", async () => {
     const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
     const version = "9.9.10";

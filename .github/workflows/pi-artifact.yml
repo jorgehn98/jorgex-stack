@@ -86,3 +86,24 @@ jobs:
 
       - run: pnpm test
         if: ${{ github.event_name != 'pull_request' || github.event.action == 'ready_for_review' || github.event.pull_request.draft != true }}
+
+  browser-windows:
+    name: Browser Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: pnpm
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run tests/browser-managed-windows.test.ts tests/playwright-windows-execution.test.ts
+      - run: pnpm exec vitest run tests/browser-provider-resolution.test.ts -t "through the real pnpm stage"
