@@ -49,7 +49,7 @@ export function trustedPlaywrightHandoff(stateDir: string, commandPath: string) 
   };
 }
 
-/** Pi 0.8.33 validates and launches this exact v3 shape through its own guard. */
+/** Published Pi validates and launches this exact v3 shape through its own guard. */
 export function trustedDevtoolsHandoff(stateDir: string) {
   const receipt = loadVerifiedManagedBrowserReceipt(stateDir, "chrome-devtools-mcp");
   if (receipt === null) throw new Error("DevTools managed receipt is missing for Pi handoff");
