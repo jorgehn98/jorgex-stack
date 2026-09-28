@@ -768,10 +768,23 @@ describe("optional Chrome DevTools MCP", () => {
       const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
       const install = await import("../src/install.js");
       writeRuntimeManifest("codex", { configDir: profileA, owned: [], updatedAt: "previous" });
-      const current = install.makeContext(codexAdapter, profileB);
-      expect(current).not.toBeNull();
-      expect(current?.ownedMcpServers?.has(DEVTOOLS_SERVER)).toBe(false);
-      expect(() => planMcp(codexAdapter, current!)).toThrow(/chrome-devtools.*conflicto/i);
+      expect(() => install.makeContext(codexAdapter, profileB)).toThrow(/MCP ownership configDir/);
+      expect(fs.readFileSync(configB, "utf8")).toBe(originalB);
+
+      const manifestFile = path.join(homeDir, ".jorgex-stack", "manifest.json");
+      const manifestBefore = fs.readFileSync(manifestFile);
+      const originalDetect = install.ADAPTERS.codex!.detect;
+      install.ADAPTERS.codex!.detect = () => ({ id: "codex", name: "Codex CLI", installed: true, binPath: null, configDir: profileB });
+      try {
+        await expect(install.runInstall({
+          runtimes: ["codex"], command: "sync", dryRun: false, yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          devtoolsMcpSelection: { codex: false },
+        })).resolves.toBe(1);
+      } finally {
+        install.ADAPTERS.codex!.detect = originalDetect;
+      }
+      expect(fs.readFileSync(manifestFile)).toEqual(manifestBefore);
       expect(fs.readFileSync(configB, "utf8")).toBe(originalB);
     });
   });

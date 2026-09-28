@@ -254,10 +254,14 @@ function enabledMcpServers(
 
 function ownedMcpServers(runtime: RuntimeId, configDir: string, useBrowserPreferences = true): ReadonlySet<string> {
   if (!useBrowserPreferences) return new Set();
-  const recordedDir = readManifest().runtimes[runtime]?.configDir;
-  if (typeof recordedDir !== "string" || !samePath(recordedDir, configDir)) return new Set();
   const file = devtoolsMcpPreferenceFile();
-  return new Set([DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server)));
+  const marked = [DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server));
+  if (marked.length === 0) return new Set();
+  const recordedDir = readManifest().runtimes[runtime]?.configDir;
+  if (typeof recordedDir !== "string" || !samePath(recordedDir, configDir)) {
+    throw new Error(`${runtime}: MCP ownership configDir no coincide con el perfil actual; se conserva la configuración. Vuelve al perfil anterior o revisa el estado gestionado antes de reintentar.`);
+  }
+  return new Set(marked);
 }
 
 /** El estado de ownership solo avanza tras observar la entrada escrita o ausente. */
