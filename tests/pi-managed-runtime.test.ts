@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const browserContractMock = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/pi-browser-contract.js", () => ({ requirePiBrowserHandoffSchemas: browserContractMock }));
+afterEach(() => browserContractMock.mockReset());
+
 // Integration fixtures carry synthetic tarball bytes; the isolated CLI probe
 // has its own artifact tests and explicit success/failure flow doubles below.
 vi.mock("../src/lib/browser-provider.js", async (importOriginal) => ({
@@ -215,6 +219,9 @@ describe("Pi managed package and projection coordination", () => {
         playwrightCliCommand: null,
         targetDir: undefined,
       })]);
+      expect(browserContractMock).toHaveBeenCalledWith(
+        expect.stringMatching(/node_modules[/\\]jorgex-pi$/), { devtools: 3 },
+      );
 
       expect(saveDevtoolsMcpPreference).toHaveBeenCalledWith(devtoolsPreferenceFile, "pi", true, DEVTOOLS_OBSERVED);
 
@@ -380,6 +387,15 @@ describe("Pi managed package and projection coordination", () => {
       ]);
       expect(detectPlaywrightCli).not.toHaveBeenCalled();
       expect(savePlaywrightCliPreference).toHaveBeenCalledWith(playwrightPreferenceFile, true, { pi: true });
+
+      const projectionCount = projectionInputs.length;
+      const savedCount = savePlaywrightCliPreference.mock.calls.length;
+      browserContractMock.mockImplementationOnce(() => { throw new Error("missing browser schema contract"); });
+      await expect(mod.runManagedPiSystem({ ...verifiedInput, operation: "sync" })).resolves.toMatchObject({
+        kind: "blocked", reason: "browser-handoff-unsupported", remedy: expect.stringMatching(/browser schema contract/i),
+      });
+      expect(projectionInputs).toHaveLength(projectionCount);
+      expect(savePlaywrightCliPreference).toHaveBeenCalledTimes(savedCount);
 
       await expect(mod.runManagedPiSystem(input)).resolves.toMatchObject({ kind: "installed" });
       expect(projectionInputs.at(-1)).toEqual(expect.objectContaining({

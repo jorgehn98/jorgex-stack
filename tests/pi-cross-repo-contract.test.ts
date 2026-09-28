@@ -10,6 +10,7 @@ import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecyc
 import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
 import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { requirePiBrowserHandoffSchemas } from "../src/lib/pi-browser-contract.js";
 
 const piDirectory = process.env.JORGEX_PI_DIR;
 const crossRepo = piDirectory === undefined ? describe.skip : describe;
@@ -372,6 +373,17 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
     expect(entries.has("package/assets/system-prompt/browser-playwright.md")).toBe(true);
     expect(entries.has("package/assets/permissions/defaults.json")).toBe(true);
   }, 60_000);
+
+  it("requires the published Pi artifact to declare trusted browser handoff schemas", () => {
+    const tarball = path.resolve(registryTarball!);
+    expectObservedArtifactIntegrity(tarball, readObservedCandidate());
+    const contractBytes = execFileSync("tar", ["-xOf", tarball, "package/contract/browser-handoffs.v1.json"]);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-observed-browser-contract-"));
+    temporaryPaths.push(root);
+    fs.mkdirSync(path.join(root, "contract"));
+    fs.writeFileSync(path.join(root, "contract", "browser-handoffs.v1.json"), contractBytes);
+    expect(() => requirePiBrowserHandoffSchemas(root, { playwright: 2, devtools: 3 })).not.toThrow();
+  });
 
   // Unbundled .31 cannot run via direct extraction (runner needs
   // provider-managed strip-json-comments). When opt-in JORGEX_PI_BIN exists,

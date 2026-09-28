@@ -15,6 +15,7 @@ import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./browser-provider.js";
 import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+import { requirePiBrowserHandoffSchemas } from "./pi-browser-contract.js";
 import { dataDir, stackRoot } from "./paths.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -434,6 +435,18 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       return managedPackageResult(raw);
     },
     runProjection(operation) {
+      if (playwrightCliEnabled || devtoolsMcpEnabled) {
+        const packageRoot = path.join(path.dirname(piSystemPromptFile(input.targetDir)), "npm", "node_modules", "jorgex-pi");
+        try {
+          requirePiBrowserHandoffSchemas(packageRoot, {
+            ...(playwrightCliEnabled ? { playwright: 2 } : {}),
+            ...(devtoolsMcpEnabled ? { devtools: 3 } : {}),
+          });
+        } catch (error) {
+          return Promise.resolve({ kind: "blocked" as const, reason: "browser-handoff-unsupported",
+            remedy: `${error instanceof Error ? error.message : String(error)}. Ejecuta install --agents pi con un paquete compatible antes de activar el navegador.` });
+        }
+      }
       const result = runPiProjectionLifecycleSystem({
         operation,
         ...projectionInput,
