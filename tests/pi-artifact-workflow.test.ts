@@ -465,6 +465,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect((windows?.steps ?? []).map((step) => step.run).filter(Boolean)).toEqual([
       "pnpm install --frozen-lockfile",
       "pnpm exec vitest run tests/browser-managed-windows.test.ts tests/playwright-windows-execution.test.ts",
+      "pnpm exec vitest run tests/pi-host-version.test.ts",
       'pnpm exec vitest run tests/browser-provider-resolution.test.ts -t "through the real pnpm stage"',
     ]);
     for (const step of windows?.steps ?? []) {

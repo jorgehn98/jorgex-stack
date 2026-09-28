@@ -530,7 +530,7 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     return 1;
   }
   if (detected.version === null) {
-    console.error("No se pudo verificar la versión instalada de Pi sin ejecutarlo; revisa la instalación de Pi.");
+    console.error(`No se pudo verificar la versión instalada de Pi sin ejecutarlo: ${detected.versionDiagnostic ?? "causa desconocida"}. Repara Pi con su instalador oficial antes de reintentar.`);
     return 1;
   }
   // Pi install real ordena Engram primero (resolvePiEngramBin/installMissingEngram
