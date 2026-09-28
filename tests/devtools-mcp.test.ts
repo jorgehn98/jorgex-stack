@@ -382,10 +382,10 @@ function expectDevToolsAbsent(runtime: RuntimeId, content: string): void {
   expect(parsed[mcpKey]?.[DEVTOOLS_SERVER]).toBeUndefined();
 }
 
-function addUserFieldToDevToolsServer(runtime: RuntimeId, content: string): string {
+function addUserFieldToDevToolsServer(runtime: RuntimeId, content: string, version = OBSERVED_DEVTOOLS.version): string {
   if (runtime === "codex") {
     return content.replace(
-      `args = ["dlx", "chrome-devtools-mcp@${OBSERVED_DEVTOOLS.version}", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]`,
+      `args = ["dlx", "chrome-devtools-mcp@${version}", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]`,
       '$&\nuser_marker = "preserve"',
     );
   }
@@ -641,7 +641,13 @@ describe("optional Chrome DevTools MCP", () => {
     const file = configFile(runtime, configDir);
     const adapter = adapterFor(runtime);
     writeUserConfig(runtime, file);
-    const extended = addUserFieldToDevToolsServer(runtime, plannedContent(adapter, context(runtime, configDir, true)));
+    const canonical = loadCanonicalMcp(stackRoot());
+    const [legacyAction] = adapter.planMainConfig(
+      { servers: { ...canonical.servers, [DEVTOOLS_SERVER]: literalLegacyDevtoolsServer(canonical) } },
+      context(runtime, configDir, true),
+    );
+    const extended = addUserFieldToDevToolsServer(runtime, (legacyAction as { content: string }).content, "1.6.0");
+    expect(extended).toContain("user_marker");
     fs.writeFileSync(file, extended);
     const ctx = {
       ...context(runtime, configDir, true, true),
