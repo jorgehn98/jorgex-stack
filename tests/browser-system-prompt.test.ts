@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,9 +13,108 @@ import { upsertMarkdownSection } from "../src/lib/filemerge.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { savePlaywrightCliPreference } from "../src/lib/tool-preferences.js";
 import { testModelsForRuntime } from "./fixtures/model-map.js";
+import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
+import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 
 const DEVTOOLS_SERVER = "chrome-devtools";
 const tempDirs: string[] = [];
+
+// Synthetic test-only observed releases shared by the browser prompt tests.
+// Fixtures, never version selectors: exact versions travel with bytes-matching
+// SRI from stubbed provider doubles below, never live npm.
+const PLAYWRIGHT_TARBALL_BYTES = Buffer.from("synthetic-playwright-cli-tarball-9.9.10\n");
+const PLAYWRIGHT_OBSERVED = {
+  version: "9.9.10",
+  integrity: `sha512-${createHash("sha512").update(PLAYWRIGHT_TARBALL_BYTES).digest("base64")}`,
+};
+const PLAYWRIGHT_TARBALL_URL = "https://registry.npmjs.org/@playwright/cli/-/cli-9.9.10.tgz";
+const PLAYWRIGHT_METADATA_URL = "https://registry.npmjs.org/@playwright/cli";
+const DEVTOOLS_OBSERVED = {
+  version: "9.9.20",
+  integrity: `sha512-${createHash("sha512").update(Buffer.from("synthetic-chrome-devtools-mcp-tarball-9.9.20\n")).digest("base64")}`,
+};
+
+async function seedManagedDevtools(stateDir: string): Promise<void> {
+  const stageDir = path.join(path.dirname(stateDir), "devtools-stage");
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treePath = path.join(nodeModulesPath, "chrome-devtools-mcp");
+  const entryPath = path.join(treePath, "entry.js");
+  fs.mkdirSync(treePath, { recursive: true });
+  fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "chrome-devtools-mcp", version: DEVTOOLS_OBSERVED.version }));
+  fs.writeFileSync(entryPath, "export {};\n");
+  await activateManagedBrowserTree({
+    stateDir,
+    packageName: "chrome-devtools-mcp",
+    release: { ...DEVTOOLS_OBSERVED,
+      tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${DEVTOOLS_OBSERVED.version}.tgz` },
+    staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+      closure: [{ name: "chrome-devtools-mcp", ...DEVTOOLS_OBSERVED }] },
+    entryPath,
+  });
+}
+
+async function seedManagedPlaywright(stateDir: string): Promise<void> {
+  const stageDir = path.join(path.dirname(stateDir), "playwright-stage");
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treePath = path.join(nodeModulesPath, "@playwright", "cli");
+  const entryPath = path.join(treePath, "entry.js");
+  fs.mkdirSync(treePath, { recursive: true });
+  fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "@playwright/cli", version: PLAYWRIGHT_OBSERVED.version }));
+  fs.writeFileSync(entryPath, `process.stdout.write("playwright-cli ${PLAYWRIGHT_OBSERVED.version}\\n");\n`);
+  await activateManagedBrowserTree({
+    stateDir,
+    packageName: "@playwright/cli",
+    release: { ...PLAYWRIGHT_OBSERVED, tarballUrl: PLAYWRIGHT_TARBALL_URL },
+    staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+      closure: [{ name: "@playwright/cli", ...PLAYWRIGHT_OBSERVED }] },
+    entryPath,
+  });
+}
+
+function playwrightPackument(): unknown {
+  return {
+    name: "@playwright/cli",
+    "dist-tags": { latest: PLAYWRIGHT_OBSERVED.version },
+    versions: {
+      [PLAYWRIGHT_OBSERVED.version]: {
+        name: "@playwright/cli",
+        version: PLAYWRIGHT_OBSERVED.version,
+        dist: { tarball: PLAYWRIGHT_TARBALL_URL, integrity: PLAYWRIGHT_OBSERVED.integrity },
+      },
+    },
+  };
+}
+
+function stubPlaywrightProviderFetch(events: string[]): void {
+  const stub = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    events.push(`fetch ${url}`);
+    if (url === PLAYWRIGHT_TARBALL_URL) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(PLAYWRIGHT_TARBALL_BYTES.slice());
+          controller.close();
+        },
+      });
+      const tarball = new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      Object.defineProperty(tarball, "url", { value: url });
+      return tarball;
+    }
+    if (url === PLAYWRIGHT_METADATA_URL) {
+      const metadata = new Response(JSON.stringify(playwrightPackument()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+      Object.defineProperty(metadata, "url", { value: url });
+      return metadata;
+    }
+    return new Response("not found", { status: 404 });
+  };
+  vi.stubGlobal("fetch", stub);
+}
 const prompts = vi.hoisted(() => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -100,11 +200,11 @@ function expectCapabilities(content: string, playwright: boolean, devtools: bool
     expect(playwrightSection).toMatch(/explicitly.*approves/i);
     expect(playwrightSection).toMatch(/Playwright CLI/i);
     expect(playwrightSection).not.toMatch(/\bskill\b/i);
-    expect(playwrightSection).toContain("playwright-cli --help");
-    expect(playwrightSection).toContain("playwright-cli open --browser=chromium");
-    expect(playwrightSection).toContain("playwright-cli snapshot");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright --help");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> open --browser=chromium");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> snapshot");
     expect(playwrightSection).toMatch(/verify/i);
-    expect(playwrightSection).toContain("playwright-cli close");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> close");
     expect(playwrightSection).toMatch(/only.*session.*created|session.*only.*created/i);
   } else {
     expect(playwrightSection).toBeNull();
@@ -417,8 +517,19 @@ describe("Playwright prompt install ordering", () => {
         executePlaywrightToolAction: vi.fn(() => ({ ok: true })),
         resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
       }));
+      vi.doMock("../src/lib/playwright-capability.js", async () => ({
+        ...(await vi.importActual<typeof import("../src/lib/playwright-capability.js")>("../src/lib/playwright-capability.js")),
+        inspectPlaywrightCapability: vi.fn(() => ({
+          cli: { status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: PLAYWRIGHT_OBSERVED.version },
+          browserCache: { status: "ready", path: "/isolated/cache" },
+          browserVerified: true,
+          effective: true,
+        })),
+      }));
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, path.join(configRoot, "opencode"));
+      const fetchEvents: string[] = [];
+      stubPlaywrightProviderFetch(fetchEvents);
       try {
         await expect(install.runInstall({
           runtimes: ["opencode"],
@@ -434,15 +545,28 @@ describe("Playwright prompt install ordering", () => {
             confirmed: false,
             runtimeSelection: { opencode: true, pi: false },
           },
+          playwrightToolDeps: {
+            run: async () => true,
+            verify: () => true,
+            persistEnabled: (enabled, observed) =>
+              savePlaywrightCliPreference(preferenceFile, enabled, { opencode: true }, observed),
+          },
         })).resolves.toBe(0);
 
-        expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual({
+        expect(fetchEvents).toEqual([
+          `fetch ${PLAYWRIGHT_METADATA_URL}`,
+          `fetch ${PLAYWRIGHT_TARBALL_URL}`,
+        ]);
+        expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toMatchObject({
           version: 2,
           enabled: { opencode: true, "claude-code": false, codex: false, pi: true },
+          observed: { version: PLAYWRIGHT_OBSERVED.version, integrity: PLAYWRIGHT_OBSERVED.integrity },
         });
       } finally {
         restoreDetect();
+        vi.unstubAllGlobals();
         vi.doUnmock("../src/lib/external-tools.js");
+        vi.doUnmock("../src/lib/playwright-capability.js");
       }
     });
   });
@@ -557,10 +681,12 @@ describe("Playwright prompt install ordering", () => {
     const preference = {
       version: 2,
       enabled: { opencode: true, codex: false, "claude-code": false, pi: false },
+      observed: { ...PLAYWRIGHT_OBSERVED },
     } as const;
     writeOpenCodeModelMap(homeDir);
     fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
     fs.writeFileSync(preferenceFile, JSON.stringify(preference) + "\n");
+    await seedManagedPlaywright(path.dirname(preferenceFile));
 
     await withTempHome(homeDir, async () => {
       const externalTools = {
@@ -579,6 +705,11 @@ describe("Playwright prompt install ordering", () => {
       vi.doMock("../src/lib/external-tools.js", async () => ({
         ...(await vi.importActual<typeof import("../src/lib/external-tools.js")>("../src/lib/external-tools.js")),
         ...externalTools,
+      }));
+      const verifyManagedPlaywrightBrowser = vi.fn(() => false);
+      vi.doMock("../src/lib/browser-command.js", async () => ({
+        ...(await vi.importActual<typeof import("../src/lib/browser-command.js")>("../src/lib/browser-command.js")),
+        verifyManagedPlaywrightBrowser,
       }));
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
@@ -601,10 +732,12 @@ describe("Playwright prompt install ordering", () => {
         const content = fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8");
         expect(managedSection(content, "playwright")).toBeNull();
         expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual(preference);
-        expect(externalTools.verifyPlaywrightBrowser).toHaveBeenCalledTimes(1);
+        expect(verifyManagedPlaywrightBrowser).toHaveBeenCalledTimes(1);
+        expect(externalTools.verifyPlaywrightBrowser).not.toHaveBeenCalled();
       } finally {
         restoreDetect();
         vi.doUnmock("../src/lib/external-tools.js");
+        vi.doUnmock("../src/lib/browser-command.js");
       }
     });
   });
@@ -772,20 +905,24 @@ describe("Playwright prompt install ordering", () => {
     const playwrightPreference = path.join(stateDir, "playwright-cli.json");
     const devtoolsPreference = path.join(stateDir, "devtools-mcp.json");
     writeOpenCodeModelMap(homeDir);
-    fs.writeFileSync(playwrightPreference, JSON.stringify({ version: 1, enabled: true }) + "\n");
+    fs.writeFileSync(
+      playwrightPreference,
+      JSON.stringify({ version: 2, enabled: { opencode: true }, observed: { ...PLAYWRIGHT_OBSERVED } }) + "\n",
+    );
     fs.writeFileSync(
       devtoolsPreference,
-      JSON.stringify({ version: 1, enabled: { opencode: true }, owned: {} }) + "\n",
+      JSON.stringify({ version: 1, enabled: { opencode: true }, owned: {}, observed: { ...DEVTOOLS_OBSERVED } }) + "\n",
     );
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
       try {
+        await seedManagedDevtools(stateDir);
         await expect(install.runInstall({
           runtimes: ["opencode"],
           playwrightCapability: {
-            cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
+            cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: PLAYWRIGHT_OBSERVED.version },
             browserCache: { status: "ready", path: "/isolated/browser" },
             browserVerified: true,
             effective: true,
@@ -805,7 +942,7 @@ describe("Playwright prompt install ordering", () => {
         await expect(install.runInstall({
           runtimes: ["opencode"],
           playwrightCapability: {
-            cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
+            cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: PLAYWRIGHT_OBSERVED.version },
             browserCache: { status: "ready", path: "/isolated/browser" },
             browserVerified: true,
             effective: true,
@@ -826,6 +963,40 @@ describe("Playwright prompt install ordering", () => {
     });
   });
 
+  it("uninstalls its managed DevTools registration without deleting the verified tree", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const stateDir = path.join(homeDir, ".jorgex-stack");
+    writeOpenCodeModelMap(homeDir);
+    fs.writeFileSync(path.join(stateDir, "devtools-mcp.json"), JSON.stringify({
+      version: 1, enabled: { opencode: true }, owned: {}, observed: DEVTOOLS_OBSERVED,
+    }) + "\n");
+    await withTempHome(homeDir, async () => {
+      await seedManagedDevtools(stateDir);
+      const install = await import("../src/install.js");
+      const uninstall = await import("../src/uninstall.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      try {
+        await expect(install.runInstall({
+          runtimes: ["opencode"], dryRun: false, yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+        })).resolves.toBe(0);
+        const configFile = path.join(configDir, "opencode.json");
+        expect(JSON.stringify(JSON.parse(fs.readFileSync(configFile, "utf8")))).toContain(DEVTOOLS_SERVER);
+        expect(install.makeContext(install.ADAPTERS.opencode!, configDir)?.devtoolsMcpInvocation?.command).toBe(process.execPath);
+        await expect(uninstall.runUninstall({
+          runtimes: ["opencode"], dryRun: false, yes: true,
+          removeEngram: false, removePlaywright: false,
+        })).resolves.toBe(0);
+        if (fs.existsSync(configFile)) {
+          expect(JSON.stringify(JSON.parse(fs.readFileSync(configFile, "utf8")))).not.toContain(DEVTOOLS_SERVER);
+        }
+        expect(fs.existsSync(path.join(stateDir, ".browser-managed", "chrome-devtools-mcp"))).toBe(true);
+      } finally { restoreDetect(); }
+    });
+  });
+
   it("--target-dir ignores real browser preferences but accepts an explicit DevTools simulation without persisting it", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
@@ -841,8 +1012,21 @@ describe("Playwright prompt install ordering", () => {
     const realDevtoolsPreference = fs.readFileSync(path.join(stateDir, "devtools-mcp.json"), "utf8");
 
     await withTempHome(homeDir, async () => {
+      const fetchEvents: string[] = [];
+      const execEvents: unknown[][] = [];
+      vi.doMock("node:child_process", async () => ({
+        ...(await vi.importActual<typeof import("node:child_process")>("node:child_process")),
+        execFileSync: (...args: unknown[]) => {
+          execEvents.push(args);
+          return "";
+        },
+      }));
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, targetDir);
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        fetchEvents.push(String(input));
+        return new Response("not found", { status: 404 });
+      });
       try {
         await expect(install.runInstall({
           runtimes: ["opencode"],
@@ -857,6 +1041,7 @@ describe("Playwright prompt install ordering", () => {
         expect(content).not.toContain("Playwright CLI");
         expect(content).not.toContain("Chrome DevTools");
 
+        await seedManagedDevtools(path.join(targetDir, ".jorgex-stack"));
         await expect(install.runInstall({
           runtimes: ["opencode"],
           targetDir,
@@ -864,14 +1049,24 @@ describe("Playwright prompt install ordering", () => {
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
           devtoolsMcpSelection: { opencode: true },
+          devtoolsMcpObservedVersion: { ...DEVTOOLS_OBSERVED },
         })).resolves.toBe(0);
 
         expectCapabilities(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8"), false, true);
-        expect(JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER]).toBeDefined();
+        const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER] as {
+          command?: unknown;
+        };
+        expect(Array.isArray(targetServer?.command)).toBe(true);
+        expect((targetServer?.command as string[])[0]).toBe(process.execPath);
+        expect(JSON.stringify(targetServer)).not.toContain("dlx");
+        expect(fetchEvents).toEqual([]);
+        expect(execEvents).toEqual([]);
         expect(fs.readFileSync(path.join(stateDir, "playwright-cli.json"), "utf8")).toBe(realPlaywrightPreference);
         expect(fs.readFileSync(path.join(stateDir, "devtools-mcp.json"), "utf8")).toBe(realDevtoolsPreference);
       } finally {
         restoreDetect();
+        vi.unstubAllGlobals();
+        vi.doUnmock("node:child_process");
       }
     });
   });

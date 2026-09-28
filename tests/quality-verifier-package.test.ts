@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,6 +15,7 @@ const PACKAGE_PATH = path.join(ROOT, "package.json");
 
 const EXPECTED_ENTRIES = {
   cli: "src/cli.ts",
+  "browser-playwright": "src/browser-playwright.ts",
   "pi-ci-artifact": "src/lib/pi-ci-artifact.ts",
   "quality-verifier": "src/lib/quality-verifier.ts",
 };
@@ -163,10 +165,37 @@ describe("T37 package contract", () => {
     ]);
   });
 
-  it("conserva el bin existente sin añadir otro", () => {
+  it("conserva el bin existente y publica el dispatcher Playwright", () => {
     expect(readPackageJson().bin).toEqual({
       "jorgex-stack": "./dist/cli.js",
+      "jorgex-stack-playwright": "./dist/browser-playwright.js",
     });
+  });
+
+  it("ejecuta el dispatcher Playwright construido sin depender de un CLI global", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-playwright-dispatcher-package-"));
+    try {
+      const outputDir = path.join(root, "dist");
+      fs.mkdirSync(outputDir);
+      await build({
+        ...readTsupConfig(), config: false,
+        entry: { "browser-playwright": path.join(ROOT, EXPECTED_ENTRIES["browser-playwright"]) },
+        outDir: outputDir, tsconfig: path.join(ROOT, "tsconfig.json"), silent: true,
+      });
+      const packageDir = stagePackage(root, outputDir);
+      const dispatcher = path.join(packageDir, "dist", "browser-playwright.js");
+      const home = path.join(root, "home");
+      fs.mkdirSync(home);
+      expect(fs.readFileSync(dispatcher, "utf8").startsWith("#!/usr/bin/env node")).toBe(true);
+      const result = spawnSync(process.execPath, [dispatcher, "--version"], {
+        encoding: "utf8", timeout: 10_000,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/Playwright CLI: opt-in no habilitado/);
+      expect(result.stderr).not.toMatch(/Cannot find module|ERR_MODULE_NOT_FOUND/);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   it("mantiene dist en los archivos publicados", () => {
@@ -203,6 +232,7 @@ describe("T37 tsup contract", () => {
   it("declara semánticamente los aliases de entry y habilita dts", () => {
     const config = readTsupConfig();
     expect(config.entry).toEqual(EXPECTED_ENTRIES);
+    expect(config.splitting).toBe(false);
     expect(config.dts).toBeTruthy();
   });
 });

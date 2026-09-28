@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   complementsToScan,
@@ -20,11 +21,13 @@ interface PlaywrightUpdateCheckReport {
 async function resolvePlaywrightUpdateCheck(input: {
   enabled: boolean | undefined;
   cli: PlaywrightCliState;
+  observedVersion?: string | null;
 }): Promise<PlaywrightUpdateCheckReport | null> {
   const mod = await import("../src/update.js") as {
     resolvePlaywrightUpdateCheck?: (input: {
       enabled: boolean | undefined;
       cli: PlaywrightCliState;
+      observedVersion?: string | null;
     }) => PlaywrightUpdateCheckReport | null;
   };
 
@@ -208,32 +211,42 @@ describe("resolveEngramRollback: casos none", () => {
 });
 
 describe("resolvePlaywrightUpdateCheck", () => {
-  it("informa el pin aprobado solo cuando Playwright fue habilitado explícitamente", async () => {
-    const current = resolvePlaywrightCliState({
-      binPath: "C:/u/pnpm/playwright-cli.cmd",
-      versionOutput: "playwright-cli 0.1.18\n",
-    });
-    const outdated = resolvePlaywrightCliState({
-      binPath: "C:/u/pnpm/playwright-cli.cmd",
-      versionOutput: "playwright-cli 0.1.16\n",
-    });
+  it("informa la versión observada solo cuando Playwright fue habilitado explícitamente", async () => {
+    const current = resolvePlaywrightCliState(
+      {
+        binPath: "C:/u/pnpm/playwright-cli.cmd",
+        versionOutput: "playwright-cli 9.9.8\n",
+      },
+      "9.9.8",
+    );
+    const outdated = resolvePlaywrightCliState(
+      {
+        binPath: "C:/u/pnpm/playwright-cli.cmd",
+        versionOutput: "playwright-cli 9.9.7\n",
+      },
+      "9.9.8",
+    );
 
-    const [notConfigured, disabled, healthy, stale] = await Promise.all([
-      resolvePlaywrightUpdateCheck({ enabled: undefined, cli: outdated }),
-      resolvePlaywrightUpdateCheck({ enabled: false, cli: outdated }),
+    const [notConfigured, disabled, healthy, stale, legacyNull, legacyMissing] = await Promise.all([
+      resolvePlaywrightUpdateCheck({ enabled: undefined, cli: outdated, observedVersion: "9.9.8" }),
+      resolvePlaywrightUpdateCheck({ enabled: false, cli: outdated, observedVersion: "9.9.8" }),
+      resolvePlaywrightUpdateCheck({ enabled: true, cli: current, observedVersion: "9.9.8" }),
+      resolvePlaywrightUpdateCheck({ enabled: true, cli: outdated, observedVersion: "9.9.8" }),
+      resolvePlaywrightUpdateCheck({ enabled: true, cli: current, observedVersion: null }),
       resolvePlaywrightUpdateCheck({ enabled: true, cli: current }),
-      resolvePlaywrightUpdateCheck({ enabled: true, cli: outdated }),
     ]);
 
     expect(notConfigured).toBeNull();
     expect(disabled).toBeNull();
     expect(healthy).toMatchObject({ level: "success" });
-    expect(healthy?.message).toContain("0.1.18");
-    expect(healthy?.message).toContain("pin aprobado");
+    expect(healthy?.message).toContain("9.9.8");
+    expect(healthy?.message).not.toContain("pin aprobado");
     expect(stale).toMatchObject({ level: "warn" });
-    expect(stale?.message).toContain("0.1.16");
-    expect(stale?.message).toContain("0.1.18");
-    expect(stale?.message).toContain("pin aprobado");
+    expect(stale?.message).toContain("9.9.7");
+    expect(stale?.message).toContain("9.9.8");
+    expect(stale?.message).not.toContain("pin aprobado");
+    expect(legacyNull).toMatchObject({ level: "warn" });
+    expect(legacyMissing).toMatchObject({ level: "warn" });
   });
 });
 
@@ -303,5 +316,25 @@ describe("complementsToScan", () => {
       },
     } as unknown as Upstreams;
     expect(complementsToScan(upstreams)).toEqual(["gentle-engram"]);
+  });
+});
+
+describe("browser complements provider-managed doctrine [T14-RED]", () => {
+  it("declares playwright-cli and chrome-devtools-mcp as provider-managed without a static future selector", () => {
+    const upstreams = JSON.parse(fs.readFileSync(new URL("../upstreams.json", import.meta.url), "utf8")) as {
+      complements?: Record<string, { source?: unknown; version?: unknown; strategy?: unknown; reviewed?: unknown }>;
+    };
+    for (const [name, source] of [
+      ["playwright-cli", "npm:@playwright/cli"],
+      ["chrome-devtools-mcp", "npm:chrome-devtools-mcp"],
+    ] as const) {
+      const complement = upstreams.complements?.[name];
+      expect(complement, `${name} must exist in upstreams.json complements`).toBeDefined();
+      expect(complement?.source).toBe(source);
+      expect(complement?.strategy).toBe("provider-managed");
+      expect(complement?.version).toBeNull();
+      expect(typeof complement?.reviewed).toBe("string");
+      expect((complement?.reviewed as string).trim()).not.toBe("");
+    }
   });
 });

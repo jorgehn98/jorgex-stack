@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { WritingStyleSnapshot } from "./writing-style.js";
-import { DEVTOOLS_MCP_SERVER, loadCanonicalMcp } from "./canonical.js";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalMcp, materializeCanonicalDevtoolsArgsForVersion } from "./canonical.js";
+import { isStableSemverVersion } from "./npm-provider.js";
 import { piAdapter, piSystemPromptFile } from "../adapters/pi.js";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../adapters/types.js";
 import { planCommands } from "../components/commands.js";
@@ -14,8 +15,58 @@ import { copyFile, pruneEmptyDirs, writeText } from "./fsx.js";
 import { readManifest } from "./manifest.js";
 import { DEFAULT_MODEL_MAP } from "./model-map.js";
 import { dataDir, HOME, stackRoot } from "./paths.js";
-import { PLAYWRIGHT_CLI } from "./external-tools.js";
 import { filterProjectedPiPackage } from "./pi-package-lifecycle.js";
+import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+
+/** Pi v2 authenticates this Stack dispatcher; it rechecks the browser at every invocation. */
+export function trustedPlaywrightHandoff(stateDir: string, commandPath: string) {
+  const receipt = loadVerifiedManagedBrowserReceipt(stateDir, "@playwright/cli");
+  if (receipt === null) throw new Error("Playwright managed receipt is missing for Pi handoff");
+  const command = fs.realpathSync(commandPath);
+  const relativeCommand = path.relative(receipt.rootPath, command);
+  if (relativeCommand === "" || (relativeCommand !== ".."
+    && !relativeCommand.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeCommand))) {
+    throw new Error("Playwright Stack dispatcher must remain outside the managed release");
+  }
+  const stat = fs.lstatSync(command);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) {
+    throw new Error("Playwright Stack dispatcher must be a bounded regular file");
+  }
+  fs.accessSync(command, fs.constants.X_OK);
+  const commandSha256 = createHash("sha256").update(fs.readFileSync(command)).digest("hex");
+  return {
+    schemaVersion: 2 as const,
+    enabled: true as const,
+    command,
+    version: receipt.version,
+    commandSha256,
+    rootPath: receipt.rootPath,
+    treePath: receipt.treePath,
+    entryPath: receipt.entryPath,
+    launcherPath: receipt.launcherPath,
+    launcherSha256: receipt.launcherSha256,
+    treeSha256: receipt.treeSha256,
+  };
+}
+
+/** Published Pi validates and launches this exact v3 shape through its own guard. */
+export function trustedDevtoolsHandoff(stateDir: string) {
+  const receipt = loadVerifiedManagedBrowserReceipt(stateDir, "chrome-devtools-mcp");
+  if (receipt === null) throw new Error("DevTools managed receipt is missing for Pi handoff");
+  return {
+    schemaVersion: 3 as const,
+    enabled: true as const,
+    command: process.execPath,
+    args: [receipt.launcherPath, "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+    entryPath: receipt.entryPath,
+    launcherPath: receipt.launcherPath,
+    launcherSha256: receipt.launcherSha256,
+    rootPath: receipt.rootPath,
+    treePath: receipt.treePath,
+    treeSha256: receipt.treeSha256,
+  };
+}
+
 
 export type PiProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
 
@@ -44,8 +95,13 @@ export interface PiProjectionLifecycleInput {
   playwrightCliEnabled: boolean;
   devtoolsMcpEnabled?: boolean;
   pnpmBin?: string | null;
+  devtoolsMcpVersion?: string | null;
+  devtoolsManagedStateDir?: string;
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
+  playwrightCliVersion?: string | null;
+  playwrightManagedStateDir?: string;
+  playwrightDispatcherPath?: string;
 }
 
 export interface PiProjectionManifest {
@@ -178,16 +234,27 @@ function projectionPlan(input: PiProjectionLifecycleInput, scope: ProjectionScop
     ...planSkills(adapter, ctx),
     ...planCommands(adapter, ctx),
   ];
-  if (input.devtoolsMcpEnabled && input.pnpmBin) {
+  if (input.devtoolsMcpEnabled && input.devtoolsManagedStateDir !== undefined) {
+    actions.push({ kind: "write", target: handoffPath(scope, "devtools"),
+      content: `${JSON.stringify(trustedDevtoolsHandoff(input.devtoolsManagedStateDir), null, 2)}\n` });
+  } else if (input.devtoolsMcpEnabled && input.pnpmBin
+    && isStableSemverVersion(input.devtoolsMcpVersion)) {
     const server = loadCanonicalMcp(input.stackDir).servers[DEVTOOLS_MCP_SERVER];
-    if (server?.transport !== "stdio" || !Array.isArray(server.args)) throw new Error("Falta la configuración canónica de DevTools.");
+    if (server === undefined) throw new Error("Falta la configuración canónica de DevTools.");
+    const args = materializeCanonicalDevtoolsArgsForVersion(server, input.devtoolsMcpVersion);
     actions.push({ kind: "write", target: handoffPath(scope, "devtools"), content: `${JSON.stringify({
-      schemaVersion: 1, enabled: true, command: input.pnpmBin, args: server.args,
+      schemaVersion: 1, enabled: true, command: input.pnpmBin, args,
     }, null, 2)}\n` });
   }
-  if (input.playwrightHandoffEnabled && input.playwrightCliCommand) {
+  if (input.playwrightHandoffEnabled && input.playwrightManagedStateDir !== undefined
+    && input.playwrightDispatcherPath !== undefined) {
+    actions.push({ kind: "write", target: handoffPath(scope, "playwright"), content: `${JSON.stringify(
+      trustedPlaywrightHandoff(input.playwrightManagedStateDir, input.playwrightDispatcherPath), null, 2,
+    )}\n` });
+  } else if (input.playwrightHandoffEnabled && input.playwrightCliCommand
+    && isStableSemverVersion(input.playwrightCliVersion)) {
     actions.push({ kind: "write", target: handoffPath(scope, "playwright"), content: `${JSON.stringify({
-      schemaVersion: 1, enabled: true, command: input.playwrightCliCommand, version: PLAYWRIGHT_CLI.version,
+      schemaVersion: 1, enabled: true, command: input.playwrightCliCommand, version: input.playwrightCliVersion,
     }, null, 2)}\n` });
   }
   return actions;
@@ -652,12 +719,56 @@ export function runPiProjectionLifecycle(
     return blocked("projection-prompt-markers", [prompt], error instanceof Error ? error.message : String(error));
   }
 
-  if (input.devtoolsMcpEnabled && (!input.pnpmBin || !path.isAbsolute(input.pnpmBin))) {
+  if (input.devtoolsMcpEnabled && input.devtoolsManagedStateDir !== undefined) {
+    const stateDir = input.devtoolsManagedStateDir;
+    if (!path.isAbsolute(stateDir) || (scope.kind === "target-dir" && !isInside(scope.home, stateDir))) {
+      return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "El receipt gestionado de DevTools debe estar dentro del HOME aislado del target.");
+    }
+    try {
+      if (scope.kind === "target-dir") {
+        const homeStat = fs.lstatSync(scope.home);
+        if (!homeStat.isDirectory() || homeStat.isSymbolicLink()
+          || !isInside(fs.realpathSync(scope.home), fs.realpathSync(stateDir))) {
+          throw new Error("El receipt gestionado de DevTools sale del HOME aislado del target.");
+        }
+      }
+      trustedDevtoolsHandoff(stateDir);
+    }
+    catch (error) {
+      return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], error instanceof Error ? error.message : String(error));
+    }
+  } else if (input.devtoolsMcpEnabled && (!input.pnpmBin || !path.isAbsolute(input.pnpmBin))) {
     return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere un ejecutable pnpm absoluto disponible en PATH.");
   }
-  if (input.playwrightHandoffEnabled && (!input.playwrightCliCommand || !path.isAbsolute(input.playwrightCliCommand)
+  if (input.devtoolsMcpEnabled && input.devtoolsManagedStateDir === undefined
+    && !isStableSemverVersion(input.devtoolsMcpVersion)) {
+    return blocked("projection-devtools-command", [handoffPath(scope, "devtools")], "DevTools requiere una versión estable observada y verificada. Reintenta tras verificar la versión observada.");
+  }
+  if (input.playwrightHandoffEnabled && input.playwrightManagedStateDir !== undefined) {
+    const stateDir = input.playwrightManagedStateDir;
+    if (input.playwrightDispatcherPath === undefined || !path.isAbsolute(input.playwrightDispatcherPath)
+      || !path.isAbsolute(stateDir) || (scope.kind === "target-dir" && !isInside(scope.home, stateDir))) {
+      return blocked("projection-playwright-command", [handoffPath(scope, "playwright")], "Playwright requiere un receipt gestionado y dispatcher absoluto dentro del target aislado.");
+    }
+    try {
+      if (scope.kind === "target-dir") {
+        const homeStat = fs.lstatSync(scope.home);
+        if (!homeStat.isDirectory() || homeStat.isSymbolicLink()
+          || !isInside(fs.realpathSync(scope.home), fs.realpathSync(stateDir))) {
+          throw new Error("El receipt Playwright sale del HOME aislado del target.");
+        }
+      }
+      trustedPlaywrightHandoff(stateDir, input.playwrightDispatcherPath);
+    } catch (error) {
+      return blocked("projection-playwright-command", [handoffPath(scope, "playwright")], error instanceof Error ? error.message : String(error));
+    }
+  } else if (input.playwrightHandoffEnabled && (!input.playwrightCliCommand || !path.isAbsolute(input.playwrightCliCommand)
     || /[\u0000-\u001f\u007f]/.test(input.playwrightCliCommand))) {
     return blocked("projection-playwright-command", [handoffPath(scope, "playwright")], "Playwright requiere un ejecutable absoluto verificado. Abre una terminal nueva tras pnpm setup y reintenta install --playwright.");
+  }
+  if (input.playwrightHandoffEnabled && input.playwrightManagedStateDir === undefined
+    && !isStableSemverVersion(input.playwrightCliVersion)) {
+    return blocked("projection-playwright-command", [handoffPath(scope, "playwright")], "Playwright requiere una versión estable verificada. Reintenta install --playwright tras verificar la versión observada.");
   }
   const plan = projectionPlan(input, scope);
   assertPlanContained(plan, scope);
@@ -747,8 +858,13 @@ export interface PiProjectionLifecycleSystemInput {
   playwrightCliEnabled: boolean;
   devtoolsMcpEnabled?: boolean;
   pnpmBin?: string | null;
+  devtoolsMcpVersion?: string | null;
+  devtoolsManagedStateDir?: string;
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
+  playwrightCliVersion?: string | null;
+  playwrightManagedStateDir?: string;
+  playwrightDispatcherPath?: string;
 }
 
 function systemProjectionLifecycle(
@@ -775,8 +891,13 @@ function systemProjectionLifecycle(
       playwrightCliEnabled: input.playwrightCliEnabled,
       devtoolsMcpEnabled: input.devtoolsMcpEnabled,
       pnpmBin: input.pnpmBin,
+      devtoolsMcpVersion: input.devtoolsMcpVersion,
+      devtoolsManagedStateDir: input.devtoolsManagedStateDir,
       playwrightHandoffEnabled: input.playwrightHandoffEnabled,
       playwrightCliCommand: input.playwrightCliCommand,
+      playwrightCliVersion: input.playwrightCliVersion,
+      playwrightManagedStateDir: input.playwrightManagedStateDir,
+      playwrightDispatcherPath: input.playwrightDispatcherPath,
     },
     deps: {
       readText: readTextOnlyIfMissing,

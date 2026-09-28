@@ -16,7 +16,7 @@ import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliStatus,
 } from "./lib/external-tools.js";
-import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
+import { inspectManagedPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference, primaryModelOwnershipError } from "./lib/tool-preferences.js";
 
 function readDoctorTextIfExists(file: string): string | null {
@@ -422,7 +422,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     p.log.info("Playwright CLI: comprobación omitida en dry-run; no se evalúa el estado del paquete ni del navegador.");
   } else {
     const enabled = loadPlaywrightCliPreference();
-    const capability = options.playwrightCapability ?? (enabled === true ? inspectPlaywrightCapability() : undefined);
+    const capability = options.playwrightCapability ?? (enabled === true ? inspectManagedPlaywrightCapability() : undefined);
     effectivePlaywright = capability?.effective;
     const cli = capability?.cli ?? { status: "absent" as const };
     const playwright = resolvePlaywrightDoctorState({
@@ -453,7 +453,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       p.log.error(`Playwright CLI: no se puede leer la caché de navegadores en ${playwright.path} (${playwright.errorCode}) → revisa permisos o ejecuta 'jorgex-stack install --playwright'.`);
       problems++;
     } else {
-      p.log.warn("Playwright CLI: versión distinta del pin aprobado → ejecuta 'jorgex-stack update' o 'install --playwright'.");
+      p.log.warn("Playwright CLI: versión local distinta de la observada o sin verificación del proveedor → ejecuta 'jorgex-stack update' o 'install --playwright'.");
       problems++;
     }
   }
@@ -480,13 +480,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       .join(", ");
     p.log.info(`${adapter.name}: capabilities diagnostic (${capabilitySummary}); no certifica enforcement local.`);
 
-    const ctx = makeContext(adapter, detection.configDir, modePreference, true, effectivePlaywright);
-    if (!ctx) continue;
-    ctx.writingStyle = writingStyle;
-
     let pending: number;
     let stalePermissions = false;
     try {
+      const ctx = makeContext(adapter, detection.configDir, modePreference, true, effectivePlaywright);
+      if (!ctx) continue;
+      ctx.writingStyle = writingStyle;
       const plan = buildPlan(adapter, ctx);
       pending = diffPlan(plan).filter((d) => d.status !== "unchanged").length;
       stalePermissions = ctx.warnings.some((warning) => warning.includes(STALE_PERMISSIONS_MARKER));

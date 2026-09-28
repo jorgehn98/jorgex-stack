@@ -3,14 +3,12 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import type { FileAction, RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildContentPlan, makeContext } from "./install.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import { inspectOpencodePluginFile } from "./adapters/opencode.js";
 import { HOME, stackRoot } from "./lib/paths.js";
-import { executePlaywrightToolAction, type PlaywrightToolAction } from "./install.js";
-import { resolvePnpmFailureRemedy } from "./lib/external-tools.js";
 import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import {
@@ -31,16 +29,16 @@ export interface UninstallOptions {
   yes: boolean;
   /** D7: desregistrar Engram exige el sí explícito (flag o confirmación). */
   removeEngram: boolean;
-  /** Retira solo el paquete global de Playwright; nunca sus datos/navegadores. */
+  /** Desactiva el opt-in gestionado; nunca retira paquetes globales ajenos. */
   removePlaywright: boolean;
 }
 
-export function resolvePlaywrightUninstallPlan(input: { removePackage: boolean }): {
-  actions: PlaywrightToolAction[];
+export function resolvePlaywrightUninstallPlan(input: { disableManaged: boolean }): {
+  disablePreference: boolean;
   preserveBrowserData: boolean;
 } {
   return {
-    actions: input.removePackage ? ["remove"] : [],
+    disablePreference: input.disableManaged,
     preserveBrowserData: true,
   };
 }
@@ -140,7 +138,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       if (opts.runtimes.includes(keep.id)) continue;
       const detection = keep.detect();
       if (!detection.installed) continue;
-      const keepCtx = makeContext(keep, detection.configDir);
+      const keepCtx = makeContext(keep, detection.configDir, undefined, true, undefined, false);
       if (!keepCtx) continue;
       for (const action of buildContentPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
     }
@@ -158,13 +156,29 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       p.log.warn(`${adapter.name} no detectado — omitido.`);
       continue;
     }
-    const ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences);
+    let ctx: ReturnType<typeof makeContext>;
+    try { ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences); }
+    catch (error) {
+      p.log.error(`${adapter.name}: no se pudo verificar el estado managed browser (${error instanceof Error ? error.message : String(error)}).`);
+      exitCode = 1;
+      continue;
+    }
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
 
     let unmerge: FileAction[];
     try {
-      unmerge = adapter.planUnmerge(mcpForUnmerge, hooks, ctx);
+      const devtools = mcpForUnmerge.servers[DEVTOOLS_MCP_SERVER];
+      const scopedMcp = devtools !== undefined && ctx.ownedMcpServers?.has(DEVTOOLS_MCP_SERVER)
+        ? { servers: { ...mcpForUnmerge.servers, [DEVTOOLS_MCP_SERVER]: {
+          ...materializeCanonicalDevtoolsServerForRemoval(devtools, ctx.devtoolsMcpObservedVersion),
+          ...(ctx.devtoolsMcpInvocation === undefined ? {} : {
+            command: ctx.devtoolsMcpInvocation.command,
+            args: [...ctx.devtoolsMcpInvocation.args],
+          }),
+        } } }
+        : mcpForUnmerge;
+      unmerge = adapter.planUnmerge(scopedMcp, hooks, ctx);
     } catch (error) {
       p.log.error(`${adapter.name}: no se pudo planificar la limpieza en ${configDir} — ${error instanceof Error ? error.message : String(error)}.`);
       exitCode = 1;
@@ -244,37 +258,28 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 
-  // --target-dir es una simulación/paridad de config: no debe afectar paquetes
-  // globales ni la preferencia real del usuario.
+  // --target-dir no modifica la preferencia real; un global ajeno nunca es propio.
   const playwrightPlan = resolvePlaywrightUninstallPlan({
-    removePackage: opts.targetDir === undefined && opts.removePlaywright,
+    disableManaged: opts.targetDir === undefined && opts.removePlaywright,
   });
   if (opts.removePlaywright && opts.targetDir !== undefined) {
-    p.log.info("Playwright CLI: --target-dir conserva el paquete global y los datos del navegador.");
-  } else if (playwrightPlan.actions.length > 0) {
+    p.log.info("Playwright CLI: --target-dir conserva la preferencia, el árbol gestionado y los datos del navegador.");
+  } else if (playwrightPlan.disablePreference) {
     if (opts.dryRun) {
-      p.log.info("Playwright CLI: se retiraría solo el paquete global; los datos y navegadores se conservan.");
+      p.log.info("Playwright CLI: se desactivaría la preferencia; árbol gestionado, paquetes globales y navegadores se conservan.");
     } else {
-      const removal = executePlaywrightToolAction("remove");
-      if (removal.ok) {
-        try {
-          savePlaywrightCliPreference(playwrightCliPreferenceFile(), false);
-          p.log.success("Playwright CLI: paquete global retirado; los datos y navegadores se conservan.");
-        } catch (error) {
-          p.log.error(`Playwright CLI: paquete global retirado, pero no se pudo guardar la preferencia (${error instanceof Error ? error.message : String(error)}). Corrige la preferencia antes de reintentar.`);
-          exitCode = 1;
-        }
-      } else {
-        const pnpmRemedy = resolvePnpmFailureRemedy(removal.reason);
-        const recovery = pnpmRemedy === null
-          ? " Revisa el error de pnpm anterior y ejecuta 'jorgex-stack uninstall --remove-playwright' para reintentar."
-          : ` ${pnpmRemedy} Después, ejecuta 'jorgex-stack uninstall --remove-playwright' para reintentar.`;
-        p.log.error(`Playwright CLI: no se pudo retirar el paquete global; los datos y la preferencia se conservan.${recovery}`);
+      try {
+        const file = playwrightCliPreferenceFile();
+        if (fs.existsSync(file)) createBackup([file], "uninstall-playwright-preference");
+        savePlaywrightCliPreference(file, false);
+        p.log.success("Playwright CLI: preferencia desactivada; árbol gestionado, paquetes globales y navegadores conservados.");
+      } catch (error) {
+        p.log.error(`Playwright CLI: no se pudo desactivar la preferencia (${error instanceof Error ? error.message : String(error)}). Corrígela y reintenta.`);
         exitCode = 1;
       }
     }
   } else {
-    p.log.info("Playwright CLI: paquete global y datos del navegador conservados (usa --remove-playwright para retirar solo el paquete).");
+    p.log.info("Playwright CLI: preferencia, árbol gestionado, paquetes globales y datos del navegador conservados.");
   }
 
   p.outro(opts.dryRun

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
@@ -6,7 +7,7 @@ import type { Adapter, FileAction, InstallContext, InstallModePreference, Runtim
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
-import { HOME, stackRoot } from "./lib/paths.js";
+import { HOME, dataDir, stackRoot } from "./lib/paths.js";
 import { detectEngram, engramVersion } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
@@ -21,7 +22,7 @@ import {
   type OfficialSetupIfNeededResult,
 } from "./lib/official-engram-setup.js";
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
-import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp } from "./lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, materializeCanonicalDevtoolsServerForRemoval, type CanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
@@ -35,23 +36,32 @@ import {
   executePlaywrightToolAction as executeExternalPlaywrightToolAction,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
+  isPlaywrightBrowserReady,
   setupPnpmGlobal,
   type PlaywrightCliAction,
+  type PlaywrightCliCandidate,
   type PnpmSetupResult,
   type PlaywrightToolActionFailureReason,
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
+import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
+import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation, rollbackManagedBrowserActivation } from "./lib/browser-managed.js";
+import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
+import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./lib/browser-command.js";
 import {
   inspectPlaywrightCapability,
+  inspectManagedPlaywrightCapability,
   type PlaywrightCapabilitySnapshot,
   type VerifiedPlaywrightCapabilitySnapshot,
 } from "./lib/playwright-capability.js";
 import {
   browserPreferenceErrors,
   devtoolsMcpPreferenceFile,
+  loadDevtoolsMcpObservation,
   loadDevtoolsMcpOwnership,
   loadDevtoolsMcpPreference,
   loadPlaywrightCliPreference,
+  type ObservedVersion,
   type PlaywrightRuntimeSelection,
   loadPrimaryModelOwnership,
   playwrightCliPreferenceFile,
@@ -90,6 +100,12 @@ export interface InstallOptions {
   onPlaywrightCapability?: (snapshot: VerifiedPlaywrightCapabilitySnapshot) => void;
   /** Elecciones explícitas del MCP DevTools para este install; undefined usa el estado persistido. */
   devtoolsMcpSelection?: Partial<Record<RuntimeId, boolean>>;
+  /**
+   * Observación DevTools inyectada SOLO para el sandbox --target-dir (objeto
+   * previamente verificado; se valida con el materializador canónico antes de
+   * escribir). --target-dir nunca lee/escribe preferencias reales ni hace fetch.
+   */
+  devtoolsMcpObservedVersion?: ObservedVersion;
   /** Opt-in para re-aplicar el bloque de permisos gestionados sobre config existente (reemplazo entero con backup; sin flag solo se avisa). */
   upgradePermissions?: boolean;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
@@ -134,8 +150,9 @@ export function executePlaywrightToolAction(
   action: PlaywrightCliAction,
   pnpmBin = resolvePnpmBin(),
   env?: NodeJS.ProcessEnv,
+  candidate?: PlaywrightCliCandidate,
 ): PlaywrightToolActionResult {
-  return executeExternalPlaywrightToolAction(action, pnpmBin, env);
+  return executeExternalPlaywrightToolAction(action, pnpmBin, env, candidate);
 }
 
 export interface PlaywrightToolPlan {
@@ -154,8 +171,13 @@ export interface PlaywrightToolConsent {
 }
 
 export interface PlaywrightToolPlanDeps {
-  run: (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv) => Promise<boolean | PlaywrightToolActionResult>;
-  persistEnabled: (enabled: boolean) => void;
+  run: (
+    action: PlaywrightInstallAction,
+    env?: NodeJS.ProcessEnv,
+    candidate?: PlaywrightCliCandidate,
+  ) => Promise<boolean | PlaywrightToolActionResult>;
+  persistEnabled: (enabled: boolean, observed?: ObservedVersion) => void;
+  verify?: (candidate?: PlaywrightCliCandidate) => boolean;
   setupPnpm?: (pnpmBin: string) => PnpmSetupResult;
 }
 
@@ -163,7 +185,7 @@ export type PlaywrightToolPlanResult =
   | { ok: true }
   | {
       ok: false;
-      failedAction: PlaywrightInstallAction | "persist";
+      failedAction: PlaywrightInstallAction | "verify" | "persist";
       reason?: PlaywrightToolActionFailureReason;
     };
 
@@ -187,19 +209,30 @@ export function resolvePlaywrightToolPlan(consent: PlaywrightToolConsent): Playw
 export async function runPlaywrightToolPlan(
   plan: PlaywrightToolPlan,
   deps: PlaywrightToolPlanDeps,
+  candidate?: PlaywrightCliCandidate,
 ): Promise<PlaywrightToolPlanResult> {
   for (const action of plan.actions) {
     try {
-      const result = await deps.run(action);
+      const result = await deps.run(action, undefined, candidate);
       if (result === false) return { ok: false, failedAction: action };
       if (result !== true && !result.ok) return { ok: false, failedAction: action, reason: result.reason };
     } catch {
       return { ok: false, failedAction: action };
     }
   }
+  if (deps.verify !== undefined) {
+    try {
+      if (!deps.verify(candidate)) return { ok: false, failedAction: "verify" };
+    } catch {
+      return { ok: false, failedAction: "verify" };
+    }
+  }
   if (plan.persistEnabledOnSuccess) {
     try {
-      deps.persistEnabled(true);
+      const observed = candidate === undefined
+        ? undefined
+        : { version: candidate.version, integrity: candidate.integrity };
+      deps.persistEnabled(true, observed);
     } catch {
       return { ok: false, failedAction: "persist" };
     }
@@ -240,6 +273,18 @@ function persistConfigurationOwnershipChanges(runtime: RuntimeId, configDir: str
   for (const [field, owned] of primary) savePrimaryModelOwnership(primaryFile, runtime, configDir, field, owned);
 }
 
+/** Materializa el canon para unmerge con la misma observación del plan donde exista. */
+function canonicalMcpForUnmerge(base: CanonicalMcp, observed?: ObservedVersion): CanonicalMcp {
+  const server = base.servers[DEVTOOLS_MCP_SERVER];
+  if (server === undefined) return base;
+  try {
+    const materialized = materializeCanonicalDevtoolsServerForRemoval(server, observed);
+    return { servers: { ...base.servers, [DEVTOOLS_MCP_SERVER]: materialized } };
+  } catch {
+    return base;
+  }
+}
+
 /** Contexto de instalación para un runtime, o null si no hay model-map. */
 export function makeContext(
   adapter: Adapter,
@@ -247,9 +292,34 @@ export function makeContext(
   mode: InstallModePreference = DEFAULT_INSTALL_MODE_PREFERENCE,
   useBrowserPreferences = true,
   playwrightCapability?: boolean,
+  resolveManagedBrowser = true,
 ): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
+  const enabled = enabledMcpServers(adapter.id, undefined, useBrowserPreferences);
+  const owned = ownedMcpServers(adapter.id, useBrowserPreferences);
+  let devtoolsMcpObservedVersion: ObservedVersion | undefined;
+  let devtoolsMcpInvocation: InstallContext["devtoolsMcpInvocation"];
+  if (useBrowserPreferences && (enabled.has(DEVTOOLS_MCP_SERVER) || owned.has(DEVTOOLS_MCP_SERVER))) {
+    try {
+      const persisted = loadDevtoolsMcpObservation(devtoolsMcpPreferenceFile());
+      if (persisted !== null) devtoolsMcpObservedVersion = persisted;
+    } catch {
+      // Sin observación: enable falla cerrado; disable retira el legacy owned exacto.
+    }
+  }
+  if (resolveManagedBrowser && devtoolsMcpObservedVersion !== undefined) {
+    const receipt = loadVerifiedManagedBrowserReceipt(dataDir(), "chrome-devtools-mcp");
+    if (receipt !== null) {
+      if (receipt.version !== devtoolsMcpObservedVersion.version
+        || receipt.integrity !== devtoolsMcpObservedVersion.integrity) {
+        throw new Error("DevTools: el receipt gestionado no coincide con la observación persistida.");
+      }
+      devtoolsMcpInvocation = planManagedBrowserInvocation(dataDir(), "chrome-devtools-mcp", [
+        "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+      ]);
+    }
+  }
   return {
     stackDir: stackRoot(),
     configDir,
@@ -258,11 +328,13 @@ export function makeContext(
     engramBin: detectEngram(),
     models,
     warnings: [],
-    enabledMcpServers: enabledMcpServers(adapter.id, undefined, useBrowserPreferences),
+    enabledMcpServers: enabled,
+    ...(devtoolsMcpObservedVersion === undefined ? {} : { devtoolsMcpObservedVersion }),
+    ...(devtoolsMcpInvocation === undefined ? {} : { devtoolsMcpInvocation }),
     playwrightCliEnabled: useBrowserPreferences
       && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true
       && (playwrightCapability ?? true),
-    ownedMcpServers: ownedMcpServers(adapter.id, useBrowserPreferences),
+    ownedMcpServers: owned,
     ownedPrimaryModelFields: useBrowserPreferences
       ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
       : new Set(),
@@ -291,8 +363,8 @@ export function preflightSelectedMcpConfigs(runtimes: readonly RuntimeId[], targ
     if (!adapter) continue;
     const detection = adapter.detect();
     if (targetDir === undefined && !detection.installed) continue;
-    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined);
-    if (ctx) planMcp(adapter, ctx);
+    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined, undefined, false);
+    if (ctx) planMcp(adapter, { ...ctx, enabledMcpServers: new Set() });
   }
 }
 
@@ -334,13 +406,13 @@ export function collectAllCurrentTargets(
   for (const adapter of Object.values(ADAPTERS)) {
     const detection = adapter.detect();
     if (!detection.installed) continue;
-    const ctx = makeContext(adapter, detection.configDir, mode, true, playwrightCapability);
-    if (!ctx) {
-      complete = false;
-      warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
-      continue;
-    }
     try {
+      const ctx = makeContext(adapter, detection.configDir, mode, true, playwrightCapability);
+      if (!ctx) {
+        complete = false;
+        warnings.push(`${adapter.name}: limpieza de huérfanos deshabilitada — falta contexto/model-map instalable para este runtime.`);
+        continue;
+      }
       for (const action of buildPlan(adapter, ctx)) targets.add(path.resolve(action.target));
     } catch (error) {
       complete = false;
@@ -456,6 +528,112 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (showSummary) p.outro("Install cancelado: corrige el estado de configuración indicado arriba antes de reintentar.");
     return 1;
   }
+  // T15 verified-provider DevTools opt-in: con selección explícita y comando
+  // real, resolver el candidato exacto del proveedor ANTES de cualquier
+  // escritura (writing-style, config, ownership o prefs). SRI, metadata y
+  // red fallan cerrado sin tocar config/prefs, sin exec ni Chrome.
+  // sync/dry-run/target-dir NUNCA resuelven ni descargan.
+  const isSyncCommand = opts.command === "sync";
+  const isDevtoolsTargetDir = opts.targetDir !== undefined;
+  const isDevtoolsDryRun = opts.dryRun === true;
+  const isRealDevtoolsInstall = !isSyncCommand && !isDevtoolsDryRun && !isDevtoolsTargetDir;
+  let devtoolsPersistedObserved: ObservedVersion | null = null;
+  if (useManifest) {
+    try {
+      devtoolsPersistedObserved = loadDevtoolsMcpObservation(devtoolsMcpPreferenceFile());
+    } catch {
+      devtoolsPersistedObserved = null;
+    }
+  }
+  let devtoolsVerifiedObserved: ObservedVersion | undefined;
+  let devtoolsTargetDirObserved: ObservedVersion | undefined;
+  let devtoolsManagedInvocation: InstallContext["devtoolsMcpInvocation"];
+  const devtoolsStateDir = opts.targetDir === undefined ? dataDir() : path.join(opts.targetDir, ".jorgex-stack");
+  const devtoolsExplicitTrue = opts.runtimes.filter((id) => opts.devtoolsMcpSelection?.[id] === true);
+  if (devtoolsExplicitTrue.length > 0) {
+    if (isRealDevtoolsInstall) {
+      try {
+        const pnpmBin = resolvePnpmBin();
+        if (pnpmBin === null) throw new Error("pnpm no disponible para preparar el árbol gestionado de DevTools");
+        const release = await prepareVerifiedBrowserRelease("chrome-devtools-mcp", {
+          fetchImpl: globalThis.fetch,
+          withVerifiedArtifact: async (context) => {
+            await activateVerifiedBrowserArtifact(context, { stateDir: devtoolsStateDir, pnpmBin, fetchImpl: globalThis.fetch });
+          },
+        });
+        devtoolsVerifiedObserved = { version: release.version, integrity: release.integrity };
+        devtoolsManagedInvocation = planManagedBrowserInvocation(devtoolsStateDir, "chrome-devtools-mcp", [
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+        ]);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        p.log.error(`Chrome DevTools MCP: no se pudo verificar el paquete del proveedor (${detail}). Revisa tu conexión y la metadata oficial antes de reintentar; la preferencia no se ha marcado como habilitada.`);
+        if (showSummary) p.outro("Install completado con errores (revisa arriba).");
+        return 1;
+      }
+    } else if (isDevtoolsTargetDir) {
+      const injected = opts.devtoolsMcpObservedVersion;
+      if (injected === undefined) {
+        p.log.error(`Chrome DevTools MCP: no hay versión observada inyectada para materializar el servidor habilitado; --target-dir no resuelve ni descarga del proveedor ni lee preferencias reales.`);
+        if (showSummary) p.outro("Install completado con errores (revisa arriba).");
+        return 1;
+      }
+      try {
+        const canonicalForValidation = loadCanonicalMcp(stackRoot());
+        const template = canonicalForValidation.servers[DEVTOOLS_MCP_SERVER];
+        if (template === undefined) throw new Error("falta el servidor canónico chrome-devtools.");
+        materializeCanonicalDevtoolsServer(template, injected);
+        devtoolsTargetDirObserved = { version: injected.version, integrity: injected.integrity };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        p.log.error(`Chrome DevTools MCP: observación inyectada inválida para --target-dir (${detail}).`);
+        if (showSummary) p.outro("Install completado con errores (revisa arriba).");
+        return 1;
+      }
+    } else if (devtoolsPersistedObserved === null) {
+      const modeLabel = isSyncCommand ? "sync" : "dry-run";
+      p.log.error(`Chrome DevTools MCP: no hay versión observada verificada para materializar el servidor habilitado; ${modeLabel} no resuelve ni descarga del proveedor. Ejecuta 'jorgex-stack install --devtools' para verificar y registrar la versión observada.`);
+      if (showSummary) p.outro("Install completado con errores (revisa arriba).");
+      return 1;
+    }
+  }
+  const anyDevtoolsEnabled = opts.runtimes.some((id) =>
+    enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest).has(DEVTOOLS_MCP_SERVER));
+  const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) =>
+    ownedMcpServers(id, true).has(DEVTOOLS_MCP_SERVER));
+  if (anyDevtoolsEnabled && devtoolsManagedInvocation === undefined) {
+    const observed = isDevtoolsTargetDir ? devtoolsTargetDirObserved : devtoolsPersistedObserved;
+    try {
+      const receipt = loadVerifiedManagedBrowserReceipt(devtoolsStateDir, "chrome-devtools-mcp");
+      if (receipt === null || observed === undefined || observed === null
+        || receipt.version !== observed.version || receipt.integrity !== observed.integrity) {
+        throw new Error("falta un receipt DevTools activo que coincida con la versión e integridad observadas");
+      }
+      devtoolsManagedInvocation = planManagedBrowserInvocation(devtoolsStateDir, "chrome-devtools-mcp", [
+        "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+      ]);
+    } catch (error) {
+      p.log.error(`Chrome DevTools MCP: estado gestionado inválido (${error instanceof Error ? error.message : String(error)}). No se usará dlx.`);
+      return 1;
+    }
+  }
+  if (!anyDevtoolsEnabled && anyDevtoolsOwned && devtoolsPersistedObserved !== null) {
+    try {
+      const receipt = loadVerifiedManagedBrowserReceipt(devtoolsStateDir, "chrome-devtools-mcp");
+      if (receipt !== null) {
+        if (receipt.version !== devtoolsPersistedObserved.version
+          || receipt.integrity !== devtoolsPersistedObserved.integrity) {
+          throw new Error("el receipt DevTools no coincide con la observación owned");
+        }
+        devtoolsManagedInvocation = planManagedBrowserInvocation(devtoolsStateDir, "chrome-devtools-mcp", [
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+        ]);
+      }
+    } catch (error) {
+      p.log.error(`Chrome DevTools MCP: no se puede retirar una entrada managed sin validar ownership (${error instanceof Error ? error.message : String(error)}).`);
+      return 1;
+    }
+  }
   const toolPlan = opts.playwrightToolConsent === undefined
     ? null
     : resolvePlaywrightToolPlan({
@@ -470,7 +648,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     && loadPlaywrightCliPreference() === true;
   const playwrightCapability = opts.dryRun || !useManifest
     ? undefined
-    : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectPlaywrightCapability() : undefined);
+    : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectManagedPlaywrightCapability() : undefined);
   const effectivePlaywright = playwrightCapability?.effective;
   const plannedPlaywright = effectivePlaywright
     ?? (toolPlan !== null && toolPlan.actions.length > 0 ? false : undefined);
@@ -544,6 +722,25 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
     }
 
+    const enabledForRuntime = enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest);
+    const ownedForRuntime = ownedMcpServers(id, useManifest);
+    let devtoolsObservedForRuntime: ObservedVersion | undefined;
+    if (isDevtoolsTargetDir) {
+      if (enabledForRuntime.has(DEVTOOLS_MCP_SERVER)) {
+        devtoolsObservedForRuntime = devtoolsTargetDirObserved;
+      }
+    } else if (enabledForRuntime.has(DEVTOOLS_MCP_SERVER)) {
+      const explicitSelection = opts.devtoolsMcpSelection?.[id];
+      if (explicitSelection === true) {
+        devtoolsObservedForRuntime = isRealDevtoolsInstall
+          ? devtoolsVerifiedObserved
+          : (devtoolsPersistedObserved ?? undefined);
+      } else if (explicitSelection === undefined && useManifest && devtoolsPersistedObserved !== null) {
+        devtoolsObservedForRuntime = devtoolsPersistedObserved;
+      }
+    } else if (useManifest && ownedForRuntime.has(DEVTOOLS_MCP_SERVER) && devtoolsPersistedObserved !== null) {
+      devtoolsObservedForRuntime = devtoolsPersistedObserved;
+    }
     const ctx: InstallContext = {
       writingStyle,
       stackDir,
@@ -554,12 +751,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       models,
       warnings: [],
       upgradePermissions: opts.upgradePermissions === true,
-      enabledMcpServers: enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest),
+      enabledMcpServers: enabledForRuntime,
+      ...(devtoolsObservedForRuntime === undefined ? {} : { devtoolsMcpObservedVersion: devtoolsObservedForRuntime }),
+      ...((enabledForRuntime.has(DEVTOOLS_MCP_SERVER) || ownedForRuntime.has(DEVTOOLS_MCP_SERVER))
+        && devtoolsManagedInvocation !== undefined
+        ? { devtoolsMcpInvocation: devtoolsManagedInvocation } : {}),
       playwrightCliEnabled: projectPlaywrightPrompt
         ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
         : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true
           && (plannedPlaywright ?? true)),
-      ownedMcpServers: ownedMcpServers(id, useManifest),
+      ownedMcpServers: ownedForRuntime,
       ownedPrimaryModelFields: useManifest
         ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir)
         : new Set(),
@@ -568,7 +769,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const persistDevtoolsSelection = (): void => {
       const selection = opts.devtoolsMcpSelection?.[id];
       if (useManifest && selection !== undefined) {
-        saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), id, selection);
+        const observed = ctx.devtoolsMcpObservedVersion;
+        if (selection === true && observed !== undefined) {
+          saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), id, selection, observed);
+        } else {
+          saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), id, selection);
+        }
       }
     };
 
@@ -609,7 +815,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       opts?: { keepPendingOrphans?: string[] },
     ): Promise<void> => {
       if (!useManifest) return;
-      const unmergeTargets = new Set(adapter.planUnmerge(canonicalMcp, canonicalHooks, ctx).map((a) => path.resolve(a.target)));
+      const unmergeTargets = new Set(adapter.planUnmerge(canonicalMcpForUnmerge(canonicalMcp, ctx.devtoolsMcpObservedVersion), canonicalHooks, ctx).map((a) => path.resolve(a.target)));
       const keepTarget = (target: string): boolean => !unmergeTargets.has(target);
       const liveOwned = plan.map((a) => path.resolve(a.target)).filter(keepTarget);
       const previousOwned = (prevManifest?.owned ?? []).map((target) => path.resolve(target)).filter(keepTarget);
@@ -785,27 +991,67 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
   if (toolPlan?.actions.length) {
     if (opts.dryRun) {
-      p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
+      p.log.info("Playwright CLI: árbol gestionado y Chromium previstos (dry-run; no se ejecutan).");
     } else if (exitCode === 0) {
-      const baseDeps = opts.playwrightToolDeps ?? {
-        run: async (action: PlaywrightInstallAction, env?: NodeJS.ProcessEnv) => {
-          const pnpmBin = resolvePnpmBin();
-          return executePlaywrightToolAction(action, pnpmBin, env);
+      // T15 verified-provider: con opt-in explícito y comando real, resolver
+      // el candidato exacto del proveedor antes de cualquier árbol managed o
+      // escritura de preferencia. Composición compartida con stage aislado
+      // en os.tmpdir, sin mutar HOME/Engram antes de verificar; SRI,
+      // metadata y red fallan cerrado.
+      type PlaywrightCliCandidateWithArtifact = PlaywrightCliCandidate & { artifactPath: string };
+      let candidate: PlaywrightCliCandidateWithArtifact | undefined;
+      let setupAttempted = false;
+      let preparedEnv: NodeJS.ProcessEnv | undefined;
+      let verifiedCapability: VerifiedPlaywrightCapabilitySnapshot | undefined;
+      let managedReceipt: ManagedBrowserReceipt | undefined;
+      let previousManagedReceipt: ManagedBrowserReceipt | null | undefined;
+      const hasInjectedActivation = opts.playwrightToolDeps !== undefined;
+      const rollbackFailedActivation = async (): Promise<void> => {
+        if (hasInjectedActivation || managedReceipt === undefined || previousManagedReceipt === undefined) return;
+        try {
+          await rollbackManagedBrowserActivation(dataDir(), "@playwright/cli", managedReceipt, previousManagedReceipt);
+        } catch (error) {
+          p.log.error(`Playwright CLI: rollback del release gestionado incompleto (${error instanceof Error ? error.message : String(error)}). Revisa el receipt y el backup antes de reintentar.`);
+        }
+      };
+      const baseDeps: PlaywrightToolPlanDeps = opts.playwrightToolDeps ?? {
+        run: async (action) => {
+          if (managedReceipt === undefined) return { ok: false, reason: "action-failed" as const };
+          if (action === "install") return { ok: true };
+          const result = runVerifiedManagedPlaywright(dataDir(), ["install-browser", "chromium"], { timeoutMs: 600_000 });
+          return result.status === 0 && result.error === undefined
+            ? { ok: true }
+            : { ok: false, reason: "action-failed" as const };
         },
-        persistEnabled: (enabled: boolean) => {
+        persistEnabled: (enabled: boolean, observed?: ObservedVersion) => {
           const selected = opts.playwrightToolConsent?.runtimeSelection;
           const fileSelection = selected === undefined ? undefined
             : Object.fromEntries(Object.entries(selected).filter(([runtime]) => runtime !== "pi"));
-          savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection);
+          savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection, observed);
         },
-        setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
-      } satisfies PlaywrightToolPlanDeps;
-      let setupAttempted = false;
-      let preparedEnv: NodeJS.ProcessEnv | undefined;
-      const result = await runPlaywrightToolPlan(toolPlan, {
+        verify: (selected?: PlaywrightCliCandidate) => {
+          if (selected === undefined || managedReceipt === undefined
+            || managedReceipt.version !== selected.version || managedReceipt.integrity !== selected.integrity) return false;
+          const current = loadVerifiedManagedBrowserReceipt(dataDir(), "@playwright/cli");
+          if (current === null || current.rootPath !== managedReceipt.rootPath) return false;
+          const version = runVerifiedManagedPlaywright(dataDir(), ["--version"], { captureOutput: true, timeoutMs: 5_000 });
+          const reported = (version.stdout ?? "").trim().replace(/^playwright-cli\s+/i, "");
+          const browserCache = isPlaywrightBrowserReady();
+          if (version.error !== undefined || version.status !== 0 || reported !== selected.version
+            || browserCache.status !== "ready" || !verifyManagedPlaywrightBrowser(dataDir())) return false;
+          verifiedCapability = {
+            cli: { status: "current", binPath: current.launcherPath, detectedVersion: selected.version },
+            browserCache, browserVerified: true, effective: true,
+          };
+          return true;
+        },
+      };
+      const activateVerifiedArtifact = async (
+        runCandidate?: PlaywrightCliCandidate,
+      ): Promise<PlaywrightToolPlanResult> => runPlaywrightToolPlan(toolPlan, {
         ...baseDeps,
-        run: async (action) => {
-          const first = await baseDeps.run(action, preparedEnv);
+        run: async (action, _env?, candidateForRun?) => {
+          const first = await baseDeps.run(action, preparedEnv, candidateForRun);
           if (first === true || first === false || first.ok || first.reason !== "pnpm-global-bin") return first;
           if (setupAttempted || opts.dryRun || opts.targetDir !== undefined) return first;
           const consent = opts.playwrightToolConsent;
@@ -826,58 +1072,92 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           }
           preparedEnv = setup.env;
           p.log.info("pnpm preparado para esta instalación. Abre una terminal nueva al terminar para que otras herramientas y doctor reciban el PATH actualizado.");
-          return baseDeps.run(action, preparedEnv);
+          return baseDeps.run(action, preparedEnv, candidateForRun);
         },
-      });
-      if (!result.ok) {
-        const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
-        const reason = result.reason === "pnpm-global-bin"
-          ? `la configuración global de pnpm no está lista. ${pnpmRemedy}`
-          : pnpmRemedy ?? (result.failedAction === "install"
-          ? "no se pudo instalar el paquete global"
-          : result.failedAction === "install-browser"
-            ? "no se pudo descargar el navegador"
-            : "se instalaron los componentes, pero no se pudo guardar la preferencia");
-        p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
+      }, runCandidate);
+      let activationResult: PlaywrightToolPlanResult | undefined;
+      try {
+        await prepareVerifiedBrowserRelease("@playwright/cli", {
+          fetchImpl: fetch,
+          // The stage is a short-lived lease: activation runs before this
+          // helper returns and before its finally block removes the tarball.
+          withVerifiedArtifact: async (context) => {
+            const { release, artifactPath } = context;
+            candidate = { version: release.version, tarballUrl: release.tarballUrl, integrity: release.integrity, artifactPath };
+            if (!hasInjectedActivation) {
+              const pnpmBin = resolvePnpmBin();
+              if (pnpmBin === null) throw new Error("pnpm no disponible para preparar Playwright gestionado");
+              previousManagedReceipt = loadVerifiedManagedBrowserReceipt(dataDir(), "@playwright/cli");
+              managedReceipt = await activateVerifiedBrowserArtifact(context, {
+                stateDir: dataDir(), pnpmBin, fetchImpl: fetch,
+              });
+            }
+            activationResult = await activateVerifiedArtifact(candidate);
+          },
+        });
+        if (candidate === undefined || activationResult === undefined) {
+          throw new Error("no se ejecutó la activación del artefacto verificado");
+        }
+      } catch (error) {
+        await rollbackFailedActivation();
+        const detail = error instanceof Error ? error.message : String(error);
+        p.log.error(`Playwright CLI: no se pudo verificar o activar el paquete del proveedor (${detail}). Revisa el diagnóstico antes de reintentar; la nueva versión no se confirmó. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
         exitCode = 1;
-      } else {
-        let promptReconciliationFailed = false;
-        for (const { adapter, ctx } of successfulContexts) {
-          const browserCtx: InstallContext = { ...ctx,
-            playwrightCliEnabled: opts.playwrightToolConsent?.runtimeSelection?.[adapter.id] ?? true, warnings: [] };
-          try {
-            const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
-            if (browserChanges.length === 0) continue;
+      }
+      if (candidate !== undefined && activationResult !== undefined) {
+        const result = activationResult;
+        if (!result.ok) {
+          await rollbackFailedActivation();
+          const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
+          let reason: string;
+          if (result.reason === "pnpm-global-bin") reason = `la configuración global de pnpm no está lista. ${pnpmRemedy}`;
+          else if (result.failedAction === "verify") reason = "el CLI gestionado no coincide con el receipt verificado o Chromium no ha arrancado";
+          else reason = pnpmRemedy ?? (result.failedAction === "install"
+            ? "no se pudo preparar el paquete gestionado"
+            : result.failedAction === "install-browser"
+              ? "no se pudo descargar el navegador"
+              : "se instalaron los componentes, pero no se pudo guardar la preferencia");
+          p.log.error(`Playwright CLI: ${reason}; la nueva versión no se confirmó. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
+          exitCode = 1;
+        } else {
+          let promptReconciliationFailed = false;
+          for (const { adapter, ctx } of successfulContexts) {
+            const browserCtx: InstallContext = { ...ctx,
+              playwrightCliEnabled: opts.playwrightToolConsent?.runtimeSelection?.[adapter.id] ?? true, warnings: [] };
+            try {
+              const browserChanges = diffPlan(planSystemPrompt(adapter, browserCtx)).filter((change) => change.status !== "unchanged");
+              if (browserChanges.length === 0) continue;
 
-            const browserUpdates = browserChanges.filter((change) => change.status === "update");
-            const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
-            if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
-            applyChanges(browserChanges);
+              const browserUpdates = browserChanges.filter((change) => change.status === "update");
+              const backup = useManifest ? createBackup(browserUpdates.map((change) => change.action.target), `install-browser-${adapter.id}`) : null;
+              if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+              applyChanges(browserChanges);
 
-            const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
-              .filter((change) => change.status !== "unchanged");
-            if (dirty.length > 0) {
-              p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+              const dirty = diffPlan(planSystemPrompt(adapter, { ...browserCtx, warnings: [] }))
+                .filter((change) => change.status !== "unchanged");
+              if (dirty.length > 0) {
+                p.log.error(`${adapter.name}: verificación de la guía de navegador FALLÓ (${dirty.length} acciones inestables).`);
+                promptReconciliationFailed = true;
+              }
+            } catch (error) {
+              p.log.error(`${adapter.name}: no se pudo actualizar la guía de navegador (${error instanceof Error ? error.message : String(error)}).`);
+              exitCode = 1;
               promptReconciliationFailed = true;
             }
-          } catch (error) {
-            p.log.error(`${adapter.name}: no se pudo actualizar la guía de navegador (${error instanceof Error ? error.message : String(error)}).`);
+          }
+          if (promptReconciliationFailed) {
             exitCode = 1;
-            promptReconciliationFailed = true;
+            p.log.error("Playwright CLI y navegador se han instalado y la preferencia quedó activa, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
+          } else {
+            const verified = verifiedCapability ?? (preparedEnv === undefined
+              ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
+              : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version }));
+            if (hasInjectedActivation && verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
+              && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
+              opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
+            }
+            p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
           }
-        }
-        if (promptReconciliationFailed) {
-          exitCode = 1;
-          p.log.error("Playwright CLI y navegador se han instalado y la preferencia está activada, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
-        } else {
-          const verified = preparedEnv === undefined
-            ? inspectPlaywrightCapability({ browserVerified: true })
-            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv });
-          if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
-            && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
-            opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
-          }
-          p.log.success("Playwright CLI instalado y arranque de Chromium verificado.");
         }
       }
     }

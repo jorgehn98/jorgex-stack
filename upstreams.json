@@ -49,17 +49,17 @@
     },
     "chrome-devtools-mcp": {
       "source": "npm:chrome-devtools-mcp",
-      "version": "1.6.0",
-      "strategy": "exact",
-      "reviewed": "2026-09-17",
-      "note": "opt-in, default-off; flags --isolated --redact-network-headers --no-performance-crux --no-usage-statistics"
+      "version": null,
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-24",
+      "note": "Avanzado opt-in default-off con flags --isolated --redact-network-headers --no-performance-crux --no-usage-statistics; preferencia DevTools observada por máquina; provider-managed sin re-pin manual ni selector fijo futuro"
     },
     "playwright-cli": {
       "source": "npm:@playwright/cli",
-      "version": "0.1.18",
-      "strategy": "exact",
-      "reviewed": "2026-09-17",
-      "note": "CLI global compartido por la máquina; camino recomendado opt-in"
+      "version": null,
+      "strategy": "provider-managed",
+      "reviewed": "2026-09-24",
+      "note": "CLI global compartido por la máquina, camino recomendado opt-in con smoke de navegador; preferencia observada por máquina; provider-managed sin re-pin manual ni selector fijo futuro"
     }
   },
   "skills": {

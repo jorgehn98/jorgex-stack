@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isStableSemverVersion } from "./npm-provider.js";
 import { buildStagedPiCandidate } from "./pi-candidate.js";
 import {
   downloadVerifiedPiTarball,
@@ -66,7 +67,6 @@ export interface PiInstallPreflightResult {
   sourceAlias: string;
 }
 
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 
 function fail(message: string): never {
@@ -241,7 +241,7 @@ export async function preparePiManagedInstall(
     );
   }
 
-  if (!STABLE_SEMVER.test(release.version)) {
+  if (!isStableSemverVersion(release.version)) {
     fail(`provider returned an unstable version: ${release.version}`);
   }
 

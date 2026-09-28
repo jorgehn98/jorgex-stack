@@ -7,11 +7,18 @@ import {
   runPiProjectionLifecycleSystem,
 } from "./pi-projection-lifecycle.js";
 import { PI_RUNTIME_CANDIDATE, preparePiRuntimeSystem, runPiRuntimeSystem, type PiRuntimeInput } from "./pi-runtime.js";
-import { devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference } from "./tool-preferences.js";
+import { devtoolsMcpPreferenceFile, loadDevtoolsMcpObservation, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, playwrightCliPreferenceFile, savePlaywrightCliPreference, saveDevtoolsMcpPreference, type ObservedVersion } from "./tool-preferences.js";
+import { isValidObservedVersion } from "./npm-provider.js";
 import { resolvePnpmBin } from "./external-tools.js";
 import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
 import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
+import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./browser-provider.js";
+import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+import { requirePiBrowserHandoffSchemas } from "./pi-browser-contract.js";
+import { dataDir, stackRoot } from "./paths.js";
+import fs from "node:fs";
+import path from "node:path";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type PiProjectionOperation = Exclude<PiManagedOperation, "models" | "update">;
@@ -177,6 +184,7 @@ function managedPackageResult(
 /** Coordina el paquete Pi con la proyección compartida de Stack. */
 export async function runManagedPiSystem(input: PiRuntimeInput & {
   devtoolsMcpEnabled?: boolean;
+  devtoolsMcpObservedVersion?: ObservedVersion | null;
   writingStyle?: WritingStyleSnapshot;
   writingStyleMode?: InstallMode;
   playwrightCliEnabled?: boolean;
@@ -232,6 +240,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   }
   const {
     devtoolsMcpEnabled: explicitDevtools,
+    devtoolsMcpObservedVersion: injectedDevtoolsObserved,
     playwrightCliEnabled: explicitPlaywright,
     playwrightCapability,
     packageOnly,
@@ -263,6 +272,84 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const writingStyle = style && mode === "programmatic" ? { ...style, content: null } : style;
   const devtoolsMcpEnabled = explicitDevtools
     ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
+  const needsDevtoolsObservation = devtoolsMcpEnabled === true
+    && input.operation !== "uninstall"
+    && input.operation !== "models";
+  // T15 Pi-only verified provider: explicit true + real scope + deliberate
+  // install/update with no valid injected observation resolves the exact
+  // provider candidate via the shared helper BEFORE projection. targetDir
+  // never fetches nor reads global prefs (valid injected only); sync/doctor
+  // never fetch; no opt-in never fetches.
+  let devtoolsMcpObservedVersion: ObservedVersion | null = null;
+  let devtoolsVerifiedForPersist: ObservedVersion | undefined;
+  const devtoolsManagedStateDir = input.targetDir === undefined
+    ? dataDir()
+    : path.join(input.targetDir, "home", ".jorgex-stack");
+  if (needsDevtoolsObservation) {
+    if (input.targetDir !== undefined) {
+      devtoolsMcpObservedVersion = isValidObservedVersion(injectedDevtoolsObserved)
+        ? { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity }
+        : null;
+    } else if ((input.operation === "install" || input.operation === "update") && explicitDevtools === true) {
+      if (isValidObservedVersion(injectedDevtoolsObserved)) {
+        devtoolsMcpObservedVersion = { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity };
+        devtoolsVerifiedForPersist = devtoolsMcpObservedVersion;
+      } else {
+        let release: { version: string; integrity: string };
+        try {
+          const pnpmBin = resolvePnpmBin();
+          if (pnpmBin === null) throw new Error("pnpm no disponible para preparar el árbol gestionado de DevTools");
+          release = await prepareVerifiedBrowserRelease("chrome-devtools-mcp", {
+            fetchImpl: globalThis.fetch,
+            withVerifiedArtifact: async (context) => {
+              await activateVerifiedBrowserArtifact(context, {
+                stateDir: devtoolsManagedStateDir, pnpmBin, fetchImpl: globalThis.fetch,
+              });
+            },
+          });
+        } catch (error) {
+          return {
+            kind: "blocked",
+            reason: "devtools-verification-failed",
+            remedy: error instanceof Error ? error.message : String(error),
+          };
+        }
+        const observed = { version: release.version, integrity: release.integrity };
+        if (!isValidObservedVersion(observed)) {
+          return {
+            kind: "blocked",
+            reason: "devtools-verification-failed",
+            remedy: "Chrome DevTools MCP: versión observada inválida del proveedor; preferencia no marcada.",
+          };
+        }
+        devtoolsMcpObservedVersion = observed;
+        devtoolsVerifiedForPersist = observed;
+      }
+    } else {
+      devtoolsMcpObservedVersion = loadDevtoolsMcpObservation();
+    }
+  }
+  if (needsDevtoolsObservation) {
+    try {
+      if (input.targetDir !== undefined) {
+        const target = fs.lstatSync(input.targetDir);
+        const home = fs.lstatSync(path.join(input.targetDir, "home"));
+        if (!target.isDirectory() || target.isSymbolicLink() || !home.isDirectory() || home.isSymbolicLink()) {
+          throw new Error("HOME del target Pi no es un directorio real aislado");
+        }
+      }
+      const receipt = loadVerifiedManagedBrowserReceipt(devtoolsManagedStateDir, "chrome-devtools-mcp");
+      if (receipt === null || devtoolsMcpObservedVersion === null
+        || receipt.version !== devtoolsMcpObservedVersion.version
+        || receipt.integrity !== devtoolsMcpObservedVersion.integrity) {
+        throw new Error("falta un receipt DevTools activo coincidente con la versión e integridad observadas");
+      }
+    } catch (error) {
+      return { kind: "blocked", reason: "devtools-verification-failed",
+        remedy: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  const devtoolsMcpVersion = devtoolsMcpObservedVersion?.version ?? null;
   const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
   const persistedPlaywright = input.targetDir === undefined
     && loadPlaywrightCliPreference(undefined, "pi") === true;
@@ -272,9 +359,10 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const playwrightCliEnabled = input.targetDir === undefined && supportsPlaywright
     && selectedPlaywright
     && playwrightCapabilityEffective;
-  const playwrightCliCommand = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
-    ? playwrightCapability?.cli.binPath ?? null
-    : null;
+  const playwrightManagedStateDir = playwrightCliEnabled && input.operation !== "uninstall" && input.operation !== "models"
+    ? dataDir() : undefined;
+  const playwrightDispatcherPath = playwrightManagedStateDir === undefined
+    ? undefined : path.join(path.dirname(stackRoot()), "dist", "browser-playwright.js");
   let effectivePackageSource: string = PI_RUNTIME_CANDIDATE.package.source;
   const projectionInput = {
     writingStyle,
@@ -283,9 +371,14 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     engramBin: input.engramBin,
     playwrightCliEnabled,
     playwrightHandoffEnabled: playwrightCliEnabled,
-    playwrightCliCommand,
+    playwrightCliCommand: null,
+    playwrightCliVersion: null,
+    playwrightManagedStateDir,
+    playwrightDispatcherPath,
     devtoolsMcpEnabled,
-    pnpmBin: devtoolsMcpEnabled && input.operation !== "uninstall" ? resolvePnpmBin() : null,
+    devtoolsManagedStateDir: needsDevtoolsObservation ? devtoolsManagedStateDir : undefined,
+    pnpmBin: null,
+    devtoolsMcpVersion,
   };
   if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
   const result = await runManagedPiOperation(input.operation, {
@@ -342,6 +435,18 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       return managedPackageResult(raw);
     },
     runProjection(operation) {
+      if (playwrightCliEnabled || devtoolsMcpEnabled) {
+        const packageRoot = path.join(path.dirname(piSystemPromptFile(input.targetDir)), "npm", "node_modules", "jorgex-pi");
+        try {
+          requirePiBrowserHandoffSchemas(packageRoot, {
+            ...(playwrightCliEnabled ? { playwright: 2 } : {}),
+            ...(devtoolsMcpEnabled ? { devtools: 3 } : {}),
+          });
+        } catch (error) {
+          return Promise.resolve({ kind: "blocked" as const, reason: "browser-handoff-unsupported",
+            remedy: `${error instanceof Error ? error.message : String(error)}. Ejecuta install --agents pi con un paquete compatible antes de activar el navegador.` });
+        }
+      }
       const result = runPiProjectionLifecycleSystem({
         operation,
         ...projectionInput,
@@ -364,8 +469,12 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     },
   });
   if (input.targetDir === undefined && explicitDevtools !== undefined
-    && (input.operation === "install" || input.operation === "sync") && result.kind !== "blocked") {
-    saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", explicitDevtools);
+    && (input.operation === "install" || input.operation === "sync" || input.operation === "update") && result.kind !== "blocked") {
+    if (explicitDevtools === true && devtoolsVerifiedForPersist !== undefined) {
+      saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", true, devtoolsVerifiedForPersist);
+    } else {
+      saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", explicitDevtools);
+    }
   }
   if (input.targetDir === undefined && supportsPlaywright && explicitPlaywright !== undefined
     && (input.operation === "install" || input.operation === "sync") && result.kind !== "blocked") {

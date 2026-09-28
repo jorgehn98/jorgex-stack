@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isStableSemverVersion } from "./npm-provider.js";
 
 export interface VerifyCachedPiArtifactInput {
   receipt: unknown;
@@ -9,7 +10,6 @@ export interface VerifyCachedPiArtifactInput {
 }
 
 const PACKAGE_NAME = "jorgex-pi";
-const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX128 = /^[0-9a-f]{128}$/;
 const MAX_TARBALL_BYTES = 128 * 1024 * 1024;
@@ -94,7 +94,7 @@ export function verifyCachedPiArtifact(input: VerifyCachedPiArtifactInput): bool
     if (!isRecord(pkg)) return false;
     if (pkg["name"] !== PACKAGE_NAME) return false;
     const version = pkg["version"];
-    if (typeof version !== "string" || !STABLE_SEMVER.test(version)) return false;
+    if (!isStableSemverVersion(version)) return false;
     if (pkg["source"] !== `npm:${PACKAGE_NAME}@${version}`) return false;
     const tarball = candidate["tarball"];
     if (!isRecord(tarball)) return false;

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBackup, restoreBackup } from "../src/lib/backup.js";
 
 const tempRoots: string[] = [];
@@ -44,16 +44,19 @@ describe("[followup-1] restore count mismatch reports incomplete, preserves back
     } catch {
       // Windows: el bit de ejecución no aplica; el spawn fallará igual.
     }
-    await import("../src/adapters/codex.js");
-    const mod = await import("../src/lib/official-engram-setup.js");
-
     const originalHome = process.env.HOME;
     const originalUserProfile = process.env.USERPROFILE;
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
-      const { default: osMod } = await import("node:os");
-      void osMod;
+      vi.resetModules();
+      await import("../src/adapters/codex.js");
+      const mod = await import("../src/lib/official-engram-setup.js");
+      const pathsMod = await import("../src/lib/paths.js");
+      // Aislamiento: la raíz de backups efectiva debe vivir dentro del HOME del test.
+      const effectiveBackupRoot = path.join(pathsMod.dataDir(), "backups");
+      expect(path.resolve(effectiveBackupRoot).startsWith(path.resolve(home) + path.sep)).toBe(true);
       const result = await mod.runOfficialSetupIfNeeded("codex", {
         command: "install",
         dryRun: false,
@@ -73,10 +76,12 @@ describe("[followup-1] restore count mismatch reports incomplete, preserves back
         expect(incomplete).toBe(true);
       }
     } finally {
+      homedirSpy.mockRestore();
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
+      vi.resetModules();
     }
   });
 

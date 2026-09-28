@@ -11,6 +11,12 @@ const mocks = vi.hoisted(() => {
     browserVerified: true,
     effective: true,
   }));
+  const inspectManagedPlaywrightCapability = vi.fn(() => ({
+    cli: { status: "current", binPath: "/isolated/managed-launcher", detectedVersion: "0.1.18" },
+    browserCache: { status: "ready", path: "/isolated/browser" },
+    browserVerified: true,
+    effective: true,
+  }));
   const runInstall = vi.fn().mockResolvedValue(0);
   const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
@@ -45,6 +51,7 @@ const mocks = vi.hoisted(() => {
   return {
     prompts,
     inspectPlaywrightCapability,
+    inspectManagedPlaywrightCapability,
     runInteractiveUpdate,
     runInstall,
     runModelsPicker,
@@ -59,6 +66,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("../src/lib/playwright-capability.js", () => ({
   inspectPlaywrightCapability: mocks.inspectPlaywrightCapability,
+  inspectManagedPlaywrightCapability: mocks.inspectManagedPlaywrightCapability,
 }));
 
 vi.mock("@clack/prompts", () => ({
@@ -738,7 +746,7 @@ describe("opciones de navegador en main()", () => {
       expect(exitCode).toBe(1);
       expect(mocks.runInstall).not.toHaveBeenCalled();
       expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
-      expect(collectedMessages([error]).some((message) => /Pi.*playwright-handoff-v1|playwright-handoff-v1.*Pi/i.test(message))).toBe(true);
+      expect(collectedMessages([error]).some((message) => /Pi no declara el handoff Playwright requerido/i.test(message))).toBe(true);
     } finally {
       error.mockRestore();
     }
@@ -765,8 +773,9 @@ describe("CLI effective browser capability", () => {
         version: 2,
         enabled: { opencode: true },
       }) + "\n");
-      mocks.inspectPlaywrightCapability
-        .mockReturnValueOnce(beforeUpdate);
+      mocks.inspectManagedPlaywrightCapability
+        .mockReturnValueOnce(beforeUpdate)
+        .mockReturnValueOnce(afterUpdate);
       mocks.runInteractiveUpdate.mockResolvedValueOnce({
         exitCode: 0,
         appliedUpdates: true,
@@ -776,7 +785,7 @@ describe("CLI effective browser capability", () => {
 
       await runCli(["update", "--agents", "opencode", "--mode", "human"], homeDir, true);
 
-      expect(mocks.inspectPlaywrightCapability).toHaveBeenCalledTimes(1);
+      expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(2);
       expect(mocks.runInstall).toHaveBeenCalledTimes(2);
       expect(mocks.runInstall.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
         playwrightCapability: beforeUpdate,
@@ -847,20 +856,9 @@ describe("CLI effective browser capability", () => {
     }
   });
 
-  it("install Playwright de Pi reenvía la snapshot verificada y su ruta absoluta al lifecycle", async () => {
+  it("admite un nuevo Playwright Pi con selección explícita y capacidad publicada", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-install-playwright-pi-handoff-"));
     const homeDir = path.join(tmp, "home");
-    const capability = {
-      cli: {
-        status: "current" as const,
-        binPath: path.join(tmp, "pnpm-home", "playwright-cli"),
-        detectedVersion: "0.1.18",
-      },
-      browserCache: { status: "ready" as const, path: path.join(tmp, "browser-cache") },
-      browserVerified: true,
-      effective: true,
-    };
-
     try {
       mocks.detectPiRuntime.mockReturnValue({
         id: "pi",
@@ -870,33 +868,24 @@ describe("CLI effective browser capability", () => {
         version: "0.84.2",
         codingAgentDir: "/isolated/pi-agent",
       });
-      mocks.runInstall.mockImplementationOnce(async (options: {
-        onPlaywrightCapability?: (snapshot: typeof capability) => void;
-      }) => {
-        options.onPlaywrightCapability?.(capability);
-        return 0;
-      });
-
-      await runCli(["install", "--agents", "pi", "--playwright", "--yes"], homeDir);
-
-      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-        operation: "install",
-        playwrightCapability: capability,
+      expect(await runCli(["install", "--agents", "pi", "--playwright", "--yes"], homeDir)).toBe(0);
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        runtimes: [], playwrightToolConsent: expect.objectContaining({ runtimeSelection: { pi: true } }),
       }));
-      const piInput = mocks.runManagedPiSystem.mock.calls[0]?.[0] as { playwrightCapability?: typeof capability };
-      expect(piInput.playwrightCapability?.cli.binPath).toBe(capability.cli.binPath);
-      expect(path.isAbsolute(piInput.playwrightCapability?.cli.binPath ?? "")).toBe(true);
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "install", playwrightCliEnabled: true,
+      }));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
   it.each([
-    { args: ["sync", "--agents", "opencode,pi", "--mode", "human", "--yes"], probes: 1, pi: true },
-    { args: ["doctor", "--agents", "pi", "--dry-run"], probes: 0, pi: false },
-    { args: ["update", "--agents", "pi", "--dry-run"], probes: 0, pi: false },
-    { args: ["sync", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], probes: 0, pi: false },
-  ])("shares one probe or skips it for $args", async ({ args, probes, pi }) => {
+    { args: ["sync", "--agents", "opencode,pi", "--mode", "human", "--yes"], managedProbes: 2, legacyProbes: 0, pi: true },
+    { args: ["doctor", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
+    { args: ["update", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
+    { args: ["sync", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], managedProbes: 0, legacyProbes: 0, pi: false },
+  ])("uses managed Playwright probes for file runtimes and Pi in $args", async ({ args, managedProbes, legacyProbes, pi }) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-browser-capability-"));
     const homeDir = path.join(tmp, "home");
     try {
@@ -911,11 +900,14 @@ describe("CLI effective browser capability", () => {
       mocks.hasManagedPiRuntime.mockReturnValue(true);
       const actualArgs = args.at(-1) === "--target-dir" ? [...args, path.join(tmp, "target")] : args;
       await runCli(actualArgs, homeDir);
-      expect(mocks.inspectPlaywrightCapability).toHaveBeenCalledTimes(probes);
+      expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(managedProbes);
+      expect(mocks.inspectPlaywrightCapability).toHaveBeenCalledTimes(legacyProbes);
       if (pi) {
-        const snapshot = mocks.inspectPlaywrightCapability.mock.results[0]!.value;
-        expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ playwrightCapability: snapshot }));
-        expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ playwrightCapability: snapshot }));
+        const managed = mocks.inspectManagedPlaywrightCapability.mock.results[0]!.value;
+        expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ playwrightCapability: managed }));
+        expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+          playwrightCapability: expect.objectContaining({ cli: expect.objectContaining({ binPath: "/isolated/managed-launcher" }) }),
+        }));
       } else {
         expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
       }

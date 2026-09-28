@@ -1149,6 +1149,7 @@ describe("target inventory regressions", () => {
           operation: "install",
           devtoolsMcpEnabled: true,
           pnpmBin,
+          devtoolsMcpVersion: "9.9.20",
         })).toMatchObject({ kind: "installed" });
         expect(readRealPiProjectionOwned()).toMatchObject({
           kind: "valid",
@@ -1353,7 +1354,7 @@ describe("target inventory regressions", () => {
       ).resolves.toBe(0);
 
       expect(mocks.prompts.log.info).toHaveBeenCalledWith(
-        expect.stringMatching(/Playwright CLI: se retirar[ií]a solo el paquete global/i),
+        expect.stringMatching(/Playwright CLI: se desactivar[ií]a la preferencia.*paquetes globales.*conservan/i),
       );
       expect(fs.readFileSync(receiptFile, "utf8")).toBe("{not-json\n");
     });

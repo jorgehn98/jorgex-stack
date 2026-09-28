@@ -23,6 +23,14 @@ import {
 } from "../src/lib/tool-preferences.js";
 
 const PINNED_PACKAGE = "@playwright/cli@0.1.18";
+const HISTORICAL_VERSION = "0.1.18";
+const HISTORICAL_TARBALL = "https://registry.npmjs.org/@playwright/cli/-/cli-0.1.18.tgz";
+const HISTORICAL_INTEGRITY = `sha512-${Buffer.alloc(64, 9).toString("base64")}`;
+const HISTORICAL_CANDIDATE = {
+  version: HISTORICAL_VERSION,
+  tarballUrl: HISTORICAL_TARBALL,
+  integrity: HISTORICAL_INTEGRITY,
+};
 const WINDOWS_PLAYWRIGHT_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\playwright-cli.cmd";
 const WINDOWS_PNPM_BIN = "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.cmd";
 const tempDirs: string[] = [];
@@ -61,7 +69,7 @@ describe("Playwright CLI external tool core", () => {
     mocks.lookPath.mockReturnValue(process.execPath);
     mocks.execFileSync.mockReturnValue("0.1.18\n");
 
-    expect(detectPlaywrightCli().status).toBe("current");
+    expect(detectPlaywrightCli().status).toBe("outdated");
     expect(mocks.execFileSync).toHaveBeenCalledTimes(1);
     const [command, args, options] = mocks.execFileSync.mock.calls[0]!;
     expect(command).toBe(process.execPath);
@@ -76,11 +84,15 @@ describe("Playwright CLI external tool core", () => {
     expect(mocks.execFileSync.mock.calls[0]?.[2]).not.toHaveProperty("env");
   });
 
-  it("defines the approved package, binary, and release pin", () => {
+  it("defines the approved package and binary for the observed candidate", () => {
     expect(PLAYWRIGHT_CLI).toMatchObject({
       packageName: "@playwright/cli",
       bin: "playwright-cli",
+    });
+    expect(PLAYWRIGHT_CLI).not.toHaveProperty("version");
+    expect(HISTORICAL_CANDIDATE).toMatchObject({
       version: "0.1.18",
+      tarballUrl: "https://registry.npmjs.org/@playwright/cli/-/cli-0.1.18.tgz",
     });
   });
 
@@ -101,12 +113,12 @@ describe("Playwright CLI external tool core", () => {
       expected: { status: "broken", detectedVersion: null, binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
     {
-      name: "current only at the approved release",
+      name: "current only at the observed candidate",
       input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "playwright-cli 0.1.18\n" },
       expected: { status: "current", detectedVersion: "0.1.18", binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
     {
-      name: "current when the CLI reports the bare approved release",
+      name: "current when the CLI reports the bare observed candidate",
       input: { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "0.1.18" },
       expected: { status: "current", detectedVersion: "0.1.18", binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
@@ -116,7 +128,7 @@ describe("Playwright CLI external tool core", () => {
       expected: { status: "outdated", detectedVersion: "0.1.16", binPath: WINDOWS_PLAYWRIGHT_BIN },
     },
   ])("reports $name", ({ input, expected }) => {
-    expect(resolvePlaywrightCliState(input)).toMatchObject(expected);
+    expect(resolvePlaywrightCliState(input, HISTORICAL_VERSION)).toMatchObject(expected);
   });
 
   it.each([
@@ -124,8 +136,8 @@ describe("Playwright CLI external tool core", () => {
     ["update", ["add", "--global", PINNED_PACKAGE]],
     ["remove", ["remove", "--global", "@playwright/cli"]],
     ["install-browser", ["dlx", PINNED_PACKAGE, "install-browser", "chromium"]],
-  ] as const)("plans %s as direct pinned pnpm argv", (action, args) => {
-    expect(planPlaywrightCliCommand(action, WINDOWS_PNPM_BIN)).toEqual({
+  ] as const)("plans %s as direct observed-candidate pnpm argv", (action, args) => {
+    expect(planPlaywrightCliCommand(action, WINDOWS_PNPM_BIN, HISTORICAL_CANDIDATE)).toEqual({
       command: WINDOWS_PNPM_BIN,
       args,
     });
@@ -145,14 +157,16 @@ describe("Playwright CLI external tool core", () => {
     const pnpmBin = "C:\\tools\\pnpm.exe";
     const globalActions = ["install", "update", "remove"] as const;
 
-    const globalResults = globalActions.map((action) => executePlaywrightToolAction(action, pnpmBin));
+    const globalResults = globalActions.map((action) =>
+      executePlaywrightToolAction(action, pnpmBin, undefined, HISTORICAL_CANDIDATE),
+    );
 
     expect(globalResults).toEqual(globalActions.map(() => ({ ok: false, reason: "pnpm-global-bin" })));
     expect(preflightCalls).toEqual(globalActions.map(() => ["bin", "--global"]));
     expect(globalMutationCalls).toEqual([]);
   });
 
-  it("returns browser-launch when Chromium cannot launch after the pinned browser download", () => {
+  it("returns browser-launch when Chromium cannot launch after the observed-candidate browser download", () => {
     const globalRoot = tempDir();
     const packageDir = path.join(globalRoot, "@playwright", "cli");
     fs.mkdirSync(packageDir, { recursive: true });
@@ -172,7 +186,7 @@ describe("Playwright CLI external tool core", () => {
     });
 
     const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", PNPM_HOME: "/tmp/jx-pnpm", JX_TEST_ENV: "preserved" };
-    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm", env)).toEqual({
+    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm", env, HISTORICAL_CANDIDATE)).toEqual({
       ok: false,
       reason: "browser-launch",
     });
@@ -207,7 +221,7 @@ describe("Playwright CLI external tool core", () => {
     });
 
     const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", PNPM_HOME: "/tmp/jx-pnpm", JX_TEST_ENV: "preserved" };
-    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm", env)).toEqual({ ok: true });
+    expect(executePlaywrightToolAction("install-browser", "/usr/bin/pnpm", env, HISTORICAL_CANDIDATE)).toEqual({ ok: true });
 
     expect(downloadCwd).toBeDefined();
     expect(downloadCwd && fs.existsSync(downloadCwd)).toBe(false);
@@ -237,7 +251,7 @@ describe("Playwright CLI external tool core", () => {
       throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
     });
 
-    expect(verifyPlaywrightBrowser("/usr/bin/pnpm", { PATH: "/usr/bin:/bin" })).toBe(true);
+    expect(verifyPlaywrightBrowser("/usr/bin/pnpm", { PATH: "/usr/bin:/bin" }, undefined, "0.1.18")).toBe(true);
   });
 
   it.each(["", " \n", "\t\n"])(
@@ -255,7 +269,9 @@ describe("Playwright CLI external tool core", () => {
       });
 
       const globalActions = ["install", "update", "remove"] as const;
-      const results = globalActions.map((action) => executePlaywrightToolAction(action, "/usr/bin/pnpm"));
+      const results = globalActions.map((action) =>
+        executePlaywrightToolAction(action, "/usr/bin/pnpm", undefined, HISTORICAL_CANDIDATE),
+      );
 
       expect(results).toEqual(globalActions.map(() => ({ ok: false, reason: "pnpm-global-bin" })));
       expect(preflightCalls).toEqual(globalActions.map(() => ["bin", "--global"]));
@@ -270,7 +286,7 @@ describe("Playwright CLI external tool core", () => {
       return "/home/test/.local/share/pnpm\n";
     });
 
-    expect(executePlaywrightToolAction("install", "/usr/bin/pnpm")).toEqual({ ok: true });
+    expect(executePlaywrightToolAction("install", "/usr/bin/pnpm", undefined, HISTORICAL_CANDIDATE)).toEqual({ ok: true });
     expect(calls).toEqual([
       ["bin", "--global"],
       ["add", "--global", PINNED_PACKAGE],
@@ -286,7 +302,7 @@ describe("Playwright CLI external tool core", () => {
       PATH: `/isolated/pnpm/bin${path.delimiter}/isolated/pnpm`,
     };
 
-    expect(executePlaywrightToolAction("install", "/usr/bin/pnpm", childEnv)).toEqual({ ok: true });
+    expect(executePlaywrightToolAction("install", "/usr/bin/pnpm", childEnv, HISTORICAL_CANDIDATE)).toEqual({ ok: true });
     expect(mocks.execFileSync).toHaveBeenCalledTimes(2);
     for (const [, , options] of mocks.execFileSync.mock.calls) {
       expect(options).toEqual(expect.objectContaining({ env: childEnv }));
@@ -323,7 +339,7 @@ describe("Playwright CLI external tool core", () => {
       return "";
     });
 
-    expect(executePlaywrightToolAction("install", "C:\\tools\\pnpm.exe")).toEqual({
+    expect(executePlaywrightToolAction("install", "C:\\tools\\pnpm.exe", undefined, HISTORICAL_CANDIDATE)).toEqual({
       ok: false,
       reason: "pnpm-command",
     });
@@ -417,5 +433,112 @@ describe("Playwright CLI external tool core", () => {
 
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ version: 1, enabled });
     expect(loadPlaywrightCliPreference(file)).toBe(enabled);
+  });
+});
+
+describe("Playwright CLI verified candidate tracer [T14-RED]", () => {
+  const SYNTHETIC_VERSION = "9.9.10";
+  const SYNTHETIC_TARBALL = "https://registry.npmjs.org/@playwright/cli/-/cli-9.9.10.tgz";
+  const SYNTHETIC_INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
+  const SYNTHETIC_CANDIDATE = {
+    version: SYNTHETIC_VERSION,
+    tarballUrl: SYNTHETIC_TARBALL,
+    integrity: SYNTHETIC_INTEGRITY,
+  };
+
+  type Candidate = typeof SYNTHETIC_CANDIDATE;
+  type PlanWithCandidate = (
+    action: "install" | "update" | "remove" | "install-browser",
+    pnpmBin: string,
+    candidate?: Candidate,
+  ) => { command: string; args: string[] };
+  type ResolveWithObserved = (
+    input: { binPath: string | null; versionOutput: string | null },
+    observedVersion: string,
+  ) => { status: string; detectedVersion: string | null; binPath: string | null };
+  type VerifyWithExpected = (
+    pnpmBin: string,
+    env: NodeJS.ProcessEnv,
+    cwd: string | undefined,
+    expectedVersion: string,
+  ) => boolean;
+  type ExecuteWithCandidate = (
+    action: "install" | "update" | "remove" | "install-browser",
+    pnpmBin: string,
+    env?: NodeJS.ProcessEnv,
+    candidate?: Candidate,
+  ) => { ok: boolean; reason?: string };
+
+  const planWithCandidate = planPlaywrightCliCommand as unknown as PlanWithCandidate;
+  const resolveWithObserved = resolvePlaywrightCliState as unknown as ResolveWithObserved;
+  const verifyWithExpected = verifyPlaywrightBrowser as unknown as VerifyWithExpected;
+  const executeWithCandidate = executePlaywrightToolAction as unknown as ExecuteWithCandidate;
+
+  it("plans install with the explicit verified candidate, not the fixed pin", () => {
+    expect(planWithCandidate("install", WINDOWS_PNPM_BIN, SYNTHETIC_CANDIDATE)).toEqual({
+      command: WINDOWS_PNPM_BIN,
+      args: ["add", "--global", "@playwright/cli@9.9.10"],
+    });
+  });
+
+  it("plans install-browser with the explicit verified candidate, not the fixed pin", () => {
+    expect(planWithCandidate("install-browser", WINDOWS_PNPM_BIN, SYNTHETIC_CANDIDATE)).toEqual({
+      command: WINDOWS_PNPM_BIN,
+      args: ["dlx", "@playwright/cli@9.9.10", "install-browser", "chromium"],
+    });
+  });
+
+  it("resolves current only for the observed version; the old 0.1.18 is outdated", () => {
+    expect(
+      resolveWithObserved(
+        { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "playwright-cli 9.9.10\n" },
+        SYNTHETIC_VERSION,
+      ),
+    ).toMatchObject({ status: "current", detectedVersion: "9.9.10" });
+    expect(
+      resolveWithObserved(
+        { binPath: WINDOWS_PLAYWRIGHT_BIN, versionOutput: "playwright-cli 0.1.18\n" },
+        SYNTHETIC_VERSION,
+      ),
+    ).toMatchObject({ status: "outdated", detectedVersion: "0.1.18" });
+  });
+
+  it("verifies the browser when the global manifest and expected version are the observed release", () => {
+    const globalRoot = tempDir();
+    const packageDir = path.join(globalRoot, "@playwright", "cli");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "@playwright/cli", version: "9.9.10" }),
+    );
+    mocks.execFileSync.mockImplementation((command, args: string[]) => {
+      if (args[0] === "root" && args[1] === "--global") return `${globalRoot}\n`;
+      if (command === process.execPath && args[0] === "-e") return "";
+      throw new Error(`unexpected process: ${command} ${args.join(" ")}`);
+    });
+
+    expect(verifyWithExpected("/usr/bin/pnpm", { PATH: "/usr/bin:/bin" }, undefined, "9.9.10")).toBe(true);
+  });
+
+  it("fails mutating plans before any pnpm command when the verified candidate is missing", () => {
+    expect(() => (planWithCandidate as (...args: unknown[]) => unknown)("install", WINDOWS_PNPM_BIN)).toThrow();
+    expect(() => (planWithCandidate as (...args: unknown[]) => unknown)("install-browser", WINDOWS_PNPM_BIN)).toThrow();
+    expect(mocks.execFileSync).not.toHaveBeenCalled();
+  });
+
+  it("fails execute before any pnpm command when the verified candidate is missing", () => {
+    mocks.execFileSync.mockReturnValue("/home/test/.local/share/pnpm\n");
+
+    const result = executeWithCandidate("install", "/usr/bin/pnpm", undefined, undefined);
+
+    expect(result).toMatchObject({ ok: false });
+    expect(mocks.execFileSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps remove unversioned even with a verified candidate", () => {
+    expect(planWithCandidate("remove", WINDOWS_PNPM_BIN, SYNTHETIC_CANDIDATE)).toEqual({
+      command: WINDOWS_PNPM_BIN,
+      args: ["remove", "--global", "@playwright/cli"],
+    });
   });
 });

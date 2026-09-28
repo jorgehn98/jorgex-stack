@@ -3,21 +3,44 @@ import path from "node:path";
 import type { RuntimeId, SelectableRuntimeId } from "../adapters/types.js";
 import { writeText } from "./fsx.js";
 import { dataDir } from "./paths.js";
+import { isValidObservedVersion } from "./npm-provider.js";
 
 const PLAYWRIGHT_CLI_PREFERENCE_VERSION = 1;
 const DEVTOOLS_MCP_PREFERENCE_VERSION = 1;
 const PRIMARY_MODEL_OWNERSHIP_VERSION = 1;
 
 export type PlaywrightRuntimeSelection = Partial<Record<SelectableRuntimeId, boolean>>;
+export interface ObservedVersion {
+  version: string;
+  integrity: string;
+}
 type PlaywrightCliPreference =
-  | { version: 1; enabled: boolean }
-  | { version: 2; enabled: PlaywrightRuntimeSelection };
+  | { version: 1; enabled: boolean; observed?: ObservedVersion }
+  | { version: 2; enabled: PlaywrightRuntimeSelection; observed?: ObservedVersion };
 const PLAYWRIGHT_RUNTIMES: SelectableRuntimeId[] = ["opencode", "claude-code", "codex", "pi"];
 
 interface DevtoolsMcpPreference {
   version: typeof DEVTOOLS_MCP_PREFERENCE_VERSION;
   enabled: Partial<Record<SelectableRuntimeId, boolean>>;
   owned: Partial<Record<RuntimeId, Record<string, true>>>;
+  observed?: ObservedVersion;
+}
+
+function assertValidObservedVersion(value: unknown, label: string): asserts value is ObservedVersion {
+  if (!isValidObservedVersion(value)) {
+    throw new Error(`${label}: versión observada inválida (se requiere semver estable e integridad sha512 SRI canónica).`);
+  }
+}
+
+function normalizeObservedVersion(value: ObservedVersion): ObservedVersion {
+  return { version: value.version, integrity: value.integrity };
+}
+
+function parseObservedField(value: Record<string, unknown>): ObservedVersion | undefined | null {
+  if (value.observed === undefined) return undefined;
+  if (!isValidObservedVersion(value.observed)) return null;
+  const observed = value.observed as ObservedVersion;
+  return normalizeObservedVersion(observed);
 }
 
 interface PrimaryModelOwnership {
@@ -44,11 +67,21 @@ function parsePlaywrightCliPreference(raw: string): PlaywrightCliPreference | un
   try {
     const value: unknown = JSON.parse(raw);
     if (!isRecord(value)) return undefined;
-    if (value.version === 1 && typeof value.enabled === "boolean") return { version: 1, enabled: value.enabled };
+    const observedField = parseObservedField(value);
+    if (observedField === null) return undefined;
+    const observed = observedField === undefined ? undefined : observedField;
+    if (value.version === 1 && typeof value.enabled === "boolean") {
+      return observed === undefined
+        ? { version: 1, enabled: value.enabled }
+        : { version: 1, enabled: value.enabled, observed };
+    }
     if (value.version !== 2 || !isRecord(value.enabled)) return undefined;
     if (Object.entries(value.enabled).some(([runtime, enabled]) =>
       !PLAYWRIGHT_RUNTIMES.includes(runtime as SelectableRuntimeId) || typeof enabled !== "boolean")) return undefined;
-    return { version: 2, enabled: value.enabled as PlaywrightRuntimeSelection };
+    const enabled = value.enabled as PlaywrightRuntimeSelection;
+    return observed === undefined
+      ? { version: 2, enabled }
+      : { version: 2, enabled, observed };
   } catch {
     return undefined;
   }
@@ -81,22 +114,41 @@ export function savePlaywrightCliPreference(
   file: string,
   enabled: boolean,
   selection?: PlaywrightRuntimeSelection,
+  observed?: ObservedVersion,
 ): void {
+  if (observed !== undefined) assertValidObservedVersion(observed, "Playwright CLI");
   const error = playwrightCliPreferenceError(file);
   if (error !== null) throw new Error(error);
   const { raw } = readPreference(file);
   const previous = raw === null ? undefined : parsePlaywrightCliPreference(raw);
+  const nextObserved = observed !== undefined ? normalizeObservedVersion(observed) : previous?.observed;
   if (selection === undefined && previous?.version !== 2) {
-    writeText(file, JSON.stringify({ version: PLAYWRIGHT_CLI_PREFERENCE_VERSION, enabled }) + "\n");
+    const state = nextObserved === undefined
+      ? { version: PLAYWRIGHT_CLI_PREFERENCE_VERSION, enabled }
+      : { version: PLAYWRIGHT_CLI_PREFERENCE_VERSION, enabled, observed: nextObserved };
+    const content = JSON.stringify(state) + "\n";
+    if (parsePlaywrightCliPreference(content) === undefined) throw new Error("Playwright CLI: selección de runtimes inválida.");
+    writeText(file, content);
     return;
   }
   const inherited: PlaywrightRuntimeSelection = previous?.version === 2 ? previous.enabled
     : Object.fromEntries(PLAYWRIGHT_RUNTIMES.map((runtime) => [runtime, previous?.enabled === true]));
   const choices = { ...inherited, ...selection };
-  const state = { version: 2, enabled: enabled ? choices : Object.fromEntries(Object.keys(choices).map((runtime) => [runtime, false])) };
+  const state = nextObserved === undefined
+    ? { version: 2, enabled: enabled ? choices : Object.fromEntries(Object.keys(choices).map((runtime) => [runtime, false])) }
+    : { version: 2, enabled: enabled ? choices : Object.fromEntries(Object.keys(choices).map((runtime) => [runtime, false])), observed: nextObserved };
   const content = JSON.stringify(state) + "\n";
   if (parsePlaywrightCliPreference(content) === undefined) throw new Error("Playwright CLI: selección de runtimes inválida.");
   writeText(file, content);
+}
+
+/** Versión realmente observada; ausente o inválida nunca implica una versión. */
+export function loadPlaywrightCliObservation(file = playwrightCliPreferenceFile()): ObservedVersion | null {
+  const { raw } = readPreference(file);
+  if (raw === null) return null;
+  const state = parsePlaywrightCliPreference(raw);
+  if (state === undefined || state.observed === undefined) return null;
+  return { ...state.observed };
 }
 
 export function devtoolsMcpPreferenceFile(stateDir = dataDir()): string {
@@ -141,7 +193,10 @@ function parseDevtoolsMcpState(raw: string): DevtoolsMcpPreference | null {
       }
       if (Object.keys(managed).length > 0) owned[runtime] = managed;
     }
-    return { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled, owned };
+    const observedField = parseObservedField(value as unknown as Record<string, unknown>);
+    if (observedField === null) return null;
+    if (observedField === undefined) return { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled, owned };
+    return { version: DEVTOOLS_MCP_PREFERENCE_VERSION, enabled, owned, observed: observedField };
   } catch {
     return null;
   }
@@ -177,10 +232,21 @@ export function loadDevtoolsMcpPreference(file: string, runtime: SelectableRunti
 }
 
 /** Persiste una selección por runtime sin modificar las elecciones de los demás. */
-export function saveDevtoolsMcpPreference(file: string, runtime: SelectableRuntimeId, enabled: boolean): void {
+export function saveDevtoolsMcpPreference(file: string, runtime: SelectableRuntimeId, enabled: boolean, observed?: ObservedVersion): void {
+  if (observed !== undefined) assertValidObservedVersion(observed, "Chrome DevTools MCP");
   const state = loadDevtoolsMcpState(file);
   state.enabled[runtime] = enabled;
+  if (observed !== undefined) state.observed = normalizeObservedVersion(observed);
   saveDevtoolsMcpState(file, state);
+}
+
+/** Versión realmente observada; ausente o inválida nunca implica una versión. */
+export function loadDevtoolsMcpObservation(file = devtoolsMcpPreferenceFile()): ObservedVersion | null {
+  const { raw } = readPreference(file);
+  if (raw === null) return null;
+  const state = parseDevtoolsMcpState(raw);
+  if (state === null || state.observed === undefined) return null;
+  return { ...state.observed };
 }
 
 /** La marca solo autoriza retirar una entrada que el stack creó previamente. */

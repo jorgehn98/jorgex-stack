@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { stackRoot } from "../src/lib/paths.js";
+import { browserTreeSha256 } from "../src/lib/browser-stage.js";
+import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
 
 type ProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
 
@@ -63,8 +65,13 @@ type PiProjectionLifecycleInput = {
   playwrightCliEnabled: boolean;
   devtoolsMcpEnabled?: boolean;
   pnpmBin?: string | null;
+  devtoolsMcpVersion?: string | null;
+  devtoolsManagedStateDir?: string;
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
+  playwrightCliVersion?: string | null;
+  playwrightManagedStateDir?: string;
+  playwrightDispatcherPath?: string;
 };
 
 type PiProjectionLifecycle = {
@@ -127,6 +134,14 @@ const DEVTOOLS_ARGS = [
   "--no-usage-statistics",
 ] as const;
 
+// Synthetic test-only observed releases shared by every test in this file.
+// Fixtures, never future version selectors: exact versions travel with their
+// verified inputs (devtoolsMcpVersion / playwrightCliVersion). The raw 1.6.0
+// and 0.1.18 pins survive below only as negative historical controls proving
+// stale foreign handoffs are never adopted.
+const OBSERVED_DEVTOOLS_VERSION = "9.9.20";
+const OBSERVED_PLAYWRIGHT_VERSION = "9.9.10";
+
 function devtoolsHandoffContent(command: string): string {
   return `${JSON.stringify({
     schemaVersion: 1,
@@ -136,12 +151,39 @@ function devtoolsHandoffContent(command: string): string {
   }, null, 2)}\n`;
 }
 
+const OBSERVED_DEVTOOLS_ARGS = [
+  "dlx",
+  `chrome-devtools-mcp@${OBSERVED_DEVTOOLS_VERSION}`,
+  "--isolated",
+  "--redact-network-headers",
+  "--no-performance-crux",
+  "--no-usage-statistics",
+] as const;
+
+function observedDevtoolsHandoffContent(command: string): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    enabled: true,
+    command: path.resolve(command),
+    args: OBSERVED_DEVTOOLS_ARGS,
+  }, null, 2)}\n`;
+}
+
 function playwrightHandoffContent(command: string): string {
   return `${JSON.stringify({
     schemaVersion: 1,
     enabled: true,
     command: path.resolve(command),
     version: "0.1.18",
+  }, null, 2)}\n`;
+}
+
+function observedPlaywrightHandoffContent(command: string, version: string): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    enabled: true,
+    command: path.resolve(command),
+    version,
   }, null, 2)}\n`;
 }
 
@@ -291,6 +333,111 @@ function seedTarget(root: string, source: string, scope: ProjectionScope = {
 }
 
 describe("Pi shared projection lifecycle", () => {
+  it("writes Pi Playwright v2 only from a verified managed tree and dispatcher", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-playwright-v2-projection-"));
+    try {
+      const source = "npm:jorgex-pi@0.8.34";
+      const target = seedTarget(root, source);
+      fs.mkdirSync(target.home, { recursive: true });
+      const stateDir = path.join(target.home, ".jorgex-stack");
+      const stageDir = path.join(root, "stage");
+      const nodeModulesPath = path.join(stageDir, "node_modules");
+      const treePath = path.join(nodeModulesPath, "@playwright", "cli");
+      const entryPath = path.join(treePath, "entry.js");
+      const version = "9.9.10";
+      const integrity = `sha512-${Buffer.alloc(64, 11).toString("base64")}`;
+      fs.mkdirSync(treePath, { recursive: true });
+      fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "@playwright/cli", version }));
+      fs.writeFileSync(entryPath, "export {};\n");
+      await activateManagedBrowserTree({
+        stateDir, packageName: "@playwright/cli",
+        release: { version, integrity, tarballUrl: `https://registry.npmjs.org/@playwright/cli/-/cli-${version}.tgz` },
+        staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+          closure: [{ name: "@playwright/cli", version, integrity }] },
+        entryPath,
+      });
+      const dispatcher = path.join(root, "browser-playwright.js");
+      fs.writeFileSync(dispatcher, "#!/usr/bin/env node\nprocess.stdout.write('playwright-cli 9.9.10\\n');\n");
+      fs.chmodSync(dispatcher, 0o755);
+      const events: string[] = [];
+      const result = runPiProjectionLifecycle({
+        operation: "install", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: true,
+        playwrightHandoffEnabled: true, playwrightManagedStateDir: stateDir,
+        playwrightDispatcherPath: dispatcher,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(result.kind).toBe("installed");
+      const handoff = JSON.parse(fs.readFileSync(path.join(target.agentDir, "jorgex-pi", "playwright.v1.json"), "utf8")) as Record<string, unknown>;
+      expect(handoff.schemaVersion).toBe(2);
+      expect(handoff.command).toBe(dispatcher);
+      expect(handoff.commandSha256).toBe(createHash("sha256").update(fs.readFileSync(dispatcher)).digest("hex"));
+      expect(handoff.treeSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(events).toContain(`write:${path.join(target.agentDir, "jorgex-pi", "playwright.v1.json")}`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("writes the Pi v3 handoff from managed DevTools without requiring pnpm", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-trusted-devtools-"));
+    try {
+      const source = "npm:jorgex-pi@0.8.33";
+      const target = seedTarget(root, source);
+      fs.mkdirSync(target.home, { recursive: true });
+      const stateDir = path.join(target.home, ".jorgex-stack");
+      const stageDir = path.join(root, "stage");
+      const nodeModulesPath = path.join(stageDir, "node_modules");
+      const treePath = path.join(nodeModulesPath, "chrome-devtools-mcp");
+      const entryPath = path.join(treePath, "entry.js");
+      const version = "9.9.20";
+      const integrity = `sha512-${Buffer.alloc(64, 14).toString("base64")}`;
+      fs.mkdirSync(treePath, { recursive: true });
+      fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "chrome-devtools-mcp", version }));
+      fs.writeFileSync(entryPath, "export {};\n");
+      await activateManagedBrowserTree({
+        stateDir,
+        packageName: "chrome-devtools-mcp",
+        release: { version, integrity, tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${version}.tgz` },
+        staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+          closure: [{ name: "chrome-devtools-mcp", version, integrity }] },
+        entryPath,
+      });
+      const events: string[] = [];
+      const result = runPiProjectionLifecycle({
+        operation: "install", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true, devtoolsManagedStateDir: stateDir,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(result.kind).toBe("installed");
+      const handoff = JSON.parse(fs.readFileSync(path.join(target.agentDir, "jorgex-pi", "devtools.v1.json"), "utf8")) as Record<string, unknown>;
+      expect(handoff.schemaVersion).toBe(3);
+      expect(handoff.command).toBe(process.execPath);
+      expect(handoff.args).toEqual([handoff.launcherPath, "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"]);
+      expect(events).toContain(`write:${path.join(target.agentDir, "jorgex-pi", "devtools.v1.json")}`);
+      events.length = 0;
+      const escaped = runPiProjectionLifecycle({
+        operation: "sync", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true, devtoolsManagedStateDir: path.join(root, "foreign-state"),
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(escaped).toMatchObject({ kind: "blocked", reason: "projection-devtools-command" });
+      expect(events).toEqual([]);
+
+      const externalHome = path.join(root, "moved-home");
+      fs.renameSync(target.home, externalHome);
+      fs.symlinkSync(externalHome, target.home, "dir");
+      const linked = runPiProjectionLifecycle({
+        operation: "sync", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true, devtoolsManagedStateDir: stateDir,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(linked).toMatchObject({ kind: "blocked", reason: "projection-devtools-command" });
+      expect(events).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes the owned Pi DevTools handoff, browser policy, and receipt digest idempotently", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-enable-"));
@@ -310,13 +457,14 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       };
       const deps = temporaryDeps(root, events, { runtimes: {} });
       const installed = runPiProjectionLifecycle({ ...input, operation: "install" }, deps);
       expect(installed.kind).toBe("installed");
 
       const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
-      const handoffContent = devtoolsHandoffContent(pnpmBin);
+      const handoffContent = observedDevtoolsHandoffContent(pnpmBin);
       expect(fs.readFileSync(handoff, "utf8")).toBe(handoffContent);
       expect(fs.readFileSync(target.agentDir + "/AGENTS.md", "utf8")).toContain("Chrome DevTools MCP");
 
@@ -353,13 +501,14 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       };
       const deps = temporaryDeps(root, events, { runtimes: {} });
       const installed = runPiProjectionLifecycle({ ...input, operation: "install" }, deps);
       expect(installed.kind).toBe("installed");
 
       const handoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
-      const handoffContent = playwrightHandoffContent(playwrightBin);
+      const handoffContent = observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION);
       expect(fs.readFileSync(handoff, "utf8")).toBe(handoffContent);
 
       const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
@@ -376,7 +525,7 @@ describe("Pi shared projection lifecycle", () => {
     }
   });
 
-  it("blocks an identical pre-existing Playwright handoff because it is foreign", async () => {
+  it("blocks a stale pinned Playwright handoff because it is foreign", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-playwright-foreign-"));
     const source = "npm:jorgex-pi@0.4.0";
@@ -388,6 +537,7 @@ describe("Pi shared projection lifecycle", () => {
       fs.writeFileSync(playwrightBin, "#!/bin/sh\n");
       const handoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
       const foreignContent = playwrightHandoffContent(playwrightBin);
+      expect(foreignContent).toContain('"version": "0.1.18"');
       fs.mkdirSync(path.dirname(handoff), { recursive: true });
       fs.writeFileSync(handoff, foreignContent);
       const prompt = path.join(target.agentDir, "AGENTS.md");
@@ -404,6 +554,7 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       }, temporaryDeps(root, events, { runtimes: {} }));
 
       expect(result).toMatchObject({
@@ -440,11 +591,12 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
       const actualHandoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
-      const changedContent = `${playwrightHandoffContent(playwrightBin)}\nuser change\n`;
+      const changedContent = `${observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION)}\nuser change\n`;
       fs.writeFileSync(actualHandoff, changedContent);
       const receiptBefore = fs.readFileSync(target.projectionReceipt, "utf8");
       events.length = 0;
@@ -481,11 +633,12 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
       const handoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
-      const disabledInput = { ...input, playwrightHandoffEnabled: false, playwrightCliCommand: null };
+      const disabledInput = { ...input, playwrightHandoffEnabled: false, playwrightCliCommand: null, playwrightCliVersion: null };
       events.length = 0;
       expect(runPiProjectionLifecycle({ ...disabledInput, operation: "sync" }, deps)).toEqual({
         kind: "synced",
@@ -533,13 +686,18 @@ describe("Pi shared projection lifecycle", () => {
       const legacyReceipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
       expect(legacyReceipt.playwright).toBeUndefined();
 
-      const enabledInput = { ...legacyInput, playwrightHandoffEnabled: true, playwrightCliCommand: playwrightBin };
+      const enabledInput = {
+        ...legacyInput,
+        playwrightHandoffEnabled: true,
+        playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
+      };
       expect(runPiProjectionLifecycle({ ...enabledInput, operation: "sync" }, deps)).toMatchObject({
         kind: "synced",
         changed: true,
       });
       const handoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
-      const handoffContent = playwrightHandoffContent(playwrightBin);
+      const handoffContent = observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION);
       expect(fs.readFileSync(handoff, "utf8")).toBe(handoffContent);
       expect(JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8"))).toMatchObject({
         schemaVersion: 1,
@@ -573,18 +731,20 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: true,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
       const devtools = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
       const playwright = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
-      expect(fs.existsSync(devtools)).toBe(true);
-      expect(fs.readFileSync(playwright, "utf8")).toBe(playwrightHandoffContent(playwrightBin));
+      expect(fs.readFileSync(devtools, "utf8")).toBe(observedDevtoolsHandoffContent(pnpmBin));
+      expect(fs.readFileSync(playwright, "utf8")).toBe(observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION));
       const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
       expect(receipt.devtools).toEqual({ sha256: createHash("sha256").update(fs.readFileSync(devtools, "utf8")).digest("hex") });
-      expect(receipt.playwright).toEqual({ sha256: createHash("sha256").update(playwrightHandoffContent(playwrightBin)).digest("hex") });
+      expect(receipt.playwright).toEqual({ sha256: createHash("sha256").update(observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION)).digest("hex") });
       expect(receipt.owned.indexOf(path.resolve(devtools))).toBeLessThan(receipt.owned.indexOf(path.resolve(playwright)));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -602,7 +762,7 @@ describe("Pi shared projection lifecycle", () => {
       const playwrightBin = path.join(root, "bin", "playwright-cli");
       fs.mkdirSync(path.dirname(playwrightBin), { recursive: true });
       fs.writeFileSync(playwrightBin, "#!/bin/sh\n");
-      const handoffContent = playwrightHandoffContent(playwrightBin);
+      const handoffContent = observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION);
       const events: string[] = [];
       const baseDeps = temporaryDeps(root, events, { runtimes: {} });
       let handoffReads = 0;
@@ -631,6 +791,7 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       }, deps);
 
       expect(result).toMatchObject({
@@ -669,6 +830,7 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         playwrightHandoffEnabled: true,
         playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
@@ -680,7 +842,7 @@ describe("Pi shared projection lifecycle", () => {
       const plan = preparedPlan(preparePiProjectionUninstall({ ...input, operation: "uninstall" }, deps));
       expect(mutationEvents(events)).toEqual([]);
 
-      const changedContent = `${playwrightHandoffContent(playwrightBin)}\nuser change\n`;
+      const changedContent = `${observedPlaywrightHandoffContent(playwrightBin, OBSERVED_PLAYWRIGHT_VERSION)}\nuser change\n`;
       fs.writeFileSync(handoff, changedContent);
       events.length = 0;
       expect(completePiProjectionUninstall(plan, deps)).toMatchObject({
@@ -696,7 +858,7 @@ describe("Pi shared projection lifecycle", () => {
     }
   });
 
-  it("blocks an identical pre-existing DevTools handoff because it is foreign", async () => {
+  it("blocks a stale pinned DevTools handoff because it is foreign", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-foreign-"));
     const source = "npm:jorgex-pi@0.4.0";
@@ -709,6 +871,7 @@ describe("Pi shared projection lifecycle", () => {
       fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
       fs.mkdirSync(path.dirname(handoff), { recursive: true });
       const foreignContent = devtoolsHandoffContent(pnpmBin);
+      expect(foreignContent).toContain("chrome-devtools-mcp@1.6.0");
       fs.writeFileSync(handoff, foreignContent);
       const prompt = path.join(target.agentDir, "AGENTS.md");
       const promptBefore = fs.readFileSync(prompt, "utf8");
@@ -724,6 +887,7 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       }, temporaryDeps(root, events, { runtimes: {} }));
 
       expect(result).toMatchObject({
@@ -800,12 +964,13 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
       const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
       const prompt = path.join(target.agentDir, "AGENTS.md");
-      const disabledInput = { ...input, devtoolsMcpEnabled: false, pnpmBin: null };
+      const disabledInput = { ...input, devtoolsMcpEnabled: false, pnpmBin: null, devtoolsMcpVersion: null };
       events.length = 0;
       expect(runPiProjectionLifecycle({ ...disabledInput, operation: "sync" }, deps)).toEqual({
         kind: "synced",
@@ -849,11 +1014,12 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
       const actualHandoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
-      const changedContent = `${devtoolsHandoffContent(pnpmBin)}\nuser change\n`;
+      const changedContent = `${observedDevtoolsHandoffContent(pnpmBin)}\nuser change\n`;
       fs.writeFileSync(actualHandoff, changedContent);
       const receiptBefore = fs.readFileSync(target.projectionReceipt, "utf8");
       events.length = 0;
@@ -882,7 +1048,7 @@ describe("Pi shared projection lifecycle", () => {
       const pnpmBin = path.join(root, "bin", "pnpm");
       fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
       fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
-      const handoffContent = devtoolsHandoffContent(pnpmBin);
+      const handoffContent = observedDevtoolsHandoffContent(pnpmBin);
       const events: string[] = [];
       const baseDeps = temporaryDeps(root, events, { runtimes: {} });
       let handoffReads = 0;
@@ -911,6 +1077,7 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       }, deps);
 
       expect(result).toMatchObject({
@@ -950,6 +1117,7 @@ describe("Pi shared projection lifecycle", () => {
         playwrightCliEnabled: false,
         devtoolsMcpEnabled: true,
         pnpmBin,
+        devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       };
       expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
 
@@ -1662,7 +1830,9 @@ describe("retired Playwright skill migration", () => {
       scope: target.scope, packageSource: source, stackDir: canon,
       engramBin: path.join(root, "engram"), playwrightCliEnabled: handoffs,
       devtoolsMcpEnabled: handoffs, pnpmBin: path.join(root, "pnpm"),
+      devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
       playwrightHandoffEnabled: handoffs, playwrightCliCommand: path.join(root, "playwright-cli"),
+      playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
     };
     expect(run({ ...input, operation: "install" }, deps).kind).toBe("installed");
     const retired = legacyFiles.map((relative) => path.join(target.home, ".agents", "skills", "playwright-cli", relative));
@@ -1734,5 +1904,206 @@ describe("retired Playwright skill migration", () => {
       expect(fs.readFileSync(f.foreign, "utf8")).toBe("foreign content\n");
       expect(f.run({ ...f.input, operation: "sync" }, f.deps)).toEqual({ kind: "synced", changed: true });
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Pi Playwright observed-version handoff [T14-RED]", () => {
+  const OBSERVED_VERSION = OBSERVED_PLAYWRIGHT_VERSION;
+
+  it("writes the observed handoff version and receipt digest idempotently", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-playwright-observed-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const playwrightBin = path.join(root, "bin", "playwright-cli");
+      fs.mkdirSync(path.dirname(playwrightBin), { recursive: true });
+      fs.writeFileSync(playwrightBin, "#!/bin/sh\n");
+      const input = {
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: true,
+        playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: OBSERVED_VERSION,
+      };
+      const deps = temporaryDeps(root, events, { runtimes: {} });
+      expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+      const handoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
+      const handoffContent = observedPlaywrightHandoffContent(playwrightBin, OBSERVED_VERSION);
+      expect(fs.readFileSync(handoff, "utf8")).toBe(handoffContent);
+      const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
+      expect(receipt.playwright).toEqual({
+        sha256: createHash("sha256").update(handoffContent).digest("hex"),
+      });
+
+      events.length = 0;
+      expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
+      expect(events).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "missing", version: null },
+    { name: "prerelease", version: "9.9.10-beta.1" },
+  ] as const)("blocks a $name Playwright handoff version before any write", async ({ version }) => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-playwright-version-guard-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const playwrightBin = path.join(root, "bin", "playwright-cli");
+      fs.mkdirSync(path.dirname(playwrightBin), { recursive: true });
+      fs.writeFileSync(playwrightBin, "#!/bin/sh\n");
+      const handoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
+
+      const result = runPiProjectionLifecycle({
+        operation: "install",
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+        playwrightHandoffEnabled: true,
+        playwrightCliCommand: playwrightBin,
+        playwrightCliVersion: version,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+
+      expect(result.kind).toBe("blocked");
+      expect(events).toEqual([]);
+      expect(fs.existsSync(handoff)).toBe(false);
+      expect(fs.existsSync(target.projectionReceipt)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Pi DevTools observed-version handoff [T14-RED]", () => {
+  const OBSERVED_VERSION = OBSERVED_DEVTOOLS_VERSION;
+
+  it("writes the observed DevTools handoff args and receipt digest idempotently", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-observed-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const pnpmBin = path.join(root, "bin", "pnpm");
+      fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
+      fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
+      const input = {
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true,
+        pnpmBin,
+        devtoolsMcpVersion: OBSERVED_VERSION,
+      };
+      const deps = temporaryDeps(root, events, { runtimes: {} });
+      expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+      const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+      const handoffContent = observedDevtoolsHandoffContent(pnpmBin);
+      expect(fs.readFileSync(handoff, "utf8")).toBe(handoffContent);
+      expect(JSON.parse(handoffContent).args).toEqual([...OBSERVED_DEVTOOLS_ARGS]);
+      const receipt = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as ProjectionReceipt;
+      expect(receipt.devtools).toEqual({
+        sha256: createHash("sha256").update(handoffContent).digest("hex"),
+      });
+
+      events.length = 0;
+      expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
+      expect(events).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "missing", version: null },
+    { name: "prerelease", version: "9.9.20-beta.1" },
+  ] as const)("blocks a $name DevTools handoff version before any write", async ({ version }) => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-version-guard-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const pnpmBin = path.join(root, "bin", "pnpm");
+      fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
+      fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
+      const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+
+      const result = runPiProjectionLifecycle({
+        operation: "install",
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true,
+        pnpmBin,
+        devtoolsMcpVersion: version,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+
+      expect(result.kind).toBe("blocked");
+      expect(events).toEqual([]);
+      expect(fs.existsSync(handoff)).toBe(false);
+      expect(fs.existsSync(target.projectionReceipt)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a stale pinned DevTools handoff instead of overwriting it with the observed version", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-devtools-stale-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const pnpmBin = path.join(root, "bin", "pnpm");
+      fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
+      fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
+      const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+      const staleContent = devtoolsHandoffContent(pnpmBin);
+      expect(staleContent).toContain("chrome-devtools-mcp@1.6.0");
+      fs.mkdirSync(path.dirname(handoff), { recursive: true });
+      fs.writeFileSync(handoff, staleContent);
+      const events: string[] = [];
+
+      const result = runPiProjectionLifecycle({
+        operation: "install",
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+        devtoolsMcpEnabled: true,
+        pnpmBin,
+        devtoolsMcpVersion: OBSERVED_VERSION,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+
+      expect(result.kind).toBe("blocked");
+      expect(events).toEqual([]);
+      expect(fs.readFileSync(handoff, "utf8")).toBe(staleContent);
+      expect(fs.existsSync(target.projectionReceipt)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

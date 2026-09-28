@@ -412,7 +412,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
   it("routes the real job conservatively across pull-request and manual events", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
-    expect(jobs).toHaveLength(1);
+    expect(jobs).toHaveLength(2);
 
     const [job] = jobs;
     expect(job).toBeDefined();
@@ -456,6 +456,19 @@ describe("JorgeX Pi artifact pull-request gate", () => {
       const commonStep = (job?.steps ?? []).find(matches);
       expect(commonStep, "Falta un paso común del gate.").toBeDefined();
       expect(commonStep?.if, "Los pasos comunes no deben rutearse por draft.").toBeUndefined();
+    }
+
+    const windows = jobs[1];
+    expect(windows?.name).toBe("Browser Windows");
+    expect(windows?.if).toBeUndefined();
+    expect(workflow).toMatch(/^  browser-windows:\n    name: Browser Windows\n    runs-on: windows-latest/m);
+    expect((windows?.steps ?? []).map((step) => step.run).filter(Boolean)).toEqual([
+      "pnpm install --frozen-lockfile",
+      "pnpm exec vitest run tests/browser-managed-windows.test.ts tests/playwright-windows-execution.test.ts",
+      'pnpm exec vitest run tests/browser-provider-resolution.test.ts -t "through the real pnpm stage"',
+    ]);
+    for (const step of windows?.steps ?? []) {
+      if (step.uses !== undefined) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
     }
   });
 
