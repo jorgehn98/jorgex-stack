@@ -480,13 +480,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       .join(", ");
     p.log.info(`${adapter.name}: capabilities diagnostic (${capabilitySummary}); no certifica enforcement local.`);
 
-    const ctx = makeContext(adapter, detection.configDir, modePreference, true, effectivePlaywright);
-    if (!ctx) continue;
-    ctx.writingStyle = writingStyle;
-
     let pending: number;
     let stalePermissions = false;
     try {
+      const ctx = makeContext(adapter, detection.configDir, modePreference, true, effectivePlaywright);
+      if (!ctx) continue;
+      ctx.writingStyle = writingStyle;
       const plan = buildPlan(adapter, ctx);
       pending = diffPlan(plan).filter((d) => d.status !== "unchanged").length;
       stalePermissions = ctx.warnings.some((warning) => warning.includes(STALE_PERMISSIONS_MARKER));
