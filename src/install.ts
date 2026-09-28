@@ -45,7 +45,7 @@ import {
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
-import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } from "./lib/browser-managed.js";
+import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation, rollbackManagedBrowserActivation } from "./lib/browser-managed.js";
 import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
 import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./lib/browser-command.js";
 import {
@@ -991,10 +991,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
   if (toolPlan?.actions.length) {
     if (opts.dryRun) {
-      p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
+      p.log.info("Playwright CLI: árbol gestionado y Chromium previstos (dry-run; no se ejecutan).");
     } else if (exitCode === 0) {
       // T15 verified-provider: con opt-in explícito y comando real, resolver
-      // el candidato exacto del proveedor antes de cualquier pnpm global o
+      // el candidato exacto del proveedor antes de cualquier árbol managed o
       // escritura de preferencia. Composición compartida con stage aislado
       // en os.tmpdir, sin mutar HOME/Engram antes de verificar; SRI,
       // metadata y red fallan cerrado.
@@ -1004,7 +1004,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       let preparedEnv: NodeJS.ProcessEnv | undefined;
       let verifiedCapability: VerifiedPlaywrightCapabilitySnapshot | undefined;
       let managedReceipt: ManagedBrowserReceipt | undefined;
+      let previousManagedReceipt: ManagedBrowserReceipt | null | undefined;
       const hasInjectedActivation = opts.playwrightToolDeps !== undefined;
+      const rollbackFailedActivation = async (): Promise<void> => {
+        if (hasInjectedActivation || managedReceipt === undefined || previousManagedReceipt === undefined) return;
+        try {
+          await rollbackManagedBrowserActivation(dataDir(), "@playwright/cli", managedReceipt, previousManagedReceipt);
+        } catch (error) {
+          p.log.error(`Playwright CLI: rollback del release gestionado incompleto (${error instanceof Error ? error.message : String(error)}). Revisa el receipt y el backup antes de reintentar.`);
+        }
+      };
       const baseDeps: PlaywrightToolPlanDeps = opts.playwrightToolDeps ?? {
         run: async (action) => {
           if (managedReceipt === undefined) return { ok: false, reason: "action-failed" as const };
@@ -1078,6 +1087,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             if (!hasInjectedActivation) {
               const pnpmBin = resolvePnpmBin();
               if (pnpmBin === null) throw new Error("pnpm no disponible para preparar Playwright gestionado");
+              previousManagedReceipt = loadVerifiedManagedBrowserReceipt(dataDir(), "@playwright/cli");
               managedReceipt = await activateVerifiedBrowserArtifact(context, {
                 stateDir: dataDir(), pnpmBin, fetchImpl: fetch,
               });
@@ -1089,23 +1099,25 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           throw new Error("no se ejecutó la activación del artefacto verificado");
         }
       } catch (error) {
+        await rollbackFailedActivation();
         const detail = error instanceof Error ? error.message : String(error);
-        p.log.error(`Playwright CLI: no se pudo verificar o activar el paquete del proveedor (${detail}). Revisa tu conexión y la metadata oficial antes de reintentar; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
+        p.log.error(`Playwright CLI: no se pudo verificar o activar el paquete del proveedor (${detail}). Revisa el diagnóstico antes de reintentar; la nueva versión no se confirmó. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
         exitCode = 1;
       }
       if (candidate !== undefined && activationResult !== undefined) {
         const result = activationResult;
         if (!result.ok) {
+          await rollbackFailedActivation();
           const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
           let reason: string;
           if (result.reason === "pnpm-global-bin") reason = `la configuración global de pnpm no está lista. ${pnpmRemedy}`;
           else if (result.failedAction === "verify") reason = "el CLI gestionado no coincide con el receipt verificado o Chromium no ha arrancado";
           else reason = pnpmRemedy ?? (result.failedAction === "install"
-            ? "no se pudo instalar el paquete global"
+            ? "no se pudo preparar el paquete gestionado"
             : result.failedAction === "install-browser"
               ? "no se pudo descargar el navegador"
               : "se instalaron los componentes, pero no se pudo guardar la preferencia");
-          p.log.error(`Playwright CLI: ${reason}; la preferencia no se ha marcado como habilitada. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
+          p.log.error(`Playwright CLI: ${reason}; la nueva versión no se confirmó. Ejecuta 'jorgex-stack install --playwright' para reintentar.`);
           exitCode = 1;
         } else {
           let promptReconciliationFailed = false;

@@ -700,6 +700,56 @@ describe("Playwright verified-provider install [T14-RED]", () => {
     }
   });
 
+  it("restores the prior managed release when Chromium installation fails after promotion", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-update-rollback-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const previous = { version: "9.9.9", integrity: OBSERVED_INTEGRITY, rootPath: path.join(root, "previous") };
+    const activated = { version: OBSERVED_VERSION, integrity: OBSERVED_INTEGRITY, rootPath: path.join(root, "activated") };
+    const rollback = vi.fn(async () => undefined);
+    let promoted = false;
+    try {
+      await withTempHome(homeDir, async () => {
+        vi.doMock("../src/lib/browser-provider.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/browser-provider.js")>("../src/lib/browser-provider.js")),
+          activateVerifiedBrowserArtifact: async () => { promoted = true; return activated; },
+        }));
+        vi.doMock("../src/lib/browser-managed.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/browser-managed.js")>("../src/lib/browser-managed.js")),
+          loadVerifiedManagedBrowserReceipt: () => promoted ? activated : previous,
+          rollbackManagedBrowserActivation: rollback,
+        }));
+        vi.doMock("../src/lib/browser-command.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/browser-command.js")>("../src/lib/browser-command.js")),
+          runVerifiedManagedPlaywright: () => ({ status: 1, error: undefined }),
+        }));
+        vi.doMock("../src/lib/external-tools.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/external-tools.js")>("../src/lib/external-tools.js")),
+          resolvePnpmBin: () => "/isolated/bin/pnpm",
+        }));
+        const install = await import("../src/install.js");
+        stubProviderFetch([], OBSERVED_BYTES);
+        try {
+          await expect(install.runInstall({
+            runtimes: [], dryRun: false, yes: true,
+            playwrightToolConsent: {
+              command: "install", interactive: false, yes: true, targetDir: false,
+              explicitToolSelection: true, confirmed: false,
+            },
+          })).resolves.toBe(1);
+          expect(rollback).toHaveBeenCalledWith(path.join(homeDir, ".jorgex-stack"), "@playwright/cli", activated, previous);
+          expect(fs.existsSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"))).toBe(false);
+        } finally { vi.unstubAllGlobals(); }
+      });
+    } finally {
+      vi.doUnmock("../src/lib/browser-provider.js");
+      vi.doUnmock("../src/lib/browser-managed.js");
+      vi.doUnmock("../src/lib/browser-command.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   function explicitConsent(overrides: Partial<PlaywrightToolConsent> = {}): PlaywrightToolConsent {
     return {
       command: "install",

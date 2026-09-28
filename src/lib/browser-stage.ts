@@ -468,8 +468,14 @@ async function runDefaultPnpm(
     maxBuffer: 2 * 1024 * 1024,
     shell: false,
   });
-  if (result.error !== undefined) fail(`pnpm failed: ${result.error.message}`);
-  if (result.status !== 0) fail(`pnpm exited with status ${String(result.status)}`);
+  if (result.error !== undefined) {
+    fail(`pnpm failed (${(result.error as NodeJS.ErrnoException).code ?? "UNKNOWN"})`);
+  }
+  if (result.status !== 0) {
+    const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+    const codes = [...new Set(output.match(/\b(?:ERR_PNPM_[A-Z0-9_]+|EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ENOSPC|CERT_[A-Z0-9_]+|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN)\b/g) ?? [])].slice(0, 3);
+    fail(`pnpm exited with status ${String(result.status)}${codes.length > 0 ? ` (${codes.join(", ")})` : ""}`);
+  }
 }
 
 function assertStageTreeFilesystem(stageDir: string, realStage: string): void {

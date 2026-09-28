@@ -295,6 +295,41 @@ function assertStrictReceipt(receipt: ManagedBrowserReceipt, fixture: Fixture): 
 }
 
 describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activation", () => {
+  it("runs DevTools only through the external guard with fixed flags and untampered bytes", async () => {
+    const root = sandbox();
+    const stageDir = path.join(root, "stage");
+    const stateDir = path.join(root, "state");
+    const nodeModulesPath = path.join(stageDir, "node_modules");
+    const treePath = path.join(nodeModulesPath, "chrome-devtools-mcp");
+    const entryPath = path.join(treePath, "index.js");
+    const marker = path.join(root, "devtools.marker");
+    const version = "9.9.10";
+    const integrity = `sha512-${Buffer.alloc(64, 17).toString("base64")}`;
+    const flags = ["--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"];
+    fs.mkdirSync(treePath, { recursive: true });
+    fs.mkdirSync(stateDir);
+    fs.writeFileSync(path.join(treePath, "package.json"), `${JSON.stringify({ name: "chrome-devtools-mcp", version })}\n`);
+    fs.writeFileSync(entryPath, `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(marker)}, "ran\\n");\n`);
+    const receipt = await activateManagedBrowserTree({
+      stateDir, packageName: "chrome-devtools-mcp",
+      release: { version, integrity, tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${version}.tgz` },
+      staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+        closure: [{ name: "chrome-devtools-mcp", version, integrity }] },
+      entryPath,
+    });
+    const planner = await loadManagedBrowserInvocationPlanner();
+    expect(() => planner(stateDir, "chrome-devtools-mcp", ["--isolated"])).toThrow(/flags|privacy/i);
+    const plan = planner(stateDir, "chrome-devtools-mcp", flags);
+    const run = () => spawnSync(plan.command, plan.args, { encoding: "utf8", timeout: 30_000 });
+    expect(run().status).toBe(0);
+    expect(fs.readFileSync(marker, "utf8")).toBe("ran\n");
+    fs.unlinkSync(marker);
+    fs.appendFileSync(receipt.entryPath, "// tampered after planning\n");
+    const tampered = run();
+    expect(tampered.status).not.toBe(0);
+    expect(`${tampered.stdout ?? ""}${tampered.stderr ?? ""}`).toMatch(/digest|drift/i);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
   it("runs the Playwright user command through the external guard only while opted in", async () => {
     const fixture = writeFixture();
     const marker = path.join(fixture.root, "playwright-command.marker");
@@ -597,6 +632,56 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     expect(fs.readFileSync(pointerBefore.path)).toEqual(pointerBefore.raw);
     expect(fs.readFileSync(receiptPath)).toEqual(receiptBefore);
     expect(releaseRoots(first)).toEqual(releasesBefore);
+  });
+
+  it("restores the previous release when a newly linked active pointer fails readback", async () => {
+    const fixture = writeFixture();
+    const first = await activateManagedBrowserTree(fixture.input);
+    const before = assertActivePointer(first, fixture);
+    const candidate = nextCandidate(fixture.input);
+    const originalLink = fs.linkSync;
+    let injected = false;
+    vi.spyOn(fs, "linkSync").mockImplementation((source, destination) => {
+      originalLink(source, destination);
+      if (!injected && String(destination) === before.path && String(source).includes(".active-")) {
+        injected = true;
+        fs.writeFileSync(destination, "corrupt new pointer\n");
+      }
+    });
+
+    await expect(activateManagedBrowserTree(candidate)).rejects.toThrow(/pointer.*readback|rollback/i);
+    expect(injected).toBe(true);
+    expect(fs.readFileSync(before.path)).toEqual(before.raw);
+    expect(loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)?.rootPath).toBe(first.rootPath);
+    expect(fs.existsSync(first.launcherPath)).toBe(true);
+  });
+
+  it("restores the prior active release after a later browser smoke fails", async () => {
+    const fixture = writeFixture();
+    const previous = await activateManagedBrowserTree(fixture.input);
+    const before = assertActivePointer(previous, fixture);
+    const candidate = await activateManagedBrowserTree(nextCandidate(fixture.input));
+    const moduleNamespace = await import("../src/lib/browser-managed.js") as Record<string, unknown>;
+    const rollback = moduleNamespace.rollbackManagedBrowserActivation as
+      | ((stateDir: string, packageName: typeof PACKAGE_NAME, current: ManagedBrowserReceipt,
+        previous: ManagedBrowserReceipt | null) => Promise<void>) | undefined;
+    expect(rollback).toBeTypeOf("function");
+    await rollback!(fixture.stateDir, PACKAGE_NAME, candidate, previous);
+    expect(fs.readFileSync(before.path)).toEqual(before.raw);
+    expect(loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)?.rootPath).toBe(previous.rootPath);
+  });
+
+  it("removes a fresh active release after a later browser smoke fails", async () => {
+    const fixture = writeFixture();
+    const candidate = await activateManagedBrowserTree(fixture.input);
+    const moduleNamespace = await import("../src/lib/browser-managed.js") as Record<string, unknown>;
+    const rollback = moduleNamespace.rollbackManagedBrowserActivation as
+      | ((stateDir: string, packageName: typeof PACKAGE_NAME, current: ManagedBrowserReceipt,
+        previous: ManagedBrowserReceipt | null) => Promise<void>) | undefined;
+    expect(rollback).toBeTypeOf("function");
+    await rollback!(fixture.stateDir, PACKAGE_NAME, candidate, null);
+    expect(loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)).toBeNull();
+    await expect(activateManagedBrowserTree(fixture.input)).resolves.toMatchObject({ version: VERSION });
   });
 
   it("blocks an existing foreign active pointer without overwriting it", async () => {

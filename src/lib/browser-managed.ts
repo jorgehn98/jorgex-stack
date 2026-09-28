@@ -990,7 +990,19 @@ function writeActivePointerAtomic(
 
     const publishedRaw = readBoundedRegularFile(pointerPath, "active browser pointer", 64 * 1024);
     if (!publishedRaw.equals(Buffer.from(content))) {
-      throw new Error(`active browser pointer readback differs; backup retained at ${backupDirectory}`);
+      try {
+        if (!sameFileIdentity(lstatOrFail(pointerPath, "active browser pointer"), temporaryIdentity)) {
+          throw new Error("active browser pointer was replaced by a foreign inode");
+        }
+        fs.unlinkSync(pointerPath);
+        linkNoClobber(retiredPointerPath, pointerPath, "active browser pointer restore");
+        if (!readBoundedRegularFile(pointerPath, "active browser pointer", 64 * 1024).equals(previous.pointerRaw)) {
+          throw new Error("active browser pointer restore readback differs");
+        }
+      } catch (restoreError) {
+        throw new Error(`${restoreError instanceof Error ? restoreError.message : String(restoreError)}; active pointer rollback incomplete; backup retained at ${backupDirectory}`);
+      }
+      throw new Error("active browser pointer readback differs; previous pointer restored");
     }
     removeOwnedFile(temporaryPath, temporaryIdentity);
   } finally {
@@ -1107,9 +1119,69 @@ export async function activateManagedBrowserTree(
     );
     return verifiedReceipt;
   } catch (error) {
-    removeOwnedDirectory(publishedRoot, publishedIdentity);
+    let safeToRemovePublished = true;
+    try {
+      const active = readValidatedActiveBrowser(packageDirectory, prepared.packageName);
+      safeToRemovePublished = active?.receipt.rootPath !== publishedRoot;
+    } catch {
+      safeToRemovePublished = false;
+    }
+    if (safeToRemovePublished) removeOwnedDirectory(publishedRoot, publishedIdentity);
     removeOwnedDirectory(pendingRoot, pendingIdentity);
     throw error;
+  } finally {
+    releaseLock();
+  }
+}
+
+/** Restore the prior active release if a later browser smoke or preference write fails. */
+export async function rollbackManagedBrowserActivation(
+  stateDir: string,
+  packageName: ManagedBrowserPackageName,
+  activated: ManagedBrowserReceipt,
+  previous: ManagedBrowserReceipt | null,
+): Promise<void> {
+  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+    fail("unsupported managed browser package");
+  }
+  const realStateDir = assertRealDirectory(stateDir, "stateDir");
+  const packageDirectory = assertRealDirectory(
+    path.join(realStateDir, MANAGED_ROOT, packageDirectoryName(packageName)),
+    "managed browser package root",
+  );
+  const releaseLock = await acquireLock(path.join(packageDirectory, LOCK_FILE));
+  try {
+    const active = readValidatedActiveBrowser(packageDirectory, packageName);
+    if (active === null || JSON.stringify(active.receipt) !== JSON.stringify(activated)) {
+      fail("active browser release changed before rollback");
+    }
+    if (previous?.rootPath === activated.rootPath) return;
+    const activatedIdentity = fileIdentity(lstatOrFail(activated.rootPath, "activated browser release"));
+    if (previous === null) {
+      const currentRaw = readBoundedRegularFile(active.pointerPath, "active browser pointer", 64 * 1024);
+      if (!currentRaw.equals(active.pointerRaw)
+        || !sameFileIdentity(lstatOrFail(active.pointerPath, "active browser pointer"), active.pointerIdentity)) {
+        fail("active browser pointer changed before rollback");
+      }
+      fs.unlinkSync(active.pointerPath);
+    } else {
+      if (path.dirname(previous.rootPath) !== packageDirectory) fail("previous browser release escapes managed root");
+      const priorRaw = readBoundedRegularFile(path.join(previous.rootPath, RECEIPT_FILE), "previous managed receipt", 4 * 1024 * 1024);
+      const prior = validateReceiptObject(parseJsonObject(priorRaw, "previous managed receipt"), packageDirectory, packageName, previous.rootPath);
+      if (JSON.stringify(prior) !== JSON.stringify(previous)) fail("previous browser release drifted before rollback");
+      writeActivePointerAtomic(packageDirectory, {
+        schemaVersion: 1,
+        packageName,
+        rootPath: previous.rootPath,
+        receiptSha256: createHash("sha256").update(priorRaw).digest("hex"),
+      }, active);
+    }
+    const restored = readValidatedActiveBrowser(packageDirectory, packageName);
+    if (restored?.receipt.rootPath !== previous?.rootPath) {
+      fail("active browser rollback readback differs");
+    }
+    removeOwnedDirectory(activated.rootPath, activatedIdentity);
+    if (fs.existsSync(activated.rootPath)) fail(`browser rollback restored pointer but candidate cleanup failed: ${activated.rootPath}`);
   } finally {
     releaseLock();
   }

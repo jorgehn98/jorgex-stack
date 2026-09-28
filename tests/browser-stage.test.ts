@@ -320,6 +320,28 @@ function expectIsolatedPnpmCall(
 }
 
 describe("[T25-RED] browser stage certifies official transitive closure", () => {
+  it("reports a bounded pnpm error code without leaking command output", async () => {
+    const { stageVerifiedBrowserTree } = await loadBrowserStage();
+    const fixture = buildFixture();
+    const pnpmBin = path.join(fixture.root, "failing-pnpm");
+    fs.writeFileSync(pnpmBin, "#!/bin/sh\nprintf 'ERR_PNPM_FETCH_404 secret-marker https://private.example/token' >&2\nexit 1\n");
+    fs.chmodSync(pnpmBin, 0o755);
+    let message = "";
+    try {
+      await stageVerifiedBrowserTree({
+        artifactPath: fixture.artifactPath,
+        packageName: PACKAGE_NAME,
+        release: fixture.release,
+        stageDir: fixture.stageDir,
+        pnpmBin,
+        fetchImpl: metadataFetch([], []),
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/ERR_PNPM_FETCH_404/);
+    expect(message).not.toMatch(/secret-marker|private\.example/);
+  });
   it("returns root and transitive official SRI evidence from the isolated stage", async () => {
     const { stageVerifiedBrowserTree } = await loadBrowserStage();
     const fixture = buildFixture();
