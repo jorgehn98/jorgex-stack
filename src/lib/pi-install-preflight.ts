@@ -153,12 +153,6 @@ function validateDeps(deps: unknown): PiInstallPreflightDeps {
 }
 
 /**
- * Detect the Pi host version from the executable's own installed manifest
- * without invoking it and without touching any active tree. Fail closed when
- * the manifest cannot be found: hostVersion is evidence for the candidate
- * builder, never a static fallback.
- */
-/**
  * T06 provider-to-private-stage preflight (NO activation).
  *
  * Composes the already-tested Stack Pi provider chain in order:

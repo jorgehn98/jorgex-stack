@@ -55,13 +55,15 @@ function managedHost() {
 describe.skipIf(process.platform === "win32")("managed Pi host preflight", () => {
   it("passes the managed host version to the candidate builder without running Pi", async () => {
     const paths = managedHost();
+    const run = vi.fn();
     const { preparePiManagedInstall } = await import("../src/lib/pi-install-preflight.js");
     await preparePiManagedInstall(paths, {
       fetchImpl: vi.fn() as unknown as typeof fetch,
-      run: vi.fn(),
+      run,
     });
     expect(buildCandidate).toHaveBeenCalledOnce();
     expect(buildCandidate).toHaveBeenCalledWith(expect.objectContaining({ hostVersion: "0.87.1" }));
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("blocks invalid managed metadata before candidate construction", async () => {
