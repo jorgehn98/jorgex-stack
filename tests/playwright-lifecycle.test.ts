@@ -697,10 +697,14 @@ describe("Playwright verified-provider install [T14-RED]", () => {
       "run install",
       "run install-browser",
     ]);
-    expect(runCalls).toEqual([
-      { action: "install", env: undefined, candidate: OBSERVED_CANDIDATE },
-      { action: "install-browser", env: undefined, candidate: OBSERVED_CANDIDATE },
+    expect(runCalls).toMatchObject([
+      { action: "install", candidate: OBSERVED_CANDIDATE },
+      { action: "install-browser", candidate: OBSERVED_CANDIDATE },
     ]);
+    const artifactPaths = runCalls.map(({ candidate }) => (candidate as { artifactPath: string }).artifactPath);
+    expect(artifactPaths[0]).toBe(artifactPaths[1]);
+    expect(path.isAbsolute(artifactPaths[0]!)).toBe(true);
+    expect(artifactPaths[0]).toMatch(/\.tgz$/);
     expect(persistCalls).toEqual([
       { enabled: true, observed: { version: OBSERVED_VERSION, integrity: OBSERVED_INTEGRITY } },
     ]);
