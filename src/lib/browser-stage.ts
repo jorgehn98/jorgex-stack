@@ -581,8 +581,14 @@ function collectHoistedPackages(stageDir: string, realStage: string): Set<string
     try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
     catch { fail(`cannot enumerate hoisted package directory: ${directory}`); }
     for (const entry of entries) {
-      if ([".pnpm", ".bin", ".modules.yaml", ".pnpm-workspace-state-v1.json"].includes(entry.name)) continue;
       const fullPath = path.join(directory, entry.name);
+      if (entry.name === ".pnpm") {
+        if (directory !== nodeModules || !entry.isDirectory() || entry.isSymbolicLink()) fail("unexpected hoisted virtual store");
+        const virtualEntries = fs.readdirSync(fullPath);
+        if (virtualEntries.some((name) => name !== "lock.yaml")) fail("hoisted virtual store contains unverified packages");
+        continue;
+      }
+      if ([".bin", ".modules.yaml", ".pnpm-workspace-state-v1.json"].includes(entry.name)) continue;
       if (entry.name.startsWith("@") && entry.isDirectory()) {
         let scoped: fs.Dirent[];
         try { scoped = fs.readdirSync(fullPath, { withFileTypes: true }); }

@@ -1134,7 +1134,7 @@ export async function activateManagedBrowserTree(
   }
 }
 
-/** Restore the prior active release if a later browser smoke or preference write fails. */
+/** Recover owned browser state after a failure beyond pointer publication. */
 export async function rollbackManagedBrowserActivation(
   stateDir: string,
   packageName: ManagedBrowserPackageName,
