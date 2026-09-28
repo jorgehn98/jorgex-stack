@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
-import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, isCanonicalMcpServerEnabled, loadCanonicalDefaults, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
@@ -58,6 +58,14 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], v
     && Array.isArray(current.command)
     && current.command.length === expectedCommand.length
     && current.command.every((arg, index) => arg === expectedCommand[index]);
+}
+
+function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][string], value: unknown, ctx: InstallContext): boolean {
+  if (isManagedOptionalStdioServer(server, value)) return true;
+  if (name !== DEVTOOLS_MCP_SERVER) return false;
+  const template = loadCanonicalMcp(ctx.stackDir).servers[DEVTOOLS_MCP_SERVER];
+  return template !== undefined
+    && isManagedOptionalStdioServer(materializeCanonicalDevtoolsServerForRemoval(template), value);
 }
 
 const PRIMARY_MODEL = "openai/gpt-5.6-sol";
@@ -420,16 +428,14 @@ export const opencodeAdapter: Adapter = {
         }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
-            if (isManagedOptionalStdioServer(server, existing)) delete mcp[name];
+            if (isOwnedDevtoolsServer(name, server, existing, ctx)) delete mcp[name];
             mcpOwnership.push({ server: name, owned: false });
           }
           continue;
         }
         if (server.optional && existing !== undefined) {
-          if (!owned || !isManagedOptionalStdioServer(server, existing)) {
-            if (owned) mcpOwnership.push({ server: name, owned: false });
-            ctx.warnings.push(`OpenCode: MCP opcional '${name}' ya pertenece a la configuración del usuario; se conserva.`);
-            continue;
+          if (!owned || !isOwnedDevtoolsServer(name, server, existing, ctx)) {
+            throw new Error(`OpenCode: ${name}: conflicto con servidor MCP existente ajeno o modificado; se conserva. Retira esa entrada explícitamente antes de activar DevTools gestionado.`);
           }
         }
         if (server.transport === "stdio") {
@@ -583,7 +589,7 @@ export const opencodeAdapter: Adapter = {
               continue;
             }
             if (ctx.ownedMcpServers?.has(name) === true) {
-              if (isManagedOptionalStdioServer(server, mcpBlock[name])) delete mcpBlock[name];
+              if (isOwnedDevtoolsServer(name, server, mcpBlock[name], ctx)) delete mcpBlock[name];
               mcpOwnership.push({ server: name, owned: false });
             }
           }

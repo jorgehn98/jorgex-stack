@@ -584,6 +584,8 @@ describe("browser preference safety", () => {
 
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
+        const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
+        writeRuntimeManifest("opencode", { configDir, owned: [], updatedAt: "legacy" });
         const { runUninstall } = await import("../src/uninstall.js");
         await assertPreferencesSandboxed(homeDir);
         const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
@@ -628,6 +630,8 @@ describe("browser preference safety", () => {
 
       await withTempHome(homeDir, async () => {
         const install = await import("../src/install.js");
+        const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
+        writeRuntimeManifest("opencode", { configDir, owned: [], updatedAt: "legacy" });
         const { runUninstall } = await import("../src/uninstall.js");
         const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
         try {

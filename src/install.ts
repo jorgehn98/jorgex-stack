@@ -7,7 +7,7 @@ import type { Adapter, FileAction, InstallContext, InstallModePreference, Runtim
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
-import { HOME, dataDir, stackRoot } from "./lib/paths.js";
+import { HOME, dataDir, samePath, stackRoot } from "./lib/paths.js";
 import { detectEngram, engramVersion } from "./lib/detect.js";
 import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
@@ -252,10 +252,16 @@ function enabledMcpServers(
   return devtoolsEnabled ? new Set([DEVTOOLS_MCP_SERVER]) : new Set();
 }
 
-function ownedMcpServers(runtime: RuntimeId, useBrowserPreferences = true): ReadonlySet<string> {
+function ownedMcpServers(runtime: RuntimeId, configDir: string, useBrowserPreferences = true): ReadonlySet<string> {
   if (!useBrowserPreferences) return new Set();
   const file = devtoolsMcpPreferenceFile();
-  return new Set([DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server)));
+  const marked = [DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server));
+  if (marked.length === 0) return new Set();
+  const recordedDir = readManifest().runtimes[runtime]?.configDir;
+  if (typeof recordedDir !== "string" || !samePath(recordedDir, configDir)) {
+    throw new Error(`${runtime}: MCP ownership configDir no coincide con el perfil actual; se conserva la configuración. Vuelve al perfil anterior o revisa el estado gestionado antes de reintentar.`);
+  }
+  return new Set(marked);
 }
 
 /** El estado de ownership solo avanza tras observar la entrada escrita o ausente. */
@@ -297,7 +303,7 @@ export function makeContext(
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
   const enabled = enabledMcpServers(adapter.id, undefined, useBrowserPreferences);
-  const owned = ownedMcpServers(adapter.id, useBrowserPreferences);
+  const owned = ownedMcpServers(adapter.id, configDir, useBrowserPreferences);
   let devtoolsMcpObservedVersion: ObservedVersion | undefined;
   let devtoolsMcpInvocation: InstallContext["devtoolsMcpInvocation"];
   if (useBrowserPreferences && (enabled.has(DEVTOOLS_MCP_SERVER) || owned.has(DEVTOOLS_MCP_SERVER))) {
@@ -599,8 +605,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
   const anyDevtoolsEnabled = opts.runtimes.some((id) =>
     enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest).has(DEVTOOLS_MCP_SERVER));
-  const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) =>
-    ownedMcpServers(id, true).has(DEVTOOLS_MCP_SERVER));
+  const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) => {
+    const adapter = ADAPTERS[id];
+    if (adapter === undefined) return false;
+    const detection = adapter.detect();
+    return detection.installed
+      && ownedMcpServers(id, detection.configDir, true).has(DEVTOOLS_MCP_SERVER);
+  });
   if (anyDevtoolsEnabled && devtoolsManagedInvocation === undefined) {
     const observed = isDevtoolsTargetDir ? devtoolsTargetDirObserved : devtoolsPersistedObserved;
     try {
@@ -723,7 +734,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     }
 
     const enabledForRuntime = enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest);
-    const ownedForRuntime = ownedMcpServers(id, useManifest);
+    const ownedForRuntime = ownedMcpServers(id, configDir, useManifest);
     let devtoolsObservedForRuntime: ObservedVersion | undefined;
     if (isDevtoolsTargetDir) {
       if (enabledForRuntime.has(DEVTOOLS_MCP_SERVER)) {
@@ -928,7 +939,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     // Verificación de idempotencia: re-planificar debe dar cero cambios.
     // Huérfanos diferidos hasta verificación oficial (nada irreversible
     // antes del setup).
-    const verifyCtx: InstallContext = { ...ctx, warnings: [] };
+    const verifiedOwnedMcpServers = new Set(ctx.ownedMcpServers ?? []);
+    for (const action of plan) {
+      if (action.kind !== "write") continue;
+      for (const change of action.mcpOwnership ?? []) {
+        if (change.owned) verifiedOwnedMcpServers.add(change.server);
+        else verifiedOwnedMcpServers.delete(change.server);
+      }
+    }
+    const verifyCtx: InstallContext = { ...ctx, warnings: [], ownedMcpServers: verifiedOwnedMcpServers };
     const dirty = diffPlan(buildPlan(adapter, verifyCtx)).filter((d) => d.status !== "unchanged");
     if (dirty.length > 0) {
       p.log.error(`${adapter.name}: verificación de idempotencia FALLÓ (${dirty.length} acciones inestables).`);
