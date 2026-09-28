@@ -570,7 +570,49 @@ function collectVirtualPackages(stageDir: string, realStage: string): Set<string
   return identities;
 }
 
-function assertTopLevelPackages(stageDir: string, packageName: string, realStage: string): string {
+function collectHoistedPackages(stageDir: string, realStage: string): Set<string> {
+  const nodeModules = path.join(stageDir, "node_modules");
+  assertRealDirectory(nodeModules, "node_modules");
+  const identities = new Set<string>();
+  const pending = [nodeModules];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
+    catch { fail(`cannot enumerate hoisted package directory: ${directory}`); }
+    for (const entry of entries) {
+      if ([".pnpm", ".bin", ".modules.yaml", ".pnpm-workspace-state-v1.json"].includes(entry.name)) continue;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.name.startsWith("@") && entry.isDirectory()) {
+        let scoped: fs.Dirent[];
+        try { scoped = fs.readdirSync(fullPath, { withFileTypes: true }); }
+        catch { fail(`cannot enumerate hoisted scope: ${fullPath}`); }
+        for (const child of scoped) {
+          if (!child.isDirectory() || child.isSymbolicLink()) fail(`hoisted scope contains a non-directory package: ${fullPath}`);
+          const packagePath = path.join(fullPath, child.name);
+          const real = assertContained(realStage, packagePath, "hoisted package");
+          const manifest = readPackageManifest(path.join(real, "package.json"), "hoisted package manifest");
+          if (manifest.name !== `${entry.name}/${child.name}`) fail(`hoisted package name differs from path: ${packagePath}`);
+          identities.add(`${manifest.name}@${manifest.version}`);
+          const nested = path.join(packagePath, "node_modules");
+          if (fs.existsSync(nested)) { assertRealDirectory(nested, "nested node_modules"); pending.push(nested); }
+        }
+        continue;
+      }
+      if (!entry.isDirectory() || entry.isSymbolicLink()) fail(`hoisted package is not a real directory: ${fullPath}`);
+      const real = assertContained(realStage, fullPath, "hoisted package");
+      const manifest = readPackageManifest(path.join(real, "package.json"), "hoisted package manifest");
+      if (manifest.name !== entry.name) fail(`hoisted package name differs from path: ${fullPath}`);
+      identities.add(`${manifest.name}@${manifest.version}`);
+      const nested = path.join(fullPath, "node_modules");
+      if (fs.existsSync(nested)) { assertRealDirectory(nested, "nested node_modules"); pending.push(nested); }
+    }
+  }
+  if (identities.size === 0) fail("hoisted installed package tree is empty");
+  return identities;
+}
+
+function assertTopLevelPackages(stageDir: string, packageName: string, realStage: string, lockPackages: LockPackage[]): string {
   const nodeModules = path.join(stageDir, "node_modules");
   assertRealDirectory(nodeModules, "node_modules");
   let entries: fs.Dirent[];
@@ -579,10 +621,10 @@ function assertTopLevelPackages(stageDir: string, packageName: string, realStage
   } catch {
     fail("cannot enumerate node_modules");
   }
-  const scope = packageName.startsWith("@") ? packageName.slice(0, packageName.indexOf("/")) : null;
   const allowed = new Set([".pnpm", ".bin", ".modules.yaml", ".pnpm-workspace-state-v1.json"]);
-  if (scope !== null) allowed.add(scope);
-  else allowed.add(packageName);
+  for (const name of process.platform === "win32" ? lockPackages.map((pkg) => pkg.name) : [packageName]) {
+    allowed.add(name.startsWith("@") ? name.slice(0, name.indexOf("/")) : name);
+  }
   for (const entry of entries) {
     if (!allowed.has(entry.name)) fail(`extra top-level installed package: ${entry.name}`);
   }
@@ -602,19 +644,21 @@ function assertClosureInstalled(
   lockPackages: LockPackage[],
   realStage: string,
 ): string {
-  const treePath = assertTopLevelPackages(stageDir, packageName, realStage);
+  const treePath = assertTopLevelPackages(stageDir, packageName, realStage, lockPackages);
   const manifest = readPackageManifest(path.join(treePath, "package.json"), "staged root package manifest");
   if (manifest.name !== packageName || manifest.version !== release.version) {
     fail("staged root package manifest differs from release");
   }
-  const installed = collectVirtualPackages(stageDir, realStage);
+  const installed = process.platform === "win32"
+    ? collectHoistedPackages(stageDir, realStage)
+    : collectVirtualPackages(stageDir, realStage);
   const expected = new Set<string>();
   for (const pkg of lockPackages) expected.add(`${pkg.name}@${pkg.version}`);
   expected.add(`${packageName}@${release.version}`);
   for (const identity of installed) {
     if (!expected.has(identity)) fail(`installed package is absent from lock closure: ${identity}`);
   }
-  if (!installed.has(`${packageName}@${release.version}`)) fail("verified root package is absent from virtual store");
+  if (!installed.has(`${packageName}@${release.version}`)) fail("verified root package is absent from installed tree");
   for (const pkg of lockPackages) {
     const identity = `${pkg.name}@${pkg.version}`;
     if (!installed.has(identity)) fail(`lock package is absent from installed tree: ${identity}`);
@@ -906,6 +950,7 @@ export async function stageVerifiedBrowserTree(
     `--config.lockfile-dir=${stageDir}`,
     `--config.store-dir=${storeDir}`,
     `--config.virtual-store-dir=${virtualStoreDir}`,
+    ...(process.platform === "win32" ? ["--config.node-linker=hoisted"] : []),
     "--frozen-lockfile=false",
   ];
   try {
