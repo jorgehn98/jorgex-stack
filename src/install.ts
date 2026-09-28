@@ -36,6 +36,7 @@ import {
   executePlaywrightToolAction as executeExternalPlaywrightToolAction,
   resolvePnpmBin,
   resolvePnpmFailureRemedy,
+  isPlaywrightBrowserReady,
   setupPnpmGlobal,
   type PlaywrightCliAction,
   type PlaywrightCliCandidate,
@@ -45,8 +46,11 @@ import {
 } from "./lib/external-tools.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
 import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } from "./lib/browser-managed.js";
+import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
+import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./lib/browser-command.js";
 import {
   inspectPlaywrightCapability,
+  inspectManagedPlaywrightCapability,
   type PlaywrightCapabilitySnapshot,
   type VerifiedPlaywrightCapabilitySnapshot,
 } from "./lib/playwright-capability.js";
@@ -644,7 +648,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     && loadPlaywrightCliPreference() === true;
   const playwrightCapability = opts.dryRun || !useManifest
     ? undefined
-    : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectPlaywrightCapability() : undefined);
+    : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectManagedPlaywrightCapability() : undefined);
   const effectivePlaywright = playwrightCapability?.effective;
   const plannedPlaywright = effectivePlaywright
     ?? (toolPlan !== null && toolPlan.actions.length > 0 ? false : undefined);
@@ -999,12 +1003,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       let setupAttempted = false;
       let preparedEnv: NodeJS.ProcessEnv | undefined;
       let verifiedCapability: VerifiedPlaywrightCapabilitySnapshot | undefined;
-      const hasManagedActivation = opts.playwrightToolDeps !== undefined;
+      let managedReceipt: ManagedBrowserReceipt | undefined;
+      const hasInjectedActivation = opts.playwrightToolDeps !== undefined;
       const baseDeps: PlaywrightToolPlanDeps = opts.playwrightToolDeps ?? {
-        // The verified root tarball is retained for this callback, but the
-        // transitive closure/managed tree is not certified yet. Do not fall
-        // back to global pnpm/dlx by package name until that later T25 slice.
-        run: async () => ({ ok: false, reason: "action-failed" as const }),
+        run: async (action) => {
+          if (managedReceipt === undefined) return { ok: false, reason: "action-failed" as const };
+          if (action === "install") return { ok: true };
+          const result = runVerifiedManagedPlaywright(dataDir(), ["install-browser", "chromium"], { timeoutMs: 600_000 });
+          return result.status === 0 && result.error === undefined
+            ? { ok: true }
+            : { ok: false, reason: "action-failed" as const };
+        },
         persistEnabled: (enabled: boolean, observed?: ObservedVersion) => {
           const selected = opts.playwrightToolConsent?.runtimeSelection;
           const fileSelection = selected === undefined ? undefined
@@ -1012,16 +1021,21 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection, observed);
         },
         verify: (selected?: PlaywrightCliCandidate) => {
-          if (selected === undefined) return false;
-          const snapshot = preparedEnv === undefined
-            ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: selected.version })
-            : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: selected.version });
-          if (!snapshot.effective || snapshot.cli.status !== "current" || snapshot.cli.binPath === null
-            || snapshot.cli.detectedVersion !== selected.version || snapshot.browserCache.status !== "ready") return false;
-          verifiedCapability = snapshot as VerifiedPlaywrightCapabilitySnapshot;
+          if (selected === undefined || managedReceipt === undefined
+            || managedReceipt.version !== selected.version || managedReceipt.integrity !== selected.integrity) return false;
+          const current = loadVerifiedManagedBrowserReceipt(dataDir(), "@playwright/cli");
+          if (current === null || current.rootPath !== managedReceipt.rootPath) return false;
+          const version = runVerifiedManagedPlaywright(dataDir(), ["--version"], { captureOutput: true, timeoutMs: 5_000 });
+          const reported = (version.stdout ?? "").trim().replace(/^playwright-cli\s+/i, "");
+          const browserCache = isPlaywrightBrowserReady();
+          if (version.error !== undefined || version.status !== 0 || reported !== selected.version
+            || browserCache.status !== "ready" || !verifyManagedPlaywrightBrowser(dataDir())) return false;
+          verifiedCapability = {
+            cli: { status: "current", binPath: current.launcherPath, detectedVersion: selected.version },
+            browserCache, browserVerified: true, effective: true,
+          };
           return true;
         },
-        setupPnpm: (pnpmBin: string) => setupPnpmGlobal(pnpmBin),
       };
       const activateVerifiedArtifact = async (
         runCandidate?: PlaywrightCliCandidate,
@@ -1058,8 +1072,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           fetchImpl: fetch,
           // The stage is a short-lived lease: activation runs before this
           // helper returns and before its finally block removes the tarball.
-          withVerifiedArtifact: async ({ release, artifactPath }) => {
+          withVerifiedArtifact: async (context) => {
+            const { release, artifactPath } = context;
             candidate = { version: release.version, tarballUrl: release.tarballUrl, integrity: release.integrity, artifactPath };
+            if (!hasInjectedActivation) {
+              const pnpmBin = resolvePnpmBin();
+              if (pnpmBin === null) throw new Error("pnpm no disponible para preparar Playwright gestionado");
+              managedReceipt = await activateVerifiedBrowserArtifact(context, {
+                stateDir: dataDir(), pnpmBin, fetchImpl: fetch,
+              });
+            }
             activationResult = await activateVerifiedArtifact(candidate);
           },
         });
@@ -1077,8 +1099,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           const pnpmRemedy = result.reason === undefined ? null : resolvePnpmFailureRemedy(result.reason);
           let reason: string;
           if (result.reason === "pnpm-global-bin") reason = `la configuración global de pnpm no está lista. ${pnpmRemedy}`;
-          else if (result.failedAction === "verify") reason = "el ejecutable de PATH no coincide con la versión verificada del proveedor o Chromium no está listo";
-          else if (!hasManagedActivation && result.reason === "action-failed") reason = "todavía no existe un árbol gestionado con cierre transitivo certificado; se ha bloqueado la activación global/dlx";
+          else if (result.failedAction === "verify") reason = "el CLI gestionado no coincide con el receipt verificado o Chromium no ha arrancado";
           else reason = pnpmRemedy ?? (result.failedAction === "install"
             ? "no se pudo instalar el paquete global"
             : result.failedAction === "install-browser"
@@ -1119,7 +1140,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             const verified = verifiedCapability ?? (preparedEnv === undefined
               ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
               : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version }));
-            if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
+            if (hasInjectedActivation && verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
               && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
               opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
             }

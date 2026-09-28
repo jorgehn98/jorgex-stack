@@ -14,6 +14,7 @@ const PACKAGE_PATH = path.join(ROOT, "package.json");
 
 const EXPECTED_ENTRIES = {
   cli: "src/cli.ts",
+  "browser-playwright": "src/browser-playwright.ts",
   "pi-ci-artifact": "src/lib/pi-ci-artifact.ts",
   "quality-verifier": "src/lib/quality-verifier.ts",
 };
@@ -163,9 +164,10 @@ describe("T37 package contract", () => {
     ]);
   });
 
-  it("conserva el bin existente sin añadir otro", () => {
+  it("conserva el bin existente y publica el dispatcher Playwright", () => {
     expect(readPackageJson().bin).toEqual({
       "jorgex-stack": "./dist/cli.js",
+      "jorgex-stack-playwright": "./dist/browser-playwright.js",
     });
   });
 
@@ -203,6 +205,7 @@ describe("T37 tsup contract", () => {
   it("declara semánticamente los aliases de entry y habilita dts", () => {
     const config = readTsupConfig();
     expect(config.entry).toEqual(EXPECTED_ENTRIES);
+    expect(config.splitting).toBe(false);
     expect(config.dts).toBeTruthy();
   });
 });

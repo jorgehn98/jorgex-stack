@@ -6,8 +6,11 @@ import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliState,
 } from "./external-tools.js";
-import { loadPlaywrightCliObservation } from "./tool-preferences.js";
+import { loadPlaywrightCliObservation, playwrightCliPreferenceFile } from "./tool-preferences.js";
 import { isStableSemverVersion } from "./npm-provider.js";
+import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./browser-command.js";
+import { dataDir } from "./paths.js";
 
 /** Snapshot efímera de la capacidad global compartida de Playwright. */
 export interface PlaywrightCapabilitySnapshot {
@@ -23,6 +26,64 @@ export interface VerifiedPlaywrightCapabilitySnapshot extends PlaywrightCapabili
   browserCache: { status: "ready"; path: string };
   browserVerified: true;
   effective: true;
+}
+
+/** Read-only local candidate for update --check; hashes the managed receipt, never PATH. */
+export function detectManagedPlaywrightCli(stateDir = dataDir()): PlaywrightCliState {
+  const observed = loadPlaywrightCliObservation(playwrightCliPreferenceFile(stateDir));
+  try {
+    const receipt = loadVerifiedManagedBrowserReceipt(stateDir, "@playwright/cli");
+    if (receipt === null) return { status: "absent", binPath: null, detectedVersion: null };
+    return {
+      status: observed?.version === receipt.version && observed.integrity === receipt.integrity ? "current" : "outdated",
+      binPath: receipt.launcherPath,
+      detectedVersion: receipt.version,
+    };
+  } catch {
+    return { status: "broken", binPath: null, detectedVersion: null };
+  }
+}
+
+/** Offline managed receipt check plus a bounded CLI/Chromium smoke; never checks global pnpm. */
+export function inspectManagedPlaywrightCapability(options: {
+  stateDir?: string;
+  env?: NodeJS.ProcessEnv;
+  browserVerified?: boolean;
+} = {}): PlaywrightCapabilitySnapshot {
+  const stateDir = options.stateDir ?? dataDir();
+  const browserCache = isPlaywrightBrowserReady(options.env ?? process.env);
+  const observed = loadPlaywrightCliObservation(playwrightCliPreferenceFile(stateDir));
+  let receipt;
+  try { receipt = loadVerifiedManagedBrowserReceipt(stateDir, "@playwright/cli"); }
+  catch {
+    return { cli: { status: "broken", binPath: null, detectedVersion: null },
+      browserCache, browserVerified: false, effective: false };
+  }
+  if (receipt === null) {
+    return { cli: { status: "absent", binPath: null, detectedVersion: null },
+      browserCache, browserVerified: false, effective: false };
+  }
+  const matches = observed !== null && receipt.version === observed.version && receipt.integrity === observed.integrity;
+  if (!matches) {
+    return { cli: { status: "outdated", binPath: receipt.launcherPath, detectedVersion: receipt.version },
+      browserCache, browserVerified: false, effective: false };
+  }
+  try {
+    const result = runVerifiedManagedPlaywright(stateDir, ["--version"], { captureOutput: true, timeoutMs: 5_000 });
+    const reported = (result.stdout ?? "").trim().replace(/^playwright-cli\s+/i, "");
+    if (result.error !== undefined || result.status !== 0 || reported !== receipt.version) {
+      throw new Error("managed Playwright version probe failed");
+    }
+    const browserVerified = browserCache.status === "ready"
+      && (options.browserVerified === true || verifyManagedPlaywrightBrowser(stateDir));
+    return {
+      cli: { status: "current", binPath: receipt.launcherPath, detectedVersion: receipt.version },
+      browserCache, browserVerified, effective: browserVerified,
+    };
+  } catch {
+    return { cli: { status: "broken", binPath: receipt.launcherPath, detectedVersion: receipt.version },
+      browserCache, browserVerified: false, effective: false };
+  }
 }
 
 /**

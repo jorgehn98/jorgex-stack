@@ -19,7 +19,8 @@
     "harness"
   ],
   "bin": {
-    "jorgex-stack": "./dist/cli.js"
+    "jorgex-stack": "./dist/cli.js",
+    "jorgex-stack-playwright": "./dist/browser-playwright.js"
   },
   "files": [
     "dist",

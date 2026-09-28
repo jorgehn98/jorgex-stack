@@ -20,7 +20,7 @@ import {
   saveInstallModePreference,
 } from "./lib/install-mode.js";
 import { browserPreferenceErrors, devtoolsMcpPreferenceFile, loadDevtoolsMcpPreference, loadPlaywrightCliPreference, type PlaywrightRuntimeSelection } from "./lib/tool-preferences.js";
-import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
+import { inspectManagedPlaywrightCapability, inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import {
   detectPiRuntime,
   PI_RUNTIME_CANDIDATE,
@@ -36,10 +36,11 @@ import { writeText } from "./lib/fsx.js";
 import { runQualityPlan } from "./lib/quality-runner.js";
 import { serializeQualityReceipt } from "./lib/quality-receipt.js";
 import { installMissingEngram } from "./lib/engram-install.js";
+import { runManagedPlaywrightCommand } from "./lib/browser-command.js";
 
 const VERSION = readPackageVersion();
 
-const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall", "quality"] as const;
+const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall", "quality", "browser"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export interface Flags {
@@ -290,8 +291,7 @@ async function resolvePlaywrightToolConsent(
   runtimeSelection?: PlaywrightRuntimeSelection;
 } | null> {
   const interactive = Boolean(process.stdout.isTTY);
-  const supported = runtimes.filter((runtime) => runtime !== "pi"
-    || (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1"));
+  const supported: SelectableRuntimeId[] = runtimes.filter((runtime) => runtime !== "pi");
   if (flags.playwrightRuntimes !== undefined) {
     const requested = flags.playwrightRuntimes;
     let error: string | undefined;
@@ -299,15 +299,20 @@ async function resolvePlaywrightToolConsent(
     for (const runtime of requested) {
       if (!["opencode", "claude-code", "codex", "pi"].includes(runtime)) error = `Runtime Playwright desconocido: ${runtime}.`;
       else if (!runtimes.includes(runtime)) error = `El runtime ${runtime} no está en --agents/destinos de esta instalación.`;
-      else if (!supported.includes(runtime)) error = "Pi requiere un candidato con playwright-handoff-v1 para activar Playwright.";
+      else if (!supported.includes(runtime)) error = "Pi Playwright v1 no verifica el launcher ni el árbol: no se permite un opt-in nuevo hasta publicar un handoff confiable.";
       if (error) break;
     }
     if (error) { console.error(error); process.exitCode = 1; return null; }
   }
+  if (command === "install" && flags.playwright && supported.length === 0 && runtimes.includes("pi")) {
+    console.error("Pi Playwright v1 no verifica el launcher ni el árbol; se conserva el soporte histórico, pero no se habilita un opt-in nuevo.");
+    process.exitCode = 1;
+    return null;
+  }
   let confirmed = false;
   if (command === "install" && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
     const answer = await p.confirm({
-      message: "Recomendado: ¿instalar Playwright CLI global y descargar sus navegadores?",
+      message: "Recomendado: ¿instalar Playwright CLI gestionado y descargar Chromium?",
       initialValue: false,
     });
     if (p.isCancel(answer)) return null;
@@ -319,7 +324,7 @@ async function resolvePlaywrightToolConsent(
     let selected = flags.playwrightRuntimes ?? supported;
     if (interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined && flags.playwrightRuntimes === undefined) {
       const answer = await p.multiselect({
-        message: "¿En qué runtimes activar la guía de Playwright? (instalación global compartida)",
+        message: "¿En qué runtimes activar la guía de Playwright gestionado?",
         required: false,
         options: supported.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
         initialValues: supported.filter((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true),
@@ -329,8 +334,8 @@ async function resolvePlaywrightToolConsent(
     }
     runtimeSelection = Object.fromEntries(supported.map((runtime) => [runtime, selected.includes(runtime)]));
   }
-  if (command === "install" && approved && runtimes.includes("pi") && !supported.includes("pi")) {
-    p.log.info("La activación de Playwright en Pi requiere la próxima adopción del paquete Pi; el binario global sí puede instalarse.");
+  if (command === "install" && approved && runtimes.includes("pi")) {
+    p.log.info("Pi conserva handoffs Playwright v1 históricos; nuevas activaciones esperan un lector que verifique launcher y árbol.");
   }
   return {
     command,
@@ -389,6 +394,9 @@ function assertSelectedPromptFiles(runtimes: SelectableRuntimeId[], targetDir?: 
 
 export function parseCliArgs(argv: string[]): ParsedCli {
   const [first, ...rest] = argv;
+  if (first === "browser") {
+    return { action: "run", command: "browser", flags: { ...parseFlags([]), positional: rest } };
+  }
   const isCommand = (COMMANDS as readonly string[]).includes(first ?? "install");
 
   if (first !== undefined && !isCommand && !first.startsWith("-")) {
@@ -618,6 +626,7 @@ Comandos:
                Engram se CONSERVA por defecto (memorias, binario y registro);
                desregistrarlo exige --remove-engram o el sí explícito
   quality     Ejecuta un plan JSON explícito y emite un receipt local
+  browser playwright <args>  Ejecuta Playwright desde el árbol gestionado verificado
 
 Opciones:
   --agents, -a opencode,claude-code,codex,pi   Runtimes destino (default: detectados)
@@ -626,7 +635,7 @@ Opciones:
   --target-dir <dir>    Dir alternativo (pruebas de paridad; requiere 1 runtime)
   --dry-run             Muestra el plan sin escribir nada
   --yes, -y             No interactivo
-  --playwright          Autoriza Playwright CLI global y sus navegadores (requerido con --yes/sin TTY)
+  --playwright          Autoriza Playwright CLI gestionado y Chromium (requerido con --yes/sin TTY)
   --engram              (install) autoriza instalar el binario Engram si falta
   --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
@@ -634,8 +643,8 @@ Opciones:
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
                         memorias y binario quedan intactos igualmente
   --playwright-runtimes <csv>  Activa su guía sólo en estos runtimes de --agents (con --playwright)
-  --remove-playwright   (uninstall) retira solo el paquete global de Playwright;
-                        nunca perfiles, caché ni navegadores
+  --remove-playwright   (uninstall) desactiva Playwright gestionado;
+                        conserva árbol, paquetes globales, perfiles, caché y navegadores
   --receipt <path>      (quality) escribe el receipt en ese path de forma atómica
 
 Ver PRD.md para el diseño completo.`);
@@ -687,6 +696,19 @@ async function main(): Promise<void> {
   }
 
   switch (command) {
+    case "browser": {
+      if (flags.positional[0] !== "playwright") {
+        console.error("Uso: jorgex-stack browser playwright <argumentos de Playwright CLI>");
+        process.exitCode = 1;
+        return;
+      }
+      try { process.exitCode = runManagedPlaywrightCommand(flags.positional.slice(1)); }
+      catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+      }
+      return;
+    }
     case "quality": {
       if (
         flags.targetDir !== undefined
@@ -770,7 +792,7 @@ async function main(): Promise<void> {
         const playwrightToolPlan = resolvePlaywrightToolPlan(playwrightToolConsent);
         let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
           && playwrightToolPlan.actions.length === 0
-          ? inspectPlaywrightCapability()
+          ? inspectManagedPlaywrightCapability()
           : undefined;
         const capturePlaywrightCapability = (snapshot: PlaywrightCapabilitySnapshot): void => {
           playwrightCapability = snapshot;
@@ -836,7 +858,8 @@ async function main(): Promise<void> {
               modePreference: mode,
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
-              playwrightCapability,
+              playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+                ? inspectPlaywrightCapability() : undefined,
               ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
             });
             exitCode = Math.max(exitCode, piExitCode);
@@ -909,7 +932,7 @@ async function main(): Promise<void> {
             ]
           : [...Object.keys(ADAPTERS) as RuntimeId[], ...(piSelected ? ["pi" as const] : [])];
       const doctorCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-        ? inspectPlaywrightCapability()
+        ? inspectManagedPlaywrightCapability()
         : undefined;
       let exitCode = await runDoctor({
         targetDir: flags.targetDir,
@@ -925,7 +948,8 @@ async function main(): Promise<void> {
             operation: "doctor",
             targetDir: flags.targetDir,
             modePreference: mode,
-            playwrightCapability: doctorCapability,
+            playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+              ? inspectPlaywrightCapability() : undefined,
           }));
         }
       }
@@ -976,7 +1000,7 @@ async function main(): Promise<void> {
       );
       applyWritingStyle(writingStyle, flags.dryRun);
       let updateCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-        ? inspectPlaywrightCapability()
+        ? inspectManagedPlaywrightCapability()
         : undefined;
       if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
         const piExitCode = await runSelectedPi({
@@ -984,7 +1008,8 @@ async function main(): Promise<void> {
           targetDir: flags.targetDir,
           writingStyle,
           modePreference: mode,
-          playwrightCapability: updateCapability,
+          playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+            ? inspectPlaywrightCapability() : undefined,
         });
         process.exitCode = piExitCode;
         persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, piExitCode);
@@ -1017,7 +1042,7 @@ async function main(): Promise<void> {
       process.exitCode = result.exitCode;
       let playwrightReconciled = false;
       if (result.exitCode === 0 && result.playwrightCapability !== undefined) {
-        updateCapability = result.playwrightCapability;
+        updateCapability = inspectManagedPlaywrightCapability();
         if (fileRuntimes.length > 0 && canSync) {
           const code = await runInstall({
             runtimes: fileRuntimes,
@@ -1038,7 +1063,7 @@ async function main(): Promise<void> {
           targetDir: flags.targetDir,
           writingStyle,
           modePreference: mode,
-          playwrightCapability: updateCapability,
+          playwrightCapability: result.playwrightCapability,
         }));
       }
       // Solo skills/stack cambian los artefactos que el sync propaga.
@@ -1100,7 +1125,7 @@ async function main(): Promise<void> {
           const mode = await resolveInstallMode(flags, false);
           if (mode === null) return;
           const playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-            ? inspectPlaywrightCapability()
+            ? inspectManagedPlaywrightCapability()
             : undefined;
           process.exitCode = await runInstall({
             runtimes: fileRuntimes,

@@ -70,6 +70,8 @@ type PiProjectionLifecycleInput = {
   playwrightHandoffEnabled?: boolean;
   playwrightCliCommand?: string | null;
   playwrightCliVersion?: string | null;
+  playwrightManagedStateDir?: string;
+  playwrightDispatcherPath?: string;
 };
 
 type PiProjectionLifecycle = {
@@ -331,6 +333,50 @@ function seedTarget(root: string, source: string, scope: ProjectionScope = {
 }
 
 describe("Pi shared projection lifecycle", () => {
+  it("writes Pi Playwright v2 only from a verified managed tree and dispatcher", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-playwright-v2-projection-"));
+    try {
+      const source = "npm:jorgex-pi@0.8.34";
+      const target = seedTarget(root, source);
+      fs.mkdirSync(target.home, { recursive: true });
+      const stateDir = path.join(target.home, ".jorgex-stack");
+      const stageDir = path.join(root, "stage");
+      const nodeModulesPath = path.join(stageDir, "node_modules");
+      const treePath = path.join(nodeModulesPath, "@playwright", "cli");
+      const entryPath = path.join(treePath, "entry.js");
+      const version = "9.9.10";
+      const integrity = `sha512-${Buffer.alloc(64, 11).toString("base64")}`;
+      fs.mkdirSync(treePath, { recursive: true });
+      fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "@playwright/cli", version }));
+      fs.writeFileSync(entryPath, "export {};\n");
+      await activateManagedBrowserTree({
+        stateDir, packageName: "@playwright/cli",
+        release: { version, integrity, tarballUrl: `https://registry.npmjs.org/@playwright/cli/-/cli-${version}.tgz` },
+        staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+          closure: [{ name: "@playwright/cli", version, integrity }] },
+        entryPath,
+      });
+      const dispatcher = path.join(root, "browser-playwright.js");
+      fs.writeFileSync(dispatcher, "#!/usr/bin/env node\nprocess.stdout.write('playwright-cli 9.9.10\\n');\n");
+      fs.chmodSync(dispatcher, 0o755);
+      const events: string[] = [];
+      const result = runPiProjectionLifecycle({
+        operation: "install", scope: target.scope, packageSource: source, stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"), playwrightCliEnabled: true,
+        playwrightHandoffEnabled: true, playwrightManagedStateDir: stateDir,
+        playwrightDispatcherPath: dispatcher,
+      }, temporaryDeps(root, events, { runtimes: {} }));
+      expect(result.kind).toBe("installed");
+      const handoff = JSON.parse(fs.readFileSync(path.join(target.agentDir, "jorgex-pi", "playwright.v1.json"), "utf8")) as Record<string, unknown>;
+      expect(handoff.schemaVersion).toBe(2);
+      expect(handoff.command).toBe(dispatcher);
+      expect(handoff.commandSha256).toBe(createHash("sha256").update(fs.readFileSync(dispatcher)).digest("hex"));
+      expect(handoff.treeSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(events).toContain(`write:${path.join(target.agentDir, "jorgex-pi", "playwright.v1.json")}`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("writes the Pi v3 handoff from managed DevTools without requiring pnpm", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-trusted-devtools-"));

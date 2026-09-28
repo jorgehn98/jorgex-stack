@@ -295,6 +295,49 @@ function assertStrictReceipt(receipt: ManagedBrowserReceipt, fixture: Fixture): 
 }
 
 describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activation", () => {
+  it("runs the Playwright user command through the external guard only while opted in", async () => {
+    const fixture = writeFixture();
+    const marker = path.join(fixture.root, "playwright-command.marker");
+    fs.writeFileSync(fixture.input.entryPath, [
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));`,
+      'process.stdout.write("playwright-cli 9.9.10\\n");',
+    ].join("\n"));
+    const staged = { ...fixture.staged, treeSha256: browserTreeSha256(
+      fixture.staged.nodeModulesPath, path.dirname(fixture.staged.nodeModulesPath),
+    ) };
+    await activateManagedBrowserTree({ ...fixture.input, staged });
+    const api = await import("../src/lib/browser-command.js") as Record<string, unknown>;
+    const run = api.runManagedPlaywrightCommand as ((args: string[], stateDir: string) => number) | undefined;
+    const runBeforePreference = api.runVerifiedManagedPlaywright as
+      | ((stateDir: string, args: string[], options: { captureOutput: boolean }) => { status: number | null; stdout: string })
+      | undefined;
+    expect(run, "managed Playwright user command is missing").toBeTypeOf("function");
+    expect(runBeforePreference, "managed Playwright install invocation is missing").toBeTypeOf("function");
+    expect(() => run!(["--version"], fixture.stateDir)).toThrow(/opt.in|enabled|preference/i);
+    expect(runBeforePreference!(fixture.stateDir, ["--version"], { captureOutput: true }).status).toBe(0);
+
+    fs.writeFileSync(path.join(fixture.stateDir, "playwright-cli.json"), JSON.stringify({
+      version: 1, enabled: true, observed: { version: VERSION, integrity: ROOT_INTEGRITY },
+    }));
+    expect(run!(["--version"], fixture.stateDir)).toBe(0);
+    expect(JSON.parse(fs.readFileSync(marker, "utf8"))).toEqual(["--version"]);
+    const { inspectManagedPlaywrightCapability } = await import("../src/lib/playwright-capability.js");
+    const capability = inspectManagedPlaywrightCapability({
+      stateDir: fixture.stateDir,
+      env: { ...process.env, XDG_CACHE_HOME: path.join(fixture.root, "empty-cache") },
+    });
+    expect(capability.cli.status).toBe("current");
+    expect(capability.browserCache.status).toBe("missing");
+    expect(capability.effective).toBe(false);
+    fs.unlinkSync(marker);
+    const receipt = loadVerifiedManagedBrowserReceipt(fixture.stateDir, PACKAGE_NAME)!;
+    fs.appendFileSync(receipt.entryPath, "// managed tree drift\n");
+    expect(() => run!(["--version"], fixture.stateDir)).toThrow(/digest|drift/i);
+    expect(inspectManagedPlaywrightCapability({ stateDir: fixture.stateDir }).cli.status).toBe("broken");
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it("resolves only the declared package bin inside the verified staged root", async () => {
     const fixture = writeFixture();
     const api = await import("../src/lib/browser-managed.js") as Record<string, unknown>;
@@ -356,6 +399,29 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
       treeSha256: receipt.treeSha256,
     });
   });
+
+  it("materializes Pi Playwright v2 from a verified tree and separate Stack dispatcher", async () => {
+    const fixture = writeFixture();
+    const dispatcher = path.join(fixture.root, "jorgex-stack-playwright");
+    fs.writeFileSync(dispatcher, "#!/bin/sh\nprintf 'playwright-cli 9.9.10\\n'\n");
+    fs.chmodSync(dispatcher, 0o755);
+    const { trustedPlaywrightHandoff } = await import("../src/lib/pi-projection-lifecycle.js");
+    expect(() => trustedPlaywrightHandoff(fixture.stateDir, dispatcher)).toThrow(/receipt/i);
+    const receipt = await activateManagedBrowserTree(fixture.input);
+    const handoff = trustedPlaywrightHandoff(fixture.stateDir, dispatcher);
+    expect(Object.keys(handoff).sort()).toEqual([
+      "command", "commandSha256", "enabled", "entryPath", "launcherPath", "launcherSha256",
+      "rootPath", "schemaVersion", "treePath", "treeSha256", "version",
+    ].sort());
+    expect(handoff).toEqual({
+      schemaVersion: 2, enabled: true, command: dispatcher, version: VERSION,
+      commandSha256: createHash("sha256").update(fs.readFileSync(dispatcher)).digest("hex"),
+      rootPath: receipt.rootPath, treePath: receipt.treePath, entryPath: receipt.entryPath,
+      launcherPath: receipt.launcherPath, launcherSha256: receipt.launcherSha256,
+      treeSha256: receipt.treeSha256,
+    });
+  });
+
 
   it("distinguishes absent state from an orphaned managed release", async () => {
     const absentRoot = sandbox();

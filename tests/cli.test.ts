@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { parseCliArgs, type Flags } from "../src/cli.js";
 
+it("passes Playwright CLI flags through the managed browser command", () => {
+  const parsed = parseCliArgs(["browser", "playwright", "open", "--browser=chromium", "-s=task"]);
+  expect(parsed).toMatchObject({
+    action: "run", command: "browser",
+    flags: { positional: ["playwright", "open", "--browser=chromium", "-s=task"], unknownFlags: [] },
+  });
+});
+
 describe("CLI argument parsing", () => {
   it.each([
     [["--help"], "install"],

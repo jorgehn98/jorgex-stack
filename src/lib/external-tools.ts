@@ -282,7 +282,21 @@ export function verifyPlaywrightBrowser(
       encoding: "utf8", timeout: 5_000, env: actualEnv, cwd, stdio: ["ignore", "pipe", "inherit"],
     }).trim();
     if (!path.isAbsolute(root)) return false;
-    const packageFile = fs.realpathSync(path.join(root, "@playwright", "cli", "package.json"));
+    return verifyPlaywrightPackageBrowser(path.join(root, "@playwright", "cli", "package.json"), expectedVersion, actualEnv, cwd);
+  } catch {
+    return false;
+  }
+}
+
+/** Shared Chromium smoke once the caller has authenticated its package tree. */
+export function verifyPlaywrightPackageBrowser(
+  packageFilePath: string,
+  expectedVersion: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
+): boolean {
+  try {
+    const packageFile = fs.realpathSync(packageFilePath);
     const installed = JSON.parse(fs.readFileSync(packageFile, "utf8")) as { name?: string; version?: string };
     if (installed.name !== PLAYWRIGHT_CLI.packageName || installed.version !== expectedVersion) return false;
     const probe = `
@@ -297,7 +311,7 @@ export function verifyPlaywrightBrowser(
       })().catch(error => { console.error(error.message); process.exitCode = 1; });
     `;
     execFileSync(process.execPath, ["-e", probe, packageFile], {
-      timeout: 25_000, stdio: "inherit", cwd, env: { ...actualEnv, NO_UPDATE_NOTIFIER: "1" },
+      timeout: 25_000, stdio: "inherit", cwd, env: { ...env, NO_UPDATE_NOTIFIER: "1" },
     });
     return true;
   } catch {

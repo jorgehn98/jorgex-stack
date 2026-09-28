@@ -529,6 +529,14 @@ describe("browser preference safety", () => {
       });
 
       await withTempHome(homeDir, async () => {
+        vi.doMock("../src/lib/playwright-capability.js", async (importOriginal) => ({
+          ...(await importOriginal<typeof import("../src/lib/playwright-capability.js")>()),
+          inspectManagedPlaywrightCapability: () => ({
+            cli: { status: "current", binPath: path.join(stateDir, "launcher.mjs"), detectedVersion: "9.9.10" },
+            browserCache: mocks.isPlaywrightBrowserReady(),
+            browserVerified: false, effective: false,
+          }),
+        }));
         const { runInstall } = await import("../src/install.js");
         await assertPreferencesSandboxed(homeDir);
         await expect(runInstall({
@@ -549,6 +557,7 @@ describe("browser preference safety", () => {
         expect(mocks.isPlaywrightBrowserReady).toHaveBeenCalledOnce();
         expect(mocks.prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining(cachePath));
         expect(mocks.prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
+        vi.doUnmock("../src/lib/playwright-capability.js");
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -53,6 +53,24 @@ async function seedManagedDevtools(stateDir: string): Promise<void> {
   });
 }
 
+async function seedManagedPlaywright(stateDir: string): Promise<void> {
+  const stageDir = path.join(path.dirname(stateDir), "playwright-stage");
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treePath = path.join(nodeModulesPath, "@playwright", "cli");
+  const entryPath = path.join(treePath, "entry.js");
+  fs.mkdirSync(treePath, { recursive: true });
+  fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "@playwright/cli", version: PLAYWRIGHT_OBSERVED.version }));
+  fs.writeFileSync(entryPath, `process.stdout.write("playwright-cli ${PLAYWRIGHT_OBSERVED.version}\\n");\n`);
+  await activateManagedBrowserTree({
+    stateDir,
+    packageName: "@playwright/cli",
+    release: { ...PLAYWRIGHT_OBSERVED, tarballUrl: PLAYWRIGHT_TARBALL_URL },
+    staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+      closure: [{ name: "@playwright/cli", ...PLAYWRIGHT_OBSERVED }] },
+    entryPath,
+  });
+}
+
 function playwrightPackument(): unknown {
   return {
     name: "@playwright/cli",
@@ -182,11 +200,11 @@ function expectCapabilities(content: string, playwright: boolean, devtools: bool
     expect(playwrightSection).toMatch(/explicitly.*approves/i);
     expect(playwrightSection).toMatch(/Playwright CLI/i);
     expect(playwrightSection).not.toMatch(/\bskill\b/i);
-    expect(playwrightSection).toContain("playwright-cli --help");
-    expect(playwrightSection).toContain("playwright-cli open --browser=chromium");
-    expect(playwrightSection).toContain("playwright-cli snapshot");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright --help");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> open --browser=chromium");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> snapshot");
     expect(playwrightSection).toMatch(/verify/i);
-    expect(playwrightSection).toContain("playwright-cli close");
+    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> close");
     expect(playwrightSection).toMatch(/only.*session.*created|session.*only.*created/i);
   } else {
     expect(playwrightSection).toBeNull();
@@ -668,6 +686,7 @@ describe("Playwright prompt install ordering", () => {
     writeOpenCodeModelMap(homeDir);
     fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
     fs.writeFileSync(preferenceFile, JSON.stringify(preference) + "\n");
+    await seedManagedPlaywright(path.dirname(preferenceFile));
 
     await withTempHome(homeDir, async () => {
       const externalTools = {
@@ -686,6 +705,11 @@ describe("Playwright prompt install ordering", () => {
       vi.doMock("../src/lib/external-tools.js", async () => ({
         ...(await vi.importActual<typeof import("../src/lib/external-tools.js")>("../src/lib/external-tools.js")),
         ...externalTools,
+      }));
+      const verifyManagedPlaywrightBrowser = vi.fn(() => false);
+      vi.doMock("../src/lib/browser-command.js", async () => ({
+        ...(await vi.importActual<typeof import("../src/lib/browser-command.js")>("../src/lib/browser-command.js")),
+        verifyManagedPlaywrightBrowser,
       }));
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
@@ -708,10 +732,12 @@ describe("Playwright prompt install ordering", () => {
         const content = fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8");
         expect(managedSection(content, "playwright")).toBeNull();
         expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual(preference);
-        expect(externalTools.verifyPlaywrightBrowser).toHaveBeenCalledTimes(1);
+        expect(verifyManagedPlaywrightBrowser).toHaveBeenCalledTimes(1);
+        expect(externalTools.verifyPlaywrightBrowser).not.toHaveBeenCalled();
       } finally {
         restoreDetect();
         vi.doUnmock("../src/lib/external-tools.js");
+        vi.doUnmock("../src/lib/browser-command.js");
       }
     });
   });

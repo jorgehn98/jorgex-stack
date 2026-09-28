@@ -206,6 +206,8 @@ function writeDevtoolsPreference(homeDir: string, value: unknown): string {
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.runInstall.mockReset().mockResolvedValue(0);
+  mocks.runManagedPiSystem.mockReset().mockResolvedValue({ kind: "healthy" });
   mocks.installMissingEngram.mockReset().mockResolvedValue({ ok: true, bin: "/isolated/bin/engram" });
   mocks.resolvePiEngramBin.mockReset().mockReturnValue("/isolated/bin/engram");
   mocks.hasManagedPiRuntime.mockReset().mockReturnValue(false);
@@ -498,34 +500,12 @@ describe("CLI Pi package-runtime dispatch", () => {
     }
   });
 
-  it("installs the opted-in Playwright tool before the Pi-only managed install without using the real home", async () => {
+  it("rejects a new Pi-only Playwright opt-in before installing or projecting", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-"));
 
-    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(0);
-
-    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
-      runtimes: [],
-      targetDir: undefined,
-      playwrightToolConsent: {
-        command: "install",
-        interactive: false,
-        yes: true,
-        targetDir: false,
-        explicitToolSelection: true,
-        confirmed: false,
-        runtimeSelection: { pi: true },
-      },
-    }));
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "install",
-      targetDir: undefined,
-      detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
-      engramBin: "/isolated/bin/engram",
-      playwrightCliEnabled: true,
-    }));
-    expect(mocks.runInstall.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.runManagedPiSystem.mock.invocationCallOrder[0]!,
-    );
+    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(1);
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
   });
 
   it("resolves the host Engram before configuring a mixed install", async () => {
@@ -713,53 +693,46 @@ describe("CLI Pi package-runtime dispatch", () => {
     );
   });
 
-  it("does not run the Pi lifecycle when Pi-only Playwright setup fails", async () => {
+  it("rejects explicit Pi Playwright runtime selection before any install", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-failure-"));
-    mocks.runInstall.mockResolvedValueOnce(1);
 
-    const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home);
+    const exitCode = await runCli(["install", "--playwright", "--playwright-runtimes=pi", "--agents", "pi", "--yes"], home);
 
     expect(exitCode).toBe(1);
-    expect(mocks.runInstall).toHaveBeenCalledOnce();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
     expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
   });
 
-  it("does not persist the Pi Playwright choice when the managed projection fails", async () => {
+  it("preserves an existing Pi Playwright v1 choice when sync projection fails", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-projection-failure-"));
     const preference = writePlaywrightPreference(home, {
       version: 2,
-      enabled: { opencode: true, "claude-code": false, codex: false, pi: false },
+      enabled: { opencode: true, "claude-code": false, codex: false, pi: true },
     });
     const before = fs.readFileSync(preference, "utf8");
-    mocks.runInstall.mockResolvedValueOnce(0);
     mocks.runManagedPiSystem.mockResolvedValueOnce({
       kind: "blocked",
       reason: "projection-write-failed",
       remedy: "Reintenta la proyección.",
     });
 
-    expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(1);
+    expect(await runCli(["sync", "--agents", "pi", "--yes"], home)).toBe(1);
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "install",
-      playwrightCliEnabled: true,
+      operation: "sync",
     }));
     expect(fs.readFileSync(preference, "utf8")).toBe(before);
   });
 
-  it("keeps a Pi-only target-dir Playwright install out of the global installer and real browser preferences", async () => {
+  it("blocks a Pi-only target-dir Playwright opt-in without touching real preferences", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
     const targetDir = path.join(home, "target");
     writeCorruptBrowserPreference(home);
 
     const exitCode = await runCli(["install", "--playwright", "--agents", "pi", "--target-dir", targetDir, "--yes"], home);
 
-    expect(exitCode).toBe(0);
+    expect(exitCode).toBe(1);
     expect(mocks.runInstall).not.toHaveBeenCalled();
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "install",
-      targetDir,
-    }));
-    expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]).not.toHaveProperty("playwrightCliEnabled");
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
   });
 
   it.each(["install", "sync", "update", "uninstall"] as const)(

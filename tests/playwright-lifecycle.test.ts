@@ -114,16 +114,16 @@ async function updateSyncRequired(updated: string[]): Promise<boolean> {
   return mod.resolveUpdateSyncRequired!(updated);
 }
 
-async function uninstallToolPlan(removePackage: boolean): Promise<{ actions: PlaywrightToolAction[]; preserveBrowserData: boolean }> {
+async function uninstallToolPlan(disableManaged: boolean): Promise<{ disablePreference: boolean; preserveBrowserData: boolean }> {
   const mod = await import("../src/uninstall.js") as {
-    resolvePlaywrightUninstallPlan?: (input: { removePackage: boolean }) => {
-      actions: PlaywrightToolAction[];
+    resolvePlaywrightUninstallPlan?: (input: { disableManaged: boolean }) => {
+      disablePreference: boolean;
       preserveBrowserData: boolean;
     };
   };
 
   expect(mod.resolvePlaywrightUninstallPlan).toBeTypeOf("function");
-  return mod.resolvePlaywrightUninstallPlan!({ removePackage });
+  return mod.resolvePlaywrightUninstallPlan!({ disableManaged });
 }
 
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
@@ -569,10 +569,10 @@ describe("Playwright lifecycle contracts", () => {
     );
   });
 
-  it("uninstall preserves browser data and removes the package only when explicit", async () => {
+  it("uninstall preserves browser data and disables the preference only when explicit", async () => {
     await expect(Promise.all([uninstallToolPlan(false), uninstallToolPlan(true)])).resolves.toEqual([
-      { actions: [], preserveBrowserData: true },
-      { actions: ["remove"], preserveBrowserData: true },
+      { disablePreference: false, preserveBrowserData: true },
+      { disablePreference: true, preserveBrowserData: true },
     ]);
   });
 });
@@ -636,6 +636,70 @@ function stubProviderFetch(events: string[], tarballBytes: Buffer): void {
 }
 
 describe("Playwright verified-provider install [T14-RED]", () => {
+  it("activates a verified managed tree before browser install and persists opt-in only after smoke", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-managed-install-"));
+    const homeDir = path.join(root, "home");
+    fs.mkdirSync(homeDir, { recursive: true });
+    const events: string[] = [];
+    const receipt = {
+      version: OBSERVED_VERSION, integrity: OBSERVED_INTEGRITY,
+      rootPath: path.join(homeDir, ".jorgex-stack", "managed-release"),
+      launcherPath: path.join(homeDir, ".jorgex-stack", "managed-release", "launcher.mjs"),
+    };
+    try {
+      await withTempHome(homeDir, async () => {
+        vi.doMock("../src/lib/browser-provider.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/browser-provider.js")>("../src/lib/browser-provider.js")),
+          activateVerifiedBrowserArtifact: async () => { events.push("activate"); return receipt; },
+        }));
+        vi.doMock("../src/lib/browser-managed.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/browser-managed.js")>("../src/lib/browser-managed.js")),
+          loadVerifiedManagedBrowserReceipt: () => receipt,
+        }));
+        vi.doMock("../src/lib/browser-command.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/browser-command.js")>("../src/lib/browser-command.js")),
+          runVerifiedManagedPlaywright: (_stateDir: string, args: string[]) => {
+            events.push(`run ${args.join(" ")}`);
+            return { status: 0, stdout: `playwright-cli ${OBSERVED_VERSION}\n` };
+          },
+          verifyManagedPlaywrightBrowser: () => { events.push("chromium smoke"); return true; },
+        }));
+        vi.doMock("../src/lib/external-tools.js", async () => ({
+          ...(await vi.importActual<typeof import("../src/lib/external-tools.js")>("../src/lib/external-tools.js")),
+          resolvePnpmBin: () => "/isolated/bin/pnpm",
+          isPlaywrightBrowserReady: () => ({ status: "ready", path: path.join(homeDir, "browser-cache") }),
+        }));
+        const install = await import("../src/install.js");
+        stubProviderFetch(events, OBSERVED_BYTES);
+        const onPlaywrightCapability = vi.fn();
+        try {
+          await expect(install.runInstall({
+            runtimes: [], dryRun: false, yes: true,
+            playwrightToolConsent: {
+              command: "install", interactive: false, yes: true, targetDir: false,
+              explicitToolSelection: true, confirmed: false,
+            },
+            onPlaywrightCapability,
+          })).resolves.toBe(0);
+          expect(events).toEqual([
+            `fetch ${METADATA_URL}`, `fetch ${OBSERVED_TARBALL}`, "activate",
+            "run install-browser chromium", "run --version", "chromium smoke",
+          ]);
+          expect(JSON.parse(fs.readFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), "utf8"))).toMatchObject({
+            enabled: true, observed: OBSERVED_RECORD,
+          });
+          expect(onPlaywrightCapability).not.toHaveBeenCalled();
+        } finally { vi.unstubAllGlobals(); }
+      });
+    } finally {
+      vi.doUnmock("../src/lib/browser-provider.js");
+      vi.doUnmock("../src/lib/browser-managed.js");
+      vi.doUnmock("../src/lib/browser-command.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   function explicitConsent(overrides: Partial<PlaywrightToolConsent> = {}): PlaywrightToolConsent {
     return {
       command: "install",

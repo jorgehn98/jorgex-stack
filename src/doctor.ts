@@ -16,7 +16,7 @@ import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliStatus,
 } from "./lib/external-tools.js";
-import { inspectPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
+import { inspectManagedPlaywrightCapability, type PlaywrightCapabilitySnapshot } from "./lib/playwright-capability.js";
 import { browserPreferenceErrors, loadPlaywrightCliPreference, primaryModelOwnershipError } from "./lib/tool-preferences.js";
 
 function readDoctorTextIfExists(file: string): string | null {
@@ -422,7 +422,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     p.log.info("Playwright CLI: comprobación omitida en dry-run; no se evalúa el estado del paquete ni del navegador.");
   } else {
     const enabled = loadPlaywrightCliPreference();
-    const capability = options.playwrightCapability ?? (enabled === true ? inspectPlaywrightCapability() : undefined);
+    const capability = options.playwrightCapability ?? (enabled === true ? inspectManagedPlaywrightCapability() : undefined);
     effectivePlaywright = capability?.effective;
     const cli = capability?.cli ?? { status: "absent" as const };
     const playwright = resolvePlaywrightDoctorState({
