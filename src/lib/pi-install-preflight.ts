@@ -8,6 +8,7 @@ import {
   resolvePiProducerCommit,
 } from "./pi-release-resolver.js";
 import { stageVerifiedPiTarball } from "./pi-release-stage.js";
+import { detectPiHostVersion } from "./pi-host-version.js";
 import type { PiRuntimeCandidate } from "./pi-package-lifecycle.js";
 
 export interface PiInstallPreflightPaths {
@@ -66,8 +67,6 @@ export interface PiInstallPreflightResult {
   evidence: PiInstallPreflightEvidence;
   sourceAlias: string;
 }
-
-const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 
 function fail(message: string): never {
   throw new Error(`pi-install-preflight: ${message}`);
@@ -153,56 +152,12 @@ function validateDeps(deps: unknown): PiInstallPreflightDeps {
   return { fetchImpl: fetchImpl as typeof fetch, run: run as PiInstallPreflightRun };
 }
 
-function readJsonFile(file: string): unknown {
-  return JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-}
-
 /**
  * Detect the Pi host version from the executable's own installed manifest
  * without invoking it and without touching any active tree. Fail closed when
  * the manifest cannot be found: hostVersion is evidence for the candidate
  * builder, never a static fallback.
  */
-function detectPiHostVersion(piExecutable: string): string {
-  let current: string;
-  try {
-    current = path.dirname(fs.realpathSync(piExecutable));
-  } catch {
-    fail(`cannot resolve Pi executable: ${piExecutable}`);
-  }
-  for (let depth = 0; depth < 8; depth++) {
-    const manifests = [
-      path.join(current, "package.json"),
-      path.join(current, "node_modules", PI_PACKAGE_NAME, "package.json"),
-    ];
-    for (const manifest of manifests) {
-      let parsed: unknown;
-      try {
-        parsed = readJsonFile(manifest);
-      } catch {
-        continue;
-      }
-      if (
-        parsed !== null &&
-        typeof parsed === "object" &&
-        Reflect.get(parsed, "name") === PI_PACKAGE_NAME &&
-        typeof Reflect.get(parsed, "version") === "string"
-      ) {
-        const version = Reflect.get(parsed, "version") as string;
-        if (version !== "" && !/\s/.test(version)) {
-          return version;
-        }
-      }
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-  fail(`cannot detect Pi host version from executable: ${piExecutable}`);
-}
-
 /**
  * T06 provider-to-private-stage preflight (NO activation).
  *
@@ -306,7 +261,8 @@ export async function preparePiManagedInstall(
   // contract. The Stack contract is compatibility only; package/source
   // come from the live release, never the frozen pin. Fail closed here
   // when the published stage contract drifts (capabilities/browser).
-  const hostVersion = detectPiHostVersion(piExecutable);
+  const hostVersion = detectPiHostVersion(piExecutable)
+    ?? fail(`cannot detect Pi host version from executable: ${piExecutable}`);
   let candidate: PiRuntimeCandidate;
   try {
     candidate = await buildStagedPiCandidate({

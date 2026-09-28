@@ -6,6 +6,7 @@ import pin from "./pi-runtime-pin.json" with { type: "json" };
 import history from "./pi-runtime-history.json" with { type: "json" };
 import { dataDir } from "./paths.js";
 import { preparePiManagedInstall, type PiInstallPreflightResult } from "./pi-install-preflight.js";
+import { detectPiHostVersion } from "./pi-host-version.js";
 import {
   activatePreparedPiInstall,
   type PreparedPiInstallEvidence,
@@ -611,37 +612,6 @@ function readJsonFile(file: string): unknown {
   return JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
 }
 
-function packageVersionFromExecutable(executable: string): string | null {
-  let current: string;
-  try {
-    current = path.dirname(fs.realpathSync(executable));
-  } catch {
-    return null;
-  }
-  for (let depth = 0; depth < 8; depth++) {
-    const manifests = [
-      path.join(current, "package.json"),
-      path.join(current, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"),
-    ];
-    for (const manifest of manifests) {
-      try {
-        const parsed = readJsonFile(manifest);
-        if (parsed !== null && typeof parsed === "object"
-          && Reflect.get(parsed, "name") === "@earendil-works/pi-coding-agent"
-          && typeof Reflect.get(parsed, "version") === "string") {
-          return Reflect.get(parsed, "version") as string;
-        }
-      } catch {
-        // Continue walking; most ancestors do not contain the Pi manifest.
-      }
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return null;
-}
-
 export function detectPiRuntime(): PiRuntimeDetection {
   const executable = lookPath("pi");
   const home = os.homedir();
@@ -650,7 +620,7 @@ export function detectPiRuntime(): PiRuntimeDetection {
     name: "Pi",
     installed: executable !== null,
     executable,
-    version: executable === null ? null : packageVersionFromExecutable(executable),
+    version: executable === null ? null : detectPiHostVersion(executable),
     codingAgentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(home, ".pi", "agent"),
   };
 }
