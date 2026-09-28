@@ -781,6 +781,14 @@ describe("optional Chrome DevTools MCP", () => {
           mode: { mode: "human", subagentConcurrency: "serial" },
           devtoolsMcpSelection: { codex: false },
         })).resolves.toBe(1);
+        install.ADAPTERS.codex!.detect = () => ({
+          id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: profileB,
+        });
+        await expect(install.runInstall({
+          runtimes: ["codex"], command: "sync", dryRun: false, yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          devtoolsMcpSelection: { codex: false },
+        })).resolves.toBe(0);
       } finally {
         install.ADAPTERS.codex!.detect = originalDetect;
       }

@@ -607,8 +607,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     enabledMcpServers(id, opts.devtoolsMcpSelection?.[id], useManifest).has(DEVTOOLS_MCP_SERVER));
   const anyDevtoolsOwned = useManifest && opts.runtimes.some((id) => {
     const adapter = ADAPTERS[id];
-    return adapter !== undefined
-      && ownedMcpServers(id, adapter.detect().configDir, true).has(DEVTOOLS_MCP_SERVER);
+    if (adapter === undefined) return false;
+    const detection = adapter.detect();
+    return detection.installed
+      && ownedMcpServers(id, detection.configDir, true).has(DEVTOOLS_MCP_SERVER);
   });
   if (anyDevtoolsEnabled && devtoolsManagedInvocation === undefined) {
     const observed = isDevtoolsTargetDir ? devtoolsTargetDirObserved : devtoolsPersistedObserved;
