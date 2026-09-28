@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { planDetectedBinCommand } from "./detect.js";
-import { stageVerifiedBrowserTree } from "./browser-stage.js";
+import { stageVerifiedBrowserTree, type StageVerifiedBrowserTreeResult } from "./browser-stage.js";
 import {
   activateManagedBrowserTree,
   resolveStagedBrowserEntry,
@@ -43,6 +43,9 @@ export async function activateVerifiedBrowserArtifact(
     pnpmBin: options.pnpmBin,
     fetchImpl: options.fetchImpl,
   });
+  if (context.packageName === "chrome-devtools-mcp") {
+    await verifyStagedDevtoolsCliArtifact({ stageDir, staged, release: context.release });
+  }
   return activateManagedBrowserTree({
     stateDir: options.stateDir,
     packageName: context.packageName,
@@ -254,6 +257,27 @@ export interface VerifiedDevtoolsCliArtifact {
   version: string | null;
 }
 
+/** Prove privacy flags only after the official transitive closure is certified. */
+export async function verifyStagedDevtoolsCliArtifact(
+  input: { stageDir: string; staged: StageVerifiedBrowserTreeResult; release: BrowserPackageRelease },
+  deps?: VerifyDevtoolsCliArtifactDeps,
+): Promise<VerifiedDevtoolsCliArtifact> {
+  const { stageDir, staged, release } = input;
+  const realStage = fs.realpathSync(stageDir);
+  const packageDir = assertInsideStage(realStage, fs.realpathSync(staged.treePath), "devtools package");
+  const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as unknown;
+  if (!isRecord(manifest) || manifest.name !== DEVTOOLS_BIN_NAME || manifest.version !== release.version) {
+    fail("devtools staged identity differs from the verified release");
+  }
+  const binPath = resolveStagedBrowserEntry(staged, "chrome-devtools-mcp");
+  const realBinPath = assertInsideStage(packageDir, fs.realpathSync(binPath), "devtools bin entry");
+  const run = deps?.run ?? defaultDevtoolsCliRun;
+  if (typeof run !== "function") fail("run must be a function");
+  const env = restrictedStageEnv(stageDir);
+  await assertDevtoolsPrivacyProof(run, realBinPath, packageDir, stageDir, env);
+  return { binPath, version: release.version };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -355,6 +379,49 @@ async function runDevtoolsCli(
     return await run(command, args, { cwd, env });
   } catch (error) {
     throw asBrowserError(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function assertDevtoolsPrivacyProof(
+  run: DevtoolsCliRun,
+  scriptPath: string,
+  realPackageDir: string,
+  stageDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const help = await runDevtoolsCli(
+    run, process.execPath, [scriptPath, ...DEVTOOLS_PRIVACY_FLAGS, "--help"],
+    stageDir, env, "devtools help probe",
+  );
+  if (typeof help.status !== "number" || help.status !== 0 || typeof help.stdout !== "string") {
+    fail("devtools help probe failed");
+  }
+  if (Buffer.byteLength(help.stdout, "utf8") > MAX_HELP_STDOUT_BYTES) fail("devtools help output exceeds its bound");
+  for (const flag of DEVTOOLS_PRIVACY_FLAGS) {
+    if (!help.stdout.includes(flag)
+      && !(flag === "--redact-network-headers" && help.stdout.includes("--redactNetworkHeaders"))) {
+      fail(`devtools help is missing ${flag}`);
+    }
+  }
+
+  const parserModule = path.join(realPackageDir, "build", "src", "config", "mcp-options.js");
+  let realParserModule: string;
+  try {
+    realParserModule = assertInsideStage(realPackageDir, fs.realpathSync(parserModule), "devtools parser");
+    if (!fs.statSync(realParserModule).isFile()) fail("devtools parser is not a file");
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("browser-provider: ")) throw error;
+    fail("devtools parser is missing or unreadable");
+  }
+  const probeEnv = { ...env };
+  delete probeEnv.CI;
+  const parserProbe = await runDevtoolsCli(
+    run, process.execPath,
+    ["--input-type=module", "-e", DEVTOOLS_PARSER_PROBE, realParserModule],
+    stageDir, probeEnv, "devtools parser probe",
+  );
+  if (parserProbe.status !== 0 || parserProbe.stdout?.trim() !== "[true,true,false,false]") {
+    fail("devtools parser does not honor the mandatory privacy flags");
   }
 }
 
@@ -473,49 +540,6 @@ export async function verifyDevtoolsCliArtifact(
     fail("devtools bin entry is missing or unreadable");
   }
 
-  const help = await runDevtoolsCli(
-    run,
-    process.execPath,
-    [scriptPath, ...DEVTOOLS_PRIVACY_FLAGS, "--help"],
-    stageDir,
-    env,
-    "devtools help probe",
-  );
-  if (typeof help.status !== "number" || help.status !== 0) fail("devtools help probe failed");
-  if (typeof help.stdout !== "string") fail("devtools help probe failed");
-  if (Buffer.byteLength(help.stdout, "utf8") > MAX_HELP_STDOUT_BYTES) {
-    fail("devtools help output exceeds its bound");
-  }
-  for (const flag of DEVTOOLS_PRIVACY_FLAGS) {
-    const advertised = help.stdout.includes(flag)
-      || (flag === "--redact-network-headers" && help.stdout.includes("--redactNetworkHeaders"));
-    if (!advertised) fail(`devtools help is missing ${flag}`);
-  }
-
-  // --help exits before yargs validates its arguments (even an unknown flag
-  // returns 0). Probe the package's parser directly, without starting Chrome,
-  // to verify the exact configured flags have their intended boolean effects.
-  const parserModule = path.join(realPackageDir, "build", "src", "config", "mcp-options.js");
-  let realParserModule: string;
-  try {
-    realParserModule = assertInsideStage(realPackageDir, fs.realpathSync(parserModule), "devtools parser");
-    if (!fs.statSync(realParserModule).isFile()) fail("devtools parser is not a file");
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("browser-provider: ")) throw error;
-    fail("devtools parser is missing or unreadable");
-  }
-  const probeEnv = { ...env };
-  delete probeEnv.CI; // Otherwise CI alone forces usageStatistics=false, masking an ignored flag.
-  const parserProbe = await runDevtoolsCli(
-    run,
-    process.execPath,
-    ["--input-type=module", "-e", DEVTOOLS_PARSER_PROBE, realParserModule],
-    stageDir,
-    probeEnv,
-    "devtools parser probe",
-  );
-  if (parserProbe.status !== 0 || parserProbe.stdout?.trim() !== "[true,true,false,false]") {
-    fail("devtools parser does not honor the mandatory privacy flags");
-  }
+  await assertDevtoolsPrivacyProof(run, scriptPath, realPackageDir, stageDir, env);
   return { binPath, version: release.version };
 }
