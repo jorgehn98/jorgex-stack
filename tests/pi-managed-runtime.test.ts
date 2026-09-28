@@ -9,6 +9,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/lib/browser-provider.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/browser-provider.js")>()),
   verifyDevtoolsCliArtifact: vi.fn(async () => ({ binPath: "/isolated/stage/bin", version: DEVTOOLS_VERSION })),
+  activateVerifiedBrowserArtifact: vi.fn(async () => ({})),
+}));
+
+vi.mock("../src/lib/browser-managed.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/browser-managed.js")>()),
+  loadVerifiedManagedBrowserReceipt: vi.fn(() => ({ version: DEVTOOLS_VERSION, integrity: DEVTOOLS_INTEGRITY })),
 }));
 
 type Operation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
@@ -883,7 +889,7 @@ describe("Pi managed package and projection coordination", () => {
         operation: "sync",
         detected: { executable: "/opt/pi/bin/pi", version: "99.0.0" },
         engramBin: "/isolated/bin/engram",
-        devtoolsMcpEnabled: true,
+        devtoolsMcpEnabled: false,
         playwrightCliEnabled: true,
         writingStyle: FORWARDING_STYLE,
       });
@@ -1162,7 +1168,7 @@ describe("Pi managed package and projection coordination", () => {
         detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
         engramBin: "/isolated/bin/engram",
         writingStyle: FORWARDING_STYLE,
-        devtoolsMcpEnabled: true,
+        devtoolsMcpEnabled: false,
         playwrightCliEnabled: true,
         candidate: { package: { name: "jorgex-pi", version: "9.9.8", source: CANDIDATE_SOURCE_A } },
       });
@@ -3427,13 +3433,13 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
   ): void {
     vi.doMock("../src/lib/browser-provider.js", async () => ({
       ...(await vi.importActual<typeof import("../src/lib/browser-provider.js")>("../src/lib/browser-provider.js")),
-      verifyDevtoolsCliArtifact: (...args: unknown[]) => {
+      activateVerifiedBrowserArtifact: (...args: unknown[]) => {
         smokeCalls.push(args);
-        events.push("smoke");
+        events.push("managed-activation");
         if (behavior === "reject") {
-          return Promise.reject(new Error("DevTools CLI smoke: missing mandatory flag --isolated"));
+          return Promise.reject(new Error("DevTools managed privacy proof: missing mandatory flag --isolated"));
         }
-        return Promise.resolve({ binPath: "/isolated/stage/bin", version: DEVTOOLS_VERSION });
+        return Promise.resolve({});
       },
     }));
     vi.doMock("../src/lib/external-tools.js", () => ({
@@ -3472,7 +3478,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
             expect(result).toMatchObject({ kind: "installed" });
             expect(events[0]).toBe(`fetch ${DEVTOOLS_METADATA}`);
             expect(events[1]).toBe(`fetch ${DEVTOOLS_TARBALL}`);
-            expect(events[2]).toBe("smoke");
+            expect(events[2]).toBe("managed-activation");
             expect(events.findIndex((event) => event.startsWith("projection "))).toBe(3);
             expect(projectionInputs[0]).toMatchObject({
               operation: "install",
@@ -3687,18 +3693,18 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
               release?: unknown;
             };
             expect(input).toMatchObject({
-              pnpmBin: "/isolated/bin/pnpm",
               release: {
                 version: DEVTOOLS_VERSION,
                 tarballUrl: DEVTOOLS_TARBALL,
                 integrity: DEVTOOLS_INTEGRITY,
               },
             });
+            expect(smokeCalls[0]?.[1]).toMatchObject({ pnpmBin: "/isolated/bin/pnpm" });
             expect(typeof input?.artifactPath === "string" && path.isAbsolute(input.artifactPath)).toBe(true);
             expect(typeof input?.stageDir === "string" && path.isAbsolute(input.stageDir)).toBe(true);
             const metaIdx = events.indexOf(`fetch ${DEVTOOLS_METADATA}`);
             const tarballIdx = events.indexOf(`fetch ${DEVTOOLS_TARBALL}`);
-            const smokeIdx = events.indexOf("smoke");
+            const smokeIdx = events.indexOf("managed-activation");
             const projectionIdx = events.findIndex((event) => event.startsWith("projection "));
             expect(metaIdx).toBeGreaterThanOrEqual(0);
             expect(tarballIdx).toBeGreaterThan(metaIdx);
