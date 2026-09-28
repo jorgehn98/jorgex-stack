@@ -779,6 +779,10 @@ type VerifyArtifactModule = {
     input: { artifactPath: string; stageDir: string; pnpmBin: string; release: NpmPackageRelease },
     deps: { run: ArtifactRun },
   ): Promise<unknown>;
+  verifyStagedDevtoolsCliArtifact(
+    input: { stageDir: string; staged: { treePath: string; nodeModulesPath: string; treeSha256: string; closure: [] }; release: NpmPackageRelease },
+    deps: { run: ArtifactRun },
+  ): Promise<unknown>;
 };
 
 async function loadVerifyArtifact(): Promise<VerifyArtifactModule> {
@@ -871,6 +875,32 @@ function artifactRelease(): NpmPackageRelease {
 }
 
 describe("[T14-RED] DevTools artifact keeps the mandatory privacy flags", () => {
+  it("proves flags from a certified stage without a second pnpm install", async () => {
+    const { verifyStagedDevtoolsCliArtifact } = await loadVerifyArtifact();
+    const parent = artifactParent();
+    const stageDir = path.join(parent, "stage");
+    fs.mkdirSync(stageDir, { recursive: true });
+    const events: ArtifactEvent[] = [];
+    const run = artifactRunFake({
+      events, stageDir,
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP, helpStatus: 0,
+    });
+    await run(ARTIFACT_PNPM_BIN, ["add"], { cwd: stageDir, env: {} });
+    events.length = 0;
+    await verifyStagedDevtoolsCliArtifact({
+      stageDir,
+      staged: {
+        treePath: path.join(stageDir, "node_modules", "chrome-devtools-mcp"),
+        nodeModulesPath: path.join(stageDir, "node_modules"), treeSha256: "0".repeat(64), closure: [],
+      },
+      release: artifactRelease(),
+    }, { run });
+    expect(events.some((event) => event.args[0] === "add")).toBe(false);
+    expect(events.some((event) => event.args.includes("--help"))).toBe(true);
+    expect(events.some((event) => event.args[0] === "--input-type=module")).toBe(true);
+  });
+
   it("installs the exact local tarball isolated and proves all four flags via --help", async () => {
     const { verifyDevtoolsCliArtifact } = await loadVerifyArtifact();
     const parent = artifactParent();
