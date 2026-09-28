@@ -539,6 +539,88 @@ describe("optional Chrome DevTools MCP", () => {
     expectUserConfigPreserved(runtime, content);
   });
 
+  it.each(RUNTIMES)("%s migrates its exact owned legacy DevTools server to the verified guard", (runtime) => {
+    const root = tempDir();
+    const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
+    const file = configFile(runtime, configDir);
+    const adapter = adapterFor(runtime);
+    writeUserConfig(runtime, file);
+    const canonical = loadCanonicalMcp(stackRoot());
+    const legacy = materializeCanonicalDevtoolsServer(canonical.servers[DEVTOOLS_SERVER]!, {
+      ...OBSERVED_DEVTOOLS, version: "1.6.0",
+    });
+    const [oldAction] = adapter.planMainConfig({ servers: { ...canonical.servers, [DEVTOOLS_SERVER]: legacy } },
+      context(runtime, configDir, true));
+    fs.writeFileSync(file, (oldAction as { content: string }).content);
+
+    const ctx = {
+      ...context(runtime, configDir, true, true),
+      devtoolsMcpObservedVersion: OBSERVED_DEVTOOLS,
+      devtoolsMcpInvocation: {
+        command: process.execPath,
+        args: ["--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+      },
+    };
+    const [action] = planMcp(adapter, ctx);
+    const migrated = (action as { content: string; mcpOwnership?: Array<{ server: string; owned: boolean }> }).content;
+    const server = devToolsServerSnapshot(runtime, migrated);
+    expect(JSON.stringify(server)).toContain("trusted-guard");
+    expect(JSON.stringify(server)).not.toContain("dlx");
+    expect((action as { mcpOwnership?: Array<{ server: string; owned: boolean }> }).mcpOwnership ?? [])
+      .not.toContainEqual({ server: DEVTOOLS_SERVER, owned: false });
+    expectUserConfigPreserved(runtime, migrated);
+  });
+
+  it.each(RUNTIMES)("%s blocks enabled DevTools when the existing legacy server is not owned", (runtime) => {
+    const root = tempDir();
+    const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
+    const file = configFile(runtime, configDir);
+    const adapter = adapterFor(runtime);
+    writeUserConfig(runtime, file);
+    const canonical = loadCanonicalMcp(stackRoot());
+    const legacy = materializeCanonicalDevtoolsServer(canonical.servers[DEVTOOLS_SERVER]!, {
+      ...OBSERVED_DEVTOOLS, version: "1.6.0",
+    });
+    const [oldAction] = adapter.planMainConfig({ servers: { ...canonical.servers, [DEVTOOLS_SERVER]: legacy } },
+      context(runtime, configDir, true));
+    const original = (oldAction as { content: string }).content;
+    fs.writeFileSync(file, original);
+
+    const ctx = {
+      ...context(runtime, configDir, true, false),
+      devtoolsMcpObservedVersion: OBSERVED_DEVTOOLS,
+      devtoolsMcpInvocation: {
+        command: process.execPath,
+        args: ["--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+      },
+    };
+    expect(() => planMcp(adapter, ctx)).toThrow(/chrome-devtools.*(ajena|conflicto|usuario)/i);
+    expect(fs.readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it.each(RUNTIMES)("%s blocks an owned DevTools server extended by the user while enabled", (runtime) => {
+    const root = tempDir();
+    const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
+    const file = configFile(runtime, configDir);
+    const adapter = adapterFor(runtime);
+    writeUserConfig(runtime, file);
+    const extended = addUserFieldToDevToolsServer(runtime, plannedContent(adapter, context(runtime, configDir, true)));
+    fs.writeFileSync(file, extended);
+    const ctx = {
+      ...context(runtime, configDir, true, true),
+      devtoolsMcpObservedVersion: OBSERVED_DEVTOOLS,
+      devtoolsMcpInvocation: {
+        command: process.execPath,
+        args: ["--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
+          "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
+      },
+    };
+    expect(() => planMcp(adapter, ctx)).toThrow(/chrome-devtools.*conflicto/i);
+    expect(fs.readFileSync(file, "utf8")).toBe(extended);
+  });
+
   it.each(RUNTIMES)("%s releases ownership but preserves a formerly owned server extended by the user", (runtime) => {
     const root = tempDir();
     const configDir = runtime === "claude-code" ? path.join(root, ".claude") : path.join(root, runtime);
@@ -802,6 +884,53 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
     "--no-performance-crux",
     "--no-usage-statistics",
   ];
+
+  it("migrates a verified legacy owned server during a deliberate provider install", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(homeDir, ".config", "opencode");
+    const configFile = path.join(configDir, "opencode.json");
+    writeModelMap(homeDir);
+    writeUserConfig("opencode", configFile);
+    const canonical = loadCanonicalMcp(stackRoot());
+    const legacy = materializeCanonicalDevtoolsServer(canonical.servers[DEVTOOLS_SERVER]!, {
+      ...OBSERVED_DEVTOOLS, version: "1.6.0",
+    });
+    const [legacyAction] = opencodeAdapter.planMainConfig(
+      { servers: { ...canonical.servers, [DEVTOOLS_SERVER]: legacy } },
+      context("opencode", configDir, true),
+    );
+    fs.writeFileSync(configFile, (legacyAction as { content: string }).content);
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
+    fs.writeFileSync(preferenceFile, JSON.stringify({
+      version: 1, enabled: { opencode: true }, owned: { opencode: { [DEVTOOLS_SERVER]: true } },
+    }) + "\n");
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const adapter = install.ADAPTERS.opencode!;
+      const originalDetect = adapter.detect;
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      try {
+        stubFlowFetch([], FLOW_BYTES);
+        await expect(install.runInstall({
+          runtimes: ["opencode"], dryRun: false, yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          devtoolsMcpSelection: { opencode: true },
+        })).resolves.toBe(0);
+        expectManagedDevToolsServer(fs.readFileSync(configFile, "utf8"));
+        expectUserConfigPreserved("opencode", fs.readFileSync(configFile, "utf8"));
+        const preference = JSON.parse(fs.readFileSync(preferenceFile, "utf8")) as {
+          observed?: { version?: string }; owned?: Record<string, Record<string, boolean>>;
+        };
+        expect(preference.observed?.version).toBe(FLOW_VERSION);
+        expect(preference.owned?.opencode?.[DEVTOOLS_SERVER]).toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+        adapter.detect = originalDetect;
+      }
+    });
+  });
 
   it("verifies the provider release before writing config and records the observed opt-in", async () => {
     const root = tempDir();
