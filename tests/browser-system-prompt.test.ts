@@ -13,6 +13,8 @@ import { upsertMarkdownSection } from "../src/lib/filemerge.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { savePlaywrightCliPreference } from "../src/lib/tool-preferences.js";
 import { testModelsForRuntime } from "./fixtures/model-map.js";
+import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
+import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 
 const DEVTOOLS_SERVER = "chrome-devtools";
 const tempDirs: string[] = [];
@@ -31,6 +33,25 @@ const DEVTOOLS_OBSERVED = {
   version: "9.9.20",
   integrity: `sha512-${createHash("sha512").update(Buffer.from("synthetic-chrome-devtools-mcp-tarball-9.9.20\n")).digest("base64")}`,
 };
+
+async function seedManagedDevtools(stateDir: string): Promise<void> {
+  const stageDir = path.join(path.dirname(stateDir), "devtools-stage");
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treePath = path.join(nodeModulesPath, "chrome-devtools-mcp");
+  const entryPath = path.join(treePath, "entry.js");
+  fs.mkdirSync(treePath, { recursive: true });
+  fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "chrome-devtools-mcp", version: DEVTOOLS_OBSERVED.version }));
+  fs.writeFileSync(entryPath, "export {};\n");
+  await activateManagedBrowserTree({
+    stateDir,
+    packageName: "chrome-devtools-mcp",
+    release: { ...DEVTOOLS_OBSERVED,
+      tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${DEVTOOLS_OBSERVED.version}.tgz` },
+    staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+      closure: [{ name: "chrome-devtools-mcp", ...DEVTOOLS_OBSERVED }] },
+    entryPath,
+  });
+}
 
 function playwrightPackument(): unknown {
   return {
@@ -506,6 +527,12 @@ describe("Playwright prompt install ordering", () => {
             confirmed: false,
             runtimeSelection: { opencode: true, pi: false },
           },
+          playwrightToolDeps: {
+            run: async () => true,
+            verify: () => true,
+            persistEnabled: (enabled, observed) =>
+              savePlaywrightCliPreference(preferenceFile, enabled, { opencode: true }, observed),
+          },
         })).resolves.toBe(0);
 
         expect(fetchEvents).toEqual([
@@ -865,6 +892,7 @@ describe("Playwright prompt install ordering", () => {
       const install = await import("../src/install.js");
       const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
       try {
+        await seedManagedDevtools(stateDir);
         await expect(install.runInstall({
           runtimes: ["opencode"],
           playwrightCapability: {
@@ -953,6 +981,7 @@ describe("Playwright prompt install ordering", () => {
         expect(content).not.toContain("Playwright CLI");
         expect(content).not.toContain("Chrome DevTools");
 
+        await seedManagedDevtools(path.join(targetDir, ".jorgex-stack"));
         await expect(install.runInstall({
           runtimes: ["opencode"],
           targetDir,
@@ -967,15 +996,9 @@ describe("Playwright prompt install ordering", () => {
         const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER] as {
           command?: unknown;
         };
-        expect(targetServer?.command).toEqual([
-          "pnpm",
-          "dlx",
-          `chrome-devtools-mcp@${DEVTOOLS_OBSERVED.version}`,
-          "--isolated",
-          "--redact-network-headers",
-          "--no-performance-crux",
-          "--no-usage-statistics",
-        ]);
+        expect(Array.isArray(targetServer?.command)).toBe(true);
+        expect((targetServer?.command as string[])[0]).toBe(process.execPath);
+        expect(JSON.stringify(targetServer)).not.toContain("dlx");
         expect(fetchEvents).toEqual([]);
         expect(execEvents).toEqual([]);
         expect(fs.readFileSync(path.join(stateDir, "playwright-cli.json"), "utf8")).toBe(realPlaywrightPreference);
