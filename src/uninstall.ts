@@ -140,7 +140,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       if (opts.runtimes.includes(keep.id)) continue;
       const detection = keep.detect();
       if (!detection.installed) continue;
-      const keepCtx = makeContext(keep, detection.configDir);
+      const keepCtx = makeContext(keep, detection.configDir, undefined, true, undefined, false);
       if (!keepCtx) continue;
       for (const action of buildContentPlan(keep, keepCtx)) retained.add(path.resolve(action.target));
     }
@@ -158,7 +158,13 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       p.log.warn(`${adapter.name} no detectado — omitido.`);
       continue;
     }
-    const ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences);
+    let ctx: ReturnType<typeof makeContext>;
+    try { ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences); }
+    catch (error) {
+      p.log.error(`${adapter.name}: no se pudo verificar el estado managed browser (${error instanceof Error ? error.message : String(error)}).`);
+      exitCode = 1;
+      continue;
+    }
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
 
@@ -166,7 +172,13 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     try {
       const devtools = mcpForUnmerge.servers[DEVTOOLS_MCP_SERVER];
       const scopedMcp = devtools !== undefined && ctx.ownedMcpServers?.has(DEVTOOLS_MCP_SERVER)
-        ? { servers: { ...mcpForUnmerge.servers, [DEVTOOLS_MCP_SERVER]: materializeCanonicalDevtoolsServerForRemoval(devtools, ctx.devtoolsMcpObservedVersion) } }
+        ? { servers: { ...mcpForUnmerge.servers, [DEVTOOLS_MCP_SERVER]: {
+          ...materializeCanonicalDevtoolsServerForRemoval(devtools, ctx.devtoolsMcpObservedVersion),
+          ...(ctx.devtoolsMcpInvocation === undefined ? {} : {
+            command: ctx.devtoolsMcpInvocation.command,
+            args: [...ctx.devtoolsMcpInvocation.args],
+          }),
+        } } }
         : mcpForUnmerge;
       unmerge = adapter.planUnmerge(scopedMcp, hooks, ctx);
     } catch (error) {
