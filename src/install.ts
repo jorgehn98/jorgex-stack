@@ -928,7 +928,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     // Verificación de idempotencia: re-planificar debe dar cero cambios.
     // Huérfanos diferidos hasta verificación oficial (nada irreversible
     // antes del setup).
-    const verifyCtx: InstallContext = { ...ctx, warnings: [] };
+    const verifiedOwnedMcpServers = new Set(ctx.ownedMcpServers ?? []);
+    for (const action of plan) {
+      if (action.kind !== "write") continue;
+      for (const change of action.mcpOwnership ?? []) {
+        if (change.owned) verifiedOwnedMcpServers.add(change.server);
+        else verifiedOwnedMcpServers.delete(change.server);
+      }
+    }
+    const verifyCtx: InstallContext = { ...ctx, warnings: [], ownedMcpServers: verifiedOwnedMcpServers };
     const dirty = diffPlan(buildPlan(adapter, verifyCtx)).filter((d) => d.status !== "unchanged");
     if (dirty.length > 0) {
       p.log.error(`${adapter.name}: verificación de idempotencia FALLÓ (${dirty.length} acciones inestables).`);

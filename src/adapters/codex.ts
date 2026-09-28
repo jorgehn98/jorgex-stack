@@ -5,7 +5,7 @@ import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryMo
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
-import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, isCanonicalMcpServerEnabled, loadCanonicalDefaults, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "../lib/canonical.js";
 import { HOME, samePath, stackRoot } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import {
@@ -65,6 +65,14 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], s
   return server.optional === true
     && server.transport === "stdio"
     && section?.trim() === stdioMcpSection(server);
+}
+
+function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][string], section: string | null, ctx: InstallContext): boolean {
+  if (isManagedOptionalStdioServer(server, section)) return true;
+  if (name !== DEVTOOLS_MCP_SERVER) return false;
+  const template = loadCanonicalMcp(ctx.stackDir).servers[DEVTOOLS_MCP_SERVER];
+  return template !== undefined
+    && isManagedOptionalStdioServer(materializeCanonicalDevtoolsServerForRemoval(template), section);
 }
 
 /**
@@ -614,16 +622,14 @@ export const codexAdapter: Adapter = {
       }
       if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
         if (owned) {
-          if (isManagedOptionalStdioServer(server, existing)) content = removeTomlSection(content!, section);
+          if (isOwnedDevtoolsServer(name, server, existing, ctx)) content = removeTomlSection(content!, section);
           mcpOwnership.push({ server: name, owned: false });
         }
         continue;
       }
       if (server.optional && existing !== null) {
-        if (!owned || !isManagedOptionalStdioServer(server, existing)) {
-          if (owned) mcpOwnership.push({ server: name, owned: false });
-          ctx.warnings.push(`Codex: MCP opcional '${name}' ya pertenece a la configuración del usuario; se conserva.`);
-          continue;
+        if (!owned || !isOwnedDevtoolsServer(name, server, existing, ctx)) {
+          throw new Error(`Codex: ${name}: conflicto con servidor MCP existente ajeno o modificado; se conserva. Retira esa entrada explícitamente antes de activar DevTools gestionado.`);
         }
       }
       if (server.transport === "stdio") {
@@ -728,7 +734,7 @@ export const codexAdapter: Adapter = {
           continue;
         }
         if (ctx.ownedMcpServers?.has(name) === true) {
-          if (isManagedOptionalStdioServer(server, readTomlSection(content, section))) {
+          if (isOwnedDevtoolsServer(name, server, readTomlSection(content, section), ctx)) {
             content = removeTomlSection(content, section);
           }
           mcpOwnership.push({ server: name, owned: false });

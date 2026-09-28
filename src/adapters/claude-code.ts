@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
-import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
+import { DEVTOOLS_MCP_SERVER, isCanonicalMcpServerEnabled, loadCanonicalDefaults, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectClaudeCode } from "../lib/detect.js";
@@ -130,6 +130,14 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], v
     && Array.isArray(current.args)
     && current.args.length === expectedArgs.length
     && current.args.every((arg, index) => arg === expectedArgs[index]);
+}
+
+function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][string], value: unknown, ctx: InstallContext): boolean {
+  if (isManagedOptionalStdioServer(server, value)) return true;
+  if (name !== DEVTOOLS_MCP_SERVER) return false;
+  const template = loadCanonicalMcp(ctx.stackDir).servers[DEVTOOLS_MCP_SERVER];
+  return template !== undefined
+    && isManagedOptionalStdioServer(materializeCanonicalDevtoolsServerForRemoval(template), value);
 }
 
 export const claudeCodeAdapter: Adapter = {
@@ -300,16 +308,14 @@ export const claudeCodeAdapter: Adapter = {
         }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
-            if (isManagedOptionalStdioServer(server, existing)) delete servers[name];
+            if (isOwnedDevtoolsServer(name, server, existing, ctx)) delete servers[name];
             mcpOwnership.push({ server: name, owned: false });
           }
           continue;
         }
         if (server.optional && existing !== undefined) {
-          if (!owned || !isManagedOptionalStdioServer(server, existing)) {
-            if (owned) mcpOwnership.push({ server: name, owned: false });
-            ctx.warnings.push(`Claude Code: MCP opcional '${name}' ya pertenece a la configuración del usuario; se conserva.`);
-            continue;
+          if (!owned || !isOwnedDevtoolsServer(name, server, existing, ctx)) {
+            throw new Error(`Claude Code: ${name}: conflicto con servidor MCP existente ajeno o modificado; se conserva. Retira esa entrada explícitamente antes de activar DevTools gestionado.`);
           }
         }
         if (server.transport === "stdio") {
@@ -406,7 +412,7 @@ export const claudeCodeAdapter: Adapter = {
             continue;
           }
           if (ctx.ownedMcpServers?.has(name) === true) {
-            if (isManagedOptionalStdioServer(server, servers[name])) delete servers[name];
+            if (isOwnedDevtoolsServer(name, server, servers[name], ctx)) delete servers[name];
             mcpOwnership.push({ server: name, owned: false });
           }
         }
