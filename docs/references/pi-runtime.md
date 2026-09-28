@@ -137,6 +137,8 @@ El plugin oficial de Claude sigue requiriendo Engram estable 2.0.0 o superior. U
 
 ## Comandos
 
+Stack reconoce la versión del host Pi sin ejecutarlo: admite tanto el binario de un paquete npm directo como el launcher del instalador gestionado de Pi (`install/managed-install.json` con layout `releases-v1`). Para este último comprueba la versión actual contra el manifest de `@earendil-works/pi-coding-agent` dentro del release; si la metadata no coincide, bloquea la operación en lugar de adivinar la versión o usar el `.bin` interno como atajo. En un PC nuevo, ejecuta primero `install --agents pi`; `sync --agents pi` solo reconcilia una instalación Stack que ya tiene receipt gestionado y no crea ese receipt desde cero.
+
 | Comando Stack | Comportamiento Pi |
 | --- | --- |
 | `install --agents pi` | Verifica el tarball, instala y normaliza el paquete, proyecta recursos, ejecuta `sync` para inicializar Pi y escribe ambos receipts. |
