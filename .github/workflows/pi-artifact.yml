@@ -106,4 +106,5 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vitest run tests/browser-managed-windows.test.ts tests/playwright-windows-execution.test.ts
+      - run: pnpm exec vitest run tests/pi-host-version.test.ts
       - run: pnpm exec vitest run tests/browser-provider-resolution.test.ts -t "through the real pnpm stage"

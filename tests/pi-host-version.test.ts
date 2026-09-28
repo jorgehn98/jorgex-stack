@@ -56,7 +56,9 @@ describe.skipIf(process.platform === "win32")("Pi host version detection", () =>
   it("rejects path traversal in the managed current-version", () => {
     const fixture = managedPiFixture();
     fs.writeFileSync(path.join(fixture.agentDir, "install", "current-version"), "../outside\n");
-    expect(detectPiRuntime().version).toBeNull();
+    expect(detectPiRuntime()).toMatchObject({
+      version: null, versionDiagnostic: expect.stringMatching(/install\/current-version.*inválida/),
+    });
   });
 
   it("rejects a managed entrypoint that does not name the detected executable", () => {
@@ -65,6 +67,36 @@ describe.skipIf(process.platform === "win32")("Pi host version detection", () =>
       kind: "pi-managed-install", schemaVersion: 1, layout: "releases-v1",
       entrypoint: { type: "symlink", path: path.join(fixture.root, "other", "pi") },
     }));
+    expect(detectPiRuntime()).toMatchObject({
+      version: null, versionDiagnostic: expect.stringMatching(/managed-install\.json.*entrypoint/),
+    });
+  });
+
+  it("reports corrupt managed-install metadata without executing Pi", () => {
+    const fixture = managedPiFixture();
+    fs.writeFileSync(path.join(fixture.agentDir, "install", "managed-install.json"), "{invalid json");
+    expect(detectPiRuntime()).toMatchObject({
+      version: null, versionDiagnostic: expect.stringMatching(/install\/managed-install\.json/),
+    });
+    expect(fs.existsSync(fixture.marker)).toBe(false);
+  });
+
+  it("does not fall back to an ancestor npm manifest when managed metadata is invalid", () => {
+    const fixture = managedPiFixture();
+    const ancestorPackage = path.join(fixture.agentDir, "node_modules", "@earendil-works", "pi-coding-agent");
+    fs.mkdirSync(ancestorPackage, { recursive: true });
+    fs.writeFileSync(path.join(ancestorPackage, "package.json"),
+      JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "9.9.9" }));
+    fs.writeFileSync(path.join(fixture.agentDir, "install", "current-version"), "../outside\n");
+    expect(detectPiRuntime().version).toBeNull();
+  });
+
+  it("rejects a managed release directory that is a symlink", () => {
+    const fixture = managedPiFixture();
+    const releaseDir = path.join(fixture.agentDir, "install", "releases", "0.87.1");
+    const alternate = path.join(fixture.root, "alternate-release");
+    fs.renameSync(releaseDir, alternate);
+    fs.symlinkSync(alternate, releaseDir);
     expect(detectPiRuntime().version).toBeNull();
   });
 
@@ -81,5 +113,21 @@ describe.skipIf(process.platform === "win32")("Pi host version detection", () =>
     fs.symlinkSync(path.join(packageDir, "dist", "cli.js"), executable);
     process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
     expect(detectPiRuntime()).toMatchObject({ installed: true, executable, version: "0.87.1" });
+  });
+});
+
+it.skipIf(process.platform !== "win32")("keeps npm Pi .cmd hosts detectable on Windows", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-npm-pi-win-"));
+  sandboxes.push(root);
+  const binDir = path.join(root, "node_modules", ".bin");
+  const packageDir = path.join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, "pi.cmd"), "@echo off\r\n");
+  fs.writeFileSync(path.join(packageDir, "package.json"),
+    JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.87.1" }));
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+  expect(detectPiRuntime()).toMatchObject({
+    installed: true, executable: path.join(binDir, "pi.cmd"), version: "0.87.1",
   });
 });

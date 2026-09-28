@@ -6,7 +6,7 @@ import pin from "./pi-runtime-pin.json" with { type: "json" };
 import history from "./pi-runtime-history.json" with { type: "json" };
 import { dataDir } from "./paths.js";
 import { preparePiManagedInstall, type PiInstallPreflightResult } from "./pi-install-preflight.js";
-import { detectPiHostVersion } from "./pi-host-version.js";
+import { inspectPiHostVersion } from "./pi-host-version.js";
 import {
   activatePreparedPiInstall,
   type PreparedPiInstallEvidence,
@@ -605,6 +605,7 @@ export interface PiRuntimeDetection {
   installed: boolean;
   executable: string | null;
   version: string | null;
+  versionDiagnostic?: string | null;
   codingAgentDir: string;
 }
 
@@ -615,12 +616,14 @@ function readJsonFile(file: string): unknown {
 export function detectPiRuntime(): PiRuntimeDetection {
   const executable = lookPath("pi");
   const home = os.homedir();
+  const inspection = executable === null ? null : inspectPiHostVersion(executable);
   return {
     id: "pi",
     name: "Pi",
     installed: executable !== null,
     executable,
-    version: executable === null ? null : detectPiHostVersion(executable),
+    version: inspection?.version ?? null,
+    versionDiagnostic: inspection?.diagnostic ?? null,
     codingAgentDir: process.env.PI_CODING_AGENT_DIR ?? path.join(home, ".pi", "agent"),
   };
 }

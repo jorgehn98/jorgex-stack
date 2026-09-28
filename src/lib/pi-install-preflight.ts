@@ -8,7 +8,7 @@ import {
   resolvePiProducerCommit,
 } from "./pi-release-resolver.js";
 import { stageVerifiedPiTarball } from "./pi-release-stage.js";
-import { detectPiHostVersion } from "./pi-host-version.js";
+import { inspectPiHostVersion } from "./pi-host-version.js";
 import type { PiRuntimeCandidate } from "./pi-package-lifecycle.js";
 
 export interface PiInstallPreflightPaths {
@@ -261,8 +261,9 @@ export async function preparePiManagedInstall(
   // contract. The Stack contract is compatibility only; package/source
   // come from the live release, never the frozen pin. Fail closed here
   // when the published stage contract drifts (capabilities/browser).
-  const hostVersion = detectPiHostVersion(piExecutable)
-    ?? fail(`cannot detect Pi host version from executable: ${piExecutable}`);
+  const hostInspection = inspectPiHostVersion(piExecutable);
+  const hostVersion = hostInspection.version
+    ?? fail(`cannot detect Pi host version: ${hostInspection.diagnostic ?? "unknown reason"}`);
   let candidate: PiRuntimeCandidate;
   try {
     candidate = await buildStagedPiCandidate({
