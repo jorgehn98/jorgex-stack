@@ -1031,12 +1031,13 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     const lstatSpy = vi.spyOn(fs, "lstatSync");
     let replaced = false;
     lstatSpy.mockImplementation(((file: unknown, options: unknown) => {
+      const observed = Reflect.apply(originalLstat, fs, [file, options]) as fs.Stats;
       if (!replaced && path.resolve(String(file)) === path.resolve(lockPath)) {
         fs.unlinkSync(lockPath);
         fs.writeFileSync(lockPath, foreignLock, { mode: 0o600 });
         replaced = true;
       }
-      return Reflect.apply(originalLstat, fs, [file, options]) as fs.Stats;
+      return observed;
     }) as typeof fs.lstatSync);
 
     await activateManagedBrowserTree(fixture.input);

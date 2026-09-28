@@ -401,6 +401,18 @@ function writeStageFiles(stageDir: string, packageName: string, artifactPath: st
   return lockPath;
 }
 
+function assertNoAncestorPnpmConfig(stageDir: string): void {
+  for (let directory = path.dirname(stageDir);; directory = path.dirname(directory)) {
+    for (const name of ["pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs", ".pnpmfile.mjs"]) {
+      const file = path.join(directory, name);
+      if (fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined) {
+        fail(`pnpm ancestor configuration blocks private browser stage: ${file}`);
+      }
+    }
+    if (directory === path.dirname(directory)) break;
+  }
+}
+
 function stageEnv(stageDir: string, storeDir: string, virtualStoreDir: string, lockPath: string): NodeJS.ProcessEnv {
   const home = path.join(stageDir, ".home");
   const cache = path.join(stageDir, ".cache");
@@ -930,6 +942,7 @@ export async function stageVerifiedBrowserTree(
   if (deps.runPnpm !== undefined && typeof deps.runPnpm !== "function") fail("runPnpm must be a function");
   const release = assertRelease(packageName, rawRelease);
   const realStage = assertRealDirectory(stageDir, "stageDir");
+  assertNoAncestorPnpmConfig(realStage);
   let stageEntries: fs.Dirent[];
   try {
     stageEntries = fs.readdirSync(stageDir, { withFileTypes: true });

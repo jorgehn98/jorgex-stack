@@ -493,8 +493,7 @@ describe("[T25-RED] browser stage certifies official transitive closure", () => 
     expect(String((mirrorError as Error).message)).not.toContain("MIRROR-playwright-core");
   });
 
-  it("does not inherit an ancestor workspace pnpmfile that patches the staged package", async () => {
-    const { execFileSync } = await import("node:child_process");
+  it("blocks an ancestor workspace pnpmfile before executing pnpm", async () => {
     const { gzipSync } = await import("node:zlib");
     const { stageVerifiedBrowserTree } = await loadBrowserStage();
 
@@ -572,31 +571,7 @@ describe("[T25-RED] browser stage certifies official transitive closure", () => 
       { mode: 0o600 },
     );
 
-    const pnpmRoots = [
-      path.join(os.homedir(), ".local", "share", "pnpm", ".tools", "pnpm"),
-      ...(process.env.LOCALAPPDATA === undefined ? [] : [path.join(process.env.LOCALAPPDATA, "pnpm", ".tools", "pnpm")]),
-    ];
-    const pnpmCandidates: string[] = [];
-    for (const rootPath of pnpmRoots) {
-      for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
-        if (!entry.isDirectory() || !entry.name.startsWith("11.1.1")) continue;
-        pnpmCandidates.push(path.join(rootPath, entry.name, "node_modules", "pnpm", "bin", "pnpm.mjs"));
-      }
-    }
-    const pathEntries = (process.env.PATH ?? "").split(path.delimiter);
-    for (const dir of pathEntries) {
-      pnpmCandidates.push(path.join(dir, process.platform === "win32" ? "pnpm.cmd" : "pnpm"));
-    }
-    const pnpmBin = pnpmCandidates.find((candidate) => {
-      if (!fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) return false;
-      try {
-        return execFileSync(candidate, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() === "11.1.1";
-      } catch {
-        return false;
-      }
-    });
-    expect(pnpmBin, "the focused test requires pnpm 11.1.1").toBeDefined();
-    if (pnpmBin === undefined) return;
+    const pnpmBin = "/isolated/bin/pnpm";
 
     let result: BrowserStageResult | null = null;
     let stageError: unknown = null;
@@ -620,13 +595,9 @@ describe("[T25-RED] browser stage certifies official transitive closure", () => 
     }
 
     expect(fs.existsSync(marker), "ancestor global pnpmfile must not execute").toBe(false);
-    expect(stageError).toBeNull();
-    expect(result).not.toBeNull();
-    expect(result!.closure).toEqual([{ name: PACKAGE_NAME, version: VERSION, integrity: sri(rootBytes) }]);
-    expect(fs.existsSync(path.join(stageDir, "node_modules", "external-patch"))).toBe(false);
-    expect(JSON.parse(fs.readFileSync(path.join(result!.treePath, "package.json"), "utf8"))).toMatchObject({
-      name: PACKAGE_NAME,
-      version: VERSION,
-    });
+    expect(stageError).toBeInstanceOf(Error);
+    expect(String(stageError)).toMatch(/pnpm ancestor configuration blocks private browser stage/);
+    expect(result).toBeNull();
+    expect(fs.readdirSync(stageDir)).toEqual([]);
   });
 });

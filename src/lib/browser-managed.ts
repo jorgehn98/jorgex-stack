@@ -259,15 +259,19 @@ async function acquireLock(lockPath: string): Promise<() => void> {
     try {
       const fd = fs.openSync(lockPath, "wx", 0o600);
       const lockIdentity = fileIdentity(fs.fstatSync(fd));
+      const lockContent = Buffer.from(`${process.pid}:${randomBytes(16).toString("hex")}\n`);
       try {
-        fs.writeSync(fd, `${process.pid}\n`, undefined, "utf8");
+        fs.writeSync(fd, lockContent);
       } finally {
         fs.closeSync(fd);
       }
       return () => {
         try {
           const stat = fs.lstatSync(lockPath);
-          if (stat.isFile() && !stat.isSymbolicLink() && sameFileIdentity(stat, lockIdentity)) fs.unlinkSync(lockPath);
+          if (stat.isFile() && !stat.isSymbolicLink() && sameFileIdentity(stat, lockIdentity)
+            && readBoundedRegularFile(lockPath, "activation lock", 128).equals(lockContent)) {
+            fs.unlinkSync(lockPath);
+          }
         } catch {
           // Never remove a path that changed owner.
         }

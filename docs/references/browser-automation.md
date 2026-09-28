@@ -8,6 +8,8 @@ Stack ofrece dos integraciones independientes y **opt-in**. Playwright CLI sirve
 
 En Windows el stage usa el linker `hoisted` de pnpm para materializar directorios reales: las junctions del linker aislado pueden salir de `node_modules` antes de volver a entrar y no satisfacen el digest browser-v2 ni el lector Pi. Stack sigue comparando cada paquete físico con el lock y la metadata oficial; no relaja la contención de enlaces para hacerlo pasar.
 
+El stage también rechaza una ruta temporal situada bajo un `.npmrc`, `pnpm-workspace.yaml` o pnpmfile ancestro. Un wrapper de pnpm puede leer esa configuración antes de respetar los flags de aislamiento; no se ejecuta ese hook y la activación falla cerrada. Si aparece ese error, configura un directorio temporal privado fuera de ese workspace y reintenta deliberadamente.
+
 El árbol aprobado ejecuta `install-browser chromium`; después Stack comprueba su `--version` y un arranque headless local contra `about:blank`. La caché de Chromium es de Playwright, no del receipt: Stack no promete borrar perfiles, cookies, storage state, trazas, vídeos ni capturas. No instala dependencias de sistema para Chromium ni Firefox/WebKit. La preferencia `~/.jorgex-stack/playwright-cli.json` se guarda solo tras completar el plan.
 
 ```bash
