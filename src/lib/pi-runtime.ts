@@ -9,6 +9,7 @@ import { preparePiManagedInstall, type PiInstallPreflightResult } from "./pi-ins
 import { inspectPiHostVersion } from "./pi-host-version.js";
 import {
   activatePreparedPiInstall,
+  derivePiReleaseId,
   type PreparedPiInstallEvidence,
 } from "./pi-install-activation.js";
 import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
@@ -992,9 +993,9 @@ export function verifyActivePiRelease(input: {
     throw new Error("pi-verify-active: el receipt promovido no trae un releaseDir absoluto");
   }
   const releaseResolved = path.resolve(releaseDir);
-  const releaseRel = path.relative(managedRoot, releaseResolved);
-  if (releaseRel === "" || releaseRel === ".." || releaseRel.startsWith(`..${path.sep}`) || path.isAbsolute(releaseRel)) {
-    throw new Error("pi-verify-active: el release promovido sale del root gestionado");
+  const expectedRelease = path.join(managedRoot, "releases", derivePiReleaseId(input.candidate.tarball.sha256, input.evidence));
+  if (releaseResolved !== expectedRelease) {
+    throw new Error("pi-verify-active: el release promovido no coincide con el esperado");
   }
   let target: string;
   try {

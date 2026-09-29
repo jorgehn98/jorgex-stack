@@ -289,19 +289,8 @@ export async function verifyOfficialSetup(args: {
         } else {
           const servers = parsed["mcpServers"];
           if (!isRecord(servers) || servers["engram"] === undefined) {
-            // Keep the historical alternate spelling diagnosable for old
-            // fixtures, but never use it to bypass an active duplicate.
-            const alt = isRecord(parsed["servers"]) ? parsed["servers"]["engram"] : undefined;
-            if (alt === undefined) {
-              missing.push("mcp:missing");
-              appendMcpDetail(`mcp ausente en ${mcpName} (falta mcpServers.engram)`);
-            } else if (isExactPiEngramMcp(alt, args.engramBin)) {
-              passed.push("mcp");
-              if (!missing.some((entry) => entry === "mcp:conflict")) mcpDetail = null;
-            } else {
-              missing.push("mcp:invalid");
-              appendMcpDetail(`mcp inválido en ${mcpName} (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`);
-            }
+            missing.push("mcp:missing");
+            appendMcpDetail(`mcp ausente en ${mcpName} (falta mcpServers.engram)`);
           } else if (isExactPiEngramMcp(servers["engram"], args.engramBin)) {
             const legacy = isRecord(parsed["servers"]) ? parsed["servers"]["engram"] : undefined;
             if (legacy !== undefined) {

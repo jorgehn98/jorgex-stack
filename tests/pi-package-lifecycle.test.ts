@@ -1273,6 +1273,19 @@ describe("[T50-RED] Pi package source identidad estricta", () => {
 });
 
 describe("[T50-RED] Pi MCP canónico exige ausencia de servers.engram legacy", () => {
+  it("rejects alternate servers.engram that the Pi reader ignores", async () => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    fs.writeFileSync(path.join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["npm:gentle-engram", "npm:pi-mcp-adapter"] }));
+    const mcpPath = path.join(piAgentDir, "mcp.json");
+    const canonical = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
+    const alternate = JSON.stringify({ servers: canonical.mcpServers });
+    fs.writeFileSync(mcpPath, alternate);
+    const pi = await import("../src/adapters/pi.js");
+    const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok).toBe(false);
+    expect(fs.readFileSync(mcpPath, "utf8")).toBe(alternate);
+  });
+
   it("control: canónico exacto solo sin legacy pasa", async () => {
     const { piAgentDir, engramBin } = t50PiDir();
     fs.writeFileSync(
