@@ -46,7 +46,7 @@ export interface InspectStagedPiNpmResult {
  * - no independently resolved nested companion; optional package-local
  *   runtime copies must contain exactly the six byte-identical originals.
  *
- * Digests for receipt v2: `lockSha256` is the sha256 of the raw lock bytes;
+ * Digests recorded in the managed receipt schema 1: `lockSha256` is the sha256 of the raw lock bytes;
  * `treeSha256` is a deterministic sorted inventory of the staged npm tree
  * (paths, entry kinds, regular-file bytes, raw safe relative symlink
  * targets). The tarball SRI is NOT claimed to equal unpacked bytes; the
@@ -347,7 +347,7 @@ type InventoryEntry =
   | { rel: string; kind: "file" }
   | { rel: string; kind: "symlink"; target: string };
 
-/** Deterministic sorted inventory of the staged npm tree for receipt v2. */
+/** Deterministic sorted inventory of the staged npm tree for the managed receipt schema 1. */
 export function inventoryTreeSha256(npmDir: string): string {
   const root = path.resolve(npmDir);
   const entries: InventoryEntry[] = [];
@@ -619,7 +619,7 @@ function inspectRuntimeCopies(nodeModules: string): void {
   }
 }
 
-/** Pi's loader resolves from its active package link, so expose its private dependencies locally. */
+/** Pi's loader resolves from its active package link, so expose verified companions as byte-identical local copies without changing the lock. */
 export function materializeStagedPiRuntimeDependencies(input: InspectStagedPiNpmInput): InspectStagedPiNpmResult {
   const before = inspectStagedPiNpm(input);
   const modules = path.join(input.stageDir, "npm", "node_modules");

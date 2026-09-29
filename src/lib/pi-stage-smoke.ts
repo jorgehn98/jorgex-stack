@@ -17,7 +17,8 @@ const REQUIRED_COMMANDS = ["goal", "subagents", "permission-system", "websearch"
 const EXPECTED_ARGV = ["--mode", "rpc", "--no-session", "--no-approve", "--offline", "--no-context-files"] as const;
 const KNOWN_STDERR_WARNING =
   "[pi-web-access] Dynamic tool activation requires Pi 0.86.1 or newer; web tools remain eagerly available.";
-// This package-only probe intentionally precedes official provider setup.
+// This package-only probe intentionally precedes official provider setup; its
+// expected missing-provider error does not prove the full MCP setup works.
 const EXPECTED_MISSING_PROVIDER = "JorgeX Engram bridge is unavailable: official Engram MCP setup is missing; run `engram setup pi` and reload Pi";
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
