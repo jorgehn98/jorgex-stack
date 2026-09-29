@@ -136,7 +136,10 @@ async function withProviderExecutable<T>(fixture: Fixture, run: () => Promise<T>
   if (process.platform !== "win32") return run();
   const previousNodeOptions = process.env.NODE_OPTIONS;
   const previousPreloadMarker = process.env.JX_PI_PROVIDER_PRELOAD;
-  const preload = `--require="${fixture.providerScriptPath}"`;
+  // NODE_OPTIONS parses backslashes as escapes even on Windows. Forward
+  // slashes are accepted by Node there and preserve the absolute fixture path.
+  const preloadPath = fixture.providerScriptPath.replaceAll("\\", "/");
+  const preload = `--require="${preloadPath}"`;
   process.env.NODE_OPTIONS = previousNodeOptions === undefined
     ? preload
     : `${preload} ${previousNodeOptions}`;
@@ -200,7 +203,7 @@ describe("Pi official setup + MCP migration integration", () => {
       piMcpConfigFiles: ["mcp.json", "mcp-adapter.json"],
     }));
 
-    expect(result).toMatchObject({ ran: true, ok: true, ownershipTransferred: true });
+    expect(result, `Pi setup result: ${JSON.stringify(result)}`).toMatchObject({ ran: true, ok: true, ownershipTransferred: true });
     expect(result.backupId).toBeTypeOf("string");
     expect(fs.existsSync(path.join(fixture.dataDir, "backups", result.backupId as string))).toBe(true);
     expect(fs.existsSync(fixture.legacyPath)).toBe(false);
