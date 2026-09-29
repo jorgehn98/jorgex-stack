@@ -118,6 +118,8 @@ El canon de Stack y el paquete Pi mantienen una snapshot de 17 árboles de skill
 
 Pi combines the **snapshot v2** package with a Stack-owned shared projection. Package resolution, verification, receipt and recovery behavior are documented in [docs/references/pi-runtime.md](docs/references/pi-runtime.md); historical pins are not a promise that personal Pi installations have migrated.
 
+En Pi nuevo, Stack gestiona `jorgex-pi` y sus seis companions locales, y prepara los providers oficiales `gentle-engram` y `pi-mcp-adapter` en stages Pi-native aislados. Cada `install` o `update` deliberado resuelve el `latest` publicado, verifica lock/SRI/árbol y promociona solo los dos directorios provider; conserva el enlace y receipt privados de `jorgex-pi`, el host Pi, las entradas npm ajenas y los datos de Engram. Con un receipt Stack válido, `install --agents pi` continúa por la actualización autenticada; el estado manual o ambiguo se bloquea. El [inventario de Pi](docs/references/pi-runtime.md#inventario-operativo-de-pi) distingue componentes obligatorios y opcionales.
+
 The following command block is retained as historical reference for that transition:
 
 ```bash
@@ -164,7 +166,7 @@ Los receipts históricos, incluido `jorgex-pi@0.8.24`, son evidencia para recupe
 
 Stack gestiona la selección dinámica y verificación de Pi en `install`/`update`; esto no significa que una instalación personal de Pi se haya migrado. La automatización Stack ↔ Pi es snapshot-only. La instalación directa de Pi no incluye la etapa aislada ni el rollback de Stack.
 
-`update --agents pi` only runs the Pi package lifecycle; it does not enter the global Stack updater. `update --check --agents pi` performs a read-only check of the Pi package and local registration metadata through the package runner. It does not compare Stack's projection, run the browser smoke check, or mutate Pi state; use `doctor --agents pi` for the complete package-and-projection diagnosis. Uninstall runs package cleanup, backs up Pi's settings before removal, removes only the exact receipt-owned package after verifying absence, and preserves all companion/user state. Full behavior, failure states and troubleshooting are in [docs/references/pi-runtime.md](docs/references/pi-runtime.md).
+`update --agents pi` cambia versiones deliberadamente: resuelve y verifica el paquete Pi y los dos providers oficiales en stages aislados, aplica la promoción acotada y verifica la configuración MCP. No entra en el updater global de Stack, no actualiza el host Pi ni toca los datos de Engram. `sync --agents pi` reaplica la proyección a partir del paquete autenticado y comprueba el estado MCP existente; no resuelve versiones ni descarga providers. `update --check --agents pi` consulta el runner sin mutar Pi; `doctor --agents pi` diagnostica paquete y proyección. Uninstall respalda los settings y retira solo el paquete exacto acreditado por el receipt, verificando su ausencia y conservando companions y estado ajeno. Consulta los límites de recuperación en la [referencia Pi](docs/references/pi-runtime.md).
 
 ### Estilo global de escritura
 

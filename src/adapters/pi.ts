@@ -102,7 +102,7 @@ function claimsProtectedName(source: string, name: string): boolean {
   return source === `npm:${name}` || source.startsWith(`npm:${name}@`);
 }
 
-function isNamedPiSource(source: string, name: string): boolean {
+export function isNamedPiSource(source: string, name: string): boolean {
   if (source === `npm:${name}`) return true;
   const prefix = `npm:${name}@`;
   if (!source.startsWith(prefix)) return false;

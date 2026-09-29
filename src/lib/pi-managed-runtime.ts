@@ -14,10 +14,13 @@ import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
 import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./browser-provider.js";
-import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+import { detectChromiumExecutable, loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
 import { requirePiBrowserHandoffSchemas } from "./pi-browser-contract.js";
+import { refreshPiPlaywright } from "./pi-browser-update.js";
 import { dataDir, stackRoot } from "./paths.js";
 import fs from "node:fs";
+import os from "node:os";
+import { updatePiProviderPackages } from "./pi-provider-update.js";
 import path from "node:path";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
@@ -189,6 +192,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   writingStyleMode?: InstallMode;
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
+  playwrightRefresh?: boolean;
   packageOnly?: boolean;
   upgradePermissions?: boolean;
 }): Promise<PiManagedOperationResult> {
@@ -243,6 +247,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     devtoolsMcpObservedVersion: injectedDevtoolsObserved,
     playwrightCliEnabled: explicitPlaywright,
     playwrightCapability,
+    playwrightRefresh,
     packageOnly,
     writingStyle: suppliedStyle,
     writingStyleMode,
@@ -270,8 +275,10 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     ? writingStyleMode ?? (input.targetDir === undefined ? loadInstallModePreference().mode : "human")
     : "human";
   const writingStyle = style && mode === "programmatic" ? { ...style, content: null } : style;
-  const devtoolsMcpEnabled = explicitDevtools
-    ?? (input.targetDir === undefined && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi"));
+  const persistedDevtools = explicitDevtools === undefined
+    && input.targetDir === undefined
+    && loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi");
+  const devtoolsMcpEnabled = explicitDevtools ?? persistedDevtools;
   const needsDevtoolsObservation = devtoolsMcpEnabled === true
     && input.operation !== "uninstall"
     && input.operation !== "models";
@@ -285,12 +292,17 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   const devtoolsManagedStateDir = input.targetDir === undefined
     ? dataDir()
     : path.join(input.targetDir, "home", ".jorgex-stack");
+  const deliberateBrowserOperation = input.targetDir === undefined
+    && (input.operation === "install" || input.operation === "update");
+  const devtoolsRefreshRequested = deliberateBrowserOperation
+    && devtoolsMcpEnabled === true
+    && explicitDevtools !== false;
   if (needsDevtoolsObservation) {
     if (input.targetDir !== undefined) {
       devtoolsMcpObservedVersion = isValidObservedVersion(injectedDevtoolsObserved)
         ? { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity }
         : null;
-    } else if ((input.operation === "install" || input.operation === "update") && explicitDevtools === true) {
+    } else if (devtoolsRefreshRequested) {
       if (isValidObservedVersion(injectedDevtoolsObserved)) {
         devtoolsMcpObservedVersion = { version: injectedDevtoolsObserved.version, integrity: injectedDevtoolsObserved.integrity };
         devtoolsVerifiedForPersist = devtoolsMcpObservedVersion;
@@ -304,6 +316,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
             withVerifiedArtifact: async (context) => {
               await activateVerifiedBrowserArtifact(context, {
                 stateDir: devtoolsManagedStateDir, pnpmBin, fetchImpl: globalThis.fetch,
+                browserExecutablePath: detectChromiumExecutable(),
               });
             },
           });
@@ -349,13 +362,55 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         remedy: error instanceof Error ? error.message : String(error) };
     }
   }
+  if (input.targetDir === undefined && devtoolsVerifiedForPersist !== undefined) {
+    // The browser phase has committed verified bytes. Keep its observation
+    // aligned even if Pi later fails, without enabling a fresh Pi selection.
+    saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi",
+      loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi") === true, devtoolsVerifiedForPersist);
+  }
   const devtoolsMcpVersion = devtoolsMcpObservedVersion?.version ?? null;
   const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
   const persistedPlaywright = input.targetDir === undefined
     && loadPlaywrightCliPreference(undefined, "pi") === true;
   const selectedPlaywright = explicitPlaywright
     ?? persistedPlaywright;
-  const playwrightCapabilityEffective = playwrightCapability?.effective === true;
+  let effectivePlaywrightCapability = playwrightCapability;
+  let refreshedPlaywright: Awaited<ReturnType<typeof refreshPiPlaywright>> | undefined;
+  const skipPlaywrightRefresh = playwrightRefresh === false;
+  const injectedPlaywrightCapability = input.operation === "install" && explicitPlaywright === true
+    && playwrightCapability?.effective === true;
+  if (deliberateBrowserOperation && input.operation === "install" && supportsPlaywright
+    && explicitPlaywright === true && !skipPlaywrightRefresh && !injectedPlaywrightCapability) {
+    return { kind: "blocked", reason: "playwright-capability-unverified", remedy: "El opt-in nuevo de Playwright requiere la adquisición y verificación del CLI antes de proyectarse en Pi." };
+  }
+  const playwrightRefreshRequested = deliberateBrowserOperation
+    && supportsPlaywright
+    && selectedPlaywright === true
+    && !skipPlaywrightRefresh
+    && !injectedPlaywrightCapability;
+  if (playwrightRefreshRequested) {
+    const pnpmBin = resolvePnpmBin();
+    if (pnpmBin === null) {
+      return {
+        kind: "blocked",
+        reason: "playwright-refresh-failed",
+        remedy: "pnpm no está disponible para actualizar el Playwright gestionado de Pi; instala pnpm y reintenta.",
+      };
+    }
+    try {
+      refreshedPlaywright = await refreshPiPlaywright({ stateDir: dataDir(), pnpmBin });
+      effectivePlaywrightCapability = refreshedPlaywright.capability;
+      savePlaywrightCliPreference(playwrightCliPreferenceFile(), true,
+        { pi: persistedPlaywright }, refreshedPlaywright.observed);
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "playwright-refresh-failed",
+        remedy: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  const playwrightCapabilityEffective = effectivePlaywrightCapability?.effective === true;
   const playwrightCliEnabled = input.targetDir === undefined && supportsPlaywright
     && selectedPlaywright
     && playwrightCapabilityEffective;
@@ -381,7 +436,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     devtoolsMcpVersion,
   };
   if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
-  const result = await runManagedPiOperation(input.operation, {
+  let result = await runManagedPiOperation(input.operation, {
     installInitRemedy: input.targetDir === undefined ? undefined : INSTALL_INIT_TARGET_REMEDY,
     async runPackage(operation) {
       const raw = await runPiRuntimeSystem({
@@ -392,8 +447,8 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         ...(upgradePermissions ? { upgradePermissions: true as const } : {}),
       });
       if (effectiveCandidate !== undefined
-        && ((operation === "install" && raw.kind === "installed")
-          || (operation === "update" && raw.kind === "updated"))) {
+        && ((operation === "install" || operation === "update")
+          && (raw.kind === "installed" || raw.kind === "updated"))) {
         const expected = effectiveCandidate.package;
         const receipt = raw.receipt as
           | { candidate?: { package?: { name?: unknown; version?: unknown; source?: unknown } }; package?: { name?: unknown; version?: unknown; source?: unknown } }
@@ -415,7 +470,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       if (
         ((operation === "sync" && raw.kind === "synced") ||
           (operation === "doctor" && raw.kind === "healthy") ||
-          (operation === "update" && raw.kind === "healthy")) &&
+          ((operation === "update" || operation === "install") && raw.kind === "healthy")) &&
         "packageSource" in raw &&
         raw.packageSource !== undefined
       ) {
@@ -468,17 +523,42 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       return Promise.resolve(completePiProjectionUninstallSystem(token, { operation: "uninstall", ...projectionInput }));
     },
   });
-  if (input.targetDir === undefined && explicitDevtools !== undefined
-    && (input.operation === "install" || input.operation === "sync" || input.operation === "update") && result.kind !== "blocked") {
-    if (explicitDevtools === true && devtoolsVerifiedForPersist !== undefined) {
+  if (input.targetDir === undefined && (input.operation === "install" || input.operation === "update") && result.kind !== "blocked") {
+    try {
+      if (input.engramBin === null) throw new Error("Engram no disponible para verificar los providers Pi");
+      const providers = await updatePiProviderPackages({
+        homeDir: os.homedir(), agentDir: path.dirname(piSystemPromptFile()),
+        piExecutable: input.detected.executable, engramBin: input.engramBin,
+      });
+      if (providers.kind === "updated" && result.kind === "healthy") result = { kind: "updated" };
+    } catch (error) {
+      return { kind: "blocked", reason: "provider-update-failed", remedy: `La fase principal de Pi terminó, pero la actualización de providers está incompleta: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  if (input.targetDir === undefined
+    && (explicitDevtools !== undefined || devtoolsVerifiedForPersist !== undefined)
+    && (input.operation === "install" || input.operation === "sync" || input.operation === "update")
+    && result.kind !== "blocked") {
+    if (devtoolsVerifiedForPersist !== undefined) {
       saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", true, devtoolsVerifiedForPersist);
-    } else {
+    } else if (explicitDevtools !== undefined) {
       saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi", explicitDevtools);
     }
   }
-  if (input.targetDir === undefined && supportsPlaywright && explicitPlaywright !== undefined
-    && (input.operation === "install" || input.operation === "sync") && result.kind !== "blocked") {
-    savePlaywrightCliPreference(playwrightCliPreferenceFile(), true, { pi: explicitPlaywright });
+  if (input.targetDir === undefined && supportsPlaywright
+    && (explicitPlaywright !== undefined || refreshedPlaywright !== undefined)
+    && (input.operation === "install" || input.operation === "sync" || input.operation === "update")
+    && result.kind !== "blocked") {
+    if (refreshedPlaywright !== undefined) {
+      savePlaywrightCliPreference(
+        playwrightCliPreferenceFile(),
+        true,
+        { pi: true },
+        refreshedPlaywright.observed,
+      );
+    } else {
+      savePlaywrightCliPreference(playwrightCliPreferenceFile(), true, { pi: explicitPlaywright ?? true });
+    }
   }
   return result;
 }

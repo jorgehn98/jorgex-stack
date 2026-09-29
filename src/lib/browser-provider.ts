@@ -31,7 +31,7 @@ export interface BrowserReleaseSmokeContext {
 /** Consume the verified tarball lease and promote its certified dependency closure. */
 export async function activateVerifiedBrowserArtifact(
   context: BrowserReleaseSmokeContext,
-  options: { stateDir: string; pnpmBin: string; fetchImpl: typeof fetch },
+  options: { stateDir: string; pnpmBin: string; fetchImpl: typeof fetch; browserExecutablePath?: string },
 ): Promise<ManagedBrowserReceipt> {
   assertBrowserPackage(context.packageName);
   const stageDir = fs.mkdtempSync(path.join(context.stageDir, "managed-"));
@@ -44,7 +44,7 @@ export async function activateVerifiedBrowserArtifact(
     fetchImpl: options.fetchImpl,
   });
   if (context.packageName === "chrome-devtools-mcp") {
-    await verifyStagedDevtoolsCliArtifact({ stageDir, staged, release: context.release });
+    await verifyStagedDevtoolsCliArtifact({ stageDir, staged, release: context.release, browserExecutablePath: options.browserExecutablePath });
   }
   return activateManagedBrowserTree({
     stateDir: options.stateDir,
@@ -52,6 +52,7 @@ export async function activateVerifiedBrowserArtifact(
     release: context.release,
     staged,
     entryPath: resolveStagedBrowserEntry(staged, context.packageName),
+    browserExecutablePath: options.browserExecutablePath,
   });
 }
 
@@ -223,10 +224,12 @@ const { parseArguments } = await import(pathToFileURL(process.argv[1]).href);
 if (typeof parseArguments !== "function") process.exit(1);
 const parsed = parseArguments("probe", [
   process.execPath, process.argv[1],
-  "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"
+  "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
+  ...(process.argv[2] === undefined ? [] : ["--executablePath=" + process.argv[2]])
 ], process.env);
 process.stdout.write(JSON.stringify([
-  parsed.isolated, parsed.redactNetworkHeaders, parsed.performanceCrux, parsed.usageStatistics
+  parsed.isolated, parsed.redactNetworkHeaders, parsed.performanceCrux, parsed.usageStatistics,
+  ...(process.argv[2] === undefined ? [] : [parsed.executablePath])
 ]));
 `;
 
@@ -257,9 +260,9 @@ export interface VerifiedDevtoolsCliArtifact {
   version: string | null;
 }
 
-/** Prove privacy flags only after the official transitive closure is certified. */
+/** Prove privacy flags and parser support for a supplied selector after the official closure is certified. */
 export async function verifyStagedDevtoolsCliArtifact(
-  input: { stageDir: string; staged: StageVerifiedBrowserTreeResult; release: BrowserPackageRelease },
+  input: { stageDir: string; staged: StageVerifiedBrowserTreeResult; release: BrowserPackageRelease; browserExecutablePath?: string },
   deps?: VerifyDevtoolsCliArtifactDeps,
 ): Promise<VerifiedDevtoolsCliArtifact> {
   const { stageDir, staged, release } = input;
@@ -274,7 +277,7 @@ export async function verifyStagedDevtoolsCliArtifact(
   const run = deps?.run ?? defaultDevtoolsCliRun;
   if (typeof run !== "function") fail("run must be a function");
   const env = restrictedStageEnv(stageDir);
-  await assertDevtoolsPrivacyProof(run, realBinPath, packageDir, stageDir, env);
+  await assertDevtoolsPrivacyProof(run, realBinPath, packageDir, stageDir, env, input.browserExecutablePath);
   return { binPath, version: release.version };
 }
 
@@ -388,9 +391,11 @@ async function assertDevtoolsPrivacyProof(
   realPackageDir: string,
   stageDir: string,
   env: NodeJS.ProcessEnv,
+  browserExecutablePath?: string,
 ): Promise<void> {
+  const selectorArgs = browserExecutablePath === undefined ? [] : [`--executablePath=${browserExecutablePath}`];
   const help = await runDevtoolsCli(
-    run, process.execPath, [scriptPath, ...DEVTOOLS_PRIVACY_FLAGS, "--help"],
+    run, process.execPath, [scriptPath, ...DEVTOOLS_PRIVACY_FLAGS, ...selectorArgs, "--help"],
     stageDir, env, "devtools help probe",
   );
   if (typeof help.status !== "number" || help.status !== 0 || typeof help.stdout !== "string") {
@@ -402,6 +407,10 @@ async function assertDevtoolsPrivacyProof(
       && !(flag === "--redact-network-headers" && help.stdout.includes("--redactNetworkHeaders"))) {
       fail(`devtools help is missing ${flag}`);
     }
+  }
+
+  if (browserExecutablePath !== undefined && !help.stdout.includes("--executablePath")) {
+    fail("devtools help is missing --executablePath");
   }
 
   const parserModule = path.join(realPackageDir, "build", "src", "config", "mcp-options.js");
@@ -417,11 +426,12 @@ async function assertDevtoolsPrivacyProof(
   delete probeEnv.CI;
   const parserProbe = await runDevtoolsCli(
     run, process.execPath,
-    ["--input-type=module", "-e", DEVTOOLS_PARSER_PROBE, realParserModule],
+    ["--input-type=module", "-e", DEVTOOLS_PARSER_PROBE, realParserModule, ...(browserExecutablePath === undefined ? [] : [browserExecutablePath])],
     stageDir, probeEnv, "devtools parser probe",
   );
-  if (parserProbe.status !== 0 || parserProbe.stdout?.trim() !== "[true,true,false,false]") {
-    fail("devtools parser does not honor the mandatory privacy flags");
+  const expectedParsed = [true, true, false, false, ...(browserExecutablePath === undefined ? [] : [browserExecutablePath])];
+  if (parserProbe.status !== 0 || parserProbe.stdout?.trim() !== JSON.stringify(expectedParsed)) {
+    fail("devtools parser does not honor the mandatory privacy flags or browser executable selector");
   }
 }
 
@@ -432,7 +442,8 @@ async function assertDevtoolsPrivacyProof(
  * the stage) on a non-regular artifact, an escaping stage, a manifest
  * name/version mismatch against the provided release, a missing or escaping
  * stage-local bin, a nonzero help status, an over-bound or flag-incomplete
- * help output, an incompatible parser, or any spawn failure.
+ * help output, missing selector support when requested, an incompatible parser,
+ * or any spawn failure.
  */
 export async function verifyDevtoolsCliArtifact(
   input: VerifyDevtoolsCliArtifactInput,

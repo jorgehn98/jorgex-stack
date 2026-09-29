@@ -359,3 +359,15 @@ export function migrateOfficialPiMcpConfig(input: PiMcpMigrationInput): PiMcpMig
   if (!removeExactSource(legacyPath, source)) return { migrated: false, backupPath };
   return { migrated: destination === null, backupPath };
 }
+
+export function declaredPiMcpConfigFiles(stageDir: string): string[] {
+  const file = path.join(stageDir, "npm", "node_modules", "jorgex-pi", "contract", "jorgex-pi.v1.json");
+  const contract = JSON.parse(fs.readFileSync(file, "utf8")) as { mcpAdapterConfig?: { schemaVersion?: unknown; files?: unknown } };
+  const declaration = contract.mcpAdapterConfig;
+  if (declaration === undefined) return [];
+  if (declaration.schemaVersion !== 1 || !Array.isArray(declaration.files)
+    || !declaration.files.every((file): file is string => typeof file === "string")) {
+    throw new Error("El candidato Pi declara un contrato MCP inválido.");
+  }
+  return declaration.files;
+}

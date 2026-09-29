@@ -7,6 +7,7 @@ export interface PiStageSmokeInput {
   piExecutable: string;
   stageDir: string;
   timeoutMs?: number;
+  providerSetup?: { engramBin: string; engramUrl: string };
 }
 
 export interface PiStageSmokeResult {
@@ -96,10 +97,8 @@ function assertRealDir(p: string, label: string): string {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (typeof timer.unref === "function") timer.unref();
-  });
+  // This awaited cleanup delay must keep a standalone CLI alive after child exit.
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function runtimePath(piExecutable: string): string {
@@ -265,7 +264,7 @@ type ParsedOutcome =
   | { kind: "ready"; commands: string[] }
   | { kind: "failed"; message: string };
 
-function validateCommandsData(value: unknown): { ok: true; names: string[] } | { ok: false; message: string } {
+function validateCommandsData(value: unknown, requireProviders: boolean): { ok: true; names: string[] } | { ok: false; message: string } {
   if (!Array.isArray(value)) return { ok: false, message: "get_commands data.commands must be an array" };
   const names: string[] = [];
   for (const entry of value) {
@@ -279,12 +278,12 @@ function validateCommandsData(value: unknown): { ok: true; names: string[] } | {
     if (seen.has(name)) return { ok: false, message: `duplicate command name: ${name}` };
     seen.add(name);
   }
-  const missing = [...REQUIRED_COMMANDS].filter((required) => !seen.has(required));
+  const missing = [...REQUIRED_COMMANDS, ...(requireProviders ? ["mcp-adapter", "mcp"] : [])].filter((required) => !seen.has(required));
   if (missing.length > 0) return { ok: false, message: `missing required commands: ${missing.join(", ")}` };
   return { ok: true, names };
 }
 
-function evaluateLines(lines: unknown[], stateId: number, commandsId: number): ParsedOutcome {
+function evaluateLines(lines: unknown[], stateId: number, commandsId: number, requireProviders: boolean): ParsedOutcome {
   let stateSeen = false;
   let commandsNames: string[] | null = null;
   for (const entry of lines) {
@@ -292,7 +291,7 @@ function evaluateLines(lines: unknown[], stateId: number, commandsId: number): P
     const type = entry["type"];
     if (type === "extension_ui_request" && entry["method"] === "notify" && entry["notifyType"] === "error") {
       const message = typeof entry["message"] === "string" ? entry["message"] : "extension notification error";
-      if (message !== EXPECTED_MISSING_PROVIDER) {
+      if (requireProviders || message !== EXPECTED_MISSING_PROVIDER) {
         return { kind: "failed", message: `extension notification: ${message.slice(0, 300)}` };
       }
     }
@@ -324,7 +323,7 @@ function evaluateLines(lines: unknown[], stateId: number, commandsId: number): P
     if (!isRecord(entry["data"])) {
       return { kind: "failed", message: "get_commands response misses data" };
     }
-    const checked = validateCommandsData(entry["data"]["commands"]);
+    const checked = validateCommandsData(entry["data"]["commands"], requireProviders);
     if (!checked.ok) return { kind: "failed", message: checked.message };
     commandsNames = checked.names;
   }
@@ -446,6 +445,15 @@ async function runSmoke(input: PiStageSmokeInput): Promise<PiStageSmokeResult> {
   if (timeout > 2_147_483_647) fail("timeoutMs exceeds platform bound");
 
   const env = buildSandboxEnv(stageRoot, stageResolved, piResolved);
+  if (input.providerSetup !== undefined) {
+    env.ENGRAM_BIN = assertPiExecutable(input.providerSetup.engramBin);
+    const endpoint = new URL(input.providerSetup.engramUrl);
+    if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || !endpoint.port || endpoint.username || endpoint.password) {
+      fail("provider smoke requires its isolated loopback endpoint");
+    }
+    env.ENGRAM_URL = endpoint.href;
+  }
+
   const planned = planDetectedBinCommand(piResolved, [...EXPECTED_ARGV]);
   if (planned === null) fail("unsafe executable for Windows launch");
 
@@ -498,7 +506,7 @@ async function runSmoke(input: PiStageSmokeInput): Promise<PiStageSmokeResult> {
       if (out.malformed !== null) return { kind: "malformed", message: `malformed line-delimited JSON: ${out.malformed}` };
       const err = parseStderrComplete(stderrParts);
       if (err.rejected !== null) return { kind: "malformed", message: `unexpected stderr text: ${err.rejected}` };
-      return evaluateLines([...out.lines, ...err.lines], stateId, commandsId);
+      return evaluateLines([...out.lines, ...err.lines], stateId, commandsId, input.providerSetup !== undefined);
     };
 
     const scheduleReady = (): void => {
@@ -618,7 +626,7 @@ async function runSmoke(input: PiStageSmokeInput): Promise<PiStageSmokeResult> {
 
     try {
       spawned.stdin?.write(requests);
-      spawned.stdin?.end();
+      // EOF requests Pi RPC shutdown; retain ownership until the probe settles.
     } catch (error) {
       void settleFailure(`stdin failed: ${error instanceof Error ? error.message : String(error)}`);
     }

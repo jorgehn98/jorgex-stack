@@ -15,13 +15,14 @@ import {
 import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { smokeStagedPiRuntime, smokeLinkedPiRuntime } from "./pi-stage-smoke.js";
 import { runPiStageProcess } from "./pi-stage-process.js";
+import { completeUpdatedPiMcp } from "./pi-provider-update.js";
 import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { deactivateVerifiedLegacyPiEntry, deactivateVerifiedPiRelease } from "./pi-private-release.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { detectEngram, lookPath, planDetectedBinCommand } from "./detect.js";
 import type { EngramInstallResult } from "./engram-install.js";
-import { migrateOfficialPiMcpConfig, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
+import { declaredPiMcpConfigFiles, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
 import {
   executePiPackageLifecycle,
   planPiPackageLifecycle,
@@ -680,26 +681,6 @@ function runProcess(invocation: {
   };
 }
 
-function declaredPiMcpConfigFiles(stageDir: string): string[] {
-  const file = path.join(stageDir, "npm", "node_modules", "jorgex-pi", "contract", "jorgex-pi.v1.json");
-  const contract = JSON.parse(fs.readFileSync(file, "utf8")) as { mcpAdapterConfig?: { schemaVersion?: unknown; files?: unknown } };
-  const declaration = contract.mcpAdapterConfig;
-  if (declaration === undefined) return [];
-  if (declaration.schemaVersion !== 1 || !Array.isArray(declaration.files)
-    || !declaration.files.every((file): file is string => typeof file === "string")) {
-    throw new Error("El candidato Pi declara un contrato MCP inválido.");
-  }
-  return declaration.files;
-}
-
-async function completeUpdatedPiMcp(configDir: string, engramBin: string): Promise<void> {
-  const { verifyOfficialSetup } = await import("../adapters/pi.js");
-  const before = await verifyOfficialSetup({ configDir, engramBin });
-  if (!before.layers.includes("packages")) throw new Error(before.reason ?? "Setup de paquetes Pi incompleto.");
-  migrateOfficialPiMcpConfig({ configDir, engramBin });
-  const after = await verifyOfficialSetup({ configDir, engramBin });
-  if (!after.ok) throw new Error(after.reason ?? "Configuración MCP Pi no verificada.");
-}
 
 function setupPiFailedRemedy(setup: {
   reason?: string;
@@ -1043,6 +1024,17 @@ function isStrictChildPath(child: string, root: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
+function routesInstalledPiToUpdate(input: PiRuntimeInput): boolean {
+  if (input.operation !== "install") return false;
+  const paths = input.targetDir === undefined
+    ? userPaths(input.engramBin, input.detected.executable)
+    : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
+  const receipt = readOptional(paths.receiptPath, null);
+  // This only selects the route. The update gate still authenticates every
+  // receipt/settings/artifact byte before any acquisition or activation.
+  return receipt !== null && !isLegacyUnmanagedReceipt(receipt);
+}
+
 /**
  * CLI-to-preflight: deliberate install/update resolves the live provider
  * candidate through the isolated managed-install preflight, without touching
@@ -1053,6 +1045,7 @@ function isStrictChildPath(child: string, root: string): boolean {
  * the stage for diagnostics; the caller never falls back to static bytes.
  */
 export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiRuntimePreflightOut> {
+  if (routesInstalledPiToUpdate(input)) return preparePiRuntimeSystem({ ...input, operation: "update" });
   if (input.operation !== "install" && input.operation !== "update") {
     return {
       kind: "blocked",
@@ -1317,6 +1310,7 @@ export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiR
 }
 
 export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<RuntimeResult> {
+  if (routesInstalledPiToUpdate(input)) return runPiRuntimeSystem({ ...input, operation: "update" });
   // Pi install real ordena Engram absoluto primero → `engram setup pi`
   // (backup/setup/verify singleton via runOfficialSetupIfNeeded("pi"),
   // install-only: shouldRunOfficialSetup excluye sync/dry-run/targetDir) →

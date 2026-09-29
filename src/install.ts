@@ -1171,7 +1171,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             const verified = verifiedCapability ?? (preparedEnv === undefined
               ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })
               : inspectPlaywrightCapability({ browserVerified: true, env: preparedEnv, expectedVersion: candidate.version }));
-            if (hasInjectedActivation && verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
+            if (verified.effective && verified.cli.status === "current" && verified.cli.binPath !== null
               && verified.cli.detectedVersion !== null && verified.browserCache.status === "ready") {
               opts.onPlaywrightCapability?.(verified as VerifiedPlaywrightCapabilitySnapshot);
             }

@@ -881,7 +881,7 @@ describe("CLI effective browser capability", () => {
   });
 
   it.each([
-    { args: ["sync", "--agents", "opencode,pi", "--mode", "human", "--yes"], managedProbes: 2, legacyProbes: 0, pi: true },
+    { args: ["sync", "--agents", "opencode,pi", "--mode", "human", "--yes"], managedProbes: 1, legacyProbes: 0, pi: true },
     { args: ["doctor", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
     { args: ["update", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
     { args: ["sync", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], managedProbes: 0, legacyProbes: 0, pi: false },

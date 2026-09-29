@@ -327,7 +327,7 @@ function snapshotFiles(sandbox: UpdateSandbox): { receipt: string; settings: str
 }
 
 describe("pi runtime managed update", () => {
-  it("authenticates the old managed receipt before activation and returns updated with the new receipt/source", async () => {
+  it.each(["update", "install"] as const)("%s authenticates the old managed receipt before activation and returns updated with the new receipt/source", async (operation) => {
     const sandbox = setupUpdateSandbox();
     expect(sandbox.oldCandidate.package.source).toBe(OLD_SOURCE);
     expect(sandbox.newCandidate.package.source).toBe(NEW_SOURCE);
@@ -397,7 +397,7 @@ describe("pi runtime managed update", () => {
     try {
       const { runPiRuntimeSystem } = await import("../src/lib/pi-runtime.js");
       const result = (await runPiRuntimeSystem({
-        operation: "update",
+        operation,
         targetDir: sandbox.targetDir,
         detected: { executable: sandbox.piExecutable, version: "0.87.1" },
         engramBin: sandbox.engramBin,

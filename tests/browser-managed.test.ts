@@ -228,6 +228,13 @@ function assertActivePointer(receipt: ManagedBrowserReceipt, fixture: Fixture): 
   return { path: pointer.path, raw: pointer.raw };
 }
 
+function devtoolsCandidate(input: ActivateManagedBrowserTreeInput): ActivateManagedBrowserTreeInput {
+  return { ...input, packageName: "chrome-devtools-mcp",
+    release: { ...input.release, tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${input.release.version}.tgz` },
+    staged: { ...input.staged, closure: input.staged.closure.map((item) => item.name === PACKAGE_NAME ? { ...item, name: "chrome-devtools-mcp" } : item) },
+  };
+}
+
 function nextCandidate(input: ActivateManagedBrowserTreeInput): ActivateManagedBrowserTreeInput {
   const version = "9.9.11";
   return {
@@ -295,7 +302,7 @@ function assertStrictReceipt(receipt: ManagedBrowserReceipt, fixture: Fixture): 
 }
 
 describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activation", () => {
-  it("runs DevTools only through the external guard with fixed flags and untampered bytes", async () => {
+  it.each(["default", "chromium"] as const)("runs DevTools through the external guard with fixed flags and untampered bytes (%s)", async (selection) => {
     const root = sandbox();
     const stageDir = path.join(root, "stage");
     const stateDir = path.join(root, "state");
@@ -309,9 +316,10 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     fs.mkdirSync(treePath, { recursive: true });
     fs.mkdirSync(stateDir);
     fs.writeFileSync(path.join(treePath, "package.json"), `${JSON.stringify({ name: "chrome-devtools-mcp", version })}\n`);
-    fs.writeFileSync(entryPath, `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(marker)}, "ran\\n");\n`);
+    fs.writeFileSync(entryPath, `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\n`);
     const receipt = await activateManagedBrowserTree({
       stateDir, packageName: "chrome-devtools-mcp",
+      ...(selection === "chromium" ? { browserExecutablePath: fs.realpathSync(process.execPath) } : {}),
       release: { version, integrity, tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${version}.tgz` },
       staged: { treePath, nodeModulesPath, treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
         closure: [{ name: "chrome-devtools-mcp", version, integrity }] },
@@ -322,7 +330,9 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     const plan = planner(stateDir, "chrome-devtools-mcp", flags);
     const run = () => spawnSync(plan.command, plan.args, { encoding: "utf8", timeout: 30_000 });
     expect(run().status).toBe(0);
-    expect(fs.readFileSync(marker, "utf8")).toBe("ran\n");
+    expect(JSON.parse(fs.readFileSync(marker, "utf8"))).toEqual([
+      ...flags, ...(selection === "chromium" ? [`--executablePath=${fs.realpathSync(process.execPath)}`] : []),
+    ]);
     fs.unlinkSync(marker);
     fs.appendFileSync(receipt.entryPath, "// tampered after planning\n");
     const tampered = run();
@@ -330,6 +340,53 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     expect(`${tampered.stdout ?? ""}${tampered.stderr ?? ""}`).toMatch(/digest|drift/i);
     expect(fs.existsSync(marker)).toBe(false);
   });
+  it("changes only the launcher for a same-tree Chromium selection and repeats idempotently", async () => {
+    const fixture = writeFixture();
+    const input = devtoolsCandidate(fixture.input);
+    const initial = await activateManagedBrowserTree(input);
+    const selected = { ...input, browserExecutablePath: fs.realpathSync(process.execPath) };
+    const chromium = await activateManagedBrowserTree(selected);
+    expect(chromium.treeSha256).toBe(initial.treeSha256);
+    expect(chromium.launcherSha256).not.toBe(initial.launcherSha256);
+    expect(chromium.rootPath).not.toBe(initial.rootPath);
+    const before = readActivePointer(chromium).raw;
+    const repeated = await activateManagedBrowserTree(selected);
+    expect(repeated).toEqual(chromium);
+    expect(readActivePointer(repeated).raw).toEqual(before);
+  });
+
+  it("does not reuse a same-tree launcher when the verified relative entry changes", async () => {
+    const fixture = writeFixture();
+    const alternateEntry = path.join(path.dirname(fixture.input.entryPath), "alternate.js");
+    fs.copyFileSync(fixture.input.entryPath, alternateEntry);
+    const input = { ...fixture.input, staged: { ...fixture.staged,
+      treeSha256: browserTreeSha256(fixture.staged.nodeModulesPath, path.dirname(fixture.staged.nodeModulesPath)) } };
+    const initial = await activateManagedBrowserTree(input);
+    const updated = await activateManagedBrowserTree({ ...input, entryPath: alternateEntry });
+    expect(updated.treeSha256).toBe(initial.treeSha256);
+    expect(updated.launcherSha256).not.toBe(initial.launcherSha256);
+    expect(path.basename(updated.entryPath)).toBe("alternate.js");
+  });
+
+  it.each(["missing", "relative", "symlink", "non-executable"] as const)("rejects an invalid DevTools browser selector (%s)", async (invalid) => {
+    const fixture = writeFixture();
+    const executable = path.join(fixture.root, "chromium");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: invalid === "non-executable" ? 0o600 : 0o700 });
+    const link = path.join(fixture.root, "chromium-link");
+    if (invalid === "symlink") fs.symlinkSync(executable, link);
+    const browserExecutablePath = invalid === "missing" ? path.join(fixture.root, "missing-chromium")
+      : invalid === "relative" ? "chromium" : invalid === "symlink" ? link : executable;
+    await expect(activateManagedBrowserTree({ ...devtoolsCandidate(fixture.input), browserExecutablePath } as ActivateManagedBrowserTreeInput))
+      .rejects.toThrow(/browser|executable|symlink|absolute/i);
+    expect(fs.existsSync(path.join(fixture.stateDir, ".browser-managed", "chrome-devtools-mcp", "active.v1.json"))).toBe(false);
+  });
+
+  it("rejects a browser executable selector for Playwright rather than silently applying it", async () => {
+    const fixture = writeFixture();
+    await expect(activateManagedBrowserTree({ ...fixture.input, browserExecutablePath: fs.realpathSync(process.execPath) } as ActivateManagedBrowserTreeInput))
+      .rejects.toThrow(/DevTools|browser.*selector|executable/i);
+  });
+
   it("runs the Playwright user command through the external guard only while opted in", async () => {
     const fixture = writeFixture();
     const marker = path.join(fixture.root, "playwright-command.marker");
@@ -393,6 +450,22 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     manifest.bin = { "playwright-cli": "./runtime-link" };
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
     expect(() => resolveEntry!(fixture.staged, PACKAGE_NAME)).toThrow(/bin|entry|symlink/i);
+  });
+
+  it("resolves the physical bin when pnpm links the root package into its virtual store", async () => {
+    const fixture = writeFixture();
+    const { resolveStagedBrowserEntry } = await import("../src/lib/browser-managed.js");
+    const physicalRoot = path.join(fixture.staged.nodeModulesPath, ".pnpm", "linked-root", "node_modules", "@playwright", "cli");
+    fs.mkdirSync(path.dirname(physicalRoot), { recursive: true });
+    fs.renameSync(fixture.staged.treePath, physicalRoot);
+    fs.symlinkSync(path.relative(path.dirname(fixture.staged.treePath), physicalRoot), fixture.staged.treePath, "dir");
+    const manifestPath = path.join(physicalRoot, "package.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.bin = { "playwright-cli": "./index.js" };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const entry = resolveStagedBrowserEntry(fixture.staged, PACKAGE_NAME);
+    expect(entry).toBe(path.join(physicalRoot, "index.js"));
+    expect(fs.realpathSync(entry)).toBe(entry);
   });
 
   it("projects Pi's published trusted DevTools handoff from an active verified receipt", async () => {
