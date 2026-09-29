@@ -957,6 +957,9 @@ function t41PiPostState(kind: "valid" | "missing-adapter" | "duplicate-engram" |
   const engramBin = path.join(root, "bin", "engram");
   fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   // Canónico upstream main + Pi 0.8.28: packages como sources
   // `npm:gentle-engram` / `npm:pi-mcp-adapter` (provider-managed, se observan
   // sin pin) y mcp.json con mcpServers.engram directo exacto (command absoluto,
@@ -1049,6 +1052,9 @@ function t42PiDir(): { piAgentDir: string; engramBin: string } {
   const engramBin = path.join(root, "bin", "engram");
   fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   fs.writeFileSync(
     path.join(piAgentDir, "settings.json"),
     JSON.stringify({ packages: ["npm:gentle-engram@0.1.99-observada", "npm:pi-mcp-adapter@2.99.0-observada"] }),
@@ -1144,6 +1150,9 @@ function t50PiDir(): { piAgentDir: string; engramBin: string } {
   const engramBin = path.join(root, "bin", "engram");
   fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   fs.writeFileSync(
     path.join(piAgentDir, "mcp.json"),
     JSON.stringify({

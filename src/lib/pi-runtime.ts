@@ -13,12 +13,14 @@ import {
 } from "./pi-install-activation.js";
 import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { smokeStagedPiRuntime, smokeLinkedPiRuntime } from "./pi-stage-smoke.js";
+import { runPiStageProcess } from "./pi-stage-process.js";
 import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { deactivateVerifiedLegacyPiEntry, deactivateVerifiedPiRelease } from "./pi-private-release.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { detectEngram, lookPath, planDetectedBinCommand } from "./detect.js";
 import type { EngramInstallResult } from "./engram-install.js";
+import { migrateOfficialPiMcpConfig, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
 import {
   executePiPackageLifecycle,
   planPiPackageLifecycle,
@@ -677,6 +679,27 @@ function runProcess(invocation: {
   };
 }
 
+function declaredPiMcpConfigFiles(stageDir: string): string[] {
+  const file = path.join(stageDir, "npm", "node_modules", "jorgex-pi", "contract", "jorgex-pi.v1.json");
+  const contract = JSON.parse(fs.readFileSync(file, "utf8")) as { mcpAdapterConfig?: { schemaVersion?: unknown; files?: unknown } };
+  const declaration = contract.mcpAdapterConfig;
+  if (declaration === undefined) return [];
+  if (declaration.schemaVersion !== 1 || !Array.isArray(declaration.files)
+    || !declaration.files.every((file): file is string => typeof file === "string")) {
+    throw new Error("El candidato Pi declara un contrato MCP inválido.");
+  }
+  return declaration.files;
+}
+
+async function completeUpdatedPiMcp(configDir: string, engramBin: string): Promise<void> {
+  const { verifyOfficialSetup } = await import("../adapters/pi.js");
+  const before = await verifyOfficialSetup({ configDir, engramBin });
+  if (!before.layers.includes("packages")) throw new Error(before.reason ?? "Setup de paquetes Pi incompleto.");
+  migrateOfficialPiMcpConfig({ configDir, engramBin });
+  const after = await verifyOfficialSetup({ configDir, engramBin });
+  if (!after.ok) throw new Error(after.reason ?? "Configuración MCP Pi no verificada.");
+}
+
 function setupPiFailedRemedy(setup: {
   reason?: string;
   stderr?: string;
@@ -1151,12 +1174,7 @@ export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiR
         { homeDir: updateHomeDir, agentDir: updateAgentDir, piExecutable: updateExecutable, downloadsDir: updateDownloadsDir },
         {
           fetchImpl: updateFetch as typeof fetch,
-          run: (executable, args, options) => runProcess({
-            executable,
-            args,
-            environment: options.env,
-            cwd: options.cwd,
-          }),
+          run: runPiStageProcess,
         },
       );
       return { candidate: updateResult.candidate, prepared: updateResult };
@@ -1279,12 +1297,7 @@ export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiR
       { homeDir, agentDir, piExecutable, downloadsDir },
       {
         fetchImpl: fetchImpl as typeof fetch,
-        run: (executable, args, options) => runProcess({
-          executable,
-          args,
-          environment: options.env,
-          cwd: options.cwd,
-        }),
+        run: runPiStageProcess,
       },
     );
     return { candidate: result.candidate, prepared: result };
@@ -1437,7 +1450,14 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
     // prueba del stage y antes de activar. Con --target-dir se omite
     // (no-op global) y todo queda en el destino aislado.
     if (input.targetDir === undefined) {
-      const { runOfficialSetupIfNeeded } = await import("./official-engram-setup.js");
+      const { runOfficialSetupIfNeeded, validateOfficialSetupDestination } = await import("./official-engram-setup.js");
+      const destinationError = validateOfficialSetupDestination("pi", paths.codingAgentDir, os.homedir());
+      if (destinationError !== null) return { kind: "blocked", reason: "setup-pi-failed", remedy: destinationError };
+      let mcpConfigFiles: string[];
+      try { mcpConfigFiles = declaredPiMcpConfigFiles(prepared.stageDir); }
+      catch (error) {
+        return { kind: "blocked", reason: "mcp-reader-incompatible", remedy: error instanceof Error ? error.message : String(error) };
+      }
       const setup = await runOfficialSetupIfNeeded("pi", {
         command: "install",
         dryRun: false,
@@ -1445,6 +1465,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         engramBin,
         configDir: paths.codingAgentDir,
         homeDir: os.homedir(),
+        piMcpConfigFiles: mcpConfigFiles,
       });
       if (!setup.ran || !setup.ok) {
         if (!setup.ran) {
@@ -1721,6 +1742,16 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         remedy: "El receipt previo no trae managedPackage; el update legacy sigue bloqueado en otro paso. No se modificó nada; Pi no quedó activado.",
       };
     }
+    if (input.targetDir === undefined) {
+      try {
+        const selectedFile = path.basename(resolvePiAdapterConfigPath(paths.codingAgentDir));
+        if (selectedFile === "mcp-adapter.json" && !declaredPiMcpConfigFiles(updatePrepared.stageDir).includes(selectedFile)) {
+          throw new Error("El candidato Pi verificado no declara lector mcp-adapter.json; no se modifica la instalación.");
+        }
+      } catch (error) {
+        return { kind: "blocked", reason: "mcp-reader-incompatible", remedy: error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (sameJsonValue(updateValidated.receipt.candidate.package, updateCandidate.package)
       && sameJsonValue(updateValidated.receipt.candidate.tarball, updateCandidate.tarball)
       && sameJsonValue(updateValidated.receipt.candidate.provenance, updateCandidate.provenance)
@@ -1729,6 +1760,10 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
       && Array.isArray(updateOldManaged.dependencies)
       && updateOldManaged.dependencies.length === 6
       && sortedDepIdentities(updateOldManaged.dependencies) === sortedDepIdentities([...updatePrepared.evidence.dependencies])) {
+      if (input.targetDir === undefined) {
+        try { await completeUpdatedPiMcp(paths.codingAgentDir, engramBinForUpdate); }
+        catch (error) { return { kind: "blocked", reason: "mcp-config-incomplete", remedy: error instanceof Error ? error.message : String(error) }; }
+      }
       return { kind: "healthy", packageSource: updateValidated.receipt.candidate.package.source };
     }
     let updateFreshSettingsRaw: string;
@@ -1818,6 +1853,12 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         },
         { verifyStage: updateVerifyStage, smokeStage: updateSmokeStage, verifyActive: updateVerifyActive },
       );
+      if (input.targetDir === undefined) {
+        try { await completeUpdatedPiMcp(updateAgentDir, engramBinForUpdate); }
+        catch (error) {
+          return { kind: "blocked", reason: "mcp-config-incomplete", remedy: `Paquete Pi activado y verificado; configuración MCP pendiente, conservada con su backup. ${error instanceof Error ? error.message : String(error)}` };
+        }
+      }
       return { kind: "updated", receipt: updateActivated.receipt, packageSource: updateActivationCandidate.package.source };
     } catch (error) {
       if (error !== null && typeof error === "object" && Reflect.get(error as object, "recovery") === "incomplete") {

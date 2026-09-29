@@ -188,6 +188,9 @@ function isStrictChild(parent: string, child: string): boolean {
 function expectStageIsolation(calls: CapturedCall[], agentDir: string, artifactPath: string): string {
   expect(calls).toHaveLength(1);
   const call = calls[0]!;
+  expect(call.env.npm_config_audit).toBe("false");
+  expect(call.env.npm_config_fund).toBe("false");
+  expect(call.env.npm_config_progress).toBe("false");
   expect(call.executable).toBe(PI_EXECUTABLE);
   expect(call.executable).not.toBe("npm");
   expect(call.args).toEqual(["install", `npm:jorgex-pi@file:${artifactPath}`, "--no-approve"]);

@@ -199,7 +199,7 @@ function destroyChild(child: ChildProcess): void {
   }
 }
 
-async function stopOwned(child: ChildProcess): Promise<void> {
+export async function stopOwnedPiProcess(child: ChildProcess): Promise<void> {
   const pid = child.pid;
   if (pid === undefined) {
     destroyChild(child);
@@ -474,7 +474,7 @@ async function runSmoke(input: PiStageSmokeInput): Promise<PiStageSmokeResult> {
       settled = true;
       cleanupTimers();
       const owned = child;
-      if (owned !== undefined) await stopOwned(owned);
+      if (owned !== undefined) await stopOwnedPiProcess(owned);
       reject(new Error(`pi-stage-smoke: ${message}`));
     };
 
@@ -483,7 +483,7 @@ async function runSmoke(input: PiStageSmokeInput): Promise<PiStageSmokeResult> {
       settled = true;
       cleanupTimers();
       const owned = child;
-      if (owned !== undefined) await stopOwned(owned);
+      if (owned !== undefined) await stopOwnedPiProcess(owned);
       resolve({ commands });
     };
 

@@ -123,7 +123,6 @@ jobs:
       PI_TEST_HOST: ${{ github.workspace }}/.validation-artifacts/pi-live-host
       JORGEX_PI_LIVE_ARTIFACT: ${{ github.workspace }}/.validation-artifacts/pi-live.tgz
       PI_TEST_CANDIDATE: ${{ github.workspace }}/.validation-artifacts/pi-live.json
-      JORGEX_PI_LIVE_DIAGNOSTICS: ${{ github.workspace }}/.validation-artifacts/pi-live-diagnostics
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
@@ -142,11 +141,3 @@ jobs:
           pnpm --dir "${{ env.PI_TEST_HOST }}" add --ignore-scripts @earendil-works/pi-coding-agent@latest
       - name: Verify real Pi link layout and failure detection
         run: pnpm exec vitest run tests/pi-linked-smoke-live.test.ts tests/pi-staged-lock.test.ts tests/pi-stage-smoke.test.ts
-      - name: Upload Pi live stage diagnostics
-        if: ${{ failure() && matrix.os == 'windows-latest' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: pi-live-windows-diagnostics
-          path: ${{ github.workspace }}/.validation-artifacts/pi-live-diagnostics
-          if-no-files-found: ignore
-          retention-days: 3

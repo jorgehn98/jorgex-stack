@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { materializeStagedPiRuntimeDependencies } from "./pi-staged-lock.js";
 import { isStableSemverVersion } from "./npm-provider.js";
+import { PI_STAGE_PROCESS_TIMEOUT_MS } from "./pi-stage-process.js";
 
 export interface StageArtifact {
   path: string;
@@ -72,7 +73,7 @@ const REGISTRY_HOST = "registry.npmjs.org";
 const MAX_TARBALL_BYTES = 128 * 1024 * 1024;
 const MAX_SETTINGS_BYTES = 1 * 1024 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
-const STAGE_TIMEOUT_MS = 120_000;
+const STAGE_TIMEOUT_MS = PI_STAGE_PROCESS_TIMEOUT_MS + 5_000;
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX128 = /^[0-9a-f]{128}$/;
 
@@ -408,6 +409,9 @@ export async function stageVerifiedPiTarball(input: StageInput, run: StageRun): 
     npm_config_cache: npmCache,
     NPM_CONFIG_IGNORE_SCRIPTS: "true",
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_progress: "false",
     PI_CODING_AGENT_DIR: stageDir,
     PATH: runtimePath(piExecutable as string),
   };

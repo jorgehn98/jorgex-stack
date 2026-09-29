@@ -3,6 +3,7 @@ import path from "node:path";
 import type { SelectableRuntimeId, SharedProjectionAdapter } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
+import { readPiMcpConfig, resolvePiAdapterConfigPath } from "../lib/pi-mcp-config.js";
 
 export function piSystemPromptFile(targetDir?: string): string {
   const configDir = targetDir === undefined
@@ -232,79 +233,107 @@ export async function verifyOfficialSetup(args: {
     }
   }
 
-  // --- mcp (mcp.json, mcpServers.engram exacto) ---
+  // --- mcp (the installed adapter's selected config, mcpServers.engram exacto) ---
   let mcpDetail: string | null = null;
+  const appendMcpDetail = (detail: string): void => {
+    mcpDetail = mcpDetail === null ? detail : `${mcpDetail}; ${detail}`;
+  };
   if (typeof args.engramBin !== "string" || args.engramBin === "") {
     missing.push("mcp:missing");
     mcpDetail = "mcp inválido en mcp.json (sin engramBin absoluto)";
   } else {
+    let mcpPath: string | null = null;
+    let mcpName = "mcp.json";
     try {
-      const raw = fs.readFileSync(path.join(args.configDir, "mcp.json"), "utf8");
-      let parsed: unknown;
+      mcpPath = resolvePiAdapterConfigPath(args.configDir);
+      mcpName = path.basename(mcpPath);
+    } catch (error) {
+      missing.push("mcp:adapter-metadata");
+      mcpDetail = `mcp inválido: metadata instalada de pi-mcp-adapter ausente o inválida (${error instanceof Error ? error.message : String(error)})`;
+    }
+
+    // Adapter >=3 no longer reads the old filename.  An old official Engram
+    // root is still a duplicate/conflict, not a reason to silently declare
+    // the new file healthy.  This check is read-only; migration belongs to
+    // the official setup lifecycle.
+    if (mcpPath !== null && mcpName === "mcp-adapter.json") {
+      const legacyPath = path.join(args.configDir, "mcp.json");
       try {
-        parsed = JSON.parse(raw) as unknown;
-      } catch {
-        missing.push("mcp:invalid");
-        mcpDetail = "mcp inválido en mcp.json (JSON no parseable)";
-        parsed = null;
-        throw new Error("__invalid_mcp__");
-      }
-      if (!isRecord(parsed)) {
-        missing.push("mcp:invalid");
-        mcpDetail = "mcp inválido en mcp.json (raíz no objeto)";
-      } else {
-        const servers = parsed["mcpServers"];
-        if (!isRecord(servers) || servers["engram"] === undefined) {
-          // Compat: algunos estados usan `servers.engram`; el canónico es
-          // `mcpServers.engram` en mcp.json.
-          const alt = isRecord(parsed["servers"]) ? (parsed["servers"] as Record<string, unknown>)["engram"] : undefined;
-          if (alt === undefined) {
-            missing.push("mcp:missing");
-            mcpDetail = "mcp ausente en mcp.json (falta mcpServers.engram)";
-          } else if (isExactPiEngramMcp(alt, args.engramBin)) {
-            passed.push("mcp");
-            mcpDetail = null;
-          } else {
-            missing.push("mcp:invalid");
-            mcpDetail = `mcp inválido en mcp.json (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`;
-          }
-        } else if (isExactPiEngramMcp(servers["engram"], args.engramBin)) {
-          // Canónico exacto exige ausencia de `servers.engram` legacy: toda
-          // coexistencia (exacta, ajena o inválida) es conflicto fail-closed.
-          const legacy = isRecord(parsed["servers"]) ? (parsed["servers"] as Record<string, unknown>)["engram"] : undefined;
-          if (legacy !== undefined) {
-            missing.push("mcp:conflict");
-            mcpDetail = "mcp en conflicto en mcp.json (servers.engram legacy coexiste con mcpServers.engram canónico; conflicto fail-closed sin activar Pi)";
-          } else {
-            passed.push("mcp");
-            mcpDetail = null;
-          }
-        } else {
-          const foreign = isRecord(servers["engram"])
-            && typeof (servers["engram"] as Record<string, unknown>)["command"] === "string"
-            && (servers["engram"] as Record<string, unknown>)["command"] !== args.engramBin
-            && !String((servers["engram"] as Record<string, unknown>)["command"]).includes("node")
-            && !JSON.stringify(servers["engram"]).includes(args.engramBin);
-          missing.push(foreign ? "mcp:conflict" : "mcp:invalid");
-          mcpDetail = foreign
-            ? `mcp en conflicto en mcp.json (no apunta al binario oficial ${args.engramBin}); se preserva sin reescribir`
-            : `mcp inválido en mcp.json (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`;
+        const legacy = readPiMcpConfig(legacyPath);
+        const legacyServers = isRecord(legacy) ? legacy["mcpServers"] : undefined;
+        const legacyAltServers = isRecord(legacy) ? legacy["mcp-servers"] : undefined;
+        const legacyEngram = isRecord(legacyServers)
+          ? legacyServers["engram"]
+          : isRecord(legacyAltServers) ? legacyAltServers["engram"] : undefined;
+        if (legacyEngram !== undefined) {
+          duplicates = true;
+          missing.push("mcp:conflict");
+          appendMcpDetail("mcp en conflicto en mcp.json (el adapter instalado lee mcp-adapter.json y conserva una definición Engram legacy; migra la raíz oficial sin duplicarla)");
+        }
+      } catch (error) {
+        const code = errnoCode(error);
+        if (code !== "ENOENT") {
+          missing.push("mcp:conflict");
+          const diagnostic = error instanceof SyntaxError ? "INVALID_JSON" : /^[A-Z0-9_]{1,32}$/.test(code) ? code : "UNKNOWN";
+          appendMcpDetail(`mcp en conflicto en ${legacyPath} (configuración legacy ilegible o inválida: ${diagnostic})`);
         }
       }
-    } catch (error) {
-      if (error instanceof Error && error.message === "__invalid_mcp__") {
-        // Ya registrado.
-      } else {
+    }
+
+    if (mcpPath !== null && !missing.some((entry) => entry === "mcp:adapter-metadata")) {
+      try {
+        const parsed = readPiMcpConfig(mcpPath);
+        if (!isRecord(parsed)) {
+          missing.push("mcp:invalid");
+          appendMcpDetail(`mcp inválido en ${mcpName} (raíz no objeto)`);
+        } else {
+          const servers = parsed["mcpServers"];
+          if (!isRecord(servers) || servers["engram"] === undefined) {
+            // Keep the historical alternate spelling diagnosable for old
+            // fixtures, but never use it to bypass an active duplicate.
+            const alt = isRecord(parsed["servers"]) ? parsed["servers"]["engram"] : undefined;
+            if (alt === undefined) {
+              missing.push("mcp:missing");
+              appendMcpDetail(`mcp ausente en ${mcpName} (falta mcpServers.engram)`);
+            } else if (isExactPiEngramMcp(alt, args.engramBin)) {
+              passed.push("mcp");
+              if (!missing.some((entry) => entry === "mcp:conflict")) mcpDetail = null;
+            } else {
+              missing.push("mcp:invalid");
+              appendMcpDetail(`mcp inválido en ${mcpName} (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`);
+            }
+          } else if (isExactPiEngramMcp(servers["engram"], args.engramBin)) {
+            const legacy = isRecord(parsed["servers"]) ? parsed["servers"]["engram"] : undefined;
+            if (legacy !== undefined) {
+              missing.push("mcp:conflict");
+              appendMcpDetail(`mcp en conflicto en ${mcpName} (servers.engram legacy coexiste con mcpServers.engram canónico; conflicto fail-closed sin activar Pi)`);
+            } else if (!missing.some((entry) => entry === "mcp:conflict")) {
+              passed.push("mcp");
+              mcpDetail = null;
+            }
+          } else {
+            const foreign = isRecord(servers["engram"])
+              && typeof (servers["engram"] as Record<string, unknown>)["command"] === "string"
+              && (servers["engram"] as Record<string, unknown>)["command"] !== args.engramBin
+              && !String((servers["engram"] as Record<string, unknown>)["command"]).includes("node")
+              && !JSON.stringify(servers["engram"]).includes(args.engramBin);
+            missing.push(foreign ? "mcp:conflict" : "mcp:invalid");
+            appendMcpDetail(foreign
+              ? `mcp en conflicto en ${mcpName} (no apunta al binario oficial ${args.engramBin}); se preserva sin reescribir`
+              : `mcp inválido en ${mcpName} (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`);
+          }
+        }
+      } catch (error) {
         const code = errnoCode(error);
         if (code === "ENOENT") {
-          // Solo registrar si no se registró ya como missing/invalid arriba.
-          if (mcpDetail === null && !missing.some((entry) => entry.startsWith("mcp:"))) {
-            missing.push("mcp:missing");
-            mcpDetail = "mcp ausente en mcp.json (falta mcpServers.engram)";
-          }
+          missing.push("mcp:missing");
+          appendMcpDetail(`mcp ausente en ${mcpName} (falta mcpServers.engram)`);
+        } else if (error instanceof SyntaxError) {
+          missing.push("mcp:invalid");
+          appendMcpDetail(`mcp inválido en ${mcpName} (JSON/JSONC no parseable)`);
         } else {
           missing.push("mcp:unreadable");
-          mcpDetail = `mcp ilegible en mcp.json (unreadable ${code}, parcial sin activar Pi)`;
+          appendMcpDetail(`mcp ilegible en ${mcpName} (unreadable ${code}, parcial sin activar Pi)`);
         }
       }
     }

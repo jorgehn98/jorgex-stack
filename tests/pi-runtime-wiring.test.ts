@@ -472,6 +472,11 @@ function t48WiringSeedNpm(piAgentDir: string): { npmDir: string; linkPath: strin
 }
 
 function t48WiringSeedSingleton(piAgentDir: string, engramBin: string): void {
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  // T48 models the legacy adapter reader, so materialize the installed
+  // package metadata instead of relying on the old filename alone.
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   fs.writeFileSync(
     path.join(piAgentDir, "settings.json"),
     JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"] }),
@@ -483,6 +488,15 @@ function t48WiringSeedSingleton(piAgentDir: string, engramBin: string): void {
         engram: { command: engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
       },
     }),
+  );
+}
+
+function materializePiStageContract(stageDir: string): void {
+  const contract = path.join(stageDir, "npm", "node_modules", "jorgex-pi", "contract", "jorgex-pi.v1.json");
+  fs.mkdirSync(path.dirname(contract), { recursive: true });
+  fs.writeFileSync(
+    contract,
+    JSON.stringify({ mcpAdapterConfig: { schemaVersion: 1, files: ["mcp.json", "mcp-adapter.json"] } }),
   );
 }
 
@@ -656,6 +670,7 @@ async function t50SetupPiFailedRemedy(setupResult: Record<string, unknown>): Pro
   // hashes) so install reaches the setup seam instead of candidate-missing.
   const stageDir = path.join(isolatedAgentDir, `stage-${"b".repeat(32)}`, "pi-agent");
   fs.mkdirSync(stageDir, { recursive: true });
+  materializePiStageContract(stageDir);
   const candidate = PI_RUNTIME_CANDIDATE;
   const preparedIntegrity = `sha512-${Buffer.from(candidate.tarball.sha512, "hex").toString("base64")}`;
   const preparedDeps = [
@@ -917,6 +932,7 @@ describe("[T05/T06-RED] runPiRuntimeSystem routes prepared stage to activation",
     const stageHex = "b".repeat(32);
     const stageDir = path.join(agentDir, `stage-${stageHex}`, "pi-agent");
     fs.mkdirSync(stageDir, { recursive: true });
+    materializePiStageContract(stageDir);
     const engramBin = path.join(sandbox, "bin", "engram");
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
@@ -1046,6 +1062,7 @@ describe("[T05/T06-RED] runPiRuntimeSystem routes prepared stage to activation",
     const stageHex = "c".repeat(32);
     const stageDir = path.join(agentDir, `stage-${stageHex}`, "pi-agent");
     fs.mkdirSync(stageDir, { recursive: true });
+    materializePiStageContract(stageDir);
     const engramBin = path.join(sandbox, "bin", "engram");
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
@@ -1265,6 +1282,7 @@ describe("[T05-RED] install real uses post-setup settings for activation", () =>
     fs.mkdirSync(isolatedAgentDir, { recursive: true });
     const stageDir = path.join(isolatedAgentDir, `stage-${"b".repeat(32)}`, "pi-agent");
     fs.mkdirSync(stageDir, { recursive: true });
+    materializePiStageContract(stageDir);
     const preSetup = JSON.stringify({ packages: [] });
     fs.writeFileSync(path.join(isolatedAgentDir, "settings.json"), preSetup);
     // Sandbox context from the real failure: npm roots + mcp.json exist, but
@@ -1316,6 +1334,7 @@ describe("[T05-RED] install real uses post-setup settings for activation", () =>
     const providerB = "npm:pi-mcp-adapter@9.9.98";
     const foreign = "npm:foreign-keep@1.0.0";
     const activationSettings: string[] = [];
+    const setupConfigFiles: string[][] = [];
     const engramBin = path.join(tmp, "bin", "engram");
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, "#!/bin/sh\necho 2.0.0\n");
@@ -1330,7 +1349,8 @@ describe("[T05-RED] install real uses post-setup settings for activation", () =>
       );
       return {
         ...actual,
-        runOfficialSetupIfNeeded: async (_runtime: unknown, opts: { configDir: string }) => {
+        runOfficialSetupIfNeeded: async (_runtime: unknown, opts: { configDir: string; piMcpConfigFiles?: readonly string[] }) => {
+          setupConfigFiles.push([...(opts.piMcpConfigFiles ?? [])]);
           const settingsPath = path.join(opts.configDir, "settings.json");
           const raw = fs.readFileSync(settingsPath, "utf8");
           const parsed = JSON.parse(raw) as { packages: unknown[] };
@@ -1356,6 +1376,7 @@ describe("[T05-RED] install real uses post-setup settings for activation", () =>
         prepared,
       });
       expect(fetchSpy).not.toHaveBeenCalled();
+      expect(setupConfigFiles).toEqual([["mcp.json", "mcp-adapter.json"]]);
       const onDisk = JSON.parse(
         fs.readFileSync(path.join(isolatedAgentDir, "settings.json"), "utf8"),
       ) as { packages: unknown[] };
@@ -1446,6 +1467,7 @@ describe("[T05/T07-RED] runPiRuntimeSystem migrates owned legacy 0.8.24 receipt"
     } as const;
     const stageDir = path.join(agentDir, `stage-${"d".repeat(32)}`, "pi-agent");
     fs.mkdirSync(stageDir, { recursive: true });
+    materializePiStageContract(stageDir);
     const syntheticDeps = [
       { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
       { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
@@ -1663,6 +1685,7 @@ describe("[T05/T07-RED] runPiRuntimeSystem migrates owned legacy 0.8.24 receipt"
     } as const;
     const stageDir = path.join(agentDir, `stage-${"e".repeat(32)}`, "pi-agent");
     fs.mkdirSync(stageDir, { recursive: true });
+    materializePiStageContract(stageDir);
     const syntheticDeps = [
       { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
       { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
@@ -2550,6 +2573,7 @@ describe("[T07-RED] fresh install blocks on unowned FS entry before setup", () =
     } as const;
     const stageDir = path.join(agentDir, `stage-${"f".repeat(32)}`, "pi-agent");
     fs.mkdirSync(stageDir, { recursive: true });
+    materializePiStageContract(stageDir);
     const syntheticDeps = [
       { name: "@gotgenes/pi-permission-system", version: "9.9.10", integrity: `sha512-${Buffer.alloc(64, 11).toString("base64")}` },
       { name: "@juicesharp/rpiv-ask-user-question", version: "9.9.11", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
