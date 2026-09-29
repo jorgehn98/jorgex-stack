@@ -308,6 +308,9 @@ describe("[T41-RED] doctor Pi distingue binary/setup/runtime", () => {
 
 function t50SeedValidPi(piAgentDir: string, engramBin: string): void {
   fs.mkdirSync(piAgentDir, { recursive: true });
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   fs.writeFileSync(
     path.join(piAgentDir, "settings.json"),
     JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@0.2.5"] }),

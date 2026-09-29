@@ -14,6 +14,12 @@ export interface PreparedPiInstallEvidence {
   readonly dependencies: readonly PiPackageManagedDependency[];
 }
 
+export function derivePiReleaseId(tarballSha256: string, evidence: PreparedPiInstallEvidence): string {
+  return createHash("sha256")
+    .update(`${tarballSha256}:${evidence.lockSha256}:${evidence.treeSha256}`)
+    .digest("hex");
+}
+
 export interface ActivatePreparedPiInstallInput {
   readonly homeDir: string;
   readonly agentDir: string;
@@ -77,9 +83,7 @@ export async function activatePreparedPiInstall(
 
   await deps.smokeStage(stageDir);
 
-  const releaseId = createHash("sha256")
-    .update(`${candidate.tarball.sha256}:${evidence.lockSha256}`)
-    .digest("hex");
+  const releaseId = derivePiReleaseId(candidate.tarball.sha256, evidence);
 
   const receipt = createManagedPiReceipt({
     candidate,

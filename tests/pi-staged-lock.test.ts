@@ -224,6 +224,44 @@ function writeLock(stageDir: string, lock: unknown): void {
 const HEX64 = /^[0-9a-f]{64}$/;
 
 describe("[T06-RED] staged Pi npm tree evidence before activation", () => {
+  it("accepts an absolute file spec only when it identifies the verified artifact", async () => {
+    const fixture = buildStagedFixture();
+    const lock = readLock(fixture.stageDir);
+    const absolute = `file:${fixture.tarballPath}`;
+    lock.packages[""]!.dependencies = { "jorgex-pi": absolute };
+    lock.packages["node_modules/jorgex-pi"]!.resolved = absolute;
+    writeLock(fixture.stageDir, lock);
+    fs.writeFileSync(path.join(fixture.stageDir, "npm", "package.json"), JSON.stringify({ name: "pi-extensions", dependencies: { "jorgex-pi": absolute } }));
+    const { inspectStagedPiNpm } = await loadStagedInspector();
+    expect(await inspectStagedPiNpm(fixture)).toMatchObject({ dependencies: expect.any(Array) });
+    lock.packages[""]!.dependencies = { "jorgex-pi": `file:${fixture.tarballPath}.foreign` };
+    writeLock(fixture.stageDir, lock);
+    expect(() => inspectStagedPiNpm(fixture)).toThrow(/verified tarball/);
+  });
+
+  it("materializes only byte-identical package-local runtime dependencies and rejects drift", async () => {
+    const module = await import(/* @vite-ignore */ stagedSpecifier) as Record<string, unknown>;
+    expect(module.materializeStagedPiRuntimeDependencies).toBeTypeOf("function");
+    const materialize = module.materializeStagedPiRuntimeDependencies as (input: StagedPiInput) => StagedPiResult;
+    const fixture = buildStagedFixture();
+    const mods = path.join(fixture.stageDir, "npm", "node_modules");
+    const sourceFile = path.join(mods, "pi-subagents", "index.js");
+    fs.writeFileSync(sourceFile, "export const verified = true;\n");
+    const before = await (await loadStagedInspector()).inspectStagedPiNpm(fixture);
+    const result = materialize(fixture);
+    const copyFile = path.join(mods, "jorgex-pi", "node_modules", "pi-subagents", "index.js");
+    expect(fs.readFileSync(copyFile)).toEqual(fs.readFileSync(sourceFile));
+    expect(result.lockSha256).toBe(before.lockSha256);
+    expect(result.treeSha256).not.toBe(before.treeSha256);
+    expect(result.dependencies).toEqual(before.dependencies);
+    expect(materialize(fixture)).toEqual(result);
+    fs.writeFileSync(copyFile, "export const verified = false;\n");
+    const { inspectStagedPiNpm } = await loadStagedInspector();
+    expect(() => inspectStagedPiNpm(fixture)).toThrow(/runtime copy|diverg/i);
+    expect(() => materialize(fixture)).toThrow(/runtime copy|diverg/i);
+    expect(fs.readFileSync(sourceFile, "utf8")).toContain("true");
+  });
+
   it("returns the six observed identities with 64-hex lock/tree digests", async () => {
     const { inspectStagedPiNpm } = await loadStagedInspector();
     const fixture = buildStagedFixture();

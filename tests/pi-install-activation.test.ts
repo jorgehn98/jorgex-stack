@@ -26,7 +26,7 @@ import type {
  *   (b) plan via existing planPiManagedSettings (null on manual/ambiguous
  *       blocks before activation),
  *   (c) derive releaseId = SHA256(candidate.tarball.sha256 + ':' +
- *       evidence.lockSha256),
+ *       evidence.lockSha256 + ':' + evidence.treeSha256),
  *   (d) build schemaVersion 1 + managedPackage via existing
  *       createManagedPiReceipt with exact release/link/backup/deps,
  *   (e) invoke activateVerifiedPiRelease with nextSettings/nextReceipt and
@@ -136,7 +136,7 @@ function syntheticEvidence(): TestEvidence {
 function expectedReleaseId(candidate: PiRuntimeCandidate, evidence: TestEvidence): string {
   return crypto
     .createHash("sha256")
-    .update(`${candidate.tarball.sha256}:${evidence.lockSha256}`)
+    .update(`${candidate.tarball.sha256}:${evidence.lockSha256}:${evidence.treeSha256}`)
     .digest("hex");
 }
 

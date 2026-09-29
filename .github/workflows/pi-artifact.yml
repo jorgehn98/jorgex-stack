@@ -108,3 +108,36 @@ jobs:
       - run: pnpm exec vitest run tests/browser-managed-windows.test.ts tests/playwright-windows-execution.test.ts
       - run: pnpm exec vitest run tests/pi-host-version.test.ts
       - run: pnpm exec vitest run tests/browser-provider-resolution.test.ts -t "through the real pnpm stage"
+
+  pi-runtime:
+    name: Pi runtime (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PI_TEST_HOST: ${{ github.workspace }}/.validation-artifacts/pi-live-host
+      JORGEX_PI_LIVE_ARTIFACT: ${{ github.workspace }}/.validation-artifacts/pi-live.tgz
+      PI_TEST_CANDIDATE: ${{ github.workspace }}/.validation-artifacts/pi-live.json
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: pnpm
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Acquire verified Pi artifact and isolated host
+        run: |
+          node -e "require('fs').mkdirSync(require('path').dirname(process.env.JORGEX_PI_LIVE_ARTIFACT),{recursive:true})"
+          node dist/pi-ci-artifact.js "${{ env.JORGEX_PI_LIVE_ARTIFACT }}" "${{ env.PI_TEST_CANDIDATE }}"
+          node -e "require('fs').mkdirSync(process.env.PI_TEST_HOST,{recursive:true})"
+          pnpm --dir "${{ env.PI_TEST_HOST }}" add --ignore-scripts @earendil-works/pi-coding-agent@latest
+      - name: Verify real Pi link layout and failure detection
+        run: pnpm exec vitest run tests/pi-linked-smoke-live.test.ts tests/pi-staged-lock.test.ts tests/pi-stage-smoke.test.ts tests/pi-mcp-setup-integration.test.ts

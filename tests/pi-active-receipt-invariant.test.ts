@@ -133,10 +133,10 @@ function setupActiveSandbox(): ActiveSandbox {
 
   const agentDir = path.join(sandbox, "agent");
   const npmDir = path.join(agentDir, "npm");
-  const releaseId = syntheticHex("jx-t07-active-release");
+  let releaseId = syntheticHex("jx-t07-active-release");
   expect(releaseId).toMatch(/^[0-9a-f]{64}$/);
-  const releaseDir = path.join(npmDir, "jorgex-pi-managed", "releases", releaseId);
-  const packageRoot = path.join(releaseDir, "node_modules", "jorgex-pi");
+  let releaseDir = path.join(npmDir, "jorgex-pi-managed", "releases", releaseId);
+  let packageRoot = path.join(releaseDir, "node_modules", "jorgex-pi");
   const linkPath = path.join(npmDir, "node_modules", "jorgex-pi");
   const receiptPath = path.join(sandbox, "state", "pi-receipt.json");
   const engramBin = path.join(sandbox, "bin", "engram");
@@ -160,6 +160,12 @@ function setupActiveSandbox(): ActiveSandbox {
   expect(lockSha256).toMatch(/^[0-9a-f]{64}$/);
   const treeSha256 = inventoryTreeSha256(releaseDir);
   expect(treeSha256).toMatch(/^[0-9a-f]{64}$/);
+
+  releaseId = syntheticHex(`${syntheticCandidate().tarball.sha256}:${lockSha256}:${treeSha256}`);
+  const derivedDir = path.join(path.dirname(releaseDir), releaseId);
+  fs.renameSync(releaseDir, derivedDir);
+  releaseDir = derivedDir;
+  packageRoot = path.join(releaseDir, "node_modules", "jorgex-pi");
 
   fs.mkdirSync(path.dirname(linkPath), { recursive: true });
   const expectedLinkTarget = path.relative(path.dirname(linkPath), packageRoot);
@@ -191,7 +197,7 @@ function writeReceipt(input: {
   evidence: SyntheticEvidence;
   mutate?: (receipt: Record<string, unknown>) => void;
 }): string {
-  const releaseId = syntheticHex("jx-t07-active-release");
+  const releaseId = syntheticHex(`${input.candidate.tarball.sha256}:${input.evidence.lockSha256}:${input.evidence.treeSha256}`);
   const receipt = {
     schemaVersion: 1,
     state: "installed",
@@ -218,6 +224,19 @@ function writeReceipt(input: {
 }
 
 describe("pi active receipt invariant (T07 RED)", () => {
+  it("rejects an identical sibling release substituted after promotion", async () => {
+    const verify = await loadVerifyActivePiRelease();
+    const sb = setupActiveSandbox();
+    const sibling = path.join(path.dirname(sb.releaseDir), "b".repeat(64));
+    fs.renameSync(sb.releaseDir, sibling);
+    fs.unlinkSync(sb.linkPath);
+    fs.symlinkSync(path.relative(path.dirname(sb.linkPath), path.join(sibling, "node_modules", "jorgex-pi")), sb.linkPath, "dir");
+    const receipt = JSON.parse(fs.readFileSync(sb.receiptPath, "utf8"));
+    receipt.managedPackage.releaseDir = sibling;
+    fs.writeFileSync(sb.receiptPath, JSON.stringify(receipt));
+    expect(() => verify({ ...sb, scopeKind: "target-dir" })).toThrow(/release.*esperado/);
+  });
+
   it("valid control passes without writes", async () => {
     const verifyActivePiRelease = await loadVerifyActivePiRelease();
     const sb = setupActiveSandbox();

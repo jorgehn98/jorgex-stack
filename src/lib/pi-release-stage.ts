@@ -1,8 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { inspectStagedPiNpm } from "./pi-staged-lock.js";
+import { materializeStagedPiRuntimeDependencies } from "./pi-staged-lock.js";
 import { isStableSemverVersion } from "./npm-provider.js";
+import { PI_STAGE_PROCESS_TIMEOUT_MS } from "./pi-stage-process.js";
 
 export interface StageArtifact {
   path: string;
@@ -72,7 +73,7 @@ const REGISTRY_HOST = "registry.npmjs.org";
 const MAX_TARBALL_BYTES = 128 * 1024 * 1024;
 const MAX_SETTINGS_BYTES = 1 * 1024 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
-const STAGE_TIMEOUT_MS = 120_000;
+const STAGE_TIMEOUT_MS = PI_STAGE_PROCESS_TIMEOUT_MS + 5_000;
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX128 = /^[0-9a-f]{128}$/;
 
@@ -408,9 +409,19 @@ export async function stageVerifiedPiTarball(input: StageInput, run: StageRun): 
     npm_config_cache: npmCache,
     NPM_CONFIG_IGNORE_SCRIPTS: "true",
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_progress: "false",
     PI_CODING_AGENT_DIR: stageDir,
     PATH: runtimePath(piExecutable as string),
   };
+  if (process.platform === "win32") {
+    // Windows process creation/DNS needs OS metadata; never inherit user tokens or npm config.
+    for (const key of ["SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT", "OS"] as const) {
+      const value = process.env[key];
+      if (value) env[key] = value;
+    }
+  }
 
   const expectedAlias = `npm:jorgex-pi@file:${typedArtifact.path}`;
   const args = ["install", expectedAlias, "--no-approve"];
@@ -454,7 +465,7 @@ export async function stageVerifiedPiTarball(input: StageInput, run: StageRun): 
   // and returns the exact Pi-native file: alias; this module never promotes.
   let evidence: StageEvidence;
   try {
-    evidence = (await inspectStagedPiNpm({
+    evidence = (await materializeStagedPiRuntimeDependencies({
       stageDir,
       tarballPath: typedArtifact.path,
       release: { version, tarballUrl, integrity: (release as StageRelease).integrity },

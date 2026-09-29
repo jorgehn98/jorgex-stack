@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createBackup, restoreBackup } from "./backup.js";
 import { isContainedIn } from "./fsx.js";
 import { HOME } from "./paths.js";
+import { migrateOfficialPiMcpConfig, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
 
 /**
  * Coordinador común de `engram setup` oficial.
@@ -838,6 +839,7 @@ export function collectOfficialSetupBackupTargets(
       return [
         path.join(configDir, "settings.json"),
         path.join(configDir, "mcp.json"),
+        path.join(configDir, "mcp-adapter.json"),
         path.join(configDir, "npm"),
       ];
   }
@@ -1032,6 +1034,8 @@ export async function runOfficialSetupIfNeeded(
     engramVersion?: string | null;
     /** Modo explícito Claude; si se omite, se infiere de `CLAUDE_CONFIG_DIR`. */
     isExplicitClaudeConfigDir?: boolean;
+    /** Reader files declared by the verified Pi candidate, never inferred from its version. */
+    piMcpConfigFiles?: readonly string[];
   },
 ): Promise<OfficialSetupIfNeededResult> {
   if (!shouldRunOfficialSetup({ command: opts.command, dryRun: opts.dryRun, targetDir: opts.targetDir })) {
@@ -1129,7 +1133,17 @@ export async function runOfficialSetupIfNeeded(
       expectedBackupFiles = backup?.files.length ?? 0;
       return { id: backupId ?? "no-backup" };
     },
-    spawn: async (bin, argv) => spawnOfficialSetupBin(bin, argv, setupEnv),
+    spawn: async (bin, argv) => {
+      const result = await spawnOfficialSetupBin(bin, argv, setupEnv);
+      if (result.ok && runtime === "pi") {
+        const configName = path.basename(resolvePiAdapterConfigPath(configDir));
+        if (configName === "mcp-adapter.json" && !opts.piMcpConfigFiles?.includes(configName)) {
+          throw new Error("El candidato Pi verificado no declara lector mcp-adapter.json; no se migra la configuración.");
+        }
+        migrateOfficialPiMcpConfig({ configDir, engramBin });
+      }
+      return result;
+    },
     verify: async () => verify({
       configDir,
       engramBin,

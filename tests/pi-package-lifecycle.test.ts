@@ -957,6 +957,9 @@ function t41PiPostState(kind: "valid" | "missing-adapter" | "duplicate-engram" |
   const engramBin = path.join(root, "bin", "engram");
   fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   // Canónico upstream main + Pi 0.8.28: packages como sources
   // `npm:gentle-engram` / `npm:pi-mcp-adapter` (provider-managed, se observan
   // sin pin) y mcp.json con mcpServers.engram directo exacto (command absoluto,
@@ -1049,6 +1052,9 @@ function t42PiDir(): { piAgentDir: string; engramBin: string } {
   const engramBin = path.join(root, "bin", "engram");
   fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   fs.writeFileSync(
     path.join(piAgentDir, "settings.json"),
     JSON.stringify({ packages: ["npm:gentle-engram@0.1.99-observada", "npm:pi-mcp-adapter@2.99.0-observada"] }),
@@ -1144,6 +1150,9 @@ function t50PiDir(): { piAgentDir: string; engramBin: string } {
   const engramBin = path.join(root, "bin", "engram");
   fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.writeFileSync(engramBin, "#!/bin/sh\n");
+  const adapterPackage = path.join(piAgentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
+  fs.mkdirSync(path.dirname(adapterPackage), { recursive: true });
+  fs.writeFileSync(adapterPackage, JSON.stringify({ name: "pi-mcp-adapter", version: "2.0.5" }));
   fs.writeFileSync(
     path.join(piAgentDir, "mcp.json"),
     JSON.stringify({
@@ -1264,6 +1273,19 @@ describe("[T50-RED] Pi package source identidad estricta", () => {
 });
 
 describe("[T50-RED] Pi MCP canónico exige ausencia de servers.engram legacy", () => {
+  it("rejects alternate servers.engram that the Pi reader ignores", async () => {
+    const { piAgentDir, engramBin } = t50PiDir();
+    fs.writeFileSync(path.join(piAgentDir, "settings.json"), JSON.stringify({ packages: ["npm:gentle-engram", "npm:pi-mcp-adapter"] }));
+    const mcpPath = path.join(piAgentDir, "mcp.json");
+    const canonical = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
+    const alternate = JSON.stringify({ servers: canonical.mcpServers });
+    fs.writeFileSync(mcpPath, alternate);
+    const pi = await import("../src/adapters/pi.js");
+    const report = await pi.verifyOfficialSetup({ configDir: piAgentDir, engramBin, homeDir: path.dirname(piAgentDir) });
+    expect(report.ok).toBe(false);
+    expect(fs.readFileSync(mcpPath, "utf8")).toBe(alternate);
+  });
+
   it("control: canónico exacto solo sin legacy pasa", async () => {
     const { piAgentDir, engramBin } = t50PiDir();
     fs.writeFileSync(

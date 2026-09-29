@@ -99,10 +99,19 @@ type FakeMode =
   | "hang"
   | "valid_with_known_stderr_warning"
   | "unexpected_stderr_text"
-  | "stderr_extension_error";
+  | "stderr_extension_error"
+  | "ui_notify_error"
+  | "stderr_ui_notify_error"
+  | "missing_engram_setup"
+  | "altered_missing_engram_setup";
 
 const KNOWN_STDERR_WARNING =
   "[pi-web-access] Dynamic tool activation requires Pi 0.86.1 or newer; web tools remain eagerly available.";
+const PERMISSION_NOTIFY_ERROR =
+  "JorgeX companion permission load failure: Cannot find module '/stage/node_modules/@gotgenes/pi-permission-system/index.js'";
+const MISSING_ENGRAM_SETUP_NOTIFY_ERROR =
+  "JorgeX Engram bridge is unavailable: official Engram MCP setup is missing; run `engram setup pi` and reload Pi";
+const ALTERED_MISSING_ENGRAM_SETUP_NOTIFY_ERROR = `${MISSING_ENGRAM_SETUP_NOTIFY_ERROR}.`;
 
 type StageTopology = {
   sandbox: string;
@@ -229,6 +238,24 @@ setTimeout(() => {
   const stateLine = JSON.stringify({ type: "response", id: stateId, command: "get_state", success: true, data: { ok: true } });
   const commandsLine = (names) => JSON.stringify({ type: "response", id: commandsId, command: "get_commands", success: true, data: { commands: withSource(names) } });
   const stderrWarningLine = ${JSON.stringify(KNOWN_STDERR_WARNING + "\r\n")};
+  const uiNotifyErrorLine = JSON.stringify({
+    type: "extension_ui_request",
+    method: "notify",
+    notifyType: "error",
+    message: ${JSON.stringify(PERMISSION_NOTIFY_ERROR)},
+  });
+  const missingEngramSetupLine = JSON.stringify({
+    type: "extension_ui_request",
+    method: "notify",
+    notifyType: "error",
+    message: ${JSON.stringify(MISSING_ENGRAM_SETUP_NOTIFY_ERROR)},
+  });
+  const alteredMissingEngramSetupLine = JSON.stringify({
+    type: "extension_ui_request",
+    method: "notify",
+    notifyType: "error",
+    message: ${JSON.stringify(ALTERED_MISSING_ENGRAM_SETUP_NOTIFY_ERROR)},
+  });
   let out = "";
   let errOut = "";
   if (MODE === "valid") out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n";
@@ -239,6 +266,10 @@ setTimeout(() => {
   else if (MODE === "valid_with_known_stderr_warning") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n"; errOut = stderrWarningLine; }
   else if (MODE === "unexpected_stderr_text") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n"; errOut = "[pi-web-access] unexpected diagnostic boom\\n"; }
   else if (MODE === "stderr_extension_error") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n"; errOut = JSON.stringify({ type: "extension_error", id: commandsId, command: "get_commands", success: false, error: { message: "boom" } }) + "\\n"; }
+  else if (MODE === "ui_notify_error") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + uiNotifyErrorLine + "\\n"; }
+  else if (MODE === "stderr_ui_notify_error") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n"; errOut = uiNotifyErrorLine + "\\n"; }
+  else if (MODE === "missing_engram_setup") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + missingEngramSetupLine + "\\n"; }
+  else if (MODE === "altered_missing_engram_setup") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + alteredMissingEngramSetupLine + "\\n"; }
   // Stderr first so the diagnostic is already buffered when stdout completes;
   // otherwise a valid-stdout-first race could settle success before stderr lands.
   process.stderr.write(errOut, () => process.stdout.write(out, () => process.exit(0)));
@@ -640,6 +671,75 @@ describe("[T05-RED] staged Pi host/package ABI smoke before activation", () => {
     const topology = buildStageTopology();
     const fake = writeFakePi(topology, "stderr_extension_error");
     process.env["JORGEX_SMOKE_SENTINEL"] = `jx-sentinel-stderr-ext-${Date.now()}`;
+
+    const failure = await smokeStagedPiRuntime({
+      piExecutable: fake.piExecutable,
+      stageDir: topology.stageDir,
+      timeoutMs: 5000,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).toMatch(/pi-stage-smoke:/);
+  });
+
+  it("fails closed on a permission extension_ui_request error even when commands are registered", async () => {
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const topology = buildStageTopology();
+    const fake = writeFakePi(topology, "ui_notify_error");
+
+    const failure = await smokeStagedPiRuntime({
+      piExecutable: fake.piExecutable,
+      stageDir: topology.stageDir,
+      timeoutMs: 5000,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).toMatch(
+      /pi-stage-smoke:.*JorgeX companion permission load failure: Cannot find module/,
+    );
+  });
+
+  it("fails closed on a permission extension_ui_request error received on stderr", async () => {
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const topology = buildStageTopology();
+    const fake = writeFakePi(topology, "stderr_ui_notify_error");
+
+    const failure = await smokeStagedPiRuntime({
+      piExecutable: fake.piExecutable,
+      stageDir: topology.stageDir,
+      timeoutMs: 5000,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).toMatch(
+      /pi-stage-smoke:.*JorgeX companion permission load failure: Cannot find module/,
+    );
+  });
+
+  it("accepts the exact missing Engram setup notification in a package-only stage", async () => {
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const topology = buildStageTopology();
+    const fake = writeFakePi(topology, "missing_engram_setup");
+
+    const result = await smokeStagedPiRuntime({
+      piExecutable: fake.piExecutable,
+      stageDir: topology.stageDir,
+      timeoutMs: 5000,
+    });
+
+    expect([...result.commands].sort()).toEqual([...REQUIRED_COMMANDS].sort());
+  });
+
+  it("rejects an altered missing Engram setup notification", async () => {
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const topology = buildStageTopology();
+    const fake = writeFakePi(topology, "altered_missing_engram_setup");
 
     const failure = await smokeStagedPiRuntime({
       piExecutable: fake.piExecutable,
