@@ -392,9 +392,9 @@ function defaultStageRun(executable: string, args: string[], options: { env: Rec
 
 /**
  * Resolve both provider tarballs into isolated Pi-native trees. Each provider
- * gets its own npm root so native Pi cannot prune the other provider or the
- * managed jorgex-pi tree. The returned trees are evidence only; activation is
- * a separate transaction in pi-provider-activation.ts.
+ * gets its own npm root as the selected isolation layout, keeping staging
+ * separate from the active jorgex-pi tree. The returned trees are evidence
+ * only; activation is a separate transaction in pi-provider-activation.ts.
  */
 export async function stagePiProviderPackages(
   input: StagePiProviderPackagesInput,
