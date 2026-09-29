@@ -50,6 +50,7 @@ type Fixture = {
   configDir: string;
   dataDir: string;
   engramBin: string;
+  providerScriptPath: string;
   settingsPath: string;
   legacyPath: string;
   destinationPath: string;
@@ -74,13 +75,20 @@ function createFixture(): Fixture {
   const homeDir = path.join(root, "home");
   const configDir = path.join(homeDir, ".pi", "agent");
   const dataDir = path.join(root, "stack-data");
-  const engramBin = path.join(homeDir, ".local", "bin", "engram");
+  const providerScriptPath = path.join(root, "engram-provider.cjs");
+  // POSIX can execute the shebang fixture directly. Windows cannot execute a
+  // .cmd/.js fixture through execFileSync(shell:false), so the test uses the
+  // real Node executable and preloads the same provider script via
+  // NODE_OPTIONS around the setup call (see withProviderExecutable).
+  const engramBin = process.platform === "win32"
+    ? process.execPath
+    : path.join(homeDir, ".local", "bin", "engram");
   const settingsPath = path.join(configDir, "settings.json");
   const legacyPath = path.join(configDir, "mcp.json");
   const destinationPath = path.join(configDir, "mcp-adapter.json");
   const adapterPackagePath = path.join(configDir, "npm", "node_modules", "pi-mcp-adapter", "package.json");
   const npmForeignPath = path.join(configDir, "npm", "foreign", "keep.txt");
-  fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+  if (process.platform !== "win32") fs.mkdirSync(path.dirname(engramBin), { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
 
   const official = {
@@ -99,12 +107,14 @@ fs.mkdirSync(path.join(configDir, "npm", "node_modules", "pi-mcp-adapter"), { re
 fs.writeFileSync(path.join(configDir, "settings.json"), ${JSON.stringify(JSON.stringify({ packages: ["npm:gentle-engram@0.1.99", "npm:pi-mcp-adapter@3.2.0"] }) + "\n")});
 fs.writeFileSync(path.join(configDir, "npm", "node_modules", "pi-mcp-adapter", "package.json"), ${JSON.stringify(JSON.stringify({ name: "pi-mcp-adapter", version: "3.2.0" }) + "\n")});
 fs.writeFileSync(path.join(configDir, "mcp.json"), ${JSON.stringify(legacyBytes)});
+if (process.env.JX_PI_PROVIDER_PRELOAD === "1") process.exit(0);
 `;
-  fs.writeFileSync(engramBin, providerScript, "utf8");
+  fs.writeFileSync(providerScriptPath, providerScript, "utf8");
+  if (process.platform !== "win32") fs.writeFileSync(engramBin, providerScript, "utf8");
   try {
-    fs.chmodSync(engramBin, 0o755);
+    fs.chmodSync(process.platform === "win32" ? providerScriptPath : engramBin, 0o755);
   } catch {
-    // Windows execution is skipped; POSIX mode is asserted by the real spawn.
+    // Best effort on filesystems without POSIX executable bits.
   }
   return {
     root,
@@ -112,6 +122,7 @@ fs.writeFileSync(path.join(configDir, "mcp.json"), ${JSON.stringify(legacyBytes)
     configDir,
     dataDir,
     engramBin,
+    providerScriptPath,
     settingsPath,
     legacyPath,
     destinationPath,
@@ -119,6 +130,25 @@ fs.writeFileSync(path.join(configDir, "mcp.json"), ${JSON.stringify(legacyBytes)
     npmForeignPath,
     legacyBytes,
   };
+}
+
+async function withProviderExecutable<T>(fixture: Fixture, run: () => Promise<T>): Promise<T> {
+  if (process.platform !== "win32") return run();
+  const previousNodeOptions = process.env.NODE_OPTIONS;
+  const previousPreloadMarker = process.env.JX_PI_PROVIDER_PRELOAD;
+  const preload = `--require="${fixture.providerScriptPath}"`;
+  process.env.NODE_OPTIONS = previousNodeOptions === undefined
+    ? preload
+    : `${preload} ${previousNodeOptions}`;
+  process.env.JX_PI_PROVIDER_PRELOAD = "1";
+  try {
+    return await run();
+  } finally {
+    if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = previousNodeOptions;
+    if (previousPreloadMarker === undefined) delete process.env.JX_PI_PROVIDER_PRELOAD;
+    else process.env.JX_PI_PROVIDER_PRELOAD = previousPreloadMarker;
+  }
 }
 
 async function loadSetupWithRealPiVerifier(fixture: Fixture): Promise<{ setup: SetupModule; pi: PiModule }> {
@@ -155,20 +185,20 @@ function expectMigrationBackup(fixture: Fixture): void {
   expect(fs.readFileSync(path.join(fixture.configDir, backupName as string), "utf8")).toBe(fixture.legacyBytes);
 }
 
-describe.skipIf(process.platform === "win32")("Pi official setup + MCP migration integration", () => {
+describe("Pi official setup + MCP migration integration", () => {
   it("runs the real provider hook, migrates legacy MCP, and verifies the active adapter config", async () => {
     const fixture = createFixture();
     seedPreexistingState(fixture);
     const { setup, pi } = await loadSetupWithRealPiVerifier(fixture);
 
-    const result = await setup.runOfficialSetupIfNeeded("pi", {
+    const result = await withProviderExecutable(fixture, () => setup.runOfficialSetupIfNeeded("pi", {
       command: "install",
       dryRun: false,
       engramBin: fixture.engramBin,
       configDir: fixture.configDir,
       homeDir: fixture.homeDir,
       piMcpConfigFiles: ["mcp.json", "mcp-adapter.json"],
-    });
+    }));
 
     expect(result).toMatchObject({ ran: true, ok: true, ownershipTransferred: true });
     expect(result.backupId).toBeTypeOf("string");
@@ -193,13 +223,13 @@ describe.skipIf(process.platform === "win32")("Pi official setup + MCP migration
     const before = seedPreexistingState(fixture);
     const { setup } = await loadSetupWithRealPiVerifier(fixture);
 
-    const result = await setup.runOfficialSetupIfNeeded("pi", {
+    const result = await withProviderExecutable(fixture, () => setup.runOfficialSetupIfNeeded("pi", {
       command: "install",
       dryRun: false,
       engramBin: fixture.engramBin,
       configDir: fixture.configDir,
       homeDir: fixture.homeDir,
-    });
+    }));
 
     expect(result.ran).toBe(true);
     expect(result.ok).toBe(false);
