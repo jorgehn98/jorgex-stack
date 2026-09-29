@@ -19,6 +19,7 @@ const version: string | undefined = process.env.JORGEX_PI_LIVE_VERSION ?? (proce
 
 it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promoted-link topology only with its verified local runtime copies", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-layout-live-"));
+  let failed = false;
   try {
     const agentDir = path.join(homeDir, "agent");
     fs.mkdirSync(agentDir);
@@ -33,7 +34,7 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
       const command = planDetectedBinCommand(executable, args);
       if (command === null) throw new Error("Unsafe Pi test executable");
       const result = spawnSync(command.command, command.args, { ...options, encoding: "utf8", timeout: 120_000 });
-      return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? result.error?.message ?? "" };
+      return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: [result.error?.message, result.stderr, result.status !== 0 ? result.stdout?.slice(-1500) : undefined].filter(Boolean).join("\n") };
     });
     const packageRoot = path.join(staged.stageDir, "npm", "node_modules", "jorgex-pi");
     // Restore the old topology to prove the same real loader goes RED.
@@ -43,7 +44,11 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     materializeStagedPiRuntimeDependencies({ stageDir: staged.stageDir, tarballPath: artifact.path, release });
     const ready = await smokeLinkedPiRuntime(smoke);
     expect(ready.commands).toEqual(expect.arrayContaining(["permission-system", "subagents", "goal", "websearch"]));
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    fs.rmSync(homeDir, { recursive: true, force: true });
+    if (failed) console.error(`Failed Pi live stage retained for diagnosis: ${homeDir}`);
+    else fs.rmSync(homeDir, { recursive: true, force: true });
   }
 }, 240_000);
