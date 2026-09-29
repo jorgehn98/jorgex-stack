@@ -65,6 +65,7 @@ type SmokeInput = {
   piExecutable: string;
   stageDir: string;
   timeoutMs?: number;
+  providerSetup?: { engramBin: string; engramUrl: string };
 };
 
 type SmokeResult = {
@@ -102,6 +103,7 @@ type FakeMode =
   | "stderr_extension_error"
   | "ui_notify_error"
   | "stderr_ui_notify_error"
+  | "missing_engram_setup_with_providers"
   | "missing_engram_setup"
   | "altered_missing_engram_setup";
 
@@ -221,6 +223,7 @@ function snapshotEnv() {
 }
 const MODE = ${JSON.stringify(mode)};
 const REQUIRED = ${JSON.stringify([...REQUIRED_COMMANDS])};
+if (MODE === "missing_engram_setup_with_providers") REQUIRED.push("mcp-adapter", "mcp");
 setTimeout(() => {
   const stdin = Buffer.concat(chunks).toString("utf8");
   const payload = { pid: process.pid, args: process.argv.slice(2), env: snapshotEnv(), cwd: process.cwd(), stdin };
@@ -268,7 +271,7 @@ setTimeout(() => {
   else if (MODE === "stderr_extension_error") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n"; errOut = JSON.stringify({ type: "extension_error", id: commandsId, command: "get_commands", success: false, error: { message: "boom" } }) + "\\n"; }
   else if (MODE === "ui_notify_error") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + uiNotifyErrorLine + "\\n"; }
   else if (MODE === "stderr_ui_notify_error") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n"; errOut = uiNotifyErrorLine + "\\n"; }
-  else if (MODE === "missing_engram_setup") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + missingEngramSetupLine + "\\n"; }
+  else if (MODE === "missing_engram_setup" || MODE === "missing_engram_setup_with_providers") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + missingEngramSetupLine + "\\n"; }
   else if (MODE === "altered_missing_engram_setup") { out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n" + alteredMissingEngramSetupLine + "\\n"; }
   // Stderr first so the diagnostic is already buffered when stdout completes;
   // otherwise a valid-stdout-first race could settle success before stderr lands.
@@ -720,6 +723,16 @@ describe("[T05-RED] staged Pi host/package ABI smoke before activation", () => {
     expect(String((failure as Error).message)).toMatch(
       /pi-stage-smoke:.*JorgeX companion permission load failure: Cannot find module/,
     );
+  });
+
+  it("rejects missing provider setup when probing the complete provider layout", async () => {
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const topology = buildStageTopology();
+    const fake = writeFakePi(topology, "missing_engram_setup_with_providers");
+    await expect(smokeStagedPiRuntime({
+      piExecutable: fake.piExecutable, stageDir: topology.stageDir, timeoutMs: 5000,
+      providerSetup: { engramBin: process.execPath, engramUrl: "http://127.0.0.1:9" },
+    })).rejects.toThrow(/Engram bridge is unavailable/);
   });
 
   it("accepts the exact missing Engram setup notification in a package-only stage", async () => {
