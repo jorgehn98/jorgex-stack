@@ -10,11 +10,11 @@ El canon de Stack y el paquete Pi adoptado mantienen una snapshot de 17 árboles
 
 En cada install/update deliberado, el resolver consume metadata del registro para obtener la versión exacta, URL canónica e integridad SRI del tarball; los bytes descargados se verifican antes del stage. El `provenance.commit` resuelto es informativo, no una attestation. Los valores del JSON pin/historial son referencias congeladas, no la fuente de la selección productiva dinámica.
 
-La verificación del tarball precede a la activación. El stage aísla la instalación Pi-native y fija seis dependencias con versiones e integridades; smoke e inspección del lock/tree deben concluir antes de tocar la entrada activa. La activación respalda el estado, promueve el release privado y publica solo el entry propio; si falla, intenta restaurar el estado previo. La entrada de paquete y el receipt deben coincidir con el candidato activado; receipt schema 1 añade `managedPackage` con link/release y evidencia de dependencias, lock y árbol para verificación offline. Las rutas del stage/downloads no son selectores de versiones.
+La verificación del tarball precede a la activación. El stage aísla la instalación Pi-native, verifica seis dependencias directas con versiones e integridades y materializa copias package-local byte-identical para el loader de Pi; el lock conserva sus entradas verificadas y solo el inventario del árbol incluye esas copias, mientras que el `releaseId` se deriva del tarball más los digests del lock y del árbol. Smoke e inspección del lock/tree deben concluir antes de tocar la entrada activa. La activación respalda el estado, promueve el release privado y publica solo el entry propio; si falla, intenta restaurar el estado previo. La entrada de paquete y el receipt deben coincidir con el candidato activado; receipt schema 1 añade `managedPackage` con link/release y evidencia de dependencias, lock y árbol para verificación offline. Las rutas del stage/downloads no son selectores de versiones.
 
 El paquete adoptado mantiene su comportamiento oficial de provider; Stack no añade filtros de herramientas ni una allowlist Engram.
 
-El gestor de paquetes interno de Pi es la única excepción npm del lifecycle: Stack usa pnpm para desarrollo, dependencias y herramientas globales, y nunca lanza npm directamente. El paquete registra un receipt separado en `~/.jorgex-stack/pi-receipt.json` únicamente después de que su runner confirme una instalación sana. Ese receipt es el hand-off del binario Engram verificado; no transfiere su propiedad a Pi ni a Stack.
+El gestor de paquetes interno de Pi es la única excepción npm del lifecycle: Stack usa pnpm para desarrollo, dependencias y herramientas globales, y nunca lanza npm directamente. El cierre privado de Pi se publica únicamente desde el stage verificado; no se reutiliza el árbol npm compartido ni se pisa el estado de paquetes ajenos. El paquete registra un receipt separado en `~/.jorgex-stack/pi-receipt.json` únicamente después de que su runner confirme una instalación sana. Ese receipt es el hand-off del binario Engram verificado; no transfiere su propiedad a Pi ni a Stack.
 
 ## Procedencia, attestation y paridad
 
@@ -47,6 +47,12 @@ La snapshot validada declara:
 Las 14 capabilities del contrato son `foundation-contract-v1`, `stack-snapshot-v2`, `runtime-agents-v1`, `permission-gated-tools-v1`, `structured-questions-v1`, `web-access-v1`, `goal-continuation-v1`, `mcp-adapter-v1`, `engram-runtime-tools-v1`, `runner-json-v1`, `tui-branding-v1`, `managed-primary-model-v1`, `quality-receipt-contract-v1` y `quality-capabilities-contract-v1`.
 
 Respecto al pin anterior `0.7.0`, se mantienen las 14 capabilities y el mismo runtime, la clausura de dependencias empaquetadas y las tres escrituras externas gestionadas. `0.8.0` añade `work-audit` a la snapshot, que pasa de **17 a 18 skills** y de 96 a 97 archivos, y a la allowlist activa, que pasa de **16 a 17 skills**; el inventario del artefacto pasa de `13402` a `13403` entradas. `playwright-cli` permanece en la snapshot, pero fuera de la allowlist activa por ser opt-in. El delta documenta la capacidad empaquetada y no crea una migración in-place.
+
+## Configuración MCP efectiva y smoke
+
+El archivo MCP que se verifica es el que declara el `pi-mcp-adapter` instalado: para adapter mayor `2` se lee `mcp.json`; para mayor `3` o superior, `mcp-adapter.json`. Si falta o es inválida la metadata del adapter, no se hace fallback silencioso a la ruta histórica. En la ruta moderna, una definición oficial Engram duplicada en `mcp.json` es conflicto: la migración oficial respalda ambas rutas, conserva configuración ajena y escribe solo la raíz oficial cuando puede demostrar que la configuración no cambió durante la operación. La configuración acepta JSONC acotado (comentarios y comas finales), pero el contrato canónico sigue exigiendo `mcpServers.engram` directo y exacto.
+
+El smoke se ejecuta contra el stage y vuelve a ejecutarse sobre la topología de enlace después de promover el release. Usa Pi en RPC sin sesión, aprobación, contexto ni red; comprueba las capabilities públicas y falla ante cualquier `extension_error` o notificación de error salvo el mensaje exacto de Engram ausente en la sonda package-only. Esa excepción no certifica el MCP: la configuración oficial se verifica aparte antes de declarar el runtime saludable.
 
 ## Proyección compartida de Stack
 
@@ -88,7 +94,7 @@ Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad 
 
 La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
 
-- `install` ejecuta primero `engram setup pi` en una instalación real, con backup y rollback de `settings.json`, `mcp.json` y el árbol `npm`; si falla, Pi no se activa. Después verifica el tarball, hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete.
+- `install` verifica primero el tarball y prepara el stage aislado; solo después, en una instalación real, ejecuta `engram setup pi` con backup y rollback de `settings.json`, `mcp.json`, `mcp-adapter.json` y el árbol `npm`. Si el setup falla, Pi no se activa. El candidato verificado debe declarar el lector MCP que va a usar antes de migrar la configuración. Después hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete.
 - `sync` repara drift del paquete o de la proyección sin duplicar recursos; dos pasadas consecutivas son idempotentes.
 - `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. El diagnóstico de Stack puede marcar el runner como no saludable de forma genérica; para el estado detallado de Context7 (`available`, `conflict` o `invalid`) consulta el `doctor` nativo de Pi. `available` no implica un handshake HTTP.
 - `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime.
@@ -105,7 +111,7 @@ Los receipts históricos schema 1 sin `managedPackage` requieren la ruta explíc
 
 La migración de un receipt histórico se realiza mediante `install --agents pi` deliberado: el lifecycle autentica el receipt legacy y el estado propio, respalda lo necesario y solo continúa con el candidato staged verificado. Si no puede autenticar el estado, falla cerrado y no modifica estado ajeno.
 
-La restauración automática cubre fallos durante la activación/verificación del release nuevo. Si la activación terminó y después falla la proyección o el `sync` final, puede requerirse recuperación manual desde el backup retenido; no se garantiza restauración automática en todo fallo posterior. El release anterior se identifica mediante el receipt verificado, nunca editándolo.
+La restauración automática cubre fallos durante la activación/verificación del release nuevo. Si el paquete ya quedó activado y verificado y después falla la proyección o la configuración MCP/sync final, la operación queda bloqueada con el backup retenido para recuperación manual; no se declara rollback completo ni se garantiza restauración automática en todo fallo posterior. El release anterior se identifica mediante el receipt verificado, nunca editándolo.
 
 Las parejas históricas siguientes describen releases pasadas, no comandos recomendados para una instalación actual. No se editan receipts ni se borra estado manualmente:
 
@@ -127,7 +133,7 @@ pnpm dlx jorgex-stack@1.9.6 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
-La resolución dinámica no equivale a una migración automática durante `sync`: solo un `install`/`update` deliberado adquiere y activa una release nueva. Los receipts antiguos siguen necesitando migración autenticada.
+La resolución dinámica no equivale a una migración automática durante `sync`: solo un `install`/`update` deliberado adquiere y activa una release nueva. La adopción de una release Pi requiere que esté publicada y que su declaración de lector MCP, tarball e integridad pasen la verificación del stage; no se inventa ni se fija una versión futura en Stack. El updater nativo de Pi (`pi update --extensions`) y las actualizaciones de paquetes gestionadas por el provider no son un sustituto seguro del lifecycle privado verificado de Stack, porque no aportan su receipt ni sus garantías de activación y recuperación. Los receipts antiguos siguen necesitando migración autenticada.
 
 ## Engram
 
