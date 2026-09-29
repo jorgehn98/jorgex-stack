@@ -395,6 +395,22 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     expect(() => resolveEntry!(fixture.staged, PACKAGE_NAME)).toThrow(/bin|entry|symlink/i);
   });
 
+  it("resolves the physical bin when pnpm links the root package into its virtual store", async () => {
+    const fixture = writeFixture();
+    const { resolveStagedBrowserEntry } = await import("../src/lib/browser-managed.js");
+    const physicalRoot = path.join(fixture.staged.nodeModulesPath, ".pnpm", "linked-root", "node_modules", "@playwright", "cli");
+    fs.mkdirSync(path.dirname(physicalRoot), { recursive: true });
+    fs.renameSync(fixture.staged.treePath, physicalRoot);
+    fs.symlinkSync(path.relative(path.dirname(fixture.staged.treePath), physicalRoot), fixture.staged.treePath, "dir");
+    const manifestPath = path.join(physicalRoot, "package.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.bin = { "playwright-cli": "./index.js" };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const entry = resolveStagedBrowserEntry(fixture.staged, PACKAGE_NAME);
+    expect(entry).toBe(path.join(physicalRoot, "index.js"));
+    expect(fs.realpathSync(entry)).toBe(entry);
+  });
+
   it("projects Pi's published trusted DevTools handoff from an active verified receipt", async () => {
     const fixture = writeFixture();
     const api = await import("../src/lib/pi-projection-lifecycle.js") as Record<string, unknown>;

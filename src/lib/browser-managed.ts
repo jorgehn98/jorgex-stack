@@ -364,7 +364,7 @@ export function resolveStagedBrowserEntry(
   if (!stat.isFile() || stat.isSymbolicLink() || !isContained(realRoot, realEntry, false)) {
     fail("staged package bin must be a regular file in its root");
   }
-  return entry;
+  return realEntry;
 }
 
 function readOptionalRegularFile(file: string, label: string, maxBytes: number): Buffer | null {
