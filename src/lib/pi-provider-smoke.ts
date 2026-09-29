@@ -20,6 +20,8 @@ export async function smokePiProviderRuntime(input: {
     response.writeHead(503, { "Content-Type": "application/json", Connection: "close" });
     response.end('{"error":"isolated package smoke"}');
   });
+  let failed = false;
+  let smokeError: unknown;
   try {
     const stageDir = path.join(root, "pi-agent");
     const modules = path.join(stageDir, "npm", "node_modules");
@@ -49,9 +51,21 @@ export async function smokePiProviderRuntime(input: {
       piExecutable: input.piExecutable, stageDir,
       providerSetup: { engramBin: input.engramBin, engramUrl: `http://127.0.0.1:${address.port}` },
     });
+  } catch (error) {
+    failed = true;
+    smokeError = error;
+    throw error;
   } finally {
     endpoint.closeAllConnections();
     if (endpoint.listening) await new Promise<void>((resolve) => endpoint.close(() => resolve()));
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      // Windows can briefly retain directory handles after process teardown.
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (cleanupError) {
+      if (!failed) throw cleanupError;
+      const detail = smokeError instanceof Error ? smokeError.message : String(smokeError);
+      throw new AggregateError([smokeError, cleanupError],
+        `${detail}; Pi provider smoke cleanup failed at ${root}`, { cause: smokeError });
+    }
   }
 }

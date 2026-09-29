@@ -93,6 +93,7 @@ const EXPECTED_ARGV = ["--mode", "rpc", "--no-session", "--no-approve", "--offli
 
 type FakeMode =
   | "valid"
+  | "shutdown_on_eof"
   | "missing"
   | "extension_error"
   | "malformed"
@@ -222,6 +223,7 @@ function snapshotEnv() {
   };
 }
 const MODE = ${JSON.stringify(mode)};
+if (MODE === "shutdown_on_eof") process.stdin.on("end", () => process.exit(0));
 const REQUIRED = ${JSON.stringify([...REQUIRED_COMMANDS])};
 if (MODE === "missing_engram_setup_with_providers") REQUIRED.push("mcp-adapter", "mcp");
 setTimeout(() => {
@@ -261,7 +263,7 @@ setTimeout(() => {
   });
   let out = "";
   let errOut = "";
-  if (MODE === "valid") out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n";
+  if (MODE === "valid" || MODE === "shutdown_on_eof") out = stateLine + "\\n" + commandsLine(REQUIRED) + "\\n";
   else if (MODE === "missing") out = stateLine + "\\n" + commandsLine(REQUIRED.filter((n) => n !== "websearch")) + "\\n";
   else if (MODE === "duplicate") out = stateLine + "\\n" + commandsLine([...REQUIRED, "goal"]) + "\\n";
   else if (MODE === "extension_error") out = stateLine + "\\n" + JSON.stringify({ type: "extension_error", id: commandsId, command: "get_commands", success: false, error: { message: "boom" } }) + "\\n";
@@ -433,6 +435,17 @@ describe("[T05-RED] staged Pi host/package ABI smoke before activation", () => {
     expectSandboxIsolation(captured, topology, sentinel);
     expectPidDead(captured.pid, "smoke child");
     expect(fs.existsSync(fake.grandchildPath)).toBe(false);
+  });
+
+  it("keeps RPC input open until responses arrive instead of triggering Pi EOF shutdown", async () => {
+    const { smokeStagedPiRuntime } = await loadSmoke();
+    const topology = buildStageTopology();
+    // Pi RPC starts asynchronous runtime disposal when stdin ends. Responses
+    // can still be initializing, so EOF is not a completion handshake.
+    const fake = writeFakePi(topology, "shutdown_on_eof");
+    const result = await smokeStagedPiRuntime({ piExecutable: fake.piExecutable, stageDir: topology.stageDir, timeoutMs: 5000 });
+    expect(result.commands).toEqual([...REQUIRED_COMMANDS]);
+    expectPidDead(readCapture(fake.capturePath).pid, "smoke child");
   });
 
   it("fails closed when a required public command is missing", async () => {

@@ -628,7 +628,7 @@ async function runSmoke(input: PiStageSmokeInput): Promise<PiStageSmokeResult> {
 
     try {
       spawned.stdin?.write(requests);
-      spawned.stdin?.end();
+      // EOF requests Pi RPC shutdown; retain ownership until the probe settles.
     } catch (error) {
       void settleFailure(`stdin failed: ${error instanceof Error ? error.message : String(error)}`);
     }
