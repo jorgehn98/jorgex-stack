@@ -292,11 +292,11 @@ function validatePackageInput(provider: PiProviderPackage, expectedName: string)
   }
 }
 
-function validateCandidate(provider: PiProviderPackage, stageDir: string, agentDir: string): BinMap {
+function validateCandidate(provider: PiProviderPackage, stageDir: string): BinMap {
   const candidateRoot = resolved(provider.packageRoot);
-  const expectedRoot = path.join(stageDir, "npm", "node_modules", provider.name);
+  const expectedRoot = path.join(stageDir, provider.name, "pi-agent", "npm", "node_modules", provider.name);
   if (candidateRoot !== resolved(expectedRoot)) fail(`candidate root is not the direct staged provider root: ${provider.name}`);
-  assertRealDirectory(candidateRoot, agentDir, `candidate ${provider.name}`);
+  assertRealDirectory(candidateRoot, stageDir, `candidate ${provider.name}`);
   realPathInside(candidateRoot, stageDir, `candidate ${provider.name}`);
   const manifest = readJsonObject(path.join(candidateRoot, "package.json"), candidateRoot, `${provider.name} package.json`);
   if (manifest.name !== provider.name || manifest.version !== provider.version) {
@@ -465,6 +465,7 @@ function restoreState(
   markerPath: string,
   markerContent: string,
   backupDir: string,
+  stageDir: string,
 ): void {
   ensureTransactionFile(lockPath, lockContent);
   ensureTransactionFile(markerPath, markerContent);
@@ -478,7 +479,7 @@ function restoreState(
     verifyPromotedPackage(state);
   }
   for (const state of states) {
-    assertAncestorsClean(path.dirname(state.candidateRoot), agentDir, `candidate ${state.input.name}`);
+    assertAncestorsClean(path.dirname(state.candidateRoot), stageDir, `candidate ${state.input.name}`);
     assertAncestorsClean(path.dirname(state.activeRoot), agentDir, `active ${state.input.name}`);
     const stageStat = lstatOrNull(state.candidateRoot);
     if (stageStat !== null) incomplete(`candidate stage root was replaced: ${state.input.name}`);
@@ -494,7 +495,8 @@ export async function activatePiProviderPackages(
 ): Promise<ActivatePiProviderPackagesResult> {
   const homeDir = assertRealDirectory(input.homeDir, resolved(input.homeDir), "homeDir");
   const agentDir = assertRealDirectory(input.agentDir, homeDir, "agentDir");
-  const stageDir = assertRealDirectory(input.stageDir, agentDir, "stageDir");
+  const stageDir = assertRealDirectory(input.stageDir, homeDir, "stageDir");
+  if (!isStrictChild(stageDir, homeDir)) fail("stageDir must be a strict child of homeDir");
   if (!Array.isArray(input.packages) || input.packages.length !== PROVIDER_NAMES.length) {
     fail("exactly the two owned provider packages are required");
   }
@@ -528,7 +530,7 @@ export async function activatePiProviderPackages(
     const provider = byName.get(name);
     if (provider === undefined) fail(`missing provider package: ${name}`);
     validatePackageInput(provider, name);
-    const candidateBins = validateCandidate(provider, stageDir, agentDir);
+    const candidateBins = validateCandidate(provider, stageDir);
     const activeRoot = path.join(modules, name);
     assertAncestorsClean(activeRoot, agentDir, `active ${name}`);
     const previousTreeSha256 = validateExistingPackage(activeRoot, agentDir, provider, candidateBins, modules);
@@ -570,7 +572,7 @@ export async function activatePiProviderPackages(
       // a stage writer that changed the verified tree after preflight.
       const currentCandidateTree = inventoryTreeSha256(state.candidateRoot);
       if (currentCandidateTree !== state.input.treeSha256) fail(`candidate tree changed before promotion: ${state.input.name}`);
-      assertAncestorsClean(path.dirname(state.candidateRoot), agentDir, `candidate ${state.input.name}`);
+      assertAncestorsClean(path.dirname(state.candidateRoot), stageDir, `candidate ${state.input.name}`);
       assertAncestorsClean(path.dirname(state.activeRoot), agentDir, `active ${state.input.name}`);
       verifyPreviousPackageBeforeRename(state, agentDir);
       if (state.existed) fs.renameSync(state.activeRoot, state.backupRoot);
@@ -599,7 +601,7 @@ export async function activatePiProviderPackages(
     }
     try {
       await Promise.resolve();
-      restoreState(states, settingsPath, input.settingsJson, nextSettings, agentDir, lockPath, lockContent, markerPath, markerContent, backupDir);
+      restoreState(states, settingsPath, input.settingsJson, nextSettings, agentDir, lockPath, lockContent, markerPath, markerContent, backupDir, stageDir);
     } catch (rollbackError) {
       const reason = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
       incomplete(`rollback incomplete; retaining provider backup and transaction marker: ${reason}; original: ${original.message}`);

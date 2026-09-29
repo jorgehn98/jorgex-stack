@@ -9,10 +9,10 @@ function fixture() {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-provider-activate-")); roots.push(homeDir);
   const agentDir = path.join(homeDir, ".pi", "agent");
   const modules = path.join(agentDir, "npm", "node_modules");
-  const stageDir = path.join(agentDir, "stage-provider-test", "pi-agent");
+  const stageDir = path.join(homeDir, "stage-providers-test");
   const settingsJson = JSON.stringify({ quietStartup: false, packages: [{ source: "npm:gentle-engram@0.1.0", skills: [] }, "npm:pi-mcp-adapter@latest", { source: "npm:jorgex-pi@0.8.37", extensions: ["bootstrap.ts"] }, "npm:foreign@1.0.0"] });
   const packages = (["gentle-engram", "pi-mcp-adapter"] as const).map(name => {
-    const activeRoot = path.join(modules, name); const packageRoot = path.join(stageDir, "npm", "node_modules", name);
+    const activeRoot = path.join(modules, name); const packageRoot = path.join(stageDir, name, "pi-agent", "npm", "node_modules", name);
     for (const root of [activeRoot, packageRoot]) fs.mkdirSync(root, { recursive: true });
     fs.writeFileSync(path.join(activeRoot, "package.json"), JSON.stringify({ name, version: "0.1.0", bin: { [name]: "cli.js" } }));
     fs.writeFileSync(path.join(activeRoot, "cli.js"), "old");
