@@ -7,6 +7,9 @@ import { stageVerifiedPiTarball } from "../src/lib/pi-release-stage.js";
 import { materializeStagedPiRuntimeDependencies } from "../src/lib/pi-staged-lock.js";
 import { smokeLinkedPiRuntime } from "../src/lib/pi-stage-smoke.js";
 import { runPiStageProcess } from "../src/lib/pi-stage-process.js";
+import { resolveLatestNpmPackageRelease } from "../src/lib/npm-provider.js";
+import { stagePiProviderPackages } from "../src/lib/pi-provider-stage.js";
+import { smokePiProviderRuntime } from "../src/lib/pi-provider-smoke.js";
 
 const piExecutable = process.env.JORGEX_PI_BIN ?? (process.env.PI_TEST_HOST
   ? path.join(process.env.PI_TEST_HOST, "node_modules", ".bin", process.platform === "win32" ? "pi.cmd" : "pi")
@@ -41,6 +44,17 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     materializeStagedPiRuntimeDependencies({ stageDir: staged.stageDir, tarballPath: artifact.path, release });
     const ready = await smokeLinkedPiRuntime(smoke);
     expect(ready.commands).toEqual(expect.arrayContaining(["permission-system", "subagents", "goal", "websearch"]));
+    const providers = await stagePiProviderPackages({ homeDir, agentDir, piExecutable: piExecutable!, releases: {
+      "gentle-engram": await resolveLatestNpmPackageRelease("gentle-engram", fetch),
+      "pi-mcp-adapter": await resolveLatestNpmPackageRelease("pi-mcp-adapter", fetch),
+    } });
+    const roots = Object.fromEntries(providers.packages.map((provider) => [provider.name, provider.packageRoot])) as Record<"gentle-engram" | "pi-mcp-adapter", string>;
+    // The loopback service and executable here are controlled fixtures: this
+    // proves real provider imports/registration, not an Engram service query.
+    const providerSmoke = await smokePiProviderRuntime({ piExecutable: piExecutable!, jorgexPackageRoot: packageRoot,
+      providerRoots: roots, engramBin: process.execPath, scratchRoot: providers.stageDir });
+    expect(providerSmoke.commands).toEqual(expect.arrayContaining(["mcp", "mcp-adapter", "permission-system"]));
+
   } catch (error) {
     failed = true;
     throw error;
@@ -48,4 +62,4 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     if (failed) console.error(`Failed Pi live stage retained for diagnosis: ${homeDir}`);
     else fs.rmSync(homeDir, { recursive: true, force: true });
   }
-}, process.platform === "win32" ? 420_000 : 240_000);
+}, process.platform === "win32" ? 960_000 : 480_000);
