@@ -1043,6 +1043,17 @@ function isStrictChildPath(child: string, root: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
+function routesInstalledPiToUpdate(input: PiRuntimeInput): boolean {
+  if (input.operation !== "install") return false;
+  const paths = input.targetDir === undefined
+    ? userPaths(input.engramBin, input.detected.executable)
+    : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
+  const receipt = readOptional(paths.receiptPath, null);
+  // This only selects the route. The update gate still authenticates every
+  // receipt/settings/artifact byte before any acquisition or activation.
+  return receipt !== null && !isLegacyUnmanagedReceipt(receipt);
+}
+
 /**
  * CLI-to-preflight: deliberate install/update resolves the live provider
  * candidate through the isolated managed-install preflight, without touching
@@ -1053,6 +1064,7 @@ function isStrictChildPath(child: string, root: string): boolean {
  * the stage for diagnostics; the caller never falls back to static bytes.
  */
 export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiRuntimePreflightOut> {
+  if (routesInstalledPiToUpdate(input)) return preparePiRuntimeSystem({ ...input, operation: "update" });
   if (input.operation !== "install" && input.operation !== "update") {
     return {
       kind: "blocked",
@@ -1317,6 +1329,7 @@ export async function preparePiRuntimeSystem(input: PiRuntimeInput): Promise<PiR
 }
 
 export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<RuntimeResult> {
+  if (routesInstalledPiToUpdate(input)) return runPiRuntimeSystem({ ...input, operation: "update" });
   // Pi install real ordena Engram absoluto primero → `engram setup pi`
   // (backup/setup/verify singleton via runOfficialSetupIfNeeded("pi"),
   // install-only: shouldRunOfficialSetup excluye sync/dry-run/targetDir) →
