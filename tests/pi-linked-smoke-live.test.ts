@@ -10,6 +10,7 @@ import { runPiStageProcess } from "../src/lib/pi-stage-process.js";
 import { resolveLatestNpmPackageRelease } from "../src/lib/npm-provider.js";
 import { stagePiProviderPackages } from "../src/lib/pi-provider-stage.js";
 import { smokePiProviderRuntime } from "../src/lib/pi-provider-smoke.js";
+import { installMissingEngram } from "../src/lib/engram-install.js";
 
 const piExecutable = process.env.JORGEX_PI_BIN ?? (process.env.PI_TEST_HOST
   ? path.join(process.env.PI_TEST_HOST, "node_modules", ".bin", process.platform === "win32" ? "pi.cmd" : "pi")
@@ -49,10 +50,12 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
       "pi-mcp-adapter": await resolveLatestNpmPackageRelease("pi-mcp-adapter", fetch),
     } });
     const roots = Object.fromEntries(providers.packages.map((provider) => [provider.name, provider.packageRoot])) as Record<"gentle-engram" | "pi-mcp-adapter", string>;
-    // The loopback service and executable here are controlled fixtures: this
-    // proves real provider imports/registration, not an Engram service query.
+    // The adapter may initialize its lazy MCP transport during startup. Use
+    // the official verified binary, not Node pretending to be an MCP server.
+    const engram = await installMissingEngram({ homeDir });
+    if (!engram.ok) throw new Error(engram.reason);
     const providerSmoke = await smokePiProviderRuntime({ piExecutable: piExecutable!, jorgexPackageRoot: packageRoot,
-      providerRoots: roots, engramBin: process.execPath, scratchRoot: providers.stageDir });
+      providerRoots: roots, engramBin: engram.bin, scratchRoot: providers.stageDir });
     expect(providerSmoke.commands).toEqual(expect.arrayContaining(["mcp", "mcp-adapter", "permission-system"]));
 
   } catch (error) {
