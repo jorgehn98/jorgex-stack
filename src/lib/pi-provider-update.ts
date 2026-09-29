@@ -71,24 +71,25 @@ export async function updatePiProviderPackages(input: {
   const smoke = { piExecutable: input.piExecutable, engramBin: input.engramBin, scratchRoot: staged.stageDir, jorgexPackageRoot: packageLink };
   await smokePiProviderRuntime({ ...smoke, providerRoots });
   assertPrivateUnchanged();
-  const unchanged = staged.packages.every((provider) => fs.existsSync(activeRoots[provider.name])
-    && inventoryTreeSha256(activeRoots[provider.name]) === provider.treeSha256);
-  if (!unchanged) {
-    await activatePiProviderPackages({
-      homeDir, agentDir, stageDir: staged.stageDir, packages: staged.packages, settingsJson,
-      verify: async () => {
-        assertPrivateUnchanged();
-        await smokePiProviderRuntime({ ...smoke, providerRoots: activeRoots });
-        assertPrivateUnchanged();
-      },
-    });
-  }
+  const activation = await activatePiProviderPackages({
+    homeDir, agentDir, stageDir: staged.stageDir, packages: staged.packages, settingsJson,
+    verify: async () => {
+      assertPrivateUnchanged();
+      await smokePiProviderRuntime({ ...smoke, providerRoots: activeRoots });
+      assertPrivateUnchanged();
+    },
+  });
   assertPrivateUnchanged();
   try { await completeUpdatedPiMcp(agentDir, input.engramBin); }
   catch (error) {
     throw new Error(`Pi providers activated and verified; MCP configuration pending with backup preserved: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { kind: unchanged ? "healthy" : "updated", versions: {
+  try {
+    fs.rmSync(staged.stageDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (error) {
+    throw new Error(`Pi providers and MCP verified; stage cleanup pending at ${staged.stageDir}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { kind: activation.changed ? "updated" : "healthy", versions: {
     "gentle-engram": releases["gentle-engram"].version, "pi-mcp-adapter": releases["pi-mcp-adapter"].version,
   } };
 }

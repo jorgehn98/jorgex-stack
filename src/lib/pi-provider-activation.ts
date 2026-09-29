@@ -32,7 +32,8 @@ export interface ActivatePiProviderPackagesInput {
 
 export interface ActivatePiProviderPackagesResult {
   readonly ok: true;
-  readonly backupDir: string;
+  readonly backupDir: string | null;
+  readonly changed: boolean;
 }
 
 type RecoveryError = Error & { recovery?: "complete" | "incomplete" };
@@ -568,6 +569,17 @@ export async function activatePiProviderPackages(
     // Re-read after obtaining the lock: a native Pi process may have updated
     // settings between the initial preflight and transaction acquisition.
     validateSettingsFile(settingsPath, agentDir, input.settingsJson);
+    const unchanged = JSON.stringify(JSON.parse(input.settingsJson)) === nextSettings
+      && states.every((state) => state.previousTreeSha256 === state.input.treeSha256);
+    if (unchanged) {
+      await input.verify();
+      validateSettingsFile(settingsPath, agentDir, input.settingsJson);
+      for (const state of states) verifyPreviousPackageBeforeRename(state, agentDir);
+      ensureTransactionFile(lockPath, lockContent);
+      fs.unlinkSync(lockPath);
+      lockAcquired = false;
+      return { ok: true, changed: false, backupDir: null };
+    }
     fs.writeFileSync(markerPath, markerContent, { encoding: "utf8", flag: "wx", mode: 0o600 });
     markerCreated = true;
     fs.mkdirSync(backupDir, { recursive: false, mode: 0o700 });
@@ -600,7 +612,7 @@ export async function activatePiProviderPackages(
     for (const state of states) verifyPromotedPackage(state);
     if (!sameRegularFile(settingsPath, nextSettings, agentDir)) fail("settings drifted after provider verification");
     removeTransactionState(lockPath, lockContent, markerPath, markerContent);
-    return { ok: true, backupDir };
+    return { ok: true, changed: true, backupDir };
   } catch (error) {
     const original = error instanceof Error ? error : new Error(String(error));
     if (!lockAcquired || !markerCreated || !backupCreated) {

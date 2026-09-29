@@ -27,7 +27,9 @@ import type { NpmPackageRelease } from "../src/lib/npm-provider.js";
  * Registry, stage, smoke, and activation are mocked at their public module
  * seams. The receipt/link/tree fixture remains real filesystem state, and the
  * activation mock executes the verification callback so the test protects the
- * ownership boundary rather than call choreography.
+ * ownership boundary rather than call choreography. Successful/healthy cases
+ * forward that spy to the real activation implementation and verify filesystem
+ * promotion and source reconciliation, not merely mocked return values.
  */
 
 type ProviderName = "gentle-engram" | "pi-mcp-adapter";
@@ -278,9 +280,9 @@ function snapshotPrivateState(sandbox: ProviderSandbox): { receipt: string; link
 }
 
 function stageFixture(sandbox: ProviderSandbox): { stageDir: string; packages: ProviderEvidence[] } {
-  const stageDir = path.join(sandbox.root, "provider-stage");
+  const stageDir = path.join(sandbox.homeDir, "stage-providers-test");
   const packages = PROVIDERS.map((name) => {
-    const packageRoot = path.join(stageDir, name, "npm", "node_modules", name);
+    const packageRoot = path.join(stageDir, name, "pi-agent", "npm", "node_modules", name);
     fs.mkdirSync(packageRoot, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(packageRoot, "package.json"),
@@ -294,13 +296,13 @@ function stageFixture(sandbox: ProviderSandbox): { stageDir: string; packages: P
       integrity: latestVersions[name].integrity,
       packageRoot,
       treeSha256: inventoryTreeSha256(packageRoot),
-      bins: { [name]: path.join(packageRoot, "cli.js") },
+      bins: { [name]: "cli.js" },
     };
   });
   return { stageDir, packages };
 }
 
-function configureMocks(sandbox: ProviderSandbox, options: { activationError?: string; mcpFailure?: boolean } = {}): string[] {
+function configureMocks(sandbox: ProviderSandbox): string[] {
   const events: string[] = [];
   const staged = stageFixture(sandbox);
   mocks.resolveLatestNpmPackageRelease.mockImplementation(async (name: ProviderName) => {
@@ -331,9 +333,7 @@ function configureMocks(sandbox: ProviderSandbox, options: { activationError?: s
       events.push("verify-failed");
       throw error;
     }
-    if (options.activationError !== undefined) throw new Error(options.activationError);
-    if (options.mcpFailure === true) fs.writeFileSync(sandbox.mcpPath, "{ invalid mcp json\n", { mode: 0o600 });
-    return { ok: true, backupDir: path.join(staged.stageDir, "backup") };
+    return { ok: true, changed: true, backupDir: path.join(staged.stageDir, "backup") };
   });
   return events;
 }
@@ -375,6 +375,87 @@ describe("[T65-RED] deliberate Pi provider update", () => {
     expect(fs.readFileSync(sandbox.foreignFile, "utf8")).toBe("foreign provider bytes\n");
   });
 
+  it("updates real provider roots and sources, then reports healthy only when both match", async () => {
+    const sandbox = createSandbox();
+    const before = snapshotPrivateState(sandbox);
+    configureMocks(sandbox);
+    const actual = await vi.importActual<typeof import("../src/lib/pi-provider-activation.js")>("../src/lib/pi-provider-activation.js");
+    mocks.activatePiProviderPackages.mockImplementation(actual.activatePiProviderPackages);
+    const update = await loadUpdater();
+    await expect(update.updatePiProviderPackages(sandbox)).resolves.toEqual({ kind: "updated", versions: {
+      "gentle-engram": "0.1.17", "pi-mcp-adapter": "3.2.1",
+    } });
+    expect(fs.existsSync(path.join(sandbox.homeDir, "stage-providers-test"))).toBe(false);
+    const expectedSettings = { packages: [
+      "npm:gentle-engram@0.1.17", "npm:pi-mcp-adapter@3.2.1", "npm:jorgex-pi@0.8.37", "npm:foreign@1.0.0",
+    ] };
+    expect(JSON.parse(fs.readFileSync(sandbox.settingsPath, "utf8"))).toEqual(expectedSettings);
+    for (const name of PROVIDERS) {
+      const activeRoot = path.join(sandbox.agentDir, "npm", "node_modules", name);
+      expect(JSON.parse(fs.readFileSync(path.join(activeRoot, "package.json"), "utf8")).version).toBe(latestVersions[name].version);
+      expect(fs.readFileSync(path.join(activeRoot, "cli.js"), "utf8")).toBe(`// candidate ${name}\n`);
+    }
+    const after = snapshotPrivateState(sandbox);
+    expect({ ...after, settings: before.settings }).toEqual(before);
+    expect(fs.readFileSync(sandbox.foreignFile, "utf8")).toBe("foreign provider bytes\n");
+    configureMocks(sandbox);
+    mocks.activatePiProviderPackages.mockImplementation(actual.activatePiProviderPackages);
+    mocks.activatePiProviderPackages.mockClear();
+    await expect(update.updatePiProviderPackages(sandbox)).resolves.toMatchObject({ kind: "healthy" });
+    expect(mocks.activatePiProviderPackages).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(sandbox.homeDir, "stage-providers-test"))).toBe(false);
+    expect(snapshotPrivateState(sandbox)).toEqual(after);
+  });
+
+  it("repairs stale sources even when installed provider trees already match latest", async () => {
+    const sandbox = createSandbox();
+    const before = snapshotPrivateState(sandbox);
+    configureMocks(sandbox);
+    const staged = mocks.stagePiProviderPackages.getMockImplementation()!;
+    const stage = await staged({ releases: latestVersions });
+    for (const provider of stage.packages as ProviderEvidence[]) {
+      const activeRoot = path.join(sandbox.agentDir, "npm", "node_modules", provider.name);
+      fs.rmSync(activeRoot, { recursive: true });
+      fs.cpSync(provider.packageRoot, activeRoot, { recursive: true });
+    }
+    const actual = await vi.importActual<typeof import("../src/lib/pi-provider-activation.js")>("../src/lib/pi-provider-activation.js");
+    mocks.activatePiProviderPackages.mockImplementation(actual.activatePiProviderPackages);
+    const update = await loadUpdater();
+    await expect(update.updatePiProviderPackages(sandbox)).resolves.toMatchObject({ kind: "updated" });
+    expect(JSON.parse(fs.readFileSync(sandbox.settingsPath, "utf8")).packages).toEqual([
+      "npm:gentle-engram@0.1.17", "npm:pi-mcp-adapter@3.2.1", "npm:jorgex-pi@0.8.37", "npm:foreign@1.0.0",
+    ]);
+    expect({ ...snapshotPrivateState(sandbox), settings: before.settings }).toEqual(before);
+    expect(fs.readFileSync(sandbox.foreignFile, "utf8")).toBe("foreign provider bytes\n");
+  });
+
+  it("rejects latest providers installed through a foreign symlink instead of reporting healthy", async () => {
+    const sandbox = createSandbox();
+    configureMocks(sandbox);
+    const stage = await mocks.stagePiProviderPackages.getMockImplementation()!({ releases: latestVersions });
+    for (const provider of stage.packages as ProviderEvidence[]) {
+      const activeRoot = path.join(sandbox.agentDir, "npm", "node_modules", provider.name);
+      fs.rmSync(activeRoot, { recursive: true });
+      fs.cpSync(provider.packageRoot, activeRoot, { recursive: true });
+    }
+    const adapterRoot = path.join(sandbox.agentDir, "npm", "node_modules", "pi-mcp-adapter");
+    const foreignRoot = path.join(sandbox.homeDir, "foreign-latest-adapter");
+    fs.renameSync(adapterRoot, foreignRoot);
+    fs.symlinkSync(path.relative(path.dirname(adapterRoot), foreignRoot), adapterRoot, "dir");
+    fs.writeFileSync(sandbox.settingsPath, JSON.stringify({ packages: [
+      "npm:gentle-engram@0.1.17", "npm:pi-mcp-adapter@3.2.1", "npm:jorgex-pi@0.8.37", "npm:foreign@1.0.0",
+    ] }));
+    const before = snapshotPrivateState(sandbox);
+    const foreignTree = inventoryTreeSha256(foreignRoot);
+    const actual = await vi.importActual<typeof import("../src/lib/pi-provider-activation.js")>("../src/lib/pi-provider-activation.js");
+    mocks.activatePiProviderPackages.mockImplementation(actual.activatePiProviderPackages);
+    const update = await loadUpdater();
+    await expect(update.updatePiProviderPackages(sandbox)).rejects.toThrow(/symlink|real directory|ancestor/i);
+    expect(snapshotPrivateState(sandbox)).toEqual(before);
+    expect(fs.lstatSync(adapterRoot).isSymbolicLink()).toBe(true);
+    expect(inventoryTreeSha256(foreignRoot)).toBe(foreignTree);
+  });
+
   it("propagates private receipt/link/tree drift from the activation verification callback", async () => {
     const sandbox = createSandbox();
     const before = snapshotPrivateState(sandbox);
@@ -404,7 +485,14 @@ describe("[T65-RED] deliberate Pi provider update", () => {
   it("reports providers active and MCP pending when post-promotion completion fails", async () => {
     const sandbox = createSandbox();
     const before = snapshotPrivateState(sandbox);
-    const events = configureMocks(sandbox, { mcpFailure: true });
+    const events = configureMocks(sandbox);
+    const actual = await vi.importActual<typeof import("../src/lib/pi-provider-activation.js")>("../src/lib/pi-provider-activation.js");
+    mocks.activatePiProviderPackages.mockImplementation(async (input) => {
+      events.push("activate");
+      const result = await actual.activatePiProviderPackages(input);
+      fs.writeFileSync(sandbox.mcpPath, "{ invalid mcp json\n");
+      return result;
+    });
     const update = await loadUpdater();
 
     await expect(update.updatePiProviderPackages({
@@ -419,7 +507,11 @@ describe("[T65-RED] deliberate Pi provider update", () => {
     expect(mocks.activatePiProviderPackages).toHaveBeenCalledTimes(1);
     // The private jorgex-pi receipt/link/tree are not part of provider
     // promotion and remain byte-identical even when MCP completion is pending.
-    expect(snapshotPrivateState(sandbox)).toEqual(before);
+    expect({ ...snapshotPrivateState(sandbox), settings: before.settings }).toEqual(before);
+    const stageDir = path.join(sandbox.homeDir, "stage-providers-test");
+    expect(fs.existsSync(stageDir)).toBe(true);
+    expect(fs.readdirSync(stageDir).some((name) => name.startsWith(".provider-activation-"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(sandbox.agentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json"), "utf8")).version).toBe("3.2.1");
     expect(fs.readFileSync(sandbox.foreignFile, "utf8")).toBe("foreign provider bytes\n");
   });
 });

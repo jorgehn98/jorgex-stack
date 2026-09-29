@@ -82,3 +82,15 @@ it("preserves concurrent provider edits and its recovery marker rather than over
   expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(true);
   expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(true);
 });
+
+
+it("rejects staged provider tree drift before touching active roots or settings", async () => {
+  const f = fixture(); const api = await load();
+  const before = inventoryTreeSha256(path.join(f.agentDir, "npm"));
+  fs.writeFileSync(path.join(f.packages[0]!.packageRoot, "cli.js"), "candidate modified after verification");
+  const verify = vi.fn(async () => {});
+  await expect(api.activatePiProviderPackages({ ...f, verify })).rejects.toThrow(/drift|tree|hash/i);
+  expect(verify).not.toHaveBeenCalled();
+  expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8")).toBe(f.settingsJson);
+  expect(inventoryTreeSha256(path.join(f.agentDir, "npm"))).toBe(before);
+});
