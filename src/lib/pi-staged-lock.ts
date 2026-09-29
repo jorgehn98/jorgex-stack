@@ -43,8 +43,8 @@ export interface InspectStagedPiNpmResult {
  *   `*` companions;
  * - each hoisted companion: canonical registry URL plus canonical sha512
  *   SRI in the lock, matching installed manifest identity/version;
- * - singleton: no nested second copy of an active companion under
- *   `node_modules/jorgex-pi/node_modules` (lock keys and filesystem).
+ * - no independently resolved nested companion; optional package-local
+ *   runtime copies must contain exactly the six byte-identical originals.
  *
  * Digests for receipt v2: `lockSha256` is the sha256 of the raw lock bytes;
  * `treeSha256` is a deterministic sorted inventory of the staged npm tree
@@ -538,7 +538,7 @@ export function inspectStagedPiNpm(input: InspectStagedPiNpmInput): InspectStage
     }
   }
 
-  // Singleton: no nested second copy of an active companion, in lock or tree.
+  // Reject independently resolved duplicates, not identical deployment copies.
   for (const key of Object.keys(packages)) {
     if (key.startsWith(`node_modules/${PARENT_NAME}/node_modules/`)) {
       fail(`nested second copy under staged parent: ${key}`);
@@ -549,10 +549,6 @@ export function inspectStagedPiNpm(input: InspectStagedPiNpmInput): InspectStage
         fail(`nested second copy of staged companion: ${key}`);
       }
     }
-  }
-  const nestedRoot = path.join(nodeModules, PARENT_NAME, "node_modules");
-  if (lstatOrNull(nestedRoot) !== null) {
-    fail("nested second copy under staged parent: node_modules/jorgex-pi/node_modules");
   }
 
   const dependencies: StagedPiDependency[] = [];
@@ -586,6 +582,61 @@ export function inspectStagedPiNpm(input: InspectStagedPiNpmInput): InspectStage
     dependencies.push({ name, version: depVersion, integrity: entry["integrity"] });
   }
 
+  inspectRuntimeCopies(nodeModules);
   const treeSha256 = inventoryTreeSha256(npmDir);
   return { lockSha256, treeSha256, dependencies };
+}
+
+function inspectRuntimeCopies(nodeModules: string): void {
+  const nested = path.join(nodeModules, PARENT_NAME, "node_modules");
+  if (lstatOrNull(nested) === null) return;
+  assertRealDirStrict(nested, "runtime copy root");
+  const groups = new Map<string, string[]>();
+  for (const name of EXPECTED_COMPANIONS) {
+    const [first, second] = name.split("/") as [string, string?];
+    groups.set(first, [...(groups.get(first) ?? []), ...(second ? [second] : [])]);
+  }
+  const assertNames = (dir: string, expected: string[]): void => {
+    if (JSON.stringify(fs.readdirSync(dir).sort()) !== JSON.stringify([...expected].sort())) {
+      fail(`runtime copy inventory diverges: ${dir}`);
+    }
+  };
+  assertNames(nested, [...groups.keys()]);
+  for (const [group, children] of groups) {
+    if (children.length === 0) continue;
+    assertRealDirStrict(path.join(nested, group), "runtime copy scope");
+    assertRealDirStrict(path.join(nodeModules, group), "runtime source scope");
+    assertNames(path.join(nested, group), children);
+  }
+  for (const name of EXPECTED_COMPANIONS) {
+    const source = depDirFor(nodeModules, name);
+    const copy = depDirFor(nested, name);
+    assertRealDirStrict(source, `runtime source ${name}`);
+    assertRealDirStrict(copy, `runtime copy ${name}`);
+    if (inventoryTreeSha256(source) !== inventoryTreeSha256(copy)) {
+      fail(`runtime copy diverges from verified source: ${name}`);
+    }
+  }
+}
+
+/** Pi's loader resolves from its active package link, so expose its private dependencies locally. */
+export function materializeStagedPiRuntimeDependencies(input: InspectStagedPiNpmInput): InspectStagedPiNpmResult {
+  const before = inspectStagedPiNpm(input);
+  const modules = path.join(input.stageDir, "npm", "node_modules");
+  const nested = path.join(modules, PARENT_NAME, "node_modules");
+  if (lstatOrNull(nested) !== null) return before;
+  for (const name of EXPECTED_COMPANIONS) {
+    if (name.startsWith("@")) assertRealDirStrict(path.join(modules, name.split("/")[0]!), "runtime source scope");
+    // Validate each copy boundary before creating any deployment copies.
+    inventoryTreeSha256(depDirFor(modules, name));
+  }
+  fs.mkdirSync(nested);
+  for (const name of EXPECTED_COMPANIONS) {
+    const destination = depDirFor(nested, name);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.cpSync(depDirFor(modules, name), destination, {
+      recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true,
+    });
+  }
+  return inspectStagedPiNpm(input);
 }

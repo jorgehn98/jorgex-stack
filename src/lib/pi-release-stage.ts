@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { inspectStagedPiNpm } from "./pi-staged-lock.js";
+import { materializeStagedPiRuntimeDependencies } from "./pi-staged-lock.js";
 import { isStableSemverVersion } from "./npm-provider.js";
 
 export interface StageArtifact {
@@ -454,7 +454,7 @@ export async function stageVerifiedPiTarball(input: StageInput, run: StageRun): 
   // and returns the exact Pi-native file: alias; this module never promotes.
   let evidence: StageEvidence;
   try {
-    evidence = (await inspectStagedPiNpm({
+    evidence = (await materializeStagedPiRuntimeDependencies({
       stageDir,
       tarballPath: typedArtifact.path,
       release: { version, tarballUrl, integrity: (release as StageRelease).integrity },

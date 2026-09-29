@@ -78,7 +78,7 @@ export async function activatePreparedPiInstall(
   await deps.smokeStage(stageDir);
 
   const releaseId = createHash("sha256")
-    .update(`${candidate.tarball.sha256}:${evidence.lockSha256}`)
+    .update(`${candidate.tarball.sha256}:${evidence.lockSha256}:${evidence.treeSha256}`)
     .digest("hex");
 
   const receipt = createManagedPiReceipt({

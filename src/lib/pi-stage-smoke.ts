@@ -17,6 +17,8 @@ const REQUIRED_COMMANDS = ["goal", "subagents", "permission-system", "websearch"
 const EXPECTED_ARGV = ["--mode", "rpc", "--no-session", "--no-approve", "--offline", "--no-context-files"] as const;
 const KNOWN_STDERR_WARNING =
   "[pi-web-access] Dynamic tool activation requires Pi 0.86.1 or newer; web tools remain eagerly available.";
+// This package-only probe intentionally precedes official provider setup.
+const EXPECTED_MISSING_PROVIDER = "JorgeX Engram bridge is unavailable: official Engram MCP setup is missing; run `engram setup pi` and reload Pi";
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const KILL_GRACE_MS = 200;
@@ -287,6 +289,12 @@ function evaluateLines(lines: unknown[], stateId: number, commandsId: number): P
   for (const entry of lines) {
     if (!isRecord(entry)) continue;
     const type = entry["type"];
+    if (type === "extension_ui_request" && entry["method"] === "notify" && entry["notifyType"] === "error") {
+      const message = typeof entry["message"] === "string" ? entry["message"] : "extension notification error";
+      if (message !== EXPECTED_MISSING_PROVIDER) {
+        return { kind: "failed", message: `extension notification: ${message.slice(0, 300)}` };
+      }
+    }
     if (type === "extension_error") {
       const detail = isRecord(entry["error"]) && typeof entry["error"]["message"] === "string"
         ? (entry["error"]["message"] as string)
@@ -371,6 +379,34 @@ export async function smokeStagedPiRuntime(input: PiStageSmokeInput): Promise<Pi
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("pi-stage-smoke: ")) throw error;
     throw new Error(`pi-stage-smoke: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Probe the same single-link topology used after promotion, without loading personal configuration. */
+export async function smokeLinkedPiRuntime(input: {
+  piExecutable: string;
+  packageRoot: string;
+  scratchRoot: string;
+  timeoutMs?: number;
+}): Promise<PiStageSmokeResult> {
+  const scratch = assertRealDir(input.scratchRoot, "linked smoke scratch root");
+  if (!path.isAbsolute(input.packageRoot)) fail("linked package root must be absolute");
+  const packageRoot = fs.realpathSync(input.packageRoot);
+  assertRealDir(packageRoot, "linked package root");
+  const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")) as Record<string, unknown>;
+  if (manifest["name"] !== "jorgex-pi" || typeof manifest["version"] !== "string"
+    || !/^\d+\.\d+\.\d+$/.test(manifest["version"])) fail("linked package identity is invalid");
+  const root = fs.mkdtempSync(path.join(scratch, "stage-linked-"));
+  try {
+    const stageDir = path.join(root, "pi-agent");
+    const modules = path.join(stageDir, "npm", "node_modules");
+    fs.mkdirSync(modules, { recursive: true });
+    fs.mkdirSync(path.join(root, "workspace"));
+    fs.symlinkSync(path.relative(modules, packageRoot), path.join(modules, "jorgex-pi"), "dir");
+    fs.writeFileSync(path.join(stageDir, "settings.json"), JSON.stringify({ packages: [`npm:jorgex-pi@${manifest["version"]}`] }));
+    return await smokeStagedPiRuntime({ piExecutable: input.piExecutable, stageDir, timeoutMs: input.timeoutMs });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 

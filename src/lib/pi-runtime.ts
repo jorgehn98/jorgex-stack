@@ -12,7 +12,7 @@ import {
   type PreparedPiInstallEvidence,
 } from "./pi-install-activation.js";
 import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
-import { smokeStagedPiRuntime } from "./pi-stage-smoke.js";
+import { smokeStagedPiRuntime, smokeLinkedPiRuntime } from "./pi-stage-smoke.js";
 import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { deactivateVerifiedLegacyPiEntry, deactivateVerifiedPiRelease } from "./pi-private-release.js";
 import { writeText } from "./fsx.js";
@@ -1574,8 +1574,11 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
     };
     const smokeStage = async (dir: string): Promise<void> => {
       await smokeStagedPiRuntime({ piExecutable: input.detected.executable, stageDir: dir });
+      await smokeLinkedPiRuntime({ piExecutable: input.detected.executable, packageRoot: path.join(dir, "npm", "node_modules", "jorgex-pi"), scratchRoot: path.dirname(dir) });
     };
-    const verifyActive = (): void => {
+    const verifyActive = async (): Promise<void> => {
+      verifyActivePiRelease({ agentDir, receiptPath, candidate: activationCandidate, evidence, scopeKind, engramBin });
+      await smokeLinkedPiRuntime({ piExecutable: input.detected.executable, packageRoot: path.join(agentDir, "npm", "node_modules", "jorgex-pi"), scratchRoot: path.dirname(stageDir) });
       verifyActivePiRelease({ agentDir, receiptPath, candidate: activationCandidate, evidence, scopeKind, engramBin });
     };
     try {
@@ -1794,8 +1797,11 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
     };
     const updateSmokeStage = async (dir: string): Promise<void> => {
       await smokeStagedPiRuntime({ piExecutable: input.detected.executable, stageDir: dir });
+      await smokeLinkedPiRuntime({ piExecutable: input.detected.executable, packageRoot: path.join(dir, "npm", "node_modules", "jorgex-pi"), scratchRoot: path.dirname(dir) });
     };
-    const updateVerifyActive = (): void => {
+    const updateVerifyActive = async (): Promise<void> => {
+      verifyActivePiRelease({ agentDir: updateAgentDir, receiptPath: updateReceiptPath, candidate: updateActivationCandidate, evidence: updateEvidence, scopeKind: updateScopeKind, engramBin: engramBinForUpdate });
+      await smokeLinkedPiRuntime({ piExecutable: input.detected.executable, packageRoot: path.join(updateAgentDir, "npm", "node_modules", "jorgex-pi"), scratchRoot: path.dirname(updatePrepared.stageDir) });
       verifyActivePiRelease({ agentDir: updateAgentDir, receiptPath: updateReceiptPath, candidate: updateActivationCandidate, evidence: updateEvidence, scopeKind: updateScopeKind, engramBin: engramBinForUpdate });
     };
     try {
