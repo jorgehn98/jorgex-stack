@@ -97,10 +97,8 @@ function assertRealDir(p: string, label: string): string {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (typeof timer.unref === "function") timer.unref();
-  });
+  // This awaited cleanup delay must keep a standalone CLI alive after child exit.
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function runtimePath(piExecutable: string): string {
