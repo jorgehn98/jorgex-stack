@@ -16,6 +16,31 @@ El paquete adoptado mantiene su comportamiento oficial de provider; Stack no añ
 
 El gestor de paquetes interno de Pi es la única excepción npm del lifecycle: Stack usa pnpm para desarrollo, dependencias y herramientas globales, y nunca lanza npm directamente. El cierre privado de Pi se publica únicamente desde el stage verificado; no se reutiliza el árbol npm compartido ni se pisa el estado de paquetes ajenos. El paquete registra un receipt separado en `~/.jorgex-stack/pi-receipt.json` únicamente después de que su runner confirme una instalación sana. Ese receipt es el hand-off del binario Engram verificado; no transfiere su propiedad a Pi ni a Stack.
 
+## Inventario operativo de Pi
+
+Esta tabla separa lo que Stack gestiona de lo que Pi o el usuario ya deben proporcionar. Las versiones de los candidatos se resuelven desde `dist-tags.latest` en cada `install`/`update` deliberado; no hay números de versión futuros fijados en la documentación.
+
+| Elemento | Estado | Qué hace Stack | Qué no hace |
+| --- | --- | --- | --- |
+| Host Pi (`pi` o launcher gestionado) | Prerrequisito | Detecta el ejecutable y lo usa para staging, smoke y RPC | No sustituye la instalación del host ni ejecuta su actualización nativa |
+| `jorgex-pi` | Obligatorio y gestionado | Resuelve el último release estable publicado, verifica tarball/SRI, stage, smoke y receipt privado | No instala el alias flotante `latest` ni adopta un paquete manual sin receipt |
+| Seis companions del paquete Pi | Obligatorios dentro del release | Verifica sus versiones e integridades observadas y conserva copias package-local byte-identical para el loader | No los resuelve como seis actualizaciones independientes |
+| `gentle-engram` y `pi-mcp-adapter` | Providers oficiales obligatorios para la integración Stack | En `install`/`update` resuelve cada `latest`, los instala en stages Pi-native separados fuera del agente activo, verifica lock/SRI/árbol y promociona únicamente sus dos directorios con backup | No actualiza el árbol npm activo con el updater nativo de Pi ni poda el enlace/receipt privado de `jorgex-pi` |
+| Binario Engram | Obligatorio para el setup, propiedad del usuario | Conserva uno válido; si falta, `install` puede resolver el release estable oficial con autorización explícita | No reemplaza implícitamente un binario existente |
+| Base de datos y memorias Engram | Datos del usuario | Ninguna mutación | Nunca los actualiza, migra ni elimina |
+| Configuración MCP Pi (`mcp.json`/`mcp-adapter.json`) | Configuración del provider | Lee la ruta declarada por la metadata instalada, migra solo la raíz oficial con backup y verifica el resultado | No trata una entrada ajena, ambigua o ilegible como conexión sana |
+| Proyección Stack (prompt, skills y recibos) | Gestionada por Stack | Proyecta y reconcilia sus secciones con ownership y backup | No inyecta el protocolo ni filtra las herramientas del provider Engram |
+| Context7 | Integrado por defecto; credenciales opcionales | Mantiene el bridge de bootstrap y la guía si el candidato lo declara | No escribe credenciales ni convierte `available` en un handshake confirmado |
+| Playwright CLI / Chrome DevTools MCP | Opcionales y opt-in por runtime | Solo para una preferencia Pi explícita, resuelve y verifica sus árboles/hand-offs durante un `install`/`update` deliberado | No instala Chrome ni activa browser tooling por defecto |
+
+Los seis companions son `@gotgenes/pi-permission-system` (permisos), `@juicesharp/rpiv-ask-user-question` (preguntas), `@narumitw/pi-goal` (objetivos), `pi-subagents` (subagentes), `pi-web-access` (acceso web) y `strip-json-comments` (lectura JSONC). Se cargan como extensiones o dependencias del paquete; no se instalan como seis CLI globales. Que el paquete de acceso web esté presente no configura automáticamente cuentas externas.
+
+La integración también incluye la marca/tema JorgeX, el prompt `lean-audit` y las 17 skills compartidas de la snapshot. `pi-engram` y `pi-mcp-adapter` son los entrypoints CLI de sus respectivos providers, no sustituyen el binario `engram`. Playwright se invoca mediante el dispatcher verificado `jorgex-stack-playwright`; Chrome DevTools es un servidor MCP, no instala el navegador Chrome. Las herramientas MCP se descubren bajo demanda y su lista depende del servidor conectado.
+
+La instalación o actualización gestionada de un Pi existente con receipt válido continúa por la ruta autenticada de `update`; una instalación manual, un receipt ilegible o un estado ambiguo se bloquea. Si providers se activan y verifican pero falla después la finalización MCP, el resultado informa **providers activos, MCP pendiente** y conserva el backup: no se presenta como rollback total.
+
+La smoke aislada confirma la carga del runtime, el registro de extensiones y los comandos públicos del candidato (incluidos `goal`, `subagents`, `permission-system`, `websearch`, `jorgex:header`, `mcp-adapter` y `mcp` cuando corresponde). El endpoint de prueba pertenece al stage y devuelve `503` deliberadamente para evitar que la sonda inicie un daemon o use el servicio de memoria personal; esa prueba no es una certificación del servicio Engram. La certificación de una conexión MCP y las herramientas efectivamente visibles requieren el readback de la configuración oficial y una sesión real separada.
+
 ## Procedencia, attestation y paridad
 
 Estos identificadores describen objetos distintos y no deben intercambiarse:
@@ -52,7 +77,7 @@ Respecto al pin anterior `0.7.0`, se mantienen las 14 capabilities y el mismo ru
 
 El archivo MCP que se verifica es el que declara el `pi-mcp-adapter` instalado: para adapter mayor `2` se lee `mcp.json`; para mayor `3` o superior, `mcp-adapter.json`. Si falta o es inválida la metadata del adapter, no se hace fallback silencioso a la ruta histórica. En la ruta moderna, una definición oficial Engram duplicada en `mcp.json` es conflicto: la migración oficial respalda ambas rutas, conserva configuración ajena y escribe solo la raíz oficial cuando puede demostrar que la configuración no cambió durante la operación. La configuración acepta JSONC acotado (comentarios y comas finales), pero el contrato canónico sigue exigiendo `mcpServers.engram` directo y exacto.
 
-El smoke se ejecuta contra el stage y vuelve a ejecutarse sobre la topología de enlace después de promover el release. Usa Pi en RPC sin sesión, aprobación, contexto ni red; comprueba las capabilities públicas y falla ante cualquier `extension_error` o notificación de error salvo el mensaje exacto de Engram ausente en la sonda package-only. Esa excepción no certifica el MCP: la configuración oficial se verifica aparte antes de declarar el runtime saludable.
+El smoke se ejecuta contra el stage y vuelve a ejecutarse sobre la topología de enlace después de promover el release. Usa Pi en RPC sin sesión, aprobación ni contexto, con `--offline` y sin solicitar respuestas a un modelo; comprueba las capabilities públicas y falla ante cualquier `extension_error` o notificación de error salvo el mensaje exacto de Engram ausente en la sonda package-only. Esa excepción no certifica el MCP: la configuración oficial se verifica aparte antes de declarar el runtime saludable.
 
 ## Proyección compartida de Stack
 
@@ -95,7 +120,7 @@ Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad 
 La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
 
 - `install` verifica primero el tarball y prepara el stage aislado; solo después, en una instalación real, ejecuta `engram setup pi` con backup y rollback de `settings.json`, `mcp.json`, `mcp-adapter.json` y el árbol `npm`. Si el setup falla, Pi no se activa. El candidato verificado debe declarar el lector MCP que va a usar antes de migrar la configuración. Después hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete.
-- `sync` repara drift del paquete o de la proyección sin duplicar recursos; dos pasadas consecutivas son idempotentes.
+- `sync` reaplica la proyección del paquete autenticado y comprueba la configuración MCP existente sin resolver versiones ni descargar providers; dos pasadas consecutivas son idempotentes. Si hay un paquete activo obsoleto, usa `update --agents pi`, no `sync`.
 - `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. El diagnóstico de Stack puede marcar el runner como no saludable de forma genérica; para el estado detallado de Context7 (`available`, `conflict` o `invalid`) consulta el `doctor` nativo de Pi. `available` no implica un handshake HTTP.
 - `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime.
 - Si un receipt es ilegible, de otro scope, parcial o de historial desconocido, la operación destructiva falla cerrada; no se adopta ni se elimina estado manual silenciosamente.
@@ -147,8 +172,9 @@ Stack reconoce la versión del host Pi sin ejecutarlo: admite tanto el binario d
 
 | Comando Stack | Comportamiento Pi |
 | --- | --- |
-| `install --agents pi` | Verifica el tarball, instala y normaliza el paquete, proyecta recursos, ejecuta `sync` para inicializar Pi y escribe ambos receipts. |
-| `sync --agents pi` | Reconcilia paquete y proyección; no instala recursos globales ni duplica skills/prompts. |
+| `install --agents pi` | En un Pi nuevo verifica el tarball, instala y normaliza el paquete, proyecta recursos, ejecuta `sync` para inicializar Pi y escribe ambos receipts; sobre un receipt gestionado válido continúa por la actualización autenticada. |
+| `sync --agents pi` | Reconcilia receipt, proyección y configuración MCP ya gestionada; no resuelve versiones, no descarga providers ni duplica skills/prompts. |
+| `update --agents pi` | Resuelve y verifica `jorgex-pi`, `gentle-engram` y `pi-mcp-adapter` en stages aislados; sobre un receipt gestionado válido actualiza el release y los dos providers sin tocar el host Pi, Engram ni datos ajenos. |
 | `models --agents pi` | Devuelve la información primaria gestionada del paquete Pi; no escribe model map de Stack. |
 | `doctor --agents pi` | Comprueba package/projection receipts, scope, entradas y drift. |
 | `update --check --agents pi` | Ejecuta mediante el runner una comprobación de solo lectura del paquete y del registro; no compara la proyección compartida, no ejecuta el smoke del navegador y no entra en el updater global. Usa `doctor --agents pi` para el diagnóstico completo de paquete y proyección. |
