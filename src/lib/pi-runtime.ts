@@ -15,13 +15,14 @@ import {
 import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { smokeStagedPiRuntime, smokeLinkedPiRuntime } from "./pi-stage-smoke.js";
 import { runPiStageProcess } from "./pi-stage-process.js";
+import { completeUpdatedPiMcp } from "./pi-provider-update.js";
 import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { deactivateVerifiedLegacyPiEntry, deactivateVerifiedPiRelease } from "./pi-private-release.js";
 import { writeText } from "./fsx.js";
 import { createBackup } from "./backup.js";
 import { detectEngram, lookPath, planDetectedBinCommand } from "./detect.js";
 import type { EngramInstallResult } from "./engram-install.js";
-import { migrateOfficialPiMcpConfig, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
+import { declaredPiMcpConfigFiles, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
 import {
   executePiPackageLifecycle,
   planPiPackageLifecycle,
@@ -680,26 +681,6 @@ function runProcess(invocation: {
   };
 }
 
-function declaredPiMcpConfigFiles(stageDir: string): string[] {
-  const file = path.join(stageDir, "npm", "node_modules", "jorgex-pi", "contract", "jorgex-pi.v1.json");
-  const contract = JSON.parse(fs.readFileSync(file, "utf8")) as { mcpAdapterConfig?: { schemaVersion?: unknown; files?: unknown } };
-  const declaration = contract.mcpAdapterConfig;
-  if (declaration === undefined) return [];
-  if (declaration.schemaVersion !== 1 || !Array.isArray(declaration.files)
-    || !declaration.files.every((file): file is string => typeof file === "string")) {
-    throw new Error("El candidato Pi declara un contrato MCP inválido.");
-  }
-  return declaration.files;
-}
-
-async function completeUpdatedPiMcp(configDir: string, engramBin: string): Promise<void> {
-  const { verifyOfficialSetup } = await import("../adapters/pi.js");
-  const before = await verifyOfficialSetup({ configDir, engramBin });
-  if (!before.layers.includes("packages")) throw new Error(before.reason ?? "Setup de paquetes Pi incompleto.");
-  migrateOfficialPiMcpConfig({ configDir, engramBin });
-  const after = await verifyOfficialSetup({ configDir, engramBin });
-  if (!after.ok) throw new Error(after.reason ?? "Configuración MCP Pi no verificada.");
-}
 
 function setupPiFailedRemedy(setup: {
   reason?: string;

@@ -18,6 +18,8 @@ import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
 import { requirePiBrowserHandoffSchemas } from "./pi-browser-contract.js";
 import { dataDir, stackRoot } from "./paths.js";
 import fs from "node:fs";
+import os from "node:os";
+import { updatePiProviderPackages } from "./pi-provider-update.js";
 import path from "node:path";
 
 export type PiManagedOperation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
@@ -381,7 +383,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     devtoolsMcpVersion,
   };
   if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
-  const result = await runManagedPiOperation(input.operation, {
+  let result = await runManagedPiOperation(input.operation, {
     installInitRemedy: input.targetDir === undefined ? undefined : INSTALL_INIT_TARGET_REMEDY,
     async runPackage(operation) {
       const raw = await runPiRuntimeSystem({
@@ -392,8 +394,8 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         ...(upgradePermissions ? { upgradePermissions: true as const } : {}),
       });
       if (effectiveCandidate !== undefined
-        && ((operation === "install" && raw.kind === "installed")
-          || (operation === "update" && raw.kind === "updated"))) {
+        && ((operation === "install" || operation === "update")
+          && (raw.kind === "installed" || raw.kind === "updated"))) {
         const expected = effectiveCandidate.package;
         const receipt = raw.receipt as
           | { candidate?: { package?: { name?: unknown; version?: unknown; source?: unknown } }; package?: { name?: unknown; version?: unknown; source?: unknown } }
@@ -415,7 +417,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       if (
         ((operation === "sync" && raw.kind === "synced") ||
           (operation === "doctor" && raw.kind === "healthy") ||
-          (operation === "update" && raw.kind === "healthy")) &&
+          ((operation === "update" || operation === "install") && raw.kind === "healthy")) &&
         "packageSource" in raw &&
         raw.packageSource !== undefined
       ) {
@@ -468,6 +470,18 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       return Promise.resolve(completePiProjectionUninstallSystem(token, { operation: "uninstall", ...projectionInput }));
     },
   });
+  if (input.targetDir === undefined && (input.operation === "install" || input.operation === "update") && result.kind !== "blocked") {
+    try {
+      if (input.engramBin === null) throw new Error("Engram no disponible para verificar los providers Pi");
+      const providers = await updatePiProviderPackages({
+        homeDir: os.homedir(), agentDir: path.dirname(piSystemPromptFile()),
+        piExecutable: input.detected.executable, engramBin: input.engramBin,
+      });
+      if (providers.kind === "updated" && result.kind === "healthy") result = { kind: "updated" };
+    } catch (error) {
+      return { kind: "blocked", reason: "provider-update-failed", remedy: `La fase principal de Pi terminó, pero la actualización de providers está incompleta: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
   if (input.targetDir === undefined && explicitDevtools !== undefined
     && (input.operation === "install" || input.operation === "sync" || input.operation === "update") && result.kind !== "blocked") {
     if (explicitDevtools === true && devtoolsVerifiedForPersist !== undefined) {

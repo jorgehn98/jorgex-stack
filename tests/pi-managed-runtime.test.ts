@@ -4,6 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const providerUpdateMock = vi.hoisted(() => vi.fn(async () => ({ kind: "healthy", versions: {} })));
+vi.mock("../src/lib/pi-provider-update.js", () => ({
+  updatePiProviderPackages: providerUpdateMock,
+  completeUpdatedPiMcp: vi.fn(async () => {}),
+}));
+afterEach(() => providerUpdateMock.mockReset().mockResolvedValue({ kind: "healthy", versions: {} }));
+
 const browserContractMock = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/pi-browser-contract.js", () => ({ requirePiBrowserHandoffSchemas: browserContractMock }));
 afterEach(() => browserContractMock.mockReset());
@@ -3472,6 +3479,26 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
   function preferenceFile(homeDir: string): string {
     return path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
   }
+
+  it("does not report successful install when the provider update fails after package initialization", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-provider-result-"));
+    try {
+      await withTempPiHome(root, async () => {
+        mockPiPackage();
+        mockPiProjection([], []);
+        providerUpdateMock.mockRejectedValueOnce(new Error("provider regression"));
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          const result = await mod.runManagedPiSystem({
+            operation: "install", detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" },
+            engramBin: "/isolated/bin/engram", devtoolsMcpEnabled: false, writingStyle: FORWARDING_STYLE,
+          });
+          expect(result).toMatchObject({ kind: "blocked", reason: "provider-update-failed" });
+          expect(providerUpdateMock).toHaveBeenCalledTimes(1);
+        } finally { unmockPiSystem(); }
+      });
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
 
   it("verifies the published DevTools candidate before Pi projection and persists the observation only on success", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-acquisition-"));

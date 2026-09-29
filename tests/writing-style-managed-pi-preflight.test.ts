@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/lib/pi-provider-update.js", () => ({
+  updatePiProviderPackages: vi.fn(async () => ({ kind: "healthy", versions: {} })),
+  completeUpdatedPiMcp: vi.fn(async () => {}),
+}));
+
 const mocks = vi.hoisted(() => ({
   runPackage: vi.fn(async (input: { operation: string }) =>
     input.operation === "sync" ? { kind: "synced" } : { kind: "installed" },
