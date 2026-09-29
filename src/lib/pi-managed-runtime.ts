@@ -14,7 +14,7 @@ import type { PlaywrightCapabilitySnapshot } from "./playwright-capability.js";
 import { piSystemPromptFile } from "../adapters/pi.js";
 import { assertSystemPromptFile } from "./system-prompt-sections.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./browser-provider.js";
-import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
+import { detectChromiumExecutable, loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
 import { requirePiBrowserHandoffSchemas } from "./pi-browser-contract.js";
 import { refreshPiPlaywright } from "./pi-browser-update.js";
 import { dataDir, stackRoot } from "./paths.js";
@@ -316,6 +316,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
             withVerifiedArtifact: async (context) => {
               await activateVerifiedBrowserArtifact(context, {
                 stateDir: devtoolsManagedStateDir, pnpmBin, fetchImpl: globalThis.fetch,
+                browserExecutablePath: detectChromiumExecutable(),
               });
             },
           });

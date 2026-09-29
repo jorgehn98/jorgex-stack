@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadVerifiedManagedBrowserReceipt } from "../src/lib/browser-managed.js";
+import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } from "../src/lib/browser-managed.js";
 import { resolvePnpmBin } from "../src/lib/external-tools.js";
 
 /**
@@ -679,6 +679,8 @@ describe("[T14-RED] shared verified browser release composes resolve plus verifi
     const version = "9.9.10";
     const root = stageParent();
     const packageDir = path.join(root, "source", "package");
+    const marker = path.join(root, "devtools-argv.json");
+    const chromium = fs.realpathSync(process.execPath);
     fs.mkdirSync(packageDir, { recursive: true });
     const bin = "entry.js";
     fs.writeFileSync(path.join(packageDir, "package.json"), `${JSON.stringify({
@@ -686,13 +688,13 @@ describe("[T14-RED] shared verified browser release composes resolve plus verifi
       bin: { [packageName === PLAYWRIGHT_PKG ? "playwright-cli" : DEVTOOLS_PKG]: `./${bin}` },
     })}\n`);
     fs.writeFileSync(path.join(packageDir, bin), packageName === DEVTOOLS_PKG
-      ? 'process.stdout.write("--isolated --redact-network-headers --no-performance-crux --no-usage-statistics\\n");\n'
+      ? `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write("--isolated --redact-network-headers --no-performance-crux --no-usage-statistics --executablePath\\n");\n`
       : 'process.stdout.write("playwright-cli 9.9.10\\n");\n');
     if (packageName === DEVTOOLS_PKG) {
       const parser = path.join(packageDir, "build", "src", "config");
       fs.mkdirSync(parser, { recursive: true });
       fs.writeFileSync(path.join(parser, "mcp-options.js"),
-        "export function parseArguments() { return { isolated: true, redactNetworkHeaders: true, performanceCrux: false, usageStatistics: false }; }\n");
+        "export function parseArguments(_name, argv) { return { isolated: true, redactNetworkHeaders: true, performanceCrux: false, usageStatistics: false, executablePath: argv.find((arg) => arg.startsWith('--executablePath='))?.slice('--executablePath='.length) }; }\n");
     }
     const archive = path.join(root, "package.tgz");
     execFileSync("tar", ["-czf", archive, "-C", path.join(root, "source"), "package"]);
@@ -706,13 +708,19 @@ describe("[T14-RED] shared verified browser release composes resolve plus verifi
     await provider.prepareVerifiedBrowserRelease(packageName, {
       fetchImpl: fetch, stageParent: root,
       withVerifiedArtifact: async (context) => {
-        promoted = await provider.activateVerifiedBrowserArtifact(context, { stateDir, pnpmBin: pnpmBin!, fetchImpl: fetch });
+        promoted = await provider.activateVerifiedBrowserArtifact(context, { stateDir, pnpmBin: pnpmBin!, fetchImpl: fetch, ...(packageName === DEVTOOLS_PKG ? { browserExecutablePath: chromium } : {}) });
       },
     });
     const active = loadVerifiedManagedBrowserReceipt(stateDir, packageName);
     expect(active).toMatchObject({ version, integrity, rootPath: promoted?.rootPath,
       treeSha256: promoted?.treeSha256, launcherSha256: promoted?.launcherSha256 });
     expect(fs.existsSync(active!.entryPath)).toBe(true);
+    if (packageName === DEVTOOLS_PKG) {
+      const flags = ["--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"];
+      const plan = planManagedBrowserInvocation(stateDir, DEVTOOLS_PKG, flags);
+      execFileSync(plan.command, plan.args);
+      expect(JSON.parse(fs.readFileSync(marker, "utf8"))).toEqual([...flags, `--executablePath=${chromium}`]);
+    }
   }, 120_000);
   it("returns the observed Playwright release only after verified bytes and removes its own stage", async () => {
     const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
@@ -821,7 +829,7 @@ type VerifyArtifactModule = {
     deps: { run: ArtifactRun },
   ): Promise<unknown>;
   verifyStagedDevtoolsCliArtifact(
-    input: { stageDir: string; staged: { treePath: string; nodeModulesPath: string; treeSha256: string; closure: [] }; release: NpmPackageRelease },
+    input: { stageDir: string; staged: { treePath: string; nodeModulesPath: string; treeSha256: string; closure: [] }; release: NpmPackageRelease; browserExecutablePath?: string },
     deps: { run: ArtifactRun },
   ): Promise<unknown>;
 };
@@ -940,6 +948,35 @@ describe("[T14-RED] DevTools artifact keeps the mandatory privacy flags", () => 
     expect(events.some((event) => event.args[0] === "add")).toBe(false);
     expect(events.some((event) => event.args.includes("--help"))).toBe(true);
     expect(events.some((event) => event.args[0] === "--input-type=module")).toBe(true);
+  });
+
+  it.each(["supported", "ignored", "unsupported-help"] as const)("requires the staged DevTools CLI to prove its Chromium selector (%s)", async (mode) => {
+    const { verifyStagedDevtoolsCliArtifact } = await loadVerifyArtifact();
+    const parent = artifactParent();
+    const stageDir = path.join(parent, "stage");
+    fs.mkdirSync(stageDir);
+    const events: ArtifactEvent[] = [];
+    const chromium = fs.realpathSync(process.execPath);
+    const run = artifactRunFake({ events, stageDir,
+      manifest: { name: "chrome-devtools-mcp", version: ARTIFACT_VERSION },
+      helpStdout: ARTIFACT_FULL_HELP + (mode === "unsupported-help" ? "" : "\n --executablePath Chromium executable"),
+      helpStatus: 0,
+      parserOutput: JSON.stringify(mode === "ignored" ? [true, true, false, false] : [true, true, false, false, chromium]),
+    });
+    await run(ARTIFACT_PNPM_BIN, ["add"], { cwd: stageDir, env: {} });
+    events.length = 0;
+    const proof = verifyStagedDevtoolsCliArtifact({ stageDir, browserExecutablePath: chromium,
+      staged: { treePath: path.join(stageDir, "node_modules", "chrome-devtools-mcp"),
+        nodeModulesPath: path.join(stageDir, "node_modules"), treeSha256: "0".repeat(64), closure: [] },
+      release: artifactRelease(),
+    }, { run });
+    if (mode === "supported") {
+      await expect(proof).resolves.toMatchObject({ version: ARTIFACT_VERSION });
+      expect(events.find((event) => event.args.includes("--help"))?.args).toContain(`--executablePath=${chromium}`);
+      expect(events.find((event) => event.args[0] === "--input-type=module")?.args).toContain(chromium);
+    } else {
+      await expect(proof).rejects.toThrow(/executablePath|selector/i);
+    }
   });
 
   it("installs the exact local tarball isolated and proves all four flags via --help", async () => {

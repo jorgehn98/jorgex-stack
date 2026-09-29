@@ -19,6 +19,9 @@ const browserContractMock = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/pi-browser-contract.js", () => ({ requirePiBrowserHandoffSchemas: browserContractMock }));
 afterEach(() => browserContractMock.mockReset());
 
+const chromiumDetectionMock = vi.hoisted(() => vi.fn((): string | undefined => undefined));
+afterEach(() => chromiumDetectionMock.mockReset().mockReturnValue(undefined));
+
 // Integration fixtures carry synthetic tarball bytes; the isolated CLI probe
 // has its own artifact tests and explicit success/failure flow doubles below.
 vi.mock("../src/lib/browser-provider.js", async (importOriginal) => ({
@@ -29,6 +32,7 @@ vi.mock("../src/lib/browser-provider.js", async (importOriginal) => ({
 
 vi.mock("../src/lib/browser-managed.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/browser-managed.js")>()),
+  detectChromiumExecutable: chromiumDetectionMock,
   loadVerifiedManagedBrowserReceipt: vi.fn(() => ({ version: DEVTOOLS_VERSION, integrity: DEVTOOLS_INTEGRITY })),
 }));
 
@@ -3508,6 +3512,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
           });
           expect(result).toMatchObject({ kind: successfulResults[operation].kind });
           expect(providerUpdateMock).not.toHaveBeenCalled();
+          expect(chromiumDetectionMock).not.toHaveBeenCalled();
         } finally { unmockPiSystem(); }
       });
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -3890,6 +3895,8 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     const events: string[] = [];
     const projectionInputs: unknown[] = [];
     const smokeCalls: unknown[][] = [];
+    const chromium = path.resolve("/isolated/chromium-browser");
+    chromiumDetectionMock.mockReturnValue(chromium);
 
     try {
       await withTempPiHome(homeDir, async () => {
@@ -3923,7 +3930,8 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
                 integrity: DEVTOOLS_INTEGRITY,
               },
             });
-            expect(smokeCalls[0]?.[1]).toMatchObject({ pnpmBin: "/isolated/bin/pnpm" });
+            expect(smokeCalls[0]?.[1]).toMatchObject({ pnpmBin: "/isolated/bin/pnpm", browserExecutablePath: chromium });
+            expect(chromiumDetectionMock).toHaveBeenCalledTimes(1);
             expect(typeof input?.artifactPath === "string" && path.isAbsolute(input.artifactPath)).toBe(true);
             expect(typeof input?.stageDir === "string" && path.isAbsolute(input.stageDir)).toBe(true);
             const metaIdx = events.indexOf(`fetch ${DEVTOOLS_METADATA}`);
@@ -4030,6 +4038,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     }
 
     expect(smokeCalls).toEqual([]);
+    expect(chromiumDetectionMock).not.toHaveBeenCalled();
     expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
   });
 });

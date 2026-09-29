@@ -40,6 +40,8 @@ export interface ActivateManagedBrowserTreeInput {
   readonly staged: StageVerifiedBrowserTreeResult;
   /** Absolute entry path contained by `staged.nodeModulesPath`. */
   readonly entryPath: string;
+  /** Optional physical browser executable, supported only by DevTools. */
+  readonly browserExecutablePath?: string;
 }
 
 export interface ManagedBrowserReceipt {
@@ -93,6 +95,39 @@ function realpathOrFail(file: string, label: string): string {
   } catch {
     fail(`cannot resolve ${label}: ${file}`);
   }
+}
+
+function assertBrowserExecutable(value: unknown): string {
+  const executable = absolutePath(value, "browser executable");
+  if (executable !== value || CONTROL_CHARACTERS.test(executable)) fail("browser executable path must be canonical and contain no control characters");
+  const stat = lstatOrFail(executable, "browser executable");
+  if (!stat.isFile() || stat.isSymbolicLink()) fail("browser executable must be a regular non-symlink file");
+  if (realpathOrFail(executable, "browser executable") !== executable) fail("browser executable path contains a symlink");
+  try {
+    fs.accessSync(executable, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+  } catch {
+    fail("browser executable is not executable");
+  }
+  return executable;
+}
+
+/** Probe fixed platform paths, returning a canonical regular executable without consulting PATH or browser profiles. */
+export function detectChromiumExecutable(): string | undefined {
+  const candidates = process.platform === "linux"
+    ? ["/usr/bin/chromium-browser", "/usr/bin/chromium"]
+    : process.platform === "darwin"
+      ? ["/Applications/Chromium.app/Contents/MacOS/Chromium"]
+      : process.platform === "win32"
+        ? ["C:\\Program Files\\Chromium\\Application\\chrome.exe", "C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe"]
+        : [];
+  for (const candidate of candidates) {
+    try {
+      return assertBrowserExecutable(fs.realpathSync(candidate));
+    } catch {
+      // An absent or unusable candidate leaves the provider's default browser unchanged.
+    }
+  }
+  return undefined;
 }
 
 function assertRealDirectory(directory: string, label: string): string {
@@ -216,12 +251,15 @@ function validateStagedInput(input: ActivateManagedBrowserTreeInput): {
   entryPath: string;
   treeSha256: string;
   closure: readonly BrowserClosurePackage[];
+  browserExecutablePath: string | undefined;
 } {
   if (!isRecord(input)) fail("input must be an object");
   if (input.packageName !== "@playwright/cli" && input.packageName !== "chrome-devtools-mcp") {
     fail("unsupported managed browser package");
   }
   const packageName = input.packageName;
+  if (input.browserExecutablePath !== undefined && packageName !== "chrome-devtools-mcp") fail("browser executable selector is supported only for DevTools");
+  const browserExecutablePath = input.browserExecutablePath === undefined ? undefined : assertBrowserExecutable(input.browserExecutablePath);
   const stateDir = assertStateDirectory(input.stateDir);
   const release = validateRelease(input.release);
   if (!isRecord(input.staged)) fail("staged tree evidence must be an object");
@@ -251,7 +289,7 @@ function validateStagedInput(input: ActivateManagedBrowserTreeInput): {
   ) {
     fail("entryPath must be contained by staged node_modules");
   }
-  return { stateDir, packageName, release, nodeModulesPath, treePath: realTreePath, entryPath, treeSha256, closure };
+  return { stateDir, packageName, release, nodeModulesPath, treePath: realTreePath, entryPath, treeSha256, closure, browserExecutablePath };
 }
 
 async function acquireLock(lockPath: string): Promise<() => void> {
@@ -576,7 +614,7 @@ function hashRegularFile(file: string): string {
   }
 }
 
-function launcherSource(nodeModulesPath: string, entryPath: string, expectedTreeSha256: string): string {
+function launcherSource(nodeModulesPath: string, entryPath: string, expectedTreeSha256: string, browserExecutablePath?: string): string {
   return `const fs = (await import("node:fs")).default;
 const path = (await import("node:path")).default;
 const { createHash } = await import("node:crypto");
@@ -719,7 +757,7 @@ function treeHash(tree) {
 
 if (treeHash(root) !== expected) throw new Error("managed browser tree digest drifted before launch");
 process.argv[1] = entry;
-await import(pathToFileURL(entry).href);
+${browserExecutablePath === undefined ? "" : `process.argv.push(${JSON.stringify(`--executablePath=${browserExecutablePath}`)});\n`}await import(pathToFileURL(entry).href);
 `;
 }
 
@@ -1018,12 +1056,20 @@ function sameVerifiedCandidate(
   receipt: ManagedBrowserReceipt,
   prepared: ReturnType<typeof validateStagedInput>,
 ): boolean {
+  const expectedEntry = path.join(receipt.treePath, path.relative(prepared.nodeModulesPath, prepared.entryPath));
   return (
     receipt.packageName === prepared.packageName &&
     receipt.version === prepared.release.version &&
     receipt.integrity === prepared.release.integrity &&
     receipt.treeSha256 === prepared.treeSha256 &&
-    JSON.stringify(receipt.closure) === JSON.stringify(prepared.closure)
+    JSON.stringify(receipt.closure) === JSON.stringify(prepared.closure) &&
+    receipt.entryPath === expectedEntry &&
+    receipt.launcherSha256 === createHash("sha256").update(launcherSource(
+      receipt.treePath,
+      expectedEntry,
+      prepared.treeSha256,
+      prepared.browserExecutablePath,
+    )).digest("hex")
   );
 }
 
@@ -1088,7 +1134,7 @@ export async function activateManagedBrowserTree(
     const finalNodeModules = path.join(finalRoot, "node_modules");
     const finalEntry = path.join(finalNodeModules, relativeEntry);
     const launcherPath = path.join(finalRoot, "launcher.mjs");
-    writeNewFile(launcherPath, launcherSource(finalNodeModules, finalEntry, prepared.treeSha256), 0o700);
+    writeNewFile(launcherPath, launcherSource(finalNodeModules, finalEntry, prepared.treeSha256, prepared.browserExecutablePath), 0o700);
     const launcherSha256 = hashRegularFile(launcherPath);
     const receipt: ManagedBrowserReceipt = {
       schemaVersion: 1,
