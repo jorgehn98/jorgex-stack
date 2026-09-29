@@ -44,6 +44,7 @@ type PackageState = {
   backupRoot: string;
   existed: boolean;
   previousTreeSha256: string | null;
+  phase: "pending" | "backed-up" | "promoted";
 };
 
 function resolved(value: string): string {
@@ -469,24 +470,33 @@ function restoreState(
 ): void {
   ensureTransactionFile(lockPath, lockContent);
   ensureTransactionFile(markerPath, markerContent);
-  if (!sameRegularFile(settingsPath, nextSettings, agentDir)) incomplete("settings drifted during provider rollback");
+  if (!sameRegularFile(settingsPath, nextSettings, agentDir) && !sameRegularFile(settingsPath, oldSettings, agentDir)) incomplete("settings drifted during provider rollback");
   const backupSettings = path.join(backupDir, "settings.json");
   assertRegularFile(backupSettings, backupDir, "provider settings backup");
   if (fs.readFileSync(backupSettings, "utf8") !== oldSettings) incomplete("provider settings backup drifted");
   for (const state of states) {
+    assertAncestorsClean(path.dirname(state.activeRoot), agentDir, `active ${state.input.name}`);
+    if (state.phase === "pending") {
+      verifyPreviousPackageBeforeRename(state, agentDir);
+      continue;
+    }
     assertAncestorsClean(path.dirname(state.backupRoot), backupDir, `provider backup ${state.input.name}`);
     verifyBackup(state);
-    verifyPromotedPackage(state);
+    if (state.phase === "promoted") {
+      verifyPromotedPackage(state);
+      assertAncestorsClean(path.dirname(state.candidateRoot), stageDir, `candidate ${state.input.name}`);
+      if (lstatOrNull(state.candidateRoot) !== null) incomplete(`candidate stage root was replaced: ${state.input.name}`);
+    } else if (lstatOrNull(state.activeRoot) !== null) {
+      incomplete(`provider root appeared after backup: ${state.input.name}`);
+    }
   }
-  for (const state of states) {
-    assertAncestorsClean(path.dirname(state.candidateRoot), stageDir, `candidate ${state.input.name}`);
-    assertAncestorsClean(path.dirname(state.activeRoot), agentDir, `active ${state.input.name}`);
-    const stageStat = lstatOrNull(state.candidateRoot);
-    if (stageStat !== null) incomplete(`candidate stage root was replaced: ${state.input.name}`);
-    fs.renameSync(state.activeRoot, state.candidateRoot);
+  for (const state of [...states].reverse()) {
+    if (state.phase === "pending") continue;
+    if (state.phase === "promoted") fs.renameSync(state.activeRoot, state.candidateRoot);
     if (state.existed) fs.renameSync(state.backupRoot, state.activeRoot);
   }
   atomicWrite(settingsPath, oldSettings, agentDir);
+  for (const state of states) verifyPreviousPackageBeforeRename(state, agentDir);
   removeTransactionState(lockPath, lockContent, markerPath, markerContent);
 }
 
@@ -541,6 +551,7 @@ export async function activatePiProviderPackages(
       backupRoot: "",
       existed: previousTreeSha256 !== null,
       previousTreeSha256,
+      phase: "pending",
     });
   }
   const backupDir = path.join(stageDir, `.provider-activation-${crypto.randomBytes(16).toString("hex")}`);
@@ -575,8 +586,12 @@ export async function activatePiProviderPackages(
       assertAncestorsClean(path.dirname(state.candidateRoot), stageDir, `candidate ${state.input.name}`);
       assertAncestorsClean(path.dirname(state.activeRoot), agentDir, `active ${state.input.name}`);
       verifyPreviousPackageBeforeRename(state, agentDir);
-      if (state.existed) fs.renameSync(state.activeRoot, state.backupRoot);
+      if (state.existed) {
+        fs.renameSync(state.activeRoot, state.backupRoot);
+        state.phase = "backed-up";
+      }
       fs.renameSync(state.candidateRoot, state.activeRoot);
+      state.phase = "promoted";
     }
     for (const state of states) verifyPromotedPackage(state);
     atomicWrite(settingsPath, nextSettings, agentDir);

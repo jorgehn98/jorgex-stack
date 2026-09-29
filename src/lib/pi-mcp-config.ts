@@ -371,4 +371,3 @@ export function declaredPiMcpConfigFiles(stageDir: string): string[] {
   }
   return declaration.files;
 }
-

@@ -67,7 +67,7 @@ type StageCall = {
 };
 
 const stageSpecifier = new URL("../src/lib/pi-provider-stage.js", import.meta.url).href;
-const PI_EXECUTABLE = "/opt/pi/bin/pi";
+const PI_EXECUTABLE = path.resolve("/opt/pi/bin/pi");
 const PROVIDERS: readonly ProviderName[] = ["gentle-engram", "pi-mcp-adapter"];
 const BIN_NAMES: Record<ProviderName, string> = {
   "gentle-engram": "gentle-engram",

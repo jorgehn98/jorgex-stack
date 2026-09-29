@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { inventoryTreeSha256 } from "../src/lib/pi-staged-lock.js";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -53,4 +53,32 @@ it("honors the existing Pi activation transaction lock before changing provider 
   const before = inventoryTreeSha256(path.join(f.agentDir, "npm"));
   await expect(api.activatePiProviderPackages({ ...f, verify: async () => {} })).rejects.toThrow(/lock|transaction/);
   expect(inventoryTreeSha256(path.join(f.agentDir, "npm"))).toBe(before);
+});
+
+it("restores an already promoted provider when the second promotion fails before its rename", async () => {
+  const f = fixture(); const api = await load();
+  const before = inventoryTreeSha256(path.join(f.agentDir, "npm"));
+  const originalRename = fs.renameSync;
+  const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    if (String(from) === f.packages[1]!.packageRoot) throw new Error("injected second provider rename failure");
+    return originalRename(from, to);
+  });
+  try {
+    await expect(api.activatePiProviderPackages({ ...f, verify: async () => {} })).rejects.toThrow(/injected second provider rename failure/);
+  } finally { rename.mockRestore(); }
+  expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8")).toBe(f.settingsJson);
+  expect(inventoryTreeSha256(path.join(f.agentDir, "npm"))).toBe(before);
+});
+
+it("preserves concurrent provider edits and its recovery marker rather than overwriting them", async () => {
+  const f = fixture(); const api = await load();
+  const edited = path.join(f.modules, "gentle-engram", "cli.js");
+  const promise = api.activatePiProviderPackages({ ...f, verify: async () => {
+    fs.writeFileSync(edited, "concurrent user edit");
+    throw new Error("verification failed after concurrent edit");
+  } });
+  await expect(promise).rejects.toMatchObject({ recovery: "incomplete" });
+  expect(fs.readFileSync(edited, "utf8")).toBe("concurrent user edit");
+  expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(true);
+  expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(true);
 });
