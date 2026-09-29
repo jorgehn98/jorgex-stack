@@ -412,7 +412,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
   it("routes the real job conservatively across pull-request and manual events", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
-    expect(jobs).toHaveLength(2);
+    expect(jobs).toHaveLength(3);
 
     const [job] = jobs;
     expect(job).toBeDefined();
@@ -471,6 +471,13 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     for (const step of windows?.steps ?? []) {
       if (step.uses !== undefined) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
     }
+    const livePi = jobs[2];
+    expect(livePi?.if).toBeUndefined();
+    expect(workflow).toContain("os: [ubuntu-latest, windows-latest]");
+    expect(livePi?.steps.some((step) => step.raw.includes("dist/pi-ci-artifact.js"))).toBe(true);
+    expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-linked-smoke-live.test.ts"))).toBe(true);
+    expect(workflow).toContain("PI_TEST_HOST:");
+    expect(workflow).toContain("PI_TEST_CANDIDATE:");
   });
 
   it("declares explicit routing, serialization, identity, and read-only contracts", () => {

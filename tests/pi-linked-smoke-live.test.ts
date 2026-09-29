@@ -7,10 +7,15 @@ import { expect, it } from "vitest";
 import { stageVerifiedPiTarball } from "../src/lib/pi-release-stage.js";
 import { materializeStagedPiRuntimeDependencies } from "../src/lib/pi-staged-lock.js";
 import { smokeLinkedPiRuntime } from "../src/lib/pi-stage-smoke.js";
+import { planDetectedBinCommand } from "../src/lib/detect.js";
 
-const piExecutable = process.env.JORGEX_PI_BIN;
+const piExecutable = process.env.JORGEX_PI_BIN ?? (process.env.PI_TEST_HOST
+  ? path.join(process.env.PI_TEST_HOST, "node_modules", ".bin", process.platform === "win32" ? "pi.cmd" : "pi")
+  : undefined);
 const artifactPath = process.env.JORGEX_PI_LIVE_ARTIFACT;
-const version = process.env.JORGEX_PI_LIVE_VERSION;
+const version: string | undefined = process.env.JORGEX_PI_LIVE_VERSION ?? (process.env.PI_TEST_CANDIDATE
+  ? JSON.parse(fs.readFileSync(process.env.PI_TEST_CANDIDATE, "utf8")).version as string
+  : undefined);
 
 it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promoted-link topology only with its verified local runtime copies", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-layout-live-"));
@@ -25,7 +30,9 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     };
     const release = { version: version!, tarballUrl: `https://registry.npmjs.org/jorgex-pi/-/jorgex-pi-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` };
     const staged = await stageVerifiedPiTarball({ homeDir, agentDir, piExecutable: piExecutable!, artifact, release }, (executable, args, options) => {
-      const result = spawnSync(executable, args, { ...options, encoding: "utf8", timeout: 120_000 });
+      const command = planDetectedBinCommand(executable, args);
+      if (command === null) throw new Error("Unsafe Pi test executable");
+      const result = spawnSync(command.command, command.args, { ...options, encoding: "utf8", timeout: 120_000 });
       return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? result.error?.message ?? "" };
     });
     const packageRoot = path.join(staged.stageDir, "npm", "node_modules", "jorgex-pi");
