@@ -253,8 +253,8 @@ describe("Pi managed package and projection coordination", () => {
         devtoolsMcpEnabled: true,
         writingStyle: FORWARDING_STYLE,
       });
-      expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
-      expect(loadDevtoolsMcpPreference).not.toHaveBeenCalled();
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(3);
+      expect(loadDevtoolsMcpPreference).toHaveBeenCalledTimes(1);
 
       runPiRuntimeSystem.mockResolvedValueOnce({ kind: "blocked", reason: "runner-unhealthy" });
       await mod.runManagedPiSystem({
@@ -264,7 +264,7 @@ describe("Pi managed package and projection coordination", () => {
         devtoolsMcpEnabled: true,
         writingStyle: FORWARDING_STYLE,
       });
-      expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(2);
+      expect(saveDevtoolsMcpPreference).toHaveBeenCalledTimes(3);
     } finally {
       vi.unstubAllGlobals();
       vi.doUnmock("../src/lib/pi-runtime.js");
@@ -3485,6 +3485,34 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     return path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
   }
 
+  it.each([
+    ["sync", false], ["doctor", false], ["models", false], ["uninstall", false],
+    ["install", true], ["update", true],
+  ] as const)("never acquires provider packages during %s (target-dir=%s)", async (operation, isolatedTarget) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-provider-offline-"));
+    try {
+      await withTempPiHome(root, async () => {
+        const { runPiRuntimeSystem } = mockPiPackage();
+        runPiRuntimeSystem.mockImplementation(async (input) => successfulResults[input.operation as Operation]);
+        vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+          runPiProjectionLifecycleSystem: vi.fn((input: { operation: ProjectionOperation }) => projectionSuccess(input.operation)),
+          preparePiProjectionUninstallSystem: vi.fn(() => ({ kind: "prepared", token: "isolated-uninstall" })),
+          completePiProjectionUninstallSystem: vi.fn(() => ({ kind: "uninstalled" })),
+        }));
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+          const result = await mod.runManagedPiSystem({ operation,
+            ...(isolatedTarget ? { targetDir: path.join(root, "target") } : {}),
+            detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+            engramBin: "/isolated/bin/engram", devtoolsMcpEnabled: false, playwrightCliEnabled: false,
+          });
+          expect(result).toMatchObject({ kind: successfulResults[operation].kind });
+          expect(providerUpdateMock).not.toHaveBeenCalled();
+        } finally { unmockPiSystem(); }
+      });
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("does not report successful install when the provider update fails after package initialization", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-provider-result-"));
     try {
@@ -3555,7 +3583,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     }
   });
 
-  it("leaves the preference unmarked when the Pi package is blocked", async () => {
+  it("records verified DevTools bytes without enabling fresh Pi when its package is blocked", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-package-blocked-"));
     const homeDir = path.join(root, "home");
     fs.mkdirSync(homeDir, { recursive: true });
@@ -3566,6 +3594,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
       await withTempPiHome(homeDir, async () => {
         const { runPiRuntimeSystem } = mockPiPackage();
         mockPiProjection(events, projectionInputs);
+        mockSmokeProvider(events, [], "resolve");
         runPiRuntimeSystem.mockResolvedValueOnce({ kind: "blocked", reason: "runner-unhealthy" });
         try {
           const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
@@ -3579,8 +3608,10 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
               writingStyle: FORWARDING_STYLE,
             });
 
-            expect(result).toMatchObject({ kind: "blocked" });
-            expect(fs.existsSync(preferenceFile(homeDir))).toBe(false);
+            expect(result).toMatchObject({ kind: "blocked", reason: "runner-unhealthy" });
+            expect(JSON.parse(fs.readFileSync(preferenceFile(homeDir), "utf8"))).toMatchObject({
+              enabled: { pi: false }, observed: DEVTOOLS_OBSERVED,
+            });
           } finally {
             vi.unstubAllGlobals();
           }
@@ -3593,7 +3624,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     }
   });
 
-  it("verifies before projection yet leaves the preference unmarked when the projection is blocked", async () => {
+  it("records verified DevTools bytes without enabling fresh Pi when its projection is blocked", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-projection-blocked-"));
     const homeDir = path.join(root, "home");
     fs.mkdirSync(homeDir, { recursive: true });
@@ -3626,7 +3657,9 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
             expect(events[0]).toBe(`fetch ${DEVTOOLS_METADATA}`);
             expect(events[1]).toBe(`fetch ${DEVTOOLS_TARBALL}`);
             expect(projectionInputs[0]).toMatchObject({ devtoolsMcpVersion: DEVTOOLS_VERSION });
-            expect(fs.existsSync(preferenceFile(homeDir))).toBe(false);
+            expect(JSON.parse(fs.readFileSync(preferenceFile(homeDir), "utf8"))).toMatchObject({
+              enabled: { pi: false }, observed: DEVTOOLS_OBSERVED,
+            });
           } finally {
             vi.unstubAllGlobals();
           }
@@ -3711,6 +3744,53 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     }
 
     expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
+  });
+
+  it.each([
+    ["devtools", "package"], ["devtools", "providers"],
+    ["playwright", "package"], ["playwright", "providers"],
+  ] as const)("keeps the verified %s observation when the later %s phase fails", async (browser, failingPhase) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-browser-phase-observation-"));
+    const oldPlaywright = { version: "0.1.18", integrity: `sha512-${Buffer.alloc(64, 18).toString("base64")}` };
+    const latestPlaywright = { version: "0.1.21", integrity: `sha512-${Buffer.alloc(64, 21).toString("base64")}` };
+    const capability = { cli: { status: "current" as const, binPath: "/isolated/playwright", detectedVersion: latestPlaywright.version },
+      browserCache: { status: "ready" as const, path: "/isolated/cache" }, effective: true, browserVerified: true };
+    try {
+      await withTempPiHome(home, async () => {
+        const prefs = await import("../src/lib/tool-preferences.js");
+        if (browser === "devtools") {
+          prefs.saveDevtoolsMcpPreference(prefs.devtoolsMcpPreferenceFile(), "codex", true, DEVTOOLS_OLD_OBSERVED);
+          prefs.saveDevtoolsMcpPreference(prefs.devtoolsMcpPreferenceFile(), "pi", true, DEVTOOLS_OLD_OBSERVED);
+        } else {
+          prefs.savePlaywrightCliPreference(prefs.playwrightCliPreferenceFile(), true, { pi: true, codex: true }, oldPlaywright);
+          playwrightRefreshMock.mockResolvedValue({ observed: latestPlaywright, capability });
+        }
+        const { runPiRuntimeSystem } = mockPiPackage();
+        mockPiProjection([], []);
+        if (browser === "devtools") mockSmokeProvider([], [], "resolve");
+        if (failingPhase === "package") runPiRuntimeSystem.mockResolvedValueOnce({ kind: "blocked", reason: "runner-unhealthy" });
+        else providerUpdateMock.mockRejectedValueOnce(new Error("provider phase failed"));
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js");
+          if (browser === "devtools") stubDevtoolsFetch([]);
+          const result = await mod.runManagedPiSystem({ operation: "install",
+            detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" }, engramBin: "/isolated/engram",
+            ...(browser === "playwright" ? { devtoolsMcpEnabled: false } : { playwrightCliEnabled: false }),
+          });
+          expect(result).toMatchObject({ kind: "blocked", reason: failingPhase === "package" ? "runner-unhealthy" : "provider-update-failed" });
+          if (browser === "devtools") {
+            expect(prefs.loadDevtoolsMcpObservation()).toEqual(DEVTOOLS_OBSERVED);
+            expect(prefs.loadDevtoolsMcpPreference(prefs.devtoolsMcpPreferenceFile(), "pi")).toBe(true);
+            expect(prefs.loadDevtoolsMcpPreference(prefs.devtoolsMcpPreferenceFile(), "codex")).toBe(true);
+          } else {
+            expect(playwrightRefreshMock).toHaveBeenCalledTimes(1);
+            expect(prefs.loadPlaywrightCliObservation()).toEqual(latestPlaywright);
+            expect(prefs.loadPlaywrightCliPreference(undefined, "pi")).toBe(true);
+            expect(prefs.loadPlaywrightCliPreference(undefined, "codex")).toBe(true);
+          }
+        } finally { vi.unstubAllGlobals(); unmockPiSystem(); }
+      });
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
 
   it.each([

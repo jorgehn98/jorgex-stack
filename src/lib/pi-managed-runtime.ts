@@ -361,6 +361,12 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         remedy: error instanceof Error ? error.message : String(error) };
     }
   }
+  if (input.targetDir === undefined && devtoolsVerifiedForPersist !== undefined) {
+    // The browser phase has committed verified bytes. Keep its observation
+    // aligned even if Pi later fails, without enabling a fresh Pi selection.
+    saveDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi",
+      loadDevtoolsMcpPreference(devtoolsMcpPreferenceFile(), "pi") === true, devtoolsVerifiedForPersist);
+  }
   const devtoolsMcpVersion = devtoolsMcpObservedVersion?.version ?? null;
   const supportsPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
   const persistedPlaywright = input.targetDir === undefined
@@ -393,6 +399,8 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     try {
       refreshedPlaywright = await refreshPiPlaywright({ stateDir: dataDir(), pnpmBin });
       effectivePlaywrightCapability = refreshedPlaywright.capability;
+      savePlaywrightCliPreference(playwrightCliPreferenceFile(), true,
+        { pi: persistedPlaywright }, refreshedPlaywright.observed);
     } catch (error) {
       return {
         kind: "blocked",
