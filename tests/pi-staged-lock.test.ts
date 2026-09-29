@@ -224,6 +224,21 @@ function writeLock(stageDir: string, lock: unknown): void {
 const HEX64 = /^[0-9a-f]{64}$/;
 
 describe("[T06-RED] staged Pi npm tree evidence before activation", () => {
+  it("accepts an absolute file spec only when it identifies the verified artifact", async () => {
+    const fixture = buildStagedFixture();
+    const lock = readLock(fixture.stageDir);
+    const absolute = `file:${fixture.tarballPath}`;
+    lock.packages[""]!.dependencies = { "jorgex-pi": absolute };
+    lock.packages["node_modules/jorgex-pi"]!.resolved = absolute;
+    writeLock(fixture.stageDir, lock);
+    fs.writeFileSync(path.join(fixture.stageDir, "npm", "package.json"), JSON.stringify({ name: "pi-extensions", dependencies: { "jorgex-pi": absolute } }));
+    const { inspectStagedPiNpm } = await loadStagedInspector();
+    expect(await inspectStagedPiNpm(fixture)).toMatchObject({ dependencies: expect.any(Array) });
+    lock.packages[""]!.dependencies = { "jorgex-pi": `file:${fixture.tarballPath}.foreign` };
+    writeLock(fixture.stageDir, lock);
+    expect(() => inspectStagedPiNpm(fixture)).toThrow(/verified tarball/);
+  });
+
   it("materializes only byte-identical package-local runtime dependencies and rejects drift", async () => {
     const module = await import(/* @vite-ignore */ stagedSpecifier) as Record<string, unknown>;
     expect(module.materializeStagedPiRuntimeDependencies).toBeTypeOf("function");

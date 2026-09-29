@@ -258,9 +258,10 @@ function assertFileSpecResolves(
     fail(`${label} must be a file: spec, got ${String(spec)}`);
   }
   const rest = spec.slice("file:".length);
-  if (rest === "" || path.isAbsolute(rest)) {
-    fail(`${label} must be a relative file: spec: ${spec}`);
+  if (rest === "") {
+    fail(`${label} must contain a file path: ${spec}`);
   }
+  // npm emits absolute file: paths when a Windows stage and tarball use different drives.
   if (path.resolve(npmDir, rest) !== tarballResolved) {
     fail(`${label} does not resolve to the verified tarball: ${spec}`);
   }
