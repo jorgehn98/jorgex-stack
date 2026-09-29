@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const playwrightRefreshMock = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/pi-browser-update.js", () => ({ refreshPiPlaywright: playwrightRefreshMock }));
+afterEach(() => playwrightRefreshMock.mockReset());
+
 const providerUpdateMock = vi.hoisted(() => vi.fn(async () => ({ kind: "healthy", versions: {} })));
 vi.mock("../src/lib/pi-provider-update.js", () => ({
   updatePiProviderPackages: providerUpdateMock,
@@ -404,12 +408,9 @@ describe("Pi managed package and projection coordination", () => {
       expect(projectionInputs).toHaveLength(projectionCount);
       expect(savePlaywrightCliPreference).toHaveBeenCalledTimes(savedCount);
 
-      await expect(mod.runManagedPiSystem(input)).resolves.toMatchObject({ kind: "installed" });
-      expect(projectionInputs.at(-1)).toEqual(expect.objectContaining({
-        playwrightCliEnabled: false,
-        playwrightHandoffEnabled: false,
-        playwrightCliCommand: null,
-      }));
+      await expect(mod.runManagedPiSystem(input)).resolves.toMatchObject({ kind: "blocked", reason: "playwright-capability-unverified" });
+      expect(projectionInputs).toHaveLength(projectionCount);
+      expect(savePlaywrightCliPreference).toHaveBeenCalledTimes(savedCount);
 
       const successfulSaveCount = savePlaywrightCliPreference.mock.calls.length;
       detectPlaywrightCli.mockReturnValueOnce({ status: "current", binPath: "/isolated/bin/playwright-cli", detectedVersion: "0.1.18" });
@@ -1198,7 +1199,6 @@ describe("Pi managed package and projection coordination", () => {
         engramBin: "/isolated/bin/engram",
         writingStyle: FORWARDING_STYLE,
         devtoolsMcpEnabled: false,
-        playwrightCliEnabled: true,
         candidate: { package: { name: "jorgex-pi", version: "9.9.8", source: CANDIDATE_SOURCE_A } },
       });
 
@@ -3330,6 +3330,11 @@ const DEVTOOLS_BYTES = Buffer.from("synthetic-chrome-devtools-mcp-tarball-9.9.20
 const DEVTOOLS_INTEGRITY = `sha512-${createHash("sha512").update(DEVTOOLS_BYTES).digest("base64")}`;
 const DEVTOOLS_METADATA = "https://registry.npmjs.org/chrome-devtools-mcp";
 const DEVTOOLS_OBSERVED = { version: DEVTOOLS_VERSION, integrity: DEVTOOLS_INTEGRITY };
+const DEVTOOLS_OLD_BYTES = Buffer.from("synthetic-old-chrome-devtools-mcp-tarball-9.9.19\n");
+const DEVTOOLS_OLD_OBSERVED = {
+  version: "9.9.19",
+  integrity: `sha512-${createHash("sha512").update(DEVTOOLS_OLD_BYTES).digest("base64")}`,
+};
 
 function devtoolsPackument(): unknown {
   return {
@@ -3423,7 +3428,7 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
       PI_RUNTIME_CANDIDATE: {
         package: { source: PI_SOURCE },
         pi: { testedVersions: ["0.84.2"] },
-        contract: { capabilities: [] },
+        contract: { capabilities: ["playwright-handoff-v1"] },
       },
       preparePiRuntimeSystem,
       runPiRuntimeSystem,
@@ -3707,6 +3712,96 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
 
     expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
   });
+
+  it.each([
+    { operation: "install", veto: false, refresh: true },
+    { operation: "update", veto: false, refresh: true },
+    { operation: "install", veto: true, refresh: false },
+    { operation: "sync", veto: false, refresh: false },
+  ] as const)("preserves saved Playwright selection during $operation (veto=$veto)", async ({ operation, veto, refresh }) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-saved-playwright-"));
+    const old = { version: "0.1.18", integrity: `sha512-${Buffer.alloc(64, 18).toString("base64")}` };
+    const latest = { version: "0.1.21", integrity: `sha512-${Buffer.alloc(64, 21).toString("base64")}` };
+    const capability = { cli: { status: "current" as const, binPath: "/isolated/playwright", detectedVersion: latest.version }, browserCache: { status: "ready" as const, path: "/isolated/cache" }, effective: true, browserVerified: true };
+    try {
+      await withTempPiHome(home, async () => {
+        const prefs = await import("../src/lib/tool-preferences.js");
+        prefs.savePlaywrightCliPreference(prefs.playwrightCliPreferenceFile(), true, { pi: true, codex: true }, old);
+        mockPiPackage(); mockPiProjection([], []);
+        playwrightRefreshMock.mockResolvedValue({ observed: latest, capability });
+        try {
+          const mod = await import("../src/lib/pi-managed-runtime.js");
+          const result = await mod.runManagedPiSystem({ operation, detected: { executable: "/opt/pi/bin/pi", version: "0.87.1" }, engramBin: "/isolated/engram", devtoolsMcpEnabled: false, writingStyle: FORWARDING_STYLE,
+            playwrightCapability: { ...capability, cli: { ...capability.cli, detectedVersion: old.version } },
+            ...(veto ? { playwrightRefresh: false } : {}),
+          });
+          expect(result.kind).not.toBe("blocked");
+          expect(playwrightRefreshMock).toHaveBeenCalledTimes(refresh ? 1 : 0);
+          expect(prefs.loadPlaywrightCliObservation()).toEqual(refresh ? latest : old);
+          expect(prefs.loadPlaywrightCliPreference(undefined, "pi")).toBe(true);
+          expect(prefs.loadPlaywrightCliPreference(undefined, "codex")).toBe(true);
+        } finally { unmockPiSystem(); }
+      });
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.each(["install", "update"] as const)(
+    "refreshes a saved Pi DevTools opt-in to the latest verified release during deliberate %s when the flag is omitted",
+    async (operation) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-devtools-saved-${operation}-`));
+      const homeDir = path.join(root, "home");
+      fs.mkdirSync(homeDir, { recursive: true });
+      const events: string[] = [];
+      const projectionInputs: unknown[] = [];
+
+      try {
+        await withTempPiHome(homeDir, async () => {
+          const preferences = await import("../src/lib/tool-preferences.js");
+          const preference = preferences.devtoolsMcpPreferenceFile();
+          preferences.saveDevtoolsMcpPreference(preference, "codex", true, DEVTOOLS_OLD_OBSERVED);
+          preferences.saveDevtoolsMcpPreference(preference, "pi", true, DEVTOOLS_OLD_OBSERVED);
+
+          mockPiPackage();
+          mockPiProjection(events, projectionInputs);
+          mockSmokeProvider(events, [], "resolve");
+          try {
+            const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as PiManagedSystem;
+            stubDevtoolsFetch(events);
+            try {
+              const result = await mod.runManagedPiSystem({
+                operation,
+                detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+                engramBin: "/isolated/bin/engram",
+                // Omitted deliberately: the persisted Pi=true selection is the
+                // authorization; it must not be mistaken for a no-opt-in run.
+                devtoolsMcpEnabled: undefined,
+                writingStyle: FORWARDING_STYLE,
+              });
+              expect(result).not.toMatchObject({ kind: "blocked" });
+              expect(events.filter((event) => !event.startsWith("projection "))).toEqual([
+                `fetch ${DEVTOOLS_METADATA}`,
+                `fetch ${DEVTOOLS_TARBALL}`,
+                "managed-activation",
+              ]);
+              expect(projectionInputs[0]).toMatchObject({
+                devtoolsMcpEnabled: true,
+                devtoolsMcpVersion: DEVTOOLS_VERSION,
+              });
+              expect(preferences.loadDevtoolsMcpPreference(preference, "pi")).toBe(true);
+              expect(preferences.loadDevtoolsMcpPreference(preference, "codex")).toBe(true);
+              expect(preferences.loadDevtoolsMcpObservation(preference)).toEqual(DEVTOOLS_OBSERVED);
+            } finally {
+              vi.unstubAllGlobals();
+            }
+          } finally {
+            unmockPiSystem();
+          }
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("proves the privacy flags on the staged artifact after verification and before Pi projection", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-devtools-flag-smoke-"));

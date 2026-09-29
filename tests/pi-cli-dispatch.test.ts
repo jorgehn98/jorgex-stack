@@ -502,12 +502,29 @@ describe("CLI Pi package-runtime dispatch", () => {
 
   it("passes a new Pi-only Playwright opt-in through managed install and projection", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-"));
+    const verified = { cli: { status: "current", binPath: "/isolated/verified-launcher", detectedVersion: "0.1.22" }, browserCache: { status: "ready", path: "/isolated/verified-cache" }, browserVerified: true, effective: true };
+    mocks.runInstall.mockImplementationOnce(async (options: { onPlaywrightCapability?: (snapshot: unknown) => void }) => {
+      options.onPlaywrightCapability?.(verified); return 0;
+    });
 
     expect(await runCli(["install", "--playwright", "--agents", "pi", "--yes"], home)).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({ runtimes: [] }));
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "install", playwrightCliEnabled: true,
+      operation: "install", playwrightCliEnabled: true, playwrightCapability: verified,
     }));
+  });
+
+  it("preserves an explicit interactive No as a Playwright refresh veto without disabling the saved opt-in", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-playwright-declined-"));
+    const preference = writePlaywrightPreference(home, { version: 2, enabled: { pi: true } });
+    const before = fs.readFileSync(preference, "utf8");
+    mocks.prompts.confirm.mockResolvedValue(false);
+    try {
+      expect(await runCli(["install", "--agents", "pi", "--mode", "human"], home, true)).toBe(0);
+      expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ playwrightRefresh: false }));
+      expect(mocks.runManagedPiSystem.mock.calls[0]?.[0]).not.toHaveProperty("playwrightCliEnabled", false);
+      expect(fs.readFileSync(preference, "utf8")).toBe(before);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
 
   it("resolves the host Engram before configuring a mixed install", async () => {

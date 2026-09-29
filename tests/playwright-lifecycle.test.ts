@@ -688,7 +688,7 @@ describe("Playwright verified-provider install [T14-RED]", () => {
           expect(JSON.parse(fs.readFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), "utf8"))).toMatchObject({
             enabled: true, observed: OBSERVED_RECORD,
           });
-          expect(onPlaywrightCapability).not.toHaveBeenCalled();
+          expect(onPlaywrightCapability).toHaveBeenCalledWith(expect.objectContaining({ effective: true, browserVerified: true, cli: expect.objectContaining({ detectedVersion: OBSERVED_VERSION, binPath: receipt.launcherPath }) }));
         } finally { vi.unstubAllGlobals(); }
       });
     } finally {

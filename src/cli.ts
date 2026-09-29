@@ -493,6 +493,7 @@ interface RunSelectedPiOptions {
   modePreference?: InstallModePreference;
   playwrightCliEnabled?: boolean;
   playwrightCapability?: PlaywrightCapabilitySnapshot;
+  playwrightRefresh?: boolean;
   packageOnly?: boolean;
   upgradePermissions?: boolean;
 }
@@ -578,6 +579,7 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
     ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
     ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
+    ...(options.playwrightRefresh === undefined ? {} : { playwrightRefresh: options.playwrightRefresh }),
     ...(() => {
       if (options.upgradePermissions !== true) return {};
       const supports = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("permissions-upgrade-v1");
@@ -848,6 +850,8 @@ async function main(): Promise<void> {
           } else {
             const piExitCode = await runSelectedPi({
               operation: command,
+              ...(command === "install" && playwrightToolConsent.interactive && !flags.yes
+                && flags.targetDir === undefined && !playwrightToolConsent.confirmed ? { playwrightRefresh: false } : {}),
               targetDir: flags.targetDir,
               yes: flags.yes,
               resolvedEngramBin: flags.targetDir === undefined ? engramBin : undefined,
@@ -856,8 +860,8 @@ async function main(): Promise<void> {
               modePreference: mode,
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
-              playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
-                ? inspectManagedPlaywrightCapability() : undefined,
+              playwrightCapability: playwrightCapability ?? (shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+                ? inspectManagedPlaywrightCapability() : undefined),
               ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
             });
             exitCode = Math.max(exitCode, piExitCode);
