@@ -411,6 +411,13 @@ export async function stageVerifiedPiTarball(input: StageInput, run: StageRun): 
     PI_CODING_AGENT_DIR: stageDir,
     PATH: runtimePath(piExecutable as string),
   };
+  if (process.platform === "win32") {
+    // Windows process creation/DNS needs OS metadata; never inherit user tokens or npm config.
+    for (const key of ["SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT", "OS"] as const) {
+      const value = process.env[key];
+      if (value) env[key] = value;
+    }
+  }
 
   const expectedAlias = `npm:jorgex-pi@file:${typedArtifact.path}`;
   const args = ["install", expectedAlias, "--no-approve"];
