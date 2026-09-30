@@ -25,6 +25,8 @@ El analista entrega evidencia y recomendaciones —rutas y consumidores, restric
 
 Una PR se delimita por resultado verificable, contrato, dependencias y riesgo, no por un límite bruto de líneas o archivos. Se separan objetivos realmente independientes en entregas verticales con su protección necesaria; no se separan código y tests, documentación o generados cuando forman parte del mismo contrato. Prompts, configuración, migraciones y schemas cuentan como comportamiento.
 
+El plan y la PRD formal siguen el canon de [to-prd](../../stack/skills/to-prd/SKILL.md) y del [plan-template](../../stack/skills/work-lifecycle/references/plan-template.md): la PRD enumera historias sólo en proporción al scope aprobado, sin requisitos especulativos ni relleno; las tareas formales se delimitan por comportamiento y riesgo verificable, en cortes verticales por resultado, sin techo fijo de cinco pasos o por capas técnicas; los estados genéricos del task board no imponen RED/GREEN, que sólo aparece dentro de `In progress` cuando el trabajo test-first añade o fortalece protección.
+
 ### PRs encadenadas y continuación
 
 Clasifica cada siguiente checkpoint antes de crear su rama: **independiente**, con la base `main` de producción actualizada; **dependencia Git**, con una rama/worktree hijo desde un candidato padre estable y verificado; o **prerrequisito externo**, cuando necesita un artefacto, migración, despliegue o decisión fuera de esa cadena. Registra en el plan la base y su SHA, la PR padre o el prerrequisito, y el orden de integración. Una hija puede abrirse y revisarse contra un padre todavía abierto cuando el trabajo esté aprobado, las capacidades disponibles y las reglas del proyecto lo permitan y se respete el orden registrado, pero no está lista para mergear a producción por estar ready contra ese padre.
@@ -82,7 +84,13 @@ PRE comprueba:
 - que cada criterio tenga cobertura en la tabla de tareas;
 - que cada tarea formal resuelva y verifique la identidad y el acceso a la referencia `Spec` declarada: en Engram, get directo solo con ID ya vinculado al proyecto/topic esperado en el almacén actual; en otro caso, resolución por proyecto/topic antes del get o bloqueo, y comprobación de identidad tras recuperarla, sin reconstruir una spec ausente desde el PRD;
 - que cada tarea tenga un agente, scope, archivos, dependencias y wave coherentes;
-- que cada cambio de comportamiento tenga una testing decision completa;
+- que cada cambio de comportamiento tenga una testing decision completa,
+  valorada por el [testing value check](../../stack/skills/work-audit/SKILL.md)
+  de work-audit: un test añadido o fortalecido exige la regresión concreta
+  que la cobertura existente no detecta; una actualización mecánica del test,
+  `reuse` o `no new test` exige suficiencia de la protección o verificación
+  existente, sin regresión nueva fabricada; RED estructural permitido solo si
+  la estructura es el contrato;
 - que PRD, plan y tareas no se contradigan ni dupliquen estado/evidencia.
 
 El resultado es `clean` o `gaps`. Un plan con gaps no puede aprobarse. La skill no corrige nada: el orchestrator modifica el artefacto propietario y repite PRE.
@@ -102,6 +110,11 @@ POST comprueba:
 - evidencia concreta para cada `SC` aplicable;
 - correspondencia entre diff/comportamiento y scope aprobado;
 - comandos, setup, alcance, resultados y límites de la verificación;
+- que la protección implementada supere el [testing value check](../../stack/skills/work-audit/SKILL.md)
+  de work-audit: evidencia de la regresión que la cobertura anterior no
+  detectaba (test añadido o fortalecido) o suficiencia de la existente
+  (actualización mecánica, `reuse` o `no new test`); RED estructural permitido
+  solo si la estructura es el contrato;
 - requisitos, edge cases, docs o contratos cross-repo asignados al checkpoint actual y todavía pendientes; los checkpoints futuros quedan fuera de scope.
 
 El resultado es `converged` o `gaps`. `Converged` no sustituye tests, revisión humana, Quality Gates configurados ni validación manual cuando aplique. Con gaps, el orchestrator enruta cada hallazgo a su fase propietaria y repite POST tras resolverlo: un cambio material intencional del contrato va a SPEC mediante change-first; un defecto o bugfix que restaura el contrato aprobado vuelve a EXECUTE.

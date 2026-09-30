@@ -125,6 +125,14 @@ para rellenar el hueco.
   y solo delega gaps accionables.
 - **Orchestrator** coordina bloques coherentes y reutiliza evidencia válida; no
   repite la rúbrica ni ejecuta la suite completa por defecto.
+- **Work-audit** aplica el [testing value check](../../stack/skills/work-audit/SKILL.md)
+  en PRE/POST sobre cada cambio de comportamiento: un test añadido o fortalecido
+  exige la regresión concreta que la cobertura existente no detecta; una
+  actualización mecánica del test, `reuse` o `no new test` exige suficiencia
+  de la protección o verificación existente, sin regresión nueva fabricada; RED
+  estructural permitido solo si la estructura es el contrato (triggers,
+  permisos, secretos, registro de suites), no congelar recetas de comando
+  incidentales.
 
 Distingue tres clases de evidencia:
 
