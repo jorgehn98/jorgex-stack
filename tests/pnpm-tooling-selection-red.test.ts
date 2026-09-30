@@ -2,14 +2,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  runBoundedProcess,
+  stopOwnProcessTree,
+  type StopOwnProcessGroup,
+} from "./helpers/bounded-process.js";
 import {
   PNPM_FAIL_CLOSED,
   PNPM_PM_ON_FAIL_ENV,
   PNPM_VERIFY_DEPS_ENV,
   PREPARED_PNPM_ENTRY_ENV,
   VERIFICATION_DISK_ROOT_ENV,
+  createOwnedVerificationHome,
   prepareRepoBuildRun,
+  readPnpmPackageMetadata,
+  removeTemporaryRoots,
   resolvePnpmBuildInvocation,
   resolveVerificationDiskBase,
   type BoundedProcessOptions,
@@ -36,6 +44,7 @@ import {
 const tempRoots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
   }
@@ -64,11 +73,15 @@ type PnpmFixture = {
 
 function makePnpmPackage(
   version: string,
-  options: { name?: string; binName?: string } = {},
+  options: { name?: string; binName?: string; versionOutput?: string } = {},
 ): PnpmFixture {
   const packageRoot = path.join(makeTempRoot("jx-pnpm-pkg-"), "node_modules", "pnpm");
   fs.mkdirSync(path.join(packageRoot, "bin"), { recursive: true });
-  fs.writeFileSync(path.join(packageRoot, "bin", "pnpm.mjs"), "#!/usr/bin/env node\n", "utf8");
+  fs.writeFileSync(
+    path.join(packageRoot, "bin", "pnpm.mjs"),
+    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.versionOutput ?? "")});\n`,
+    "utf8",
+  );
   fs.writeFileSync(path.join(packageRoot, "bin", "pnpm.cjs"), "// compat stub\n", "utf8");
   fs.writeFileSync(
     path.join(packageRoot, "package.json"),
@@ -507,7 +520,8 @@ describe("verification isolation at the real acceptance caller seam", () => {
     expect(prepared.env[PNPM_PM_ON_FAIL_ENV]).toBe(PNPM_FAIL_CLOSED);
     expect(fs.statSync(prepared.root).isDirectory()).toBe(true);
     expect(path.relative(REPO_ROOT, prepared.root).startsWith("..")).toBe(true);
-    expect(prepared.root.startsWith(fs.realpathSync(os.tmpdir()) + path.sep)).toBe(false);
+    const preparedFsType = fs.statfsSync(prepared.root).type;
+    expect(preparedFsType === 0x01021994 || preparedFsType === 0x858458f6).toBe(false);
   });
 
   it("rechaza una base de disco inválida tras el preflight y sin crear HOME", async () => {
@@ -532,4 +546,126 @@ describe("verification isolation at the real acceptance caller seam", () => {
     expect(runner.calls).toHaveLength(1);
     expect(registered).toEqual([]);
   });
+
+  it("falla en el caller real antes de crear el HOME cuando el runner no puede verificar la limpieza", async () => {
+    const repoRoot = makeRepo(`pnpm@${REQUIRED_VERSION}`);
+    const pnpm = makePnpmPackage(REQUIRED_VERSION, { versionOutput: `${REQUIRED_VERSION}\n` });
+    const diskBase = makeDiskBase();
+    const registered: string[] = [];
+    const observedPids: number[] = [];
+    const failingStop: StopOwnProcessGroup = (pid) => {
+      observedPids.push(pid);
+      return { ok: false, cause: "mock stop failure" };
+    };
+
+    try {
+      await expect(
+        prepareRepoBuildRun({
+          repoRoot,
+          env: { [PREPARED_PNPM_ENTRY_ENV]: pnpm.entry, [VERIFICATION_DISK_ROOT_ENV]: diskBase },
+          runProcess: (invocation, options) =>
+            runBoundedProcess(invocation, { ...options, stopOwnProcessGroup: failingStop }),
+          versionCheckTimeoutMs: 5_000,
+          registerTempRoot: (root) => registered.push(root),
+        }),
+      ).rejects.toThrow(/tree cleanup failed|mock stop failure/);
+
+      expect(registered).toEqual([]);
+      expect(observedPids.length).toBeGreaterThan(0);
+    } finally {
+      for (const pid of observedPids) stopOwnProcessTree(pid);
+    }
+  });
+});
+
+describe("verification disk base statfs fail-closed", () => {
+  it("rechaza un filesystem no verificable (statfs type 0) en vez de asumir disco", () => {
+    const diskBase = makeDiskBase();
+    vi.spyOn(fs, "statfsSync").mockReturnValue({ type: 0 } as unknown as ReturnType<typeof fs.statfsSync>);
+
+    expect(() =>
+      resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { [VERIFICATION_DISK_ROOT_ENV]: diskBase },
+      }),
+    ).toThrow(/no verificable|type 0|0/);
+  });
+
+  it("rechaza cuando statfs no está disponible en vez de asumir disco", () => {
+    const diskBase = makeDiskBase();
+    vi.spyOn(fs, "statfsSync").mockImplementation(() => {
+      throw new Error("mock statfs unavailable");
+    });
+
+    expect(() =>
+      resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { [VERIFICATION_DISK_ROOT_ENV]: diskBase },
+      }),
+    ).toThrow(/statfs|verificar/);
+  });
+
+  it("control: rechaza un filesystem en RAM", () => {
+    const diskBase = makeDiskBase();
+    vi.spyOn(fs, "statfsSync").mockReturnValue({
+      type: 0x01021994,
+    } as unknown as ReturnType<typeof fs.statfsSync>);
+
+    expect(() =>
+      resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { [VERIFICATION_DISK_ROOT_ENV]: diskBase },
+      }),
+    ).toThrow(/RAM/);
+  });
+});
+
+describe("verification temp inventory and metadata causes", () => {
+  it("intenta limpiar todos los roots, conserva pendientes y agrega fallos", () => {
+    const roots = ["/mock/a", "/mock/b", "/mock/c"];
+    const removed: string[] = [];
+
+    expect(() =>
+      removeTemporaryRoots(roots, (target) => {
+        if (target === "/mock/b") throw new Error("mock EACCES");
+        removed.push(target);
+      }),
+    ).toThrow(/mock\/b/);
+
+    expect(removed.sort()).toEqual(["/mock/a", "/mock/c"]);
+    expect(roots).toEqual(["/mock/b"]);
+  });
+
+  it("agrega el fallo de limpieza del HOME privado sin ocultar la causa de creación", () => {
+    const base = makeTempRoot("jx-home-create-fail-");
+    const fileBase = path.join(base, "not-a-directory");
+    fs.writeFileSync(fileBase, "x", "utf8");
+    const registered: string[] = [];
+
+    expect(() =>
+      createOwnedVerificationHome({
+        base: fileBase,
+        prefix: ".jx-home-",
+        register: (root) => registered.push(root),
+      }),
+    ).toThrow(/No se pudo crear el HOME privado/);
+
+    expect(registered).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "preserva la causa inesperada de metadata y devuelve undefined para la ausencia",
+    () => {
+      const pnpm = makePnpmPackage(REQUIRED_VERSION);
+      fs.chmodSync(pnpm.packageRoot, 0o000);
+      try {
+        expect(() => readPnpmPackageMetadata(pnpm.entry)).toThrow(/No se pudo resolver|No se pudo leer/);
+      } finally {
+        fs.chmodSync(pnpm.packageRoot, 0o755);
+      }
+
+      const missing = path.join(makeTempRoot("jx-missing-entry-"), "pnpm.mjs");
+      expect(readPnpmPackageMetadata(missing)).toBeUndefined();
+    },
+  );
 });

@@ -1,6 +1,19 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type {
+  BoundedProcessOptions,
+  BoundedProcessResult,
+  BoundedProcessRunner,
+  ProcessInvocation,
+} from "./bounded-process.js";
+
+export type {
+  BoundedProcessOptions,
+  BoundedProcessResult,
+  BoundedProcessRunner,
+  ProcessInvocation,
+};
 
 /**
  * Test-side selection of the exact prepared pnpm.
@@ -14,31 +27,6 @@ import path from "node:path";
  * env so pnpm fails instead of acquiring; callers must preserve them on every
  * child (preflight and build).
  */
-
-export type ProcessInvocation = {
-  command: string;
-  args: string[];
-};
-
-export type BoundedProcessOptions = {
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  timeoutMs: number;
-};
-
-export type BoundedProcessResult = {
-  status: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-  error?: Error;
-};
-
-export type BoundedProcessRunner = (
-  invocation: ProcessInvocation,
-  options: BoundedProcessOptions,
-) => Promise<BoundedProcessResult>;
 
 export const PREPARED_PNPM_ENTRY_ENV = "JORGEX_PNPM_ENTRYPOINT";
 
@@ -59,7 +47,6 @@ export const PNPM_VERIFY_DEPS_ENV = "pnpm_config_verify_deps_before_run";
 export const PNPM_FAIL_CLOSED = "error";
 
 export type PnpmPackageMetadata = {
-  packageRoot: string;
   version: string;
   binPath: string;
 };
@@ -84,7 +71,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function readRequiredPnpmVersion(packageJsonPath: string): string {
+function readRequiredPnpmVersion(packageJsonPath: string): string {
   let raw: string;
   try {
     raw = fs.readFileSync(packageJsonPath, "utf8");
@@ -128,22 +115,37 @@ function findPackageJson(startDir: string): string | undefined {
   }
 }
 
+function errnoCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
 /** Locates the pnpm package metadata that owns `entry`, resolving symlinks first. */
 export function readPnpmPackageMetadata(entry: string): PnpmPackageMetadata | undefined {
   let resolvedEntry: string;
   try {
     resolvedEntry = fs.realpathSync(entry);
-  } catch {
-    return undefined;
+  } catch (error) {
+    // A missing entrypoint is an expected absence; anything else is unexpected.
+    if (errnoCode(error) === "ENOENT") return undefined;
+    throw new Error(`No se pudo resolver el entrypoint preparado "${entry}": ${errorMessage(error)}`);
   }
 
   const packageJsonPath = findPackageJson(path.dirname(resolvedEntry));
   if (packageJsonPath === undefined) return undefined;
 
+  let raw: string;
+  try {
+    raw = fs.readFileSync(packageJsonPath, "utf8");
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return undefined;
+    throw new Error(`No se pudo leer la metadata de "${packageJsonPath}": ${errorMessage(error)}`);
+  }
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    parsed = JSON.parse(raw);
   } catch {
+    // Unreadable/incompatible metadata is not an identity claim.
     return undefined;
   }
 
@@ -160,7 +162,6 @@ export function readPnpmPackageMetadata(entry: string): PnpmPackageMetadata | un
   if (typeof binField !== "string" || binField === "") return undefined;
 
   return {
-    packageRoot: path.dirname(packageJsonPath),
     version: record.version,
     binPath: path.resolve(path.dirname(packageJsonPath), binField),
   };
@@ -330,6 +331,11 @@ export function resolveVerificationDiskBase(options: {
       `No se pudo verificar que la base de disco "${resolved}" no sea RAM (statfs no disponible): ${errorMessage(error)}. Define ${VERIFICATION_DISK_ROOT_ENV} en un filesystem de disco verificable.`,
     );
   }
+  if (fsType === 0) {
+    throw new Error(
+      `La base de disco de verificación "${resolved}" tiene un filesystem no verificable (statfs type 0); define ${VERIFICATION_DISK_ROOT_ENV} en un filesystem de disco verificable.`,
+    );
+  }
   if (fsType === TMPFS_MAGIC || fsType === RAMFS_MAGIC) {
     throw new Error(
       `La base de disco de verificación "${resolved}" está en un filesystem temporal en RAM; define ${VERIFICATION_DISK_ROOT_ENV} en disco.`,
@@ -361,50 +367,77 @@ export function createOwnedVerificationHome(options: {
   options.register(root);
 
   try {
-    const home = path.join(root, "home");
-    const userProfile = path.join(root, "user-profile");
-    const appData = path.join(root, "app-data");
-    const localAppData = path.join(root, "local-app-data");
-    const temp = path.join(root, "temp");
-    const tmp = path.join(root, "tmp");
-    const tmpdir = path.join(root, "tmpdir");
-    const xdgConfig = path.join(root, "xdg-config");
-    const xdgData = path.join(root, "xdg-data");
-    const xdgCache = path.join(root, "xdg-cache");
-    for (const directory of [
-      home,
-      userProfile,
-      appData,
-      localAppData,
-      temp,
-      tmp,
-      tmpdir,
-      xdgConfig,
-      xdgData,
-      xdgCache,
-    ]) {
+    const dirs = {
+      home: path.join(root, "home"),
+      userProfile: path.join(root, "user-profile"),
+      appData: path.join(root, "app-data"),
+      localAppData: path.join(root, "local-app-data"),
+      temp: path.join(root, "temp"),
+      tmp: path.join(root, "tmp"),
+      tmpdir: path.join(root, "tmpdir"),
+      xdgConfig: path.join(root, "xdg-config"),
+      xdgData: path.join(root, "xdg-data"),
+      xdgCache: path.join(root, "xdg-cache"),
+    };
+    for (const directory of Object.values(dirs)) {
       fs.mkdirSync(directory, { recursive: true });
     }
     return {
       root,
       env: {
-        HOME: home,
-        USERPROFILE: userProfile,
-        APPDATA: appData,
-        LOCALAPPDATA: localAppData,
-        TEMP: temp,
-        TMP: tmp,
-        TMPDIR: tmpdir,
-        XDG_CONFIG_HOME: xdgConfig,
-        XDG_DATA_HOME: xdgData,
-        XDG_CACHE_HOME: xdgCache,
+        HOME: dirs.home,
+        USERPROFILE: dirs.userProfile,
+        APPDATA: dirs.appData,
+        LOCALAPPDATA: dirs.localAppData,
+        TEMP: dirs.temp,
+        TMP: dirs.tmp,
+        TMPDIR: dirs.tmpdir,
+        XDG_CONFIG_HOME: dirs.xdgConfig,
+        XDG_DATA_HOME: dirs.xdgData,
+        XDG_CACHE_HOME: dirs.xdgCache,
       },
     };
   } catch (error) {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
+    let cleanupError: unknown;
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
+    } catch (removeError) {
+      cleanupError = removeError;
+    }
+    const cleanupDetail =
+      cleanupError === undefined
+        ? ""
+        : `; además falló la limpieza de "${root}": ${errorMessage(cleanupError)}`;
     throw new Error(
-      `No se pudo crear el HOME privado de verificación en "${root}": ${errorMessage(error)}`,
+      `No se pudo crear el HOME privado de verificación en "${root}": ${errorMessage(error)}${cleanupDetail}`,
     );
+  }
+}
+
+/**
+ * Removes every temporary root, keeping failures for a later retry and
+ * aggregating all causes plus the still-pending paths. Attempts all roots even
+ * when one fails; never loses pending roots.
+ */
+export function removeTemporaryRoots(
+  roots: string[],
+  remove: (target: string) => void = (target) =>
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 }),
+): void {
+  const failures: string[] = [];
+  for (let index = roots.length - 1; index >= 0; index -= 1) {
+    const root = roots[index];
+    if (root === undefined) continue;
+    try {
+      remove(root);
+      roots.splice(index, 1);
+    } catch (error) {
+      failures.push(`${root} (${errorMessage(error)})`);
+    }
+  }
+  if (failures.length > 0 || roots.length > 0) {
+    const pending = roots.length === 0 ? "" : `; pendientes: ${roots.join(", ")}`;
+    throw new Error(`No se pudieron limpiar roots temporales: ${failures.join("; ")}${pending}`);
   }
 }
 
