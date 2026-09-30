@@ -3,16 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { QualityProfile } from "../src/lib/quality-policy.js";
+import { prepareRepoBuildRun } from "./helpers/pnpm-tooling.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
 const CLI_TIMEOUT_MS = 10_000;
 const BUILD_TIMEOUT_MS = 30_000;
+const PNPM_VERSION_CHECK_TIMEOUT_MS = 10_000;
 const TREE_KILL_TIMEOUT_MS = 1_000;
 const CLI_KILL_GRACE_MS = 250;
-const WINDOWS_SHELL_METACHARACTERS = /["%&|<>^!`()\r\n]/;
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
@@ -27,74 +28,19 @@ type BoundedProcessOptions = {
   timeoutMs: number;
 };
 
-function resolveWindowsPnpmShim(): string | undefined {
-  const result = spawnSync("where.exe", ["pnpm.cmd"], {
-    encoding: "utf8",
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  if (result.error !== undefined || result.status !== 0) return undefined;
-
-  const pnpmShim = String(result.stdout ?? "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line !== "");
-  if (
-    pnpmShim === undefined
-    || !fs.existsSync(pnpmShim)
-    || WINDOWS_SHELL_METACHARACTERS.test(pnpmShim)
-  ) {
-    return undefined;
-  }
-  return pnpmShim;
-}
-
-function resolveBuildInvocation(): ProcessInvocation {
-  const nodeDirectory = path.dirname(process.execPath);
-  const corepackScript = [
-    path.join(nodeDirectory, "node_modules", "corepack", "dist", "corepack.js"),
-    path.resolve(nodeDirectory, "..", "lib", "node_modules", "corepack", "dist", "corepack.js"),
-  ].find((candidate) => fs.existsSync(candidate));
-
-  if (corepackScript !== undefined) {
-    return { command: process.execPath, args: [corepackScript, "pnpm", "build"] };
-  }
-
-  if (process.platform === "win32") {
-    const corepackShim = path.join(nodeDirectory, "corepack.cmd");
-    if (fs.existsSync(corepackShim) && !WINDOWS_SHELL_METACHARACTERS.test(corepackShim)) {
-      const comspec = process.env.ComSpec
-        ?? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
-      return {
-        command: comspec,
-        args: ["/d", "/s", "/c", `"${corepackShim}" pnpm build`],
-      };
-    }
-
-    const pnpmShim = resolveWindowsPnpmShim();
-    if (pnpmShim !== undefined) {
-      const comspec = process.env.ComSpec
-        ?? process.env.COMSPEC
-        ?? path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows", "System32", "cmd.exe");
-      return {
-        command: comspec,
-        args: ["/d", "/s", "/c", `"${pnpmShim}" build`],
-      };
-    }
-  } else {
-    return { command: "pnpm", args: ["build"] };
-  }
-
-  throw new Error(`No se pudo resolver Corepack ni pnpm.cmd desde ${process.execPath}`);
-}
-
 async function buildDist(): Promise<void> {
-  const invocation = resolveBuildInvocation();
+  const prepared = await prepareRepoBuildRun({
+    repoRoot: REPO_ROOT,
+    env: process.env,
+    runProcess: runBoundedProcess,
+    versionCheckTimeoutMs: PNPM_VERSION_CHECK_TIMEOUT_MS,
+    registerTempRoot: (root) => temporaryRoots.push(root),
+  });
   let result: BoundedProcessResult;
   try {
-    result = await runBoundedProcess(invocation, {
+    result = await runBoundedProcess(prepared.invocation, {
       cwd: REPO_ROOT,
+      env: prepared.env,
       timeoutMs: BUILD_TIMEOUT_MS,
     });
   } catch (error) {
@@ -548,6 +494,12 @@ function writeManagedSentinels(layout: TestLayout): void {
 }
 
 afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
+  }
+});
+
+afterAll(() => {
   for (const root of temporaryRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
   }
