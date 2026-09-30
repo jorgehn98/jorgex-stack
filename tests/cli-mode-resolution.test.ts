@@ -121,6 +121,13 @@ vi.mock("../src/lib/pi-managed-runtime.js", () => ({
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
+const tempDirs: string[] = [];
+
+function makeTempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(prefix);
+  tempDirs.push(dir);
+  return dir;
+}
 
 function installModePreferenceFile(homeDir: string): string {
   return path.join(homeDir, ".jorgex-stack", "install-mode.json");
@@ -187,6 +194,7 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
 }
 
 afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
   mocks.detectPiRuntime.mockReset().mockReturnValue({
     id: "pi",
@@ -208,7 +216,7 @@ function collectedMessages(spies: Array<{ mock: { calls: unknown[][] } }>): stri
 
 describe("CLI follow-up sync mode resolution", () => {
   it("fresh interactive OpenCode install requires provider-aware model selection first", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-picker-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-install-model-picker-"));
     const homeDir = path.join(tmp, "home");
     mocks.runModelsPicker.mockImplementationOnce(async () => {
       writeOpenCodeModelMap(homeDir);
@@ -223,7 +231,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("OpenCode reinstall preserves an existing model selection without reopening the picker", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-existing-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-install-model-existing-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
 
@@ -235,7 +243,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("fresh non-interactive OpenCode install fails instead of inventing a provider", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-required-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-install-model-required-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -252,7 +260,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update reusa el modo explícito programmatic/parallel al lanzar el sync", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-mode-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-mode-"));
     const homeDir = path.join(tmp, "home");
     writePreference(homeDir, { mode: "human", subagentConcurrency: "serial" });
 
@@ -265,7 +273,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update mixto reutiliza la instantánea inicial y el modo explícito al sincronizar Pi", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-style-snapshot-mixed-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-style-snapshot-mixed-"));
     const homeDir = path.join(tmp, "home");
     const styleFile = path.join(homeDir, ".jorgex-stack", "writing-style.md");
     const originalStyle = "Estilo sintético inicial de update.";
@@ -321,7 +329,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update solo Pi conserva la instantánea y el modo explícito", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-style-snapshot-pi-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-style-snapshot-pi-"));
     const homeDir = path.join(tmp, "home");
     const styleFile = path.join(homeDir, ".jorgex-stack", "writing-style.md");
     const style = "Estilo sintético solo para Pi.";
@@ -365,7 +373,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update omite el sync previo cuando no hay preferencia guardada y sigue con el update", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-missing-mode-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-missing-mode-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -382,7 +390,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update con cambios aplicados y sin modo guardado deja el sync pendiente", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-pending-sync-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-pending-sync-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -407,7 +415,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update binario-only no anuncia un sync pendiente", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-binary-only-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-binary-only-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -432,7 +440,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("models pasa el modo explícito al sync posterior", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-models-mode-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-models-mode-"));
     const homeDir = path.join(tmp, "home");
 
     await runCli(["models", "--agents", "opencode", "--mode", "programmatic", "--subagent-concurrency", "parallel"], homeDir, true);
@@ -444,7 +452,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("models opcionalmente salta el sync cuando falta una preferencia guardada y conserva el exit code de éxito", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-models-missing-mode-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-models-missing-mode-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -467,7 +475,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("install con --target-dir fuerza el modo human aunque exista una preferencia programmatic", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-target-dir-human-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-install-target-dir-human-"));
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
 
@@ -484,7 +492,7 @@ describe("CLI follow-up sync mode resolution", () => {
   });
 
   it("update con --target-dir puede sincronizar en modo human aislado aunque no haya preferencia guardada", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-update-target-dir-human-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-target-dir-human-"));
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
 
@@ -501,7 +509,7 @@ describe("CLI follow-up sync mode resolution", () => {
 
 describe("rechazo de flags desconocidos en main()", () => {
   it("un flag desconocido sale con código 1 sin ejecutar install y avisa en singular", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-unknown-flag-single-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-unknown-flag-single-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -519,7 +527,7 @@ describe("rechazo de flags desconocidos en main()", () => {
   });
 
   it("varios flags desconocidos salen con código 1 y avisan en plural con la lista", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-unknown-flag-multi-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-unknown-flag-multi-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -539,7 +547,7 @@ describe("rechazo de flags desconocidos en main()", () => {
 
 describe("opciones de navegador en main()", () => {
   it("muestra las opciones de Playwright y DevTools en la ayuda", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-help-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-help-"));
     const homeDir = path.join(tmp, "home");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -557,7 +565,7 @@ describe("opciones de navegador en main()", () => {
   });
 
   it("rechaza seleccionar DevTools y no-devtools a la vez", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-devtools-conflict-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-devtools-conflict-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -576,7 +584,7 @@ describe("opciones de navegador en main()", () => {
   });
 
   it("entrega el consentimiento de Playwright y la selección DevTools a install", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-install-flags-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-install-flags-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
 
@@ -595,7 +603,7 @@ describe("opciones de navegador en main()", () => {
   });
 
   it("accepts --playwright-runtimes with --playwright and passes true/false for current agents", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-flag-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-flag-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
 
@@ -620,7 +628,7 @@ describe("opciones de navegador en main()", () => {
   });
 
   it("opens the runtime selector only after Playwright consent and passes partial choices", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-picker-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-picker-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
     mocks.prompts.confirm.mockResolvedValueOnce(true);
@@ -659,7 +667,7 @@ describe("opciones de navegador en main()", () => {
   });
 
   it("rejects --playwright-runtimes without --playwright before runInstall", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-no-consent-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-no-consent-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -690,7 +698,7 @@ describe("opciones de navegador en main()", () => {
     ] as const;
 
     for (const testCase of cases) {
-      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `jx-playwright-runtime-${testCase.name}-`));
+      const tmp = makeTempDir(path.join(os.tmpdir(), `jx-playwright-runtime-${testCase.name}-`));
       const homeDir = path.join(tmp, "home");
       const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -718,7 +726,7 @@ describe("opciones de navegador en main()", () => {
   });
 
   it("rejects Playwright for Pi before any install when the candidate lacks playwright-handoff-v1", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-runtime-pi-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-pi-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     mocks.detectPiRuntime.mockReturnValue({
@@ -756,7 +764,7 @@ describe("opciones de navegador en main()", () => {
 
 describe("CLI effective browser capability", () => {
   it("update Playwright exitoso reconcilia la guía sin pedir un sync manual", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-update-playwright-reconcile-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-update-playwright-reconcile-"));
     const homeDir = path.join(tmp, "home");
     const beforeUpdate = {
       cli: { status: "current" as const, binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
@@ -802,7 +810,7 @@ describe("CLI effective browser capability", () => {
   });
 
   it("doctor --dry-run no convierte una comprobación omitida en paquete ausente", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-doctor-dry-run-browser-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-doctor-dry-run-browser-"));
     const homeDir = path.join(tmp, "home");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
@@ -826,7 +834,7 @@ describe("CLI effective browser capability", () => {
   });
 
   it("update --check de Pi no ejecuta el smoke de Playwright", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-update-check-pi-browser-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-update-check-pi-browser-"));
     const homeDir = path.join(tmp, "home");
     fs.mkdirSync(path.join(homeDir, ".jorgex-stack"), { recursive: true });
     fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
@@ -857,7 +865,7 @@ describe("CLI effective browser capability", () => {
   });
 
   it("admite un nuevo Playwright Pi con selección explícita y capacidad publicada", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-install-playwright-pi-handoff-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-install-playwright-pi-handoff-"));
     const homeDir = path.join(tmp, "home");
     try {
       mocks.detectPiRuntime.mockReturnValue({
@@ -886,7 +894,7 @@ describe("CLI effective browser capability", () => {
     { args: ["update", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
     { args: ["sync", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], managedProbes: 0, legacyProbes: 0, pi: false },
   ])("uses managed Playwright probes for file runtimes and Pi in $args", async ({ args, managedProbes, legacyProbes, pi }) => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-browser-capability-"));
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-browser-capability-"));
     const homeDir = path.join(tmp, "home");
     try {
       writeOpenCodeModelMap(homeDir);

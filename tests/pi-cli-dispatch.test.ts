@@ -144,6 +144,13 @@ vi.mock("../src/lib/pi-managed-runtime.js", () => ({
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(ROOT, "src", "cli.ts");
+const tempDirs: string[] = [];
+
+function makeTempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(prefix);
+  tempDirs.push(dir);
+  return dir;
+}
 
 function setStdoutTty(value: boolean): () => void {
   const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -205,6 +212,7 @@ function writeDevtoolsPreference(homeDir: string, value: unknown): string {
 }
 
 afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
   mocks.runInstall.mockReset().mockResolvedValue(0);
   mocks.runManagedPiSystem.mockReset().mockResolvedValue({ kind: "healthy" });
@@ -220,7 +228,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     ["mixed", ["codex", "pi"]],
     ["Pi-only", ["pi"]],
   ] as const)("includes Pi in the optional DevTools selector for %s selections", async (_name, selection) => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-selector-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-selector-"));
     mocks.prompts.multiselect.mockResolvedValueOnce([]);
 
     const exitCode = await runCli(["install", "--agents", selection.join(","), "--mode", "human"], home, true);
@@ -251,7 +259,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     ["sync", "--devtools", true],
     ["sync", "--no-devtools", false],
   ] as const)("passes %s %s to the managed Pi coordinator", async (operation, flag, enabled) => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-devtools-flag-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-devtools-flag-"));
 
     const exitCode = await runCli([operation, "--agents", "pi", "--mode", "human", "--yes", flag], home);
 
@@ -266,7 +274,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     ["dry-run", undefined],
     ["target-dir", "target"],
   ] as const)("does not mutate host DevTools preferences during %s", async (name, targetName) => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-devtools-${name}-`));
+    const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-devtools-${name}-`));
     const initial = JSON.stringify({
       version: 1,
       enabled: { opencode: true },
@@ -298,7 +306,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("splits a mixed install so only file runtimes reach the adapter pipeline and Pi reaches its package lifecycle", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mixed-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-mixed-"));
 
     const exitCode = await runCli(["install", "--agents", "codex,pi", "--mode", "human", "--yes"], home);
 
@@ -314,7 +322,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("keeps Pi-only target-dir model selection out of adapter and model-map flows", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-target-"));
     const targetDir = path.join(home, "target");
 
     const exitCode = await runCli(["models", "--agents", "pi", "--target-dir", targetDir, "--yes"], home);
@@ -332,7 +340,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("runs the isolated style doctor before the Pi-only target-dir doctor", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-doctor-"));
     const targetDir = path.join(home, "target");
 
     const exitCode = await runCli(["doctor", "--agents", "pi", "--target-dir", targetDir], home);
@@ -343,7 +351,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("keeps Pi-only update and update --check out of the global Stack updater", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-update-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-update-"));
 
     expect(await runCli(["update", "--agents", "pi", "--yes"], home)).toBe(0);
     expect(mocks.runInteractiveUpdate).not.toHaveBeenCalled();
@@ -367,7 +375,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it.each(["install", "sync"] as const)("persiste el modo explícito tras un %s Pi-only correcto", async (operation) => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-mode-persist-${operation}-`));
+    const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-mode-persist-${operation}-`));
     const preference = path.join(home, ".jorgex-stack", "install-mode.json");
 
     expect(await runCli([
@@ -388,7 +396,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("no persiste el modo Pi-only cuando el lifecycle queda bloqueado", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mode-blocked-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-mode-blocked-"));
     const preference = path.join(home, ".jorgex-stack", "install-mode.json");
     mocks.runManagedPiSystem.mockResolvedValueOnce({
       kind: "blocked",
@@ -412,7 +420,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("no persiste el modo Pi-only durante dry-run", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mode-dry-run-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-mode-dry-run-"));
     const preference = path.join(home, ".jorgex-stack", "install-mode.json");
 
     expect(await runCli([
@@ -432,7 +440,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("no persiste el modo Pi-only de un target-dir en el HOME global", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-mode-target-dir-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-mode-target-dir-"));
     const targetDir = path.join(home, "target");
     const preference = path.join(home, ".jorgex-stack", "install-mode.json");
 
@@ -453,7 +461,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("doctor sin --agents limita el diagnóstico al Pi gestionado cuando no hay runtimes de archivo seleccionados", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-default-selection-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-doctor-default-selection-"));
     mocks.hasManagedPiRuntime.mockReturnValue(true);
     mocks.forceFileAdaptersAbsent = true;
 
@@ -472,7 +480,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("does not select Pi implicitly from the CLI alone when Stack owns no Pi package state", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-unmanaged-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-unmanaged-"));
 
     expect(await runCli(["doctor"], home)).toBe(0);
     expect(mocks.runDoctor).toHaveBeenCalledOnce();
@@ -481,7 +489,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("includes a detected Pi runtime in the explicit first Stack install even before a receipt exists", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-first-install-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-first-install-"));
     const originalPath = process.env.PATH;
     process.env.PATH = path.join(home, "empty-path");
 
@@ -501,7 +509,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("passes a new Pi-only Playwright opt-in through managed install and projection", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-playwright-"));
     const verified = { cli: { status: "current", binPath: "/isolated/verified-launcher", detectedVersion: "0.1.22" }, browserCache: { status: "ready", path: "/isolated/verified-cache" }, browserVerified: true, effective: true };
     mocks.runInstall.mockImplementationOnce(async (options: { onPlaywrightCapability?: (snapshot: unknown) => void }) => {
       options.onPlaywrightCapability?.(verified); return 0;
@@ -515,7 +523,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("preserves an explicit interactive No as a Playwright refresh veto without disabling the saved opt-in", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-playwright-declined-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-playwright-declined-"));
     const preference = writePlaywrightPreference(home, { version: 2, enabled: { pi: true } });
     const before = fs.readFileSync(preference, "utf8");
     mocks.prompts.confirm.mockResolvedValue(false);
@@ -528,7 +536,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("resolves the host Engram before configuring a mixed install", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-engram-order-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-engram-order-"));
     let engramAvailable = false;
     mocks.resolvePiEngramBin.mockImplementation(() => engramAvailable ? "/isolated/bin/engram" : null);
     mocks.installMissingEngram.mockImplementation(async () => {
@@ -562,7 +570,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("aborts before configuring runtimes when host Engram installation fails", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-engram-failure-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-engram-failure-"));
     mocks.resolvePiEngramBin.mockReturnValue(null);
     mocks.installMissingEngram.mockResolvedValue({ ok: false, reason: "download-failed" });
 
@@ -586,7 +594,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     ["dry-run", ["--dry-run"]],
     ["target-dir", ["--target-dir", "TARGET"]],
   ] as const)("does not download host Engram in %s", async (name, extraArgs) => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-engram-${name}-`));
+    const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-engram-${name}-`));
     const targetArgs = extraArgs[0] === "--target-dir"
       ? [extraArgs[0], path.join(home, "target")]
       : extraArgs;
@@ -610,7 +618,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("passes the existing host Engram to runInstall during dry-run without downloading", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-engram-dry-run-bin-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-cli-engram-dry-run-bin-"));
     const existingEngram = "/isolated/bin/engram";
     mocks.resolvePiEngramBin.mockReturnValue(existingEngram);
 
@@ -635,7 +643,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("preserves exit code 1 for an invalid mode after the final summary", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-invalid-mode-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-cli-invalid-mode-"));
 
     const exitCode = await runCli([
       "install",
@@ -652,7 +660,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("does not treat --yes as consent to download missing Engram", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-engram-no-consent-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-cli-engram-no-consent-"));
     mocks.resolvePiEngramBin.mockReturnValue(null);
 
     const exitCode = await runCli([
@@ -670,7 +678,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("resolves host Engram for a file-only install before runInstall", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-cli-engram-file-only-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-cli-engram-file-only-"));
     let engramAvailable = false;
     mocks.resolvePiEngramBin.mockImplementation(() => engramAvailable ? "/isolated/bin/engram" : null);
     mocks.installMissingEngram.mockImplementation(async () => {
@@ -701,7 +709,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("emits the final summary after Pi completes", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-summary-order-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-summary-order-"));
 
     const exitCode = await runCli(["install", "--agents", "pi", "--yes"], home);
 
@@ -713,7 +721,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("accepts explicit Pi Playwright runtime selection", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-failure-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-playwright-failure-"));
 
     const exitCode = await runCli(["install", "--playwright", "--playwright-runtimes=pi", "--agents", "pi", "--yes"], home);
 
@@ -725,7 +733,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("preserves an existing Pi Playwright v1 choice when sync projection fails", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-playwright-projection-failure-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-playwright-projection-failure-"));
     const preference = writePlaywrightPreference(home, {
       version: 2,
       enabled: { opencode: true, "claude-code": false, codex: false, pi: true },
@@ -745,7 +753,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("keeps a Pi-only target-dir Playwright opt-in inside the target without touching real preferences", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-target-playwright-"));
     const targetDir = path.join(home, "target");
     writeCorruptBrowserPreference(home);
 
@@ -761,7 +769,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   it.each(["install", "sync", "update", "uninstall"] as const)(
     "blocks Pi-only real %s before the managed lifecycle when browser preferences are corrupt",
     async (command) => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-corrupt-preference-${command}-`));
+      const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-corrupt-preference-${command}-`));
       writeCorruptBrowserPreference(home);
 
       const exitCode = await runCli([command, "--agents", "pi", "--yes"], home);
@@ -777,7 +785,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   );
 
   it("reports corrupt real browser preferences through Pi-only doctor", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-corrupt-preference-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-doctor-corrupt-preference-"));
     const preferenceFile = writeCorruptBrowserPreference(home);
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -797,7 +805,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("passes the explicit programmatic mode to a target-dir doctor", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-doctor-target-programmatic-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-doctor-target-programmatic-"));
     const targetDir = path.join(home, "target");
 
     const exitCode = await runCli([
@@ -820,7 +828,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("reports every blocked Pi operation with its reason, paths, and remedy", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-blocked-paths-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-blocked-paths-"));
     const receipt = path.join(home, ".jorgex-stack", "pi-projection-receipt.json");
     const remedy = "Revisa los permisos del receipt antes de reintentar.";
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -842,7 +850,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   });
 
   it("no ofrece upgrade sin capability: --upgrade-permissions en paquete incapaz sigue seed-only", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-upgrade-gated-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-upgrade-gated-"));
 
     const exitCode = await runCli(["sync", "--agents", "pi", "--yes", "--upgrade-permissions"], home);
 
@@ -856,7 +864,7 @@ describe("CLI Pi package-runtime dispatch", () => {
   it.each(["install", "sync"] as const)(
     "propaga --upgrade-permissions al runner ante paquete capaz en %s",
     async (operation) => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), `jx-pi-cli-upgrade-capable-${operation}-`));
+      const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-upgrade-capable-${operation}-`));
       mocks.simulateUpgradeCapable = true;
 
       try {
@@ -895,7 +903,7 @@ describe("[T17-RED] Pi usa un único installer compartido sin versión ni canale
   });
 
   it("control: dry-run/target-dir/no-consent siguen sin descargar (guardas preservadas)", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-cli-t17-controls-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-t17-controls-"));
     mocks.resolvePiEngramBin.mockReturnValue(null);
 
     expect(await runCli([
@@ -944,7 +952,7 @@ describe("[T41-RED] dispatch Pi con setup oficial antes del package install", ()
   });
 
   it("sync Pi-only nunca ejecuta setup pi ni descarga paquetes globales", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-cli-sync-"));
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-t41-pi-cli-sync-"));
     const setup = (await import("../src/lib/official-engram-setup.js")) as any;
     const beforeCalls = mocks.runManagedPiSystem.mock.calls.length;
 
@@ -969,12 +977,12 @@ describe("[T41-RED] dispatch Pi con setup oficial antes del package install", ()
     expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: true, targetDir: undefined })).toBe(false);
     expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir: "/tmp/x" })).toBe(false);
 
-    const dryHome = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-cli-dry-"));
+    const dryHome = makeTempDir(path.join(os.tmpdir(), "jx-t41-pi-cli-dry-"));
     expect(await runCli(["install", "--agents", "pi", "--mode", "human", "--yes", "--dry-run"], dryHome)).toBe(0);
     expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
     expect(mocks.installMissingEngram).not.toHaveBeenCalled();
 
-    const targetHome = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t41-pi-cli-target-"));
+    const targetHome = makeTempDir(path.join(os.tmpdir(), "jx-t41-pi-cli-target-"));
     const targetDir = path.join(targetHome, "target");
     vi.clearAllMocks();
     mocks.detectPiRuntime.mockReturnValue({
