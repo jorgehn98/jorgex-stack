@@ -144,9 +144,10 @@ export function readPnpmPackageMetadata(entry: string): PnpmPackageMetadata | un
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    // Unreadable/incompatible metadata is not an identity claim.
-    return undefined;
+  } catch (error) {
+    // Corrupt metadata keeps its path and cause instead of looking like an
+    // absent identity.
+    throw new Error(`Metadata corrupta en "${packageJsonPath}": ${errorMessage(error)}`);
   }
 
   const record = parsed as { name?: unknown; version?: unknown; bin?: unknown };

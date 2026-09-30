@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { isMainThread } from "node:worker_threads";
 
 /**
  * Bounded process runner shared by the acceptance suite and its regressions.
@@ -111,38 +112,97 @@ export function stopOwnProcessTree(pid: number): TreeCleanupOutcome {
   }
 }
 
-const activeProcessGroups = new Set<number>();
-let exitHookInstalled = false;
+type OwnedProcessGroup = { pid: number; stop: StopOwnProcessGroup };
 
-function trackOwnProcessGroup(pid: number): void {
-  if (!exitHookInstalled) {
-    exitHookInstalled = true;
-    process.on("exit", () => {
-      for (const activePid of activeProcessGroups) {
-        const outcome = stopOwnProcessTree(activePid);
-        if (!outcome.ok) {
-          try {
-            process.stderr.write(
-              `No se pudo verificar la limpieza del grupo propio ${activePid}: ${outcome.cause}\n`,
-            );
-          } catch {
-            // Best effort on the exit path.
-          }
-        }
-      }
-    });
+const ownedProcessGroups = new Map<number, OwnedProcessGroup>();
+let lifecycleInstalled = false;
+
+/**
+ * Fails before any detached spawn when this host cannot deliver verifiable
+ * cancellation to the owner: worker_threads receive no signals, and Windows
+ * terminates on an external SIGTERM without letting JavaScript clean up.
+ * SIGKILL stays irrecoverable by design; resources remain identified for
+ * recovery, but no teardown is promised.
+ */
+export function assertVerificationCancellationCapability(): void {
+  if (!isMainThread) {
+    throw new Error(
+      "No hay cancelación verificable en worker_threads (Node no entrega señales a workers); no se inicia el árbol detached.",
+    );
   }
-  activeProcessGroups.add(pid);
+  if (process.platform === "win32") {
+    throw new Error(
+      "Windows no garantiza cancelación interceptable (SIGTERM externo termina incondicionalmente); no se inicia el árbol detached. El backing de disco ya falla cerrado (statfs type 0).",
+    );
+  }
 }
 
-function untrackOwnProcessGroup(pid: number): void {
-  activeProcessGroups.delete(pid);
+function cleanupOwnedResources(): string[] {
+  const failures: string[] = [];
+  for (const resource of [...ownedProcessGroups.values()]) {
+    const outcome = resource.stop(resource.pid);
+    if (outcome.ok) ownedProcessGroups.delete(resource.pid);
+    else failures.push(`pid ${resource.pid}: ${outcome.cause}`);
+  }
+  return failures;
+}
+
+function reportOwnedCleanupFailure(failures: string[]): void {
+  try {
+    process.stderr.write(
+      `No se pudo verificar la limpieza de recursos propios: ${failures.join("; ")}\n`,
+    );
+  } catch {
+    // Best effort on a termination path.
+  }
+}
+
+/**
+ * Installs the owned-resource owner once, before the first spawn. Signal
+ * listeners are prepended, never removing framework listeners: with another
+ * handler the framework keeps ownership of termination; without one, our
+ * listener is removed and the signal is re-raised to preserve native
+ * termination and its nonzero code.
+ */
+function installOwnedResourceLifecycle(): void {
+  if (lifecycleInstalled) return;
+  lifecycleInstalled = true;
+
+  const onExit = (code: number): void => {
+    const failures = cleanupOwnedResources();
+    if (failures.length > 0) {
+      reportOwnedCleanupFailure(failures);
+      // Final cleanup failure must be nonzero, without overwriting a previous
+      // nonzero exit code.
+      if (code === 0) process.exitCode = 1;
+    }
+  };
+
+  const onSignal = (signal: NodeJS.Signals): void => {
+    const failures = cleanupOwnedResources();
+    if (failures.length > 0) reportOwnedCleanupFailure(failures);
+    const otherListeners = process.listeners(signal).filter((listener) => listener !== onSignal);
+    if (otherListeners.length > 0) return; // The framework owns termination.
+    process.removeListener(signal, onSignal);
+    process.kill(process.pid, signal);
+  };
+
+  process.on("exit", onExit);
+  process.prependListener("SIGINT", onSignal);
+  process.prependListener("SIGTERM", onSignal);
+}
+
+/** Explicitly forgets an owned group whose cleanup the caller already handled. */
+export function releaseOwnedProcessGroup(pid: number): void {
+  ownedProcessGroups.delete(pid);
 }
 
 export function runBoundedProcess(
   invocation: ProcessInvocation,
   options: BoundedProcessRunnerOptions,
 ): Promise<BoundedProcessResult> {
+  assertVerificationCancellationCapability();
+  installOwnedResourceLifecycle();
   const stopOwnProcessGroup = options.stopOwnProcessGroup ?? stopOwnProcessTree;
 
   return new Promise<BoundedProcessResult>((resolve, reject) => {
@@ -161,7 +221,9 @@ export function runBoundedProcess(
       return;
     }
 
-    if (child.pid !== undefined) trackOwnProcessGroup(child.pid);
+    if (child.pid !== undefined) {
+      ownedProcessGroups.set(child.pid, { pid: child.pid, stop: stopOwnProcessGroup });
+    }
 
     let stdout = "";
     let stderr = "";
@@ -195,9 +257,9 @@ export function runBoundedProcess(
     const cleanup = (): void => {
       if (timeout !== undefined) clearTimeout(timeout);
       if (killGrace !== undefined) clearTimeout(killGrace);
-      // Keep unverified groups tracked so the exit hook can retry and report.
+      // Keep unverified groups tracked so the lifecycle can retry and report.
       if (child.pid !== undefined && lastStopOutcome?.ok === true) {
-        untrackOwnProcessGroup(child.pid);
+        ownedProcessGroups.delete(child.pid);
       }
       child.stdout?.removeListener("data", onStdoutData);
       child.stderr?.removeListener("data", onStderrData);

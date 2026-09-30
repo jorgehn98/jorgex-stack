@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  releaseOwnedProcessGroup,
   runBoundedProcess,
   stopOwnProcessTree,
   type StopOwnProcessGroup,
@@ -573,7 +574,10 @@ describe("verification isolation at the real acceptance caller seam", () => {
       expect(registered).toEqual([]);
       expect(observedPids.length).toBeGreaterThan(0);
     } finally {
-      for (const pid of observedPids) stopOwnProcessTree(pid);
+      for (const pid of observedPids) {
+        stopOwnProcessTree(pid);
+        releaseOwnedProcessGroup(pid);
+      }
     }
   });
 });
@@ -651,6 +655,13 @@ describe("verification temp inventory and metadata causes", () => {
     ).toThrow(/No se pudo crear el HOME privado/);
 
     expect(registered).toHaveLength(1);
+  });
+
+  it("preserva ruta y causa de metadata JSON corrupta en vez de fingir identidad ausente", () => {
+    const pnpm = makePnpmPackage(REQUIRED_VERSION);
+    fs.writeFileSync(path.join(pnpm.packageRoot, "package.json"), "{ corrupt", "utf8");
+
+    expect(() => readPnpmPackageMetadata(pnpm.entry)).toThrow(/Metadata corrupta/);
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
