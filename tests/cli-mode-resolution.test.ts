@@ -225,18 +225,16 @@ function collectedMessages(spies: Array<{ mock: { calls: unknown[][] } }>): stri
 }
 
 describe("CLI follow-up sync mode resolution", () => {
-  it("fresh interactive OpenCode install requires provider-aware model selection first", async () => {
+  it("fresh interactive OpenCode install siembra el default aprobado sin abrir el picker", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-picker-"));
     const homeDir = path.join(tmp, "home");
-    mocks.runModelsPicker.mockImplementationOnce(async () => {
-      writeOpenCodeModelMap(homeDir);
-      return 0;
-    });
 
     const exitCode = await runCli(["install", "--agents", "opencode", "--mode", "human"], homeDir, true);
 
+    // Spec T04 (picker): el roster v2 aprobado inicializa OpenCode fresh sin
+    // exigir selección previa; el comando `models` explícito sigue eligiendo.
     expect(exitCode).toBe(0);
-    expect(mocks.runModelsPicker).toHaveBeenCalledWith({ yes: false, runtimes: ["opencode"] });
+    expect(mocks.runModelsPicker).not.toHaveBeenCalled();
     expect(mocks.runInstall).toHaveBeenCalledTimes(1);
   });
 
@@ -252,21 +250,15 @@ describe("CLI follow-up sync mode resolution", () => {
     expect(mocks.runInstall).toHaveBeenCalledTimes(1);
   });
 
-  it("fresh non-interactive OpenCode install fails instead of inventing a provider", async () => {
+  it("fresh non-interactive OpenCode install usa el default sin inventar proveedor ni abrir picker", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-model-required-"));
     const homeDir = path.join(tmp, "home");
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    try {
-      const exitCode = await runCli(["install", "--agents", "opencode", "--mode", "human", "--yes"], homeDir);
+    const exitCode = await runCli(["install", "--agents", "opencode", "--mode", "human", "--yes"], homeDir);
 
-      expect(exitCode).toBe(1);
-      expect(mocks.runModelsPicker).not.toHaveBeenCalled();
-      expect(mocks.runInstall).not.toHaveBeenCalled();
-      expect(error).toHaveBeenCalledWith(expect.stringMatching(/OpenCode.*models/i));
-    } finally {
-      error.mockRestore();
-    }
+    expect(exitCode).toBe(0);
+    expect(mocks.runModelsPicker).not.toHaveBeenCalled();
+    expect(mocks.runInstall).toHaveBeenCalledTimes(1);
   });
 
   it("update reusa el modo explícito programmatic/parallel al lanzar el sync", async () => {

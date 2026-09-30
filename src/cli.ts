@@ -616,7 +616,7 @@ function printHelp(): void {
 Uso: pnpm dlx jorgex-stack [comando] [opciones]
 
 Comandos:
-  install     Instala el stack; OpenCode fresh exige elegir modelos conectados
+  install     Instala el stack; OpenCode fresh usa el roster v2 aprobado (sin picker)
   sync        Re-aplica la config y el model-map existente (idempotente; sin picker)
   models      Picker por tier o subagente (OpenCode: 'opencode models' en vivo)
   update      --check: compara stack/Engram/skills con sus upstreams

@@ -92,7 +92,7 @@ describe("fresh OpenCode model selection", () => {
     }
   });
 
-  it("rejects non-interactive initialization instead of writing provider defaults", async () => {
+  it("initializa el mapa OpenCode por defecto de forma no interactiva sin tocar catálogo ni credenciales", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-model-picker-noninteractive-"));
     const originalHome = process.env.HOME;
     const originalUserProfile = process.env.USERPROFILE;
@@ -101,17 +101,54 @@ describe("fresh OpenCode model selection", () => {
 
     try {
       const { runModelsPicker } = await import("../src/models-picker.js");
-      await expect(runModelsPicker({ yes: true, runtimes: ["opencode"] })).resolves.toBe(1);
+      const { DEFAULT_MODEL_MAP } = await import("../src/lib/model-map.js");
+      await expect(runModelsPicker({ yes: true, runtimes: ["opencode"] })).resolves.toBe(0);
 
       const stored = JSON.parse(
         fs.readFileSync(path.join(homeDir, ".jorgex-stack", "model-map.json"), "utf8"),
       );
-      expect(stored.opencode).toBeUndefined();
+      // El default fresco vive en la fuente actual, no en una copia del test.
+      expect(stored.opencode).toEqual(DEFAULT_MODEL_MAP.opencode);
+      // Fresco no depende de catálogo, detección ni credenciales.
+      expect(mocks.runDetectedBin).not.toHaveBeenCalled();
+      expect(mocks.detectOpenCode).not.toHaveBeenCalled();
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
       if (originalUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("no reemplaza una selección manual existente con el default", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-model-picker-existing-"));
+    const homeDir = path.join(root, "home");
+    const file = path.join(homeDir, ".jorgex-stack", "model-map.json");
+    const manual = JSON.stringify({
+      opencode: {
+        strong: { model: "user/strong" },
+        standard: { model: "user/standard" },
+        cheap: { model: "user/cheap" },
+      },
+    }, null, 2) + "\n";
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, manual);
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = homeDir;
+    process.env.USERPROFILE = homeDir;
+
+    try {
+      const { runModelsPicker } = await import("../src/models-picker.js");
+      await expect(runModelsPicker({ yes: true, runtimes: ["opencode"] })).resolves.toBe(0);
+      expect(fs.readFileSync(file, "utf8")).toBe(manual);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -134,6 +171,7 @@ describe("fresh OpenCode model selection", () => {
 
     try {
       const { runModelsPicker } = await import("../src/models-picker.js");
+      const { DEFAULT_MODEL_MAP } = await import("../src/lib/model-map.js");
       await expect(runModelsPicker({ yes: false, runtimes: ["opencode"] })).resolves.toBe(0);
 
       const stored = JSON.parse(
@@ -142,10 +180,13 @@ describe("fresh OpenCode model selection", () => {
       const openCodeEffortOptions = pickerQuestions()
         .filter((question) => question.message.includes("OpenCode") && question.message.includes("variant"))
         .flatMap((question) => question.options.map((option) => option.value));
+      // Tiers elegidos con literales propios; los overrides prellenados del
+      // default se preservan (el picker no purga el mapa).
       expect(stored.opencode).toEqual({
         strong: { model: "xai/grok-code", variant: "high" },
         standard: { model: "zhipu/glm-code", variant: "medium" },
         cheap: { model: "minimax/MiniMax-M3" },
+        overrides: DEFAULT_MODEL_MAP.opencode.overrides,
       });
       expect(openCodeEffortOptions).not.toContain("max");
     } finally {
@@ -177,18 +218,32 @@ describe("fresh OpenCode model selection", () => {
 
     try {
       const { runModelsPicker } = await import("../src/models-picker.js");
+      const { DEFAULT_MODEL_MAP } = await import("../src/lib/model-map.js");
       await expect(runModelsPicker({ yes: false, runtimes: ["opencode"] })).resolves.toBe(0);
 
       const stored = JSON.parse(
         fs.readFileSync(path.join(homeDir, ".jorgex-stack", "model-map.json"), "utf8"),
       );
+      // Los tiers prellenados del default permanecen intactos y cada subagente
+      // elegido queda como override literal (con "" limpiando el effort del tier).
       expect(stored.opencode).toEqual({
-        strong: { model: "xai/grok-code" },
-        standard: { model: "xai/grok-code" },
-        cheap: { model: "xai/grok-code" },
+        strong: DEFAULT_MODEL_MAP.opencode.strong,
+        standard: DEFAULT_MODEL_MAP.opencode.standard,
+        cheap: DEFAULT_MODEL_MAP.opencode.cheap,
         overrides: {
-          tester: { model: "zhipu/glm-code" },
-          engram: { model: "minimax/MiniMax-M3" },
+          "codebase-analyst": { model: "xai/grok-code", variant: "" },
+          "code-reviewer": { model: "xai/grok-code", variant: "" },
+          "code-simplifier": { model: "xai/grok-code", variant: "" },
+          "comment-fixer": { model: "xai/grok-code", variant: "" },
+          "docs-maintainer": { model: "xai/grok-code", variant: "" },
+          implementer: { model: "xai/grok-code", variant: "" },
+          "security-auditor": { model: "xai/grok-code", variant: "" },
+          "silent-failure-hunter": { model: "xai/grok-code", variant: "" },
+          "test-analyzer": { model: "xai/grok-code", variant: "" },
+          translator: { model: "xai/grok-code", variant: "" },
+          "type-design-analyzer": { model: "xai/grok-code", variant: "" },
+          engram: { model: "minimax/MiniMax-M3", variant: "" },
+          tester: { model: "zhipu/glm-code", variant: "" },
         },
       });
     } finally {

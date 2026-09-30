@@ -157,7 +157,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       continue;
     }
     let ctx: ReturnType<typeof makeContext>;
-    try { ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences); }
+    try { ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences, undefined, undefined, opts.targetDir); }
     catch (error) {
       p.log.error(`${adapter.name}: no se pudo verificar el estado managed browser (${error instanceof Error ? error.message : String(error)}).`);
       exitCode = 1;

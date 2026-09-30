@@ -17,6 +17,10 @@ import { stackRoot } from "../src/lib/paths.js";
 import { planCommands } from "../src/components/commands.js";
 import { planSkills } from "../src/components/skills.js";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
+import {
+  NATIVE_OPENCODE_PERMISSIONS,
+  OPENCODE_SECRET_DENY_PATTERNS,
+} from "./helpers/opencode-native-contract.js";
 
 let tmp: string;
 
@@ -257,104 +261,60 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
   it("opencode: la config fresca permite trabajo ordinario y conserva protección de secretos y destrucción", () => {
     const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
     const fresh = JSON.parse((action as { content: string }).content);
-    expect(fresh.permission).toMatchObject({
-      external_directory: { "*": "allow" },
-      read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
-      edit: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
-      glob: "allow",
-      grep: "allow",
-      lsp: "allow",
-      webfetch: "allow",
-      websearch: "allow",
-      task: "allow",
-      skill: "allow",
-      todowrite: "allow",
-      question: "allow",
-      bash: {
-        "*": "allow",
-        "git rebase": "ask",
-        "git rebase *": "ask",
-        "git reset --hard": "ask",
-        "git reset --hard *": "ask",
-        "ssh": "ask",
-        "ssh *": "ask",
-        "scp": "ask",
-        "scp *": "ask",
-        "sftp": "ask",
-        "sftp *": "ask",
-        "rsync": "ask",
-        "rsync *": "ask",
-        "format": "deny",
-        "format *": "deny",
-        "*/format": "deny",
-        "*/format *": "deny",
-        "mkfs": "deny",
-        "mkfs *": "deny",
-        "*/mkfs": "deny",
-        "*/mkfs *": "deny",
-        "mkfs.*": "deny",
-        "*/mkfs.*": "deny",
-        "dd": "deny",
-        "dd *": "deny",
-        "*/dd": "deny",
-        "*/dd *": "deny",
-        "shred": "deny",
-        "shred *": "deny",
-        "*/shred": "deny",
-        "*/shred *": "deny",
-      },
-    });
-    // Sin fricción para trabajo ordinario: ni ask global ni reglas de push/rm/lenguajes.
-    expect(fresh.permission["*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *push*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *reset*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *restore*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *rebase*"]).toBeUndefined();
-    expect(fresh.permission.bash["rm *"]).toBeUndefined();
-    expect(fresh.permission.bash["rm * /"]).toBeUndefined();
-    expect(fresh.permission.bash["node *"]).toBeUndefined();
-    expect(fresh.permission.bash["python *"]).toBeUndefined();
-    expect(fresh.permission.bash["sudo *"]).toBeUndefined();
-    expect(fresh.permission.bash["pnpm dlx*"]).toBeUndefined();
+
+    // Contrato nativo v2 (Spec T04), literal: `permissions` ordenado con allow de
+    // external_directory, denies de secretos en read/edit y `*.env.example`
+    // permitido después de los denies.
+    expect(fresh.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
+    // Sin bloque legacy emitido.
+    expect(fresh.permission).toBeUndefined();
+
+    const rules = fresh.permissions as { action: string; resource: string; effect: string }[];
+
+    // Sin fricción para trabajo ordinario: ni un solo `ask`.
+    expect(rules.filter((rule) => rule.effect === "ask")).toEqual([]);
+    // Todo deny pertenece exactamente a los patrones de secretos en read/edit:
+    // no se añaden denies de destrucción, Git, SSH ni lenguajes.
+    expect(rules.filter((rule) => rule.effect === "deny").map((rule) => `${rule.action}:${rule.resource}`)).toEqual(
+      (["read", "edit"] as const).flatMap((action) => OPENCODE_SECRET_DENY_PATTERNS.map((resource) => `${action}:${resource}`)),
+    );
     // Sin claves muertas ni allowlist por herramienta MCP.
-    expect(fresh.permission.list).toBeUndefined();
-    expect(fresh.permission.todoread).toBeUndefined();
-    expect(fresh.permission["engram_*"]).toBeUndefined();
-    expect(fresh.permission["context7_*"]).toBeUndefined();
+    expect(JSON.stringify(fresh)).not.toMatch(/todoread|engram_\*|context7_\*|pnpm dlx/);
   });
 
-  it("opencode: una config no vacía sin permission no recibe permission", () => {
+  it("opencode: una config no vacía sin permissions no recibe el bloque ni se auto-migra", () => {
     writeText(path.join(tmp, "opencode.json"), JSON.stringify({ other: true }));
 
-    const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
+    const ctx = makeCtx("opencode");
+    const [action] = opencodeAdapter.planMainConfig(mcp(), ctx);
     const config = JSON.parse((action as { content: string }).content) as Record<string, unknown>;
 
     expect(config.other).toBe(true);
+    expect(config).not.toHaveProperty("permissions");
     expect(config).not.toHaveProperty("permission");
+    expect(ctx.warnings.join("\n")).toMatch(/--upgrade-permissions/);
   });
 
   it("opencode: la config fresca también avisa y deniega stores de secretos más amplios", () => {
     const ctx = makeCtx("opencode");
     const [action] = opencodeAdapter.planMainConfig(mcp(), ctx);
     const fresh = JSON.parse((action as { content: string }).content);
-    const readRules = fresh.permission.read as Record<string, string>;
+    const readDenies = (fresh.permissions as { action: string; resource: string; effect: string }[])
+      .filter((rule) => rule.action === "read" && rule.effect === "deny")
+      .map((rule) => rule.resource);
 
-    expect(Object.keys(readRules)).toEqual(
-      expect.arrayContaining([
-        "*",
-        "*.env",
-        "*.env.*",
-        "*.env.example",
-        "*/.ssh/*",
-        "*/.aws/credentials",
-        "*/.npmrc",
-        "*/.git-credentials",
-        "*/id_rsa",
-        "*/id_ed25519",
-        "*.pem",
-        "*.key",
-      ]),
-    );
+    expect(readDenies).toEqual([
+      "*.env",
+      "*.env.*",
+      "*.ssh/*",
+      "*.aws/credentials",
+      "*.npmrc",
+      "*.git-credentials",
+      "*id_rsa*",
+      "*id_ed25519*",
+      "*.pem",
+      "*.key",
+    ]);
     expect(ctx.warnings.join("\n")).toMatch(/ordinary|sensitive/i);
   });
 

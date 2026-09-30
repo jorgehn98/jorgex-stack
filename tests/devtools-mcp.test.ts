@@ -337,6 +337,22 @@ function expectUserConfigPreserved(runtime: RuntimeId, content: string): void {
   expect(parsed[mcpKey]).toMatchObject({ "user-server": { url: "https://example.invalid/mcp" } });
 }
 
+/**
+ * Servidores MCP nativos de cada runtime: Claude usa `mcpServers`, Codex TOML y
+ * OpenCode v2 anida los suyos en `mcp.servers`. El resto de `mcp` puede seguir
+ * siendo legacy ajeno, que se preserva sin duplicar (Spec T04).
+ */
+function nativeMcpContainer(
+  root: Record<string, Record<string, unknown>>,
+  runtime: RuntimeId,
+): Record<string, Record<string, unknown>> | undefined {
+  if (runtime === "claude-code") return root["mcpServers"] as Record<string, Record<string, unknown>> | undefined;
+  if (runtime === "opencode") {
+    return root["mcp"]?.["servers"] as Record<string, Record<string, unknown>> | undefined;
+  }
+  return root["mcp"] as Record<string, Record<string, unknown>> | undefined;
+}
+
 function expectDevToolsServer(runtime: RuntimeId, content: string): void {
   const expectedArgs = [
     "dlx",
@@ -359,8 +375,7 @@ function expectDevToolsServer(runtime: RuntimeId, content: string): void {
   }
 
   const parsed = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
-  const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
-  const server = parsed[mcpKey]![DEVTOOLS_SERVER]!;
+  const server = nativeMcpContainer(parsed, runtime)![DEVTOOLS_SERVER]!;
   if (runtime === "opencode") {
     expect(server).toMatchObject({ type: "local", command: ["pnpm", ...expectedArgs] });
   } else {
@@ -369,8 +384,8 @@ function expectDevToolsServer(runtime: RuntimeId, content: string): void {
 }
 
 function expectManagedDevToolsServer(content: string): void {
-  const parsed = JSON.parse(content) as { mcp?: Record<string, { command?: string[] }> };
-  expect(parsed.mcp?.[DEVTOOLS_SERVER]?.command).toEqual([
+  const parsed = JSON.parse(content) as { mcp?: { servers?: Record<string, { command?: string[] }> } };
+  expect(parsed.mcp?.servers?.[DEVTOOLS_SERVER]?.command).toEqual([
     process.execPath, "--input-type=module", "--eval", "trusted-guard", "/managed/launcher.mjs",
     "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics",
   ]);
@@ -384,8 +399,7 @@ function expectDevToolsAbsent(runtime: RuntimeId, content: string): void {
   }
 
   const parsed = JSON.parse(content) as Record<string, Record<string, unknown>>;
-  const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
-  expect(parsed[mcpKey]?.[DEVTOOLS_SERVER]).toBeUndefined();
+  expect(nativeMcpContainer(parsed, runtime)?.[DEVTOOLS_SERVER]).toBeUndefined();
 }
 
 function addUserFieldToDevToolsServer(runtime: RuntimeId, content: string, version = OBSERVED_DEVTOOLS.version): string {
@@ -397,9 +411,9 @@ function addUserFieldToDevToolsServer(runtime: RuntimeId, content: string, versi
   }
 
   const root = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
-  const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
-  root[mcpKey]![DEVTOOLS_SERVER]! = {
-    ...root[mcpKey]![DEVTOOLS_SERVER]!,
+  const container = nativeMcpContainer(root, runtime)!;
+  container[DEVTOOLS_SERVER] = {
+    ...(container[DEVTOOLS_SERVER] as Record<string, unknown>),
     user_marker: { source: "manual" },
   };
   return JSON.stringify(root, null, 2) + "\n";
@@ -409,8 +423,7 @@ function devToolsServerSnapshot(runtime: RuntimeId, content: string): unknown {
   if (runtime === "codex") return readTomlSection(content, `mcp_servers.${DEVTOOLS_SERVER}`);
 
   const root = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
-  const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
-  return root[mcpKey]![DEVTOOLS_SERVER];
+  return nativeMcpContainer(root, runtime)![DEVTOOLS_SERVER];
 }
 
 afterEach(() => {
@@ -948,7 +961,7 @@ describe("DevTools observed-version materialization [T14-RED]", () => {
       expect(JSON.parse(/args = (\[.*\])/.exec(section ?? "")?.[1] ?? "null")).toEqual(guard.args);
     } else {
       const parsed = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
-      const server = parsed[runtime === "claude-code" ? "mcpServers" : "mcp"]![DEVTOOLS_SERVER]!;
+      const server = nativeMcpContainer(parsed, runtime)![DEVTOOLS_SERVER]!;
       expect(server.command).toEqual(runtime === "opencode" ? [process.execPath, ...guard.args] : process.execPath);
       if (runtime === "claude-code") expect(server.args).toEqual(guard.args);
     }
@@ -989,8 +1002,7 @@ describe("DevTools observed-version materialization [T14-RED]", () => {
       return JSON.parse(match![1]!) as string[];
     }
     const parsed = JSON.parse(content) as Record<string, Record<string, Record<string, unknown>>>;
-    const mcpKey = runtime === "claude-code" ? "mcpServers" : "mcp";
-    const server = parsed[mcpKey]![DEVTOOLS_SERVER]!;
+    const server = nativeMcpContainer(parsed, runtime)![DEVTOOLS_SERVER]!;
     if (runtime === "opencode") {
       const command = server["command"] as string[];
       expect(command[0]).toBe(process.execPath);
@@ -1141,10 +1153,10 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
           })).resolves.toBe(0);
 
           const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as {
-            mcp?: Record<string, { command?: unknown }>;
+            mcp?: { servers?: Record<string, { command?: unknown }> };
           };
           expectManagedDevToolsServer(fs.readFileSync(configFile, "utf8"));
-          expect(JSON.stringify(config.mcp?.[DEVTOOLS_SERVER])).not.toContain("latest");
+          expect(JSON.stringify(config.mcp?.servers?.[DEVTOOLS_SERVER])).not.toContain("latest");
 
           const preferenceFile = path.join(homeDir, ".jorgex-stack", "devtools-mcp.json");
           const preferenceRaw = fs.readFileSync(preferenceFile, "utf8");

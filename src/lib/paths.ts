@@ -24,6 +24,20 @@ export function dataDir(): string {
   return path.join(HOME, ".jorgex-stack");
 }
 
+/**
+ * Raíz de configuración nativa de OpenCode (fuente oficial v2.0.19+):
+ * `OPENCODE_CONFIG_DIR` manda; si falta, `$XDG_CONFIG_HOME/opencode`; si no,
+ * `~/.config/opencode`. Helper puro (lee el entorno en cada llamada) que detect
+ * y el adapter comparten para que no diverjan.
+ */
+export function resolveOpenCodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.OPENCODE_CONFIG_DIR;
+  if (explicit !== undefined && explicit !== "") return explicit;
+  const xdg = env.XDG_CONFIG_HOME;
+  const base = xdg !== undefined && xdg !== "" ? xdg : path.join(env.HOME ?? HOME, ".config");
+  return path.join(base, "opencode");
+}
+
 /** Igualdad de rutas robusta (Windows es case-insensitive). */
 export function samePath(a: string, b: string): boolean {
   const resolvedA = path.resolve(a);

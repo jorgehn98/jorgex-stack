@@ -62,6 +62,12 @@ export interface InstallContext {
   stackDir: string;
   /** Dir de config del runtime destino (puede venir de --target-dir en pruebas). */
   configDir: string;
+  /**
+   * Señal explícita de sandbox: con --target-dir, TODO lookup de estado usa una
+   * raíz sintética confinada al target y jamás consulta XDG_STATE_HOME/HOME
+   * personal. No se infiere comparando configDir con la raíz global.
+   */
+  targetDir?: string;
   /** Modo de instalación resuelto para este run. */
   mode?: InstallMode;
   /** Concurrencia de subagentes resuelta para este run. */

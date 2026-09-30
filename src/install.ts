@@ -299,6 +299,7 @@ export function makeContext(
   useBrowserPreferences = true,
   playwrightCapability?: boolean,
   resolveManagedBrowser = true,
+  targetDir?: string,
 ): InstallContext | null {
   const models = loadModelMap()[adapter.id];
   if (!models) return null;
@@ -329,6 +330,7 @@ export function makeContext(
   return {
     stackDir: stackRoot(),
     configDir,
+    ...(targetDir === undefined ? {} : { targetDir }),
     mode: mode.mode,
     subagentConcurrency: mode.subagentConcurrency,
     engramBin: detectEngram(),
@@ -369,7 +371,7 @@ export function preflightSelectedMcpConfigs(runtimes: readonly RuntimeId[], targ
     if (!adapter) continue;
     const detection = adapter.detect();
     if (targetDir === undefined && !detection.installed) continue;
-    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined, undefined, false);
+    const ctx = makeContext(adapter, targetDir ?? detection.configDir, undefined, targetDir === undefined, undefined, false, targetDir);
     if (ctx) planMcp(adapter, { ...ctx, enabledMcpServers: new Set() });
   }
 }
@@ -943,6 +945,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       writingStyle,
       stackDir,
       configDir,
+      ...(opts.targetDir === undefined ? {} : { targetDir: opts.targetDir }),
       mode: modePreference.mode,
       subagentConcurrency: modePreference.subagentConcurrency,
       engramBin,

@@ -8,9 +8,9 @@ import { DEVTOOLS_MCP_SERVER, isCanonicalMcpServerEnabled, loadCanonicalDefaults
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
-import { HOME, samePath } from "../lib/paths.js";
+import { HOME, resolveOpenCodeConfigDir, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { upsertJson } from "../lib/filemerge.js";
+import { editJsonc, parseJsoncObject, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
@@ -37,14 +37,20 @@ function readMcpConfig(file: string): string | null {
     if (code === "ENOENT") return null;
     throw new Error(`OpenCode: no se pudo leer la configuración MCP en ${file} (${code}).`);
   }
-  if (content.trim() !== "") {
-    try {
-      if (objectValue(JSON.parse(content)) === null) throw new Error();
-    } catch {
-      throw new Error(`OpenCode: la configuración MCP en ${file} debe contener un objeto JSON válido.`);
-    }
+  if (content.trim() !== "" && parseJsoncObject(content).value === null) {
+    throw new Error(`OpenCode: la configuración MCP en ${file} debe contener un objeto JSON válido.`);
   }
   return content;
+}
+
+/**
+ * Escritura quirúrgica del server config: un archivo existente se edita como
+ * JSONC (comentarios/orden/formato ajenos preservados) y una config nueva o
+ * vacía se serializa limpia.
+ */
+function editConfigContent(source: string | null, mutate: (root: Record<string, unknown>) => void): string {
+  if (source === null || source.trim() === "") return upsertJson(null, mutate);
+  return editJsonc(source, mutate);
 }
 
 function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], value: unknown): boolean {
@@ -68,15 +74,198 @@ function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][str
     && isManagedOptionalStdioServer(materializeCanonicalDevtoolsServerForRemoval(template), value);
 }
 
-const PRIMARY_MODEL = "openai/gpt-5.6-sol";
-const PRIMARY_MODEL_ID = "gpt-5.6-sol";
+const CONFIG_FILENAME = "opencode.json";
+const CONFIG_FILENAME_JSONC = "opencode.jsonc";
+const CLI_FILENAME = "cli.json";
+const PRIMARY_MODEL = "openai/gpt-6.1-sol";
+const PRIMARY_MODEL_ID = "gpt-6.1-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
-const PRIMARY_MODEL_FIELD = "model";
-const PRIMARY_PROVIDER_FIELD = "provider";
-const PRIMARY_OPENAI_FIELD = "provider.openai";
-const PRIMARY_MODELS_FIELD = "provider.openai.models";
-const PRIMARY_SOL_FIELD = `provider.openai.models.${PRIMARY_MODEL_ID}`;
-const PRIMARY_LIMIT_PREFIX = `provider.openai.models.${PRIMARY_MODEL_ID}.limit`;
+
+// Canon v1 real (git 8780ba1): el adapter v1 registraba nueve IDs dotted. Se
+// reconoce únicamente para migrar ownership exacto de esa estructura — nunca
+// por igualdad de valor — y se transfiere a los IDs file-qualificados.
+const LEGACY_MODEL = "openai/gpt-5.6-sol";
+const LEGACY_MODEL_ID = "gpt-5.6-sol";
+const LEGACY_SOL_FIELD = `provider.openai.models.${LEGACY_MODEL_ID}`;
+const LEGACY_LIMIT_PREFIX = `${LEGACY_SOL_FIELD}.limit`;
+const LEGACY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
+/** Estructura `provider.openai` exacta del canon v1 (autentica la migración). */
+const LEGACY_OPENAI_SUBTREE = {
+  models: { [LEGACY_MODEL_ID]: { limit: LEGACY_LIMITS } },
+} as const;
+/** Los ocho IDs dotted de la estructura `provider.*` (autentican la entrada). */
+const LEGACY_PROVIDER_DOTTED_FIELDS = [
+  "provider",
+  "provider.openai",
+  "provider.openai.models",
+  LEGACY_SOL_FIELD,
+  LEGACY_LIMIT_PREFIX,
+  `${LEGACY_LIMIT_PREFIX}.context`,
+  `${LEGACY_LIMIT_PREFIX}.input`,
+  `${LEGACY_LIMIT_PREFIX}.output`,
+] as const;
+/** Los nueve IDs dotted exactos que escribía el adapter v1. */
+const LEGACY_DOTTED_FIELDS = ["model", ...LEGACY_PROVIDER_DOTTED_FIELDS] as const;
+
+/**
+ * ID de campo v2 file-qualificado (Spec T04): `JSON.stringify([basename, ...segmentos])`.
+ * Nunca se construye partiendo por puntos: los propios IDs de modelo
+ * (`gpt-6.1-sol`) los contienen.
+ */
+function fieldId(basename: string, ...segments: string[]): string {
+  return JSON.stringify([basename, ...segments]);
+}
+
+function ownedField(basename: string, ...segments: string[]): string {
+  return fieldId(basename, ...segments);
+}
+
+/** Registra como owned un campo solo si el write real lo creó. */
+function claimFieldId(
+  owned: ReadonlySet<string> | undefined,
+  changes: PrimaryModelOwnershipChange[],
+  field: string,
+): void {
+  if (owned?.has(field) !== true) changes.push({ field, owned: true });
+}
+
+function claimOwnedField(
+  owned: ReadonlySet<string> | undefined,
+  changes: PrimaryModelOwnershipChange[],
+  basename: string,
+  ...segments: string[]
+): void {
+  claimFieldId(owned, changes, ownedField(basename, ...segments));
+}
+
+/** Raíz de estado nativa de OpenCode (el migrador CLI lee state/kv.json). */
+function opencodeStateDir(ctx: InstallContext): string {
+  // Sandbox --target-dir: raíz sintética confinada al target, nunca el estado
+  // personal (XDG_STATE_HOME/HOME). La señal es explícita, no comparación de rutas.
+  if (ctx.targetDir !== undefined) return path.join(ctx.targetDir, ".jorgex-stack", "opencode");
+  return path.join(process.env.XDG_STATE_HOME ?? path.join(HOME, ".local", "state"), "opencode");
+}
+
+/**
+ * Fuentes legacy que el migrador nativo v2 consume al primer arranque. Si
+ * existen y `cli.json` aún no se creó, precrearlo bloquearía esa migración.
+ */
+function hasPendingCliMigration(ctx: InstallContext): boolean {
+  for (const name of ["tui.json", "tui.jsonc"]) {
+    if (readTextIfExists(path.join(ctx.configDir, name)) !== null) return true;
+  }
+  return readTextIfExists(path.join(opencodeStateDir(ctx), "kv.json")) !== null;
+}
+
+// Campos v2 del server config, file-qualificados con el basename REAL del
+// archivo editado (`opencode.json` u `opencode.jsonc`). Se resuelven por
+// invocación porque el host también lee el `.jsonc`.
+const modelField = (base: string): string => fieldId(base, "model");
+const providersField = (base: string): string => fieldId(base, "providers");
+const primaryOpenaiField = (base: string): string => fieldId(base, "providers", "openai");
+const primaryModelsField = (base: string): string => fieldId(base, "providers", "openai", "models");
+const primarySolField = (base: string): string => fieldId(base, "providers", "openai", "models", PRIMARY_MODEL_ID);
+const primaryLimitPrefix = (base: string): string => fieldId(base, "providers", "openai", "models", PRIMARY_MODEL_ID, "limit");
+const primaryLimitField = (base: string, key: string): string =>
+  fieldId(base, "providers", "openai", "models", PRIMARY_MODEL_ID, "limit", key);
+
+/**
+ * Patrones de secretos denegados para `read`/`edit` (Spec T04). El comodín `*`
+ * casa también `/`, así que no se duplican variantes con y sin directorio.
+ */
+const SECRET_DENY_PATTERNS = [
+  "*.env",
+  "*.env.*",
+  "*.ssh/*",
+  "*.aws/credentials",
+  "*.npmrc",
+  "*.git-credentials",
+  "*id_rsa*",
+  "*id_ed25519*",
+  "*.pem",
+  "*.key",
+] as const;
+
+interface PermissionRule {
+  action: string;
+  resource: string;
+  effect: "allow" | "deny" | "ask";
+}
+
+/**
+ * Overlay v2 fresh (Spec T04): `external_directory` permitido, `read`/`edit`
+ * denegados sobre secretos y `*.env.example` re-permitido después para ganar
+ * la última coincidencia. Git/shell quedan sin reglas propias: la base v2 los
+ * permite y no se importan los asks de otros runtimes.
+ */
+function freshPermissions(): PermissionRule[] {
+  const rules: PermissionRule[] = [{ action: "external_directory", resource: "*", effect: "allow" }];
+  for (const action of ["read", "edit"] as const) {
+    for (const resource of SECRET_DENY_PATTERNS) rules.push({ action, resource, effect: "deny" });
+    rules.push({ action, resource: "*.env.example", effect: "allow" });
+  }
+  return rules;
+}
+
+const CLI_VERBOSITY_FIELD = fieldId(CLI_FILENAME, "session", "verbosity");
+
+/**
+ * Proyección del archivo compacto del cliente v2 (`cli.json`, separado del
+ * server config): siembra `session.verbosity: "low"` solo si falta, conserva
+ * cualquier valor ajeno y nunca precrea el archivo mientras exista una fuente
+ * legacy (tui.json/kv.json) que el migrador nativo deba consumir primero.
+ */
+function planCliConfig(ctx: InstallContext): FileAction | null {
+  const file = path.join(ctx.configDir, CLI_FILENAME);
+  const existing = readTextIfExists(file);
+
+  // Ausente o vacío/solo espacios: equivale a "falta low", se siembra salvo que
+  // el migrador nativo tenga una fuente legacy pendiente.
+  if (existing === null || existing.trim() === "") {
+    if (hasPendingCliMigration(ctx)) {
+      ctx.warnings.push(
+        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite sync para sembrar session.verbosity: low.",
+      );
+      return null;
+    }
+    return seedCliVerbosity(ctx, null);
+  }
+
+  const parsed = parseJsoncObject(existing);
+  if (parsed.value === null) {
+    ctx.warnings.push("OpenCode: 'cli.json' no es un objeto JSON válido; se conserva sin tocar.");
+    return null;
+  }
+  const session = parsed.value["session"];
+  // `session` no-objeto es dato ambiguo del usuario: se preservan los bytes y se
+  // deja remedio, sin reclamar ownership ni reserializar un escalar/array ajeno.
+  if (session !== undefined && objectValue(session) === null) {
+    ctx.warnings.push(
+      "OpenCode: 'cli.json' tiene un 'session' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite sync para sembrar session.verbosity: low.",
+    );
+    return null;
+  }
+  if (objectValue(session)?.["verbosity"] !== undefined) return null;
+  return seedCliVerbosity(ctx, existing);
+}
+
+/** Siembra `session.verbosity: low` sobre un cli.json ausente/vacío o existente válido. */
+function seedCliVerbosity(ctx: InstallContext, existing: string | null): FileAction {
+  const ownership: PrimaryModelOwnershipChange[] = [];
+  const content = editConfigContent(existing, (root) => {
+    const session = objectValue(root["session"]);
+    const sessionBlock = session ?? {};
+    if (session === null) root["session"] = sessionBlock;
+    sessionBlock["verbosity"] = "low";
+    claimFieldId(ctx.ownedPrimaryModelFields, ownership, CLI_VERBOSITY_FIELD);
+  });
+  return {
+    kind: "write",
+    target: path.join(ctx.configDir, CLI_FILENAME),
+    content,
+    ...(ownership.length > 0 ? { primaryModelOwnership: ownership } : {}),
+  };
+}
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -139,18 +328,51 @@ function pruneEmpty(parent: Record<string, unknown>, key: string): void {
   if (value !== null && Object.keys(value).length === 0) delete parent[key];
 }
 
+/**
+ * Selector del server config nativo. `opencode.jsonc` es una fuente válida que
+ * el host lee: si solo existe ese archivo se edita en su sitio con IDs basename
+ * `opencode.jsonc` (nunca se crea un `opencode.json` paralelo que el host
+ * ignoraría). Si coexisten `opencode.json` y `opencode.jsonc` el archivo
+ * efectivo es ambiguo y se falla cerrado. Un único helper para
+ * main/unmerge/read/capabilities/diag.
+ */
+function selectOpenCodeServerFile(configDir: string): { selection: { file: string; basename: string } } | { conflict: string[] } {
+  const json = path.join(configDir, CONFIG_FILENAME);
+  const jsonc = path.join(configDir, CONFIG_FILENAME_JSONC);
+  const hasJson = fs.existsSync(json);
+  const hasJsonc = fs.existsSync(jsonc);
+  if (hasJson && hasJsonc) return { conflict: [json, jsonc] };
+  if (hasJsonc) return { selection: { file: jsonc, basename: CONFIG_FILENAME_JSONC } };
+  return { selection: { file: json, basename: CONFIG_FILENAME } };
+}
+
 function hasOpenCodeManualApproval(configDir: string): boolean {
-  const content = readTextIfExists(path.join(configDir, "opencode.json"));
+  const selection = selectOpenCodeServerFile(configDir);
+  if ("conflict" in selection) return false;
+  const content = readTextIfExists(selection.selection.file);
   if (content === null) return false;
 
-  try {
-    const root = JSON.parse(content) as unknown;
-    const permission = objectValue(objectValue(root)?.permission);
-    const expected = loadCanonicalDefaults(stackRoot())["opencode"]?.["permission"];
-    return permission !== null && expected !== undefined && isDeepStrictEqual(permission, expected);
-  } catch {
-    return false;
-  }
+  const parsed = parseJsoncObject(content);
+  const permission = objectValue(parsed.value?.["permission"]);
+  const expected = loadCanonicalDefaults(stackRoot())["opencode"]?.["permission"];
+  return permission !== null && expected !== undefined && isDeepStrictEqual(permission, expected);
+}
+
+const OPENCODE_V2_DESIGN_REASON =
+  "Canonical native v2 permissions recognized; the approved policy configures no human approval gate (sin asks) por diseño, so `manual` cannot be claimed and runtime activation is not certified";
+
+/**
+ * Reconoce el bloque nativo v2 canónico (`permissions` ordenado idéntico al que
+ * escribe el adapter). Solo acredita igualdad exacta: custom/modificado/ausente/
+ * malformado/ilegible queda fuera y conserva una razón conservadora.
+ */
+function hasCanonicalOpenCodeV2Permissions(configDir: string): boolean {
+  const selection = selectOpenCodeServerFile(configDir);
+  if ("conflict" in selection) return false;
+  const content = readTextIfExists(selection.selection.file);
+  if (content === null) return false;
+  const parsed = parseJsoncObject(content);
+  return parsed.value !== null && isDeepStrictEqual(parsed.value["permissions"], freshPermissions());
 }
 
 export const opencodeAdapter: Adapter = {
@@ -170,7 +392,13 @@ export const opencodeAdapter: Adapter = {
             evidence: { source: "jorgex-stack-system-prompt", version: "1" },
           }]
         : []),
-      ...(hasOpenCodeManualApproval(configDir)
+      ...(hasCanonicalOpenCodeV2Permissions(configDir)
+        ? [{
+            id: "tool-approval",
+            state: "unavailable",
+            reason: OPENCODE_V2_DESIGN_REASON,
+          }]
+        : hasOpenCodeManualApproval(configDir)
         ? [{
             id: "tool-approval",
             state: "manual",
@@ -187,10 +415,7 @@ export const opencodeAdapter: Adapter = {
     // sin duplicar en ~/.config/opencode/skills. Con el configDir real
     // (aunque venga de OPENCODE_CONFIG_DIR) el ancla es HOME; con --target-dir,
     // su padre (mismo patrón que Codex en pruebas).
-    const isRealConfigDir = samePath(
-      configDir,
-      process.env.OPENCODE_CONFIG_DIR ?? path.join(HOME, ".config", "opencode"),
-    );
+    const isRealConfigDir = samePath(configDir, resolveOpenCodeConfigDir());
     const agentsHome = isRealConfigDir ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
@@ -211,8 +436,11 @@ export const opencodeAdapter: Adapter = {
     // (usan el modelo seleccionado por el usuario y los defaults globales).
     if (agent.mode === "subagent") {
       const tierModel = resolveAgentModel(models, agent.name, agent.tier);
-      lines.push(`model: ${tierModel.model}`);
-      if (tierModel.variant) lines.push(`variant: ${tierModel.variant}`);
+      // v2 usa un único `provider/model#variant`. Se serializa con yamlString
+      // (JSON double-quoted) para que un modelo manual con comillas o saltos de
+      // línea no inyecte campos, comentarios ni delimitadores en el frontmatter.
+      const modelRef = tierModel.variant ? `${tierModel.model}#${tierModel.variant}` : tierModel.model;
+      lines.push(`model: ${yamlString(modelRef)}`);
 
       if (agent.readonly || agent.bash !== "full" || !agent.spawn) lines.push("permission:");
       if (agent.readonly) lines.push("  edit: deny");
@@ -332,7 +560,13 @@ export const opencodeAdapter: Adapter = {
   },
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
-    const file = path.join(ctx.configDir, "opencode.json");
+    const selection = selectOpenCodeServerFile(ctx.configDir);
+    if ("conflict" in selection) {
+      throw new Error(
+        `OpenCode: coexisten '${path.basename(selection.conflict[0]!)}' y '${path.basename(selection.conflict[1]!)}'; el archivo efectivo del host es ambiguo, así que se conservan ambos sin fusionar ni ignorar ninguno. Deja solo opencode.jsonc (o opencode.json) antes de reintentar sync.`,
+      );
+    }
+    const { file, basename: base } = selection.selection;
     const { pluginsDir } = this.paths(ctx.configDir);
     const original = readMcpConfig(file);
     const contentSource = original === null || original.trim() === "" ? null : original;
@@ -340,68 +574,235 @@ export const opencodeAdapter: Adapter = {
 
     const mcpOwnership: McpOwnershipChange[] = [];
     const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
-    const content = upsertJson(contentSource, (root) => {
+    const mutate = (root: Record<string, unknown>): void => {
       const rawMcp = root["mcp"];
       if (rawMcp !== undefined && objectValue(rawMcp) === null) {
         throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar sync.");
       }
       const existingMcp = rawMcp as Record<string, unknown> | undefined;
+      const nativeServers = objectValue(existingMcp?.["servers"]);
+      // v2 anida los servidores en `mcp.servers`. Una entrada legacy plana del
+      // mismo nombre se conserva y cuenta como existente: no se crea un
+      // duplicado nativo que oculte la configuración efectiva del usuario.
+      const inContext = (name: string): unknown => nativeServers?.[name] ?? existingMcp?.[name];
+      let servers: Record<string, unknown> | null = nativeServers;
+      const writableServers = (): Record<string, unknown> => {
+        const mcp = (root["mcp"] ??= {}) as Record<string, unknown>;
+        servers ??= ensureObject(mcp, "servers", "mcp.servers");
+        return servers;
+      };
       const context7 = canonical.servers.context7;
-      if (context7 !== undefined) assertCompatibleContext7(context7, existingMcp?.["context7"]);
+      if (context7 !== undefined) assertCompatibleContext7(context7, inContext("context7"));
 
       root["$schema"] ??= "https://opencode.ai/config.json";
-      if (root[PRIMARY_MODEL_FIELD] === undefined) {
-        root[PRIMARY_MODEL_FIELD] = PRIMARY_MODEL;
-        if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) !== true) {
-          primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: true });
-        }
-      } else if (typeof root[PRIMARY_MODEL_FIELD] !== "string" || root[PRIMARY_MODEL_FIELD].trim() === "") {
-        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar sync.");
+
+      // Migración del ledger v1 (IDs dotted) → IDs file-qualificados. Se acredita
+      // SOLO con las ocho marcas dotted owned y una estructura `provider.openai`
+      // exactamente igual al canon v1 (único modelo 5.6 con sus tres límites): si
+      // el entry owned tiene api/settings, otro modelo o cualquier campo extra,
+      // escribir el native lo ocultaría (el native válido prevalece), así que se
+      // falla cerrado antes de tocar bytes o marcas.
+      const ownedFields = ctx.ownedPrimaryModelFields;
+      const legacyProvider = objectValue(root["provider"]);
+      const nativeProviders = objectValue(root["providers"]);
+      const legacyOpenai = legacyProvider === null ? null : objectValue(legacyProvider["openai"]);
+      const legacyModels = legacyOpenai === null ? null : objectValue(legacyOpenai["models"]);
+      const legacySol = legacyModels === null ? null : objectValue(legacyModels[LEGACY_MODEL_ID]);
+      const legacyProviderOwned = LEGACY_PROVIDER_DOTTED_FIELDS.every((field) => ownedFields?.has(field) === true);
+      const pureLegacyOpenai = legacyOpenai !== null && isDeepStrictEqual(legacyOpenai, LEGACY_OPENAI_SUBTREE);
+      const migratingLegacy = base === CONFIG_FILENAME && legacySol !== null && legacyProviderOwned && pureLegacyOpenai;
+      if (legacySol !== null && legacyProviderOwned && !pureLegacyOpenai) {
+        throw new Error("OpenCode: 'provider.openai' está marcado como owned v1 pero su contenido no es el canon v1 exacto (api/settings, otros modelos o campos extra); escribir los defaults nativos lo ocultaría y no se acredita como puro. Revisa, restaura o retira esa entrada antes de reintentar sync.");
       }
 
-      const provider = ensureOwnedPrimaryObject(root, "provider", PRIMARY_PROVIDER_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const openai = ensureOwnedPrimaryObject(provider, "openai", PRIMARY_OPENAI_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const models = ensureOwnedPrimaryObject(openai, "models", PRIMARY_MODELS_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const sol = ensureOwnedPrimaryObject(models, PRIMARY_MODEL_ID, PRIMARY_SOL_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const limit = ensureOwnedPrimaryObject(sol, "limit", PRIMARY_LIMIT_PREFIX, ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      if (root["model"] === undefined) {
+        root["model"] = PRIMARY_MODEL;
+        if (ownedFields?.has(modelField(base)) !== true) {
+          primaryModelOwnership.push({ field: modelField(base), owned: true });
+        }
+      } else if (typeof root["model"] !== "string" || root["model"].trim() === "") {
+        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar sync.");
+      }
+      if (migratingLegacy && legacyProvider !== null) {
+        // El `model` owned exactamente 5.6 se reescribe al target 6.1 y se reclama
+        // en el ID file-qualificado; un valor ya modificado a mano (p.ej. 6.1) se
+        // preserva sin reclamar. Las marcas v1 se liberan tras el write verificado.
+        if (ownedFields?.has("model") === true && root["model"] === LEGACY_MODEL) {
+          root["model"] = PRIMARY_MODEL;
+          claimFieldId(ownedFields, primaryModelOwnership, modelField(base));
+        }
+        for (const field of LEGACY_DOTTED_FIELDS) {
+          if (ownedFields?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
+        }
+        // El subtree legacy owned exacto se retira por completo (una sola home).
+        // El contenedor padre solo se poda si queda vacío: otros ids se preservan.
+        delete legacyProvider["openai"];
+        pruneEmpty(root, "provider");
+      }
+
+      // Compatibilidad v1→v2: un `provider.<id>` legacy ajeno sin equivalente
+      // native sería ocultado por nuestros defaults `providers.<id>` y perdería
+      // su endpoint/settings/credenciales. Falla cerrado con remedio en vez de
+      // convertirlo o reclamarlo indiscriminadamente. Una entrada legacy v1
+      // conocida y owned (migrada arriba) no se bloquea: ya era nuestra.
+      if (!migratingLegacy && legacyProvider?.["openai"] !== undefined && nativeProviders?.["openai"] === undefined) {
+        throw new Error("OpenCode: 'provider.openai' legacy (v1) sin 'providers.openai' nativo; añadir los defaults v2 ocultaría su endpoint/settings/credenciales. Migra esa entrada a 'providers' o retírala antes de reintentar sync.");
+      }
+
+      const providers = ensureOwnedPrimaryObject(root, "providers", providersField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const openai = ensureOwnedPrimaryObject(providers, "openai", primaryOpenaiField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const models = ensureOwnedPrimaryObject(openai, "models", primaryModelsField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const sol = ensureOwnedPrimaryObject(models, PRIMARY_MODEL_ID, primarySolField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
+      const limit = ensureOwnedPrimaryObject(sol, "limit", primaryLimitPrefix(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
       for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
         if (limit[key] !== undefined) continue;
         limit[key] = value;
-        const field = `${PRIMARY_LIMIT_PREFIX}.${key}`;
+        const field = primaryLimitField(base, key);
         if (ctx.ownedPrimaryModelFields?.has(field) !== true) {
           primaryModelOwnership.push({ field, owned: true });
         }
       }
 
-      // Permisos por defecto: se siembran en config fresca o vacía. Una
-      // config existente se preserva byte a byte y solo avisa cuando el
-      // bloque difiere del default; con --upgrade-permissions se reemplaza
-      // el bloque entero (el pipeline hace backup antes de escribir).
-      const defaults = loadCanonicalDefaults(ctx.stackDir)["opencode"];
-      const canonicalPermission = defaults?.["permission"];
+      // Permisos v2: lista ordenada que se siembra en config fresca o vacía.
+      // Una config existente se preserva y solo avisa; --upgrade-permissions
+      // reemplaza el bloque entero (el pipeline hace backup antes de escribir).
+      const permissions = freshPermissions();
       if (isFreshConfig) {
-        if (canonicalPermission !== undefined) {
-          root["permission"] = canonicalPermission;
-          ctx.warnings.push(
-            "OpenCode: fresh config allows ordinary reads, edits, web access and Bash; sensitive operations ask, while protected paths and obvious destruction are denied. Native matching is not a universal filesystem sandbox.",
-          );
-        }
-      } else if (canonicalPermission !== undefined && !isDeepStrictEqual(root["permission"], canonicalPermission)) {
+        root["permissions"] = permissions;
+        ctx.warnings.push(
+          "OpenCode: fresh config allows ordinary reads, edits, web access and Bash; secrets are denied while *.env.example stays readable. Native matching is not a universal filesystem sandbox.",
+        );
+      } else if (!isDeepStrictEqual(root["permissions"], permissions)) {
         if (ctx.upgradePermissions === true) {
-          root["permission"] = canonicalPermission;
+          root["permissions"] = permissions;
         } else {
           ctx.warnings.push(
-            "OpenCode: permission block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.",
+            "OpenCode: permissions block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.",
           );
         }
       }
 
-      const mcp = (root["mcp"] ??= {}) as Record<string, Record<string, unknown>>;
+      // Defaults v2 de servidor: solo campos ausentes; nunca sobrescriben un
+      // valor manual. Los aliases legacy ya deciden su equivalente nativo, así
+      // que no se siembra un default que los ocultaría (migrate-v1). Cada campo
+      // creado se registra en el ledger file-qualificado para su uninstall.
+      if (root["update"] === undefined && root["autoupdate"] === undefined) {
+        root["update"] = "auto";
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "update");
+      }
+
+      const agentsValue = root["agents"];
+      if (agentsValue !== undefined && objectValue(agentsValue) === null) {
+        throw new Error("OpenCode: 'agents' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      const agents = objectValue(agentsValue) ?? {};
+      if (agentsValue === undefined) {
+        root["agents"] = agents;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents");
+      }
+
+      const plan = objectValue(agents["plan"]);
+      if (agents["plan"] !== undefined && plan === null) {
+        throw new Error("OpenCode: 'agents.plan' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      const planBlock = plan ?? {};
+      if (plan === null) {
+        agents["plan"] = planBlock;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "plan");
+      }
+      if (planBlock["disabled"] === undefined) {
+        planBlock["disabled"] = true;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "plan", "disabled");
+      }
+
+      // `small_model` y el mapa V1 `agent.title` ya deciden el título: no se
+      // siembra `agents.title.model` mientras cualquiera de ellos exista.
+      const legacyTitle = root["small_model"] !== undefined
+        || objectValue(root["agent"])?.["title"] !== undefined;
+      const title = objectValue(agents["title"]);
+      if (agents["title"] !== undefined && title === null) {
+        throw new Error("OpenCode: 'agents.title' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      if (!legacyTitle && title?.["model"] === undefined) {
+        const titleBlock = title ?? {};
+        if (title === null) {
+          agents["title"] = titleBlock;
+          claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "title");
+        }
+        titleBlock["model"] = "openai/gpt-6-luna#none";
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "title", "model");
+      }
+
+      const summary = objectValue(agents["summary"]);
+      if (agents["summary"] !== undefined && summary === null) {
+        throw new Error("OpenCode: 'agents.summary' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      const summaryBlock = summary ?? {};
+      if (summary === null) {
+        agents["summary"] = summaryBlock;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "summary");
+      }
+      if (summaryBlock["model"] === undefined) {
+        summaryBlock["model"] = "minimax/MiniMax-M3#thinking";
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "summary", "model");
+      }
+
+      const compactionValue = root["compaction"];
+      if (compactionValue !== undefined && objectValue(compactionValue) === null) {
+        throw new Error("OpenCode: 'compaction' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      const compaction = objectValue(compactionValue) ?? {};
+      if (compactionValue === undefined) {
+        root["compaction"] = compaction;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "compaction");
+      }
+      if (compaction["auto"] === undefined) {
+        compaction["auto"] = true;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "compaction", "auto");
+      }
+      const keep = objectValue(compaction["keep"]);
+      if (compaction["keep"] !== undefined && keep === null) {
+        throw new Error("OpenCode: 'compaction.keep' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      // `preserve_recent_tokens` (V1) ya decide el presupuesto retenido.
+      if (compaction["preserve_recent_tokens"] === undefined && keep?.["tokens"] === undefined) {
+        const keepBlock = keep ?? {};
+        if (keep === null) {
+          compaction["keep"] = keepBlock;
+          claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "compaction", "keep");
+        }
+        keepBlock["tokens"] = 20000;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "compaction", "keep", "tokens");
+      }
+
+      if (root["formatter"] === undefined) {
+        root["formatter"] = true;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "formatter");
+      }
+      if (root["lsp"] === undefined) {
+        root["lsp"] = false;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "lsp");
+      }
+
+      const worktreeValue = root["worktree"];
+      if (worktreeValue !== undefined && objectValue(worktreeValue) === null) {
+        throw new Error("OpenCode: 'worktree' debe ser un objeto; corrígelo antes de reintentar sync.");
+      }
+      const worktree = objectValue(worktreeValue) ?? {};
+      if (worktreeValue === undefined) {
+        root["worktree"] = worktree;
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "worktree");
+      }
+      if (worktree["directory"] === undefined) {
+        worktree["directory"] = "worktrees";
+        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "worktree", "directory");
+      }
+
       const pluginState = inspectOpencodeEngramPlugin(ctx.configDir);
       const officialPluginPresent = pluginState === "official";
       const pluginUnknown = pluginState === "unknown";
       for (const [name, server] of Object.entries(canonical.servers)) {
-        const existing = mcp[name];
+        const existing = inContext(name);
         const owned = ctx.ownedMcpServers?.has(name) === true;
         // Oficial preservado: con plugin oficial (`engram setup opencode`) el
         // MCP es oficial, no legacy del Stack. No se reclama ownership ni se
@@ -428,7 +829,10 @@ export const opencodeAdapter: Adapter = {
         }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
-            if (isOwnedDevtoolsServer(name, server, existing, ctx)) delete mcp[name];
+            if (isOwnedDevtoolsServer(name, server, existing, ctx)) {
+              if (nativeServers !== null) delete nativeServers[name];
+              if (existingMcp !== undefined && existing === existingMcp[name]) delete existingMcp[name];
+            }
             mcpOwnership.push({ server: name, owned: false });
           }
           continue;
@@ -446,10 +850,10 @@ export const opencodeAdapter: Adapter = {
             continue;
           }
           const command = server.command === "{{ENGRAM_BIN}}" ? ctx.engramBin! : server.command!;
-          mcp[name] = { type: "local", command: [command, ...(server.args ?? [])] };
+          writableServers()[name] = { type: "local", command: [command, ...(server.args ?? [])] };
           if (server.optional && existing === undefined && !owned) mcpOwnership.push({ server: name, owned: true });
         } else {
-          const previous = mcp[name] as { headers?: Record<string, string> } | undefined;
+          const previous = existing as { headers?: Record<string, string> } | undefined;
           const headers: Record<string, string> = {};
           for (const [key, raw] of Object.entries(server.headers ?? {})) {
             const envRef = /^\$\{(\w+)\}$/.exec(raw);
@@ -458,7 +862,7 @@ export const opencodeAdapter: Adapter = {
             // ({env:VAR}): el secreto vive en el entorno, nunca en el archivo.
             headers[key] = previous?.headers?.[key] || (envRef ? `{env:${envRef[1]!}}` : raw);
           }
-          mcp[name] = {
+          writableServers()[name] = {
             type: "remote",
             url: server.url,
             ...(Object.keys(headers).length > 0 ? { headers } : {}),
@@ -490,15 +894,19 @@ export const opencodeAdapter: Adapter = {
           }
         }
       }
-    });
+    };
+    const content = editConfigContent(contentSource, mutate);
 
-    return [{
+    const actions: FileAction[] = [{
       kind: "write",
       target: file,
       content,
       ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
       ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
     }];
+    const cliAction = planCliConfig(ctx);
+    if (cliAction !== null) actions.push(cliAction);
+    return actions;
   },
 
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
@@ -511,44 +919,122 @@ export const opencodeAdapter: Adapter = {
       actions.push({ kind: "write", target: systemPromptFile, content });
     }
 
-    const configFile = path.join(ctx.configDir, "opencode.json");
-    const config = readMcpConfig(configFile);
+    const selection = selectOpenCodeServerFile(ctx.configDir);
+    const conflict = "conflict" in selection;
+    if (conflict) {
+      ctx.warnings.push(
+        "OpenCode: coexisten 'opencode.json' y 'opencode.jsonc'; el archivo efectivo del host es ambiguo, así que se conserva sin retirar campos gestionados. Deja solo uno antes de reintentar.",
+      );
+    }
+    const configFile = conflict ? "" : (selection as { selection: { file: string } }).selection.file;
+    const base = conflict ? CONFIG_FILENAME : (selection as { selection: { basename: string } }).selection.basename;
+    const config = conflict ? null : readMcpConfig(configFile);
     if (config !== null) {
       const mcpOwnership: McpOwnershipChange[] = [];
       const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
-      const content = upsertJson(config, (root) => {
-        if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) === true) {
-          if (root[PRIMARY_MODEL_FIELD] === PRIMARY_MODEL) delete root[PRIMARY_MODEL_FIELD];
-          primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: false });
+      const content = editConfigContent(config, (root) => {
+        if (ctx.ownedPrimaryModelFields?.has(modelField(base)) === true) {
+          if (root["model"] === PRIMARY_MODEL) delete root["model"];
+          primaryModelOwnership.push({ field: modelField(base), owned: false });
         }
 
-        const provider = objectValue(root["provider"]);
-        const openai = provider === null ? null : objectValue(provider["openai"]);
+        const providers = objectValue(root["providers"]);
+        const openai = providers === null ? null : objectValue(providers["openai"]);
         const models = openai === null ? null : objectValue(openai["models"]);
         const sol = models === null ? null : objectValue(models[PRIMARY_MODEL_ID]);
         const limit = sol === null ? null : objectValue(sol["limit"]);
         if (limit !== null) {
           for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
-            const field = `${PRIMARY_LIMIT_PREFIX}.${key}`;
+            const field = primaryLimitField(base, key);
             if (ctx.ownedPrimaryModelFields?.has(field) !== true) continue;
             if (limit[key] === value) delete limit[key];
           }
         }
-        if (sol !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_LIMIT_PREFIX) === true) pruneEmpty(sol, "limit");
-        if (models !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_SOL_FIELD) === true) pruneEmpty(models, PRIMARY_MODEL_ID);
-        if (openai !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_MODELS_FIELD) === true) pruneEmpty(openai, "models");
-        if (provider !== null && ctx.ownedPrimaryModelFields?.has(PRIMARY_OPENAI_FIELD) === true) pruneEmpty(provider, "openai");
-        if (ctx.ownedPrimaryModelFields?.has(PRIMARY_PROVIDER_FIELD) === true) pruneEmpty(root, "provider");
+        if (sol !== null && ctx.ownedPrimaryModelFields?.has(primaryLimitPrefix(base)) === true) pruneEmpty(sol, "limit");
+        if (models !== null && ctx.ownedPrimaryModelFields?.has(primarySolField(base)) === true) pruneEmpty(models, PRIMARY_MODEL_ID);
+        if (openai !== null && ctx.ownedPrimaryModelFields?.has(primaryModelsField(base)) === true) pruneEmpty(openai, "models");
+        if (providers !== null && ctx.ownedPrimaryModelFields?.has(primaryOpenaiField(base)) === true) pruneEmpty(providers, "openai");
+        if (ctx.ownedPrimaryModelFields?.has(providersField(base)) === true) pruneEmpty(root, "providers");
         const managedFields = [
-          PRIMARY_PROVIDER_FIELD,
-          PRIMARY_OPENAI_FIELD,
-          PRIMARY_MODELS_FIELD,
-          PRIMARY_SOL_FIELD,
-          PRIMARY_LIMIT_PREFIX,
-          ...Object.keys(PRIMARY_LIMITS).map((key) => `${PRIMARY_LIMIT_PREFIX}.${key}`),
+          providersField(base),
+          primaryOpenaiField(base),
+          primaryModelsField(base),
+          primarySolField(base),
+          primaryLimitPrefix(base),
+          ...Object.keys(PRIMARY_LIMITS).map((key) => primaryLimitField(base, key)),
         ];
         for (const field of managedFields) {
           if (ctx.ownedPrimaryModelFields?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
+        }
+
+        // Defaults v2 de servidor owned: se retiran solo si siguen siendo el
+        // valor canónico del archivo correcto; un valor modificado se preserva.
+        // Los contenedores vacíos se podan para no dejar residuos.
+        const isOwned = (...segments: string[]): boolean =>
+          ctx.ownedPrimaryModelFields?.has(ownedField(base, ...segments)) === true;
+        const release = (...segments: string[]): void => {
+          if (isOwned(...segments)) {
+            primaryModelOwnership.push({ field: ownedField(base, ...segments), owned: false });
+          }
+        };
+
+        if (isOwned("update") && root["update"] === "auto") delete root["update"];
+        release("update");
+        if (isOwned("formatter") && root["formatter"] === true) delete root["formatter"];
+        release("formatter");
+        if (isOwned("lsp") && root["lsp"] === false) delete root["lsp"];
+        release("lsp");
+
+        release("agents");
+        const agentsBlock = objectValue(root["agents"]);
+        if (agentsBlock !== null) {
+          const planBlock = objectValue(agentsBlock["plan"]);
+          if (planBlock !== null && isOwned("agents", "plan", "disabled") && planBlock["disabled"] === true) {
+            delete planBlock["disabled"];
+          }
+          release("agents", "plan");
+          release("agents", "plan", "disabled");
+          const titleBlock = objectValue(agentsBlock["title"]);
+          if (titleBlock !== null && isOwned("agents", "title", "model") && titleBlock["model"] === "openai/gpt-6-luna#none") {
+            delete titleBlock["model"];
+          }
+          release("agents", "title");
+          release("agents", "title", "model");
+          const summaryBlock = objectValue(agentsBlock["summary"]);
+          if (summaryBlock !== null && isOwned("agents", "summary", "model") && summaryBlock["model"] === "minimax/MiniMax-M3#thinking") {
+            delete summaryBlock["model"];
+          }
+          release("agents", "summary");
+          release("agents", "summary", "model");
+          pruneEmpty(agentsBlock, "plan");
+          pruneEmpty(agentsBlock, "title");
+          pruneEmpty(agentsBlock, "summary");
+          pruneEmpty(root, "agents");
+        }
+
+        release("compaction");
+        const compactionBlock = objectValue(root["compaction"]);
+        if (compactionBlock !== null) {
+          if (isOwned("compaction", "auto") && compactionBlock["auto"] === true) delete compactionBlock["auto"];
+          release("compaction", "auto");
+          const keepBlock = objectValue(compactionBlock["keep"]);
+          if (keepBlock !== null && isOwned("compaction", "keep", "tokens") && keepBlock["tokens"] === 20000) {
+            delete keepBlock["tokens"];
+          }
+          release("compaction", "keep");
+          release("compaction", "keep", "tokens");
+          pruneEmpty(compactionBlock, "keep");
+          pruneEmpty(root, "compaction");
+        }
+
+        release("worktree");
+        const worktreeBlock = objectValue(root["worktree"]);
+        if (worktreeBlock !== null) {
+          if (isOwned("worktree", "directory") && worktreeBlock["directory"] === "worktrees") {
+            delete worktreeBlock["directory"];
+          }
+          release("worktree", "directory");
+          pruneEmpty(root, "worktree");
         }
 
         const rawMcpBlock = root["mcp"];
@@ -557,6 +1043,15 @@ export const opencodeAdapter: Adapter = {
         }
         const mcpBlock = rawMcpBlock as Record<string, unknown> | undefined;
         if (mcpBlock !== undefined) {
+          const nativeServers = objectValue(mcpBlock["servers"]);
+          // v2 anida en `mcp.servers`; una entrada legacy plana se considera
+          // igual para no dejar residuos. Solo se retira la que coincidió: la
+          // otra entrada sigue siendo del usuario.
+          const currentServer = (name: string): unknown => nativeServers?.[name] ?? mcpBlock[name];
+          const removeServer = (name: string): void => {
+            if (nativeServers !== null && name in nativeServers) delete nativeServers[name];
+            else delete mcpBlock[name];
+          };
           const pluginState = inspectOpencodeEngramPlugin(ctx.configDir);
           const officialPluginPresent = pluginState === "official";
           const pluginUnknown = pluginState === "unknown";
@@ -576,23 +1071,24 @@ export const opencodeAdapter: Adapter = {
               continue;
             }
             if (name === "context7") {
-              const canonical = isCanonicalContext7Server(server, mcpBlock[name]);
+              const canonical = isCanonicalContext7Server(server, currentServer(name));
               const owned = ctx.ownedMcpServers?.has(name) === true;
               if (owned) {
-                if (canonical) delete mcpBlock[name];
+                if (canonical) removeServer(name);
                 mcpOwnership.push({ server: name, owned: false });
               }
               continue;
             }
             if (!server.optional) {
-              delete mcpBlock[name];
+              removeServer(name);
               continue;
             }
             if (ctx.ownedMcpServers?.has(name) === true) {
-              if (isOwnedDevtoolsServer(name, server, mcpBlock[name], ctx)) delete mcpBlock[name];
+              if (isOwnedDevtoolsServer(name, server, currentServer(name), ctx)) removeServer(name);
               mcpOwnership.push({ server: name, owned: false });
             }
           }
+          if (nativeServers !== null && Object.keys(nativeServers).length === 0) delete mcpBlock["servers"];
           if (Object.keys(mcpBlock).length === 0) delete root["mcp"];
         }
         const plugin = root["plugin"] as string[] | undefined;
@@ -614,6 +1110,36 @@ export const opencodeAdapter: Adapter = {
         ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
         ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
       });
+    }
+
+    // `cli.json` es un target compartido del Stack. Se declara SIEMPRE que el
+    // archivo exista en el root correcto: (a) protege el archivo de un borrado
+    // whole-file en uninstall aunque el ledger todavía no tenga el campo (p.ej.
+    // la primera pasada, donde el ctx se construyó antes del write) y (b) lo
+    // corrobora en el inventario del manifest. Sin el campo owned la acción es
+    // un no-op byte-idéntico: diffPlan la marca "unchanged" y no se reescribe
+    // nada. Con el campo owned solo se retira el valor que siga siendo canónico,
+    // preservando las claves ajenas.
+    const cliFile = path.join(ctx.configDir, CLI_FILENAME);
+    const cliRaw = readTextIfExists(cliFile);
+    if (cliRaw !== null) {
+      if (ctx.ownedPrimaryModelFields?.has(CLI_VERBOSITY_FIELD) === true) {
+        const cliOwnership: PrimaryModelOwnershipChange[] = [];
+        const content = editConfigContent(cliRaw, (root) => {
+          const session = objectValue(root["session"]);
+          if (session !== null && session["verbosity"] === "low") delete session["verbosity"];
+          pruneEmpty(root, "session");
+          cliOwnership.push({ field: CLI_VERBOSITY_FIELD, owned: false });
+        });
+        actions.push({
+          kind: "write",
+          target: cliFile,
+          content,
+          primaryModelOwnership: cliOwnership,
+        });
+      } else if (cliRaw.trim() !== "") {
+        actions.push({ kind: "write", target: cliFile, content: cliRaw });
+      }
     }
 
     const hooksFile = path.join(ctx.configDir, "hooks.json");

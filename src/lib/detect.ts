@@ -1,7 +1,7 @@
 import path from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { HOME } from "./paths.js";
+import { HOME, resolveOpenCodeConfigDir } from "./paths.js";
 import type { RuntimeId } from "../adapters/types.js";
 
 export interface RuntimeDetection {
@@ -70,7 +70,7 @@ export function runDetectedBin(bin: string, args: string[], timeoutMs: number, e
 }
 
 export function detectOpenCode(): RuntimeDetection {
-  const configDir = process.env.OPENCODE_CONFIG_DIR ?? path.join(HOME, ".config", "opencode");
+  const configDir = resolveOpenCodeConfigDir();
   const binPath = lookPath("opencode");
   return {
     id: "opencode",

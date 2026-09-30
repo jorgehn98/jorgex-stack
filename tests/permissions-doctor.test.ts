@@ -160,10 +160,11 @@ describe("doctor: aviso stale de permisos (T03)", () => {
     writeModelMap(env.home);
     try {
       const fresh = JSON.parse(await freshOpencodeContent(oc)) as Record<string, unknown>;
-      const permission = fresh.permission as Record<string, unknown>;
-      (permission.bash as Record<string, string>).format = "ask";
-      permission.canary_probe = canary;
-      const before = JSON.stringify({ ...fresh, permission }, null, 2);
+      const permissions = fresh.permissions as { action: string; resource: string; effect: string }[];
+      // Divergencia real del bloque nativo v2 + dato ajeno que no debe volcarse.
+      permissions.push({ action: "read", resource: canary, effect: "deny" });
+      permissions.find((rule) => rule.action === "edit" && rule.resource === "*.env.example")!.effect = "deny";
+      const before = JSON.stringify({ ...fresh, permissions }, null, 2);
       fs.writeFileSync(path.join(oc, "opencode.json"), before);
 
       const doctor = await freshDoctor();

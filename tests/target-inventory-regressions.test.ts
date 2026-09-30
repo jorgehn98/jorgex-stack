@@ -57,8 +57,15 @@ vi.mock("../src/lib/detect.js", async () => {
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
   const originalHome = process.env.HOME;
   const originalUserProfile = process.env.USERPROFILE;
+  const originalXdgConfig = process.env.XDG_CONFIG_HOME;
+  const originalXdgState = process.env.XDG_STATE_HOME;
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
+  // Hermético: el perfil nativo de OpenCode se resuelve con XDG_CONFIG_HOME, así
+  // que debe apuntar al HOME temporal. Sin esto, `paths()` vería como ajena la
+  // raíz `HOME/.config/opencode` y anclaría skills al padre del configDir.
+  process.env.XDG_CONFIG_HOME = path.join(homeDir, ".config");
+  process.env.XDG_STATE_HOME = path.join(homeDir, ".local", "state");
 
   try {
     vi.resetModules();
@@ -68,6 +75,10 @@ async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<
     else process.env.HOME = originalHome;
     if (originalUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = originalUserProfile;
+    if (originalXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalXdgConfig;
+    if (originalXdgState === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = originalXdgState;
     vi.resetModules();
   }
 }

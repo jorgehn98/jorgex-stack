@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, RuntimeId } from "../src/adapters/types.js";
 import { loadCanonicalAgents } from "../src/lib/canonical.js";
+import { DEFAULT_MODEL_MAP, resolveAgentModel } from "../src/lib/model-map.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
 
 /** Binario v2 real reutilizable: el gate ejecuta el binario detectado. */
@@ -121,12 +122,14 @@ async function importInstallModule(homeDir: string): Promise<typeof import("../s
 }
 
 describe("install-mode regressions", () => {
-  it("runInstall rejects OpenCode without an explicit user model map", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-no-opencode-models-"));
+  it("runInstall siembra el roster v2 de OpenCode sin mapa de usuario ni catálogo", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-default-opencode-models-"));
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
     const { runInstall } = await importInstallModule(homeDir);
 
+    // Spec T04 (picker): los defaults v2 inicializan OpenCode fresh también sin
+    // TTY/--yes; el rechazo antiguo por falta de mapa manual queda obsoleto.
     await expect(runInstall({
       runtimes: ["opencode"],
       targetDir,
@@ -134,8 +137,13 @@ describe("install-mode regressions", () => {
       dryRun: false,
       yes: true,
       mode: { mode: "human", subagentConcurrency: "serial" },
-    })).resolves.toBe(1);
-    expect(fs.existsSync(path.join(targetDir, "agents"))).toBe(false);
+    })).resolves.toBe(0);
+
+    const subagentFile = path.join(targetDir, "agents", `${sampleSubagent.name}.md`);
+    const frontmatter = fs.readFileSync(subagentFile, "utf8");
+    const expected = resolveAgentModel(DEFAULT_MODEL_MAP.opencode, sampleSubagent.name, sampleSubagent.tier);
+    const expectedRef = expected.variant ? `${expected.model}#${expected.variant}` : expected.model;
+    expect(frontmatter).toContain(`model: ${JSON.stringify(expectedRef)}`);
   });
 
   it("no crea model-map.json en un HOME nuevo durante un dry-run", async () => {
@@ -208,8 +216,12 @@ describe("install-mode regressions", () => {
 
     const subagentFile = path.join(targetDir, "agents", `${sampleSubagent.name}.md`);
 
-    expect(fs.readFileSync(subagentFile, "utf8")).toContain(`model: ${overrideModel}`);
-    expect(fs.readFileSync(subagentFile, "utf8")).toContain(`variant: ${overrideVariant}`);
+    // El escalar YAML v2 es un único `provider/model#variant` (sin `variant:`
+    // aparte), serializado con comillas JSON para que un valor manual no inyecte
+    // campos en el frontmatter.
+    const subagent = fs.readFileSync(subagentFile, "utf8");
+    expect(subagent).toContain(`model: ${JSON.stringify(`${overrideModel}#${overrideVariant}`)}`);
+    expect(subagent).not.toContain("variant:");
     expect(fs.readFileSync(file, "utf8")).toBe(originalModelMap);
     expect(fs.readdirSync(dataDir).sort()).toEqual(["model-map.json"]);
   });
@@ -432,9 +444,9 @@ describe("Context7 install preflight regressions", () => {
       })).resolves.toBe(0);
 
       const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as {
-        mcp?: Record<string, { type?: string; url?: string }>;
+        mcp?: { servers?: Record<string, { type?: string; url?: string }> };
       };
-      expect(config.mcp?.context7).toMatchObject({
+      expect(config.mcp?.servers?.context7).toMatchObject({
         type: "remote",
         url: "https://mcp.context7.com/mcp",
       });

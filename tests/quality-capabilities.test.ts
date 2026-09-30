@@ -36,7 +36,19 @@ type AdapterFixture = {
 
 type CapabilityFixture = {
   name: string;
-  expected: readonly LocalQualityCapabilityState[];
+  /**
+   * Estado esperado por runtime. OpenCode v2 reconoce su bloque canónico pero
+   * reporta `tool-approval` como `unavailable`: la política aprobada no configura
+   * ningún gate humano (no hay asks), así que `manual` no puede afirmarse.
+   */
+  expected:
+    | readonly LocalQualityCapabilityState[]
+    | ((id: AdapterFixture["id"]) => readonly LocalQualityCapabilityState[]);
+  /**
+   * OpenCode: la razón debe distinguir el bloque canónico v2 reconocido (sin gate
+   * humano por diseño) de la ausencia, el bloque custom y el malformado.
+   */
+  opencodeToolApprovalReason?: "recognized-by-design" | "unrecognized";
   prepare: (adapter: AdapterFixture, configDir: string) => void;
 };
 
@@ -94,6 +106,18 @@ function directorySnapshot(directory: string): string {
 
 function statesFor(report: ReturnType<typeof createLocalCapabilityReport>): LocalQualityCapabilityState[] {
   return CAPABILITY_IDS.map((id) => capability(report, id).state);
+}
+
+/**
+ * Marcador independiente del estado para el reconocimiento del bloque canónico
+ * v2 de OpenCode: se reconoce la política, pero se declara que no hay gate humano
+ * configurado (por diseño). El mensaje genérico de "no hay declaración revisada"
+ * no lo satisface, así que estos asserts quedan RED hasta que exista esa razón.
+ */
+const OPENCODE_DESIGN_REASON = /dise[ñn]o|humana|humano/i;
+
+function toolApprovalReason(report: ReturnType<typeof createLocalCapabilityReport>): string {
+  return capability(report, "tool-approval").reason;
 }
 
 const ALL_UNAVAILABLE: readonly LocalQualityCapabilityState[] = [
@@ -154,21 +178,25 @@ const CAPABILITY_FIXTURES: readonly CapabilityFixture[] = [
   {
     name: "absence",
     expected: ALL_UNAVAILABLE,
+    opencodeToolApprovalReason: "unrecognized",
     prepare: () => undefined,
   },
   {
     name: "valid managed prompt marker",
     expected: ["prompt-only", "unavailable", "unavailable"],
+    opencodeToolApprovalReason: "unrecognized",
     prepare: (adapter, configDir) => writeManagedPrompt(adapter.adapter, configDir),
   },
   {
     name: "canonical permissions",
-    expected: ["unavailable", "manual", "unavailable"],
+    expected: (id) => (id === "opencode" ? ALL_UNAVAILABLE : ["unavailable", "manual", "unavailable"]),
+    opencodeToolApprovalReason: "recognized-by-design",
     prepare: (adapter, configDir) => writeCanonicalConfig(adapter, configDir),
   },
   {
     name: "canonical prompt and permissions",
-    expected: ["prompt-only", "manual", "unavailable"],
+    expected: (id) => (id === "opencode" ? ["prompt-only", "unavailable", "unavailable"] : ["prompt-only", "manual", "unavailable"]),
+    opencodeToolApprovalReason: "recognized-by-design",
     prepare: (adapter, configDir) => {
       writeManagedPrompt(adapter.adapter, configDir);
       writeCanonicalConfig(adapter, configDir);
@@ -177,6 +205,7 @@ const CAPABILITY_FIXTURES: readonly CapabilityFixture[] = [
   {
     name: "custom permissions",
     expected: ALL_UNAVAILABLE,
+    opencodeToolApprovalReason: "unrecognized",
     prepare: (adapter, configDir) => {
       fs.writeFileSync(path.join(configDir, adapter.configFile), adapter.customConfig, "utf8");
     },
@@ -184,6 +213,7 @@ const CAPABILITY_FIXTURES: readonly CapabilityFixture[] = [
   {
     name: "invalid permissions config",
     expected: ALL_UNAVAILABLE,
+    opencodeToolApprovalReason: "unrecognized",
     prepare: (adapter, configDir) => {
       fs.writeFileSync(path.join(configDir, adapter.configFile), adapter.invalidConfig, "utf8");
     },
@@ -191,6 +221,7 @@ const CAPABILITY_FIXTURES: readonly CapabilityFixture[] = [
   {
     name: "unreadable prompt and permissions config",
     expected: ALL_UNAVAILABLE,
+    opencodeToolApprovalReason: "unrecognized",
     prepare: (adapter, configDir) => {
       fs.mkdirSync(path.join(configDir, adapter.promptFile));
       fs.mkdirSync(path.join(configDir, adapter.configFile));
@@ -349,9 +380,21 @@ describe.each(ADAPTER_FIXTURES)("$id adapter capability boundaries", (fixture) =
     }).not.toThrow();
 
     if (report === undefined) throw new Error("Adapter did not return a capability report");
-    expect(statesFor(report)).toEqual(scenario.expected);
+    const expected = typeof scenario.expected === "function" ? scenario.expected(fixture.id) : scenario.expected;
+    expect(statesFor(report)).toEqual(expected);
     expect(report.capabilities.some((entry) => (entry.state as string) === "enforced")).toBe(false);
     expect(directorySnapshot(configDir)).toBe(before);
+
+    // OpenCode: la razón de `tool-approval` distingue el bloque canónico v2 del
+    // caso ausente/custom/malformado (sin reciclar un `manual` genérico).
+    if (fixture.id === "opencode" && scenario.opencodeToolApprovalReason !== undefined) {
+      const reason = toolApprovalReason(report);
+      if (scenario.opencodeToolApprovalReason === "recognized-by-design") {
+        expect(reason).toMatch(OPENCODE_DESIGN_REASON);
+      } else {
+        expect(reason).not.toMatch(OPENCODE_DESIGN_REASON);
+      }
+    }
   });
 });
 
@@ -398,12 +441,14 @@ describe("permission declaration provenance", () => {
     writeCanonicalConfig(fixture, configDir);
     const configFile = path.join(configDir, fixture.configFile);
     const config = JSON.parse(fs.readFileSync(configFile, "utf8")) as Record<string, unknown>;
-    const permission = config.permission as Record<string, unknown>;
-    const bash = permission.bash as Record<string, unknown>;
-    bash["git push*"] = "allow";
+    // Un allow ajeno no canónico deja el bloque fuera del reconocimiento v2.
+    const permissions = config.permissions as Array<Record<string, unknown>>;
+    permissions.push({ action: "bash", resource: "git push*", effect: "allow" });
     fs.writeFileSync(configFile, JSON.stringify(config), "utf8");
 
-    expect(statesFor(fixture.adapter.reportCapabilities(configDir))).toEqual(ALL_UNAVAILABLE);
+    const report = fixture.adapter.reportCapabilities(configDir);
+    expect(statesFor(report)).toEqual(ALL_UNAVAILABLE);
+    expect(toolApprovalReason(report)).not.toMatch(OPENCODE_DESIGN_REASON);
   });
 
   it.each(ADAPTER_FIXTURES)("keeps canonical approval diagnosis with unrelated $id metadata", (fixture) => {
@@ -420,11 +465,12 @@ describe("permission declaration provenance", () => {
       fs.writeFileSync(configFile, JSON.stringify(config), "utf8");
     }
 
-    expect(statesFor(fixture.adapter.reportCapabilities(configDir))).toEqual([
-      "unavailable",
-      "manual",
-      "unavailable",
-    ]);
+    const report = fixture.adapter.reportCapabilities(configDir);
+    expect(statesFor(report)).toEqual(
+      fixture.id === "opencode" ? ALL_UNAVAILABLE : ["unavailable", "manual", "unavailable"],
+    );
+    // OpenCode: metadatos ajenos no invalidan el reconocimiento del bloque v2.
+    if (fixture.id === "opencode") expect(toolApprovalReason(report)).toMatch(OPENCODE_DESIGN_REASON);
   });
 });
 

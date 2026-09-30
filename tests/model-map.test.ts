@@ -25,8 +25,10 @@ afterEach(() => {
 });
 
 describe("DEFAULT_MODEL_MAP GPT-5.6 policy", () => {
-  it("does not assume an OpenCode provider before the user selects models", () => {
-    expect(DEFAULT_MODEL_MAP.opencode).toBeUndefined();
+  it("ships the v2 OpenCode roster in the shared defaults", () => {
+    // v2: la proyección OpenCode ya no espera una selección previa de
+    // proveedores; el roster vive en DEFAULT_MODEL_MAP.opencode (Spec T04).
+    expect(DEFAULT_MODEL_MAP.opencode).toBeDefined();
   });
 
   it("keeps the Codex orchestrator runtime-selected and assigns the approved defaults to fresh subagents", () => {

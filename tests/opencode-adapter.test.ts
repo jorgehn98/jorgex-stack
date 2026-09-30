@@ -2,10 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
+import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
-import { loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
-import type { RuntimeModelMap } from "../src/lib/model-map.js";
+import { loadCanonicalAgents, loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
+import { DEFAULT_MODEL_MAP, resolveAgentModel, type RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];
@@ -42,6 +43,28 @@ function primaryOwnership(actions: ReturnType<typeof opencodeAdapter.planMainCon
   return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
 }
 
+/** Delimitador del frontmatter del agente: recorte, no un parser YAML. */
+function frontmatter(content: string): string {
+  const end = content.indexOf("\n---", 3);
+  if (!content.startsWith("---\n") || end === -1) throw new Error("Agente sin frontmatter delimitado");
+  return content.slice(4, end);
+}
+
+/**
+ * Valor escalar de un campo del header tal como lo escribe el adapter:
+ * JSON double-quoted (seguro para YAML) o plano. No es un parser YAML.
+ */
+function decodeScalar(raw: string): string {
+  const value = raw.trim();
+  return value.startsWith('"') ? JSON.parse(value) as string : value;
+}
+
+/** Valor decodificado del primer campo del frontmatter, o undefined si falta. */
+function frontmatterField(content: string, field: string): string | undefined {
+  const line = frontmatter(content).split("\n").find((candidate) => candidate.startsWith(`${field}:`));
+  return line === undefined ? undefined : decodeScalar(line.slice(field.length + 1));
+}
+
 const MODELS: RuntimeModelMap = {
   strong: { model: "provider/strong", variant: "high" },
   standard: { model: "provider/standard", variant: "medium" },
@@ -68,15 +91,17 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
       agent({ name: "implementer", tier: "standard" }),
       MODELS,
     );
-    expect(standard!.content).toContain("model: provider/standard");
-    expect(standard!.content).toContain("variant: medium");
+    // El ID exacto se compara decodificando el escalar del header, nunca por
+    // texto sin comillas (el `#` del tag no debe ser un comentario YAML).
+    expect(frontmatterField(standard!.content, "model")).toBe("provider/standard#medium");
+    expect(frontmatter(standard!.content)).not.toMatch(/^variant:/m);
 
     const [cheap] = opencodeAdapter.renderAgent(
       agent({ name: "engram", tier: "cheap" }),
       MODELS,
     );
-    expect(cheap!.content).toContain("model: provider/cheap");
-    expect(cheap!.content).not.toContain("variant:");
+    expect(frontmatterField(cheap!.content, "model")).toBe("provider/cheap");
+    expect(frontmatter(cheap!.content)).not.toMatch(/^variant:/m);
   });
 
   it("full-bash inherits the general policy without overriding its asks or denies", () => {
@@ -132,41 +157,45 @@ describe("opencodeAdapter primary Sol defaults", () => {
   it("añade límites ausentes, es idempotente y limpia solo valores canónicos", () => {
     const freshDir = tempConfigDir();
     const freshFile = path.join(freshDir, "opencode.json");
-    const fresh = JSON.parse(writeActionContent(
-      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(freshDir)),
-      freshFile,
-    )) as Record<string, any>;
-    expect(fresh.model).toBe("openai/gpt-5.6-sol");
-    expect(fresh.provider.openai.models["gpt-5.6-sol"].limit.context).toBe(872000);
+    const freshActions = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(freshDir));
+    const fresh = JSON.parse(writeActionContent(freshActions, freshFile)) as Record<string, any>;
+    expect(fresh.model).toBe("openai/gpt-6.1-sol");
+    expect(fresh.providers.openai.models["gpt-6.1-sol"].limit.context).toBe(872000);
+    // ID de ownership v2 file-qualificado: JSON.stringify([basename, ...segmentos]).
+    const freshOwnership = primaryOwnership(freshActions, freshFile);
+    expect(freshOwnership.has(JSON.stringify(["opencode.json", "model"]))).toBe(true);
+    expect(freshOwnership.has(
+      JSON.stringify(["opencode.json", "providers", "openai", "models", "gpt-6.1-sol", "limit", "context"]),
+    )).toBe(true);
 
     const configDir = tempConfigDir();
     const configFile = path.join(configDir, "opencode.json");
     const ctx = opencodeContext(configDir);
     const mcp = loadCanonicalMcp(stackRoot());
 
+    const legacyProvider = { custom: { npm: "@example/custom-provider", options: { baseURL: "https://example.invalid/v1" } } };
     fs.writeFileSync(configFile, JSON.stringify({
       foreign: { kept: true },
-      provider: { custom: true, openai: { models: { "user-model": { limit: { context: 42 } } } } },
+      provider: legacyProvider,
     }, null, 2));
     const installActions = opencodeAdapter.planMainConfig(mcp, ctx);
     const installed = writeActionContent(installActions, configFile);
     const parsed = JSON.parse(installed) as Record<string, any>;
 
-    expect(parsed.model).toBe("openai/gpt-5.6-sol");
-    expect(parsed.provider.openai.models["gpt-5.6-sol"].limit).toEqual({
+    expect(parsed.model).toBe("openai/gpt-6.1-sol");
+    expect(parsed.providers.openai.models["gpt-6.1-sol"].limit).toEqual({
       context: 872000,
       input: 744000,
       output: 128000,
     });
     expect(parsed.foreign).toEqual({ kept: true });
-    expect(parsed.provider.custom).toBe(true);
-    expect(parsed.provider.openai.models["user-model"].limit.context).toBe(42);
+    expect(parsed.provider).toEqual(legacyProvider);
 
     fs.writeFileSync(configFile, installed);
     expect(writeActionContent(opencodeAdapter.planMainConfig(mcp, ctx), configFile)).toBe(installed);
 
     parsed.model = "user/model";
-    parsed.provider.openai.models["gpt-5.6-sol"].limit.context = 900000;
+    parsed.providers.openai.models["gpt-6.1-sol"].limit.context = 900000;
     fs.writeFileSync(configFile, JSON.stringify(parsed, null, 2));
     const unmerged = JSON.parse(writeActionContent(
       opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
@@ -177,20 +206,46 @@ describe("opencodeAdapter primary Sol defaults", () => {
     )) as Record<string, any>;
 
     expect(unmerged.model).toBe("user/model");
-    expect(unmerged.provider.openai.models["gpt-5.6-sol"].limit).toEqual({ context: 900000 });
+    expect(unmerged.providers.openai.models["gpt-6.1-sol"].limit).toEqual({ context: 900000 });
     expect(unmerged.foreign).toEqual({ kept: true });
-    expect(unmerged.provider.custom).toBe(true);
-    expect(unmerged.provider.openai.models["user-model"].limit.context).toBe(42);
+    expect(unmerged.provider).toEqual(legacyProvider);
 
     const preexistingDir = tempConfigDir();
     const preexistingFile = path.join(preexistingDir, "opencode.json");
     const preexisting = {
-      model: "openai/gpt-5.6-sol",
-      provider: { openai: { models: { "gpt-5.6-sol": { limit: { context: 872000, input: 744000, output: 128000 } } } } },
+      model: "openai/gpt-6.1-sol",
+      providers: { openai: { models: { "gpt-6.1-sol": { limit: { context: 872000, input: 744000, output: 128000 } } } } },
     };
     fs.writeFileSync(preexistingFile, JSON.stringify(preexisting, null, 2));
     const preexistingActions = opencodeAdapter.planMainConfig(mcp, opencodeContext(preexistingDir));
-    expect(primaryOwnership(preexistingActions, preexistingFile)).toEqual(new Set());
+    const preexistingOwnership = primaryOwnership(preexistingActions, preexistingFile);
+    // Un valor igual preexistente no se reclama (model/providers completos)…
+    const preexistingModelProviderIds = [
+      ["model"],
+      ["providers"],
+      ["providers", "openai"],
+      ["providers", "openai", "models"],
+      ["providers", "openai", "models", "gpt-6.1-sol"],
+      ["providers", "openai", "models", "gpt-6.1-sol", "limit"],
+      ["providers", "openai", "models", "gpt-6.1-sol", "limit", "context"],
+      ["providers", "openai", "models", "gpt-6.1-sol", "limit", "input"],
+      ["providers", "openai", "models", "gpt-6.1-sol", "limit", "output"],
+    ].map((segments) => JSON.stringify(["opencode.json", ...segments]));
+    expect([...preexistingOwnership].filter((id) => preexistingModelProviderIds.includes(id))).toEqual([]);
+    // …pero los defaults de servidor que SÍ se crean quedan owned file-qualified.
+    for (const segments of [
+      ["update"],
+      ["agents", "plan", "disabled"],
+      ["agents", "title", "model"],
+      ["agents", "summary", "model"],
+      ["compaction", "auto"],
+      ["compaction", "keep", "tokens"],
+      ["formatter"],
+      ["lsp"],
+      ["worktree", "directory"],
+    ]) {
+      expect(preexistingOwnership.has(JSON.stringify(["opencode.json", ...segments])), segments.join(".")).toBe(true);
+    }
     fs.writeFileSync(preexistingFile, writeActionContent(preexistingActions, preexistingFile));
     const preserved = JSON.parse(writeActionContent(
       opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), opencodeContext(preexistingDir)),
@@ -200,7 +255,7 @@ describe("opencodeAdapter primary Sol defaults", () => {
 
     const emptyTreeDir = tempConfigDir();
     const emptyTreeFile = path.join(emptyTreeDir, "opencode.json");
-    const emptyTree = { provider: { openai: { models: {} } } };
+    const emptyTree = { providers: { openai: { models: {} } } };
     fs.writeFileSync(emptyTreeFile, JSON.stringify(emptyTree, null, 2));
     const emptyTreeActions = opencodeAdapter.planMainConfig(mcp, opencodeContext(emptyTreeDir));
     fs.writeFileSync(emptyTreeFile, writeActionContent(emptyTreeActions, emptyTreeFile));
@@ -211,13 +266,13 @@ describe("opencodeAdapter primary Sol defaults", () => {
       }),
       emptyTreeFile,
     ));
-    expect(emptyTreeUnmerged.provider).toEqual(emptyTree.provider);
+    expect(emptyTreeUnmerged.providers).toEqual(emptyTree.providers);
 
     const removedLimitDir = tempConfigDir();
     const removedLimitFile = path.join(removedLimitDir, "opencode.json");
     const removedLimitActions = opencodeAdapter.planMainConfig(mcp, opencodeContext(removedLimitDir));
     const removedLimitConfig = JSON.parse(writeActionContent(removedLimitActions, removedLimitFile));
-    delete removedLimitConfig.provider.openai.models["gpt-5.6-sol"].limit;
+    delete removedLimitConfig.providers.openai.models["gpt-6.1-sol"].limit;
     fs.writeFileSync(removedLimitFile, JSON.stringify(removedLimitConfig, null, 2));
     const removedLimitUnmerged = JSON.parse(writeActionContent(
       opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
@@ -226,7 +281,7 @@ describe("opencodeAdapter primary Sol defaults", () => {
       }),
       removedLimitFile,
     ));
-    expect(removedLimitUnmerged.provider).toBeUndefined();
+    expect(removedLimitUnmerged.providers).toBeUndefined();
 
     const malformedDir = tempConfigDir();
     fs.writeFileSync(path.join(malformedDir, "opencode.json"), JSON.stringify({ model: false }));
@@ -249,28 +304,31 @@ describe("opencodeAdapter Context7 registration safety", () => {
     if (action?.kind !== "write") throw new Error("Expected a Context7 config write");
 
     const root = JSON.parse(action.content) as {
-      mcp?: Record<string, { type?: string; url?: string }>;
+      mcp?: { servers?: Record<string, { type?: string; url?: string }>; context7?: unknown };
     };
-    expect(root.mcp?.context7).toMatchObject({
+    expect(root.mcp?.servers?.context7).toMatchObject({
       type: "remote",
       url: "https://mcp.context7.com/mcp",
     });
+    expect(root.mcp?.context7).toBeUndefined();
   });
 
-  it("conserva completa una entrada Context7 compatible sin reclamar ownership", () => {
+  it("conserva completa una entrada Context7 nativa compatible sin reclamar ownership", () => {
     const configDir = tempConfigDir();
     const configFile = path.join(configDir, "opencode.json");
     const previous = {
       model: "user/model",
-      provider: { user: { setting: "preserve" } },
+      providers: { user: { setting: "preserve" } },
       mcp: {
-        context7: {
-          type: "remote",
-          url: "https://mcp.context7.com/mcp",
-          headers: { "X-User-Setting": "preserve" },
-          userSetting: "preserve",
+        servers: {
+          context7: {
+            type: "remote",
+            url: "https://mcp.context7.com/mcp",
+            headers: { "X-User-Setting": "preserve" },
+            userSetting: "preserve",
+          },
+          foreign: { type: "remote", url: "https://example.invalid/foreign" },
         },
-        foreign: { type: "remote", url: "https://example.invalid/foreign" },
       },
     };
     fs.writeFileSync(configFile, JSON.stringify(previous, null, 2) + "\n");
@@ -280,9 +338,35 @@ describe("opencodeAdapter Context7 registration safety", () => {
     if (action?.kind !== "write") throw new Error("Expected a Context7 config write");
 
     const result = JSON.parse(action.content) as typeof previous;
-    expect(result.mcp.context7).toEqual(previous.mcp.context7);
-    expect(result.mcp.foreign).toEqual(previous.mcp.foreign);
-    expect(result.provider.user).toEqual(previous.provider.user);
+    expect(result.mcp.servers.context7).toEqual(previous.mcp.servers.context7);
+    expect(result.mcp.servers.foreign).toEqual(previous.mcp.servers.foreign);
+    expect(result.providers.user).toEqual(previous.providers.user);
+    expect(action).not.toHaveProperty("mcpOwnership");
+  });
+
+  it("con una entrada legacy plana compatible no crea un duplicado nativo que la oculte", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const legacyContext7 = {
+      type: "remote",
+      url: "https://mcp.context7.com/mcp",
+      headers: { "X-User-Setting": "preserve" },
+      userSetting: "preserve",
+    };
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ model: "user/model", mcp: { context7: legacyContext7, foreign: { type: "remote", url: "https://example.invalid/foreign" } } }, null, 2) + "\n",
+    );
+
+    const [action] = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir));
+    if (action?.kind !== "write") throw new Error("Expected a Context7 config write");
+    const result = JSON.parse(action.content) as {
+      mcp: { context7?: unknown; foreign?: unknown; servers?: unknown };
+    };
+
+    expect(result.mcp.context7).toEqual(legacyContext7);
+    expect(result.mcp.foreign).toEqual({ type: "remote", url: "https://example.invalid/foreign" });
+    expect(result.mcp.servers).toBeUndefined();
     expect(action).not.toHaveProperty("mcpOwnership");
   });
 
@@ -380,4 +464,422 @@ it("Git rejects executable and output options after every rendered read-only pre
       expect(fs.existsSync(path.join(root, "forbidden"))).toBe(false);
     }
   }
+});
+
+describe("opencodeAdapter v2: configuración fresca nativa", () => {
+  it("emite providers/permissions/mcp.servers sin claves v1 y es byte-idempotente", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const mcp = loadCanonicalMcp(stackRoot());
+    const ctx = opencodeContext(configDir);
+
+    const content = writeActionContent(opencodeAdapter.planMainConfig(mcp, ctx), configFile);
+    const root = JSON.parse(content) as Record<string, any>;
+
+    // Formato nativo v2 (PRD §Implementation Decisions): providers en plural,
+    // permissions como lista ordenada y MCP anidado en mcp.servers.
+    expect(root).toMatchObject({
+      providers: expect.any(Object),
+      permissions: expect.any(Array),
+      mcp: { servers: expect.any(Object) },
+    });
+    expect((root.permissions as unknown[]).length).toBeGreaterThan(0);
+    expect(root.mcp.servers.context7).toMatchObject({
+      type: "remote",
+      url: "https://mcp.context7.com/mcp",
+    });
+
+    // Sin emisión legacy v1: provider/permission planos y mcp.<servidor> fuera.
+    expect(root.provider).toBeUndefined();
+    expect(root.permission).toBeUndefined();
+    expect(root.mcp.context7).toBeUndefined();
+
+    // Primary Sol 6.1 con límites explícitos del contrato (T04), en providers.
+    expect(root.model).toBe("openai/gpt-6.1-sol");
+    expect(root.providers.openai.models["gpt-6.1-sol"].limit).toEqual({
+      context: 872000,
+      input: 744000,
+      output: 128000,
+    });
+
+    // Permisos no inertes: el deny de secretos y la excepción explícita
+    // sobreviven en el overlay v2 (forma del entry la fija T04).
+    const permissionTokens = JSON.stringify(root.permissions);
+    expect(permissionTokens).toContain("*.env");
+    expect(permissionTokens).toContain("*.env.example");
+    expect(permissionTokens).toContain("external_directory");
+
+    // Segunda planificación sobre el archivo ya escrito: mismos bytes.
+    fs.writeFileSync(configFile, content);
+    expect(writeActionContent(opencodeAdapter.planMainConfig(mcp, ctx), configFile)).toBe(content);
+  });
+});
+
+describe("opencodeAdapter v2: preservación JSONC", () => {
+  it("conserva comentarios y claves ajenas al escribir opencode.json", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const cliFile = path.join(configDir, "cli.json");
+    const original = [
+      "// comentario del usuario",
+      "{",
+      '  "foreign": { "kept": true }, // nota',
+      '  "model": "user/model"',
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(configFile, original);
+
+    const mcp = loadCanonicalMcp(stackRoot());
+    const actions = opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir));
+
+    // Ninguna copia a otro destino: solo la config del servidor y cli.json.
+    expect(actions.filter((action) => action.target !== configFile && action.target !== cliFile)).toEqual([]);
+
+    const content = writeActionContent(actions, configFile);
+    expect(content).toContain("// comentario del usuario");
+    expect(content).toContain("// nota");
+    expect(content).toContain('"kept": true');
+    expect(content).toContain('"user/model"');
+
+    // Segunda planificación sobre el archivo escrito: mismos bytes.
+    fs.writeFileSync(configFile, content);
+    expect(writeActionContent(opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir)), configFile)).toBe(content);
+  });
+});
+
+describe("opencodeAdapter v2: config nativa opencode.jsonc", () => {
+  it("edita el .jsonc existente en su propio archivo, con IDs basename .jsonc y unmerge solo owned", () => {
+    const configDir = tempConfigDir();
+    const jsoncFile = path.join(configDir, "opencode.jsonc");
+    const jsonFile = path.join(configDir, "opencode.json");
+    const cliFile = path.join(configDir, "cli.json");
+    const original = [
+      "// config propia del usuario",
+      "{",
+      '  "model": "user/model",',
+      '  "theme": { "name": "user-theme" }',
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(jsoncFile, original);
+
+    const mcp = loadCanonicalMcp(stackRoot());
+    const actions = opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir));
+
+    // La config nativa es la que ya existe: no se crea un segundo archivo que el
+    // host no leería (split-brain).
+    const content = writeActionContent(actions, jsoncFile);
+    expect(actions.some((action) => action.target === jsonFile)).toBe(false);
+    expect(actions.some((action) => action.target === cliFile), "el cliente sigue en la raíz correcta").toBe(true);
+
+    // Contenido ajeno preservado y defaults v2 solo en campos ausentes.
+    expect(content).toContain("// config propia del usuario");
+    expect(content).toContain('"user/model"');
+    expect(content).toContain('"user-theme"');
+    const parsed = parseJsonc(content) as Record<string, unknown>;
+    expect(parsed["model"]).toBe("user/model");
+    expect(parsed["formatter"]).toBe(true);
+
+    // IDs file-qualificados con el basename REAL del archivo editado.
+    const owned = primaryOwnership(actions, jsoncFile);
+    expect(owned).toContain(JSON.stringify(["opencode.jsonc", "formatter"]));
+    expect([...owned].some((field) => field.startsWith('["opencode.json"'))).toBe(false);
+
+    // Idempotencia sobre el mismo archivo.
+    fs.writeFileSync(jsoncFile, content);
+    expect(writeActionContent(opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir)), jsoncFile)).toBe(content);
+
+    // Unmerge: solo retira el campo owned y canónico; lo ajeno (y sus comentarios) queda.
+    const unmerged = opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+      ...opencodeContext(configDir),
+      ownedPrimaryModelFields: new Set([JSON.stringify(["opencode.jsonc", "formatter"])]),
+    });
+    const afterUnmerge = writeActionContent(unmerged, jsoncFile);
+    expect(afterUnmerge).toContain("// config propia del usuario");
+    expect(afterUnmerge).toContain('"user/model"');
+    expect(afterUnmerge).toContain('"user-theme"');
+    expect((parseJsonc(afterUnmerge) as Record<string, unknown>)["formatter"]).toBeUndefined();
+  });
+
+  it("con opencode.json y opencode.jsonc presentes falla cerrado sin fusionar ni ignorar ninguno", () => {
+    const configDir = tempConfigDir();
+    const jsonFile = path.join(configDir, "opencode.json");
+    const jsoncFile = path.join(configDir, "opencode.jsonc");
+    const jsonContent = JSON.stringify({ theme: { name: "user-json" } }, null, 2) + "\n";
+    const jsoncContent = [
+      "// config .jsonc del usuario",
+      "{",
+      '  "theme": { "name": "user-jsonc" }',
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(jsonFile, jsonContent);
+    fs.writeFileSync(jsoncFile, jsoncContent);
+
+    // Selector ambiguo: no se puede saber cuál lee el host, así que la opción
+    // conservadora es bloquear con remedio en vez de fusionar o ignorar uno.
+    expect(() => opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)))
+      .toThrow(/ambig|conflicto|conserva|opencode\.jsonc/i);
+
+    // Ninguno de los dos archivos se toca.
+    expect(fs.readFileSync(jsonFile, "utf8")).toBe(jsonContent);
+    expect(fs.readFileSync(jsoncFile, "utf8")).toBe(jsoncContent);
+  });
+});
+
+describe("opencodeAdapter provider legacy v1", () => {
+  const legacyProvider = {
+    custom: { npm: "@example/custom-provider", options: { baseURL: "https://example.invalid/v1" } },
+  };
+
+  it("preserva un provider legacy ajeno de id distinto sin escribirlo ni ocultarlo", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    fs.writeFileSync(configFile, JSON.stringify({ provider: legacyProvider, foreign: { kept: true } }, null, 2) + "\n");
+
+    const parsed = JSON.parse(writeActionContent(
+      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)),
+      configFile,
+    )) as Record<string, any>;
+
+    expect(parsed.provider).toEqual(legacyProvider);
+    expect(parsed.foreign).toEqual({ kept: true });
+    expect(parsed.providers.openai.models["gpt-6.1-sol"].limit.context).toBe(872000);
+  });
+
+  it("falla cerrado con remedio cuando provider.openai legacy quedaría oculto por los defaults nativos", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const bytes = JSON.stringify({
+      provider: { openai: { models: { "user-model": { limit: { context: 42 } } } } },
+    }, null, 2) + "\n";
+    fs.writeFileSync(configFile, bytes);
+
+    expect(() => opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)))
+      .toThrow(/legacy|providers|Migra/i);
+    expect(fs.readFileSync(configFile, "utf8")).toBe(bytes);
+  });
+
+  it("con providers.openai nativo presente, no convierte ni borra el provider.openai legacy", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const legacy = { models: { "user-model": { limit: { context: 42 } } } };
+    const native = { models: { "gpt-6.1-sol": { limit: { context: 100 } } }, userSetting: "preserve" };
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ provider: { openai: legacy }, providers: { openai: native } }, null, 2) + "\n",
+    );
+
+    const parsed = JSON.parse(writeActionContent(
+      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)),
+      configFile,
+    )) as Record<string, any>;
+
+    expect(parsed.provider.openai).toEqual(legacy);
+    expect(parsed.providers.openai.userSetting).toBe("preserve");
+    expect(parsed.providers.openai.models["gpt-6.1-sol"].limit.context).toBe(100);
+  });
+});
+
+describe("opencodeAdapter v2: defaults de servidor y roster", () => {
+  const CANONICAL_AGENTS = loadCanonicalAgents(path.join(stackRoot(), "agents"));
+
+  function canonicalAgent(name: string): CanonicalAgent {
+    const found = CANONICAL_AGENTS.find((candidate) => candidate.name === name);
+    if (!found) throw new Error(`Falta el agente canónico ${name}`);
+    return found;
+  }
+
+  // Roster final v2 (Spec T04): modelo#variant exacto por agente, fuente
+  // independiente del algoritmo de resolución del adapter.
+  const ROSTER: Record<string, string> = {
+    "codebase-analyst": "openai/gpt-6.1-sol#medium",
+    "code-reviewer": "openai/gpt-6.1-sol#medium",
+    "code-simplifier": "openai/gpt-6.1-sol#medium",
+    "security-auditor": "openai/gpt-6.1-sol#xhigh",
+    "silent-failure-hunter": "openai/gpt-6.1-sol#xhigh",
+    "test-analyzer": "openai/gpt-6-luna#max",
+    "type-design-analyzer": "openai/gpt-6-luna#max",
+    implementer: "opencode-go/deepseek-v4.1-flash#high",
+    tester: "opencode-go/deepseek-v4.1-flash#high",
+    "comment-fixer": "opencode-go/muse-spark-1.3-contributor#medium",
+    translator: "opencode-go/muse-spark-1.3-contributor#medium",
+    "docs-maintainer": "minimax/MiniMax-M3#thinking",
+    engram: "minimax/MiniMax-M3#thinking",
+  };
+
+  const freshRoster = (): RuntimeModelMap | undefined => DEFAULT_MODEL_MAP.opencode as RuntimeModelMap | undefined;
+
+  it("resuelve los 13 subagentes del roster v2 desde DEFAULT_MODEL_MAP.opencode", () => {
+    const roster = freshRoster();
+    expect(roster, "T04: el roster OpenCode vive en DEFAULT_MODEL_MAP.opencode").toBeDefined();
+    for (const [name, expected] of Object.entries(ROSTER)) {
+      const canonical = canonicalAgent(name);
+      const [model, variant] = expected.split("#");
+      expect(
+        resolveAgentModel(roster!, canonical.name, canonical.tier),
+        name,
+      ).toEqual(variant === undefined ? { model, variant: undefined } : { model, variant });
+    }
+  });
+
+  it("renderiza cada subagente del roster como model#variant, sin name ni tier", () => {
+    const roster = freshRoster();
+    expect(roster, "T04: el roster OpenCode vive en DEFAULT_MODEL_MAP.opencode").toBeDefined();
+    for (const [name, expected] of Object.entries(ROSTER)) {
+      const [rendered] = opencodeAdapter.renderAgent(canonicalAgent(name), roster!);
+      const content = rendered!.content;
+      // El ID exacto se compara decodificando el escalar: el `#` del tag no es
+      // un comentario YAML si el adapter lo escribe double-quoted.
+      expect(frontmatterField(content, "model"), name).toBe(expected);
+      expect(frontmatter(content), name).not.toMatch(/^(variant|name|tier):/m);
+    }
+  });
+
+  it("el primary orchestrator no fija model/variant ni emite name/tier", () => {
+    const [rendered] = opencodeAdapter.renderAgent(canonicalAgent("orchestrator"), MODELS);
+    expect(rendered!.content).toContain("mode: primary");
+    expect(frontmatter(rendered!.content)).not.toMatch(/^(model|variant|name|tier):/m);
+  });
+
+  it("respeta un mapa manual y no inyecta el roster por defecto", () => {
+    const manual: RuntimeModelMap = {
+      strong: { model: "user/strong" },
+      standard: { model: "user/standard" },
+      cheap: { model: "user/cheap" },
+      overrides: { implementer: { model: "user/impl", variant: "low" } },
+    };
+
+    const [impl] = opencodeAdapter.renderAgent(canonicalAgent("implementer"), manual);
+    expect(frontmatterField(impl!.content, "model")).toBe("user/impl#low");
+
+    const [docs] = opencodeAdapter.renderAgent(canonicalAgent("docs-maintainer"), manual);
+    expect(frontmatterField(docs!.content, "model")).toBe("user/cheap");
+    expect(frontmatterField(docs!.content, "model")).not.toContain("minimax/MiniMax-M3");
+  });
+
+  it("no permite que un modelo/variant manual inyecte campos ni delimitadores en el header", () => {
+    const injectedModel = 'user/injected";\nmode: primary\nname: injected';
+    const injectedVariant = "high\npermissions:\n  edit: allow\n---";
+    const manual: RuntimeModelMap = {
+      strong: { model: "user/strong" },
+      standard: { model: injectedModel, variant: injectedVariant },
+      cheap: { model: "user/cheap" },
+    };
+
+    const [rendered] = opencodeAdapter.renderAgent(
+      agent({ name: "demo", tier: "standard", readonly: false, bash: "full", spawn: true }),
+      manual,
+    );
+    const content = rendered!.content;
+    const lines = frontmatter(content).split("\n");
+
+    // Un único campo escalar con el valor completo; el texto inyectado nunca
+    // llega a ser una línea real del header.
+    expect(frontmatterField(content, "model")).toBe(`${injectedModel}#${injectedVariant}`);
+    expect(lines.filter((line) => line.startsWith("mode:"))).toHaveLength(1);
+    expect(lines.some((line) => /^(name|tier|permission|permissions):/.test(line))).toBe(false);
+    // El delimitador real sigue siendo único y el cuerpo canónico permanece intacto.
+    expect(content.split("\n").filter((line) => line === "---")).toHaveLength(2);
+    expect(content.endsWith("\n# Demo\n\nBody.\n")).toBe(true);
+  });
+
+  it("preserva aliases legacy como elección efectiva sin sembrar defaults nativos que los oculten", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    fs.writeFileSync(configFile, JSON.stringify({
+      autoupdate: false,
+      small_model: "user/legacy-small",
+      compaction: { preserve_recent_tokens: 7000 },
+      agents: { plan: { disabled: false }, summary: { model: "user/legacy-summary" } },
+    }, null, 2) + "\n");
+
+    const root = JSON.parse(writeActionContent(
+      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)),
+      configFile,
+    )) as Record<string, any>;
+
+    expect(root.autoupdate).toBe(false);
+    expect(root.small_model).toBe("user/legacy-small");
+    expect(root.compaction.preserve_recent_tokens).toBe(7000);
+    expect(root.update).toBeUndefined();
+    expect(root.agents?.title?.model).toBeUndefined();
+    expect(root.compaction.keep).toBeUndefined();
+    // Un entry nativo legacy del usuario tampoco se pisa ni se oculta.
+    expect(root.agents.plan.disabled).toBe(false);
+    expect(root.agents.summary.model).toBe("user/legacy-summary");
+  });
+
+  it("un valor nativo válido prevalece y no convierte el alias legacy que convive con él", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    fs.writeFileSync(configFile, JSON.stringify({
+      update: "disable",
+      small_model: "user/legacy-small",
+      agents: { title: { model: "user/native-title" } },
+      compaction: { preserve_recent_tokens: 7000, keep: { tokens: 5000 } },
+    }, null, 2) + "\n");
+
+    const root = JSON.parse(writeActionContent(
+      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)),
+      configFile,
+    )) as Record<string, any>;
+
+    expect(root.update).toBe("disable");
+    expect(root.agents.title.model).toBe("user/native-title");
+    expect(root.compaction.keep.tokens).toBe(5000);
+    expect(root.small_model).toBe("user/legacy-small");
+    expect(root.compaction.preserve_recent_tokens).toBe(7000);
+  });
+
+  it("siembra los defaults v2 de servidor solo en campos ausentes", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const root = JSON.parse(writeActionContent(
+      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)),
+      configFile,
+    )) as Record<string, any>;
+
+    expect(root).toMatchObject({
+      agents: expect.any(Object),
+      compaction: expect.any(Object),
+      worktree: expect.any(Object),
+    });
+    expect(root.agents.plan.disabled).toBe(true);
+    expect(root.agents.title.model).toBe("openai/gpt-6-luna#none");
+    expect(root.agents.summary.model).toBe("minimax/MiniMax-M3#thinking");
+    expect(root.compaction).toEqual({ auto: true, keep: { tokens: 20000 } });
+    expect(root.formatter).toBe(true);
+    expect(root.lsp).toBe(false);
+    expect(root.worktree).toEqual({ directory: "worktrees" });
+    expect(root.update).toBe("auto");
+    expect(root.default_agent).toBeUndefined();
+
+    const manualDir = tempConfigDir();
+    const manualFile = path.join(manualDir, "opencode.json");
+    fs.writeFileSync(manualFile, JSON.stringify({
+      update: "disable",
+      formatter: false,
+      lsp: true,
+      worktree: { directory: "custom-worktrees" },
+      agents: { plan: { disabled: false }, title: { model: "user/title-model" } },
+      compaction: { auto: false },
+    }, null, 2) + "\n");
+
+    const manual = JSON.parse(writeActionContent(
+      opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(manualDir)),
+      manualFile,
+    )) as Record<string, any>;
+
+    expect(manual.update).toBe("disable");
+    expect(manual.formatter).toBe(false);
+    expect(manual.lsp).toBe(true);
+    expect(manual.worktree.directory).toBe("custom-worktrees");
+    expect(manual.agents.plan.disabled).toBe(false);
+    expect(manual.agents.title.model).toBe("user/title-model");
+    expect(manual.compaction.auto).toBe(false);
+    expect(manual.agents.summary.model).toBe("minimax/MiniMax-M3#thinking");
+    expect(manual.compaction.keep.tokens).toBe(20000);
+  });
 });

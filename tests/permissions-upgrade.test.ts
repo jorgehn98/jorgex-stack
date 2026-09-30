@@ -8,6 +8,7 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import type { InstallContext } from "../src/adapters/types.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+import { NATIVE_OPENCODE_PERMISSIONS } from "./helpers/opencode-native-contract.js";
 
 /** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
 const OPENCODE_V2_BIN = opencodeV2Binary();
@@ -104,8 +105,9 @@ async function withIsolatedHome<T>(run: (homeDir: string, root: string) => Promi
   }
 }
 
-const canonicalOpencodePermission = () =>
-  loadCanonicalDefaults(stackRoot())["opencode"]?.["permission"] as Record<string, unknown>;
+// Contrato nativo v2 (Spec T04), literal e independiente del adapter: el overlay
+// de permisos OpenCode dejó de vivir en stack/config/defaults.json (canon
+// compartido con Pi, que se mantiene intacto). Ver tests/helpers/opencode-native-contract.ts.
 const canonicalClaudePermissions = () =>
   loadCanonicalDefaults(stackRoot())["claude-code"]?.["permissions"] as Record<string, unknown>;
 
@@ -180,7 +182,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     expect(warnings).toMatch(/--upgrade-permissions/);
     expect(warnings).toMatch(/backup/i);
     expect(warnings).toMatch(/discards your own permission changes/i);
-    expect(warnings).not.toContain(JSON.stringify(canonicalOpencodePermission()).slice(0, 80));
+    expect(warnings).not.toContain(JSON.stringify(NATIVE_OPENCODE_PERMISSIONS).slice(0, 80));
     expect(warnings).not.toContain('"external_directory"');
   });
 
@@ -195,7 +197,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     const parsed = JSON.parse((action as { content: string }).content) as Record<string, unknown>;
 
     expect(parsed.other).toBe(true);
-    expect(parsed.permission).toEqual(canonicalOpencodePermission());
+    expect(parsed.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
     expect(ctx.warnings.join("\n")).not.toMatch(/differs from the stack default/);
   });
 
@@ -209,7 +211,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     const [action] = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
     const parsed = JSON.parse((action as { content: string }).content) as Record<string, unknown>;
 
-    expect(parsed.permission).toEqual(canonicalOpencodePermission());
+    expect(parsed.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
     expect((action as { content: string }).content).toBe(freshContent);
     expect(ctx.warnings.join("\n")).not.toMatch(/differs from the stack default/);
     expect(ctx.warnings.join("\n")).not.toContain("--upgrade-permissions");
@@ -439,7 +441,7 @@ describe("permissions-upgrade: backup precede al reseed y restore lo revierte", 
 
         const reseeded = JSON.parse(fs.readFileSync(target, "utf8")) as Record<string, unknown>;
         expect(reseeded.other).toBe(true);
-        expect(reseeded.permission).toEqual(canonicalOpencodePermission());
+        expect(reseeded.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
 
         const { listBackups, restoreBackup } = await import("../src/lib/backup.js");
         const entry = listBackups()
@@ -530,7 +532,7 @@ describe("permissions-upgrade: CLI flag end-to-end (sync --target-dir)", () => {
 
     expect(exitCode).toBe(0);
     const reseeded = JSON.parse(fs.readFileSync(target, "utf8")) as Record<string, unknown>;
-    expect(reseeded.permission).toEqual(canonicalOpencodePermission());
+    expect(reseeded.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
   });
 
   it("sync sin flag preserva el stale (off por defecto end-to-end)", async () => {
