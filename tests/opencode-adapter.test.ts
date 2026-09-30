@@ -545,12 +545,23 @@ describe("opencodeAdapter v2: configuración fresca nativa", () => {
       output: 128000,
     });
 
-    // Permisos no inertes: el deny de secretos y la excepción explícita
-    // sobreviven en el overlay v2 (forma del entry la fija T04).
-    const permissionTokens = JSON.stringify(root.permissions);
-    expect(permissionTokens).toContain("*.env");
-    expect(permissionTokens).toContain("*.env.example");
-    expect(permissionTokens).toContain("external_directory");
+    // Permisos no inertes y con precedencia real (Spec T04:56): la última
+    // coincidencia gana. Todo deny de secreto debe ir ANTES de la excepción
+    // `*.env.example: allow` para read y edit, y el overlay aprobado no añade
+    // ningún `ask`. Valores esperados tomados del contrato, no del algoritmo.
+    const permissions = root.permissions as Array<{ action: string; resource: string; effect: string }>;
+    const secretPatterns = ["*.env", "*.env.*", "*.ssh/*", "*.aws/credentials", "*.npmrc", "*.git-credentials", "*id_rsa*", "*id_ed25519*", "*.pem", "*.key"];
+    for (const action of ["read", "edit"] as const) {
+      for (const resource of secretPatterns) {
+        expect(permissions).toContainEqual({ action, resource, effect: "deny" });
+      }
+      const allowIndex = permissions.findIndex((rule) => rule.action === action && rule.resource === "*.env.example" && rule.effect === "allow");
+      expect(allowIndex, `${action}: falta la excepción *.env.example`).toBeGreaterThanOrEqual(0);
+      const lastDenyIndex = permissions.reduce((last, rule, index) => (rule.action === action && rule.effect === "deny" ? index : last), -1);
+      expect(allowIndex, `${action}: la excepción debe ir después de todos los denies`).toBeGreaterThan(lastDenyIndex);
+    }
+    expect(permissions).toContainEqual({ action: "external_directory", resource: "*", effect: "allow" });
+    expect(permissions.some((rule) => rule.effect === "ask"), "el overlay aprobado no añade asks").toBe(false);
 
     // Segunda planificación sobre el archivo ya escrito: mismos bytes.
     fs.writeFileSync(configFile, content);
