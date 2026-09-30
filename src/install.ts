@@ -24,6 +24,14 @@ import {
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, materializeCanonicalDevtoolsServerForRemoval, type CanonicalMcp } from "./lib/canonical.js";
 import { findOrphans, readManifest, readManifestStrict, writeRuntimeManifest } from "./lib/manifest.js";
+import {
+  authenticateStaticResource,
+  projectedBytesByTarget,
+  staticResourceBlockReason,
+  staticResourceTargets,
+  unownedCurrentTargets,
+  type StaticResourceAuth,
+} from "./lib/opencode-static-resources.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import { planAgents } from "./components/agents.js";
@@ -608,6 +616,50 @@ function assertOpenCodeManifestCoherence(configDir: string): void {
 }
 
 /**
+ * Autenticación de bytes de los cuatro recursos estáticos OpenCode. No sustituye
+ * al ownership: el manifest coherente sigue siendo la única autoridad y el
+ * digest solo clasifica el contenido (actual/legacy/desconocido) para bloquear
+ * o permitir la mutación. Corre antes de writing-style, model-map, backups,
+ * proyección y setup.
+ */
+function openCodeStaticResourceAuths(
+  configDir: string,
+  actions: readonly FileAction[],
+  ownedPaths: readonly string[],
+): StaticResourceAuth[] {
+  const targets = staticResourceTargets(configDir);
+  if (targets.size === 0) return [];
+  const bytesByTarget = projectedBytesByTarget(actions);
+  const ownedSet = new Set(ownedPaths.map((file) => path.resolve(file)));
+  return [...targets].map(([target, row]) =>
+    authenticateStaticResource(target, row, bytesByTarget.get(target) ?? null, ownedSet.has(target), configDir));
+}
+
+function assertOpenCodeStaticResourcesUsable(auths: readonly StaticResourceAuth[]): void {
+  for (const auth of auths) {
+    const reason = staticResourceBlockReason(auth);
+    if (reason !== null) {
+      throw new Error(`OpenCode: ${reason} No se modifica ningún archivo, no se crea backup y el ownership se conserva.`);
+    }
+  }
+}
+
+/**
+ * Extiende el preflight común de OpenCode: autentica los bytes de los recursos
+ * estáticos además de la coherencia del manifest. Ausencia de contexto no muta
+ * nada (el pipeline falla más adelante antes de proyectar).
+ */
+function assertOpenCodeStaticResourcePreflight(configDir: string): void {
+  const ctx = makeContext(opencodeAdapter, configDir, DEFAULT_INSTALL_MODE_PREFERENCE, false, undefined, false);
+  if (ctx === null) return;
+  const owned = readManifest().runtimes.opencode?.owned ?? [];
+  // Solo `buildContentPlan`: la autenticación de bytes no depende del bloque
+  // MCP/modelo (cuyo plan puede fallar cerrado por estado legacy legítimo que
+  // el pipeline real migra con su ledger de ownership).
+  assertOpenCodeStaticResourcesUsable(openCodeStaticResourceAuths(configDir, buildContentPlan(opencodeAdapter, ctx), owned));
+}
+
+/**
  * Resuelve la evidencia de major SOLO para --target-dir. Fuera de target no hay
  * canal de evidencia: el gate siempre prueba el binario real. Un valor distinto
  * de "2" o malformado se representa como NaN y bloquea el sandbox.
@@ -648,6 +700,7 @@ function assertOpenCodeV2Detection(detection: RuntimeDetection, evidence: OpenCo
     );
   }
   assertOpenCodeManifestCoherence(detection.configDir);
+  assertOpenCodeStaticResourcePreflight(detection.configDir);
 }
 
 /**
@@ -991,6 +1044,22 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const prevManifest = useManifest ? readManifest().runtimes[id] : undefined;
     const orphans = canOrphan && prevManifest ? findOrphans(prevManifest.owned, current.targets) : [];
 
+    // Autenticación de bytes de los recursos estáticos OpenCode antes de
+    // cualquier backup/escritura/claim. `preservedStaticTargets` son los
+    // unowned ya idénticos al actual: no-op permitido, jamás reclamados.
+    const staticAuths = id === "opencode"
+      ? openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? [])
+      : [];
+    const preservedStaticTargets = unownedCurrentTargets(staticAuths);
+    try {
+      assertOpenCodeStaticResourcesUsable(staticAuths);
+    } catch (error) {
+      p.log.error(error instanceof Error ? error.message : String(error));
+      exitCode = 1;
+      reportStatus(adapter.name, "failed");
+      continue;
+    }
+
     p.log.step(`${adapter.name} → ${configDir}`);
     p.log.info(
       `${diff.length} archivos gestionados: ${creates.length} nuevos, ${updates.length} modificados, ${diff.length - changes.length} sin cambios`,
@@ -1017,7 +1086,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     ): Promise<void> => {
       if (!useManifest) return;
       const unmergeTargets = new Set(adapter.planUnmerge(canonicalMcpForUnmerge(canonicalMcp, ctx.devtoolsMcpObservedVersion), canonicalHooks, ctx).map((a) => path.resolve(a.target)));
-      const keepTarget = (target: string): boolean => !unmergeTargets.has(target);
+      const keepTarget = (target: string): boolean => !unmergeTargets.has(target) && !preservedStaticTargets.has(target);
       const liveOwned = plan.map((a) => path.resolve(a.target)).filter(keepTarget);
       const previousOwned = (prevManifest?.owned ?? []).map((target) => path.resolve(target)).filter(keepTarget);
       const officialFailed = official?.ran === true && !official.ok;
@@ -1119,6 +1188,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       creates = diff.filter((d) => d.status === "create");
       updates = diff.filter((d) => d.status === "update");
       changes = diff.filter((change) => change.status !== "unchanged");
+    }
+
+    if (id === "opencode") {
+      try {
+        assertOpenCodeStaticResourcesUsable(openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? []));
+      } catch (error) {
+        p.log.error(error instanceof Error ? error.message : String(error));
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        continue;
+      }
     }
 
     const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;

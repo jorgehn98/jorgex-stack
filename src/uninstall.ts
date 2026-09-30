@@ -7,6 +7,13 @@ import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeC
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
+import {
+  authenticateStaticResource,
+  projectedBytesByTarget,
+  staticResourceBlockReason,
+  staticResourceTargets,
+  type StaticResourceRow,
+} from "./lib/opencode-static-resources.js";
 import { inspectOpencodePluginFile } from "./adapters/opencode.js";
 import { HOME, stackRoot } from "./lib/paths.js";
 import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
@@ -196,14 +203,40 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     const planTargets = [
       ...new Set([...buildContentPlan(adapter, ctx).map((a) => path.resolve(a.target)), ...prevOwned.map((t) => path.resolve(t))]),
     ].filter((t) => !mergedTargets.has(t) && fs.existsSync(t));
-    // El plugin oficial (`engram setup opencode`, misma ruta) se conserva
-    // siempre — incluso con --remove-engram; ese flag solo retira legacy aún
-    // propio. El binario, la DB y las memorias jamás se tocan (no son targets).
+
+    // Recursos estáticos OpenCode: unowned → se omiten sin leer/borrar/reclamar;
+    // owned → solo se retiran con bytes actuales o legacy v1 acreditados. Un
+    // owned modificado/desconocido/enlace bloquea ANTES de backup o borrado.
+    const staticResources = id === "opencode" ? staticResourceTargets(configDir) : new Map<string, StaticResourceRow>();
+    const skippedStaticTargets = new Set<string>();
+    let staticBlock: string | null = null;
+    if (staticResources.size > 0) {
+      const projected = projectedBytesByTarget(buildContentPlan(adapter, ctx));
+      const ownedSet = new Set(prevOwned.map((t) => path.resolve(t)));
+      for (const [target, row] of staticResources) {
+        if (!ownedSet.has(target)) {
+          skippedStaticTargets.add(target);
+          continue;
+        }
+        const auth = authenticateStaticResource(target, row, projected.get(target) ?? null, true, configDir);
+        const reason = staticResourceBlockReason(auth);
+        if (reason !== null) {
+          staticBlock = reason;
+          break;
+        }
+      }
+    }
+    if (staticBlock !== null) {
+      p.log.error(`OpenCode: ${staticBlock} No se borra ni respalda nada; el ownership se conserva.`);
+      exitCode = 1;
+      continue;
+    }
+
     const deleteTargets = planTargets.filter((t) => {
-      if (retained.has(t) || !isContainedIn(t, pruneRoot)) return false;
+      if (skippedStaticTargets.has(t) || retained.has(t) || !isContainedIn(t, pruneRoot)) return false;
       if (path.basename(t) !== "engram.ts") return true;
-      // Tri-estado: official y unknown se preservan; legacy-or-foreign y
-      // absent solo se retiran con --remove-engram (unknown no es legacy).
+      // Tri-estado del plugin oficial: official y unknown se preservan;
+      // legacy-or-foreign y absent solo se retiran con --remove-engram.
       const state = inspectOpencodePluginFile(t);
       if (state === "official" || state === "unknown") return false;
       return !ctx.preserveEngram;
