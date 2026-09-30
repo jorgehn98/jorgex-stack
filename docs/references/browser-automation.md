@@ -1,6 +1,18 @@
 # Automatización de navegador
 
-Stack ofrece dos integraciones independientes y **opt-in**. Playwright CLI sirve para interacción y QA; Chrome DevTools MCP queda reservado para diagnósticos de Chrome. No instala `agent-browser` ni un browser MCP permanente. La regla «pnpm siempre» se aplica a la adquisición; un paquete global del usuario no es propiedad de Stack ni sustituye su árbol gestionado.
+Stack ofrece integraciones independientes y **opt-in**. Playwright CLI sirve para interacción y QA en los runtimes donde sigue habilitado; Chrome DevTools MCP queda reservado para diagnósticos de Chrome. No instala `agent-browser` ni un browser MCP permanente. La regla «pnpm siempre» se aplica a la adquisición; un paquete global del usuario no es propiedad de Stack ni sustituye su árbol gestionado.
+
+> **Estado de OpenCode v2 (PR01).** La integración gestionada de Browser
+> Control para OpenCode v2 se entregará en el siguiente checkpoint y será
+> obligatoria (CLI, skill y MCP). Este checkpoint todavía acepta
+> `--playwright-runtimes=opencode`. Solo el servicio relay Linux será
+> opt-in; la política de otros runtimes no cambia. La política condicional
+> de Playwright CLI y DevTools MCP para Claude Code, Codex y Pi no cambia
+> por esta decisión; un opt-in previo sigue funcionando y un opt-in nuevo
+> bajo `--playwright`/`--devtools` no se aplica automáticamente a
+> OpenCode. El flag CLI `--playwright-runtimes=opencode` sigue siendo
+> aceptado por el adapter y los tests en PR01; la transición a Browser
+> Control no altera `--playwright-runtimes` ni la app en este PR.
 
 ## Playwright CLI
 
@@ -43,7 +55,7 @@ Si falla Chromium o la persistencia después de promover un candidato, Stack res
 
 ### Pi: handoff histórico y confiable
 
-El archivo de intercambio es `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; el nombre se conserva aunque el JSON tenga `schemaVersion: 2`. El lector **v1** de Pi admite comando absoluto y versión observada para receipts históricos, pero no autentica bytes: no sirve de fallback para nuevas activaciones. El lector **v2** publicado exige un dispatcher Stack externo al release, SHA-256 del comando y del launcher, rutas contenidas y digest browser-v2 del árbol antes del probe de versión. En Windows Pi ejecuta el `.js` autenticado mediante Node sin shell. Stack selecciona esta forma solo con paquete Pi y receipt browser verificados, opt-in explícito y `contract/browser-handoffs.v1.json` del paquete realmente instalado, que debe declarar Playwright 2 y DevTools 3 según lo seleccionado. Un Pi histórico sin ese contrato bloquea handoffs nuevos sin perder su lector v1. El receipt de proyección registra SHA-256 del handoff y un archivo ajeno o modificado bloquea la limpieza; Pi no adquiere el paquete ni descarga Chromium. Los opt-ins de Claude Code, Codex y OpenCode usan la guía y el dispatcher gestionado de Stack sin depender de la publicación Pi.
+El archivo de intercambio es `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; el nombre se conserva aunque el JSON tenga `schemaVersion: 2`. El lector **v1** de Pi admite comando absoluto y versión observada para receipts históricos, pero no autentica bytes: no sirve de fallback para nuevas activaciones. El lector **v2** publicado exige un dispatcher Stack externo al release, SHA-256 del comando y del launcher, rutas contenidas y digest browser-v2 del árbol antes del probe de versión. En Windows Pi ejecuta el `.js` autenticado mediante Node sin shell. Stack selecciona esta forma solo con paquete Pi y receipt browser verificados, opt-in explícito y `contract/browser-handoffs.v1.json` del paquete realmente instalado, que debe declarar Playwright 2 y DevTools 3 según lo seleccionado. Un Pi histórico sin ese contrato bloquea handoffs nuevos sin perder su lector v1. El receipt de proyección registra SHA-256 del handoff y un archivo ajeno o modificado bloquea la limpieza; Pi no adquiere el paquete ni descarga Chromium. Los opt-ins de Claude Code y Codex usan la guía y el dispatcher gestionado de Stack sin depender de la publicación Pi. La integración gestionada de Browser Control para OpenCode v2 se entregará en el siguiente checkpoint y será obligatoria (CLI, skill y MCP); este reader Pi no la cubre en este PR.
 En Pi, el provider update no activa browser tooling por sí mismo: `install`/`update` solo refrescan Playwright o DevTools cuando Pi tiene un opt-in explícito en esa ejecución o una preferencia guardada y el candidato declara el contrato correspondiente. Para DevTools, Stack busca solo Chromium instalado en rutas conocidas del sistema; si encuentra un ejecutable regular no simbólico compatible, comprueba el selector y el parser antes de promocionar y lo pasa mediante `--executablePath`. Si cambia el selector, refresca el launcher aunque la versión y el árbol del provider no cambien. Ese Chromium no es propiedad de Stack, no se instala ni se fija su versión; si falta, DevTools conserva su navegador predeterminado y no descarga uno automáticamente. La observación verificada del nuevo artefacto se persiste en cuanto termina esa adquisición y conserva las selecciones de los demás runtimes; si después falla el paquete Pi, la proyección o los providers, no se reutiliza una observación antigua contra el artefacto recién activado. En una instalación Pi nueva, el opt-in solo queda habilitado después de que Pi finaliza correctamente. Sin preferencia, ambos permanecen fuera de la instalación. Un No explícito en la pregunta interactiva de Playwright impide la nueva descarga en esa ejecución, sin deshabilitar automáticamente una preferencia anterior.
 
 ## Chrome DevTools MCP
