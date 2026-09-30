@@ -84,6 +84,8 @@ Every piece of information about a piece of work has exactly ONE home — never 
 - Prefer targeted verification: specific test > partial suite > full suite.
 - Use the real test commands and test stack of the project.
 - For testing tasks, inspect the complete contract and the actual runner, command, scope, and environment; use existing tooling and neither auto-install nor impose Node, Vitest, pnpm, or another runner.
+- Before creating temporary files, directories, or processes for tests or local verification, arrange automatic teardown using the project's runner hooks, try/finally, or a shell trap. Clean up on success, failure, and cancellation; stop only processes started by that verification before removing their files. Delete only explicitly owned temporary paths, never shared temporary roots or unrelated resources. Keep temporary resource ownership identifiable so cleanup can be safely resumed after an abrupt termination, after confirming those resources are no longer in use.
+- Verify cleanup before reporting completion. If cleanup cannot finish safely, report the remaining paths and why. Preserve only necessary diagnostic evidence, not entire disposable environments. Check the backing filesystem and available capacity before creating large verification environments; do not assume temporary directories are disk-backed. When temporary storage is RAM-backed, place large verification environments on disk and still clean them up afterward. Scope environment overrides to that execution and preserve the test's intended behavior.
 - For CI tasks, act only when the scope requires it: measure comparable samples, use explicit refs, and when scope is uncertain run the relevant lane or fail closed; never cancel a mutable publication.
 
 ---
