@@ -65,6 +65,30 @@ function frontmatterField(content: string, field: string): string | undefined {
   return line === undefined ? undefined : decodeScalar(line.slice(field.length + 1));
 }
 
+/** Prefijo seguro canónico de Git compartido por los seis comandos read-only. */
+const GIT_READ_PREFIX = "git --no-pager -c core.fsmonitor=false -c log.showSignature=false";
+
+interface NativePermissionRule {
+  action: string;
+  resource: string;
+  effect: string;
+}
+
+/**
+ * Permisos nativos del frontmatter: array ordenado de reglas. La fuente lo
+ * serializa como YAML JSON flow (documentado), así que se parsea esa línea como
+ * JSON; no se inventa un parser YAML ni se añaden dependencias.
+ */
+function nativePermissions(content: string): NativePermissionRule[] {
+  const lines = frontmatter(content).split("\n");
+  expect(lines.some((line) => line.startsWith("permission:")), "sin campo legacy `permission:`").toBe(false);
+  const line = lines.find((candidate) => candidate.startsWith("permissions:"));
+  if (line === undefined) throw new Error("falta el campo nativo `permissions:`");
+  const parsed = JSON.parse(line.slice("permissions:".length).trim()) as unknown;
+  expect(Array.isArray(parsed), "`permissions` debe ser un array JSON flow (validación de host después del GREEN)").toBe(true);
+  return parsed as NativePermissionRule[];
+}
+
 const MODELS: RuntimeModelMap = {
   strong: { model: "provider/strong", variant: "high" },
   standard: { model: "provider/standard", variant: "medium" },
@@ -106,35 +130,53 @@ describe("opencodeAdapter.renderAgent: barrera de git destructivo", () => {
 
   it("full-bash inherits the general policy without overriding its asks or denies", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ bash: "full" }), MODELS);
-    expect(out!.content).not.toMatch(/\n  (bash|edit):/);
-    expect(out!.content).not.toContain("permission:\n---");
+    expect(out!.content).not.toMatch(/\n  (bash|edit|shell|subagent):/);
+    expect(frontmatter(out!.content).split("\n").some((line) => line.startsWith("permissions:") || line.startsWith("permission:"))).toBe(false);
   });
 
-  it("git-read denies arbitrary shell and disables Git options before variable arguments", () => {
+  it("git-read deniega shell arbitrario y fija las opciones Git antes de argumentos variables", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-    expect(out!.content).toContain('"*": deny');
-    expect(out!.content).not.toContain('"git diff*": allow');
-    expect(out!.content).toContain("core.fsmonitor=false");
-    expect(out!.content).toContain("log.showSignature=false");
-    expect(out!.content).toContain('--no-ext-diff --no-textconv --end-of-options *": allow');
+    const rules = nativePermissions(out!.content);
+    const shell = rules.filter((rule) => rule.action === "shell");
+
+    // Deny global primero y sin asks: los seis prefijos seguros son la única allow.
+    expect(shell[0]).toEqual({ action: "shell", resource: "*", effect: "deny" });
+    expect(rules.filter((rule) => rule.effect === "ask")).toEqual([]);
+
+    const allows = shell.filter((rule) => rule.effect === "allow").map((rule) => rule.resource);
+    expect(allows.length).toBeGreaterThanOrEqual(6);
+    for (const resource of allows) {
+      expect(resource, resource).toContain("core.fsmonitor=false");
+      expect(resource, resource).toContain("log.showSignature=false");
+      expect(resource, resource).toContain("--no-ext-diff --no-textconv --end-of-options");
+    }
+    // Con argumentos variables después de `--end-of-options`…
+    expect(allows.some((resource) => resource.endsWith(" *"))).toBe(true);
+    // …y sin wildcards que Git pudiera interpretar como opciones.
+    expect(allows.some((resource) => /^git diff\*/.test(resource))).toBe(false);
     expect(out!.content).toContain("put refs and paths after --end-of-options");
   });
 
-  it("none: bash denegado por completo", () => {
+  it("none: shell denegado por completo", () => {
     const [out] = opencodeAdapter.renderAgent(agent({ readonly: true, bash: "none" }), MODELS);
-    expect(out!.content).toContain("bash: deny");
-    expect(out!.content).not.toContain('"git reset*": deny');
+    const rules = nativePermissions(out!.content);
+    expect(rules.filter((rule) => rule.action === "shell")).toEqual([{ action: "shell", resource: "*", effect: "deny" }]);
+    expect(rules.some((rule) => rule.resource.includes("git reset"))).toBe(false);
   });
 
   it.each([
-    ["readonly", true, "deny"],
-    ["writer", false, "allow"],
-  ] as const)("%s usa permission.edit sin renderizar el bloque tools deprecado", (_label, readonly, edit) => {
+    ["readonly", true],
+    ["writer", false],
+  ] as const)("%s usa el deny nativo de `edit` sin renderizar el bloque tools deprecado", (_label, readonly) => {
     const [out] = opencodeAdapter.renderAgent(agent({ readonly }), MODELS);
     const content = out!.content;
 
-    if (readonly) expect(content).toContain(`permission:\n  edit: ${edit}`);
-    else expect(content).not.toMatch(/\n  edit:/);
+    if (readonly) {
+      expect(nativePermissions(content).some((rule) => rule.action === "edit" && rule.resource === "*" && rule.effect === "deny")).toBe(true);
+    } else {
+      // Un rol full-trust no necesita bloque propio: hereda la política general.
+      expect(frontmatter(content).split("\n").some((line) => line.startsWith("permissions:"))).toBe(false);
+    }
     expect(content).not.toMatch(/^tools:/m);
   });
 
@@ -452,8 +494,9 @@ it("Git rejects executable and output options after every rendered read-only pre
   const env = { PATH: process.env.PATH, HOME: root, USERPROFILE: root, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1" };
   execFileSync("git", ["init", "--quiet", root], { env });
   const [out] = opencodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-  const commands = out!.content.split("\n").filter((line) => /^    "git .*": allow$/.test(line))
-    .map((line) => JSON.parse(line.trim().slice(0, -": allow".length)) as string)
+  const commands = nativePermissions(out!.content)
+    .filter((rule) => rule.action === "shell" && rule.effect === "allow")
+    .map((rule) => rule.resource)
     .filter((command) => !command.endsWith(" *"));
   expect(commands.length).toBeGreaterThan(0);
   for (const command of commands) {
@@ -625,6 +668,132 @@ describe("opencodeAdapter v2: config nativa opencode.jsonc", () => {
     // Ninguno de los dos archivos se toca.
     expect(fs.readFileSync(jsonFile, "utf8")).toBe(jsonContent);
     expect(fs.readFileSync(jsoncFile, "utf8")).toBe(jsoncContent);
+  });
+});
+
+describe("opencodeAdapter v2: permisos nativos por rol en el frontmatter", () => {
+  function canonicalAgentByName(name: string): CanonicalAgent {
+    const found = loadCanonicalAgents(path.join(stackRoot(), "agents")).find((candidate) => candidate.name === name);
+    if (found === undefined) throw new Error(`agente canónico ausente: ${name}`);
+    return found;
+  }
+
+  it.each([
+    ["implementer", false, "unrestricted", false],
+    ["code-reviewer", true, "git-read", false],
+    ["comment-fixer", false, "git-read", true],
+    ["engram", true, "deny", true],
+  ] as const)(
+    "rol %s: `permissions` nativo ordenado sin campo legacy",
+    (name, editDeny, shell, subagentDeny) => {
+      const [rendered] = opencodeAdapter.renderAgent(canonicalAgentByName(name), MODELS);
+      const content = rendered!.content;
+
+      if (shell === "unrestricted" && !editDeny && !subagentDeny) {
+        const lines = frontmatter(content).split("\n");
+        expect(lines.some((line) => line.startsWith("permissions:")), "sin restricciones no se emite bloque").toBe(false);
+        expect(lines.some((line) => line.startsWith("permission:")), "sin campo legacy").toBe(false);
+        return;
+      }
+
+      const rules = nativePermissions(content);
+      // El overlay v2 no introduce fricción nueva: ningún `ask`.
+      expect(rules.filter((rule) => rule.effect === "ask")).toEqual([]);
+      expect(rules.some((rule) => rule.action === "edit" && rule.resource === "*" && rule.effect === "deny")).toBe(editDeny);
+      expect(rules.some((rule) => rule.action === "subagent" && rule.resource === "*" && rule.effect === "deny")).toBe(subagentDeny);
+
+      const shellRules = rules.filter((rule) => rule.action === "shell");
+      if (shell === "deny") {
+        expect(shellRules).toEqual([{ action: "shell", resource: "*", effect: "deny" }]);
+        return;
+      }
+      // git-read: deny global PRIMERO y después los seis prefijos seguros (el
+      // orden es la precedencia).
+      expect(shellRules[0]).toEqual({ action: "shell", resource: "*", effect: "deny" });
+      const allows = shellRules.filter((rule) => rule.effect === "allow");
+      expect(allows.length).toBeGreaterThanOrEqual(6);
+      for (const rule of allows) expect(rule.resource.startsWith(GIT_READ_PREFIX), rule.resource).toBe(true);
+      expect(new Set(allows.map((rule) => rule.resource.replace(/ \*$/, ""))).size).toBeGreaterThanOrEqual(6);
+    },
+  );
+});
+
+describe("opencodeAdapter v2: límites de provider restantes (Spec T04)", () => {
+  /** Contrato literal de la Spec 04:55, sin inferir nombres futuros. */
+  const NATIVE_LIMITS = [
+    { provider: "openai", model: "gpt-6-astra", limit: { context: 872000, input: 744000, output: 128000 } },
+    { provider: "opencode-go", model: "deepseek-v4.1-flash", limit: { context: 400000, output: 128000 } },
+    { provider: "opencode-go", model: "muse-spark-1.3-contributor", limit: { context: 400000, output: 128000 } },
+  ] as const;
+
+  const limitFieldIds = (provider: string, model: string): string[] =>
+    Object.keys(NATIVE_LIMITS.find((entry) => entry.provider === provider && entry.model === model)!.limit)
+      .map((key) => JSON.stringify(["opencode.json", "providers", provider, "models", model, "limit", key]));
+
+  function providersOf(content: string): Record<string, { models?: Record<string, { limit?: Record<string, number> }> }> {
+    return (JSON.parse(content) as { providers?: Record<string, { models?: Record<string, { limit?: Record<string, number> }> }> }).providers ?? {};
+  }
+
+  it("siembra los límites ausentes de la Spec con IDs owned file-qualificados", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const actions = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir));
+
+    const providers = providersOf(writeActionContent(actions, configFile));
+    for (const { provider, model, limit } of NATIVE_LIMITS) {
+      expect(providers[provider]?.models?.[model]?.limit, `${provider}/${model}`).toEqual(limit);
+    }
+    const owned = primaryOwnership(actions, configFile);
+    for (const { provider, model } of NATIVE_LIMITS) {
+      for (const field of limitFieldIds(provider, model)) expect(owned, field).toContain(field);
+    }
+  });
+
+  it.each([
+    ["modificado a mano", { context: 1, input: 2, output: 3 }],
+    ["igual al canon", { context: 872000, input: 744000, output: 128000 }],
+  ])("un límite preexistente %s no se reclama y se preserva", (_label, limit) => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    fs.writeFileSync(configFile, JSON.stringify({ providers: { openai: { models: { "gpt-6-astra": { limit } } } } }, null, 2) + "\n");
+
+    const actions = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir));
+    const providers = providersOf(writeActionContent(actions, configFile));
+    expect(providers["openai"]?.models?.["gpt-6-astra"]?.limit).toEqual(limit);
+
+    const owned = primaryOwnership(actions, configFile);
+    for (const field of limitFieldIds("openai", "gpt-6-astra")) {
+      expect(owned, `${field} no debe reclamarse`).not.toContain(field);
+    }
+    // Los límites restantes sí se siembran: el preexistente no bloquea a los demás.
+    expect(providers["opencode-go"]?.models?.["deepseek-v4.1-flash"]?.limit).toEqual({ context: 400000, output: 128000 });
+  });
+
+  it("unmerge retira solo los límites owned canónicos y preserva lo ajeno", () => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const ownedFields = limitFieldIds("opencode-go", "deepseek-v4.1-flash");
+    const config = {
+      providers: {
+        openai: { models: { "gpt-6-astra": { limit: { context: 872000, input: 744000, output: 128000 } } } },
+        "opencode-go": {
+          models: {
+            "deepseek-v4.1-flash": { limit: { context: 400000, output: 128000 } },
+            "user-model": { limit: { context: 1, output: 1 } },
+          },
+        },
+      },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + "\n");
+
+    const actions = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), loadCanonicalHooks(stackRoot()), {
+      ...opencodeContext(configDir),
+      ownedPrimaryModelFields: new Set(ownedFields),
+    });
+    const after = providersOf(writeActionContent(actions, configFile));
+    expect(after["opencode-go"]?.models?.["deepseek-v4.1-flash"]?.limit, "owned canónico se retira").toBeUndefined();
+    expect(after["opencode-go"]?.models?.["user-model"]?.limit, "lo ajeno se preserva").toEqual({ context: 1, output: 1 });
+    expect(after["openai"]?.models?.["gpt-6-astra"]?.limit, "no owned: intacto").toEqual({ context: 872000, input: 744000, output: 128000 });
   });
 });
 

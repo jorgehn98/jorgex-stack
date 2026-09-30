@@ -162,12 +162,42 @@ function hasPendingCliMigration(ctx: InstallContext): boolean {
 // invocación porque el host también lee el `.jsonc`.
 const modelField = (base: string): string => fieldId(base, "model");
 const providersField = (base: string): string => fieldId(base, "providers");
-const primaryOpenaiField = (base: string): string => fieldId(base, "providers", "openai");
-const primaryModelsField = (base: string): string => fieldId(base, "providers", "openai", "models");
-const primarySolField = (base: string): string => fieldId(base, "providers", "openai", "models", PRIMARY_MODEL_ID);
-const primaryLimitPrefix = (base: string): string => fieldId(base, "providers", "openai", "models", PRIMARY_MODEL_ID, "limit");
-const primaryLimitField = (base: string, key: string): string =>
-  fieldId(base, "providers", "openai", "models", PRIMARY_MODEL_ID, "limit", key);
+
+interface ProviderModelLimit {
+  provider: string;
+  model: string;
+  limit: Readonly<Record<string, number>>;
+}
+
+/**
+ * Tabla explícita de los cuatro provider/model conocidos y sus límites
+ * (Spec T04:55). Una sola fuente para plan y unmerge: no se infieren nombres
+ * de modelo futuros ni contexto de cuenta, y no se promete un máximo universal.
+ * `gpt-6.1-sol` es el default v2; el resto son overrides explícitos.
+ */
+const PROVIDER_MODEL_LIMITS: readonly ProviderModelLimit[] = [
+  { provider: "openai", model: PRIMARY_MODEL_ID, limit: PRIMARY_LIMITS },
+  { provider: "openai", model: "gpt-6-astra", limit: { context: 872000, input: 744000, output: 128000 } },
+  { provider: "opencode-go", model: "deepseek-v4.1-flash", limit: { context: 400000, output: 128000 } },
+  { provider: "opencode-go", model: "muse-spark-1.3-contributor", limit: { context: 400000, output: 128000 } },
+];
+
+/** Cadena de IDs file-qualificados del descriptor: providers → … → limit. */
+function providerChain(base: string, descriptor: ProviderModelLimit): [string, string, string, string, string] {
+  const prefix = ["providers", descriptor.provider, "models", descriptor.model];
+  return [
+    fieldId(base, "providers"),
+    fieldId(base, "providers", descriptor.provider),
+    fieldId(base, "providers", descriptor.provider, "models"),
+    fieldId(base, "providers", descriptor.provider, "models", descriptor.model),
+    fieldId(base, ...prefix, "limit"),
+  ];
+}
+
+/** ID file-qualificado de una hoja de límite del descriptor. */
+function limitLeafFieldId(base: string, descriptor: ProviderModelLimit, key: string): string {
+  return fieldId(base, "providers", descriptor.provider, "models", descriptor.model, "limit", key);
+}
 
 /**
  * Patrones de secretos denegados para `read`/`edit` (Spec T04). El comodín `*`
@@ -442,22 +472,31 @@ export const opencodeAdapter: Adapter = {
       const modelRef = tierModel.variant ? `${tierModel.model}#${tierModel.variant}` : tierModel.model;
       lines.push(`model: ${yamlString(modelRef)}`);
 
-      if (agent.readonly || agent.bash !== "full" || !agent.spawn) lines.push("permission:");
-      if (agent.readonly) lines.push("  edit: deny");
-      if (agent.bash === "none") lines.push("  bash: deny");
-      else if (agent.bash === "git-read") {
-        lines.push('  bash:\n    "*": deny');
+      // Permisos nativos v2: array ordenado `permissions` (mismo contrato
+      // action/resource/effect que el server config), serializado como JSON flow
+      // — válido YAML de una sola línea, decodificable sin dependencia YAML.
+      // El orden es la precedencia: deny global de shell primero, después los
+      // seis prefijos Git seguros y los denies destructivos canónicos. Sin
+      // `ask`: el overlay no añade fricción a la sesión aprobada.
+      const rules: PermissionRule[] = [];
+      if (agent.readonly) rules.push({ action: "edit", resource: "*", effect: "deny" });
+      if (agent.bash === "none") {
+        rules.push({ action: "shell", resource: "*", effect: "deny" });
+      } else if (agent.bash === "git-read") {
+        rules.push({ action: "shell", resource: "*", effect: "deny" });
         for (const command of gitReadCommands) {
-          lines.push(`    ${yamlString(command)}: allow`, `    ${yamlString(`${command} *`)}: allow`);
+          rules.push({ action: "shell", resource: command, effect: "allow" });
+          rules.push({ action: "shell", resource: `${command} *`, effect: "allow" });
         }
         const permission = objectValue(loadCanonicalDefaults(stackRoot())["opencode"]?.permission);
         const bash = objectValue(permission?.bash);
         if (bash === null) throw new Error("OpenCode: canonical Bash policy is required for git-read agents.");
         for (const [pattern, decision] of Object.entries(bash)) {
-          if (decision === "deny") lines.push(`    ${yamlString(pattern)}: deny`);
+          if (decision === "deny") rules.push({ action: "shell", resource: pattern, effect: "deny" });
         }
       }
-      if (!agent.spawn) lines.push("  task: deny");
+      if (!agent.spawn) rules.push({ action: "subagent", resource: "*", effect: "deny" });
+      if (rules.length > 0) lines.push(`permissions: ${JSON.stringify(rules)}`);
     }
 
     // En OpenCode el primary ES nativo: aparece en el ciclo de Tab junto a
@@ -643,23 +682,28 @@ export const opencodeAdapter: Adapter = {
       // Compatibilidad v1→v2: un `provider.<id>` legacy ajeno sin equivalente
       // native sería ocultado por nuestros defaults `providers.<id>` y perdería
       // su endpoint/settings/credenciales. Falla cerrado con remedio en vez de
-      // convertirlo o reclamarlo indiscriminadamente. Una entrada legacy v1
-      // conocida y owned (migrada arriba) no se bloquea: ya era nuestra.
-      if (!migratingLegacy && legacyProvider?.["openai"] !== undefined && nativeProviders?.["openai"] === undefined) {
-        throw new Error("OpenCode: 'provider.openai' legacy (v1) sin 'providers.openai' nativo; añadir los defaults v2 ocultaría su endpoint/settings/credenciales. Migra esa entrada a 'providers' o retírala antes de reintentar sync.");
+      // convertirlo o reclamarlo indiscriminadamente. Los ids conocidos de la
+      // tabla se comprueban uno a uno (p.ej. `provider.opencode-go` también);
+      // una entrada v1 owned ya migrada arriba no se bloquea: ya era nuestra.
+      for (const { provider } of PROVIDER_MODEL_LIMITS) {
+        if (legacyProvider?.[provider] !== undefined && nativeProviders?.[provider] === undefined) {
+          throw new Error(`OpenCode: 'provider.${provider}' legacy sin 'providers.${provider}' nativo; añadir los defaults v2 ocultaría su endpoint/settings/credenciales. Migra esa entrada a 'providers' o retírala antes de reintentar sync.`);
+        }
       }
 
-      const providers = ensureOwnedPrimaryObject(root, "providers", providersField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const openai = ensureOwnedPrimaryObject(providers, "openai", primaryOpenaiField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const models = ensureOwnedPrimaryObject(openai, "models", primaryModelsField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const sol = ensureOwnedPrimaryObject(models, PRIMARY_MODEL_ID, primarySolField(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      const limit = ensureOwnedPrimaryObject(sol, "limit", primaryLimitPrefix(base), ctx.ownedPrimaryModelFields, primaryModelOwnership);
-      for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
-        if (limit[key] !== undefined) continue;
-        limit[key] = value;
-        const field = primaryLimitField(base, key);
-        if (ctx.ownedPrimaryModelFields?.has(field) !== true) {
-          primaryModelOwnership.push({ field, owned: true });
+      const providers = ensureOwnedPrimaryObject(root, "providers", providersField(base), ownedFields, primaryModelOwnership);
+      for (const descriptor of PROVIDER_MODEL_LIMITS) {
+        const [, providerId, modelsId, modelId, limitId] = providerChain(base, descriptor);
+        const providerBlock = ensureOwnedPrimaryObject(providers, descriptor.provider, providerId, ownedFields, primaryModelOwnership);
+        const modelsBlock = ensureOwnedPrimaryObject(providerBlock, "models", modelsId, ownedFields, primaryModelOwnership);
+        const modelBlock = ensureOwnedPrimaryObject(modelsBlock, descriptor.model, modelId, ownedFields, primaryModelOwnership);
+        const limitBlock = ensureOwnedPrimaryObject(modelBlock, "limit", limitId, ownedFields, primaryModelOwnership);
+        for (const [key, value] of Object.entries(descriptor.limit)) {
+          // Solo campos ausentes: un valor manual (igual o distinto del canon) no
+          // se sobrescribe ni se reclama por coincidencia.
+          if (limitBlock[key] !== undefined) continue;
+          limitBlock[key] = value;
+          claimFieldId(ownedFields, primaryModelOwnership, limitLeafFieldId(base, descriptor, key));
         }
       }
 
@@ -938,33 +982,43 @@ export const opencodeAdapter: Adapter = {
           primaryModelOwnership.push({ field: modelField(base), owned: false });
         }
 
-        const providers = objectValue(root["providers"]);
-        const openai = providers === null ? null : objectValue(providers["openai"]);
-        const models = openai === null ? null : objectValue(openai["models"]);
-        const sol = models === null ? null : objectValue(models[PRIMARY_MODEL_ID]);
-        const limit = sol === null ? null : objectValue(sol["limit"]);
-        if (limit !== null) {
-          for (const [key, value] of Object.entries(PRIMARY_LIMITS)) {
-            const field = primaryLimitField(base, key);
-            if (ctx.ownedPrimaryModelFields?.has(field) !== true) continue;
-            if (limit[key] === value) delete limit[key];
+        const ownedIds = ctx.ownedPrimaryModelFields;
+        const providersBlock = objectValue(root["providers"]);
+        const releasedIds = new Set<string>();
+        for (const descriptor of PROVIDER_MODEL_LIMITS) {
+          const [, providerId, modelsId, modelId, limitId] = providerChain(base, descriptor);
+          const providerBlock = providersBlock === null ? null : objectValue(providersBlock[descriptor.provider]);
+          const modelsBlock = providerBlock === null ? null : objectValue(providerBlock["models"]);
+          const modelBlock = modelsBlock === null ? null : objectValue(modelsBlock[descriptor.model]);
+          const limitBlock = modelBlock === null ? null : objectValue(modelBlock["limit"]);
+          let removed = false;
+          if (limitBlock !== null) {
+            for (const [key, value] of Object.entries(descriptor.limit)) {
+              const field = limitLeafFieldId(base, descriptor, key);
+              if (ownedIds?.has(field) !== true) continue;
+              // Solo se retira el valor que siga siendo el canónico del archivo.
+              if (limitBlock[key] === value) { delete limitBlock[key]; removed = true; }
+              releasedIds.add(field);
+            }
           }
+          // Un `limit` vacío tras retirar hojas owned es residuo nuestro: se poda
+          // (el contenedor puede haberse creado sin reclamarse). Los contenedores
+          // superiores se podan SOLO si están owned y vacíos, para no retirar
+          // estructura preexistente ajena (p.ej. `models: {}`).
+          if (modelBlock !== null && limitBlock !== null && Object.keys(limitBlock).length === 0
+            && (removed || ownedIds?.has(limitId) === true)) delete modelBlock["limit"];
+          if (modelsBlock !== null && modelBlock !== null && Object.keys(modelBlock).length === 0
+            && ownedIds?.has(modelId) === true) delete modelsBlock[descriptor.model];
+          if (providerBlock !== null && modelsBlock !== null && Object.keys(modelsBlock).length === 0
+            && ownedIds?.has(modelsId) === true) delete providerBlock["models"];
+          if (providersBlock !== null && providerBlock !== null && Object.keys(providerBlock).length === 0
+            && ownedIds?.has(providerId) === true) delete providersBlock[descriptor.provider];
+          for (const field of providerChain(base, descriptor)) releasedIds.add(field);
         }
-        if (sol !== null && ctx.ownedPrimaryModelFields?.has(primaryLimitPrefix(base)) === true) pruneEmpty(sol, "limit");
-        if (models !== null && ctx.ownedPrimaryModelFields?.has(primarySolField(base)) === true) pruneEmpty(models, PRIMARY_MODEL_ID);
-        if (openai !== null && ctx.ownedPrimaryModelFields?.has(primaryModelsField(base)) === true) pruneEmpty(openai, "models");
-        if (providers !== null && ctx.ownedPrimaryModelFields?.has(primaryOpenaiField(base)) === true) pruneEmpty(providers, "openai");
-        if (ctx.ownedPrimaryModelFields?.has(providersField(base)) === true) pruneEmpty(root, "providers");
-        const managedFields = [
-          providersField(base),
-          primaryOpenaiField(base),
-          primaryModelsField(base),
-          primarySolField(base),
-          primaryLimitPrefix(base),
-          ...Object.keys(PRIMARY_LIMITS).map((key) => primaryLimitField(base, key)),
-        ];
-        for (const field of managedFields) {
-          if (ctx.ownedPrimaryModelFields?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
+        if (providersBlock !== null && Object.keys(providersBlock).length === 0
+          && ownedIds?.has(providersField(base)) === true) delete root["providers"];
+        for (const field of releasedIds) {
+          if (ownedIds?.has(field) === true) primaryModelOwnership.push({ field, owned: false });
         }
 
         // Defaults v2 de servidor owned: se retiran solo si siguen siendo el
