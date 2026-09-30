@@ -145,6 +145,7 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       runInstall({
         runtimes: [adapter.id],
         targetDir: configDir,
+        ...(adapter.id === "opencode" ? { opencodeTargetMajor: 2 } : {}),
         dryRun: false,
         yes: true,
         mode: mode === "human"
@@ -215,6 +216,7 @@ describe.each(RUNTIMES)("%s", (_name, adapter) => {
       runInstall({
         runtimes: [adapter.id],
         targetDir: configDir,
+        ...(adapter.id === "opencode" ? { opencodeTargetMajor: 2 } : {}),
         dryRun: false,
         yes: true,
         mode: { mode: "programmatic", subagentConcurrency: "serial" },
@@ -408,6 +410,7 @@ describe("shared skills en programmatic installs", () => {
         runInstall({
           runtimes: ["opencode"],
           targetDir: configDir,
+          opencodeTargetMajor: 2,
           dryRun: false,
           yes: true,
           mode: { mode: "programmatic", subagentConcurrency: "serial" },
@@ -441,7 +444,7 @@ describe("Codex y OpenCode comparten skills sin compartir el modo", () => {
     vi.spyOn(modelMap, "loadModelMap").mockReturnValue(TEST_MODEL_MAP);
 
     await expect(runInstall({
-      runtimes: ["opencode"], targetDir: opencodeDir, dryRun: false, yes: true,
+      runtimes: ["opencode"], targetDir: opencodeDir, opencodeTargetMajor: 2, dryRun: false, yes: true,
       mode: { mode: "human", subagentConcurrency: "serial" },
     })).resolves.toBe(0);
 

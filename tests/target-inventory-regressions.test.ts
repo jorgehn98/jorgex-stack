@@ -2,8 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+
+/** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -102,7 +108,7 @@ describe("target inventory regressions", () => {
           const originals = Object.values(ADAPTERS).map((adapter) => ({ adapter, detect: adapter.detect }));
           for (const { adapter } of originals) {
             adapter.detect = () => ({
-              id: adapter.id, name: adapter.name, installed: adapter.id === runtime, binPath: null,
+              id: adapter.id, name: adapter.name, installed: adapter.id === runtime, binPath: adapter.id === "opencode" ? OPENCODE_V2_BIN : null,
               configDir: path.join(homeDir, `.${adapter.id}`),
             });
           }
@@ -113,28 +119,44 @@ describe("target inventory regressions", () => {
               mode: { mode: "human", subagentConcurrency: "serial" },
             } as const;
             const install = () => runInstall({ ...options, runtimes: [runtime] });
-            await expect(install()).resolves.toBe(0);
-            expect(fs.existsSync(replacement)).toBe(true);
-            const ownership = readManifest().runtimes[runtime]?.owned ?? [];
-            expect(ownership).toContain(replacement);
-            for (const file of retired) {
-              expect(fs.existsSync(file), file).toBe(false);
-              expect(ownership).not.toContain(file);
-              const backup = listBackups().flatMap((entry) => entry.files).find((entry) => entry.original === file);
-              expect(backup, file).toBeDefined();
-              expect(fs.readFileSync(backup!.stored, "utf8")).toBe(`user content: ${path.basename(file)}\n`);
+
+            if (runtime === "opencode") {
+              // Los analistas retirados no están en el plan canónico actual:
+              // un manifest editable no los autentica, así que la frontera
+              // v2 falla cerrado, preserva y no proyecta.
+              await expect(install()).resolves.toBe(1);
+              for (const file of retired) {
+                expect(fs.readFileSync(file, "utf8"), file).toBe(`user content: ${path.basename(file)}\n`);
+                expect(readManifest().runtimes.opencode?.owned ?? []).toContain(file);
+              }
+              expect(fs.existsSync(replacement)).toBe(false);
+              expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
+              expect(listBackups()).toEqual([]);
+              expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/corrobora|preserva/i));
+            } else {
+              await expect(install()).resolves.toBe(0);
+              expect(fs.existsSync(replacement)).toBe(true);
+              const ownership = readManifest().runtimes[runtime]?.owned ?? [];
+              expect(ownership).toContain(replacement);
+              for (const file of retired) {
+                expect(fs.existsSync(file), file).toBe(false);
+                expect(ownership).not.toContain(file);
+                const backup = listBackups().flatMap((entry) => entry.files).find((entry) => entry.original === file);
+                expect(backup, file).toBeDefined();
+                expect(fs.readFileSync(backup!.stored, "utf8")).toBe(`user content: ${path.basename(file)}\n`);
+              }
+              expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
+              expect(ownership).not.toContain(foreign);
+              const payload = fs.readFileSync(replacement);
+              const backupIds = listBackups().map((entry) => entry.id);
+              mocks.prompts.log.success.mockClear();
+              await expect(install()).resolves.toBe(0);
+              expect(fs.readFileSync(replacement)).toEqual(payload);
+              expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
+              for (const file of retired) expect(fs.existsSync(file)).toBe(false);
+              expect(listBackups().map((entry) => entry.id)).toEqual(backupIds);
+              expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
             }
-            expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
-            expect(ownership).not.toContain(foreign);
-            const payload = fs.readFileSync(replacement);
-            const backupIds = listBackups().map((entry) => entry.id);
-            mocks.prompts.log.success.mockClear();
-            await expect(install()).resolves.toBe(0);
-            expect(fs.readFileSync(replacement)).toEqual(payload);
-            expect(fs.readFileSync(foreign, "utf8")).toBe(`user content: ${path.basename(foreign)}\n`);
-            for (const file of retired) expect(fs.existsSync(file)).toBe(false);
-            expect(listBackups().map((entry) => entry.id)).toEqual(backupIds);
-            expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
           } finally {
             for (const { adapter, detect } of originals) adapter.detect = detect;
           }
@@ -164,7 +186,7 @@ describe("target inventory regressions", () => {
         const originalCodexDetect = codex.detect;
         const originalClaudeDetect = claudeCode.detect;
 
-        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         codex.detect = () => ({
           id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex"),
         });
@@ -250,7 +272,7 @@ describe("target inventory regressions", () => {
         const originalCodexDetect = codex.detect;
         const originalClaudeDetect = claudeCode.detect;
 
-        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         codex.detect = () => ({
           id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex"),
         });
@@ -259,13 +281,18 @@ describe("target inventory regressions", () => {
         });
 
         try {
+          const manifestFile = path.join(homeDir, ".jorgex-stack", "manifest.json");
+          const manifestBefore = fs.readFileSync(manifestFile);
+          // Goal Mode retirado no está en el plan canónico actual: un manifest
+          // editable no autentica esos owned, así que la frontera v2 preserva
+          // todo y falla cerrado antes de cualquier write.
           await expect(install.runInstall({
             runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
-          })).resolves.toBe(0);
+          })).resolves.toBe(1);
 
-          for (const ownedGoalFile of [ownedGoalPlugin, ownedGoalStore, ownedGoalCommand]) {
-            expect(fs.existsSync(ownedGoalFile), ownedGoalFile).toBe(false);
-          }
+          expect(fs.readFileSync(ownedGoalPlugin, "utf8")).toBe(userModifiedGoalPlugin);
+          expect(fs.readFileSync(ownedGoalStore, "utf8")).toBe("// managed Goal store\n");
+          expect(fs.readFileSync(ownedGoalCommand, "utf8")).toBe("# managed Goal command\n");
           expect(fs.readFileSync(foreignGoalModule, "utf8")).toBe("// foreign nested plugin\n");
           expect(fs.readFileSync(foreignPlugin, "utf8")).toBe("// foreign plugin\n");
           // Stack ya no gestiona plugins/engram.ts (oficial vía setup); el
@@ -275,35 +302,17 @@ describe("target inventory regressions", () => {
           expect(fs.readFileSync(goalDatabase, "utf8")).toBe("not a real SQLite database\n");
           expect(fs.readFileSync(goalHistory, "utf8")).toBe("{\"history\":true}\n");
           expect(fs.readFileSync(goalArtifact, "utf8")).toBe("# preserved goal artifact\n");
+          expect(fs.readFileSync(manifestFile)).toEqual(manifestBefore);
+          expect(listBackups()).toEqual([]);
+          expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/corrobora|preserva/i));
 
-          const backedUpGoalPlugin = listBackups().flatMap((backup) => backup.files)
-            .find((file) => file.original === ownedGoalPlugin);
-          expect(backedUpGoalPlugin).toBeDefined();
-          expect(fs.readFileSync(backedUpGoalPlugin!.stored, "utf8")).toBe(userModifiedGoalPlugin);
-          const ownedAfterRemoval = readManifest().runtimes.opencode?.owned ?? [];
-          for (const ownedGoalFile of [ownedGoalPlugin, ownedGoalStore, ownedGoalCommand]) {
-            expect(ownedAfterRemoval).not.toContain(ownedGoalFile);
-          }
-
-          const backupIds = listBackups().map((backup) => backup.id);
-          const stablePayloads = new Map([
-            engramPlugin,
-            worktreePlugin,
-            foreignGoalModule,
-            foreignPlugin,
-            engramPlaceholder,
-            goalDatabase,
-            goalHistory,
-            goalArtifact,
-          ].map((file) => [file, fs.readFileSync(file)]));
-          mocks.prompts.log.success.mockClear();
+          // Segunda pasada idempotente del fail-closed: sigue sin tocar nada.
           await expect(install.runInstall({
             runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" },
-          })).resolves.toBe(0);
-          expect(fs.existsSync(ownedGoalPlugin)).toBe(false);
-          for (const [file, bytes] of stablePayloads) expect(fs.readFileSync(file)).toEqual(bytes);
-          expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
-          expect(listBackups().map((backup) => backup.id)).toEqual(backupIds);
+          })).resolves.toBe(1);
+          expect(fs.readFileSync(ownedGoalPlugin, "utf8")).toBe(userModifiedGoalPlugin);
+          expect(fs.readFileSync(manifestFile)).toEqual(manifestBefore);
+          expect(listBackups()).toEqual([]);
         } finally {
           opencode.detect = originalOpencodeDetect;
           codex.detect = originalCodexDetect;
@@ -331,7 +340,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: true,
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir,
       });
 
@@ -364,7 +373,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: true,
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir,
       });
 
@@ -408,7 +417,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: true,
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir,
       });
       codex.detect = () => ({
@@ -454,12 +463,14 @@ describe("target inventory regressions", () => {
   it("no borra huérfanos de manifest cuando el inventario global está incompleto", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-orphan-"));
     const homeDir = path.join(tmp, "home");
-    const configDir = path.join(homeDir, ".opencode");
+    const configDir = path.join(homeDir, ".codex");
     const orphanFile = path.join(configDir, "legacy", "orphan.txt");
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
-      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+      // Codex tiene modelos; OpenCode detectado sin mapa => inventario incompleto
+      // (regla genérica de completitud, ajena a la frontera v2 de OpenCode).
+      mocks.modelMapOverride = { codex: DEFAULT_MODEL_MAP.codex };
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
 
@@ -467,7 +478,7 @@ describe("target inventory regressions", () => {
       fs.writeFileSync(orphanFile, "keep me\n");
 
       const { writeRuntimeManifest } = await import("../src/lib/manifest.js");
-      writeRuntimeManifest("opencode", { configDir, owned: [orphanFile], updatedAt: "t" });
+      writeRuntimeManifest("codex", { configDir, owned: [orphanFile], updatedAt: "t" });
 
       const install = await import("../src/install.js");
       const opencode = install.ADAPTERS.opencode!;
@@ -480,20 +491,20 @@ describe("target inventory regressions", () => {
         name: "OpenCode",
         installed: true,
         binPath: null,
-        configDir,
+        configDir: path.join(homeDir, ".config", "opencode"),
       });
       codex.detect = () => ({
         id: "codex",
         name: "Codex CLI",
         installed: true,
         binPath: null,
-        configDir: path.join(homeDir, ".codex"),
+        configDir,
       });
 
       try {
         await expect(
           install.runInstall({
-            runtimes: ["opencode"],
+            runtimes: ["codex"],
             dryRun: false,
             yes: true,
             mode: { mode: "human", subagentConcurrency: "serial" },
@@ -512,13 +523,13 @@ describe("target inventory regressions", () => {
   it("con inventario incompleto conserva en el manifest los owned previos y los del plan actual", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-manifest-owned-"));
     const homeDir = path.join(tmp, "home");
-    const configDir = path.join(homeDir, ".opencode");
+    const configDir = path.join(homeDir, ".codex");
     const previousOwned = path.join(configDir, "legacy", "orphan.txt");
-    const currentOwned = path.join(configDir, "agents", "codebase-analyst.md");
+    const currentOwned = path.join(configDir, "agents", "codebase-analyst.toml");
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
-      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+      mocks.modelMapOverride = { codex: DEFAULT_MODEL_MAP.codex };
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
 
@@ -526,7 +537,7 @@ describe("target inventory regressions", () => {
       fs.writeFileSync(previousOwned, "keep me\n");
 
       const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
-      writeRuntimeManifest("opencode", { configDir, owned: [previousOwned], updatedAt: "t" });
+      writeRuntimeManifest("codex", { configDir, owned: [previousOwned], updatedAt: "t" });
 
       const install = await import("../src/install.js");
       const opencode = install.ADAPTERS.opencode!;
@@ -539,20 +550,20 @@ describe("target inventory regressions", () => {
         name: "OpenCode",
         installed: true,
         binPath: null,
-        configDir,
+        configDir: path.join(homeDir, ".config", "opencode"),
       });
       codex.detect = () => ({
         id: "codex",
         name: "Codex CLI",
         installed: true,
         binPath: null,
-        configDir: path.join(homeDir, ".codex"),
+        configDir,
       });
 
       try {
         await expect(
           install.runInstall({
-            runtimes: ["opencode"],
+            runtimes: ["codex"],
             dryRun: false,
             yes: true,
             mode: { mode: "human", subagentConcurrency: "serial" },
@@ -561,7 +572,7 @@ describe("target inventory regressions", () => {
 
         expect(fs.existsSync(previousOwned)).toBe(true);
         expect(fs.readFileSync(previousOwned, "utf8")).toBe("keep me\n");
-        expect(readManifest().runtimes.opencode?.owned).toEqual(expect.arrayContaining([previousOwned, currentOwned]));
+        expect(readManifest().runtimes.codex?.owned).toEqual(expect.arrayContaining([previousOwned, currentOwned]));
       } finally {
         opencode.detect = originalOpencodeDetect;
         codex.detect = originalCodexDetect;
@@ -572,13 +583,13 @@ describe("target inventory regressions", () => {
   it("con inventario degradado no mete en el manifest los targets compartidos del unmerge", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-target-manifest-unmerge-"));
     const homeDir = path.join(tmp, "home");
-    const configDir = path.join(homeDir, ".opencode");
+    const configDir = path.join(homeDir, ".codex");
     const sharedTarget = path.join(configDir, "AGENTS.md");
     const privateTarget = path.join(configDir, "legacy", "private.txt");
 
     await withTempHome(homeDir, async () => {
       const { DEFAULT_MODEL_MAP } = await vi.importActual<typeof import("../src/lib/model-map.js")>("../src/lib/model-map.js");
-      mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
+      mocks.modelMapOverride = { codex: DEFAULT_MODEL_MAP.codex };
       mocks.detectEngram.mockReturnValue("C:/mock/engram.exe");
       mocks.runDetectedBin.mockReturnValue("1.2.3");
 
@@ -587,7 +598,7 @@ describe("target inventory regressions", () => {
       fs.writeFileSync(privateTarget, "private\n");
 
       const { writeRuntimeManifest, readManifest } = await import("../src/lib/manifest.js");
-      writeRuntimeManifest("opencode", { configDir, owned: [sharedTarget, privateTarget], updatedAt: "t" });
+      writeRuntimeManifest("codex", { configDir, owned: [sharedTarget, privateTarget], updatedAt: "t" });
 
       const install = await import("../src/install.js");
       const opencode = install.ADAPTERS.opencode!;
@@ -600,20 +611,20 @@ describe("target inventory regressions", () => {
         name: "OpenCode",
         installed: true,
         binPath: null,
-        configDir,
+        configDir: path.join(homeDir, ".config", "opencode"),
       });
       codex.detect = () => ({
         id: "codex",
         name: "Codex CLI",
         installed: true,
         binPath: null,
-        configDir: path.join(homeDir, ".codex"),
+        configDir,
       });
 
       try {
         await expect(
           install.runInstall({
-            runtimes: ["opencode"],
+            runtimes: ["codex"],
             dryRun: false,
             yes: true,
             mode: { mode: "human", subagentConcurrency: "serial" },
@@ -621,8 +632,8 @@ describe("target inventory regressions", () => {
         ).resolves.toBe(0);
 
         const manifest = readManifest();
-        expect(manifest.runtimes.opencode?.owned).toEqual(expect.arrayContaining([privateTarget]));
-        expect(manifest.runtimes.opencode?.owned ?? []).not.toContain(sharedTarget);
+        expect(manifest.runtimes.codex?.owned).toEqual(expect.arrayContaining([privateTarget]));
+        expect(manifest.runtimes.codex?.owned ?? []).not.toContain(sharedTarget);
       } finally {
         opencode.detect = originalOpencodeDetect;
         codex.detect = originalCodexDetect;
@@ -630,7 +641,7 @@ describe("target inventory regressions", () => {
     });
   });
 
-  it("preserva agent-browser modificado sin ownership y lo retira solo cuando un manifest válido lo declara", async () => {
+  it("preserva agent-browser modificado sin ownership y falla cerrado si el manifest editable lo declara", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-agent-browser-manifest-"));
     const homeDir = path.join(tmp, "home");
     const configDir = path.join(homeDir, ".config", "opencode");
@@ -656,7 +667,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: true,
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir,
       });
       codex.detect = () => ({
@@ -695,7 +706,11 @@ describe("target inventory regressions", () => {
           ...previous,
           owned: [...previous.owned, legacySkill],
         });
+        const manifestFile = path.join(homeDir, ".jorgex-stack", "manifest.json");
+        const manifestBefore = fs.readFileSync(manifestFile);
 
+        // agent-browser no está en el plan canónico actual: el manifest
+        // editable no lo autentica, así que se preserva y falla cerrado.
         await expect(
           install.runInstall({
             runtimes: ["opencode"],
@@ -703,10 +718,11 @@ describe("target inventory regressions", () => {
             yes: true,
             mode: { mode: "human", subagentConcurrency: "serial" },
           }),
-        ).resolves.toBe(0);
+        ).resolves.toBe(1);
 
-        expect(fs.existsSync(legacySkill)).toBe(false);
-        expect(readManifest().runtimes.opencode?.owned).not.toContain(legacySkill);
+        expect(fs.readFileSync(legacySkill, "utf8")).toBe("# User-modified agent-browser\n");
+        expect(fs.readFileSync(manifestFile)).toEqual(manifestBefore);
+        expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/corrobora|preserva/i));
       } finally {
         opencode.detect = originalOpencodeDetect;
         codex.detect = originalCodexDetect;
@@ -715,7 +731,7 @@ describe("target inventory regressions", () => {
     });
   });
 
-  it("retira las diez rutas legacy de Playwright con backup, conserva archivos ajenos e idempotencia", async () => {
+  it("preserva las diez rutas legacy de Playwright si el manifest editable las declara sin corroboración", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-playwright-skill-retirement-"));
     const homeDir = path.join(tmp, "home");
     const configDir = path.join(homeDir, ".config", "opencode");
@@ -769,7 +785,7 @@ describe("target inventory regressions", () => {
           id: "opencode",
           name: "OpenCode",
           installed: true,
-          binPath: null,
+          binPath: OPENCODE_V2_BIN,
           configDir,
         });
         codex.detect = () => ({
@@ -795,29 +811,31 @@ describe("target inventory regressions", () => {
             mode: { mode: "human" as const, subagentConcurrency: "serial" as const },
           };
           const runSync = () => install.runInstall({ ...options, runtimes: [...options.runtimes] });
+          const manifestFile = path.join(homeDir, ".jorgex-stack", "manifest.json");
+          const manifestBefore = fs.readFileSync(manifestFile);
 
-          await expect(runSync()).resolves.toBe(0);
+          // Las diez rutas legacy de Playwright ya no están en el plan canónico:
+          // el manifest editable no las autentica y la frontera v2 preserva sin
+          // limpiar ni proyectar.
+          await expect(runSync()).resolves.toBe(1);
 
           for (const file of legacyFiles) {
-            expect(fs.existsSync(file), file).toBe(false);
-            const backup = listBackups().flatMap((entry) => entry.files)
-              .find((entry) => entry.original === file);
-            expect(backup, file).toBeDefined();
-            expect(fs.readFileSync(backup!.stored, "utf8")).toBe(legacyContent.get(file));
+            expect(fs.readFileSync(file, "utf8"), file).toBe(legacyContent.get(file));
           }
           expect(fs.readFileSync(foreignFile, "utf8")).toBe("user-owned Playwright notes\n");
-          const ownedAfterRemoval = readManifest().runtimes.opencode?.owned ?? [];
-          for (const file of legacyFiles) expect(ownedAfterRemoval).not.toContain(file);
-          expect(ownedAfterRemoval).not.toContain(foreignFile);
+          expect(fs.readFileSync(manifestFile)).toEqual(manifestBefore);
+          expect(listBackups()).toEqual([]);
+          expect(mocks.prompts.log.error).toHaveBeenCalledWith(expect.stringMatching(/corrobora|preserva/i));
 
-          const backupIds = listBackups().map((entry) => entry.id);
-          mocks.prompts.log.success.mockClear();
-          await expect(runSync()).resolves.toBe(0);
-
-          for (const file of legacyFiles) expect(fs.existsSync(file), file).toBe(false);
+          // Segunda pasada idempotente: sigue preservando todo sin cambios.
+          mocks.prompts.log.error.mockClear();
+          await expect(runSync()).resolves.toBe(1);
+          for (const file of legacyFiles) {
+            expect(fs.readFileSync(file, "utf8"), file).toBe(legacyContent.get(file));
+          }
           expect(fs.readFileSync(foreignFile, "utf8")).toBe("user-owned Playwright notes\n");
-          expect(listBackups().map((entry) => entry.id)).toEqual(backupIds);
-          expect(mocks.prompts.log.success).toHaveBeenCalledWith(expect.stringMatching(/ya al día.*idempotente/i));
+          expect(fs.readFileSync(manifestFile)).toEqual(manifestBefore);
+          expect(listBackups()).toEqual([]);
         } finally {
           opencode.detect = originalOpencodeDetect;
           codex.detect = originalCodexDetect;
@@ -862,7 +880,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: true,
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir: opencodeDir,
       });
       codex.detect = () => ({
@@ -967,7 +985,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: runtime === "opencode",
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir: configDirs.opencode,
       });
       claudeCode.detect = () => ({
@@ -1053,7 +1071,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: runtime === "opencode",
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir: configDirs.opencode,
       });
       claudeCode.detect = () => ({
@@ -1217,7 +1235,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: runtime === "opencode",
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir: configDirs.opencode,
       });
       claudeCode.detect = () => ({
@@ -1300,7 +1318,7 @@ describe("target inventory regressions", () => {
         id: "opencode",
         name: "OpenCode",
         installed: false,
-        binPath: null,
+        binPath: OPENCODE_V2_BIN,
         configDir: path.join(homeDir, ".config", "opencode"),
       });
       claudeCode.detect = () => ({

@@ -3,13 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
-import type { Adapter, FileAction, InstallContext, InstallModePreference, RuntimeId } from "./adapters/types.js";
+import type { Adapter, FileAction, InstallContext, InstallModePreference, OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
 import { opencodeAdapter } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
 import { HOME, dataDir, samePath, stackRoot } from "./lib/paths.js";
-import { detectEngram, engramVersion } from "./lib/detect.js";
-import { copyFile, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
+import { detectEngram, engramVersion, opencodeMajorVersion, type RuntimeDetection } from "./lib/detect.js";
+import { copyFile, isContainedIn, pruneEmptyDirs, readTextIfExists, sameFileContent, writeText } from "./lib/fsx.js";
 import { ensureModelMapFile, loadModelMap, type ModelMap } from "./lib/model-map.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, installModePreferenceFile, loadInstallModePreference, normalizeInstallModePreference, saveInstallModePreference } from "./lib/install-mode.js";
 import { createBackup } from "./lib/backup.js";
@@ -23,7 +23,7 @@ import {
 } from "./lib/official-engram-setup.js";
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, materializeCanonicalDevtoolsServerForRemoval, type CanonicalMcp } from "./lib/canonical.js";
-import { findOrphans, readManifest, writeRuntimeManifest } from "./lib/manifest.js";
+import { findOrphans, readManifest, readManifestStrict, writeRuntimeManifest } from "./lib/manifest.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import { planAgents } from "./components/agents.js";
@@ -82,7 +82,7 @@ export const ADAPTERS: Partial<Record<RuntimeId, Adapter>> = {
   codex: codexAdapter,
 };
 
-export interface InstallOptions {
+export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   writingStyle?: WritingStyleSnapshot;
   runtimes: RuntimeId[];
   /** Override del dir de config destino (pruebas/paridad). Solo válido con un único runtime. */
@@ -485,11 +485,201 @@ function formatOfficialFailure(
   return `${adapterName}: setup oficial Engram falló (${detail}).`;
 }
 
+/** Major admitido por esta versión de Stack para el runtime `opencode`. */
+const OPENCODE_REQUIRED_MAJOR = 2;
+
+/** Evidencia de v2 para el sandbox --target-dir (InstallOptions o env CLI). */
+export interface OpenCodePreflightEvidence {
+  targetDir?: string;
+  targetMajor?: number;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Targets de proyección que el adapter reconoce como Stack-owned mediante una
+ * lectura de solo lectura del plan canónico actual: contenido (prompt, agentes,
+ * skills, comandos, hooks, plugins, scripts), config gestionada y los targets
+ * compartidos del unmerge. Es la whitelist estructural source-only: una lista
+ * `owned` editable no autentica por sí sola un archivo que el canon no
+ * corrobora.
+ */
+function recognizedOpenCodeOwnedTargets(ctx: InstallContext): Set<string> {
+  const recognized = new Set<string>();
+  for (const action of buildPlan(opencodeAdapter, ctx)) recognized.add(path.resolve(action.target));
+  for (const action of opencodeAdapter.planUnmerge(loadCanonicalMcp(ctx.stackDir), loadCanonicalHooks(ctx.stackDir), ctx)) {
+    recognized.add(path.resolve(action.target));
+  }
+  // Recursos retirados/provistos por el provider (p.ej. plugins/engram.ts):
+  // nunca se borran ni se reclaman como proyección v2, pero un manifest que los
+  // liste no debe bloquear un sync legítimo.
+  const { pluginsDir } = opencodeAdapter.paths(ctx.configDir);
+  if (pluginsDir !== null) {
+    for (const basename of opencodeAdapter.excludedPluginBasenames ?? []) {
+      recognized.add(path.resolve(path.join(pluginsDir, basename)));
+    }
+  }
+  return recognized;
+}
+
+/**
+ * Un manifest OpenCode existente debe ser legible y coherente antes de
+ * cualquier limpieza o write. Frontera source-only: los `owned` deben vivir en
+ * las raíces reales del adapter (configDir y skillsDir; HOME completo NO es una
+ * raíz de proyección) y ser corroborados por el plan canónico actual. Un
+ * recurso retirado sin evidencia corroborable no se autentica por el manifest
+ * editable: se preserva y se bloquea con diagnóstico. `pendingOrphans`, si
+ * existe, es un array de strings subconjunto de `owned` dentro de la frontera.
+ */
+function assertOpenCodeManifestCoherence(configDir: string): void {
+  const read = readManifestStrict();
+  if (read.status === "absent") return;
+  if (read.status === "invalid") {
+    throw new Error(
+      `OpenCode: el manifest gestionado no es legible/coherente (${read.reason}); no se puede acreditar ownership ni configDir. Revisa o restaura el manifest antes de reintentar install/sync.`,
+    );
+  }
+  const entry = read.manifest.runtimes.opencode;
+  if (entry === undefined) return;
+  if (!isPlainRecord(entry)) {
+    throw new Error(
+      "OpenCode: la entrada 'opencode' del manifest no es un objeto coherente; se conserva el manifest y no se toca ningún archivo. Revisa o restaura el manifest antes de reintentar install/sync.",
+    );
+  }
+  const recorded = entry.configDir;
+  if (typeof recorded !== "string" || recorded === "" || !samePath(recorded, configDir)) {
+    throw new Error(
+      `OpenCode: el configDir del manifest (${typeof recorded === "string" && recorded !== "" ? recorded : "ausente"}) no coincide con el detectado (${configDir}); se conserva la configuración y no se tocan archivos owned (ownership ambiguo). Vuelve al perfil anterior o revisa el manifest antes de reintentar install/sync.`,
+    );
+  }
+  const owned = entry.owned;
+  if (!Array.isArray(owned) || owned.some((file) => typeof file !== "string")) {
+    throw new Error(
+      "OpenCode: la lista 'owned' del manifest debe contener solo rutas string; no se puede acreditar propiedad y no se muta nada. Revisa o restaura el manifest antes de reintentar install/sync.",
+    );
+  }
+
+  const { skillsDir } = opencodeAdapter.paths(configDir);
+  const roots = [path.resolve(configDir), path.resolve(skillsDir)];
+  const inRoots = (file: string): boolean => roots.some((root) => isContainedIn(file, root));
+  const outside = (owned as string[]).find((file) => !inRoots(file));
+  if (outside !== undefined) {
+    throw new Error(
+      `OpenCode: el manifest declara un owned fuera de las raíces reales del adapter (${outside}); HOME no es una raíz de proyección y no se limpia nada. Revisa o restaura el manifest antes de reintentar install/sync.`,
+    );
+  }
+
+  const pending = entry.pendingOrphans;
+  if (pending !== undefined) {
+    if (!Array.isArray(pending) || pending.some((file) => typeof file !== "string")) {
+      throw new Error(
+        "OpenCode: 'pendingOrphans' debe ser un array de rutas string coherentes; inventario incoherente y no se muta nada. Revisa o restaura el manifest antes de reintentar install/sync.",
+      );
+    }
+    const ownedSet = new Set((owned as string[]).map((file) => path.resolve(file)));
+    const incoherent = (pending as string[]).find((file) => !inRoots(file) || !ownedSet.has(path.resolve(file)));
+    if (incoherent !== undefined) {
+      throw new Error(
+        `OpenCode: 'pendingOrphans' incoherente (${incoherent}); debe ser subconjunto de 'owned' y estar dentro de las raíces del adapter. Revisa o restaura el manifest antes de reintentar install/sync.`,
+      );
+    }
+  }
+
+  const ctx = makeContext(opencodeAdapter, configDir, DEFAULT_INSTALL_MODE_PREFERENCE, false, undefined, false);
+  if (ctx === null) {
+    if (owned.length > 0) {
+      throw new Error(
+        "OpenCode: no se pudo corroborar el inventario owned contra el plan canónico (sin contexto/model-map); se conserva sin mutar nada. Ejecuta 'jorgex-stack models --agents opencode' o revisa el manifest antes de reintentar install/sync.",
+      );
+    }
+    return;
+  }
+  const recognized = recognizedOpenCodeOwnedTargets(ctx);
+  const unverified = (owned as string[]).find((file) => !recognized.has(path.resolve(file)));
+  if (unverified !== undefined) {
+    throw new Error(
+      `OpenCode: el manifest declara un recurso owned que el plan canónico actual no corrobora (${unverified}); se preserva y no se limpia (revisión manual antes de reintentar install/sync).`,
+    );
+  }
+}
+
+/**
+ * Resuelve la evidencia de major SOLO para --target-dir. Fuera de target no hay
+ * canal de evidencia: el gate siempre prueba el binario real. Un valor distinto
+ * de "2" o malformado se representa como NaN y bloquea el sandbox.
+ */
+function resolveOpencodeTargetMajor(evidence: OpenCodePreflightEvidence): number | undefined {
+  if (evidence.targetDir === undefined) return undefined;
+  if (evidence.targetMajor !== undefined) return evidence.targetMajor;
+  const raw = process.env.JORGEX_OPENCODE_TARGET_MAJOR;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return raw.trim() === "2" ? OPENCODE_REQUIRED_MAJOR : Number.NaN;
+}
+
+/** Guardia OpenCode v2 sobre un detection ya resuelto. */
+function assertOpenCodeV2Detection(detection: RuntimeDetection, evidence: OpenCodePreflightEvidence): void {
+  if (detection.id !== "opencode") return;
+  if (evidence.targetDir !== undefined) {
+    if (resolveOpencodeTargetMajor(evidence) !== OPENCODE_REQUIRED_MAJOR) {
+      throw new Error(
+        `OpenCode: --target-dir requiere evidencia explícita de OpenCode v2 (major ${OPENCODE_REQUIRED_MAJOR}); sin ella no se ejecuta el binario personal ni se proyecta el sandbox. Declara JORGEX_OPENCODE_TARGET_MAJOR=${OPENCODE_REQUIRED_MAJOR} o equivalente en InstallOptions.`,
+      );
+    }
+    return;
+  }
+  if (detection.binPath === null) {
+    throw new Error(
+      "OpenCode: no se encontró el ejecutable 'opencode' en PATH; Stack solo admite OpenCode v2 (major 2). Instálalo o verifica 'opencode --version' antes de reintentar.",
+    );
+  }
+  const major = opencodeMajorVersion(detection.binPath);
+  if (major === null) {
+    throw new Error(
+      `OpenCode: no se pudo interpretar la versión de ${detection.binPath} al ejecutar '--version' (se exige una única versión completa); verifica el binario antes de reintentar.`,
+    );
+  }
+  if (major !== OPENCODE_REQUIRED_MAJOR) {
+    throw new Error(
+      `OpenCode: major ${major} detectado en ${detection.binPath}; esta versión de Stack solo admite OpenCode v2 (major 2). Actualiza OpenCode o permanece en una versión anterior de Stack.`,
+    );
+  }
+  assertOpenCodeManifestCoherence(detection.configDir);
+}
+
+/**
+ * Guardia común que reutilizan el pipeline (`runInstall`) y el caller CLI antes
+ * de `applyWritingStyle`, el model-map o la instalación de Engram: ninguna ruta
+ * que mute OpenCode debe escribir antes de acreditar v2 real (o evidencia de
+ * target en el sandbox). Sin copia de la lógica entre CLI y pipeline.
+ */
+export function assertOpenCodeV2Preflight(
+  runtimes: readonly RuntimeId[],
+  evidence: OpenCodePreflightEvidence = {},
+): void {
+  if (!runtimes.includes("opencode")) return;
+  const adapter = ADAPTERS.opencode;
+  if (adapter === undefined) return;
+  assertOpenCodeV2Detection(adapter.detect(), evidence);
+}
+
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
 
+  // Valida las opciones propias del caller antes del gate de entorno: una
+  // preferencia interna inconsistente debe rechazarse aunque la máquina no
+  // tenga OpenCode v2. Es validación pura, no una escritura.
+  const modePreference = opts.mode === undefined
+    ? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE)
+    : normalizeInstallModePreference(opts.mode);
+
   try {
+    // Gate OpenCode v2 antes de cualquier escritura (y aunque el runtime no
+    // esté detectado): un `--agents opencode` explícito sin binario v2 es
+    // error accionable, no un skip que parezca éxito.
+    assertOpenCodeV2Preflight(opts.runtimes, { targetDir: opts.targetDir, targetMajor: opts.opencodeTargetMajor });
     for (const id of opts.runtimes) {
       const adapter = ADAPTERS[id];
       if (!adapter) continue;
@@ -522,9 +712,6 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
   const stackDir = stackRoot();
   const engramBin = opts.engramBin === undefined ? detectEngram() : opts.engramBin;
-  const modePreference = opts.mode === undefined
-    ? (opts.targetDir === undefined ? loadInstallModePreference() : DEFAULT_INSTALL_MODE_PREFERENCE)
-    : normalizeInstallModePreference(opts.mode);
   const useManifest = opts.targetDir === undefined;
   const preferenceErrors = useManifest
     ? [...browserPreferenceErrors(), primaryModelOwnershipError()].filter((error): error is string => error !== null)

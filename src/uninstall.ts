@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
-import type { FileAction, RuntimeId } from "./adapters/types.js";
+import type { FileAction, OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildContentPlan, makeContext } from "./install.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
@@ -22,7 +22,7 @@ import {
   savePrimaryModelOwnership,
 } from "./lib/tool-preferences.js";
 
-export interface UninstallOptions {
+export interface UninstallOptions extends OpenCodeTargetEvidenceOption {
   runtimes: RuntimeId[];
   targetDir?: string;
   dryRun: boolean;

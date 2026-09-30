@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+
+/** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 
 const mocks = vi.hoisted(() => ({
   modelMapOverride: undefined as undefined | Record<string, unknown>,
@@ -157,7 +163,7 @@ describe("[PR03-RED-1] install/sync preserves owned legacy engram.ts without ver
         const o = opencode.detect;
         const c = codex.detect;
         const cc = claudeCode.detect;
-        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         codex.detect = () => ({ id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex") });
         claudeCode.detect = () => ({ id: "claude-code", name: "Claude Code", installed: false, binPath: null, configDir: path.join(homeDir, ".claude") });
         try {
@@ -393,7 +399,7 @@ describe("[PR03-RED-5] uninstall preserves real official, retires stub legacy; u
           const { runUninstall } = await import("../src/uninstall.js");
           const opencode = install.ADAPTERS.opencode!;
           const o = opencode.detect;
-          opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+          opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
           try {
             fs.mkdirSync(path.dirname(pluginFile), { recursive: true });
             fs.writeFileSync(pluginFile, REAL_OFFICIAL_OPENCODE_TS);
@@ -430,7 +436,7 @@ describe("[PR03-RED-5] uninstall preserves real official, retires stub legacy; u
           const o = opencode.detect;
           const c = codex.detect;
           const cc = claudeCode.detect;
-          opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+          opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
           codex.detect = () => ({ id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex") });
           claudeCode.detect = () => ({ id: "claude-code", name: "Claude Code", installed: false, binPath: null, configDir: path.join(homeDir, ".claude") });
           try {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
@@ -10,6 +10,12 @@ import type { Adapter, InstallContext, RuntimeId } from "../src/adapters/types.j
 import { loadCanonicalMcp, materializeCanonicalDevtoolsServer, type CanonicalHooks, type CanonicalMcp } from "../src/lib/canonical.js";
 import { writeText as writeRealText } from "../src/lib/fsx.js";
 import { readTomlSection } from "../src/lib/filemerge.js";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+
+/** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 import type { RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { planMcp } from "../src/components/mcp.js";
@@ -831,7 +837,7 @@ describe("optional Chrome DevTools MCP", () => {
       await assertPreferencesSandboxed(homeDir);
       const adapter = install.ADAPTERS.opencode!;
       const originalDetect = adapter.detect;
-      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
       const fetchEvents: string[] = [];
 
       try {
@@ -885,7 +891,7 @@ describe("optional Chrome DevTools MCP", () => {
         await assertPreferencesSandboxed(homeDir);
         const adapter = install.ADAPTERS.opencode!;
         const originalDetect = adapter.detect;
-        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         try {
           await expect(install.runInstall({
             runtimes: ["opencode"],
@@ -1086,7 +1092,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
       writeRuntimeManifest("opencode", { configDir, owned: [], updatedAt: "legacy" });
       const adapter = install.ADAPTERS.opencode!;
       const originalDetect = adapter.detect;
-      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
       try {
         stubFlowFetch([], FLOW_BYTES);
         await expect(install.runInstall({
@@ -1118,7 +1124,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
       await assertPreferencesSandboxed(homeDir);
       const adapter = install.ADAPTERS.opencode!;
       const originalDetect = adapter.detect;
-      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
       const configFile = path.join(configDir, "opencode.json");
       writeUserConfig("opencode", configFile);
       const fetchEvents: string[] = [];
@@ -1171,7 +1177,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
       await assertPreferencesSandboxed(homeDir);
       const adapter = install.ADAPTERS.opencode!;
       const originalDetect = adapter.detect;
-      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
       const configFile = path.join(configDir, "opencode.json");
       writeUserConfig("opencode", configFile);
       const rawConfig = fs.readFileSync(configFile, "utf8");
@@ -1224,7 +1230,7 @@ describe("DevTools verified-provider opt-in [T14-RED]", () => {
       await assertPreferencesSandboxed(homeDir);
       const adapter = install.ADAPTERS.opencode!;
       const originalDetect = adapter.detect;
-      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
       const fetchEvents: string[] = [];
 
       try {
@@ -1320,7 +1326,7 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
         const install = await importSmokeInstallModule(smokeCalls, events, "resolve");
         const adapter = install.ADAPTERS.opencode!;
         const originalDetect = adapter.detect;
-        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         try {
           await expect(install.runInstall({
             runtimes: ["opencode"],
@@ -1380,7 +1386,7 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
         const install = await importSmokeInstallModule(smokeCalls, events, "reject");
         const adapter = install.ADAPTERS.opencode!;
         const originalDetect = adapter.detect;
-        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         try {
           const outcome = await install.runInstall({
             runtimes: ["opencode"],
@@ -1424,7 +1430,7 @@ describe("DevTools flag-smoke integration [T14-RED]", () => {
         const install = await importSmokeInstallModule(smokeCalls, events, "resolve");
         const adapter = install.ADAPTERS.opencode!;
         const originalDetect = adapter.detect;
-        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+        adapter.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
         try {
           const code = await install.runInstall({
             runtimes: ["opencode"],

@@ -2,7 +2,7 @@ import * as p from "@clack/prompts";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId, SubagentConcurrency } from "./adapters/types.js";
-import { ADAPTERS, formatRuntimeSummary, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall, type RuntimeSyncStatus } from "./install.js";
+import { ADAPTERS, assertOpenCodeV2Preflight, formatRuntimeSummary, preflightSelectedMcpConfigs, resolvePlaywrightToolPlan, runInstall, type RuntimeSyncStatus } from "./install.js";
 import { runUninstall } from "./uninstall.js";
 import { runDoctor } from "./doctor.js";
 import { runUpdateCheck, runInteractiveUpdate, type InteractiveUpdateResult } from "./update.js";
@@ -771,6 +771,9 @@ async function main(): Promise<void> {
       let piStatus: RuntimeSyncStatus | null = null;
       p.intro(`jorgex-stack ${command}${flags.dryRun ? " (dry-run)" : ""}`);
       try {
+        // Frontera OpenCode v2 antes del primer efecto externo: applyWritingStyle,
+        // model-map/picker y la resolución/instalación de Engram ocurren después.
+        assertOpenCodeV2Preflight(fileRuntimes, { targetDir: flags.targetDir });
         assertSelectedPromptFiles(runtimes, flags.targetDir);
         preflightSelectedMcpConfigs(fileRuntimes, flags.targetDir);
         const writingStyle = prepareWritingStyle(resolveWritingStyleFile({ targetDir: flags.targetDir }), { rootDir: flags.targetDir });
@@ -981,13 +984,18 @@ async function main(): Promise<void> {
       // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
-      try { assertSelectedPromptFiles(runtimes, flags.targetDir); }
+      const fileRuntimes = runtimes.filter(isFileManagedRuntime);
+      try {
+        // Mismo invariante que install/sync: rejectar OpenCode no-v2 antes de
+        // que update aplique writing-style o haga sync.
+        assertOpenCodeV2Preflight(fileRuntimes, { targetDir: flags.targetDir });
+        assertSelectedPromptFiles(runtimes, flags.targetDir);
+      }
       catch (error) {
         p.log.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
         return;
       }
-      const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       const preferenceFile = installModePreferenceFile();
       const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
       const hasSavedMode = hasInstallModePreference(preferenceFile);

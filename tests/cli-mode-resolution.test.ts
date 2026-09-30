@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+
+/** Binario v2 real en PATH aislado: el gate CLI ejecuta el detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 
 const mocks = vi.hoisted(() => {
   const inspectPlaywrightCapability = vi.fn(() => ({
@@ -153,11 +159,16 @@ function setStdoutTty(value: boolean): () => void {
   };
 }
 
-async function runCli(args: string[], homeDir: string, tty = false): Promise<typeof process.exitCode> {
+async function runCli(
+  args: string[],
+  homeDir: string,
+  tty = false,
+  extraEnv: Record<string, string | undefined> = {},
+): Promise<typeof process.exitCode> {
   const originalArgv = [...process.argv];
   const originalExitCode = process.exitCode;
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
+  const managedKeys = [...new Set(["HOME", "USERPROFILE", "PATH", ...Object.keys(extraEnv)])];
+  const originals = new Map<string, string | undefined>(managedKeys.map((key) => [key, process.env[key]]));
   const restoreTty = tty ? setStdoutTty(true) : null;
   let observedExitCode: typeof process.exitCode = undefined;
   const engram = path.join(homeDir, ".local", "bin", process.platform === "win32" ? "engram.exe" : "engram");
@@ -166,6 +177,13 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
 
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
+  // Fixture v2 primero: el gate resuelve el binario detectado en PATH aislado,
+  // nunca un `opencode` personal del runner.
+  process.env.PATH = `${path.dirname(OPENCODE_V2_BIN)}${path.delimiter}${process.env.PATH ?? ""}`;
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   process.exitCode = undefined;
 
   try {
@@ -176,10 +194,10 @@ async function runCli(args: string[], homeDir: string, tty = false): Promise<typ
   } finally {
     process.argv = originalArgv;
     process.exitCode = originalExitCode;
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
+    for (const [key, value] of originals) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     restoreTty?.();
     vi.resetModules();
   }
@@ -474,7 +492,12 @@ describe("CLI follow-up sync mode resolution", () => {
     writePreference(homeDir, { mode: "programmatic", subagentConcurrency: "parallel" });
     writeOpenCodeModelMap(homeDir);
 
-    await runCli(["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"], homeDir);
+    await runCli(
+      ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"],
+      homeDir,
+      false,
+      { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
+    );
 
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       targetDir,
@@ -488,7 +511,12 @@ describe("CLI follow-up sync mode resolution", () => {
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
 
-    await runCli(["update", "--agents", "opencode", "--target-dir", targetDir], homeDir);
+    await runCli(
+      ["update", "--agents", "opencode", "--target-dir", targetDir],
+      homeDir,
+      false,
+      { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
+    );
 
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       targetDir,
@@ -898,8 +926,9 @@ describe("CLI effective browser capability", () => {
         executable: "/isolated/pi", version: "0.84.2", codingAgentDir: path.join(homeDir, ".pi", "agent"),
       });
       mocks.hasManagedPiRuntime.mockReturnValue(true);
-      const actualArgs = args.at(-1) === "--target-dir" ? [...args, path.join(tmp, "target")] : args;
-      await runCli(actualArgs, homeDir);
+      const isTargetDir = args.at(-1) === "--target-dir";
+      const actualArgs = isTargetDir ? [...args, path.join(tmp, "target")] : args;
+      await runCli(actualArgs, homeDir, false, isTargetDir ? { JORGEX_OPENCODE_TARGET_MAJOR: "2" } : {});
       expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(managedProbes);
       expect(mocks.inspectPlaywrightCapability).toHaveBeenCalledTimes(legacyProbes);
       if (pi) {
