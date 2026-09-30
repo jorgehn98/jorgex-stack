@@ -962,7 +962,7 @@ describe("Playwright prompt install ordering", () => {
         expect(browserSection(disabledPrompt)).toBeNull();
         expect(managedSection(disabledPrompt, "playwright")).toBeNull();
         expect(managedSection(disabledPrompt, "chrome-devtools")).toBeNull();
-        expect(JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER]).toBeUndefined();
+        expect(JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).mcp?.servers?.[DEVTOOLS_SERVER]).toBeUndefined();
       } finally {
         restoreDetect();
       }
@@ -1061,7 +1061,7 @@ describe("Playwright prompt install ordering", () => {
         })).resolves.toBe(0);
 
         expectCapabilities(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8"), false, true);
-        const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER] as {
+        const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.servers?.[DEVTOOLS_SERVER] as {
           command?: unknown;
         };
         expect(Array.isArray(targetServer?.command)).toBe(true);
