@@ -40,10 +40,10 @@ proceder. La tabla siguiente es la única fuente de verdad:
 
 | Estado observado | Owned | Verdict | `install` / `sync` / `update` | `uninstall` |
 | --- | --- | --- | --- | --- |
-| Bytes del plan idénticos al canon legacy v1 congelado (current) | sí | `current` | noOp (sin claim adicional) | puede borrar con backup |
+| Bytes del archivo = bytes actuales que produce el plan de proyección (`projectedBytesByTarget`) | sí | `current` | noOp (sin claim adicional) | puede borrar con backup |
 | Bytes actuales = canon legacy v1 (`legacy`) | sí | `legacy` | puede **actualizar** al actual con backup previo | puede borrar con backup |
 | Bytes distintos del canon (modified/unknown) | sí | `unknown` | **bloquea antes de cualquier backup, escritura o borrado** | preserva byte a byte |
-| Bytes del plan idénticos al canon legacy v1 (current) | no | `current` | noOp, **no** se reclama | omite |
+| Bytes del archivo = bytes actuales que produce el plan de proyección (`projectedBytesByTarget`) | no | `current` | noOp, **no** se reclama | omite |
 | Bytes = canon legacy v1 (`legacy`) | no | `legacy` | **bloquea** el install | omite y preserva |
 | Bytes distintos (modified/unknown) | no | `unknown` | **bloquea** el install | omite y preserva |
 | Leaf ausente dentro del configDir autorizado | n/a | `absent` | puede **crear** y reclamar | n/a |
@@ -114,11 +114,11 @@ Garantías que el script aplica antes de escribir nada:
   (defensa contra bombas de descompresión).
 - **Integridad del tar**: cada miembro pasa por `_safe_member_path`
   (prefijo `package/`, sin segmentos vacíos ni `..`, sin separadores
-  `\`), es regular, único; el generador **lee cada miembro regular con
-  `archive.extractfile(member)` en memoria** y compara byte a byte
-  contra `git cat-file blob <commit>:<source>`. No extrae nada al
-  sistema de archivos; los symlinks y dispositivos se rechazan, y
-  nada del tarball se ejecuta.
+  `\`), es regular, único. El generador compara byte a byte únicamente
+  los cuatro recursos proyectados y el `package.json` usado como
+  evidencia con sus blobs del commit inmutable; los demás miembros se
+  validan por rutas, duplicados y tipo, pero no se comparan contra Git.
+  No extrae archivos al sistema de archivos ni ejecuta su contenido.
 - **Verificación byte-exact contra el commit inmutable**: cada recurso
   proyectado se compara con `git cat-file blob <commit>:<source>` desde
   el clon git antes de aceptar su digest; cualquier mismatch aborta.
