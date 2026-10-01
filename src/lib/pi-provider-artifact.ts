@@ -38,6 +38,8 @@ export interface DerivedProviderOriginalEvidence {
   readonly sha512: string;
   readonly bytes: number;
   readonly manifestSha256: string;
+  /** Original `package/package.json` payload, bounded and base64-encoded. */
+  readonly manifestBase64: string;
 }
 
 export interface DerivedProviderDerivedArtifact {
@@ -67,6 +69,35 @@ export type DerivedProviderArtifactEvidence =
       readonly upstreamCommit: string;
       readonly original: DerivedProviderOriginalEvidence;
       readonly derived: DerivedProviderDerivedArtifact;
+    };
+
+/** Persisted provenance: identical to the builder evidence without the stage path. */
+export interface DerivedProviderProvenanceDerived {
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly sha512: string;
+  readonly integrity: string;
+  readonly manifestSha256: string;
+}
+
+export type DerivedProviderProvenance =
+  | {
+      readonly origin: "registry";
+      readonly packageName: string;
+      readonly version: string;
+      readonly upstreamPr: number;
+      readonly upstreamCommit: string;
+      readonly original: DerivedProviderOriginalEvidence;
+      readonly derived?: undefined;
+    }
+  | {
+      readonly origin: "derived";
+      readonly packageName: string;
+      readonly version: string;
+      readonly upstreamPr: number;
+      readonly upstreamCommit: string;
+      readonly original: DerivedProviderOriginalEvidence;
+      readonly derived: DerivedProviderProvenanceDerived;
     };
 
 function fail(message: string): never {
@@ -372,6 +403,119 @@ function applyUpstreamDelta(manifest: Record<string, unknown>): Buffer {
   return Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
+/**
+ * Shared pure #1567 recipe. Both the builder and offline receipt verification
+ * call it on the original `package/package.json` bytes so the transform is
+ * never reimplemented: registry means the delta is already present, derived
+ * returns the transformed manifest bytes.
+ */
+export function resolveProviderManifestRecipe(
+  originalManifest: Buffer,
+  packageName: string,
+  version: string,
+): { readonly origin: "registry" } | { readonly origin: "derived"; readonly manifest: Buffer } {
+  if (!Buffer.isBuffer(originalManifest)) fail("manifest payload must be a buffer");
+  if (originalManifest.byteLength === 0 || originalManifest.byteLength > MAX_MANIFEST_BYTES) {
+    fail("manifest payload exceeds the 64 KiB ceiling");
+  }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(originalManifest.toString("utf8")) as unknown;
+  } catch {
+    fail("package manifest is not valid JSON");
+  }
+  if (!isRecord(manifest)) fail("package manifest must be an object");
+  if (manifest["name"] !== packageName || manifest["version"] !== version) {
+    fail("package manifest identity does not match the release");
+  }
+  if (isCorrectedManifest(manifest)) return { origin: "registry" };
+  assertVariantPreconditions(manifest);
+  const derived = applyUpstreamDelta(manifest);
+  if (derived.byteLength > MAX_MANIFEST_BYTES) fail("derived manifest exceeds the 64 KiB ceiling");
+  return { origin: "derived", manifest: derived };
+}
+
+function assertHexDigest(value: unknown, pattern: RegExp, label: string): string {
+  if (typeof value !== "string" || !pattern.test(value)) fail(`${label} is not a canonical hex digest`);
+  return value;
+}
+
+function assertBoundedBytes(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_TARBALL_BYTES) {
+    fail(`${label} has invalid bytes`);
+  }
+  return value;
+}
+
+function assertProvenanceOriginal(value: unknown): DerivedProviderOriginalEvidence {
+  if (!isRecord(value)) fail("provenance original must be an object");
+  if (!isCanonicalSha512Integrity(value.integrity)) fail("provenance original integrity is not canonical sha512");
+  const sha256 = assertHexDigest(value.sha256, HEX64, "provenance original sha256");
+  const sha512 = assertHexDigest(value.sha512, HEX128, "provenance original sha512");
+  const bytes = assertBoundedBytes(value.bytes, "provenance original");
+  const manifestSha256 = assertHexDigest(value.manifestSha256, HEX64, "provenance original manifestSha256");
+  if (sriFromSha512(sha512) !== value.integrity) fail("provenance original integrity does not match its sha512");
+  if (typeof value.manifestBase64 !== "string") fail("provenance original manifestBase64 is missing");
+  const manifest = Buffer.from(value.manifestBase64, "base64");
+  if (manifest.byteLength === 0 || manifest.byteLength > MAX_MANIFEST_BYTES) {
+    fail("provenance original manifest exceeds the 64 KiB ceiling");
+  }
+  if (manifest.toString("base64") !== value.manifestBase64) fail("provenance original manifestBase64 is not canonical");
+  if (sha256Hex(manifest) !== manifestSha256) fail("provenance original manifest does not match its digest");
+  return { integrity: value.integrity, sha256, sha512, bytes, manifestSha256, manifestBase64: value.manifestBase64 };
+}
+
+function assertProvenanceDerived(value: unknown): DerivedProviderProvenanceDerived {
+  if (!isRecord(value)) fail("provenance derived must be an object");
+  if (!isCanonicalSha512Integrity(value.integrity)) fail("provenance derived integrity is not canonical sha512");
+  const sha256 = assertHexDigest(value.sha256, HEX64, "provenance derived sha256");
+  const sha512 = assertHexDigest(value.sha512, HEX128, "provenance derived sha512");
+  const bytes = assertBoundedBytes(value.bytes, "provenance derived");
+  const manifestSha256 = assertHexDigest(value.manifestSha256, HEX64, "provenance derived manifestSha256");
+  if (sriFromSha512(sha512) !== value.integrity) fail("provenance derived integrity does not match its sha512");
+  return { bytes, sha256, sha512, integrity: value.integrity, manifestSha256 };
+}
+
+/**
+ * Offline, read-only verification of builder provenance. It re-derives the
+ * manifest from the bounded original payload with the shared recipe and rejects
+ * any incoherent digest or SRI. The persisted receipt layer additionally
+ * rejects an ephemeral stage path. This proves local coherence and past
+ * acquisition traceability, never publisher authentication.
+ */
+export function assertProviderArtifactProvenance(value: unknown): DerivedProviderProvenance {
+  if (!isRecord(value)) fail("provenance must be an object");
+  const packageName = value.packageName;
+  const version = value.version;
+  if (packageName !== PROVIDER_PACKAGE_NAME) fail("provenance package is not gentle-engram");
+  if (!isStableSemverVersion(version)) fail("provenance version is invalid");
+  if (value.upstreamPr !== UPSTREAM_PR || value.upstreamCommit !== UPSTREAM_COMMIT) {
+    fail("provenance upstream reference mismatch");
+  }
+  const original = assertProvenanceOriginal(value.original);
+  const recipe = resolveProviderManifestRecipe(Buffer.from(original.manifestBase64, "base64"), packageName, version);
+  if (value.origin === "registry") {
+    if (value.derived !== undefined) fail("registry provenance must not carry a derived artifact");
+    if (recipe.origin !== "registry") fail("registry provenance does not describe the corrected manifest");
+    return { origin: "registry", packageName, version, upstreamPr: UPSTREAM_PR, upstreamCommit: UPSTREAM_COMMIT, original };
+  }
+  if (value.origin !== "derived") fail(`unknown provenance origin: ${String(value.origin)}`);
+  const derived = assertProvenanceDerived(value.derived);
+  if (recipe.origin !== "derived") fail("derived provenance original already carries the corrected manifest");
+  if (sha256Hex(recipe.manifest) !== derived.manifestSha256) {
+    fail("derived provenance manifest does not match the shared recipe");
+  }
+  return {
+    origin: "derived",
+    packageName,
+    version,
+    upstreamPr: UPSTREAM_PR,
+    upstreamCommit: UPSTREAM_COMMIT,
+    original,
+    derived,
+  };
+}
+
 function cleanupOwnedPaths(targets: readonly string[], causes: readonly unknown[], label: string): never {
   const errors = [...causes];
   const remaining: string[] = [];
@@ -482,26 +626,17 @@ export async function buildDerivedProviderArtifact(
   if (manifestMember.directory) fail("package/package.json must be a regular file");
   if (manifestMember.data.byteLength > MAX_MANIFEST_BYTES) fail("manifest exceeds the 64 KiB ceiling");
 
-  let manifest: unknown;
-  try {
-    manifest = JSON.parse(manifestMember.data.toString("utf8")) as unknown;
-  } catch {
-    fail("package manifest is not valid JSON");
-  }
-  if (!isRecord(manifest)) fail("package manifest must be an object");
-  if (manifest["name"] !== packageName || manifest["version"] !== release.version) {
-    fail("package manifest identity does not match the release");
-  }
-
+  const recipe = resolveProviderManifestRecipe(manifestMember.data, packageName, release.version);
   const original: DerivedProviderOriginalEvidence = {
     integrity: release.integrity,
     sha256: source.sha256,
     sha512: source.sha512,
     bytes: source.bytes.byteLength,
     manifestSha256: sha256Hex(manifestMember.data),
+    manifestBase64: manifestMember.data.toString("base64"),
   };
 
-  if (isCorrectedManifest(manifest)) {
+  if (recipe.origin === "registry") {
     return {
       origin: "registry",
       packageName,
@@ -512,9 +647,7 @@ export async function buildDerivedProviderArtifact(
     };
   }
 
-  assertVariantPreconditions(manifest);
-  const derivedManifest = applyUpstreamDelta(manifest);
-  if (derivedManifest.byteLength > MAX_MANIFEST_BYTES) fail("derived manifest exceeds the 64 KiB ceiling");
+  const derivedManifest = recipe.manifest;
   const derivedTar = rebuildTar(members, derivedManifest);
   if (derivedTar.byteLength > MAX_UNCOMPRESSED_TAR_BYTES) fail("derived tar exceeds the 32 MiB ceiling");
   const derivedBytes = zlib.gzipSync(derivedTar);

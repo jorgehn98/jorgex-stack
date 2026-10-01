@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -7,6 +7,10 @@ import {
   isStableSemverVersion,
   type NpmPackageRelease,
 } from "./npm-provider.js";
+import {
+  buildDerivedProviderArtifact,
+  type DerivedProviderArtifactEvidence,
+} from "./pi-provider-artifact.js";
 import { inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { runPiStageProcess } from "./pi-stage-process.js";
 import type { StageRun, StageRunResult } from "./pi-release-stage.js";
@@ -26,12 +30,20 @@ export interface PiProviderPackageEvidence {
   readonly packageRoot: string;
   readonly treeSha256: string;
   readonly bins: Readonly<Record<string, string>>;
+  /** Only present for an opted-in gentle-engram transform; absent otherwise. */
+  readonly provenance?: DerivedProviderArtifactEvidence;
 }
 
 type StagePiProviderPackagesBaseInput = {
   readonly homeDir: string;
   readonly agentDir: string;
   readonly piExecutable: string;
+  /**
+   * Stack-internal opt-in for the bounded #1567 transform. Absent or false
+   * preserves the official acquisition; true derives only gentle-engram after
+   * the original SRI is verified. Other values fail before any effect.
+   */
+  readonly engramTypeboxCompat?: boolean;
 };
 
 /**
@@ -156,6 +168,12 @@ function resolveMcpTransport(value: unknown): "native" | "legacy" {
   if (value === undefined || value === "legacy") return "legacy";
   if (value === "native") return "native";
   fail('mcpTransport must be "native" or "legacy" when present');
+}
+
+function resolveEngramTypeboxCompat(value: unknown): boolean {
+  if (value === undefined || value === false) return false;
+  if (value === true) return true;
+  fail("engramTypeboxCompat must be a boolean when present");
 }
 
 function selectProviderReleases(
@@ -347,9 +365,44 @@ function assertLockEntries(packages: Record<string, unknown>, provider: Provider
   }
 }
 
+function sha256Hex(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * The bytes actually installed, which differ from the official release only for
+ * an opted-in derived variant. `integrity` here is the effective artifact SRI;
+ * the returned evidence always keeps the original registry SRI separately.
+ */
+type EffectiveProviderArtifact = {
+  readonly artifactPath: string;
+  readonly integrity: string;
+  readonly provenance?: DerivedProviderArtifactEvidence;
+};
+
+function expectedManifestSha256(provenance: DerivedProviderArtifactEvidence): string {
+  return provenance.origin === "derived"
+    ? provenance.derived.manifestSha256
+    : provenance.original.manifestSha256;
+}
+
+function assertDerivedHasNoOwnTypebox(
+  packages: Record<string, unknown>,
+  packageRoot: string,
+  provider: ProviderName,
+): void {
+  const lockKey = `node_modules/${provider}/node_modules/typebox`;
+  if (Object.prototype.hasOwnProperty.call(packages, lockKey)) {
+    fail(`${provider} derived variant must not install its own TypeBox`);
+  }
+  if (lstatOrNull(path.join(packageRoot, "node_modules", "typebox")) !== null) {
+    fail(`${provider} derived variant must not install its own TypeBox`);
+  }
+}
+
 function inspectProviderTree(
   stageAgentDir: string,
-  artifactPath: string,
+  effective: EffectiveProviderArtifact,
   release: NpmPackageRelease,
   provider: ProviderName,
 ): PiProviderPackageEvidence {
@@ -371,10 +424,12 @@ function inspectProviderTree(
   const parent = packages[`node_modules/${provider}`];
   if (!isRecord(root) || !isRecord(parent)) fail(`staged provider lock misses ${provider}`);
   if (!isRecord(root.dependencies)) fail("staged provider lock misses root dependencies");
-  const rootSpec = assertFileAlias(root.dependencies[provider], npmDir, artifactPath, "provider root alias");
-  const parentSpec = assertFileAlias(parent.resolved, npmDir, artifactPath, "provider resolved alias");
+  const rootSpec = assertFileAlias(root.dependencies[provider], npmDir, effective.artifactPath, "provider root alias");
+  const parentSpec = assertFileAlias(parent.resolved, npmDir, effective.artifactPath, "provider resolved alias");
   if (rootSpec !== parentSpec) fail("provider root/resolved aliases differ");
-  if (parent.version !== release.version || parent.integrity !== release.integrity) {
+  // The lock must describe the effective bytes; the original SRI stays in the
+  // returned evidence, never in the installed lock for a derived variant.
+  if (parent.version !== release.version || parent.integrity !== effective.integrity) {
     fail(`staged provider lock metadata mismatch: ${provider}`);
   }
 
@@ -388,9 +443,16 @@ function inspectProviderTree(
 
   const packageRoot = path.join(modules, provider);
   assertRealDirectory(packageRoot, `staged ${provider} root`);
-  const manifest = readJson(path.join(packageRoot, "package.json"), `${provider} manifest`);
+  const manifestPath = path.join(packageRoot, "package.json");
+  const manifest = readJson(manifestPath, `${provider} manifest`);
   if (manifest.name !== provider || manifest.version !== release.version) {
     fail(`staged ${provider} manifest identity/version mismatch`);
+  }
+  if (effective.provenance !== undefined) {
+    if (sha256Hex(fs.readFileSync(manifestPath)) !== expectedManifestSha256(effective.provenance)) {
+      fail(`staged ${provider} installed manifest does not match the selected provenance`);
+    }
+    if (effective.provenance.origin === "derived") assertDerivedHasNoOwnTypebox(packages, packageRoot, provider);
   }
   const bins = assertBinTargets(packageRoot, normalizeBins(manifest.bin, provider));
   // inventoryTreeSha256 performs a bounded deterministic walk and rejects
@@ -401,7 +463,7 @@ function inspectProviderTree(
   } catch (error) {
     fail(`staged ${provider} tree is unsafe: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return {
+  const evidence: PiProviderPackageEvidence = {
     name: provider,
     version: release.version,
     integrity: release.integrity,
@@ -409,6 +471,7 @@ function inspectProviderTree(
     treeSha256,
     bins,
   };
+  return effective.provenance === undefined ? evidence : { ...evidence, provenance: effective.provenance };
 }
 
 function failureDetail(result: StageRunResult): string {
@@ -434,6 +497,7 @@ export async function stagePiProviderPackages(
   deps: StagePiProviderPackagesDeps = {},
 ): Promise<StagePiProviderPackagesResult> {
   if (!isRecord(input)) fail("input must be an object");
+  const engramTypeboxCompat = resolveEngramTypeboxCompat(input.engramTypeboxCompat);
   const transport = resolveMcpTransport(input.mcpTransport);
   const { home, agent } = assertStageBoundary(input.homeDir, input.agentDir);
   const piExecutable = validatePiExecutable(input.piExecutable);
@@ -449,14 +513,16 @@ export async function stagePiProviderPackages(
   const stagedProviders: Array<{
     provider: ProviderName;
     release: NpmPackageRelease;
-    artifactPath: string;
+    effective: EffectiveProviderArtifact;
     stageAgentDir: string;
     workspace: string;
     env: Record<string, string>;
   }> = [];
 
   // Download and verify every selected candidate before invoking native Pi. A
-  // later SRI failure must not leave an earlier provider partially staged.
+  // later SRI failure must not leave an earlier provider partially staged. The
+  // optional derived variant is also built here, before the first spawn, from
+  // the already-verified official bytes.
   for (const { provider, release } of selected) {
     const providerStage = path.join(stageDir, provider);
     const stageAgentDir = path.join(providerStage, "pi-agent");
@@ -467,13 +533,27 @@ export async function stagePiProviderPackages(
     createDirectory(workspace);
     const artifactPath = path.join(downloads, `${provider}-${release.version}.tgz`);
     const artifact = await downloadVerifiedNpmPackageTarball(provider, release, artifactPath, fetchImpl);
+    let effective: EffectiveProviderArtifact = { artifactPath: artifact.path, integrity: release.integrity };
+    if (engramTypeboxCompat && provider === "gentle-engram") {
+      // The builder re-reads and re-verifies the official bytes, then writes its
+      // own destination; the original release SRI is never replaced or mutated.
+      const provenance = await buildDerivedProviderArtifact({
+        packageName: provider,
+        release,
+        official: artifact,
+        destination: path.join(downloads, `${provider}-${release.version}-derived.tgz`),
+      });
+      effective = provenance.origin === "derived"
+        ? { artifactPath: provenance.derived.path, integrity: provenance.derived.integrity, provenance }
+        : { artifactPath: artifact.path, integrity: release.integrity, provenance };
+    }
     const env = stageEnvironment(providerStage, stageAgentDir, piExecutable);
-    stagedProviders.push({ provider, release, artifactPath: artifact.path, stageAgentDir, workspace, env });
+    stagedProviders.push({ provider, release, effective, stageAgentDir, workspace, env });
   }
 
   for (const staged of stagedProviders) {
     const provider = staged.provider;
-    const artifact = { path: staged.artifactPath };
+    const artifact = { path: staged.effective.artifactPath };
     const source = `npm:${provider}@file:${artifact.path}`;
     let result: StageRunResult;
     try {
@@ -483,7 +563,7 @@ export async function stagePiProviderPackages(
     }
     if (!isRecord(result) || typeof result.exitCode !== "number") fail(`${provider} native stage returned invalid output`);
     if (result.exitCode !== 0) fail(`${provider} native stage failed: ${failureDetail(result)}`);
-    packages.push(inspectProviderTree(staged.stageAgentDir, artifact.path, staged.release, provider));
+    packages.push(inspectProviderTree(staged.stageAgentDir, staged.effective, staged.release, provider));
   }
   return { stageDir, packages };
 }
