@@ -152,6 +152,8 @@ son evidencia de esa ejecución, no defaults ni requisitos de esta política. La
 documentación de `install`/`sync` describe la entrega y el aislamiento; no muta el
 HOME, configuración, Engram o servicios del lector.
 
+Antes de escribir tooling diagnóstico nuevo, reutiliza harness, helpers y plataforma. El tooling diagnóstico es temporal por defecto: solo se conserva como código mantenido cuando exista una necesidad recurrente y un consumidor identificado dentro del scope aprobado; probarlo en un cambio no basta. Conserva la regresión relevante y la evidencia compacta (comando, setup, refs/inputs, resultado y límites) en el registro de trabajo existente, sin añadir una segunda herramienta ni su propia suite solo para preservar evidencia. Elimina la instrumentación temporal propia tras capturar la evidencia, sin retirar protección de regresión significativa (permisos, concurrencia, borrado) para reducir el diff. Canon: [Diagnostic tooling and evidence](../../stack/skills/lean-code/SKILL.md#diagnostic-tooling-and-evidence).
+
 ### CI solo cuando sea el alcance
 
 La orientación de CI se activa únicamente si la tarea afecta workflows, gates,

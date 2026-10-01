@@ -21,6 +21,8 @@ If the redacted output is not enough to diagnose the bug, say so and ask the use
 
 Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give up.**
 
+Before writing custom diagnostic tooling, apply [Lean Code's diagnostic tooling and evidence criteria](../lean-code/SKILL.md#diagnostic-tooling-and-evidence). A strong feedback loop does not by itself justify maintaining a new tool.
+
 ### Ways to construct one — try them in roughly this order
 
 1. **Failing test** at whatever seam reaches the bug — unit, integration, e2e.
@@ -134,7 +136,7 @@ Required before declaring done:
 - [ ] Original repro no longer reproduces (re-run the Phase 1 loop)
 - [ ] Regression test passes (or absence of seam is documented)
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
-- [ ] Throwaway prototypes deleted (or moved to a clearly-marked debug location)
+- [ ] Throwaway prototypes deleted unless they meet the shared [maintained-tooling criteria](../lean-code/SKILL.md#diagnostic-tooling-and-evidence); a debug directory alone is not a reason to keep them
 - [ ] The hypothesis that turned out correct is stated in the commit / PR message — so the next debugger learns
 
 **Then ask: what would have prevented this bug?** If the answer involves architectural change (no good test seam, tangled callers, hidden coupling) hand off to the `/improve-codebase-architecture` skill with the specifics. Make the recommendation **after** the fix is in, not before — you have more information now than when you started.
