@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { NpmPackageRelease } from "../src/lib/npm-provider.js";
+import type { StagePiProviderPackagesInput } from "../src/lib/pi-provider-stage.js";
 import type { StageRun } from "../src/lib/pi-release-stage.js";
 
 /**
@@ -43,16 +44,9 @@ type ProviderPackageEvidence = {
   bins: Record<string, string>;
 };
 
-type ProviderStageInput = {
-  homeDir: string;
-  agentDir: string;
-  piExecutable: string;
-  releases: ProviderReleases;
-};
-
 type ProviderStageModule = {
   stagePiProviderPackages(
-    input: ProviderStageInput,
+    input: StagePiProviderPackagesInput,
     deps?: { fetchImpl?: typeof fetch; run?: StageRun },
   ): Promise<{ stageDir: string; packages: ProviderPackageEvidence[] }>;
 };
@@ -209,6 +203,20 @@ function snapshotFiles(files: readonly string[]): Map<string, Buffer> {
 
 function expectFilesUnchanged(before: Map<string, Buffer>): void {
   for (const [file, bytes] of before) expect(fs.readFileSync(file), file).toEqual(bytes);
+}
+
+function providerStageRoots(homeDir: string): string[] {
+  return fs.readdirSync(homeDir).filter((entry) => entry.startsWith("provider-stage-"));
+}
+
+function recordingTarballFetch(sandbox: ActiveSandbox): { requested: string[]; fetchImpl: typeof fetch } {
+  const requested: string[] = [];
+  const baseFetch = verifiedTarballFetch(sandbox.releases, sandbox.bytes);
+  const fetchImpl: typeof fetch = (input, init) => {
+    requested.push(String(input));
+    return baseFetch(input, init);
+  };
+  return { requested, fetchImpl };
 }
 
 function isStrictChild(root: string, child: string): boolean {
@@ -463,6 +471,180 @@ describe("[T63-RED] isolated native Pi provider stage", () => {
         fetchImpl: verifiedTarballFetch(sandbox.releases, sandbox.bytes, "pi-mcp-adapter"),
         run,
       },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).toMatch(/integrity|SRI|npm-provider|pi-provider-stage/i);
+    expect(calls).toHaveLength(0);
+    expectFilesUnchanged(before);
+  });
+});
+
+describe("native gentle-only Pi provider stage", () => {
+  it("acquires and returns only the mandatory gentle-engram provider for a verified native transport", async () => {
+    const stage = await loadProviderStage();
+    const sandbox = buildActiveSandbox();
+    const before = snapshotFiles(sandbox.activeFiles);
+    const { calls, run } = makeRunner(sandbox);
+    const gentleRelease = sandbox.releases["gentle-engram"];
+    const { requested, fetchImpl } = recordingTarballFetch(sandbox);
+
+    const result = await stage.stagePiProviderPackages(
+      {
+        homeDir: sandbox.homeDir,
+        agentDir: sandbox.agentDir,
+        piExecutable: PI_EXECUTABLE,
+        mcpTransport: "native",
+        releases: { "gentle-engram": gentleRelease },
+      },
+      { fetchImpl, run },
+    );
+
+    expect(requested).toEqual([gentleRelease.tarballUrl]);
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    expect(call.provider).toBe("gentle-engram");
+    expectProviderStageCall(call, sandbox);
+    expect(call.args.join(" ")).not.toContain("pi-mcp-adapter");
+
+    expect(result.packages).toHaveLength(1);
+    const pkg = result.packages[0]!;
+    expect(pkg).toMatchObject({ name: "gentle-engram", version: gentleRelease.version, integrity: gentleRelease.integrity });
+    expect(pkg.treeSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(path.isAbsolute(pkg.packageRoot)).toBe(true);
+    expect(isStrictChild(result.stageDir, pkg.packageRoot)).toBe(true);
+    const rootStat = fs.lstatSync(pkg.packageRoot);
+    expect(rootStat.isDirectory()).toBe(true);
+    expect(rootStat.isSymbolicLink()).toBe(false);
+    expect(pkg.bins).toEqual({ "gentle-engram": expect.any(String) });
+    const binTarget = pkg.bins["gentle-engram"]!;
+    expect(path.isAbsolute(binTarget)).toBe(false);
+    const binPath = path.resolve(pkg.packageRoot, binTarget);
+    expect(isStrictChild(pkg.packageRoot, binPath)).toBe(true);
+    expect(fs.statSync(binPath).isFile()).toBe(true);
+    expectFilesUnchanged(before);
+  });
+
+  it("rejects an unknown or null mcpTransport before any download or native Pi run", async () => {
+    for (const value of ["bogus", null] as const) {
+      const stage = await loadProviderStage();
+      const sandbox = buildActiveSandbox();
+      const before = snapshotFiles(sandbox.activeFiles);
+      const stageRootsBefore = providerStageRoots(sandbox.homeDir);
+      const { calls, run } = makeRunner(sandbox);
+      const { requested, fetchImpl } = recordingTarballFetch(sandbox);
+      const badInput = {
+        homeDir: sandbox.homeDir,
+        agentDir: sandbox.agentDir,
+        piExecutable: PI_EXECUTABLE,
+        mcpTransport: value,
+        releases: { "gentle-engram": sandbox.releases["gentle-engram"] },
+      } as unknown as StagePiProviderPackagesInput;
+
+      const failure = await stage.stagePiProviderPackages(
+        badInput,
+        { fetchImpl, run },
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe('pi-provider-stage: mcpTransport must be "native" or "legacy" when present');
+      expect(requested).toHaveLength(0);
+      expect(calls).toHaveLength(0);
+      expect(providerStageRoots(sandbox.homeDir)).toEqual(stageRootsBefore);
+      expectFilesUnchanged(before);
+    }
+  });
+
+  it("rejects a native transport that also declares a pi-mcp-adapter release before any download or native Pi run", async () => {
+    const stage = await loadProviderStage();
+    const sandbox = buildActiveSandbox();
+    const before = snapshotFiles(sandbox.activeFiles);
+    const stageRootsBefore = providerStageRoots(sandbox.homeDir);
+    const gentleRelease = sandbox.releases["gentle-engram"];
+
+    // The explicit `undefined` entry protects the hasOwnProperty presence
+    // check: the key's presence, not its value, contradicts native transport.
+    for (const adapterRelease of [sandbox.releases["pi-mcp-adapter"], undefined]) {
+      const { calls, run } = makeRunner(sandbox);
+      const { requested, fetchImpl } = recordingTarballFetch(sandbox);
+      const contradictoryInput = {
+        homeDir: sandbox.homeDir,
+        agentDir: sandbox.agentDir,
+        piExecutable: PI_EXECUTABLE,
+        mcpTransport: "native",
+        releases: { "gentle-engram": gentleRelease, "pi-mcp-adapter": adapterRelease },
+      } as unknown as StagePiProviderPackagesInput;
+
+      const failure = await stage.stagePiProviderPackages(
+        contradictoryInput,
+        { fetchImpl, run },
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe("pi-provider-stage: native transport is contradictory with a pi-mcp-adapter release");
+      expect(requested).toHaveLength(0);
+      expect(calls).toHaveLength(0);
+    }
+
+    expect(providerStageRoots(sandbox.homeDir)).toEqual(stageRootsBefore);
+    expectFilesUnchanged(before);
+  });
+
+  it("rejects a default legacy stage that omits the pi-mcp-adapter release before any download or native Pi run", async () => {
+    const stage = await loadProviderStage();
+    const sandbox = buildActiveSandbox();
+    const before = snapshotFiles(sandbox.activeFiles);
+    const stageRootsBefore = providerStageRoots(sandbox.homeDir);
+    const { calls, run } = makeRunner(sandbox);
+    const { requested, fetchImpl } = recordingTarballFetch(sandbox);
+    const badInput = {
+      homeDir: sandbox.homeDir,
+      agentDir: sandbox.agentDir,
+      piExecutable: PI_EXECUTABLE,
+      releases: { "gentle-engram": sandbox.releases["gentle-engram"] },
+    } as unknown as StagePiProviderPackagesInput;
+
+    const failure = await stage.stagePiProviderPackages(
+      badInput,
+      { fetchImpl, run },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("pi-provider-stage: pi-mcp-adapter release must be an object");
+    expect(requested).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+    expect(providerStageRoots(sandbox.homeDir)).toEqual(stageRootsBefore);
+    expectFilesUnchanged(before);
+  });
+
+  it("fails closed on a native gentle-engram SRI mismatch without invoking native Pi", async () => {
+    const stage = await loadProviderStage();
+    const sandbox = buildActiveSandbox();
+    const before = snapshotFiles(sandbox.activeFiles);
+    const { calls, run } = makeRunner(sandbox);
+    const gentleRelease = sandbox.releases["gentle-engram"];
+
+    const failure = await stage.stagePiProviderPackages(
+      {
+        homeDir: sandbox.homeDir,
+        agentDir: sandbox.agentDir,
+        piExecutable: PI_EXECUTABLE,
+        mcpTransport: "native",
+        releases: { "gentle-engram": gentleRelease },
+      },
+      { fetchImpl: verifiedTarballFetch(sandbox.releases, sandbox.bytes, "gentle-engram"), run },
     ).then(
       () => null,
       (error: unknown) => error,
