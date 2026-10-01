@@ -71,6 +71,27 @@ function canonicalObservedSource(version: string): string {
   return `npm:jorgex-pi@${version}`;
 }
 
+// Declared traceability (Stack repository + full lowercase-hex commit), not Git attestation.
+function requireObservedSourceTraceability(parity: unknown): void {
+  expect(parity).toMatchObject({
+    schemaVersion: 2,
+    source: {
+      repository: "https://github.com/jorgehn98/jorgex-stack",
+      commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+    },
+  });
+}
+
+// Producer host-version evidence recorded verbatim, not an eligibility list.
+function requireObservedTestedVersions(testedVersions: unknown): void {
+  expect(Array.isArray(testedVersions)).toBe(true);
+  expect(testedVersions).not.toHaveLength(0);
+  for (const version of testedVersions as unknown[]) {
+    expect(version).toBeTypeOf("string");
+    expect(version).not.toBe("");
+  }
+}
+
 function readObservedCandidate(): ObservedPiCandidate {
   const raw = process.env.JORGEX_PI_CANDIDATE;
   expect(raw, "JORGEX_PI_CANDIDATE must be set for observed registry checks").toBeTypeOf("string");
@@ -299,6 +320,54 @@ afterEach(() => {
   }
 });
 
+describe("observed candidate traceability guards (offline)", () => {
+  const historicalCommit = PI_RUNTIME_ARCHIVE.parity.source.commit;
+  const observedCommit = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567";
+  const validParity = {
+    schemaVersion: 2,
+    source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: observedCommit },
+  };
+  const invalidParityCases: Array<{ label: string; parity: unknown }> = [
+    { label: "a non-2 schemaVersion", parity: { ...validParity, schemaVersion: 3 } },
+    {
+      label: "a foreign source repository",
+      parity: { ...validParity, source: { ...validParity.source, repository: "https://github.com/other/repo" } },
+    },
+    {
+      label: "an uppercase commit",
+      parity: { ...validParity, source: { ...validParity.source, commit: observedCommit.toUpperCase() } },
+    },
+    {
+      label: "a truncated commit",
+      parity: { ...validParity, source: { ...validParity.source, commit: observedCommit.slice(0, 39) } },
+    },
+    { label: "a missing source", parity: { schemaVersion: 2 } },
+  ];
+  const invalidTestedVersionsCases: Array<{ label: string; testedVersions: unknown }> = [
+    { label: "an empty list", testedVersions: [] },
+    { label: "an empty-string member", testedVersions: [""] },
+    { label: "a non-string member", testedVersions: [42] },
+    { label: "a non-array value", testedVersions: "0.90.0" },
+  ];
+
+  it("admits a valid Stack source commit distinct from the historical fixture commit", () => {
+    expect(observedCommit).not.toBe(historicalCommit);
+    expect(() => requireObservedSourceTraceability(validParity)).not.toThrow();
+  });
+
+  it.each(invalidParityCases)("rejects $label", ({ parity }) => {
+    expect(() => requireObservedSourceTraceability(parity)).toThrow();
+  });
+
+  it("admits a non-empty host testedVersions list", () => {
+    expect(() => requireObservedTestedVersions(["0.90.0", "0.91.0"])).not.toThrow();
+  });
+
+  it.each(invalidTestedVersionsCases)("rejects $label", ({ testedVersions }) => {
+    expect(() => requireObservedTestedVersions(testedVersions)).toThrow();
+  });
+});
+
 registryArtifact("observed npm artifact for the published jorgex-pi candidate", () => {
   let observed: ObservedPiCandidate;
   beforeAll(() => {
@@ -333,15 +402,13 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       permissions?: { diagnostic?: unknown };
     };
     const assets = readTarJson(tarball, "package/contract/assets.v1.json") as { managedExternalWrites?: unknown };
-    const parity = readTarJson(tarball, "package/contract/parity.v2.json") as {
-      source?: { commit?: unknown };
-    };
+    const parity = readTarJson(tarball, "package/contract/parity.v2.json");
     // Actual package version comes from observed metadata, never the .29 fixture.
     expect(manifest).toMatchObject({ name: "jorgex-pi", version: observedLocal.version });
     expect(contract.package).toEqual({ name: "jorgex-pi", version: observedLocal.version, source: expectedSource });
     // Stack compatibility policy: capabilities + writes must equal Stack's contract.
     expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
-    expect(contract.pi?.testedVersions).toEqual(expect.arrayContaining([...PI_RUNTIME_CANDIDATE.pi.testedVersions]));
+    requireObservedTestedVersions(contract.pi?.testedVersions);
     expect(runner).toMatchObject({
       schemaVersion: PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion,
       bin: PI_RUNTIME_CANDIDATE.contract.runner.bin,
@@ -349,7 +416,7 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       stdout: { maxBytes: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes },
     });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
-    expect(parity.source?.commit).toBe(PI_RUNTIME_ARCHIVE.parity.source.commit);
+    requireObservedSourceTraceability(parity);
     // Unbundled: six provider-managed runtime deps via npm, no nested bundle.
     expectUnbundledProducerInventory(tarball, manifest);
     // Engram bridge preserved, legacy retired.
