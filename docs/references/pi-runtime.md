@@ -25,10 +25,10 @@ Esta tabla separa lo que Stack gestiona de lo que Pi o el usuario ya deben propo
 | Host Pi (`pi` o launcher gestionado) | Prerrequisito | Detecta el ejecutable y lo usa para staging, smoke y RPC | No sustituye la instalación del host ni ejecuta su actualización nativa |
 | `jorgex-pi` | Obligatorio y gestionado | Resuelve el último release estable publicado, verifica tarball/SRI, stage, smoke y receipt privado | No instala el alias flotante `latest` ni adopta un paquete manual sin receipt |
 | Seis companions del paquete Pi | Obligatorios dentro del release | Verifica sus versiones e integridades observadas y conserva copias package-local byte-identical para el loader | No los resuelve como seis actualizaciones independientes |
-| `gentle-engram` y `pi-mcp-adapter` | Providers oficiales obligatorios para la integración Stack | En `install`/`update` resuelve cada `latest`, los instala en stages Pi-native separados fuera del agente activo, verifica lock/SRI/árbol y promociona únicamente sus dos directorios con backup; incluso cuando no hay cambio vuelve a autenticar raíces, metadata, binarios y fuentes bajo el lock común | No actualiza el árbol npm activo con el updater nativo de Pi ni poda el enlace/receipt privado de `jorgex-pi` |
+| `gentle-engram` y `pi-mcp-adapter` | Providers oficiales: `gentle-engram` siempre; `pi-mcp-adapter` solo cuando el candidato instalado no declara transporte nativo | En `install`/`update`, con candidato nativo resuelve solo `gentle-engram` en un stage aislado fuera del agente activo, verifica lock/SRI/árbol y promociona únicamente ese directorio con backup; sin nativo, resuelve también `pi-mcp-adapter` y promociona los dos con la misma verificación. En sucesivas vueltas autentica de nuevo raíces, metadata, binarios y fuentes bajo el lock común | No actualiza el árbol npm activo con el updater nativo de Pi ni poda el enlace/receipt privado de `jorgex-pi` |
 | Binario Engram | Obligatorio para el setup, propiedad del usuario | Conserva uno válido; si falta, `install` puede resolver el release estable oficial con autorización explícita | No reemplaza implícitamente un binario existente |
 | Base de datos y memorias Engram | Datos del usuario | Ninguna mutación | Nunca los actualiza, migra ni elimina |
-| Configuración MCP Pi (`mcp.json`/`mcp-adapter.json`) | Configuración del provider | Lee la ruta declarada por la metadata instalada, migra solo la raíz oficial con backup y verifica el resultado | No trata una entrada ajena, ambigua o ilegible como conexión sana |
+| Configuración MCP Pi (`mcp.json`/`mcp-adapter.json`) | Configuración del provider | Transporte nativo: `mcp.json` es la autoridad persistente de `engram`, `context7` y `chrome-devtools`; la firma y la inspección vienen del productor Pi verificado y la autoridad granular vive en `pi-projection-receipt.json`. Transporte legacy: lee la ruta declarada por la metadata del adapter instalado y migra solo la raíz oficial con backup | No trata una entrada ajena, ambigua o ilegible como conexión sana; no descubre servidores desde una ruta del adapter ni invoca `!` raw para probar disponibilidad |
 | Proyección Stack (prompt, skills y recibos) | Gestionada por Stack | Proyecta y reconcilia sus secciones con ownership y backup | No inyecta el protocolo ni filtra las herramientas del provider Engram |
 | Context7 | Integrado por defecto; credenciales opcionales | Mantiene el bridge de bootstrap y la guía si el candidato lo declara | No escribe credenciales ni convierte `available` en un handshake confirmado |
 | Playwright CLI / Chrome DevTools MCP | Opcionales y opt-in por runtime | Solo para una preferencia Pi explícita, resuelve y verifica sus árboles/hand-offs durante un `install`/`update` deliberado; DevTools puede seleccionar un Chromium ya instalado en una ruta conocida y compatible | No instala navegadores ni activa browser tooling por defecto; el Chromium del sistema no pasa a ser propiedad de Stack |
@@ -75,11 +75,77 @@ Respecto al pin anterior `0.7.0`, se mantienen las 14 capabilities y el mismo ru
 
 ## Configuración MCP efectiva y smoke
 
-El archivo MCP que se verifica es el que declara el `pi-mcp-adapter` instalado: para adapter mayor `2` se lee `mcp.json`; para mayor `3` o superior, `mcp-adapter.json`. Si falta o es inválida la metadata del adapter, no se hace fallback silencioso a la ruta histórica. En la ruta moderna, una definición oficial Engram duplicada en `mcp.json` es conflicto: la migración oficial respalda ambas rutas, conserva configuración ajena y escribe solo la raíz oficial cuando puede demostrar que la configuración no cambió durante la operación. La configuración acepta JSONC acotado (comentarios y comas finales), pero el contrato canónico sigue exigiendo `mcpServers.engram` directo y exacto.
+El archivo MCP que se verifica es el que declara el `pi-mcp-adapter` instalado: para adapter mayor `2` se lee `mcp.json`; para mayor `3` o superior, `mcp-adapter.json`. Si falta o es inválida la metadata del adapter, no se hace fallback silencioso a la ruta histórica. En la ruta moderna, una definición oficial Engram duplicada en `mcp.json` es conflicto: la migración oficial respalda ambas rutas, conserva configuración ajena y escribe solo la raíz oficial cuando puede demostrar que la configuración no cambió durante la operación. La configuración acepta JSONC acotado (comentarios y comas finales), pero el contrato canónico sigue exigiendo `mcpServers.engram` directo y exacto. Cuando el candidato Pi declara el contrato nativo (`mcp-native-v1`), la autoridad pasa a `mcp.json` persistente y la rama adapter queda fuera del flujo: ver [Transporte nativo y autoridad granular](#transporte-nativo-y-autoridad-granular).
 
 El smoke se ejecuta contra el stage y vuelve a ejecutarse sobre la topología de enlace después de promover el release. Usa Pi en RPC sin sesión, aprobación ni contexto, con `--offline` y sin solicitar respuestas a un modelo; comprueba las capabilities públicas y falla ante cualquier `extension_error` o notificación de error salvo el mensaje exacto de Engram ausente en la sonda package-only. Esa excepción no certifica el MCP: la configuración oficial se verifica aparte antes de declarar el runtime saludable.
 
-## Proyección compartida de Stack
+## Transporte nativo y autoridad granular
+
+La rama nativa requiere que el candidato Pi verificado declare la capability `mcp-native-v1` en su contrato raíz y una binding `mcpNative` igual al canon Stack (versión de schema, ruta del contrato, servidores y entrypoints de definición y ownership). El consumidor Pi-published `0.8.40` publica y verifica ese contrato en npm; su `tarballSRI/sha256` se autenticó contra los bytes descargados. Esa identidad es release, no un nuevo selector estático para futuras instalaciones: cada `install`/`update` resuelve otra vez `dist-tags.latest` y repite la verificación.
+
+La selección nativa no se infiere por `testedVersions`, por el número de capabilities raíz ni por el semver del host Pi. Procede exclusivamente del contrato staged verificado: el runtime Pi nativo activa el transporte sólo cuando el productor verificado declara la capability y la binding descritas. Sin la declaración la rama nativa se cierra; un Pi antiguo sin `contract/native-mcp.v1.json` válido no entra en nativo y conserva la rama legacy con su flujo de receipts.
+
+El archivo `PI_CODING_AGENT_DIR/mcp.json` es la autoridad persistente de los tres servidores protegidos:
+
+| Servidor | Forma canónica nativa |
+| --- | --- |
+| `engram` | `command` absoluto al binario Engram verificado, `args: `["mcp", "--tools=agent"]`` |
+| `context7` | `url: "https://mcp.context7.com/mcp"`; conserva cualquier `headers` opaco preexistente y respeta `enabled`, `exposure` y `toolExposure` del usuario |
+| `chrome-devtools` | Definición resuelta por `resolveNativeDevtoolsDefinition` del productor Pi verificado, contra el handoff `devtools.v1.json` materializado en un agent dir temporal; se publica en `mcp.json` con los flags exactos `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics` |
+
+El digest de cada definición (`definitionSha256`) lo calcula el productor Pi sobre sus propios entrypoints; Stack no reproduce su lógica ni duplica el cuerpo. El sello de cleanup (`cleanupSha256`) es independiente: SHA-256 de la entrada completa propia, sólo se estampa cuando Stack crea la entrada o cuando la entrada previa coincide exactamente con su sello.
+
+La autoridad se publica en el receipt de proyección bajo la clave `mcpNative` con `schemaVersion: 1` y un objeto `entries` por servidor:
+
+```json
+{
+  "mcpNative": {
+    "schemaVersion": 1,
+    "entries": {
+      "engram": { "definitionSha256": "<digest del productor Pi>", "cleanupSha256": "<sello de cleanup>" },
+      "context7": { "definitionSha256": "<digest del productor Pi>" },
+      "chrome-devtools": { "definitionSha256": "<digest del productor Pi>", "cleanupSha256": "<sello de cleanup>" }
+    }
+  }
+}
+```
+
+`mcpNative` no es propiedad del archivo `mcp.json`: la autoridad vive en `~/.jorgex-stack/pi-projection-receipt.json`. Stack no vuelve a calcularla al releer; sólo valida su forma estricta. Si está presente y mal formada, el bloque falla cerrado en lugar de inventar ausencia. Las preferencias de usuario dentro de cada entrada (`headers` opacos en Context7; `cwd`, `env`, `exposure`, `toolExposure`, `enabled` en Engram y DevTools) se conservan en cada promoción.
+
+### Inspección y estados
+
+`inspectNativeMcpOwnership` (sobre el módulo Pi realmente instalado en `npm/node_modules/jorgex-pi`) devuelve cuatro clases de información con nombres distintos:
+
+- `ownership`: estado por servidor (`absent`, `unowned`, `conflict`, `managed`) y `cleanupEligible` por entrada.
+- `config`: forma de cada entrada en `mcp.json`.
+- `catalogue`: herramientas y servidores que el productor ve bajo su propio registro.
+- `connection`: siempre `not-verified` en una inspección offline; una sesión Pi real con handshake abierto es la única fuente de "connected".
+
+Los nombres no se mezclan: la rama activa (fresh/update) bloquea si el checker activo detecta `state === "conflict"` en algún servidor o en el paquete; antes del sync interno y antes de desactivar el paquete privado. Una entrada `unowned` que coincide byte a byte con la forma canónica nativa se respeta sin reclamarla (caso `engram` oficial directo); cualquier otro servidor protegido sin autoridad bloquea en lugar de fallar el runner interno después de la promoción.
+
+### Etapas y provider
+
+`install` y `update` deliberados con candidato nativo ejecutan `runNativePiMcpPhase`. El orden es siempre: validar el contrato staged → releer todos los snapshots (`mcp.json`, handoff, projection receipt, package receipt) → exigir el package receipt gestionado en update y su ausencia en fresh → autenticar la autoridad granular previa con scope exacto y reclamar el checker activo si el candidato es update → resolver la definición DevTools en un agent dir temporal con el handoff materializado, sin escribir el árbol activo → planificar las tres entradas protegidas y reclamar el digest por servidor → promover solo `gentle-engram` en su stage aislado (verificar lock/SRI/árbol antes y después, con `treeSha256` exacto) → commit del handoff DevTools (si difiere) y de `mcp.json` con snapshot rechecks, readback y rollback acotado a la propia escritura → construir y publicar la autoridad granular. La rama nativa nunca resuelve ni promociona `pi-mcp-adapter`: la presencia de un adapter registrado sin autoridad propia se preserva, pero no se reinserta como requerido.
+
+### Cleanup y entradas personalizadas
+
+`reconcileNativeAuthorityAfterCleanup` retira solo las entradas donde `cleanupEligible === true` y conserva las personalizadas liberando su sello (sin renovar `cleanupSha256`). Las preferencias del usuario dentro de la entrada no se modifican: el contrato sólo deja de reclamarla. `cleanupEligible` requiere que el sello de cleanup siga siendo válido; un sello ausente o divergente mantiene la entrada sin posibilidad de borrado automático.
+
+### DevTools nativo y flags
+
+El handoff Pi `devtools.v1.json` con `schemaVersion: 3` se materializa sólo cuando difiere de los bytes activos. Stack no duplica su cuerpo: lee los flags `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics` desde la definición resuelta por el productor Pi verificado. Si el handoff activo difiere del materializado, el bloque falla cerrado y Pi no queda activado. DevTools sigue usando un Chromium del sistema en una ruta física compatible cuando existe; nunca instala Chrome de escritorio ni versiona un navegador propiedad de Stack.
+
+### Snapshot, readback y autoridad
+
+Cada escritura de `mcp.json` relee los bytes previos, compara, escribe, relee y restaura sólo mientras el archivo siga conteniendo la propia escritura de esta operación. La autoridad granular se publica al final, después del readback del commit: nunca se reclama autoridad sobre un commit que no se ha leído correctamente. El commit del handoff y el de `mcp.json` se aplican por separado con recheck entre ambos; un fallo en la autoridad granular revierte ambos sobre sus bytes previos. Un fallo de provider o de bootstrap revierte sólo los bytes que la propia operación escribió, no el cierre completo de la instalación.
+
+### Target-dir nativo fresco
+
+Un `--target-dir` nativo fresco usa las rutas canónicas `<target>/home/.jorgex-stack/pi-receipt.json` y `pi-projection-receipt.json`, recibe el stage de provider ya verificado inyectado (la red permanece apagada dentro del target) y copia el artefacto Pi verificado a `<target>/home/.jorgex-stack/packages/jorgex-pi-<version>.tgz` comparando SHA-256 antes y después. El target no descarga paquetes ni consulta el HOME real. Los layouts legacy `<target>/state`, `<target>/diag` y `<target>/cleanup` se conservan para diagnóstico y cleanup; un intento de relocalización de la autoridad existente sobre el sandbox fresco se rechaza en lugar de duplicar receipts o crear symlinks.
+
+### SDK, permisos y modelo
+
+Las traducciones que el SDK nativo del Pi publica ya en su contrato (incluidos los wildcards `Bash` que el Pi convierte en reglas equivalentes) no se reinterpretan en el canon Stack. Las plantillas canónicas de permisos Stack y los defaults de `openai-codex/gpt-5.6-sol` (con `contextWindow: 872000` solicitado) siguen siendo los mismos. Una release Pi nativa no introduce un selector adicional en las plantillas; la autoridad nativa se suma al modelo de ownership, no a las reglas por defecto.
 
 La proyección se ejecuta después de la instalación del paquete y se registra en `~/.jorgex-stack/pi-projection-receipt.json`:
 
@@ -99,7 +165,7 @@ En el rollout histórico de `work-audit`, Stack `1.9.2` adoptó Pi `0.8.0`; la v
 
 El contrato compatible permanece definido en `src/lib/pi-runtime.ts`; la release y sus capacidades se descubren desde el paquete staged en cada install/update deliberado. La resolución de una versión no equivale a aceptar semánticamente cualquier cambio: el stage compara el contrato publicado con el contrato Stack y bloquea divergencias incompatibles. La CI `pi-artifact.yml` resuelve el `latest` observado y verifica SRI, pero no implica que el runtime use una versión personal ya migrada.
 
-La lista `testedVersions` en el contrato representa compatibilidad probada del host Pi; no fija la versión publicada de `jorgex-pi`. Pi `0.87.1` con el artefacto publicado `jorgex-pi@0.8.31` pasó el smoke Pi healthy. Las actualizaciones gestionadas cruzando versiones han sido verificadas también con código de prueba sintético; no se afirma que una instalación personal se haya actualizado en vivo. El agente conductual `engram` permanece en el contrato; su setup y herramientas son provider-owned.
+La lista `testedVersions` en el contrato representa compatibilidad probada del host Pi; no fija la versión publicada de `jorgex-pi`, y no selecciona el modo nativo: ese modo lo activa exclusivamente el productor Pi verificado cuando su contrato raíz declara `mcp-native-v1` con la binding `mcpNative` canónica (ver [Transporte nativo y autoridad granular](#transporte-nativo-y-autoridad-granular)). Pi `0.87.1` con el artefacto publicado `jorgex-pi@0.8.31` pasó el smoke Pi healthy; Pi `0.8.40` publica el contrato nativo `mcp-native-v1` cuyo tarball y SRI se verificaron en este PR (no es un nuevo selector estático). Las actualizaciones gestionadas cruzando versiones han sido verificadas también con código de prueba sintético; no se afirma que una instalación personal se haya actualizado en vivo. El agente conductual `engram` permanece en el contrato; su setup y herramientas son provider-owned.
 
 ### Diagnóstico de inicialización pendiente
 
@@ -119,10 +185,10 @@ Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad 
 
 La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
 
-- `install` verifica primero el tarball y prepara el stage aislado; solo después, en una instalación real, ejecuta `engram setup pi` con backup y rollback de `settings.json`, `mcp.json`, `mcp-adapter.json` y el árbol `npm`. Si el setup falla, Pi no se activa. El candidato verificado debe declarar el lector MCP que va a usar antes de migrar la configuración. Después hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete.
-- `sync` reaplica la proyección del paquete autenticado y comprueba la configuración MCP existente sin resolver versiones ni descargar providers; dos pasadas consecutivas son idempotentes. Si hay un paquete activo obsoleto, usa `update --agents pi`, no `sync`.
-- `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. El diagnóstico de Stack puede marcar el runner como no saludable de forma genérica; para el estado detallado de Context7 (`available`, `conflict` o `invalid`) consulta el `doctor` nativo de Pi. `available` no implica un handshake HTTP.
-- `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime.
+- `install` verifica primero el tarball y prepara el stage aislado. Para un candidato con transporte nativo, ejecuta `runNativePiMcpPhase` antes de la promoción del paquete y de la proyección; con candidato legacy, ejecuta `engram setup pi` con backup y rollback de `settings.json`, `mcp.json`, `mcp-adapter.json` y el árbol `npm`. El candidato verificado debe declarar el lector MCP que va a usar antes de migrar la configuración. Después hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete. El checker nativo activo (`beforeInitialization`/`beforePackageDeactivation`) corre contra el módulo Pi realmente instalado y bloquea antes del sync interno y antes de desactivar el paquete privado.
+- `sync` reaplica la proyección del paquete autenticado y comprueba la configuración MCP existente sin resolver versiones ni descargar providers; dos pasadas consecutivas son idempotentes. Si hay un paquete activo obsoleto, usa `update --agents pi`, no `sync`. Cuando el paquete instalado es nativo, `sync` valida la autoridad granular sin reclamar entradas ajenas y conserva `mcp.json` y la autoridad tal como están.
+- `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. El diagnóstico de Stack puede marcar el runner como no saludable de forma genérica; para el estado detallado de Context7 (`available`, `conflict` o `invalid`) consulta el `doctor` nativo de Pi. `available` no implica un handshake HTTP. En modo nativo la autoridad `mcpNative` del receipt de proyección se verifica por su forma; una autoridad presente pero mal formada bloquea la operación en lugar de inventar ausencia.
+- `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime. En modo nativo corre la comprobación activa de ownership antes de desactivar el paquete privado, retira sólo las entradas con sello de cleanup completo y libera el sello de las personalizadas conservadas.
 - Si un receipt es ilegible, de otro scope, parcial o de historial desconocido, la operación destructiva falla cerrada; no se adopta ni se elimina estado manual silenciosamente.
 - El binario, la base de datos y las memorias de Engram son siempre del usuario. El setup oficial puede ejecutarse una vez durante un `install` real con confirmación para descargar un binario ausente; `sync`, dry-run y `--target-dir` no ejecutan `engram setup pi` ni descargas globales. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario.
 
@@ -162,7 +228,7 @@ La resolución dinámica no equivale a una migración automática durante `sync`
 
 ## Variante temporal del provider y recibo separado (candidato, devtool)
 
-> **Estado actual**: candidato / devtool, todavía no publicado en npm. Este contrato está apilado sobre PR203 (`e2555b2`) y la integración con el caller nativo de la cohorte de CI pública sigue pendiente. Las garantías de Windows, del set de providers nativo, del MCP nativo, de la autorización personal y de la adopción del release oficial corregido **no están verificadas**; este texto no las declara. La variante descrita es un artefacto local derivado —no es un fork ni un release npm— que aplica exclusivamente el diff de la corrección upstream `#1567` sobre bytes oficiales verificados, registra su procedencia en un recibo separado (con `provenance.origin` igual a `derived` mientras el oficial siga afectado por `#1567`, o a `registry` cuando el oficial ya venga corregido) y se retira cuando el release oficial corregido se active como `registry` sin etapa derivada.
+> **Estado actual**: candidato / devtool, todavía no publicado en npm. La fase nativa del padre (PR203) ya viene importada como base de este candidato; este contrato **extiende** esa fase nativa con el hook de provenance/compat bajo la misma política de input/receipt de la flag candidata verificada y no duplica authority, config ni cardinality. El caller nativo del padre ejecuta su fase propia (`runNativePiMcpPhase` y receipts análogos del padre) —no se reutiliza aquí como updater ni se sustituye. Las garantías de Windows, del set de providers nativo, del MCP nativo, de la autorización personal y de la publicación/adopción del release oficial corregido **no están verificadas** por este candidato; este texto no las declara. La variante descrita es un artefacto local derivado —no es un fork ni un release npm— que aplica exclusivamente el diff de la corrección upstream `#1567` sobre bytes oficiales verificados, registra su procedencia en un recibo separado (con `provenance.origin` igual a `derived` mientras el oficial siga afectado por `#1567`, o a `registry` cuando el oficial ya venga corregido) y se retira cuando el release oficial corregido se active como `registry` sin etapa derivada.
 
 ### Contexto y límites
 
@@ -220,7 +286,7 @@ La ausencia del recibo (`kind: "absent"`) preserva las instalaciones previas a e
 - **Transacción única.** La activación cubre `settings.json`, las raíces y el recibo en una sola transacción con backup, readback y rollback idempotente. El no-op exige también un recibo válido e idéntico al snapshot aprobado; sin recibo previo, el opt-in obliga a una promoción verificable aunque el árbol coincida.
 - **Detección de modificaciones ajenas.** La divergencia previa bloquea la operación. Si impide restaurar durante un rollback, se reporta `recovery incomplete` y se conserva el backup; nunca se sobrescriben los cambios del usuario. El rollback sólo restaura el recibo/raíces/settings cuando siguen siendo los escritos por esta operación.
 - **Retirada y `update` deliberado sobre derivado existente.** Ocurre únicamente cuando el release oficial corregido pasa el stage verificado y se activa como `registry`; el builder deja de declarar derivación sólo tras éxito, y el fallo conserva el recibo/árbol derived anterior. Mientras la receta derivada esté activa, una `update` deliberada **conserva la receta sin volver a requerir el flag**, siempre que el recibo existente haya pasado la verificación previa (`providerReceiptSnapshot` válido). No hay fallback a un pin antiguo, no se autosiembran preferencias y ningún otro comando propaga el opt-in; no se reemplaza silenciosamente la receta derivada por bytes no verificados.
-- **Updaters ajenos.** El updater nativo de Pi y los removedores externos no son una vía segura para esta variante gestionada: pueden sustituir o podar sus bytes fuera de la transacción de Stack. El recibo permite detectar ese drift; no es una ACL que impida comandos manuales. El updater de providers de **Stack** en esta rama sigue limitado al transporte legacy hasta integrar la fase nativa de PR203 y rechaza un recibo native sin degradarlo. Por ahora el opt-in no afirma una instalación nativa fresca saludable.
+- **Updaters ajenos y comandos fuera de la transacción.** Comandos manuales, removedores externos o el updater nativo de Pi (modo manual) pueden sustituir, podar o degradar los bytes del provider fuera de la transacción gestionada de Stack; el verificador detecta ese drift entre settings/raíz/recibo/`treeSha256` y lo reporta, pero **no es una ACL** que impida esos comandos. El updater de providers de **Stack** (función) opera exclusivamente sobre el **transporte legacy**; el transporte nativo lo maneja la **fase nativa del padre** (PR203, `runNativePiMcpPhase`) con la misma política de opt-in (`--engram-typebox-compat`) y de snapshot (`providerReceiptSnapshot`), y la autoridad nativa permanece en el recibo de autoridad del padre —**ortogonal** al `pi-provider-receipt.json` de Stack. Esta rama no está entera en legacy por falta de integración nativa: la función updater cubre su transporte y la fase nativa cubre el suyo. El opt-in no afirma una instalación nativa fresca operativa en Windows ni en cohorte público, ni publicación npm, ni aplicación personal por este candidato.
 
 Este contrato de recibo/transacción aplica al agent Pi y a los providers asociados; no modifica los contratos de proyección compartida, settings primarios ni MCP authority descritos en otras secciones.
 

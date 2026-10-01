@@ -70,12 +70,28 @@ export function trustedDevtoolsHandoff(stateDir: string) {
 
 export type PiProjectionOperation = "install" | "sync" | "doctor" | "uninstall";
 
+/**
+ * Granular native MCP authority: per-server protected-definition digest
+ * plus the optional whole-entry cleanup stamp. Stack retains the opaque
+ * authority verbatim; it never recomputes it here.
+ */
+export interface PiProjectionMcpNativeEntry {
+  readonly definitionSha256: string;
+  readonly cleanupSha256?: string;
+}
+
+export interface PiProjectionMcpNativeAuthority {
+  readonly schemaVersion: 1;
+  readonly entries: Readonly<Record<string, PiProjectionMcpNativeEntry>>;
+}
+
 export interface PiProjectionReceipt {
   schemaVersion: 1;
   scope: PiProjectionScope;
   owned: string[];
   devtools?: { sha256: string };
   playwright?: { sha256: string };
+  mcpNative?: PiProjectionMcpNativeAuthority;
 }
 
 export interface PiProjectionScope {
@@ -102,6 +118,11 @@ export interface PiProjectionLifecycleInput {
   playwrightCliVersion?: string | null;
   playwrightManagedStateDir?: string;
   playwrightDispatcherPath?: string;
+  /**
+   * Granular native authority computed by the verified caller. It is
+   * published after configuration/handoff, never derived from shape here.
+   */
+  nativeMcpAuthority?: PiProjectionMcpNativeAuthority;
 }
 
 export interface PiProjectionManifest {
@@ -332,55 +353,107 @@ function hasExactKeys(record: object, expected: readonly string[]): boolean {
   return keys.length === expected.length && expected.every((key) => keys.includes(key));
 }
 
-function parseReceipt(raw: string | null, expected: PiProjectionReceipt): PiProjectionReceipt | null {
-  if (raw === null) return null;
+const MCP_NATIVE_SERVERS = new Set(["engram", "context7", "chrome-devtools"]);
+
+type ParsedPiProjectionReceipt =
+  | { kind: "valid"; receipt: PiProjectionReceipt }
+  | { kind: "invalid" }
+  | { kind: "authority-invalid" };
+
+function isSha256Hex(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+/**
+ * Strictly parses the granular native authority extension. Returns null for a
+ * present-but-malformed authority so callers block instead of silently
+ * regenerating a receipt that still carries ownership claims.
+ */
+function parseMcpNativeAuthority(value: unknown): PiProjectionMcpNativeAuthority | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!hasExactKeys(value, ["schemaVersion", "entries"])) return null;
+  if (Reflect.get(value, "schemaVersion") !== 1) return null;
+  const entries = Reflect.get(value, "entries");
+  if (entries === null || typeof entries !== "object" || Array.isArray(entries)) return null;
+  const parsed: Record<string, PiProjectionMcpNativeEntry> = {};
+  for (const name of Object.keys(entries)) {
+    if (!MCP_NATIVE_SERVERS.has(name)) return null;
+    const entry = Reflect.get(entries, name);
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const hasCleanup = Object.hasOwn(entry, "cleanupSha256");
+    if (!hasExactKeys(entry, hasCleanup ? ["definitionSha256", "cleanupSha256"] : ["definitionSha256"])) return null;
+    const definitionSha256 = Reflect.get(entry, "definitionSha256");
+    if (!isSha256Hex(definitionSha256)) return null;
+    if (hasCleanup) {
+      const cleanupSha256 = Reflect.get(entry, "cleanupSha256");
+      if (!isSha256Hex(cleanupSha256)) return null;
+      parsed[name] = { definitionSha256, cleanupSha256 };
+    } else {
+      parsed[name] = { definitionSha256 };
+    }
+  }
+  return { schemaVersion: 1, entries: parsed };
+}
+
+function parseReceipt(raw: string | null, expected: PiProjectionReceipt): ParsedPiProjectionReceipt {
+  if (raw === null) return { kind: "invalid" };
   try {
     const receipt: unknown = JSON.parse(raw);
-    if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) return null;
+    if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) return { kind: "invalid" };
     const version = Reflect.get(receipt, "schemaVersion");
     const receivedScope = Reflect.get(receipt, "scope");
     const owned = Reflect.get(receipt, "owned");
     const presentKinds = HANDOFF_KINDS.filter((kind) => Object.hasOwn(receipt, kind));
+    const hasMcpNative = Object.hasOwn(receipt, "mcpNative");
     if (version !== expected.schemaVersion
-      || !hasExactKeys(receipt, ["schemaVersion", "scope", "owned", ...presentKinds])
+      || !hasExactKeys(receipt, ["schemaVersion", "scope", "owned", ...presentKinds, ...(hasMcpNative ? ["mcpNative"] : [])])
       || receivedScope === null
       || typeof receivedScope !== "object"
       || Array.isArray(receivedScope)
       || !hasExactKeys(receivedScope, ["kind", "home", "codingAgentDir", "receiptFile"])) {
-      return null;
+      return { kind: "invalid" };
     }
     if (Reflect.get(receivedScope, "kind") !== expected.scope.kind
       || Reflect.get(receivedScope, "home") !== expected.scope.home
       || Reflect.get(receivedScope, "codingAgentDir") !== expected.scope.codingAgentDir
       || Reflect.get(receivedScope, "receiptFile") !== expected.scope.receiptFile
       || !Array.isArray(owned)) {
-      return null;
+      return { kind: "invalid" };
     }
     const digests: Partial<Record<HandoffKind, { sha256: string }>> = {};
     for (const kind of presentKinds) {
       const value = Reflect.get(receipt, kind);
       if (value === null || typeof value !== "object" || Array.isArray(value)
         || !hasExactKeys(value, ["sha256"]) || typeof Reflect.get(value, "sha256") !== "string"
-        || !/^[a-f0-9]{64}$/.test(Reflect.get(value, "sha256"))) return null;
+        || !/^[a-f0-9]{64}$/.test(Reflect.get(value, "sha256"))) return { kind: "invalid" };
       digests[kind] = { sha256: Reflect.get(value, "sha256") as string };
     }
+    let mcpNative: PiProjectionMcpNativeAuthority | undefined;
+    if (hasMcpNative) {
+      const parsedAuthority = parseMcpNativeAuthority(Reflect.get(receipt, "mcpNative"));
+      if (parsedAuthority === null) return { kind: "authority-invalid" };
+      mcpNative = parsedAuthority;
+    }
+    const authority = mcpNative === undefined ? {} : { mcpNative };
     const handoffPaths = HANDOFF_KINDS.map((kind) => handoffPath(expected.scope, kind));
     const expectedOwned = expected.owned.filter((file) => !handoffPaths.includes(file));
     for (const kind of presentKinds) expectedOwned.push(handoffPath(expected.scope, kind));
     const matches = (inventory: string[]): boolean => owned.length === inventory.length
       && owned.every((file, index) => typeof file === "string" && file === inventory[index]);
-    if (matches(expectedOwned)) return { schemaVersion: 1, scope: expected.scope, owned: expectedOwned, ...digests };
+    if (matches(expectedOwned)) {
+      return { kind: "valid", receipt: { schemaVersion: 1, scope: expected.scope, owned: expectedOwned, ...digests, ...authority } };
+    }
 
     const retired = retiredPlaywrightFiles(expected.scope);
-    if (retired.some((file) => expectedOwned.includes(file))) return null;
+    if (retired.some((file) => expectedOwned.includes(file))) return { kind: "invalid" };
     const skillsRoot = `${path.resolve(expected.scope.home, ".agents", "skills")}${path.sep}`;
     const insertion = expectedOwned.findIndex((file) => !file.startsWith(skillsRoot) || file > retired[0]!);
     const legacyOwned = [...expectedOwned];
     legacyOwned.splice(insertion === -1 ? legacyOwned.length : insertion, 0, ...retired);
-    if (!matches(legacyOwned)) return null;
-    return { schemaVersion: 1, scope: expected.scope, owned: legacyOwned, ...digests };
+    if (!matches(legacyOwned)) return { kind: "invalid" };
+    return { kind: "valid", receipt: { schemaVersion: 1, scope: expected.scope, owned: legacyOwned, ...digests, ...authority } };
   } catch {
-    return null;
+    return { kind: "invalid" };
   }
 }
 
@@ -441,10 +514,10 @@ export function readRealPiProjectionOwned(): RealPiProjectionOwnership {
   if (receiptContent === null) {
     return { kind: "absent" };
   }
-  const receipt = parseReceipt(receiptContent, expected);
-  return receipt === null
-    ? { kind: "corrupt", file: scope.receiptFile }
-    : { kind: "valid", owned: receipt.owned };
+  const parsed = parseReceipt(receiptContent, expected);
+  return parsed.kind === "valid"
+    ? { kind: "valid", owned: parsed.receipt.owned }
+    : { kind: "corrupt", file: scope.receiptFile };
 }
 
 function manifestOwned(manifest: PiProjectionManifest): Set<string> {
@@ -560,7 +633,11 @@ function inspectHandoffs(
   handoffs: { kind: HandoffKind; file: string; content: string | null }[] } | PiProjectionBlocked {
   const read = readProjectionReceipt(scope.receiptFile, deps);
   if (read.kind === "unreadable") return receiptUnreadable(scope.receiptFile);
-  const previous = read.kind === "present" ? parseReceipt(read.content, expected) : null;
+  const parsed = read.kind === "present" ? parseReceipt(read.content, expected) : null;
+  // A malformed authority still claims ownership: block instead of rewriting
+  // the receipt and silently discarding that claim.
+  if (parsed?.kind === "authority-invalid") return receiptInvalid(scope.receiptFile);
+  const previous = parsed?.kind === "valid" ? parsed.receipt : null;
   const handoffs: { kind: HandoffKind; file: string; content: string | null }[] = [];
   for (const kind of HANDOFF_KINDS) {
     const file = handoffPath(scope, kind);
@@ -614,9 +691,9 @@ export function preparePiProjectionUninstall(
   let receiptFile: string | null = null;
   let backupTargets = promptUpdate === null ? [] : [promptUpdate.file];
   if (receiptRead.kind === "present") {
-    const receipt = parseReceipt(receiptRead.content, expectedReceipt);
-    if (receipt === null) return receiptInvalid(scope.receiptFile);
-    ownedReceipt = receipt;
+    const parsed = parseReceipt(receiptRead.content, expectedReceipt);
+    if (parsed.kind !== "valid") return receiptInvalid(scope.receiptFile);
+    ownedReceipt = parsed.receipt;
 
     let retained: Set<string>;
     try {
@@ -624,9 +701,9 @@ export function preparePiProjectionUninstall(
     } catch {
       return cleanupFailure([scope.receiptFile]);
     }
-    ownedToRemove = receipt.owned.filter((owned) => !retained.has(owned));
+    ownedToRemove = ownedReceipt.owned.filter((owned) => !retained.has(owned));
     receiptFile = path.resolve(scope.receiptFile);
-    backupTargets = [...backupTargets, ...receipt.owned, receiptFile];
+    backupTargets = [...backupTargets, ...ownedReceipt.owned, receiptFile];
   }
 
   const handoffs: { kind: HandoffKind; file: string; sha256: string }[] = [];
@@ -775,6 +852,14 @@ export function runPiProjectionLifecycle(
   const receipt = receiptFor(plan, scope);
   const checked = inspectHandoffs(input, scope, receipt, deps);
   if (checked.kind === "blocked") return input.operation === "doctor" ? { kind: "drift", paths: checked.paths } : checked;
+  // Native authority is opaque metadata owned by the Pi projection: retain it
+  // verbatim as the stable last field so a no-op reconciliation never drops it.
+  if (checked.previous?.mcpNative !== undefined) receipt.mcpNative = checked.previous.mcpNative;
+  if (input.nativeMcpAuthority !== undefined) {
+    const validated = parseMcpNativeAuthority(input.nativeMcpAuthority);
+    if (validated === null) return receiptInvalid(scope.receiptFile);
+    receipt.mcpNative = validated;
+  }
   const removedHandoffs = checked.handoffs.filter(({ kind, content }) =>
     !handoffEnabled(input, kind) && checked.previous?.[kind] !== undefined && content !== null);
   const retiredSkills = retiredPlaywrightFiles(scope).filter((file) =>
@@ -865,6 +950,9 @@ export interface PiProjectionLifecycleSystemInput {
   playwrightCliVersion?: string | null;
   playwrightManagedStateDir?: string;
   playwrightDispatcherPath?: string;
+  nativeMcpAuthority?: PiProjectionMcpNativeAuthority;
+  /** Canonical native target layout: projection receipt under `<target>/home/.jorgex-stack`. */
+  nativeLayout?: boolean;
 }
 
 function systemProjectionLifecycle(
@@ -877,7 +965,9 @@ function systemProjectionLifecycle(
         kind: "target-dir",
         home: path.join(targetRoot, "home"),
         codingAgentDir: path.dirname(piSystemPromptFile(targetRoot)),
-        receiptFile: path.join(targetRoot, "state", "pi-projection-receipt.json"),
+        receiptFile: input.nativeLayout === true
+          ? path.join(targetRoot, "home", ".jorgex-stack", "pi-projection-receipt.json")
+          : path.join(targetRoot, "state", "pi-projection-receipt.json"),
       };
 
   return {
@@ -898,6 +988,7 @@ function systemProjectionLifecycle(
       playwrightCliVersion: input.playwrightCliVersion,
       playwrightManagedStateDir: input.playwrightManagedStateDir,
       playwrightDispatcherPath: input.playwrightDispatcherPath,
+      nativeMcpAuthority: input.nativeMcpAuthority,
     },
     deps: {
       readText: readTextOnlyIfMissing,

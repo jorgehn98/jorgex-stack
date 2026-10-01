@@ -174,6 +174,78 @@ function errnoCode(error: unknown): string {
     : "UNKNOWN";
 }
 
+/** True only when the installed package declares the validated native contract. */
+function installedNativeContract(configDir: string): boolean {
+  try {
+    const file = path.join(configDir, "npm", "node_modules", "jorgex-pi", "contract", "native-mcp.v1.json");
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return isRecord(parsed)
+      && parsed["schemaVersion"] === 1
+      && parsed["capability"] === "mcp-native-v1"
+      && parsed["transport"] === "native";
+  } catch {
+    return false;
+  }
+}
+
+function isExactNativeEngramServer(value: unknown, engramBin: string): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof engramBin !== "string" || engramBin === "" || !path.isAbsolute(engramBin)) return false;
+  if (value["command"] !== engramBin) return false;
+  const args = value["args"];
+  return Array.isArray(args) && args.length === 2 && args[0] === "mcp" && args[1] === "--tools=agent";
+}
+
+/**
+ * Native official-setup verification: no adapter is required; the persistent
+ * `mcp.json` Engram server and a single canonical gentle-engram registration are
+ * enough. Returns null when an adapter is declared so the legacy branch keeps
+ * its stricter validation.
+ */
+function verifyNativePiSetup(
+  configDir: string,
+  engramBin: string,
+): { ok: boolean; layers: string[]; duplicates: boolean; reason?: string } | null {
+  let settings: unknown;
+  try {
+    settings = JSON.parse(fs.readFileSync(path.join(configDir, "settings.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isRecord(settings) || !Array.isArray(settings["packages"])) return null;
+  const sources = (settings["packages"] as unknown[]).map(piPackageSource);
+  if (sources.some((source) => source !== null && claimsProtectedName(source, "pi-mcp-adapter"))) return null;
+  const passed: string[] = [];
+  const missing: string[] = [];
+  const gentle = sources.filter((source): source is string => source !== null && isGentleSource(source));
+  if (gentle.length === 1) passed.push("packages");
+  else {
+    missing.push(gentle.length > 1 ? "packages:duplicate" : "packages:missing");
+  }
+  let mcpPath: string;
+  try {
+    mcpPath = path.join(configDir, "mcp.json");
+    const parsed = readPiMcpConfig(mcpPath);
+    const servers = isRecord(parsed) ? parsed["mcpServers"] : undefined;
+    if (!isRecord(servers) || !isExactNativeEngramServer(servers["engram"], engramBin)) {
+      missing.push("mcp:invalid");
+    } else {
+      passed.push("mcp");
+    }
+  } catch (error) {
+    missing.push(errnoCode(error) === "ENOENT" ? "mcp:missing" : "mcp:invalid");
+  }
+  if (missing.length === 0) return { ok: true, layers: passed, duplicates: false };
+  return {
+    ok: false,
+    layers: [...passed, ...missing],
+    duplicates: missing.includes("packages:duplicate"),
+    reason: `Pi: setup oficial Engram nativo incompleto (${missing.join(", ")}).`,
+  };
+}
+
 export async function verifyOfficialSetup(args: {
   configDir: string;
   engramBin: string;
@@ -185,6 +257,27 @@ export async function verifyOfficialSetup(args: {
   reason?: string;
   providerReceipt?: PiProviderReceiptReport;
 }> {
+  if (installedNativeContract(args.configDir)) {
+    const native = verifyNativePiSetup(args.configDir, args.engramBin);
+    if (native !== null) {
+      // El setup nativo también declara el origen efectivo del recibo separado
+      // (solo lectura); un recibo malformado o drifted nunca se presenta sano.
+      if (typeof args.homeDir === "string" && args.homeDir !== "") {
+        try {
+          const report = await readPiProviderReceiptReport({ homeDir: args.homeDir, agentDir: args.configDir });
+          if (report !== null) return { ...native, providerReceipt: report };
+        } catch (error) {
+          return {
+            ok: false,
+            layers: [...native.layers, "provider-receipt:invalid"],
+            duplicates: native.duplicates,
+            reason: `Pi: provider receipt inválido o drifted (${error instanceof Error ? error.message : String(error)}); no se presenta como setup sano.`,
+          };
+        }
+      }
+      return native;
+    }
+  }
   const passed: string[] = [];
   const missing: string[] = [];
   let duplicates = false;

@@ -43,6 +43,10 @@ export interface ActivatePiProviderPackagesInput {
    * Transport selector, not authentication: caller MUST derive it from the verified Pi contract.
    */
   readonly mcpTransport?: "native" | "legacy";
+  /**
+   * Registration selector, not authentication: caller MUST derive it from a verified fresh install.
+   */
+  readonly registrationPolicy?: "existing" | "create-if-absent";
   /** Exact bytes read before staging. A changed settings file aborts. */
   readonly settingsJson: string;
   /**
@@ -267,15 +271,16 @@ function canonicalProviderSource(source: string, packageName: string): boolean {
   return isNamedPiSource(source, packageName);
 }
 
-function claimsAdapterSource(source: string): boolean {
+function claimsProtectedSource(source: string, packageName: string): boolean {
   // Unsafe selectors still claim the protected name even though canonical matching rejects them.
-  return source === "npm:pi-mcp-adapter" || source.startsWith("npm:pi-mcp-adapter@");
+  return source === `npm:${packageName}` || source.startsWith(`npm:${packageName}@`);
 }
 
 function parseAndPlanSettings(
   settingsJson: string,
   packages: readonly PiProviderPackage[],
   rejectAdapterClaim: boolean,
+  createIfAbsent: boolean,
 ): string {
   let parsed: unknown;
   try {
@@ -301,12 +306,26 @@ function parseAndPlanSettings(
   if (rejectAdapterClaim) {
     for (const entry of planned) {
       const source = packageSource(entry);
-      if (source !== null && claimsAdapterSource(source)) {
+      if (source !== null && claimsProtectedSource(source, "pi-mcp-adapter")) {
         fail("settings.json registers the protected pi-mcp-adapter source; manual resolution is required");
       }
     }
   }
+  if (createIfAbsent) {
+    // Fresh registration owns absence: any existing gentle claim, canonical or
+    // unsafe, must block instead of being rewritten into an update.
+    for (const entry of planned) {
+      const source = packageSource(entry);
+      if (source !== null && claimsProtectedSource(source, "gentle-engram")) {
+        fail("settings.json already registers a gentle-engram source; create-if-absent requires an absent registration");
+      }
+    }
+  }
   for (const provider of packages) {
+    if (createIfAbsent) {
+      planned.push(`npm:${provider.name}@${provider.version}`);
+      continue;
+    }
     const matches = planned
       .map((entry, index) => ({ entry, index, source: packageSource(entry) }))
       .filter((value) => value.source !== null && canonicalProviderSource(value.source, provider.name));
@@ -699,6 +718,12 @@ export async function activatePiProviderPackages(
     fail("unknown provider activation transport");
   }
   const native = transport === "native";
+  const registrationPolicy = input.registrationPolicy;
+  if (registrationPolicy !== undefined && registrationPolicy !== "existing" && registrationPolicy !== "create-if-absent") {
+    fail("unknown provider registration policy");
+  }
+  const createIfAbsent = registrationPolicy === "create-if-absent";
+  if (createIfAbsent && !native) fail("create-if-absent registration requires native transport");
   const selectedNames: readonly string[] = native ? NATIVE_PROVIDER_NAMES : PROVIDER_NAMES;
   if (!Array.isArray(input.packages) || input.packages.length !== selectedNames.length) {
     fail(native
@@ -717,7 +742,7 @@ export async function activatePiProviderPackages(
     const provider = byName.get(name);
     if (provider === undefined) fail(`missing provider package: ${name}`);
     return provider;
-  }), native);
+  }), native, createIfAbsent);
 
   // Strict prior receipt verification against the current active roots and
   // settings, before any managed root, lock or backup is created. `undefined`
@@ -745,11 +770,8 @@ export async function activatePiProviderPackages(
   assertRealDirectory(npmDir, agentDir, "npm root");
   assertRealDirectory(modules, npmDir, "node_modules");
   const managedRoot = path.join(npmDir, "jorgex-pi-managed");
+  // Read-only preflight: keep the owned managed root absent until every provider check passes.
   assertOptionalRealDirectory(managedRoot, npmDir, "managed root");
-  if (lstatOrNull(managedRoot) === null) {
-    assertAncestorsClean(path.dirname(managedRoot), agentDir, "managed root");
-    fs.mkdirSync(managedRoot, { recursive: true, mode: 0o700 });
-  }
   const lockPath = path.join(managedRoot, "transaction.lock");
   const markerPath = path.join(managedRoot, "active-transaction.json");
   if (lstatOrNull(lockPath) !== null) fail(`transaction lock busy: ${lockPath}`);
@@ -763,7 +785,14 @@ export async function activatePiProviderPackages(
     const candidate = validateCandidate(provider, stageDir);
     const activeRoot = path.join(modules, name);
     assertAncestorsClean(activeRoot, agentDir, `active ${name}`);
-    const previousTreeSha256 = validateExistingPackage(activeRoot, agentDir, provider, candidate.bins, modules);
+    // Fresh registration never adopts a root by metadata: an existing root is
+    // rejected here so it cannot silently become an update target.
+    if (createIfAbsent && lstatOrNull(activeRoot) !== null) {
+      fail(`fresh registration requires an absent provider root: ${name}`);
+    }
+    const previousTreeSha256 = createIfAbsent
+      ? null
+      : validateExistingPackage(activeRoot, agentDir, provider, candidate.bins, modules);
     states.push({
       input: provider,
       candidateRoot: resolved(provider.packageRoot),
@@ -786,6 +815,11 @@ export async function activatePiProviderPackages(
   if (!isStrictChild(backupDir, stageDir)) fail("provider backup escaped stage root");
   const lockContent = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), backupDir })}\n`;
   const markerContent = `${JSON.stringify({ phase: "provider-activation", backupDir, packages: selectedNames, pid: process.pid }, null, 2)}\n`;
+  // Revalidate before creation: a real directory that appeared is coordinator namespace; a symlink or file still blocks.
+  if (!assertOptionalRealDirectory(managedRoot, npmDir, "managed root")) {
+    assertAncestorsClean(path.dirname(managedRoot), agentDir, "managed root");
+    fs.mkdirSync(managedRoot, { recursive: true, mode: 0o700 });
+  }
   const receiptRollback: ReceiptRollbackState = {
     homeDir,
     path: receiptPath,
@@ -803,6 +837,15 @@ export async function activatePiProviderPackages(
     // Re-read after obtaining the lock: a native Pi process may have updated
     // settings between the initial preflight and transaction acquisition.
     validateSettingsFile(settingsPath, agentDir, input.settingsJson);
+    // A root created between preflight and the lock must be preserved and
+    // rejected, never captured as an existing package under this transaction.
+    if (createIfAbsent) {
+      for (const state of states) {
+        if (lstatOrNull(state.activeRoot) !== null) {
+          fail(`fresh provider root appeared before promotion: ${state.input.name}`);
+        }
+      }
+    }
     if (receiptMode === "legacy") {
       const locked = verifyPiProviderReceipt({ homeDir, agentDir });
       if (locked.kind !== "absent") fail("managed provider receipt appeared while acquiring the transaction lock");

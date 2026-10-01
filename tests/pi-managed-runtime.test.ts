@@ -1833,6 +1833,98 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
+  // T04 native caller forwarding: an explicit `--engram-typebox-compat` opt-in
+  // must reach the native phase (not only the legacy provider updater). The
+  // phase itself is doubled here; its receipt/snapshot contract is owned by
+  // pi-native-phase.test.ts. A candidate carrying the native contract selects
+  // the native transport, so the option is forwarded unchanged.
+  it("forwards the explicit Engram compat opt-in into the native phase", async () => {
+    const phaseInputs: unknown[] = [];
+    const runNativePiMcpPhase = vi.fn(async (input: unknown) => {
+      phaseInputs.push(input);
+      return { kind: "ready" as const, authority: { schemaVersion: 1, entries: {} }, gentleVersion: "9.9.9" };
+    });
+    const NATIVE_SOURCE = "npm:jorgex-pi@9.9.9";
+    const NATIVE_CANDIDATE = {
+      package: { name: "jorgex-pi", version: "9.9.9", source: NATIVE_SOURCE },
+      contract: { mcpNative: { schemaVersion: 1, contractPath: "contract/native-mcp.v1.json" } },
+    };
+    const NATIVE_PREPARED = { stageDir: "/isolated/pi-stage" };
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) => {
+      if (input.operation === "sync") return { kind: "synced" as const };
+      return {
+        kind: "installed" as const,
+        receipt: {
+          schemaVersion: 1,
+          state: "installed",
+          candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: NATIVE_SOURCE } },
+        },
+      };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn((_input: unknown) => ({ kind: "installed" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: [] },
+      },
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+    vi.doMock("../src/lib/pi-native-phase.js", () => ({
+      runNativePiMcpPhase,
+      reconcileNativeAuthorityAfterCleanup: vi.fn(),
+    }));
+    // Deterministic native readback without probing the real HOME: the phase is
+    // the seam under test and its own readback contract is covered elsewhere.
+    vi.doMock("../src/lib/pi-private-release.js", () => ({
+      resolveActivePiEntry: vi.fn(() => ({ kind: "absent" as const })),
+    }));
+
+    try {
+      const mod = await import("../src/lib/pi-managed-runtime.js") as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        engramTypeboxCompat: true,
+        candidate: NATIVE_CANDIDATE,
+        prepared: NATIVE_PREPARED,
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(runNativePiMcpPhase).toHaveBeenCalledTimes(1);
+      expect(phaseInputs[0]).toMatchObject({ engramTypeboxCompat: true, fresh: true });
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.doUnmock("../src/lib/pi-native-phase.js");
+      vi.doUnmock("../src/lib/pi-private-release.js");
+      vi.resetModules();
+    }
+  });
+
   // T05-RED (negative): a blocked or throwing preflight must fail closed
   // before package install, projection, and preference persistence.
   const PREFLIGHT_FAILURES: Array<[string, { kind: "blocked"; reason: string } | Error]> = [
