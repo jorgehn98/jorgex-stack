@@ -3,10 +3,24 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMissingEngram, type EngramInstallResult } from "../src/lib/engram-install.js";
 import { resolvePiEngramRequirement } from "../src/lib/pi-runtime.js";
 import { __resetGithubState } from "../src/lib/github.js";
+
+// These installer assertions inject fetch and must stay offline: never spawn a
+// real `gh` (auth/keyring/network) just to build request headers. Suppress only
+// the GitHub CLI lookup; real path resolution for other binaries (and tar) is
+// preserved. Token precedence and the `gh auth token` fallback are covered in
+// tests/github.test.ts with detect.js mocked.
+vi.mock("../src/lib/detect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/detect.js")>();
+  return {
+    ...actual,
+    lookPath: (cmd: string, env?: NodeJS.ProcessEnv): string | null =>
+      cmd === "gh" ? null : actual.lookPath(cmd, env),
+  };
+});
 
 /**
  * PR04 final-review RED net (tests only, no production change).
@@ -46,6 +60,13 @@ let linuxBinary: Buffer;
 let archiveShaHex: string;
 let archiveDigest: string;
 const installRoots: string[] = [];
+
+beforeEach(() => {
+  // Clear inherited GitHub tokens so these injected-fetch tests do not depend
+  // on the developer/CI environment.
+  vi.stubEnv("GH_TOKEN", undefined);
+  vi.stubEnv("GITHUB_TOKEN", undefined);
+});
 
 function temporaryHome(): string {
   const home = fs.mkdtempSync(path.join(fixtureRoot, "home-"));
@@ -145,6 +166,7 @@ beforeAll(() => {
 afterEach(() => {
   for (const root of installRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   __resetGithubState();
 });
 
