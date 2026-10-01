@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { updatePiProviderPackages } from "./pi-provider-update.js";
-import { reconcileNativeAuthorityAfterCleanup, runNativePiMcpPhase } from "./pi-native-phase.js";
+import { reconcileNativeAuthorityAfterCleanup, runNativePiMcpPhase, type NativeMcpPreparedWrite } from "./pi-native-phase.js";
 import {
   NATIVE_MCP_SERVER_NAMES,
   inspectNativeMcpOwnership,
@@ -31,9 +31,15 @@ import {
   readNativeMcpSnapshot,
   removeNativeMcpEntries,
   restoreOwnedWrite,
+  writeNativeMcpConfig,
+  type NativeMcpOwnershipResult,
+  type NativeMcpServerName,
+  type NativeMcpSnapshot,
 } from "./pi-native-mcp.js";
 import type { PiProjectionMcpNativeAuthority } from "./pi-projection-lifecycle.js";
 import { resolveActivePiEntry } from "./pi-private-release.js";
+import { verifyOfflineManagedPiRelease } from "./pi-package-lifecycle.js";
+import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { createBackup } from "./backup.js";
 import { writeText } from "./fsx.js";
 import path from "node:path";
@@ -218,6 +224,152 @@ function managedPackageResult(
   }
   if (result.kind === "models") return { kind: "models", models: result.models };
   return result as Exclude<PiManagedPackageResult, { kind: "manual-existing" } | { kind: "models" }>;
+}
+
+/**
+ * Authenticates the active managed Pi package offline (receipt/cache/link/tree
+ * bytes) BEFORE any operational checker module is imported or executed, reusing
+ * the existing Stack offline gate. Topology (`resolveActivePiEntry`) proves the
+ * link shape; this proves the code that will actually run.
+ */
+function authenticateActiveNativePackage(args: {
+  readonly activeAgentDir: string;
+  readonly homeDir: string;
+  readonly targetDir: string | undefined;
+  readonly executable: string;
+  readonly engramBin: string | null;
+}): { kind: "ok"; realRoot: string } | { kind: "blocked"; reason: string; remedy: string } {
+  const receiptPath = path.join(args.homeDir, ".jorgex-stack", "pi-receipt.json");
+  const settingsPath = path.join(args.activeAgentDir, "settings.json");
+  let settingsJson: string;
+  let receiptJson: string | null;
+  try {
+    settingsJson = fs.readFileSync(settingsPath, "utf8");
+    receiptJson = fs.existsSync(receiptPath) ? fs.readFileSync(receiptPath, "utf8") : null;
+  } catch (error) {
+    return {
+      kind: "blocked",
+      reason: "native-receipt-unreadable",
+      remedy: `${error instanceof Error ? error.message : String(error)}; revisa el receipt/settings nativos antes de reintentar.`,
+    };
+  }
+  const downloadsDir = path.join(args.homeDir, ".jorgex-stack", "packages");
+  const validated = verifyOfflineManagedPiRelease(
+    {
+      detected: {
+        executable: args.executable,
+        packageRunner: path.join(args.activeAgentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs"),
+        settingsJson,
+      },
+      engramBin: args.engramBin,
+      receiptJson,
+      paths: {
+        targetDir: args.targetDir !== undefined,
+        codingAgentDir: args.activeAgentDir,
+        receiptPath,
+        environment: { HOME: args.homeDir, PI_CODING_AGENT_DIR: args.activeAgentDir },
+      },
+    },
+    { verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({ receipt, homeDir: args.homeDir, downloadsDir }) },
+  );
+  if (validated.kind === "blocked") {
+    return {
+      kind: "blocked",
+      reason: "native-package-untrusted",
+      remedy: "El paquete Pi gestionado no supera la prueba offline (bytes/cache/link/árbol); no se importa el checker operativo.",
+    };
+  }
+  return { kind: "ok", realRoot: validated.realRoot };
+}
+
+/** Raw bytes of a file, or null when it is absent/unreadable. */
+function readRawOrNull(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Prior native claim names in the projection receipt, or null when absent/unreadable. */
+function previousNativeClaimNames(homeDir: string): NativeMcpServerName[] | null {
+  const path0 = path.join(homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+  const raw = readRawOrNull(path0);
+  if (raw === null) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  let authority;
+  try { authority = parseNativeMcpAuthorityStrict(Reflect.get(parsed, "mcpNative")); } catch { return null; }
+  if (authority === null) return null;
+  return Object.keys(authority.entries) as NativeMcpServerName[];
+}
+
+/**
+ * Authenticates the active managed package offline and inspects its ownership,
+ * capturing config + authority bytes before the checker and revalidating them
+ * after, so stale eligibility can never authorize new content. Shared by the
+ * pre-phase update claim gate and the pre-deactivation cleanup guard.
+ */
+async function inspectAuthenticatedNativeOwnership(args: {
+  readonly activeAgentDir: string;
+  readonly homeDir: string;
+  readonly targetDir: string | undefined;
+  readonly executable: string;
+  readonly engramBin: string | null;
+}): Promise<
+  | { kind: "blocked"; reason: string; remedy: string }
+  | { kind: "ok"; ownership: NativeMcpOwnershipResult; snapshot: NativeMcpSnapshot; authorityRaw: string | null }
+> {
+  const activeEntry = resolveActivePiEntry(args.activeAgentDir);
+  if (activeEntry.kind === "absent") {
+    return { kind: "blocked", reason: "native-active-entry-absent", remedy: "La entrada nativa activa falta; no se modificó nada." };
+  }
+  const authenticated = authenticateActiveNativePackage({
+    activeAgentDir: args.activeAgentDir,
+    homeDir: args.homeDir,
+    targetDir: args.targetDir,
+    executable: args.executable,
+    engramBin: args.engramBin,
+  });
+  if (authenticated.kind === "blocked") return authenticated;
+  if (path.resolve(authenticated.realRoot) !== path.resolve(activeEntry.packageRoot)) {
+    return { kind: "blocked", reason: "native-package-drift", remedy: "La raíz autenticada no coincide con la topología del enlace activo; no se modificó nada." };
+  }
+  const authorityFile = path.join(args.homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+  const before = readNativeMcpSnapshot(args.activeAgentDir);
+  const authorityBefore = readRawOrNull(authorityFile);
+  const ownership = await inspectNativeMcpOwnership(authenticated.realRoot, {
+    env: { HOME: args.homeDir, USERPROFILE: args.homeDir, PI_CODING_AGENT_DIR: args.activeAgentDir },
+    platform: process.platform,
+    cwd: process.cwd(),
+    projectTrusted: false,
+  });
+  const after = readNativeMcpSnapshot(args.activeAgentDir);
+  if (after.raw !== before.raw || readRawOrNull(authorityFile) !== authorityBefore) {
+    return { kind: "blocked", reason: "native-config-changed", remedy: "mcp.json o la autoridad nativa cambiaron durante la comprobación; se conservan sin modificar." };
+  }
+  return { kind: "ok", ownership, snapshot: before, authorityRaw: authorityBefore };
+}
+
+/**
+ * True when `<home>/.jorgex-stack/pi-receipt.json` is a schema1 managed receipt.
+ * An install over such a receipt is the update path (the same decision the
+ * runtime preflight makes), so the native phase must not run as fresh.
+ */
+function hasManagedPiReceipt(homeDir: string): boolean {
+  try {
+    const raw = fs.readFileSync(path.join(homeDir, ".jorgex-stack", "pi-receipt.json"), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      && Reflect.get(parsed, "schemaVersion") === 1
+      && Reflect.get(parsed, "managedPackage") !== undefined
+      && Reflect.get(parsed, "managedPackage") !== null
+      && typeof Reflect.get(parsed, "managedPackage") === "object"
+      && !Array.isArray(Reflect.get(parsed, "managedPackage"));
+  } catch {
+    return false;
+  }
 }
 
 /** Coordina el paquete Pi con la proyección compartida de Stack. */
@@ -477,7 +629,11 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   }
   const nativeTransport = effectiveCandidate?.contract?.mcpNative !== undefined || installedNative;
   const nativeHomeDir = input.targetDir === undefined ? os.homedir() : path.join(path.resolve(input.targetDir), "home");
+  // All native backups for a target stay under the validated target root; only
+  // the real scope uses the default HOME backup area.
+  const nativeBackupRoot = input.targetDir === undefined ? undefined : path.join(path.resolve(input.targetDir), "backups");
   let nativeAuthority: PiProjectionMcpNativeAuthority | undefined;
+  let nativePrepared: NativeMcpPreparedWrite | undefined;
   if (nativeTransport && (input.operation === "install" || input.operation === "update")) {
     if (effectivePrepared === undefined) {
       return { kind: "blocked", reason: "stage-unverified", remedy: "La fase nativa exige el stage preverificado del preflight." };
@@ -492,20 +648,55 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         remedy: "El target nativo aislado exige el stage de provider ya verificado inyectado; no se descarga en el target.",
       };
     }
+    // Install over an already-managed install routes to the update branch (the
+    // same preflight decision the runtime makes), so the phase must not re-seed a
+    // fresh registration; a truly absent receipt stays fresh.
+    const nativeFresh = input.operation === "install" && !hasManagedPiReceipt(nativeHomeDir);
+    // On a non-fresh native update (including install routed to update), the OLD
+    // active package and its native claims must be authenticated before this
+    // operation promotes providers or prepares/publishes anything. The
+    // post-activation checker remains a distinct fresh/activation proof.
+    if (!nativeFresh) {
+      const claims = previousNativeClaimNames(nativeHomeDir);
+      if (claims !== null && claims.length > 0) {
+        const inspected = await inspectAuthenticatedNativeOwnership({
+          activeAgentDir,
+          homeDir: nativeHomeDir,
+          targetDir: input.targetDir,
+          executable: input.detected.executable,
+          engramBin: input.engramBin,
+        });
+        if (inspected.kind === "blocked") {
+          return { kind: "blocked", reason: inspected.reason, remedy: inspected.remedy };
+        }
+        if (inspected.ownership.package.state !== "verified") {
+          return { kind: "blocked", reason: "native-package-unverified", remedy: "La comprobación nativa activa no acreditó el paquete (estado no verified); no se renueva la autoridad. Pi no quedó activado." };
+        }
+        for (const name of claims) {
+          const server = inspected.ownership.servers[name];
+          if (server.state === "absent") continue; // the phase reports the precise claim-absent error
+          if (server.state !== "managed") {
+            return { kind: "blocked", reason: "native-authority-unverifiable", remedy: `La comprobación nativa activa no acredita la reclamación previa de ${name} como managed/verified; no se renueva la autoridad. Pi no quedó activado.` };
+          }
+        }
+      }
+    }
     const phase = await runNativePiMcpPhase({
       homeDir: nativeHomeDir,
       agentDir: activeAgentDir,
       engramBin: input.engramBin,
       piExecutable: input.detected.executable,
       stageDir: effectivePrepared.stageDir,
-      fresh: input.operation === "install",
-      bootstrapDirs: input.operation === "install",
+      fresh: nativeFresh,
+      bootstrapDirs: nativeFresh,
       ...(input.targetDir === undefined ? {} : { targetDir: input.targetDir }),
+      ...(nativeBackupRoot === undefined ? {} : { backupRoot: nativeBackupRoot }),
       ...(needsDevtoolsObservation ? { devtoolsManagedStateDir } : {}),
       ...(input.nativeProviderStage === undefined ? {} : { providerStage: input.nativeProviderStage }),
     });
     if (phase.kind === "blocked") return { kind: "blocked", reason: phase.reason, remedy: phase.remedy };
     nativeAuthority = phase.authority;
+    nativePrepared = phase.prepared;
   }
   // Canonical native target artifact cache: place the injected, already-verified
   // artifact under `<target>/home/.jorgex-stack/packages` (local copy, no target
@@ -527,6 +718,74 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     }
   }
   let effectivePackageSource: string = PI_RUNTIME_CANDIDATE.package.source;
+  // Pending native MCP config write: the phase prepared the owned entries and the
+  // exact CAS snapshots; the existing projection lifecycle invokes this after the
+  // handoff is applied/readback and before publishing the final receipt/authority.
+  // It exposes rollback of its exact MCP write (no one-shot "done" flag), so the
+  // lifecycle can recover until the receipt actually commits.
+  const pendingNativeConfigWrite = nativePrepared === undefined ? undefined : (() => {
+    const prepared = nativePrepared;
+    let wrote = false;
+    let ownRaw: string | null = null;
+    const currentRaw = (): string | null => readNativeMcpSnapshot(prepared.agentDir).raw;
+    const rollbackOwnWrite = (): boolean => {
+      if (!wrote || ownRaw === null) return true;
+      if (currentRaw() !== ownRaw) return false; // concurrent drift: preserve
+      try {
+        restoreOwnedWrite(prepared.snapshot.file, ownRaw, prepared.snapshot.raw);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const write = (): { kind: "ok"; recover: () => boolean; paths: string[] } => {
+      let baseRaw = prepared.snapshot.raw;
+      let baseParsed = prepared.snapshot.parsed;
+      if (prepared.removals.length > 0) {
+        const removed = removeNativeMcpEntries({
+          agentDir: prepared.agentDir,
+          names: [...prepared.removals],
+          expectedRaw: baseRaw,
+          expectedParsed: baseParsed,
+          ...(prepared.backupRoot === undefined ? {} : { backupRoot: prepared.backupRoot }),
+        });
+        ownRaw = removed.writtenRaw;
+        wrote = true;
+        const afterRemoval = readNativeMcpSnapshot(prepared.agentDir);
+        baseRaw = afterRemoval.raw;
+        baseParsed = afterRemoval.parsed;
+      }
+      if (prepared.created.length > 0) {
+        const written = writeNativeMcpConfig({
+          agentDir: prepared.agentDir,
+          servers: [...prepared.created],
+          expectedRaw: baseRaw,
+          expectedParsed: baseParsed,
+          ...(prepared.backupRoot === undefined ? {} : { backupRoot: prepared.backupRoot }),
+        });
+        ownRaw = written.writtenRaw;
+        wrote = true;
+      }
+      return { kind: "ok" as const, recover: rollbackOwnWrite, paths: [prepared.snapshot.file] };
+    };
+    return () => {
+      if (wrote && ownRaw !== null && currentRaw() === ownRaw) {
+        return { kind: "ok" as const, recover: rollbackOwnWrite, paths: [prepared.snapshot.file] };
+      }
+      try {
+        return write();
+      } catch (error) {
+        // Roll back this callback's own partial config only while it still holds
+        // our bytes; report incomplete recovery otherwise.
+        const rolledBack = rollbackOwnWrite();
+        return {
+          kind: "blocked" as const,
+          reason: "native-config-write-failed",
+          remedy: `${error instanceof Error ? error.message : String(error)};${rolledBack ? "" : " recuperación incompleta del config nativo;"} revisa mcp.json y reintenta.`,
+        };
+      }
+    };
+  })();
   const projectionInput = {
     writingStyle,
     targetDir: input.targetDir,
@@ -544,6 +803,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     devtoolsMcpVersion,
     ...(input.nativeLayout === true ? { nativeLayout: true } : {}),
     ...(nativeAuthority === undefined ? {} : { nativeMcpAuthority: nativeAuthority }),
+    ...(pendingNativeConfigWrite === undefined ? {} : { pendingNativeConfigWrite }),
   };
   if (preparedStyle !== undefined && input.operation !== "doctor") applyWritingStyle(preparedStyle);
   let result = await runManagedPiOperation(input.operation, {
@@ -635,31 +895,36 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     ...(nativeTransport && input.operation === "uninstall" ? {
       beforePackageDeactivation: async (): Promise<{ kind: "ok" } | { kind: "blocked"; reason: string; remedy?: string }> => {
         try {
-          const activeEntry = resolveActivePiEntry(activeAgentDir);
-          if (activeEntry.kind === "absent") {
-            return { kind: "blocked" as const, reason: "native-active-entry-absent", remedy: "La entrada nativa activa falta; no se desactivó nada." };
-          }
-          const ownership = await inspectNativeMcpOwnership(activeEntry.packageRoot, {
-            env: { HOME: nativeHomeDir, USERPROFILE: nativeHomeDir, PI_CODING_AGENT_DIR: activeAgentDir },
-            platform: process.platform,
-            cwd: process.cwd(),
-            projectTrusted: false,
+          const inspected = await inspectAuthenticatedNativeOwnership({
+            activeAgentDir,
+            homeDir: nativeHomeDir,
+            targetDir: input.targetDir,
+            executable: input.detected.executable,
+            engramBin: input.engramBin,
           });
-          const snapshot = readNativeMcpSnapshot(activeAgentDir);
-          const removable = NATIVE_MCP_SERVER_NAMES.filter((name) => ownership.servers[name]?.cleanupEligible === true);
+          if (inspected.kind === "blocked") {
+            return { kind: "blocked" as const, reason: inspected.reason, remedy: `${inspected.remedy} No se desactivó nada.` };
+          }
+          const removable = inspected.ownership.package.state === "verified"
+            ? NATIVE_MCP_SERVER_NAMES.filter((name) => inspected.ownership.servers[name].state === "managed" && inspected.ownership.servers[name].cleanupEligible === true)
+            : [];
           if (removable.length > 0) {
             removeNativeMcpEntries({
               agentDir: activeAgentDir,
               names: removable,
-              expectedRaw: snapshot.raw,
-              expectedParsed: snapshot.parsed,
+              expectedRaw: inspected.snapshot.raw,
+              expectedParsed: inspected.snapshot.parsed,
+              ...(nativeBackupRoot === undefined ? {} : { backupRoot: nativeBackupRoot }),
             });
           }
           reconcileNativeAuthorityAfterCleanup({
             homeDir: nativeHomeDir,
             agentDir: activeAgentDir,
+            scopeKind: input.targetDir === undefined ? "real" : "target-dir",
             removable,
-            ownership,
+            ownership: inspected.ownership,
+            expectedAuthorityRaw: inspected.authorityRaw,
+            ...(nativeBackupRoot === undefined ? {} : { backupRoot: nativeBackupRoot }),
           });
           return { kind: "ok" as const };
         } catch (error) {
@@ -676,10 +941,22 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         try {
           const activeEntry = resolveActivePiEntry(activeAgentDir);
           if (activeEntry.kind === "absent") {
-            return { kind: "blocked" as const, reason: "native-active-entry-absent", remedy: "La entrada nativa activa falta; Pi no quedó activado." };
+            return { kind: "blocked" as const, reason: "native-active-entry-absent", remedy: "La entrada nativa activa falta; inicialización nativa pendiente." };
           }
+          const authenticated = authenticateActiveNativePackage({
+            activeAgentDir,
+            homeDir: nativeHomeDir,
+            targetDir: input.targetDir,
+            executable: input.detected.executable,
+            engramBin: input.engramBin,
+          });
+          if (authenticated.kind === "blocked") return authenticated;
+          if (path.resolve(authenticated.realRoot) !== path.resolve(activeEntry.packageRoot)) {
+            return { kind: "blocked" as const, reason: "native-package-drift", remedy: "La raíz autenticada no coincide con la topología del enlace activo; inicialización nativa pendiente." };
+          }
+          const before = readNativeMcpSnapshot(activeAgentDir);
           const ownership = await inspectNativeMcpOwnership(
-            activeEntry.packageRoot,
+            authenticated.realRoot,
             {
               env: { HOME: nativeHomeDir, USERPROFILE: nativeHomeDir, PI_CODING_AGENT_DIR: activeAgentDir },
               platform: process.platform,
@@ -687,12 +964,25 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
               projectTrusted: false,
             },
           );
+          const after = readNativeMcpSnapshot(activeAgentDir);
+          if (after.raw !== before.raw) {
+            return { kind: "blocked" as const, reason: "native-config-changed", remedy: "mcp.json cambió durante la comprobación; se conserva sin modificar e inicialización nativa pendiente." };
+          }
           const conflicts = Object.values(ownership.servers).filter((server) => server.state === "conflict");
           if (ownership.package.state === "conflict" || conflicts.length > 0) {
             return {
               kind: "blocked" as const,
               reason: "native-checker-conflict",
-              remedy: "La comprobación nativa detectó un conflicto de propiedad; revisa mcp.json y la autoridad antes de reintentar. Pi no quedó activado.",
+              remedy: "El paquete Pi quedó activado; la comprobación nativa detectó un conflicto de propiedad sobre mcp.json/autoridad. Resuélvelo y ejecuta sync --agents pi para completar la inicialización.",
+            };
+          }
+          if (nativeAuthority !== undefined
+            && Object.keys(nativeAuthority.entries).length > 0
+            && ownership.package.state !== "verified") {
+            return {
+              kind: "blocked" as const,
+              reason: "native-package-unverified",
+              remedy: "El paquete Pi quedó activado; la comprobación nativa no acreditó el paquete (estado no verified). Revisa receipt/artefacto y ejecuta sync --agents pi para completar la inicialización.",
             };
           }
           return { kind: "ok" as const };
@@ -700,7 +990,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
           return {
             kind: "blocked" as const,
             reason: "native-checker-failed",
-            remedy: `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`,
+            remedy: `El paquete Pi quedó activado; la comprobación nativa falló: ${error instanceof Error ? error.message : String(error)}. Inicialización nativa pendiente; ejecuta sync --agents pi para reintentar.`,
           };
         }
       },

@@ -68,8 +68,71 @@ export interface NativeMcpOwnershipEntry {
 
 export interface NativeMcpOwnershipResult {
   readonly servers: Readonly<Record<NativeMcpServerName, NativeMcpOwnershipEntry>>;
-  readonly package: { readonly state: string; readonly reason?: string };
+  readonly package: { readonly state: "not-required" | "verified" | "conflict"; readonly reason?: string };
   readonly connection: "not-verified";
+}
+
+const OWNERSHIP_STATES: readonly NativeMcpOwnershipEntry["state"][] = ["absent", "unowned", "conflict", "managed"];
+const OWNERSHIP_AVAILABILITY: readonly NativeMcpOwnershipEntry["availability"][] = ["unavailable", "configured", "disabled", "unsupported-execution"];
+const OWNERSHIP_PACKAGE_STATES: readonly NativeMcpOwnershipResult["package"]["state"][] = ["not-required", "verified", "conflict"];
+
+/**
+ * Strictly validates the complete checker DTO before any cast: exactly the three
+ * native servers, each with a known state/availability and boolean
+ * cleanupEligible, the package state domain, and the read-only connection. A
+ * cleanupEligible claim is accepted only for a verified package and a managed
+ * server; any missing key or unexpected enum throws.
+ */
+function parseNativeMcpOwnershipResult(value: unknown): NativeMcpOwnershipResult {
+  if (!isRecord(value) || value.connection !== "not-verified") fail("native ownership result is invalid");
+  const servers = value.servers;
+  if (!isRecord(servers)
+    || Object.keys(servers).length !== NATIVE_MCP_SERVER_NAMES.length
+    || !NATIVE_MCP_SERVER_NAMES.every((name) => Object.hasOwn(servers, name))) {
+    fail("native ownership result is invalid");
+  }
+  const pkg = value.package;
+  if (!isRecord(pkg)
+    || typeof pkg.state !== "string"
+    || !OWNERSHIP_PACKAGE_STATES.includes(pkg.state as NativeMcpOwnershipResult["package"]["state"])) {
+    fail("native ownership result is invalid");
+  }
+  if (Object.hasOwn(pkg, "reason") && typeof pkg.reason !== "string") {
+    fail("native ownership result is invalid");
+  }
+  const packageState = pkg.state as NativeMcpOwnershipResult["package"]["state"];
+  const parsedServers = {} as Record<NativeMcpServerName, NativeMcpOwnershipEntry>;
+  for (const name of NATIVE_MCP_SERVER_NAMES) {
+    const entry = servers[name];
+    if (!isRecord(entry)
+      || typeof entry.state !== "string"
+      || !OWNERSHIP_STATES.includes(entry.state as NativeMcpOwnershipEntry["state"])
+      || typeof entry.cleanupEligible !== "boolean"
+      || typeof entry.availability !== "string"
+      || !OWNERSHIP_AVAILABILITY.includes(entry.availability as NativeMcpOwnershipEntry["availability"])) {
+      fail("native ownership result is invalid");
+    }
+    if (Object.hasOwn(entry, "reason") && typeof entry.reason !== "string") {
+      fail("native ownership result is invalid");
+    }
+    const state = entry.state as NativeMcpOwnershipEntry["state"];
+    if (entry.cleanupEligible === true && !(packageState === "verified" && state === "managed")) {
+      fail("native ownership result is invalid");
+    }
+    parsedServers[name] = {
+      state,
+      cleanupEligible: entry.cleanupEligible,
+      availability: entry.availability as NativeMcpOwnershipEntry["availability"],
+      ...(entry.reason === undefined ? {} : { reason: entry.reason as string }),
+    };
+  }
+  return {
+    servers: parsedServers,
+    package: pkg.reason === undefined
+      ? { state: packageState }
+      : { state: packageState, reason: pkg.reason as string },
+    connection: "not-verified",
+  };
 }
 
 function fail(message: string): never {
@@ -172,46 +235,62 @@ async function runNativeMcpExport(input: {
     let stderrBytes = 0;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
-    const settle = async (error: Error | null, value?: unknown): Promise<void> => {
+    const settle = (error: Error | null, value?: unknown): void => {
       if (settled) return;
       settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      await stopOwnedPiProcess(child);
-      if (error !== null) reject(error);
-      else resolve(value);
+      if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      child.removeListener("close", onClose);
+      child.removeListener("error", onError);
+      child.stdout?.removeListener("data", onStdout);
+      child.stderr?.removeListener("data", onStderr);
+      // Stop only this operation's own child/group; teardown failures must never
+      // silently resolve a failing export as success.
+      void stopOwnedPiProcess(child).then(
+        () => { if (error !== null) reject(error); else resolve(value); },
+        () => {
+          reject(error !== null
+            ? error
+            : new Error(`pi-native-mcp: native export ${input.exportName} teardown failed`));
+        },
+      );
     };
-    const capture = (chunk: Buffer, channel: "stdout" | "stderr"): void => {
+    const onStdout = (chunk: Buffer): void => {
       if (settled) return;
-      if (channel === "stdout") {
-        stdoutBytes += chunk.length;
-        if (stdoutBytes > MAX_CHILD_STDOUT_BYTES) { void settle(fail(`native export ${input.exportName} exceeded its output bound`)); return; }
-        stdout += chunk.toString("utf8");
-      } else {
-        stderrBytes += chunk.length;
-        // stderr is bounded but never surfaced: it may echo user definition data.
-        if (stderrBytes > MAX_CHILD_STDERR_BYTES) void settle(fail(`native export ${input.exportName} failed`));
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_CHILD_STDOUT_BYTES) {
+        settle(new Error(`pi-native-mcp: native export ${input.exportName} exceeded its output bound`));
+        return;
       }
+      stdout += chunk.toString("utf8");
     };
-    child.stdout?.on("data", (chunk: Buffer) => capture(chunk, "stdout"));
-    child.stderr?.on("data", (chunk: Buffer) => capture(chunk, "stderr"));
-    child.once("error", () => { void settle(fail(`native export ${input.exportName} failed`)); });
-    child.once("close", (code) => {
+    const onStderr = (chunk: Buffer): void => {
       if (settled) return;
-      if (code !== 0) { void settle(fail(`native export ${input.exportName} failed`)); return; }
+      stderrBytes += chunk.length;
+      // stderr is bounded but never surfaced: it may echo user definition data.
+      if (stderrBytes > MAX_CHILD_STDERR_BYTES) settle(new Error(`pi-native-mcp: native export ${input.exportName} failed`));
+    };
+    const onError = (): void => { settle(new Error(`pi-native-mcp: native export ${input.exportName} failed`)); };
+    const onClose = (code: number | null): void => {
+      if (settled) return;
+      if (code !== 0) { settle(new Error(`pi-native-mcp: native export ${input.exportName} failed`)); return; }
       let parsed: unknown;
       try {
         parsed = JSON.parse(stdout);
       } catch {
-        void settle(fail(`native export ${input.exportName} returned an invalid result`));
+        settle(new Error(`pi-native-mcp: native export ${input.exportName} returned an invalid result`));
         return;
       }
       if (!isRecord(parsed) || parsed.ok !== true) {
-        void settle(fail(`native export ${input.exportName} failed`));
+        settle(new Error(`pi-native-mcp: native export ${input.exportName} failed`));
         return;
       }
-      void settle(null, parsed.value);
-    });
-    timer = setTimeout(() => { void settle(fail(`native export ${input.exportName} timed out`)); }, EXPORT_TIMEOUT_MS);
+      settle(null, parsed.value);
+    };
+    child.stdout?.on("data", onStdout);
+    child.stderr?.on("data", onStderr);
+    child.once("error", onError);
+    child.once("close", onClose);
+    timer = setTimeout(() => { settle(new Error(`pi-native-mcp: native export ${input.exportName} timed out`)); }, EXPORT_TIMEOUT_MS);
     timer.unref();
     child.stdin?.on("error", () => { /* surfaced through close/error */ });
     child.stdin?.end(request);
@@ -277,10 +356,7 @@ export async function inspectNativeMcpOwnership(
       projectTrusted: options.projectTrusted,
     }],
   });
-  if (!isRecord(value) || !isRecord(value.servers) || !isRecord(value.package) || value.connection !== "not-verified") {
-    fail("native ownership result is invalid");
-  }
-  return value as unknown as NativeMcpOwnershipResult;
+  return parseNativeMcpOwnershipResult(value);
 }
 
 // --- Native persistent configuration (mcp.json) -----------------------------
