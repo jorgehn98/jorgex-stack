@@ -303,10 +303,11 @@ const isMissingFileError = (error: unknown) => {
     typeof error === "object" && error !== null && "code" in error
       ? (error as { code?: unknown }).code
       : undefined;
-  return (
-    code === "ENOENT" ||
-    (error instanceof Error && /not found|no such file/i.test(error.message))
-  );
+  // Ausencia solo con código ENOENT. El mensaje del sistema puede contener
+  // "not found" en la propia ruta (p. ej. un EACCES sobre `.../not found/`),
+  // así que el texto no es prueba de ausencia: sin código fiable se
+  // diagnostica, nunca se silencia.
+  return code === "ENOENT";
 };
 
 const errorCode = (error: unknown): string => {

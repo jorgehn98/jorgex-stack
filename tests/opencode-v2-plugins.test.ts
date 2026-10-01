@@ -7,7 +7,8 @@ import * as worktreeModule from "../stack/plugins/opencode/worktree.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 /**
- * RED focal de la API de plugins OpenCode v2 (tag 2.0.20, contrato T05/T06):
+ * RED focal de la API de plugins OpenCode v2 (tag 2.0.21 observado en la copia
+ * privada actual; la captura original de la receta fue contra 2.0.20, contrato T05/T06):
  *
  * - `export default { id, setup }` sin SDK runtime v1.
  * - La carga registra hooks con `ctx.tool.hook("execute.before" | "execute.after", cb)`
@@ -570,6 +571,38 @@ describe("OpenCode v2 plugins: config corrupta y script fallido no son silencios
       /read|access|permission|denied|unreadable|i\/o|erro?r/i,
     );
     expect(text, "no vuelca el contenido del fichero").not.toContain(CANARY);
+  });
+
+  it("un hooks.json ilegible por EACCES con 'not found' en el PATH se diagnostica como lectura, no como ausente", async () => {
+    // El mensaje crudo del sistema incluye el PATH (`.../not found/hooks.json`):
+    // un fallback por texto lo confunde con ausencia, pero el errno es EACCES.
+    const globalRoot = path.join(tmp, "own", "not found");
+    fs.mkdirSync(globalRoot, { recursive: true });
+    const hooksPath = path.join(globalRoot, "hooks.json");
+    fs.writeFileSync(
+      hooksPath,
+      JSON.stringify({ "tool.execute.after": { shell: { "*": [`scripts/${CANARY}.cjs`] } } }),
+    );
+    const rawMessage = `EACCES: permission denied, open '${hooksPath}'`;
+    stubHostBunWithFileFailure(hooksPath, Object.assign(new Error(rawMessage), { code: "EACCES" }));
+
+    // La raíz global se resuelve al registrar el plugin: debe apuntar al PATH
+    // con `not found` ANTES del setup para que el handler lea ese hooks.json.
+    vi.stubEnv("OPENCODE_CONFIG_DIR", globalRoot);
+
+    const { event, original } = await runCompleted(await setupAfterHandler());
+    const text = contentText(event.result);
+    const result = event.result as { output?: unknown; metadata?: unknown };
+
+    expect(text, "el EACCES no puede clasificarse como ausencia").toMatch(
+      /could not be read|read|access|permission|denied|eacces/i,
+    );
+    expect(text, "no vuelca el mensaje crudo del sistema").not.toContain(rawMessage);
+    expect(text, "no vuelca el contenido del fichero").not.toContain(CANARY);
+    expect(String(result.output), "output original preservado").toContain("original output");
+    expect(result.metadata, "metadata preservado").toEqual(
+      (original as { metadata?: unknown }).metadata,
+    );
   });
 
   it("un hooks.json global ilegible por ser directorio (EISDIR) se diagnostica", async () => {
