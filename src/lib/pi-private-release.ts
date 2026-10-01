@@ -196,6 +196,60 @@ function assertManagedEntrySymlink(linkPath: string, allowedRoot: string, label:
   assertLinkInsideRoot(linkPath, allowedRoot, label, "dir");
 }
 
+/**
+ * Resolution of the operational active package entry
+ * `<agentDir>/npm/node_modules/jorgex-pi`. `absent` is explicit; `directory` is
+ * a regular non-symlink dir (a non-private/legacy install); `owned-link` is the
+ * canonical managed entry symlink. Corrupt/absolute/foreign/outside-root/broken/
+ * chained links throw so callers block instead of silently falling back.
+ */
+export type ActivePiEntryResolution =
+  | { readonly kind: "absent" }
+  | { readonly kind: "directory"; readonly packageRoot: string }
+  | { readonly kind: "owned-link"; readonly packageRoot: string };
+
+export function resolveActivePiEntry(agentDir: string): ActivePiEntryResolution {
+  const agent = resolved(agentDir);
+  const npmDir = path.join(agent, "npm");
+  const nodeModules = path.join(npmDir, "node_modules");
+  const linkPath = path.join(nodeModules, EXPECTED_ENTRY);
+  assertStrictChild(linkPath, agent, "managed entry");
+  const entryStat = lstatOrNull(linkPath);
+  if (entryStat === null) return { kind: "absent" };
+  assertAncestorsClean(nodeModules, agent, "node_modules");
+  if (!entryStat.isSymbolicLink()) {
+    if (!entryStat.isDirectory()) throw new Error(`managed entry is not a directory: ${linkPath}`);
+    return { kind: "directory", packageRoot: linkPath };
+  }
+  // Owned managed entry: reuse the exact private-release link rules, then
+  // require the canonical `<releaseId>/node_modules/jorgex-pi` topology.
+  assertManagedEntrySymlink(linkPath, npmDir, "managed entry");
+  const rawTarget = fs.readlinkSync(linkPath);
+  const packageRoot = path.resolve(nodeModules, rawTarget);
+  const releaseRoot = path.join(npmDir, "jorgex-pi-managed", "releases");
+  const parts = path.relative(releaseRoot, packageRoot).split(path.sep);
+  if (parts.length !== 3
+    || !RELEASE_ID_PATTERN.test(parts[0] as string)
+    || parts[1] !== "node_modules"
+    || parts[2] !== EXPECTED_ENTRY) {
+    throw new Error(`managed entry does not point to a canonical release: ${linkPath}`);
+  }
+  let physical: string;
+  try {
+    physical = fs.realpathSync(linkPath);
+  } catch {
+    throw new Error(`managed entry is unreadable: ${linkPath}`);
+  }
+  if (physical !== packageRoot) {
+    throw new Error(`managed entry resolves outside its canonical release: ${linkPath}`);
+  }
+  const pkgStat = lstatOrNull(packageRoot);
+  if (pkgStat === null || !pkgStat.isDirectory() || pkgStat.isSymbolicLink()) {
+    throw new Error(`managed release root is not a real directory: ${packageRoot}`);
+  }
+  return { kind: "owned-link", packageRoot };
+}
+
 function validateStageTree(stagedNpm: string): void {
   const root = resolved(stagedNpm);
   const stack: string[] = [root];

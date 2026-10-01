@@ -482,6 +482,49 @@ describe("Pi shared projection lifecycle", () => {
     }
   });
 
+  it("preserves a valid mcpNative authority entry across a no-op sync", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-mcp-native-receipt-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const deps = temporaryDeps(root, events, { runtimes: {} });
+      const input = {
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+      };
+      expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+      // The receipt file is untrusted JSON metadata: Stack must parse and retain
+      // this opaque authority entry without recomputing or rewriting it.
+      const mcpNative = {
+        schemaVersion: 1,
+        entries: {
+          context7: {
+            definitionSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            cleanupSha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+          },
+        },
+      };
+      const seeded = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as Record<string, unknown>;
+      seeded.mcpNative = mcpNative;
+      fs.writeFileSync(target.projectionReceipt, `${JSON.stringify(seeded, null, 2)}\n`);
+
+      events.length = 0;
+      expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
+      expect(events).toEqual([]);
+      const preserved = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as Record<string, unknown>;
+      expect(preserved.mcpNative).toEqual(mcpNative);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes the owned Pi Playwright handoff and receipt digest idempotently", async () => {
     const { runPiProjectionLifecycle } = await lifecycle();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-playwright-enable-"));
