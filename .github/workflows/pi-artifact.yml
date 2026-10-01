@@ -134,6 +134,8 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify owned Pi deactivation
+        run: pnpm exec vitest run tests/pi-private-release-uninstall-red.test.ts -t "unlinks only the owned entry"
       - name: Acquire verified Pi artifact and isolated host
         run: |
           node -e "require('fs').mkdirSync(require('path').dirname(process.env.JORGEX_PI_LIVE_ARTIFACT),{recursive:true})"
