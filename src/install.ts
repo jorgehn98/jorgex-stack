@@ -454,7 +454,7 @@ async function runOfficialSetupForInstall(args: {
   dryRun: boolean;
   targetDir?: string;
 }): Promise<OfficialSetupIfNeededResult> {
-  // Solo Claude necesita la comprobación de versión; Codex/OpenCode son
+  // Solo Claude necesita la comprobación de versión de Engram; Codex/OpenCode son
   // gestionados por el proveedor. Ejecuta `--version` localmente, sin red ni
   // estado personal; un resultado nulo/ilegible falla cerrado en el preflight
   // Claude (binario intacto, antes de targets/backup/spawn).
@@ -509,8 +509,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Targets de proyección que el adapter reconoce como Stack-owned mediante una
- * lectura de solo lectura del plan canónico actual: contenido (prompt, agentes,
+ * Targets de proyección que el adapter reconoce como Stack-owned mediante
+ * inspección en solo lectura del plan canónico actual: contenido (prompt, agentes,
  * skills, comandos, hooks, plugins, scripts), config gestionada y los targets
  * compartidos del unmerge. Es la whitelist estructural source-only: una lista
  * `owned` editable no autentica por sí sola un archivo que el canon no
