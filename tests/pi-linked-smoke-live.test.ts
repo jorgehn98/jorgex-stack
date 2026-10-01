@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { expect, it } from "vitest";
 import { stageVerifiedPiTarball } from "../src/lib/pi-release-stage.js";
 import { materializeStagedPiRuntimeDependencies } from "../src/lib/pi-staged-lock.js";
@@ -14,6 +15,24 @@ import { installMissingEngram } from "../src/lib/engram-install.js";
 
 const sha256Hex = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 const sha512Hex = (bytes: Buffer): string => createHash("sha512").update(bytes).digest("hex");
+
+// One compact JSON line per live RPC phase so CI shows which boot timed out
+// without dumping the isolated environment. Only label, elapsed ms and outcome.
+function logPhase(label: string, startedAt: number, outcome: "ok" | "error"): void {
+  console.log(JSON.stringify({ phase: label, ms: Math.round(performance.now() - startedAt), outcome }));
+}
+
+async function phase<T>(label: string, run: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    const result = await run();
+    logPhase(label, startedAt, "ok");
+    return result;
+  } catch (error) {
+    logPhase(label, startedAt, "error");
+    throw error;
+  }
+}
 
 const piExecutable = process.env.JORGEX_PI_BIN ?? (process.env.PI_TEST_HOST
   ? path.join(process.env.PI_TEST_HOST, "node_modules", ".bin", process.platform === "win32" ? "pi.cmd" : "pi")
@@ -44,9 +63,9 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     // Restore the old topology to prove the same real loader goes RED.
     fs.rmSync(path.join(packageRoot, "node_modules"), { recursive: true });
     const smoke = { piExecutable: piExecutable!, packageRoot, scratchRoot: path.dirname(staged.stageDir) };
-    await expect(smokeLinkedPiRuntime(smoke)).rejects.toThrow(/permission load failure|Cannot find module/);
+    await phase("linked-negative-old-topology", () => expect(smokeLinkedPiRuntime(smoke)).rejects.toThrow(/permission load failure|Cannot find module/));
     materializeStagedPiRuntimeDependencies({ stageDir: staged.stageDir, tarballPath: artifact.path, release });
-    const ready = await smokeLinkedPiRuntime(smoke);
+    const ready = await phase("linked-positive-repaired-topology", () => smokeLinkedPiRuntime(smoke));
     expect(ready.commands).toEqual(expect.arrayContaining(["permission-system", "subagents", "goal", "websearch"]));
     const engramTypeboxCompat = process.env.JORGEX_PI_ENGRAM_TYPEBOX_COMPAT === "1";
     const gentleRelease = await resolveLatestNpmPackageRelease("gentle-engram", fetch);
@@ -119,8 +138,8 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     // the official verified binary, not Node pretending to be an MCP server.
     const engram = await installMissingEngram({ homeDir });
     if (!engram.ok) throw new Error(engram.reason);
-    const providerSmoke = await smokePiProviderRuntime({ piExecutable: piExecutable!, jorgexPackageRoot: packageRoot,
-      providerRoots: roots, engramBin: engram.bin, scratchRoot: providers.stageDir });
+    const providerSmoke = await phase("providers-complete", () => smokePiProviderRuntime({ piExecutable: piExecutable!, jorgexPackageRoot: packageRoot,
+      providerRoots: roots, engramBin: engram.bin, scratchRoot: providers.stageDir }));
     expect(providerSmoke.commands).toEqual(expect.arrayContaining(["mcp", "mcp-adapter", "permission-system"]));
 
   } catch (error) {
