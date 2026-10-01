@@ -7,6 +7,7 @@ import { inventoryTreeSha256 } from "./pi-staged-lock.js";
 
 /** The only packages owned by the Stack provider updater. */
 const PROVIDER_NAMES = ["gentle-engram", "pi-mcp-adapter"] as const;
+const NATIVE_PROVIDER_NAMES = ["gentle-engram"] as const;
 const MAX_MANIFEST_BYTES = 1 * 1024 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -24,6 +25,10 @@ export interface ActivatePiProviderPackagesInput {
   readonly agentDir: string;
   readonly stageDir: string;
   readonly packages: readonly PiProviderPackage[];
+  /**
+   * Transport selector, not authentication: caller MUST derive it from the verified Pi contract.
+   */
+  readonly mcpTransport?: "native" | "legacy";
   /** Exact bytes read before staging. A changed settings file aborts. */
   readonly settingsJson: string;
   /** Runtime readback, normally Pi RPC plus provider/MCP checks. */
@@ -230,7 +235,16 @@ function canonicalProviderSource(source: string, packageName: string): boolean {
   return isNamedPiSource(source, packageName);
 }
 
-function parseAndPlanSettings(settingsJson: string, packages: readonly PiProviderPackage[]): string {
+function claimsAdapterSource(source: string): boolean {
+  // Unsafe selectors still claim the protected name even though canonical matching rejects them.
+  return source === "npm:pi-mcp-adapter" || source.startsWith("npm:pi-mcp-adapter@");
+}
+
+function parseAndPlanSettings(
+  settingsJson: string,
+  packages: readonly PiProviderPackage[],
+  rejectAdapterClaim: boolean,
+): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(settingsJson) as unknown;
@@ -252,6 +266,14 @@ function parseAndPlanSettings(settingsJson: string, packages: readonly PiProvide
     if (source === null) fail("settings.json contains an entry without a canonical source");
     return entry;
   });
+  if (rejectAdapterClaim) {
+    for (const entry of planned) {
+      const source = packageSource(entry);
+      if (source !== null && claimsAdapterSource(source)) {
+        fail("settings.json registers the protected pi-mcp-adapter source; manual resolution is required");
+      }
+    }
+  }
   for (const provider of packages) {
     const matches = planned
       .map((entry, index) => ({ entry, index, source: packageSource(entry) }))
@@ -508,18 +530,29 @@ export async function activatePiProviderPackages(
   const agentDir = assertRealDirectory(input.agentDir, homeDir, "agentDir");
   const stageDir = assertRealDirectory(input.stageDir, homeDir, "stageDir");
   if (!isStrictChild(stageDir, homeDir)) fail("stageDir must be a strict child of homeDir");
-  if (!Array.isArray(input.packages) || input.packages.length !== PROVIDER_NAMES.length) {
-    fail("exactly the two owned provider packages are required");
+  const transport = input.mcpTransport;
+  if (transport !== undefined && transport !== "native" && transport !== "legacy") {
+    fail("unknown provider activation transport");
+  }
+  const native = transport === "native";
+  const selectedNames: readonly string[] = native ? NATIVE_PROVIDER_NAMES : PROVIDER_NAMES;
+  if (!Array.isArray(input.packages) || input.packages.length !== selectedNames.length) {
+    fail(native
+      ? "native activation requires exactly the gentle-engram provider package"
+      : "exactly the two owned provider packages are required");
   }
   const byName = new Map(input.packages.map((provider) => [provider.name, provider]));
-  if (byName.size !== PROVIDER_NAMES.length) fail("provider packages must not be duplicated");
+  if (byName.size !== selectedNames.length) fail("provider packages must not be duplicated");
+  if (native && !byName.has("gentle-engram")) {
+    fail("native activation requires the gentle-engram provider package");
+  }
   const settingsPath = path.join(agentDir, "settings.json");
   validateSettingsFile(settingsPath, agentDir, input.settingsJson);
-  const nextSettings = parseAndPlanSettings(input.settingsJson, PROVIDER_NAMES.map((name) => {
+  const nextSettings = parseAndPlanSettings(input.settingsJson, selectedNames.map((name) => {
     const provider = byName.get(name);
     if (provider === undefined) fail(`missing provider package: ${name}`);
     return provider;
-  }));
+  }), native);
 
   const npmDir = path.join(agentDir, "npm");
   const modules = path.join(npmDir, "node_modules");
@@ -537,7 +570,7 @@ export async function activatePiProviderPackages(
   if (lstatOrNull(markerPath) !== null) fail(`active transaction pending: ${markerPath}`);
 
   const states: PackageState[] = [];
-  for (const name of PROVIDER_NAMES) {
+  for (const name of selectedNames) {
     const provider = byName.get(name);
     if (provider === undefined) fail(`missing provider package: ${name}`);
     validatePackageInput(provider, name);
@@ -559,7 +592,7 @@ export async function activatePiProviderPackages(
   const backupProviders = path.join(backupDir, "providers");
   if (!isStrictChild(backupDir, stageDir)) fail("provider backup escaped stage root");
   const lockContent = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), backupDir })}\n`;
-  const markerContent = `${JSON.stringify({ phase: "provider-activation", backupDir, packages: PROVIDER_NAMES, pid: process.pid }, null, 2)}\n`;
+  const markerContent = `${JSON.stringify({ phase: "provider-activation", backupDir, packages: selectedNames, pid: process.pid }, null, 2)}\n`;
   let lockAcquired = false;
   let markerCreated = false;
   let backupCreated = false;

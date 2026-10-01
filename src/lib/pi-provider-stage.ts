@@ -28,12 +28,25 @@ export interface PiProviderPackageEvidence {
   readonly bins: Readonly<Record<string, string>>;
 }
 
-export interface StagePiProviderPackagesInput {
+type StagePiProviderPackagesBaseInput = {
   readonly homeDir: string;
   readonly agentDir: string;
   readonly piExecutable: string;
-  readonly releases: Readonly<Record<ProviderName, NpmPackageRelease>>;
-}
+};
+
+/**
+ * Stack-internal acquisition selector, not an SDK flag or authentication.
+ * A future runtime caller must derive it from the verified candidate.
+ */
+export type StagePiProviderPackagesInput =
+  | (StagePiProviderPackagesBaseInput & {
+      readonly mcpTransport?: "legacy";
+      readonly releases: Readonly<Record<ProviderName, NpmPackageRelease>>;
+    })
+  | (StagePiProviderPackagesBaseInput & {
+      readonly mcpTransport: "native";
+      readonly releases: Readonly<{ "gentle-engram": NpmPackageRelease; "pi-mcp-adapter"?: never }>;
+    });
 
 export interface StagePiProviderPackagesDeps {
   readonly fetchImpl?: typeof fetch;
@@ -137,6 +150,25 @@ function assertRelease(name: ProviderName, release: unknown): NpmPackageRelease 
     tarballUrl: release.tarballUrl,
     integrity: release.integrity,
   };
+}
+
+function resolveMcpTransport(value: unknown): "native" | "legacy" {
+  if (value === undefined || value === "legacy") return "legacy";
+  if (value === "native") return "native";
+  fail('mcpTransport must be "native" or "legacy" when present');
+}
+
+function selectProviderReleases(
+  transport: "native" | "legacy",
+  raw: Record<string, unknown>,
+): Array<{ provider: ProviderName; release: NpmPackageRelease }> {
+  if (transport === "native") {
+    if (Object.prototype.hasOwnProperty.call(raw, "pi-mcp-adapter")) {
+      fail("native transport is contradictory with a pi-mcp-adapter release");
+    }
+    return [{ provider: "gentle-engram", release: assertRelease("gentle-engram", raw["gentle-engram"]) }];
+  }
+  return PROVIDER_NAMES.map((provider) => ({ provider, release: assertRelease(provider, raw[provider]) }));
 }
 
 function createDirectory(target: string): void {
@@ -391,21 +423,22 @@ function defaultStageRun(executable: string, args: string[], options: { env: Rec
 }
 
 /**
- * Resolve both provider tarballs into isolated Pi-native trees. Each provider
- * gets its own npm root as the selected isolation layout, keeping staging
- * separate from the active jorgex-pi tree. The returned trees are evidence
- * only; activation is a separate transaction in pi-provider-activation.ts.
+ * Resolve the selected provider tarballs into isolated Pi-native trees. Each
+ * provider gets its own npm root as the selected isolation layout, keeping
+ * staging separate from the active jorgex-pi tree. The returned trees are
+ * evidence only; activation is a separate transaction in
+ * pi-provider-activation.ts.
  */
 export async function stagePiProviderPackages(
   input: StagePiProviderPackagesInput,
   deps: StagePiProviderPackagesDeps = {},
 ): Promise<StagePiProviderPackagesResult> {
   if (!isRecord(input)) fail("input must be an object");
+  const transport = resolveMcpTransport(input.mcpTransport);
   const { home, agent } = assertStageBoundary(input.homeDir, input.agentDir);
   const piExecutable = validatePiExecutable(input.piExecutable);
   if (!isRecord(input.releases)) fail("releases must be an object");
-  const releases = {} as Record<ProviderName, NpmPackageRelease>;
-  for (const name of PROVIDER_NAMES) releases[name] = assertRelease(name, input.releases[name]);
+  const selected = selectProviderReleases(transport, input.releases);
   const fetchImpl = deps.fetchImpl ?? fetch;
   if (typeof fetchImpl !== "function") fail("fetchImpl must be a function");
   const run = deps.run ?? defaultStageRun;
@@ -422,9 +455,9 @@ export async function stagePiProviderPackages(
     env: Record<string, string>;
   }> = [];
 
-  // Download and verify every candidate before invoking native Pi. A later
-  // SRI failure must not leave an earlier provider partially staged.
-  for (const provider of PROVIDER_NAMES) {
+  // Download and verify every selected candidate before invoking native Pi. A
+  // later SRI failure must not leave an earlier provider partially staged.
+  for (const { provider, release } of selected) {
     const providerStage = path.join(stageDir, provider);
     const stageAgentDir = path.join(providerStage, "pi-agent");
     const downloads = path.join(providerStage, "downloads");
@@ -432,10 +465,10 @@ export async function stagePiProviderPackages(
     createDirectory(stageAgentDir);
     createDirectory(downloads);
     createDirectory(workspace);
-    const artifactPath = path.join(downloads, `${provider}-${releases[provider].version}.tgz`);
-    const artifact = await downloadVerifiedNpmPackageTarball(provider, releases[provider], artifactPath, fetchImpl);
+    const artifactPath = path.join(downloads, `${provider}-${release.version}.tgz`);
+    const artifact = await downloadVerifiedNpmPackageTarball(provider, release, artifactPath, fetchImpl);
     const env = stageEnvironment(providerStage, stageAgentDir, piExecutable);
-    stagedProviders.push({ provider, release: releases[provider], artifactPath: artifact.path, stageAgentDir, workspace, env });
+    stagedProviders.push({ provider, release, artifactPath: artifact.path, stageAgentDir, workspace, env });
   }
 
   for (const staged of stagedProviders) {
