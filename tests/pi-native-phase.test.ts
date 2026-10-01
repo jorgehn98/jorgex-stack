@@ -883,9 +883,18 @@ let liveStage: LiveStage | undefined;
     liveStage = { stageDir: staged.stageDir, artifact, release, evidence: staged.evidence };
   }, 600_000);
 
-  afterAll(() => {
-    if (liveRoot !== "") fs.rmSync(liveRoot, { recursive: true, force: true });
-  });
+  // The published fixture contains full dependency trees; Windows cleanup can
+  // exceed the generic hook deadline even after every runtime assertion passes.
+  afterAll(async () => {
+    if (liveRoot === "") return;
+    const started = performance.now();
+    try {
+      await fs.promises.rm(liveRoot, { recursive: true, force: true });
+      expect(fs.lstatSync(liveRoot, { throwIfNoEntry: false })).toBeUndefined();
+    } finally {
+      console.error(`Native Pi fixture cleanup elapsed: ${Math.round(performance.now() - started)}ms`);
+    }
+  }, 120_000);
 
   function targetScope(label: string): { target: string; homeDir: string; agentDir: string } {
     const target = path.join(liveRoot, `target-${label}`);
