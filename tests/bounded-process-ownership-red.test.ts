@@ -7,6 +7,8 @@ import { Worker } from "node:worker_threads";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   assertVerificationCancellationCapability,
+  cleanupOwnedResourcesOrThrow,
+  registerOwnedResourceCleanup,
   releaseOwnedProcessGroup,
   runBoundedProcess,
   stopOwnProcessTree,
@@ -442,4 +444,63 @@ describe("owned resource roots", () => {
     },
     20_000,
   );
+});
+
+describe("single owner cleanup boundary", () => {
+  it("el hook normal usa el mismo owner: stop no verificado retiene el root y el retry lo limpia", async () => {
+    const root = makeTempRoot("jx-owner-hook-");
+    const ownedRoot = path.join(root, "owned-root");
+    fs.mkdirSync(ownedRoot);
+    const observedPids: number[] = [];
+    const failingStop: StopOwnProcessGroup = (pid) => {
+      observedPids.push(pid);
+      return { ok: false, cause: "mock stop failure" };
+    };
+
+    const result = await runBoundedProcess(
+      { command: process.execPath, args: ["-e", "process.stdout.write('ok')"] },
+      { cwd: root, timeoutMs: 2_000, stopOwnProcessGroup: failingStop },
+    );
+    expect(result.treeCleanupError).toBeDefined();
+
+    const unregister = registerOwnedResourceCleanup("normal-hook-roots", () =>
+      removeTemporaryRoots([ownedRoot]),
+    );
+
+    try {
+      expect(() => cleanupOwnedResourcesOrThrow()).toThrow(/No se pudo verificar/);
+      expect(fs.existsSync(ownedRoot)).toBe(true);
+
+      for (const pid of observedPids) {
+        stopOwnProcessTree(pid);
+        releaseOwnedProcessGroup(pid);
+      }
+      cleanupOwnedResourcesOrThrow();
+      expect(fs.existsSync(ownedRoot)).toBe(false);
+    } finally {
+      unregister();
+      for (const pid of observedPids) {
+        stopOwnProcessTree(pid);
+        releaseOwnedProcessGroup(pid);
+      }
+      if (fs.existsSync(ownedRoot)) removeTemporaryRoots([ownedRoot]);
+    }
+  }, 15_000);
+
+  it("un callback que falla conserva label, root y error en el mismo owner", () => {
+    const root = makeTempRoot("jx-owner-callback-fail-");
+    const ownedRoot = path.join(root, "owned-root");
+    fs.mkdirSync(ownedRoot);
+    const unregister = registerOwnedResourceCleanup("failing-roots", () => {
+      throw new Error("mock rm failure");
+    });
+
+    try {
+      expect(() => cleanupOwnedResourcesOrThrow()).toThrow(/failing-roots.*mock rm failure/s);
+      expect(fs.existsSync(ownedRoot)).toBe(true);
+    } finally {
+      unregister();
+      if (fs.existsSync(ownedRoot)) removeTemporaryRoots([ownedRoot]);
+    }
+  });
 });

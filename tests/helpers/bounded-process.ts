@@ -226,6 +226,19 @@ export function releaseOwnedProcessGroup(pid: number): void {
 }
 
 /**
+ * Single cleanup boundary for callers (test hooks included): runs the same
+ * owner cleanup — groups first, then registered callbacks — and throws with
+ * every pending cause when any resource remains unverified. It never duplicates
+ * the cleanup loop.
+ */
+export function cleanupOwnedResourcesOrThrow(): void {
+  const failures = cleanupOwnedResources();
+  if (failures.length > 0) {
+    throw new Error(`No se pudo verificar la limpieza de recursos propios: ${failures.join("; ")}`);
+  }
+}
+
+/**
  * Registers a synchronous cleanup for another owned resource (for example the
  * acceptance temporary roots). The owner runs callbacks only after every owned
  * group stop is verified, keeps failed registrations armed for retry, and

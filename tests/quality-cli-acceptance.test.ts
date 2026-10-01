@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { QualityProfile } from "../src/lib/quality-policy.js";
 import {
+  cleanupOwnedResourcesOrThrow,
   registerOwnedResourceCleanup,
   runBoundedProcess,
   type BoundedProcessResult,
@@ -356,12 +357,13 @@ function writeManagedSentinels(layout: TestLayout): void {
 }
 
 afterEach(() => {
-  removeTemporaryRoots(temporaryRoots);
+  // Same owner boundary as signals/exit: groups first, roots only if verified.
+  cleanupOwnedResourcesOrThrow();
 });
 
 afterAll(() => {
-  removeTemporaryRoots(temporaryRoots);
-  // Unregister only after the root cleanup is confirmed.
+  cleanupOwnedResourcesOrThrow();
+  // Unregister only after the owner confirms every owned resource.
   releaseBuildRootsCleanup?.();
   releaseBuildRootsCleanup = undefined;
 });
