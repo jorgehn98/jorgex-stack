@@ -649,11 +649,17 @@ describe("[T04] native provider receipt binding before effects", () => {
     const receiptFile = path.join(f.homeDir, PROVIDER_RECEIPT_RELATIVE);
     fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
     fs.writeFileSync(receiptFile, "{ not json");
-    const result = await runNativePiMcpPhase(phaseInput(f, true));
+    const fetchSpy = vi.fn();
+    const result = await runNativePiMcpPhase({
+      ...phaseInput(f, true),
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+    });
     expect(result).toMatchObject({ kind: "blocked", reason: "native-provider-receipt-invalid" });
     if (result.kind !== "blocked") return;
     // Distinguish the receipt guard from an unrelated scope rejection.
     expect(result.remedy).toMatch(/malformed JSON/);
+    // The real verifier rejects the malformed receipt before any acquisition.
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(f.agentDir, "mcp.json"))).toBe(false);
   });
 
@@ -673,8 +679,11 @@ describe("[T04] native provider receipt binding before effects", () => {
     }));
     try {
       const { runNativePiMcpPhase: phase } = await import("../src/lib/pi-native-phase.js");
-      const result = await phase(phaseInput(f, true));
+      const fetchSpy = vi.fn();
+      const result = await phase({ ...phaseInput(f, true), fetchImpl: fetchSpy as unknown as typeof fetch });
       expect(result).toMatchObject({ kind: "blocked", reason: "native-provider-receipt-transport" });
+      // The transport selection is a pre-network decision, not an acquisition.
+      expect(fetchSpy).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(f.agentDir, "mcp.json"))).toBe(false);
     } finally {
       vi.doUnmock("../src/lib/pi-provider-receipt.js");

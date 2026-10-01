@@ -2003,6 +2003,196 @@ describe("Pi managed package and projection coordination", () => {
     }
   });
 
+  // Final review regression (T04 entry guard): an existing managed provider
+  // receipt in a real (non-target) scope must be validated when the managed
+  // lifecycle is entered, BEFORE the deliberate install/update preflight
+  // resolves any provider and before any mutation. A malformed receipt fails
+  // closed as provider-receipt-invalid with no package, projection, native
+  // phase or provider update. Isolated HOME in a private temp root; malformed
+  // JSON is enough — no synthetic crypto receipt is fabricated.
+  it("blocks an invalid managed provider receipt before the install preflight and any effect", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-provider-receipt-guard-"));
+    const home = path.join(root, "home");
+    const agentDir = path.join(home, ".pi", "agent");
+
+    const previousHome = process.env.HOME;
+    const previousProfile = process.env.USERPROFILE;
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    delete process.env.PI_CODING_AGENT_DIR;
+
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" } },
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async () => ({ kind: "installed" as const }));
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+    const runNativePiMcpPhase = vi.fn(async () => ({ kind: "ready" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: [] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      loadDevtoolsMcpObservation: vi.fn(() => null),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+    vi.doMock("../src/lib/pi-native-phase.js", () => ({
+      runNativePiMcpPhase,
+      reconcileNativeAuthorityAfterCleanup: vi.fn(),
+    }));
+
+    try {
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.mkdirSync(path.join(home, ".jorgex-stack"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".jorgex-stack", "pi-provider-receipt.json"), "{not-json");
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      expect(result).toMatchObject({ kind: "blocked", reason: "provider-receipt-invalid" });
+      // The guard is an entry gate: preflight and every downstream effect stay
+      // untouched, so a late validation cannot satisfy this test.
+      expect(preparePiRuntimeSystem).not.toHaveBeenCalled();
+      expect(runPiRuntimeSystem).not.toHaveBeenCalled();
+      expect(runPiProjectionLifecycleSystem).not.toHaveBeenCalled();
+      expect(runNativePiMcpPhase).not.toHaveBeenCalled();
+      expect(providerUpdateMock).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.doUnmock("../src/lib/pi-native-phase.js");
+      vi.resetModules();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousProfile;
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Final review regression (T04 entry guard, target isolation): the provider
+  // receipt entry guard is a real-scope gate. A target-dir operation must not
+  // read the host provider receipt, so a malformed receipt in the isolated
+  // HOME cannot block a target run. Isolated HOME/target in a private temp
+  // root; the target reaches its own package path.
+  it("does not let the real-scope provider receipt guard block a target-dir operation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-provider-receipt-target-"));
+    const home = path.join(root, "home");
+    const targetDir = path.join(root, "target");
+
+    const previousHome = process.env.HOME;
+    const previousProfile = process.env.USERPROFILE;
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    delete process.env.PI_CODING_AGENT_DIR;
+
+    const preparePiRuntimeSystem = vi.fn(async () => ({
+      candidate: { package: { name: "jorgex-pi", version: "9.9.9", source: "npm:jorgex-pi@9.9.9" } },
+      prepared: { stageDir: "/isolated/pi-stage" },
+    }));
+    const runPiRuntimeSystem = vi.fn(async (input: { operation: string }) =>
+      input.operation === "install"
+        ? { kind: "blocked" as const, reason: "candidate-missing" }
+        : { kind: "blocked" as const, reason: "unexpected-operation" });
+    const runPiProjectionLifecycleSystem = vi.fn(() => ({ kind: "installed" as const }));
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: [] },
+      },
+      preparePiRuntimeSystem,
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/tool-preferences.js", () => ({
+      loadPlaywrightCliPreference: vi.fn(() => false),
+      playwrightCliPreferenceFile: vi.fn(() => "/isolated/state/playwright-cli.json"),
+      savePlaywrightCliPreference: vi.fn(),
+      devtoolsMcpPreferenceFile: vi.fn(() => "/isolated/state/devtools-mcp.json"),
+      loadDevtoolsMcpPreference: vi.fn(() => false),
+      saveDevtoolsMcpPreference: vi.fn(),
+    }));
+    vi.doMock("../src/lib/external-tools.js", () => ({
+      resolvePnpmBin: vi.fn(() => "/isolated/bin/pnpm"),
+    }));
+
+    try {
+      fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+      fs.mkdirSync(path.join(home, ".jorgex-stack"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".jorgex-stack", "pi-provider-receipt.json"), "{not-json");
+      fs.mkdirSync(targetDir, { recursive: true });
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<unknown>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        targetDir,
+        detected: { executable: "/opt/pi/bin/pi", version: "0.84.2" },
+        engramBin: "/isolated/bin/engram",
+        writingStyle: FORWARDING_STYLE,
+      });
+
+      // The target reaches its own package path instead of being blocked by the
+      // host receipt, which is the proof that the guard stayed real-scope.
+      expect(result).toMatchObject({ kind: "blocked", reason: "candidate-missing" });
+      expect(JSON.stringify(result)).not.toMatch(/provider-receipt-invalid/);
+      expect(preparePiRuntimeSystem).not.toHaveBeenCalled();
+      expect(runPiRuntimeSystem).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/tool-preferences.js");
+      vi.doUnmock("../src/lib/external-tools.js");
+      vi.resetModules();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousProfile;
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // T05 guard (targetDir, distinct rule): install with targetDir must block
   // without preflight network and without projection. Tested host 0.84.2
   // isolates the targetDir rule from the host gate. Green before (via

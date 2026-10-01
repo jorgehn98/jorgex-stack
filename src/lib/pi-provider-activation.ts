@@ -468,7 +468,23 @@ function validateExistingPackage(activeRoot: string, agentDir: string, provider:
   return existingTree;
 }
 
-function atomicWrite(target: string, content: string, boundary: string): void {
+/**
+ * Publishes `content` atomically. `expected` is optional and receipt-only:
+ * - `undefined` keeps the plain replace used by settings callers;
+ * - `null` requires an absent target and publishes with a no-replace hardlink;
+ * - `string` requires the target to still hold exactly those bytes.
+ * The expected state is rechecked after the temp file is written, fsynced and
+ * closed, immediately before the publish, so an early caller check cannot go
+ * stale during root promotion. `onPublished` runs right after the commit so a
+ * later temp-cleanup failure cannot leave the caller's phase tracking pending.
+ */
+function atomicWrite(
+  target: string,
+  content: string,
+  boundary: string,
+  expected?: string | null,
+  onPublished?: () => void,
+): void {
   assertAncestorsClean(path.dirname(target), boundary, "atomic target");
   const dir = path.dirname(target);
   const temporary = path.join(dir, `.jorgex-provider-${process.pid}-${crypto.randomBytes(12).toString("hex")}.tmp`);
@@ -479,7 +495,30 @@ function atomicWrite(target: string, content: string, boundary: string): void {
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = null;
-    fs.renameSync(temporary, target);
+    if (expected === undefined) {
+      fs.renameSync(temporary, target);
+    } else {
+      // Revalidate the exact target state after the temp write and immediately
+      // before publishing; the caller's early check may be stale by now.
+      assertAncestorsClean(dir, boundary, "atomic target");
+      if (expected === null) {
+        if (lstatOrNull(target) !== null) fail("atomic target appeared before first publication");
+        // Hardlink is the portable no-replace primitive: EEXIST aborts instead
+        // of overwriting a concurrent first publication.
+        fs.linkSync(temporary, target);
+      } else {
+        assertRegularFile(target, boundary, "atomic target");
+        let current: string;
+        try {
+          current = fs.readFileSync(target, "utf8");
+        } catch {
+          fail("cannot revalidate atomic target before publish");
+        }
+        if (current !== expected) fail("atomic target changed before publish");
+        fs.renameSync(temporary, target);
+      }
+    }
+    if (onPublished !== undefined) onPublished();
   } finally {
     if (fd !== null) {
       try { fs.closeSync(fd); } catch { /* best effort */ }
@@ -559,14 +598,30 @@ function validateReceiptRollback(state: ReceiptRollbackState): void {
 }
 
 function restoreReceipt(state: ReceiptRollbackState): void {
-  if (state.newRaw === null || state.phase !== "written") return;
+  if (state.newRaw === null) return;
+  // Revalidate at entry: root/settings restoration may have taken time, and the
+  // receipt must still be our own exact write before we replace or remove it.
+  validateReceiptRollback(state);
+  if (state.phase !== "written") return;
   if (state.oldRaw !== null) {
-    atomicWrite(state.path, state.oldRaw, state.homeDir);
+    // Replace our published receipt with the previous bytes, rechecking the
+    // exact current bytes after the temp write and immediately before rename.
+    atomicWrite(state.path, state.oldRaw, state.homeDir, state.newRaw);
     if (!sameRegularFile(state.path, state.oldRaw, state.homeDir)) {
       incomplete("provider receipt restore readback failed");
     }
     return;
   }
+  // Previous receipt was absent: remove only our exact published receipt, and
+  // only while it is still exactly ours. Drift or an unreadable file retains
+  // the foreign replacement and the backup/marker instead of deleting it.
+  let current: string | null;
+  try {
+    current = readReceiptBytesOrNull(state.homeDir, state.path);
+  } catch {
+    incomplete("provider receipt is unreadable during provider rollback");
+  }
+  if (current !== state.newRaw) incomplete("provider receipt drifted before rollback removal");
   fs.unlinkSync(state.path);
   if (state.stateDirCreated) {
     try {
@@ -909,8 +964,13 @@ export async function activatePiProviderPackages(
     if (!sameRegularFile(settingsPath, nextSettings, agentDir)) fail("settings readback failed after provider promotion");
     if (nextReceipt !== null) {
       receiptRollback.stateDirCreated = ensureStateDir(homeDir);
-      atomicWrite(receiptPath, nextReceipt, homeDir);
-      receiptRollback.phase = "written";
+      // The expected previous state is the exact bytes acknowledged before
+      // staging; a null expectation publishes the first receipt with a
+      // no-replace hardlink. Revalidated inside the write, after root
+      // promotion, immediately before the publish.
+      atomicWrite(receiptPath, nextReceipt, homeDir, oldReceiptRaw, () => {
+        receiptRollback.phase = "written";
+      });
       if (!sameRegularFile(receiptPath, nextReceipt, homeDir)) fail("provider receipt readback failed after promotion");
     }
     await input.verify();

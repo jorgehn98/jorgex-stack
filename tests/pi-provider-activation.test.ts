@@ -979,6 +979,173 @@ it("preserves foreign receipt content and reports incomplete recovery when the c
   expect(fs.readdirSync(f.stageDir).filter((name) => name.startsWith(".provider-activation-"))).toHaveLength(1);
 });
 
+/* ------------------------------------------------------------------ *
+ * Concurrent-receipt races at the publish and rollback FS seams.
+ * Each case injects real foreign bytes through a public fs hook so the
+ * no-replace/compare-expected guard is exercised on the actual write,
+ * not simulated. The recovery marker and backup are asserted to survive.
+ * ------------------------------------------------------------------ */
+
+function providerBackups(f: NativeDerivedFixture): string[] {
+  return fs.readdirSync(f.stageDir).filter((name) => name.startsWith(".provider-activation-"));
+}
+
+it("publishes the first receipt through a no-replace hardlink, preserving a foreign file that races the commit", async () => {
+  const f = await nativeDerivedFixture();
+  const api = await load() as ActivationApi;
+  const foreign = '{"schemaVersion":1,"foreign":"raced-first-publish"}\n';
+  const originalLinkSync = fs.linkSync;
+  // The foreign file lands between the absence recheck and the hardlink, so the
+  // link itself must refuse to overwrite it (EEXIST), never replace it.
+  const link = vi.spyOn(fs, "linkSync").mockImplementation((existing, newPath) => {
+    if (String(newPath) === f.receiptPath) fs.writeFileSync(f.receiptPath, foreign);
+    return originalLinkSync(existing, newPath);
+  });
+  const verify = vi.fn(async () => {});
+  let failure: unknown;
+  try {
+    failure = await api.activatePiProviderPackages({
+      homeDir: f.homeDir, agentDir: f.agentDir, stageDir: f.stageDir,
+      settingsJson: f.settingsJson, packages: [f.derivedPackage], mcpTransport: "native",
+      providerReceiptSnapshot: null, verify,
+    }).then(() => null, (error: unknown) => error);
+  } finally {
+    link.mockRestore();
+  }
+
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as { recovery?: string }).recovery).toBe("incomplete");
+  expect(verify).not.toHaveBeenCalled();
+  expect(fs.readFileSync(f.receiptPath, "utf8")).toBe(foreign);
+  expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(true);
+  expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(true);
+  expect(providerBackups(f)).toHaveLength(1);
+});
+
+it("refuses to replace an existing receipt that drifted after root promotion, preserving the foreign bytes and the recovery marker", async () => {
+  const f = await nativeDerivedFixture();
+  const api = await load() as ActivationApi;
+  await activateDerived(api, f);
+  const settingsAfter = settingsBytes(f);
+  const snapshot = fs.readFileSync(f.receiptPath, "utf8");
+  const backupsBefore = providerBackups(f).length;
+  f.restage(f.registryPackage);
+  const foreign = '{"schemaVersion":1,"foreign":"raced-replace"}\n';
+  const originalRename = fs.renameSync;
+  // The foreign receipt appears while the candidate root is promoted, after the
+  // lock recheck but before the receipt publish; the post-fsync comparison must
+  // still see it and abort instead of renaming over it.
+  const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    if (String(from) === f.registryPackage.packageRoot) fs.writeFileSync(f.receiptPath, foreign);
+    return originalRename(from, to);
+  });
+  const verify = vi.fn(async () => {});
+  let failure: unknown;
+  try {
+    failure = await api.activatePiProviderPackages({
+      homeDir: f.homeDir, agentDir: f.agentDir, stageDir: f.stageDir,
+      settingsJson: settingsAfter, packages: [f.registryPackage], mcpTransport: "native",
+      providerReceiptSnapshot: snapshot, verify,
+    }).then(() => null, (error: unknown) => error);
+  } finally {
+    rename.mockRestore();
+  }
+
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as { recovery?: string }).recovery).toBe("incomplete");
+  expect(verify).not.toHaveBeenCalled();
+  expect(fs.readFileSync(f.receiptPath, "utf8")).toBe(foreign);
+  expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(true);
+  expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(true);
+  expect(providerBackups(f)).toHaveLength(backupsBefore + 1);
+});
+
+it("does not remove a foreign receipt that replaces its own during rollback of a first receipt", async () => {
+  const f = await nativeDerivedFixture();
+  const api = await load() as ActivationApi;
+  const foreign = '{"schemaVersion":1,"foreign":"raced-rollback-removal"}\n';
+  const originalRename = fs.renameSync;
+  let inject = false;
+  // The foreign receipt lands while the promoted root is restored, after the
+  // early rollback validation but before the receipt removal; the recheck at
+  // restore time must keep it instead of unlinking it.
+  const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    if (inject) {
+      inject = false;
+      fs.writeFileSync(f.receiptPath, foreign);
+    }
+    return originalRename(from, to);
+  });
+  const verify = vi.fn(async () => {
+    inject = true;
+    throw new Error("derived RPC verification failed");
+  });
+  let failure: unknown;
+  try {
+    failure = await api.activatePiProviderPackages({
+      homeDir: f.homeDir, agentDir: f.agentDir, stageDir: f.stageDir,
+      settingsJson: f.settingsJson, packages: [f.derivedPackage], mcpTransport: "native",
+      providerReceiptSnapshot: null, verify,
+    }).then(() => null, (error: unknown) => error);
+  } finally {
+    rename.mockRestore();
+  }
+
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as { recovery?: string }).recovery).toBe("incomplete");
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(fs.readFileSync(f.receiptPath, "utf8")).toBe(foreign);
+  expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(true);
+  expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(true);
+  expect(providerBackups(f)).toHaveLength(1);
+});
+
+it("does not overwrite a foreign receipt that replaces its own while the rollback restore is being written", async () => {
+  const f = await nativeDerivedFixture();
+  const api = await load() as ActivationApi;
+  await activateDerived(api, f);
+  const settingsAfter = settingsBytes(f);
+  const snapshot = fs.readFileSync(f.receiptPath, "utf8");
+  const backupsBefore = providerBackups(f).length;
+  f.restage(f.registryPackage);
+  const foreign = '{"schemaVersion":1,"foreign":"raced-rollback-replace"}\n';
+  const originalFsync = fs.fsyncSync;
+  let inject = false;
+  let fsyncsAfterFailure = 0;
+  // After the failure, the rollback writes settings first and then the receipt
+  // restore temp; mutating the target while that second temp is fsynced must be
+  // caught by the expected-bytes comparison before the rename.
+  const fsync = vi.spyOn(fs, "fsyncSync").mockImplementation((fd: number) => {
+    if (inject) {
+      fsyncsAfterFailure += 1;
+      if (fsyncsAfterFailure === 2) fs.writeFileSync(f.receiptPath, foreign);
+    }
+    return originalFsync(fd);
+  });
+  const verify = vi.fn(async () => {
+    inject = true;
+    throw new Error("registry RPC verification failed");
+  });
+  let failure: unknown;
+  try {
+    failure = await api.activatePiProviderPackages({
+      homeDir: f.homeDir, agentDir: f.agentDir, stageDir: f.stageDir,
+      settingsJson: settingsAfter, packages: [f.registryPackage], mcpTransport: "native",
+      providerReceiptSnapshot: snapshot, verify,
+    }).then(() => null, (error: unknown) => error);
+  } finally {
+    fsync.mockRestore();
+  }
+
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as { recovery?: string }).recovery).toBe("incomplete");
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(fs.readFileSync(f.receiptPath, "utf8")).toBe(foreign);
+  expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(true);
+  expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(true);
+  expect(providerBackups(f)).toHaveLength(backupsBefore + 1);
+});
+
 it("creates the canonical gentle source and promotes its root for a fresh native install", async () => {
   const f = fixture(); const api = await load();
   const adapterActive = path.join(f.modules, "pi-mcp-adapter");
