@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { inventoryTreeSha256 } from "../src/lib/pi-staged-lock.js";
+import type { ActivatePiProviderPackagesInput } from "../src/lib/pi-provider-activation.js";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -31,6 +32,15 @@ async function load() {
   // The filesystem contract is RED until the production updater exists.
   // @ts-ignore
   return await import("../src/lib/pi-provider-activation.js");
+}
+// Extra entries are user-owned and must survive verbatim.
+function nativeSettings(...extra: unknown[]): string {
+  return JSON.stringify({ quietStartup: false, packages: [
+    { source: "npm:gentle-engram@0.1.0", skills: [] },
+    ...extra,
+    { source: "npm:jorgex-pi@0.8.37", extensions: ["bootstrap.ts"] },
+    "npm:foreign@1.0.0",
+  ] });
 }
 it("promotes only two provider roots and sources, preserving private link and foreign npm bytes", async () => {
   const f = fixture(); const api = await load(); const beforePrivate = inventoryTreeSha256(f.managed);
@@ -93,4 +103,171 @@ it("rejects staged provider tree drift before touching active roots or settings"
   expect(verify).not.toHaveBeenCalled();
   expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8")).toBe(f.settingsJson);
   expect(inventoryTreeSha256(path.join(f.agentDir, "npm"))).toBe(before);
+});
+
+it("promotes only the staged gentle provider for explicit native transport, preserving the unregistered adapter, a lookalike entry and private state", async () => {
+  const f = fixture(); const api = await load();
+  // The active adapter root stays unregistered and must be preserved.
+  const adapterActive = path.join(f.modules, "pi-mcp-adapter");
+  const binDir = path.join(f.modules, ".bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const adapterWrapper = path.join(binDir, "pi-mcp-adapter");
+  fs.symlinkSync(path.relative(binDir, path.join(adapterActive, "cli.js")), adapterWrapper);
+  const lookalike = "npm:pi-mcp-adapter-helper@1.0.0";
+  const preparedSettings = nativeSettings(lookalike);
+  fs.writeFileSync(path.join(f.agentDir, "settings.json"), preparedSettings);
+  f.settingsJson = preparedSettings;
+
+  const beforePrivate = inventoryTreeSha256(f.managed);
+  const beforePrivateLink = fs.readlinkSync(path.join(f.modules, "jorgex-pi"));
+  const beforeAdapterCli = fs.readFileSync(path.join(adapterActive, "cli.js"), "utf8");
+  const beforeAdapterManifest = fs.readFileSync(path.join(adapterActive, "package.json"), "utf8");
+  const beforeAdapterWrapper = fs.readlinkSync(adapterWrapper);
+
+  const verify = vi.fn(async () => {
+    // The real transaction marker must carry the native selected set only.
+    const marker = JSON.parse(fs.readFileSync(path.join(f.managed, "active-transaction.json"), "utf8"));
+    expect(marker.packages).toEqual(["gentle-engram"]);
+  });
+  const nativeInput: ActivatePiProviderPackagesInput = {
+    ...f, packages: [f.packages[0]!], mcpTransport: "native", verify,
+  };
+  const result = await api.activatePiProviderPackages(nativeInput);
+
+  expect(result).toEqual({ ok: true, changed: true, backupDir: expect.any(String) });
+  const settings = JSON.parse(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8"));
+  expect(settings).toEqual({ quietStartup: false, packages: [
+    { source: "npm:gentle-engram@9.1.0", skills: [] },
+    lookalike,
+    { source: "npm:jorgex-pi@0.8.37", extensions: ["bootstrap.ts"] },
+    "npm:foreign@1.0.0",
+  ] });
+  expect(fs.readFileSync(path.join(f.modules, "gentle-engram", "cli.js"), "utf8")).toBe("new");
+  expect(fs.readFileSync(path.join(adapterActive, "cli.js"), "utf8")).toBe(beforeAdapterCli);
+  expect(fs.readFileSync(path.join(adapterActive, "package.json"), "utf8")).toBe(beforeAdapterManifest);
+  expect(fs.readlinkSync(adapterWrapper)).toBe(beforeAdapterWrapper);
+  expect(fs.lstatSync(path.join(f.modules, "jorgex-pi")).isSymbolicLink()).toBe(true);
+  expect(fs.readlinkSync(path.join(f.modules, "jorgex-pi"))).toBe(beforePrivateLink);
+  expect(inventoryTreeSha256(f.managed)).toBe(beforePrivate);
+  expect(fs.readFileSync(path.join(f.modules, "foreign", "keep"), "utf8")).toBe("foreign bytes");
+  expect(verify).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["bare", "npm:pi-mcp-adapter"],
+  ["selector", "npm:pi-mcp-adapter@latest"],
+  ["unsafe selector", "npm:pi-mcp-adapter@file:foreign"],
+] as const)("rejects a native activation whose settings register the protected adapter source (%s) before any effect", async (_label, adapterSource) => {
+  const f = fixture();
+  f.settingsJson = nativeSettings(adapterSource);
+  fs.writeFileSync(path.join(f.agentDir, "settings.json"), f.settingsJson);
+  // A rejected run must not create managed state.
+  fs.rmSync(f.managed, { recursive: true, force: true });
+  const before = {
+    settings: fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8"),
+    active: fs.readFileSync(path.join(f.modules, "gentle-engram", "cli.js"), "utf8"),
+    staged: fs.readFileSync(path.join(f.packages[0]!.packageRoot, "cli.js"), "utf8"),
+    link: fs.readlinkSync(path.join(f.modules, "jorgex-pi")),
+    modules: fs.readdirSync(f.modules).sort(),
+  };
+  const api = await load();
+  const verify = vi.fn(async () => {});
+  const failure = await api.activatePiProviderPackages({
+    ...f, packages: [f.packages[0]!], mcpTransport: "native", verify,
+  }).then(() => null, (error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(Error);
+  // The diagnostic is fixed and generic: it must not echo the raw source or settings JSON.
+  expect((failure as Error).message).toBe("pi-provider-activation: settings.json registers the protected pi-mcp-adapter source; manual resolution is required");
+  expect((failure as Error).message).not.toContain(adapterSource);
+  expect((failure as Error).message).not.toContain("quietStartup");
+  expect(verify).not.toHaveBeenCalled();
+  expect(fs.existsSync(f.managed)).toBe(false);
+  expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8")).toBe(before.settings);
+  expect(fs.readFileSync(path.join(f.modules, "gentle-engram", "cli.js"), "utf8")).toBe(before.active);
+  expect(fs.readFileSync(path.join(f.packages[0]!.packageRoot, "cli.js"), "utf8")).toBe(before.staged);
+  expect(fs.readlinkSync(path.join(f.modules, "jorgex-pi"))).toBe(before.link);
+  expect(fs.readdirSync(f.modules).sort()).toEqual(before.modules);
+  expect(fs.readdirSync(f.stageDir).filter((name) => name.startsWith(".provider-activation-"))).toEqual([]);
+});
+
+it("rejects a native provider set that is not exactly gentle-engram before any effect", async () => {
+  const api = await load();
+  const cases = [
+    { label: "adapter-only", select: (f: ReturnType<typeof fixture>) => [f.packages[1]!], message: "native activation requires the gentle-engram provider package" },
+    { label: "extra provider", select: (f: ReturnType<typeof fixture>) => [f.packages[0]!, f.packages[1]!], message: "native activation requires exactly the gentle-engram provider package" },
+  ];
+  for (const row of cases) {
+    const f = fixture();
+    f.settingsJson = nativeSettings();
+    fs.writeFileSync(path.join(f.agentDir, "settings.json"), f.settingsJson);
+    const verify = vi.fn(async () => {});
+    const failure = await api.activatePiProviderPackages({
+      ...f, packages: row.select(f), mcpTransport: "native", verify,
+    }).then(() => null, (error: unknown) => error);
+
+    expect(failure, row.label).toBeInstanceOf(Error);
+    expect((failure as Error).message, row.label).toBe(`pi-provider-activation: ${row.message}`);
+    expect(verify, row.label).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8"), row.label).toBe(f.settingsJson);
+    expect(fs.existsSync(path.join(f.managed, "transaction.lock")), row.label).toBe(false);
+    expect(fs.existsSync(path.join(f.managed, "active-transaction.json")), row.label).toBe(false);
+  }
+});
+
+it("restores the gentle provider and preserves the unregistered adapter when native verification fails", async () => {
+  const f = fixture();
+  const adapterActive = path.join(f.modules, "pi-mcp-adapter");
+  const binDir = path.join(f.modules, ".bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const adapterWrapper = path.join(binDir, "pi-mcp-adapter");
+  fs.symlinkSync(path.relative(binDir, path.join(adapterActive, "cli.js")), adapterWrapper);
+  f.settingsJson = nativeSettings();
+  fs.writeFileSync(path.join(f.agentDir, "settings.json"), f.settingsJson);
+
+  const beforePrivate = inventoryTreeSha256(f.managed);
+  const beforePrivateLink = fs.readlinkSync(path.join(f.modules, "jorgex-pi"));
+  const beforeAdapterCli = fs.readFileSync(path.join(adapterActive, "cli.js"), "utf8");
+  const beforeAdapterWrapper = fs.readlinkSync(adapterWrapper);
+  const beforeForeign = fs.readFileSync(path.join(f.modules, "foreign", "keep"), "utf8");
+  const api = await load();
+  const failure = await api.activatePiProviderPackages({
+    ...f, packages: [f.packages[0]!], mcpTransport: "native",
+    verify: async () => { throw new Error("native RPC verification failed"); },
+  }).then(() => null, (error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toContain("native RPC verification failed");
+  expect((failure as { recovery?: string }).recovery).toBe("complete");
+  expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8")).toBe(f.settingsJson);
+  expect(fs.readFileSync(path.join(f.modules, "gentle-engram", "cli.js"), "utf8")).toBe("old");
+  expect(fs.readFileSync(path.join(f.packages[0]!.packageRoot, "cli.js"), "utf8")).toBe("new");
+  expect(fs.readFileSync(path.join(adapterActive, "cli.js"), "utf8")).toBe(beforeAdapterCli);
+  expect(fs.readlinkSync(adapterWrapper)).toBe(beforeAdapterWrapper);
+  expect(fs.lstatSync(path.join(f.modules, "jorgex-pi")).isSymbolicLink()).toBe(true);
+  expect(fs.readlinkSync(path.join(f.modules, "jorgex-pi"))).toBe(beforePrivateLink);
+  expect(inventoryTreeSha256(f.managed)).toBe(beforePrivate);
+  expect(fs.readFileSync(path.join(f.modules, "foreign", "keep"), "utf8")).toBe(beforeForeign);
+  expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(false);
+  expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(false);
+});
+
+it("rejects an unknown or null native transport before any effect", async () => {
+  const api = await load();
+  for (const value of ["bogus", null] as const) {
+    const f = fixture();
+    f.settingsJson = nativeSettings();
+    fs.writeFileSync(path.join(f.agentDir, "settings.json"), f.settingsJson);
+    const verify = vi.fn(async () => {});
+    const failure = await api.activatePiProviderPackages({
+      ...f, packages: [f.packages[0]!], mcpTransport: value, verify,
+    } as unknown as ActivatePiProviderPackagesInput).then(() => null, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("pi-provider-activation: unknown provider activation transport");
+    expect(verify).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(f.agentDir, "settings.json"), "utf8")).toBe(f.settingsJson);
+    expect(fs.existsSync(path.join(f.managed, "transaction.lock"))).toBe(false);
+    expect(fs.existsSync(path.join(f.managed, "active-transaction.json"))).toBe(false);
+  }
 });
