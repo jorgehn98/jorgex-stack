@@ -195,6 +195,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   playwrightRefresh?: boolean;
   packageOnly?: boolean;
   upgradePermissions?: boolean;
+  engramTypeboxCompat?: boolean;
 }): Promise<PiManagedOperationResult> {
   // T06 deliberate install/update: the real CLI never passes a caller stage, so
   // resolve the live provider preflight before the obsolete host gate. TargetDir
@@ -252,6 +253,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     writingStyle: suppliedStyle,
     writingStyleMode,
     upgradePermissions: requestedUpgrade,
+    engramTypeboxCompat: requestedEngramTypeboxCompat,
     ...runtimeInput
   } = input;
   const supportsPermissionsUpgrade = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("permissions-upgrade-v1");
@@ -529,6 +531,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       const providers = await updatePiProviderPackages({
         homeDir: os.homedir(), agentDir: path.dirname(piSystemPromptFile()),
         piExecutable: input.detected.executable, engramBin: input.engramBin,
+        ...(requestedEngramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
       });
       if (providers.kind === "updated" && result.kind === "healthy") result = { kind: "updated" };
     } catch (error) {

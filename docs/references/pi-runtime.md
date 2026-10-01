@@ -160,6 +160,70 @@ pnpm dlx jorgex-stack@1.9.5 install --agents pi
 
 La resolución dinámica no equivale a una migración automática durante `sync`: solo un `install`/`update` deliberado adquiere y activa una release nueva. La adopción de una release Pi requiere que esté publicada y que su declaración de lector MCP, tarball e integridad pasen la verificación del stage; no se inventa ni se fija una versión futura en Stack. El updater nativo de Pi (`pi update --extensions`) y las actualizaciones de paquetes gestionadas por el provider no son un sustituto seguro del lifecycle privado verificado de Stack, porque no aportan su receipt ni sus garantías de activación y recuperación. Los receipts antiguos siguen necesitando migración autenticada.
 
+## Variante temporal del provider y recibo separado (candidato, devtool)
+
+> **Estado actual**: candidato / devtool, todavía no publicado en npm. Este contrato está apilado sobre PR203 (`e2555b2`) y la integración con el caller nativo de la cohorte de CI pública sigue pendiente. Las garantías de Windows, del set de providers nativo, del MCP nativo, de la autorización personal y de la adopción del release oficial corregido **no están verificadas**; este texto no las declara. La variante descrita es un artefacto local derivado —no es un fork ni un release npm— que aplica exclusivamente el diff de la corrección upstream `#1567` sobre bytes oficiales verificados, registra su procedencia en un recibo separado (con `provenance.origin` igual a `derived` mientras el oficial siga afectado por `#1567`, o a `registry` cuando el oficial ya venga corregido) y se retira cuando el release oficial corregido se active como `registry` sin etapa derivada.
+
+### Contexto y límites
+
+La corrección upstream `#1567` (retirar la dependencia propia `typebox` y declarar `peerDependencies.typebox` como opcional en el manifest del provider) está fusionada en el repositorio oficial de `gentle-engram` pero todavía no publicada en npm. Mientras el release oficial no la incorpore, los providers gestionados disparan el warning legítimo del host Pi y bloquean el smoke estricto. Esperar la corrección bloquea los PRs relacionados; parchear el árbol instalado sin registrar su procedencia lo confundiría con un artefacto oficial.
+
+Stack puede, sólo bajo opt-in explícito, instalar y registrar una variante local derivada de los bytes oficiales verificados. La variante:
+
+- Conserva **nombre y versión** del provider (sin cambios respecto al upstream).
+- Tiene su **propio SRI/digest** y un lock ligado a los bytes efectivamente instalados; no reutiliza la metadata de registry del upstream como SRI derivada.
+- Preserva la evidencia del origen: payload original del manifiesto en `manifestBase64` (texto base64 que decodifica al manifiesto bounded; el límite aplica al payload decodificado, no al string literal), digest del payload, identidad del patch y recipe acotado verificable offline.
+- Mantiene `provenance.origin = "derived"` mientras el release oficial siga afectado por el diff `#1567`; cuando el oficial ya viene corregido, el builder devuelve `provenance.origin = "registry"` y conserva la misma evidencia acotada para que la verificación offline siga siendo reproducible.
+- Se **retira** únicamente cuando el release oficial corregido pasa el stage verificado y se activa como `registry`; el builder deja de declarar derivación sólo tras éxito, y el fallo conserva el recibo/árbol derived anterior. No hay fallback a un pin antiguo.
+
+Esta sección describe el contrato, no una adopción personal: el lector debe entender que, hasta que la publicación del PR204 y los gates pendientes no se cierren, `--engram-typebox-compat` es un flag candidato y el recibo de provider no está disponible en `latest`.
+
+### `--engram-typebox-compat`
+
+`--engram-typebox-compat` es un **booleano explícito** con admisión limitada. Cuando el flag no se pasa en la línea de comandos, la propiedad queda **realmente ausente** (`undefined`), no se añade ningún campo obligatorio a flags/fixtures existentes y no se conserva ninguna preferencia en estado del usuario.
+
+- Se acepta únicamente en `install` y `update` deliberados cuyo `--agents` incluya `pi` y **sin** combinar con `--dry-run` ni `--target-dir`.
+- `update --check` rechaza el flag antes de cualquier efecto, al igual que `--dry-run` o `--target-dir` en `install` o `update`. `--dry-run` y `--target-dir` siguen sin adquirir providers ni escribir estado personal.
+- `sync`, `models`, `doctor`, `uninstall` e `install` sin `pi` también rechazan el flag antes de cualquier efecto.
+- Cualquier valor no booleano en el campo propagado falla antes de iniciar el stage (CLI, install, managed runtime y updater del provider).
+
+El flag no es global: aplica al comando actual, al agent Pi presente y a un release verificado. Su activación no muta el árbol de un Pi ya sano; sólo participa cuando la receta derivada es coherente con el opt-in del caller.
+
+### Recibo separado de providers
+
+Stack registra la procedencia de los providers `gentle-engram` y `pi-mcp-adapter` en `<home>/.jorgex-stack/pi-provider-receipt.json` (schemaVersion 1). Este archivo es **distinto** del `pi-receipt.json` (recibo del paquete JorgeX Pi) y no altera la autoridad MCP ni la cardinalidad del set nativo.
+
+| Campo raíz | Significado |
+| --- | --- |
+| `schemaVersion` | `1` (único valor actual) |
+| `agentDir` | ruta absoluta normalizada del agent Pi activo; debe coincidir con la activación |
+| `mcpTransport` | `native` o `legacy`, derivado del contrato del Pi instalado; no se infiere por longitud |
+| `providers[]` | set exacto nativo/legacy según `mcpTransport` |
+
+Cada entrada de `providers[]` declara `name`, `version`, `source` canónico `npm:<name>@<version>`, `packageRoot` (`npm/node_modules/<name>`), `integrity` sha512 del registry, `treeSha256` del árbol activo, `bins`, `manifestSha256` y un `provenance` **opcional** ligado a la adquisición `#1567`-compat. `provenance` se emite cuando el caller pasa el opt-in: con un release oficial ya corregido el builder devuelve `provenance.origin = "registry"` y conserva la receta original; mientras el oficial sigue afectado por `#1567`, el builder devuelve `provenance.origin = "derived"`. En ambos casos el `path` de stage se descarta antes de serializar, y el payload original del manifiesto se conserva como `manifestBase64` (texto base64 que decodifica al manifiesto bounded; el límite aplica al **payload decodificado**, no al recuento literal del string base64 —por eso un `manifestBase64` de 64 KiB de bytes puede verse como más caracteres en el archivo). El digest y la referencia del patch acompañan al payload para que la verificación offline pueda reaplicar la misma función de patch sobre el payload conservado. Esto es **procedencia local reproducible**, no attestation independiente de npm ni del publisher. El orden de campos es determinista para preservar idempotencia; el recibo no incluye timestamps, rutas de stage ni datos de auth.
+
+La ausencia del recibo (`kind: "absent"`) preserva las instalaciones previas a este contrato; no las reclama ni les atribuye procedencia. El opt-in no convierte un árbol preexistente en derivado por mera igualdad de bytes: la promoción a `derived` ocurre sólo si el caller pasa el snapshot nulo y la activación pasa la verificación offline.
+
+### Verificación read-only y diagnóstico
+
+`verifyPiProviderReceipt` ata cada entrada al estado activo: `source` en `settings.json`, identidad, versión, bins, manifest y `treeSha256` del árbol activo. Un recibo malformado, symlinked o con bindings inválidos **lanza excepción**; nunca se devuelve como setup sano. Si ya existe un recibo gestionado y se omite el snapshot, la activación falla antes de escribir; la omisión no se reporta como saludable y no se deja el recibo obsoleto.
+
+`doctor` consume este helper y reporta dos modalidades a partir del campo `provenance` del recibo:
+
+- `registry`: artefacto oficial sin derivación; puede conservar `provenance.origin = "registry"` si pasó la comprobación de compatibilidad, o no llevar `provenance` en la adquisición ordinaria.
+- `derived`: la adquisición del provider tiene `provenance.origin = "derived"` (el release oficial seguía afectado por `#1567` en el momento de la activación); la receta original acotada se conserva de la misma forma.
+
+`doctor` no consulta la red, no repara, no escribe estado del usuario y nunca presenta un error como setup sano. La instalación de un derivado sin receta válida, un recibo inconsistente o unos bytes activos que no se atan al snapshot se reportan como error, no como aviso; las instalaciones sin este contrato se mantienen sin él. La autoridad MCP nativo, el set nativo y la cardinalidad de la cohorte pública pertenecen a PR203; este contrato no los duplica ni los anticipa.
+
+### Lifecycle de la variante
+
+- **Transacción única.** La activación cubre `settings.json`, las raíces y el recibo en una sola transacción con backup, readback y rollback idempotente. El no-op exige también un recibo válido e idéntico al snapshot aprobado; sin recibo previo, el opt-in obliga a una promoción verificable aunque el árbol coincida.
+- **Detección de modificaciones ajenas.** La divergencia previa bloquea la operación. Si impide restaurar durante un rollback, se reporta `recovery incomplete` y se conserva el backup; nunca se sobrescriben los cambios del usuario. El rollback sólo restaura el recibo/raíces/settings cuando siguen siendo los escritos por esta operación.
+- **Retirada y `update` deliberado sobre derivado existente.** Ocurre únicamente cuando el release oficial corregido pasa el stage verificado y se activa como `registry`; el builder deja de declarar derivación sólo tras éxito, y el fallo conserva el recibo/árbol derived anterior. Mientras la receta derivada esté activa, una `update` deliberada **conserva la receta sin volver a requerir el flag**, siempre que el recibo existente haya pasado la verificación previa (`providerReceiptSnapshot` válido). No hay fallback a un pin antiguo, no se autosiembran preferencias y ningún otro comando propaga el opt-in; no se reemplaza silenciosamente la receta derivada por bytes no verificados.
+- **Updaters ajenos.** El updater nativo de Pi y los removedores externos no son una vía segura para esta variante gestionada: pueden sustituir o podar sus bytes fuera de la transacción de Stack. El recibo permite detectar ese drift; no es una ACL que impida comandos manuales. El updater de providers de **Stack** en esta rama sigue limitado al transporte legacy hasta integrar la fase nativa de PR203 y rechaza un recibo native sin degradarlo. Por ahora el opt-in no afirma una instalación nativa fresca saludable.
+
+Este contrato de recibo/transacción aplica al agent Pi y a los providers asociados; no modifica los contratos de proyección compartida, settings primarios ni MCP authority descritos en otras secciones.
+
 ## Engram
 
 Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, siempre se conserva. Cuando falta y hay autorización, `install` consulta en tiempo de ejecución el último release estable oficial de GitHub (`releases/latest`, sin prerelease ni draft y nunca una branch) antes de configurar cualquier runtime. Comprueba la metadata viva del asset exacto para plataforma y arquitectura —nombre esperado, estado publicado, tamaño y SHA-256— y falla cerrado si no hay red o falta cualquier dato; no existe fallback estático u offline. Escribe bajo `~/.local/bin/engram` (o el equivalente de la plataforma) y no requiere Brew ni Go. En una ejecución interactiva se pide confirmación; `--engram` autoriza la descarga en flujos no interactivos. `sync`, dry-run y `--target-dir` no descargan Engram. Update sigue siendo explícito y no reemplaza implícitamente un binario existente. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.

@@ -5,6 +5,34 @@ import { HOME, samePath } from "../lib/paths.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 import { readPiMcpConfig, resolvePiAdapterConfigPath } from "../lib/pi-mcp-config.js";
 
+/** Origen efectivo declarado por el recibo separado de providers (solo lectura). */
+export interface PiProviderReceiptReport {
+  kind: "registry" | "derived";
+  detail: string;
+}
+
+/**
+ * Lectura read-only del recibo separado de providers. Devuelve null cuando no
+ * existe recibo; lanza ante binding inválido, recibo malformado o drift.
+ * No toca red ni repara nada.
+ */
+export async function readPiProviderReceiptReport(input: {
+  homeDir: string;
+  agentDir: string;
+}): Promise<PiProviderReceiptReport | null> {
+  // Import dinámico: evita el ciclo estático con pi-provider-receipt (que
+  // consume isNamedPiSource de este adapter).
+  const { piProviderReceiptPath, verifyPiProviderReceipt } = await import("../lib/pi-provider-receipt.js");
+  if (fs.lstatSync(piProviderReceiptPath(input.homeDir), { throwIfNoEntry: false }) === undefined) return null;
+  const verification = verifyPiProviderReceipt({ homeDir: input.homeDir, agentDir: input.agentDir });
+  if (verification.kind === "absent") return null;
+  const gentle = verification.receipt?.providers.find((entry) => entry.name === "gentle-engram");
+  const version = gentle?.version ?? "unknown";
+  return verification.kind === "derived"
+    ? { kind: "derived", detail: `variante temporal derivada del oficial v${version} (patch #1567)` }
+    : { kind: "registry", detail: `artefacto oficial de registry v${version}` };
+}
+
 export function piSystemPromptFile(targetDir?: string): string {
   const configDir = targetDir === undefined
     ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
@@ -155,11 +183,13 @@ export async function verifyOfficialSetup(args: {
   layers: string[];
   duplicates: boolean;
   reason?: string;
+  providerReceipt?: PiProviderReceiptReport;
 }> {
-  void args.homeDir;
   const passed: string[] = [];
   const missing: string[] = [];
   let duplicates = false;
+  let providerDetail: string | null = null;
+  let providerReceipt: PiProviderReceiptReport | undefined;
 
   // --- packages (settings.json, singleton gentle + adapter) ---
   let packagesDetail: string | null = null;
@@ -328,11 +358,33 @@ export async function verifyOfficialSetup(args: {
     }
   }
 
+  // --- provider receipt (separate provenance contract, read-only) ---
+  // Ausencia preserva instalaciones sin el contrato. Malformado o drift falla
+  // cerrado y nunca se presenta como setup sano.
+  if (typeof args.homeDir === "string" && args.homeDir !== "") {
+    try {
+      const report = await readPiProviderReceiptReport({ homeDir: args.homeDir, agentDir: args.configDir });
+      if (report !== null) {
+        providerReceipt = report;
+        passed.push(`provider-receipt:${report.kind}`);
+      }
+    } catch (error) {
+      missing.push("provider-receipt:invalid");
+      providerDetail = `provider receipt inválido o drifted (${error instanceof Error ? error.message : String(error)})`;
+    }
+  }
+
   if (missing.length === 0) {
-    return { ok: true, layers: passed, duplicates: false };
+    return {
+      ok: true,
+      layers: passed,
+      duplicates: false,
+      ...(providerReceipt === undefined ? {} : { providerReceipt }),
+    };
   }
   const detail = `Pi: setup oficial Engram incompleto (${[
     ...(packagesDetail !== null ? [packagesDetail] : []),
+    ...(providerDetail !== null ? [providerDetail] : []),
     ...(mcpDetail !== null ? [mcpDetail] : []),
   ].join("; ")}; falta: ${missing.join(", ")}).`;
   return {

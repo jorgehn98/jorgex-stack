@@ -1000,3 +1000,59 @@ describe("[T41-RED] dispatch Pi con setup oficial antes del package install", ()
     expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir })).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T03/T06: `--engram-typebox-compat` es un opt-in deliberado y acotado.
+// Contrato: solo se admite en install/update reales con Pi; cualquier otro
+// comando, --check/--dry-run/--target-dir o destino sin Pi se rechaza antes de
+// efectos. Cuando se admite se propaga a la coordinación Pi (y de ahí al
+// updater de providers); sin el flag la propiedad no existe.
+// ---------------------------------------------------------------------------
+
+describe("[T03/T06] --engram-typebox-compat: admisión estricta y propagación", () => {
+  it("propaga el flag a la coordinación Pi en install y update reales", async () => {
+    const installHome = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-install-"));
+    expect(await runCli(["install", "--agents", "pi", "--mode", "human", "--yes", "--engram-typebox-compat"], installHome)).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      engramTypeboxCompat: true,
+    }));
+
+    const updateHome = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-update-"));
+    mocks.runManagedPiSystem.mockClear();
+    expect(await runCli(["update", "--agents", "pi", "--yes", "--engram-typebox-compat"], updateHome)).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "update",
+      engramTypeboxCompat: true,
+    }));
+  });
+
+  it("sin el flag no añade la propiedad a la coordinación Pi", async () => {
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-absent-"));
+
+    expect(await runCli(["install", "--agents", "pi", "--mode", "human", "--yes"], home)).toBe(0);
+    const forwarded = mocks.runManagedPiSystem.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+    expect(forwarded).toBeDefined();
+    expect(forwarded).not.toHaveProperty("engramTypeboxCompat");
+  });
+
+  const rejectedCases: Array<[string, string[]]> = [
+    ["comando no deliberado", ["sync", "--agents", "pi", "--yes", "--engram-typebox-compat"]],
+    ["doctor", ["doctor", "--agents", "pi", "--engram-typebox-compat"]],
+    ["install dry-run", ["install", "--agents", "pi", "--mode", "human", "--yes", "--dry-run", "--engram-typebox-compat"]],
+    ["update --check", ["update", "--agents", "pi", "--check", "--engram-typebox-compat"]],
+    ["install target-dir", ["install", "--agents", "pi", "--target-dir", "TARGET", "--mode", "human", "--yes", "--engram-typebox-compat"]],
+    ["destino sin Pi", ["install", "--agents", "codex", "--mode", "human", "--yes", "--engram-typebox-compat"]],
+  ];
+
+  it.each(rejectedCases)("rechaza %s antes de cualquier efecto", async (_label, argv) => {
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-reject-"));
+    const args = argv.map((value) => (value === "TARGET" ? path.join(home, "target") : value));
+
+    expect(await runCli([...args], home)).toBe(1);
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runUpdateCheck).not.toHaveBeenCalled();
+    expect(mocks.runDoctor).not.toHaveBeenCalled();
+  });
+});
