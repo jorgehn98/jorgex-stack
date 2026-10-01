@@ -478,6 +478,7 @@ export function writeNativeMcpConfig(input: {
   readonly expectedRaw: string | null;
   readonly expectedParsed: Record<string, unknown> | null;
   readonly backupRoot?: string;
+  readonly beforeWrite?: (writtenRaw: string) => void;
 }): { file: string; previousRaw: string | null; writtenRaw: string } {
   const agentDir = path.resolve(input.agentDir);
   const dirStat = fs.lstatSync(agentDir);
@@ -491,12 +492,7 @@ export function writeNativeMcpConfig(input: {
   next.mcpServers = servers;
   const writtenRaw = `${JSON.stringify(next, null, 2)}\n`;
   if (input.expectedRaw !== null) createBackup([file], "pi-native-mcp", input.backupRoot);
-  writeText(file, writtenRaw, 0o600);
-  const readback = readRawOrNull(file);
-  if (readback !== writtenRaw) {
-    restoreOwnedWrite(file, writtenRaw, input.expectedRaw);
-    fail("native mcp.json readback did not match the written configuration");
-  }
+  publishNativeMcpWrite(file, writtenRaw, input.expectedRaw, input.beforeWrite);
   return { file, previousRaw: input.expectedRaw, writtenRaw };
 }
 
@@ -507,6 +503,7 @@ export function removeNativeMcpEntries(input: {
   readonly expectedRaw: string | null;
   readonly expectedParsed: Record<string, unknown> | null;
   readonly backupRoot?: string;
+  readonly beforeWrite?: (writtenRaw: string) => void;
 }): { file: string; previousRaw: string | null; writtenRaw: string } {
   const agentDir = path.resolve(input.agentDir);
   const file = path.join(agentDir, "mcp.json");
@@ -518,12 +515,25 @@ export function removeNativeMcpEntries(input: {
   next.mcpServers = servers;
   const writtenRaw = `${JSON.stringify(next, null, 2)}\n`;
   if (input.expectedRaw !== null) createBackup([file], "pi-native-mcp-cleanup", input.backupRoot);
-  writeText(file, writtenRaw, 0o600);
-  if (readRawOrNull(file) !== writtenRaw) {
-    restoreOwnedWrite(file, writtenRaw, input.expectedRaw);
-    fail("native mcp.json readback did not match the removal");
-  }
+  publishNativeMcpWrite(file, writtenRaw, input.expectedRaw, input.beforeWrite);
   return { file, previousRaw: input.expectedRaw, writtenRaw };
+}
+
+function publishNativeMcpWrite(
+  file: string, writtenRaw: string, previousRaw: string | null,
+  beforeWrite?: (writtenRaw: string) => void,
+): void {
+  if (readRawOrNull(file) !== previousRaw) fail("native mcp.json changed concurrently before publication");
+  // The caller must know the attempted bytes even if write/readback throws.
+  beforeWrite?.(writtenRaw);
+  try {
+    writeText(file, writtenRaw, 0o600);
+    if (readRawOrNull(file) !== writtenRaw) throw new Error("native readback mismatch");
+  } catch {
+    let restored = false;
+    try { restored = restoreOwnedWrite(file, writtenRaw, previousRaw); } catch { /* Unreadable bytes cannot be safely restored. */ }
+    fail(`native mcp.json write/readback failed${restored ? "; previous configuration restored" : "; recuperación incompleta"}`);
+  }
 }
 
 const NATIVE_MCP_CAPABILITY = NATIVE_MCP_CONTRACT_LITERAL.capability;
@@ -596,13 +606,15 @@ export function isInstalledNativePackage(agentDir: string): boolean {
 
 /** Restores a file to its previous bytes only while it still holds this write. */
 export function restoreOwnedWrite(file: string, ownRaw: string, previousRaw: string | null): boolean {
-  if (readRawOrNull(file) !== ownRaw) return false;
+  const current = readRawOrNull(file);
+  if (current === previousRaw) return true;
+  if (current !== ownRaw) return false;
   if (previousRaw === null) {
     fs.rmSync(file, { force: true });
-    return true;
+    return readRawOrNull(file) === null;
   }
   writeText(file, previousRaw, 0o600);
-  return true;
+  return readRawOrNull(file) === previousRaw;
 }
 
 /**

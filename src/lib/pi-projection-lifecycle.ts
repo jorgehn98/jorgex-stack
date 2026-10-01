@@ -327,13 +327,13 @@ function restoreProjectionWrite(deps: PiProjectionLifecycleDeps, entry: Projecti
     try {
       if (entry.previousRaw === null) deps.removeFile(entry.file);
       else deps.writeText(entry.file, entry.previousRaw);
-      return true;
+      return deps.readText(entry.file) === entry.previousRaw;
     } catch { return false; }
   }
   // This operation deleted the file: restore only while it is still absent.
   if (current !== null) return false;
   if (entry.previousRaw === null) return true;
-  try { deps.writeText(entry.file, entry.previousRaw); return true; } catch { return false; }
+  try { deps.writeText(entry.file, entry.previousRaw); return deps.readText(entry.file) === entry.previousRaw; } catch { return false; }
 }
 
 /**
@@ -365,15 +365,20 @@ function projectionWriteFailure(
 function applyActions(
   actions: FileAction[], deps: PiProjectionLifecycleDeps,
   handoffs: { kind: HandoffKind; file: string; previous: string | null }[] = [],
+  writes?: ProjectionOwnedWrite[],
 ): PiProjectionBlocked | undefined {
   for (const action of actions) {
     const handoff = handoffs.find((entry) => path.resolve(action.target) === entry.file);
     if (handoff) {
       try { if (deps.readText(handoff.file) !== handoff.previous) return handoffConflict(handoff.kind, handoff.file); }
       catch { return handoffConflict(handoff.kind, handoff.file); }
+      writes?.push({ file: handoff.file, previousRaw: handoff.previous, ownRaw: canonicalActionContent(action) });
     }
     if (action.kind === "write") deps.writeText(action.target, action.content);
     else deps.copyFile(action.source, action.target);
+    if (handoff && deps.readText(handoff.file) !== canonicalActionContent(action)) {
+      throw new Error("handoff readback mismatch");
+    }
   }
 }
 
@@ -439,6 +444,7 @@ function parseMcpNativeAuthority(value: unknown): PiProjectionMcpNativeAuthority
 
 function parseReceipt(raw: string | null, expected: PiProjectionReceipt): ParsedPiProjectionReceipt {
   if (raw === null) return { kind: "invalid" };
+  let invalidKind: "invalid" | "authority-invalid" = "invalid";
   try {
     const receipt: unknown = JSON.parse(raw);
     if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) return { kind: "invalid" };
@@ -447,27 +453,28 @@ function parseReceipt(raw: string | null, expected: PiProjectionReceipt): Parsed
     const owned = Reflect.get(receipt, "owned");
     const presentKinds = HANDOFF_KINDS.filter((kind) => Object.hasOwn(receipt, kind));
     const hasMcpNative = Object.hasOwn(receipt, "mcpNative");
+    invalidKind = hasMcpNative ? "authority-invalid" : "invalid";
     if (version !== expected.schemaVersion
       || !hasExactKeys(receipt, ["schemaVersion", "scope", "owned", ...presentKinds, ...(hasMcpNative ? ["mcpNative"] : [])])
       || receivedScope === null
       || typeof receivedScope !== "object"
       || Array.isArray(receivedScope)
       || !hasExactKeys(receivedScope, ["kind", "home", "codingAgentDir", "receiptFile"])) {
-      return { kind: "invalid" };
+      return { kind: invalidKind };
     }
     if (Reflect.get(receivedScope, "kind") !== expected.scope.kind
       || Reflect.get(receivedScope, "home") !== expected.scope.home
       || Reflect.get(receivedScope, "codingAgentDir") !== expected.scope.codingAgentDir
       || Reflect.get(receivedScope, "receiptFile") !== expected.scope.receiptFile
       || !Array.isArray(owned)) {
-      return { kind: "invalid" };
+      return { kind: invalidKind };
     }
     const digests: Partial<Record<HandoffKind, { sha256: string }>> = {};
     for (const kind of presentKinds) {
       const value = Reflect.get(receipt, kind);
       if (value === null || typeof value !== "object" || Array.isArray(value)
         || !hasExactKeys(value, ["sha256"]) || typeof Reflect.get(value, "sha256") !== "string"
-        || !/^[a-f0-9]{64}$/.test(Reflect.get(value, "sha256"))) return { kind: "invalid" };
+        || !/^[a-f0-9]{64}$/.test(Reflect.get(value, "sha256"))) return { kind: invalidKind };
       digests[kind] = { sha256: Reflect.get(value, "sha256") as string };
     }
     let mcpNative: PiProjectionMcpNativeAuthority | undefined;
@@ -487,15 +494,15 @@ function parseReceipt(raw: string | null, expected: PiProjectionReceipt): Parsed
     }
 
     const retired = retiredPlaywrightFiles(expected.scope);
-    if (retired.some((file) => expectedOwned.includes(file))) return { kind: "invalid" };
+    if (retired.some((file) => expectedOwned.includes(file))) return { kind: invalidKind };
     const skillsRoot = `${path.resolve(expected.scope.home, ".agents", "skills")}${path.sep}`;
     const insertion = expectedOwned.findIndex((file) => !file.startsWith(skillsRoot) || file > retired[0]!);
     const legacyOwned = [...expectedOwned];
     legacyOwned.splice(insertion === -1 ? legacyOwned.length : insertion, 0, ...retired);
-    if (!matches(legacyOwned)) return { kind: "invalid" };
+    if (!matches(legacyOwned)) return { kind: invalidKind };
     return { kind: "valid", receipt: { schemaVersion: 1, scope: expected.scope, owned: legacyOwned, ...digests, ...authority } };
   } catch {
-    return { kind: "invalid" };
+    return { kind: invalidKind };
   }
 }
 
@@ -949,10 +956,7 @@ export function runPiProjectionLifecycle(
     ], deps);
     if (backup.kind === "backup-failed") return backupFailure(backup.paths);
   }
-  // In the coordinated native path this lifecycle snapshots every file it is
-  // about to create/refresh/remove (handoffs, settings, receipt) so a later
-  // failure can cautiously restore only its own writes.
-  const coordinated = input.pendingNativeConfigWrite !== undefined;
+  // Journal before effects: a write may publish bytes and still throw.
   const ownWrites: ProjectionOwnedWrite[] = [];
   for (const { kind, file } of removedHandoffs) {
     try {
@@ -960,76 +964,55 @@ export function runPiProjectionLifecycle(
       if (current !== null && contentHash(current) !== checked.previous?.[kind]?.sha256) return handoffConflict(kind, file);
     } catch { return handoffConflict(kind, file); }
   }
-  for (const { kind, file } of removedHandoffs) {
-    try {
-      const current = deps.readText(file);
-      if (current !== null && contentHash(current) !== checked.previous?.[kind]?.sha256) return handoffConflict(kind, file);
-      if (coordinated) {
-        ownWrites.push({
-          file,
-          previousRaw: checked.handoffs.find((entry) => entry.kind === kind)?.content ?? current,
-          ownRaw: null,
-        });
-      }
-      deps.removeFile(file);
-    } catch { return cleanupFailure([file]); }
-  }
-  for (const file of retiredSkills) {
-    try { deps.removeFile(file); }
-    catch { return cleanupFailure([file]); }
-  }
-  const enabledHandoffs = checked.handoffs.filter(({ kind }) => handoffEnabled(input, kind));
-  const writeResult = applyActions(drifted, deps, enabledHandoffs
-    .map(({ kind, file, content }) => ({ kind, file, previous: content })));
-  if (writeResult) return writeResult;
-  if (coordinated) {
-    for (const action of drifted) {
-      const handoff = enabledHandoffs.find(({ file }) => path.resolve(file) === path.resolve(action.target));
-      if (handoff !== undefined) {
-        ownWrites.push({ file: handoff.file, previousRaw: handoff.content, ownRaw: canonicalActionContent(action) });
-      }
-    }
-  }
-  // Pending native MCP config write: coordinated by this lifecycle, after the
-  // handoff is written/readback and before the final receipt/authority publish.
   let pendingRecover: (() => boolean) | undefined;
   let pendingPaths: string[] = [];
-  if (input.pendingNativeConfigWrite !== undefined) {
-    let pending: PendingNativeConfigWriteResult;
-    try {
-      pending = input.pendingNativeConfigWrite();
-    } catch (error) {
-      return projectionWriteFailure(deps, ownWrites, undefined, pendingPaths, error instanceof Error ? error.message : String(error));
+  try {
+    for (const { kind, file, content } of removedHandoffs) {
+      const current = deps.readText(file);
+      if (current !== null && contentHash(current) !== checked.previous?.[kind]?.sha256) {
+        if (ownWrites.length === 0) return handoffConflict(kind, file);
+        throw new Error("handoff changed before removal");
+      }
+      ownWrites.push({ file, previousRaw: content, ownRaw: null });
+      deps.removeFile(file);
     }
-    if (pending.kind === "blocked") {
-      return projectionWriteFailure(deps, ownWrites, undefined, pendingPaths, pending.remedy);
+    for (const file of retiredSkills) {
+      try { deps.removeFile(file); }
+      catch {
+        if (ownWrites.length === 0 && input.pendingNativeConfigWrite === undefined) return cleanupFailure([file]);
+        throw new Error("retired skill cleanup failed");
+      }
     }
-    pendingRecover = pending.recover;
-    if (pending.paths !== undefined) pendingPaths = [...pending.paths];
-  }
-  if (packageWillChange && filteredSettings !== null) {
-    if (coordinated) ownWrites.push({ file: scope.settingsFile, previousRaw: currentSettings, ownRaw: filteredSettings });
-    try {
+    const enabledHandoffs = checked.handoffs.filter(({ kind }) => handoffEnabled(input, kind));
+    const writeResult = applyActions(drifted, deps, enabledHandoffs
+      .map(({ kind, file, content }) => ({ kind, file, previous: content })),
+    ownWrites);
+    if (writeResult) {
+      if (ownWrites.length === 0) return writeResult;
+      return projectionWriteFailure(deps, ownWrites, undefined, pendingPaths, "un handoff cambió durante la publicación");
+    }
+    if (input.pendingNativeConfigWrite !== undefined) {
+      const pending = input.pendingNativeConfigWrite();
+      if (pending.kind === "blocked") {
+        return projectionWriteFailure(deps, ownWrites, undefined, pendingPaths, pending.remedy);
+      }
+      pendingRecover = pending.recover;
+      if (pending.paths !== undefined) pendingPaths = [...pending.paths];
+    }
+    if (packageWillChange && filteredSettings !== null) {
+      if (deps.readText(scope.settingsFile) !== currentSettings) throw new Error("settings changed before publication");
+      ownWrites.push({ file: scope.settingsFile, previousRaw: currentSettings, ownRaw: filteredSettings });
       deps.writeText(scope.settingsFile, filteredSettings);
-    } catch (error) {
-      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, error instanceof Error ? error.message : String(error));
+      if (deps.readText(scope.settingsFile) !== filteredSettings) throw new Error("settings readback mismatch");
     }
-  }
-  if (receiptChanged) {
-    // CAS: the initial receipt bytes must still be the ones we planned against,
-    // after the backup and before publishing the final receipt.
-    if (deps.readText(scope.receiptFile) !== receiptOriginalRaw) {
-      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, "el receipt cambió durante la operación");
-    }
-    if (coordinated) ownWrites.push({ file: scope.receiptFile, previousRaw: receiptOriginalRaw, ownRaw: expectedReceipt });
-    try {
+    if (deps.readText(scope.receiptFile) !== receiptOriginalRaw) throw new Error("receipt changed before publication");
+    if (receiptChanged) {
+      ownWrites.push({ file: scope.receiptFile, previousRaw: receiptOriginalRaw, ownRaw: expectedReceipt });
       deps.writeText(scope.receiptFile, expectedReceipt);
-    } catch (error) {
-      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, error instanceof Error ? error.message : String(error));
+      if (deps.readText(scope.receiptFile) !== expectedReceipt) throw new Error("receipt readback mismatch");
     }
-    if (deps.readText(scope.receiptFile) !== expectedReceipt) {
-      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, "el readback del receipt no coincide");
-    }
+  } catch {
+    return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, "falló una escritura o su verificación");
   }
 
   if (input.operation === "install") return { kind: "installed", receipt };

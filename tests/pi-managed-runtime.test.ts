@@ -4042,3 +4042,190 @@ describe("[T14-RED] Pi-only DevTools provider acquisition", () => {
     expect(events.filter((event) => event.startsWith("fetch "))).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [T77] native post-activation claim guard at runManagedPiSystem
+// `beforeInitialization`: UNIT boundary doubles for the offline proof, the
+// active-entry topology and the ownership checker. The orchestrator under test
+// (runManagedPiSystem and its real beforeInitialization closure) is not mocked;
+// the doubles only stand in for the authenticated-artifact proof that the live
+// lane owns, not for the guard logic being verified.
+// ---------------------------------------------------------------------------
+
+describe("[T77] native post-activation claim guard before the internal sync", () => {
+  const CLAIM_HEX = "a".repeat(64);
+
+  type NativeGuardFixture = {
+    root: string;
+    targetDir: string;
+    homeDir: string;
+    agentDir: string;
+    receiptFile: string;
+  };
+
+  function seedNativeGuardTarget(): NativeGuardFixture {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-native-claims-"));
+    T41_TEMP_ROOTS.push(root);
+    const targetDir = path.join(root, "target");
+    const homeDir = path.join(targetDir, "home");
+    const agentDir = path.join(targetDir, "pi-agent");
+    const stateDir = path.join(homeDir, ".jorgex-stack");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "settings.json"), `${JSON.stringify({ packages: ["npm:jorgex-pi@0.8.40"] }, null, 2)}\n`);
+    const receiptFile = path.join(stateDir, "pi-projection-receipt.json");
+    fs.writeFileSync(receiptFile, `${JSON.stringify({
+      schemaVersion: 1,
+      scope: { kind: "target-dir", home: homeDir, codingAgentDir: agentDir, receiptFile },
+      owned: [],
+      mcpNative: {
+        schemaVersion: 1,
+        entries: {
+          engram: { definitionSha256: CLAIM_HEX, cleanupSha256: CLAIM_HEX },
+          context7: { definitionSha256: CLAIM_HEX, cleanupSha256: CLAIM_HEX },
+        },
+      },
+    }, null, 2)}\n`);
+    return { root, targetDir, homeDir, agentDir, receiptFile };
+  }
+
+  function ownershipResult(engramState: "managed" | "unowned"): Record<string, unknown> {
+    return {
+      servers: {
+        engram: { state: engramState, cleanupEligible: engramState === "managed", availability: "configured" },
+        context7: { state: "managed", cleanupEligible: true, availability: "configured" },
+        "chrome-devtools": { state: "absent", cleanupEligible: false, availability: "unavailable" },
+      },
+      package: { state: "verified" },
+      connection: "not-verified",
+    };
+  }
+
+  async function runGuard(
+    fixture: NativeGuardFixture,
+    options: { engramState: "managed" | "unowned"; mutateAuthority?: (file: string) => void },
+  ): Promise<{ result: Record<string, unknown>; packageOperations: string[]; projectionOperations: string[]; inspectorCalls: number }> {
+    const activeRoot = path.join(fixture.agentDir, "npm", "node_modules", "jorgex-pi");
+    const packageOperations: string[] = [];
+    const projectionOperations: string[] = [];
+    const inspectOwnership = vi.fn(async () => {
+      options.mutateAuthority?.(fixture.receiptFile);
+      return ownershipResult(options.engramState);
+    });
+    const runPiRuntimeSystem = vi.fn(async (runtimeInput: { operation: string }) => {
+      packageOperations.push(runtimeInput.operation);
+      if (runtimeInput.operation === "sync") return { kind: "synced" as const };
+      return {
+        kind: "installed" as const,
+        receipt: { schemaVersion: 1, state: "installed", candidate: { package: { name: "jorgex-pi", version: "0.8.40", source: "npm:jorgex-pi@0.8.40" } } },
+      };
+    });
+    const runPiProjectionLifecycleSystem = vi.fn((projectionInput: { operation: string }) => {
+      projectionOperations.push(projectionInput.operation);
+      return projectionInput.operation === "install"
+        ? { kind: "installed" as const }
+        : { kind: "synced" as const, changed: false };
+    });
+
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-runtime.js", () => ({
+      PI_RUNTIME_CANDIDATE: {
+        package: { source: "npm:jorgex-pi@test" },
+        pi: { testedVersions: MOCK_TESTED_PI_VERSIONS },
+        contract: { capabilities: [] },
+      },
+      preparePiRuntimeSystem: vi.fn(),
+      runPiRuntimeSystem,
+    }));
+    vi.doMock("../src/lib/pi-projection-lifecycle.js", () => ({
+      runPiProjectionLifecycleSystem,
+      preparePiProjectionUninstallSystem: vi.fn(),
+      completePiProjectionUninstallSystem: vi.fn(),
+    }));
+    vi.doMock("../src/lib/pi-native-phase.js", () => ({
+      runNativePiMcpPhase: vi.fn(async () => ({ kind: "ready", authority: undefined, gentleVersion: "0.1.99", prepared: undefined })),
+      reconcileNativeAuthorityAfterCleanup: vi.fn(),
+    }));
+    vi.doMock("../src/lib/pi-native-mcp.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/pi-native-mcp.js")>("../src/lib/pi-native-mcp.js");
+      return { ...actual, isInstalledNativePackage: vi.fn(() => true), inspectNativeMcpOwnership: inspectOwnership };
+    });
+    vi.doMock("../src/lib/pi-private-release.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/pi-private-release.js")>("../src/lib/pi-private-release.js");
+      return { ...actual, resolveActivePiEntry: vi.fn(() => ({ kind: "directory", packageRoot: activeRoot })) };
+    });
+    vi.doMock("../src/lib/pi-package-lifecycle.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/lib/pi-package-lifecycle.js")>("../src/lib/pi-package-lifecycle.js");
+      return { ...actual, verifyOfflineManagedPiRelease: vi.fn(() => ({ kind: "ok", realRoot: activeRoot })) };
+    });
+
+    try {
+      const mod = (await import("../src/lib/pi-managed-runtime.js")) as unknown as {
+        runManagedPiSystem(input: unknown): Promise<Record<string, unknown>>;
+      };
+      const result = await mod.runManagedPiSystem({
+        operation: "install",
+        targetDir: fixture.targetDir,
+        prepared: { stageDir: path.join(fixture.root, "stage") },
+        nativeProviderStage: { stageDir: path.join(fixture.root, "providers"), packages: [] },
+        detected: { executable: "/isolated/pi", version: "0.84.2" },
+        engramBin: path.join(fixture.root, "bin", "engram"),
+        writingStyle: FORWARDING_STYLE,
+      });
+      return { result, packageOperations, projectionOperations, inspectorCalls: inspectOwnership.mock.calls.length };
+    } finally {
+      vi.doUnmock("../src/lib/pi-runtime.js");
+      vi.doUnmock("../src/lib/pi-projection-lifecycle.js");
+      vi.doUnmock("../src/lib/pi-native-phase.js");
+      vi.doUnmock("../src/lib/pi-native-mcp.js");
+      vi.doUnmock("../src/lib/pi-private-release.js");
+      vi.doUnmock("../src/lib/pi-package-lifecycle.js");
+      vi.resetModules();
+    }
+  }
+
+  it("blocks native-claims-unverified and never runs the internal sync when a claimed server is unowned", async () => {
+    const fixture = seedNativeGuardTarget();
+    const before = fs.readFileSync(fixture.receiptFile, "utf8");
+
+    const { result, packageOperations, projectionOperations, inspectorCalls } =
+      await runGuard(fixture, { engramState: "unowned" });
+
+    expect(result).toMatchObject({ kind: "blocked", reason: "native-claims-unverified" });
+    expect(inspectorCalls).toBe(1);
+    // The guard runs after activation but before the internal sync/projection:
+    // neither may run, so the native authority is never reset by a later pass.
+    expect(packageOperations).toEqual(["install"]);
+    expect(projectionOperations).toEqual(["install"]);
+    expect(fs.readFileSync(fixture.receiptFile, "utf8")).toBe(before);
+  });
+
+  it("completes the install with the internal sync when every claimed server is managed", async () => {
+    const fixture = seedNativeGuardTarget();
+    const before = fs.readFileSync(fixture.receiptFile, "utf8");
+
+    const { result, packageOperations, projectionOperations } =
+      await runGuard(fixture, { engramState: "managed" });
+
+    expect(result).toMatchObject({ kind: "installed" });
+    expect(packageOperations).toEqual(["install", "sync"]);
+    expect(projectionOperations).toEqual(["install", "sync"]);
+    expect(fs.readFileSync(fixture.receiptFile, "utf8")).toBe(before);
+  });
+
+  it("blocks native-config-changed and retains the authority bytes written during the checker read", async () => {
+    const fixture = seedNativeGuardTarget();
+    const mutated = `${JSON.stringify({ schemaVersion: 1, concurrent: true, mcpNative: { schemaVersion: 1, entries: {} } }, null, 2)}\n`;
+
+    const { result, packageOperations, projectionOperations } = await runGuard(fixture, {
+      engramState: "managed",
+      mutateAuthority: () => { fs.writeFileSync(fixture.receiptFile, mutated); },
+    });
+
+    expect(result).toMatchObject({ kind: "blocked", reason: "native-config-changed" });
+    expect(packageOperations).toEqual(["install"]);
+    expect(projectionOperations).toEqual(["install"]);
+    // The concurrent bytes are preserved, not overwritten by a later broadcast.
+    expect(fs.readFileSync(fixture.receiptFile, "utf8")).toBe(mutated);
+  });
+});

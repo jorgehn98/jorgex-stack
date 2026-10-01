@@ -373,7 +373,14 @@ export function reconcileNativeAuthorityAfterCleanup(input: {
   const authority = parseNativeMcpAuthorityStrict(parsed.mcpNative);
   if (authority === null) return;
   const entries: Record<string, { definitionSha256: string; cleanupSha256?: string }> = { ...authority.entries };
-  for (const name of input.removable) delete entries[name];
+  for (const name of input.removable) {
+    const server = input.ownership.servers[name];
+    if (entries[name] === undefined || input.ownership.package.state !== "verified"
+      || server.state !== "managed" || !server.cleanupEligible) {
+      throw new Error("native cleanup cannot withdraw an unauthenticated claim");
+    }
+    delete entries[name];
+  }
   for (const name of Object.keys(entries)) {
     const server = input.ownership.servers[name as NativeMcpServerName];
     if (server === undefined || server.state !== "managed" || server.cleanupEligible !== true) {
@@ -391,12 +398,15 @@ export function reconcileNativeAuthorityAfterCleanup(input: {
   if (readRawOrNull(receiptFile) !== raw) {
     throw new Error("native projection authority changed after the cleanup backup");
   }
-  writeText(receiptFile, nextRaw, 0o600);
-  if (readRawOrNull(receiptFile) !== nextRaw) {
-    const restored = restoreOwnedWrite(receiptFile, nextRaw, raw);
+  try {
+    writeText(receiptFile, nextRaw, 0o600);
+    if (readRawOrNull(receiptFile) !== nextRaw) throw new Error("native authority readback mismatch");
+  } catch {
+    let restored = false;
+    try { restored = restoreOwnedWrite(receiptFile, nextRaw, raw); } catch { /* Preserve unreadable or concurrently changed authority. */ }
     throw new Error(restored
-      ? "native authority readback mismatch; previous receipt restored"
-      : "native authority readback mismatch and previous receipt could not be restored");
+      ? "native authority write/readback failed; previous receipt restored"
+      : "native authority write/readback failed; recuperación incompleta");
   }
 }
 

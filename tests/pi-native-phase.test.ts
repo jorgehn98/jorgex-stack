@@ -364,6 +364,74 @@ describe("[T75] native granular authority and config file IO", () => {
     expect(result.writtenRaw).toBe(fs.readFileSync(result.file, "utf8"));
   });
 
+  it("restores a freshly created native mcp.json to absent when the readback fails exactly once", () => {
+    const f = fixture();
+    fs.mkdirSync(f.agentDir, { recursive: true });
+    const file = path.join(f.agentDir, "mcp.json");
+    const realReadFileSync = fs.readFileSync;
+    // Narrow, target-scoped injection: every other read (imports, other files)
+    // stays real; only the first readback of the published mcp.json fails.
+    let publishedReads = 0;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((target: unknown, ...rest: unknown[]) => {
+      if (path.resolve(String(target)) === path.resolve(file) && fs.existsSync(file)) {
+        publishedReads += 1;
+        if (publishedReads === 1) throw Object.assign(new Error("EIO: native mcp.json readback failed"), { code: "EIO" });
+      }
+      return (realReadFileSync as unknown as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as unknown as typeof fs.readFileSync);
+    try {
+      expect(() => writeNativeMcpConfig({
+        agentDir: f.agentDir,
+        servers: [{ name: "engram", entry: { command: f.engramBin, args: ["mcp", "--tools=agent"] }, created: true }],
+        expectedRaw: null,
+        expectedParsed: null,
+      })).toThrow(/native mcp\.json write\/readback failed/);
+      // Transient failure: the published bytes are still this operation's own
+      // write, so recovery must remove the freshly created file.
+      expect(fs.existsSync(file)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("throws an incomplete-recovery write/readback error and preserves the bytes when the readback keeps failing", () => {
+    const f = fixture();
+    fs.mkdirSync(f.agentDir, { recursive: true });
+    const file = path.join(f.agentDir, "mcp.json");
+    const realReadFileSync = fs.readFileSync;
+    // Persistent failure while the file exists: ownership bytes stay unreadable,
+    // so the file cannot be safely deleted and must be preserved.
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((target: unknown, ...rest: unknown[]) => {
+      if (path.resolve(String(target)) === path.resolve(file) && fs.existsSync(file)) {
+        throw Object.assign(new Error("EIO: native mcp.json readback failed"), { code: "EIO" });
+      }
+      return (realReadFileSync as unknown as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as unknown as typeof fs.readFileSync);
+    let error: unknown;
+    try {
+      try {
+        writeNativeMcpConfig({
+          agentDir: f.agentDir,
+          servers: [{ name: "engram", entry: { command: f.engramBin, args: ["mcp", "--tools=agent"] }, created: true }],
+          expectedRaw: null,
+          expectedParsed: null,
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      const message = error instanceof Error ? error.message : "";
+      expect(message).toMatch(/native mcp\.json write\/readback failed/);
+      expect(message).toMatch(/recuperación incompleta/);
+    } finally {
+      spy.mockRestore();
+    }
+    // Assert with the real filesystem restored: the unreadable write survives
+    // for manual resolution instead of being deleted blindly.
+    expect(fs.existsSync(file)).toBe(true);
+    const preserved = JSON.parse(fs.readFileSync(file, "utf8")) as { mcpServers?: Record<string, unknown> };
+    expect(preserved.mcpServers?.engram).toEqual({ command: f.engramBin, args: ["mcp", "--tools=agent"] });
+  });
+
   it("removes only the named native entries and keeps foreign servers", () => {
     const f = fixture();
     fs.mkdirSync(f.agentDir, { recursive: true });
@@ -477,6 +545,41 @@ describe("[T75] native uninstall authority reconciliation", () => {
       ).toThrow();
       expect(fs.readFileSync(receiptFile, "utf8"), JSON.stringify(envelope)).toBe(before);
     }
+  });
+
+  it("blocks a claimed server whose ownership does not authenticate it as managed instead of dropping the claim", () => {
+    const f = fixture();
+    const receiptFile = path.join(f.homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+    writeJson(receiptFile, {
+      schemaVersion: 1,
+      scope: { kind: "real", home: f.homeDir, codingAgentDir: f.agentDir, receiptFile },
+      owned: [],
+      mcpNative: { schemaVersion: 1, entries: { engram: { definitionSha256: HEX, cleanupSha256: HEX } } },
+    });
+    const before = fs.readFileSync(receiptFile, "utf8");
+    // The operational checker authenticated the package but reports the claimed
+    // Engram as unowned: reconciliation must block instead of deleting a claim
+    // it is not allowed to clean up.
+    const ownership = {
+      servers: {
+        engram: { state: "unowned", cleanupEligible: false, availability: "configured" },
+        context7: { state: "unowned", cleanupEligible: false, availability: "configured" },
+        "chrome-devtools": { state: "unowned", cleanupEligible: false, availability: "unavailable" },
+      },
+      package: { state: "verified" },
+      connection: "not-verified",
+    } as const;
+    expect(
+      () => reconcileNativeAuthorityAfterCleanup({
+        homeDir: f.homeDir,
+        agentDir: f.agentDir,
+        removable: ["engram"],
+        ownership,
+        backupRoot: path.join(f.root, "backups"),
+      }),
+      "an unowned removable claim must block before it is dropped",
+    ).toThrow();
+    expect(fs.readFileSync(receiptFile, "utf8")).toBe(before);
   });
 });
 
