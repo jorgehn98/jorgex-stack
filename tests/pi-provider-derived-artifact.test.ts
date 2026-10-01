@@ -353,6 +353,36 @@ describe("buildDerivedProviderArtifact (#1567 derived provider artifact)", () =>
     expect(fs.existsSync(destination)).toBe(false);
   });
 
+  it("rejects a swapped official file whose mutable evidence was refreshed, keeping the immutable release SRI authoritative", async () => {
+    const root = makeSandbox();
+    const original = buildPackageTarball(root, "official", officialManifest());
+    const { release, official } = await acquireVerified(root, original, "official");
+
+    // A different but fully valid npm-shaped tarball for the same package, version
+    // and #1567 preconditions. If the immutable release SRI were not compared, the
+    // transform would accept it and publish a derived artifact from swapped bytes.
+    const changedManifest = officialManifest();
+    changedManifest.description = "same package and preconditions, different bytes";
+    const changed = buildPackageTarball(root, "changed", changedManifest);
+    expect(changed.equals(original)).toBe(false);
+
+    // A local actor refreshes every mutable field of the official evidence so it is
+    // self-consistent with the swapped file; only release.integrity still pins the
+    // originally acquired artifact, and the recorded size/hash checks now pass.
+    fs.writeFileSync(official.path, changed);
+    official.bytes = changed.byteLength;
+    official.sha256 = sha256Hex(changed);
+    official.sha512 = createHash("sha512").update(changed).digest("hex");
+
+    const destination = path.join(root, "derived", "out.tgz");
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+
+    await expect(
+      buildDerivedProviderArtifact({ packageName: PACKAGE_NAME, release, official, destination }),
+    ).rejects.toThrow(/official artifact bytes do not match the release integrity/);
+    expect(fs.existsSync(destination)).toBe(false);
+  });
+
   it.each(hostileArchiveCases)("rejects an archive with %s", async (_label, bytes, expected) => {
     const root = makeSandbox();
     const { release, official } = await acquireVerified(root, bytes, "hostile");
