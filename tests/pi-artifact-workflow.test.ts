@@ -138,6 +138,33 @@ function extractWithBlock(step: WorkflowStep): string[] {
   return block;
 }
 
+function extractEnvBlock(step: WorkflowStep): string[] {
+  const lines = step.raw.split("\n");
+  const envIndex = lines.findIndex((line) => /^\s*env:\s*$/.test(line));
+  if (envIndex < 0) {
+    return [];
+  }
+
+  const envLine = lines[envIndex] ?? "";
+  const envIndent = envLine.search(/\S/);
+  if (envIndent < 0) {
+    throw new Error(`No se pudo determinar la indentación de env en ${step.name ?? "sin nombre"}.`);
+  }
+
+  const block: string[] = [];
+  for (const line of lines.slice(envIndex + 1)) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const indent = line.search(/\S/);
+    if (indent <= envIndent) {
+      break;
+    }
+    block.push(line.slice(envIndent + 2).trimEnd());
+  }
+  return block;
+}
+
 function extractRunScript(step: WorkflowStep): string {
   const lines = step.raw.split("\n");
   const runIndex = lines.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
@@ -313,6 +340,8 @@ const OBSERVED_TARBALL_ENV = "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tg
 const OBSERVED_CANDIDATE_ENV = "JORGEX_PI_CANDIDATE: ${{ runner.temp }}/pi-observed.json";
 const OBSERVED_RUN = 'node dist/pi-ci-artifact.js "$JORGEX_PI_TARBALL" "$JORGEX_PI_CANDIDATE"';
 const CONTRACT_RUN = "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts";
+const CI_TOKEN_ENV = "GH_TOKEN: ${{ github.token }}";
+const SMOKE_STEP_NAME = "Verify real Pi link layout and failure detection";
 
 describe("JorgeX Pi artifact pull-request gate", () => {
   it("resuelve el latest publicado observado con el resolver producto y ordena build antes de adquirir", () => {
@@ -478,6 +507,42 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-linked-smoke-live.test.ts"))).toBe(true);
     expect(workflow).toContain("PI_TEST_HOST:");
     expect(workflow).toContain("PI_TEST_CANDIDATE:");
+  });
+
+  it("entrega el token efímero solo al paso smoke real y conserva permisos de lectura", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+    const runtimeJob = jobs.find((job) => job.name === "Pi runtime (${{ matrix.os }})");
+
+    expect(runtimeJob, "Falta el job pi-runtime que ejecuta el smoke real.").toBeDefined();
+    if (runtimeJob === undefined) {
+      throw new Error("Falta el job pi-runtime que ejecuta el smoke real.");
+    }
+
+    const smokeStep = runtimeJob.steps.find((step) => step.name?.trim() === SMOKE_STEP_NAME);
+    expect(smokeStep, `Falta el paso smoke real "${SMOKE_STEP_NAME}".`).toBeDefined();
+    if (smokeStep === undefined) {
+      throw new Error(`Falta el paso smoke real "${SMOKE_STEP_NAME}".`);
+    }
+
+    expect(extractEnvBlock(smokeStep), "El token CI debe declararse en el env del paso smoke.").toContain(CI_TOKEN_ENV);
+
+    // Exactamente una aparición en todo el workflow: no es global, no es de job
+    // y no se propaga a ningún otro paso (los procesos de extensiones no lo heredan).
+    expect(workflow.split(CI_TOKEN_ENV)).toHaveLength(2);
+    for (const job of jobs) {
+      for (const step of job.steps) {
+        if (step === smokeStep) {
+          continue;
+        }
+        expect(
+          step.raw,
+          `El token CI no debe aparecer en el paso ${step.name ?? step.run ?? "sin nombre"}.`,
+        ).not.toContain("GH_TOKEN");
+      }
+    }
+
+    expect(workflow).not.toMatch(/(?:contents|id-token):\s*write/);
   });
 
   it("declares explicit routing, serialization, identity, and read-only contracts", () => {

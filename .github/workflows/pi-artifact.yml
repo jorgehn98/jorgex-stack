@@ -140,4 +140,6 @@ jobs:
           node -e "require('fs').mkdirSync(process.env.PI_TEST_HOST,{recursive:true})"
           pnpm --dir "${{ env.PI_TEST_HOST }}" add --ignore-scripts @earendil-works/pi-coding-agent@latest
       - name: Verify real Pi link layout and failure detection
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: pnpm exec vitest run tests/pi-linked-smoke-live.test.ts tests/pi-staged-lock.test.ts tests/pi-stage-smoke.test.ts tests/pi-mcp-setup-integration.test.ts tests/pi-provider-stage.test.ts tests/pi-provider-activation.test.ts tests/pi-provider-update.test.ts
