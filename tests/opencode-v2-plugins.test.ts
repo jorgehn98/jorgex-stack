@@ -78,6 +78,25 @@ const stubHostBun = (spawnImpl: () => SpawnStubResult) => {
   return spawn;
 };
 
+// Igual que `stubHostBun`, pero fuerza el fallo de lectura de un único fichero
+// (p. ej. EACCES/EIO) mientras el resto sigue leyendo del filesystem real. Sirve
+// para distinguir un hooks.json ilegible de uno ausente sin tocar el HOME real.
+const stubHostBunWithFileFailure = (failPath: string, error: unknown) => {
+  const resolved = path.resolve(failPath);
+  const spawn = vi.fn();
+  vi.stubGlobal("Bun", {
+    file: (filePath: string) => ({
+      exists: async () => fs.existsSync(filePath),
+      text: async () => {
+        if (path.resolve(filePath) === resolved) throw error;
+        return fs.readFileSync(filePath, "utf8");
+      },
+    }),
+    spawn,
+  });
+  return spawn;
+};
+
 const writeHooks = (projectDir: string, hooks: unknown) => {
   fs.mkdirSync(path.join(projectDir, ".opencode"), { recursive: true });
   fs.writeFileSync(path.join(projectDir, ".opencode", "hooks.json"), JSON.stringify(hooks));
@@ -474,5 +493,136 @@ describe("OpenCode v2 plugins: raíz global efectiva (OPENCODE_CONFIG_DIR > XDG 
     );
     expect(options.cwd, `cwd = raíz global efectiva (${expectedKind})`).toBe(expected);
     expect(contentText(event.result)).toContain(`${expectedKind}-marker`);
+  });
+});
+
+/**
+ * RED de los dos fallos silenciosos de hooks.ts confirmados en el review de
+ * ff7a54f:
+ *
+ * 1. `readHookFile` convierte en `null` cualquier fallo, incluido un hooks.json
+ *    existente pero corrupto (`{`) o ilegible (EACCES/EIO/EISDIR), así que el
+ *    host lo trata como "sin config" y el fallo desaparece. ENOENT sí es
+ *    legítimo y no debe advertir.
+ * 2. `scriptDiagnostics` solo añade la identidad/exit del script cuando
+ *    stdout y stderr están vacíos; un script con exit ≠ 0 y salida parcial
+ *    pierde la identidad del fallo.
+ *
+ * Se ejecuta el handler `execute.after` real (arnés v2 + stub de Bun) contra
+ * hooks.json/scripts reales: el diagnóstico debe verse en el `content` del
+ * result completed, sin volcar el contenido crudo del fichero.
+ */
+describe("OpenCode v2 plugins: config corrupta y script fallido no son silenciosos", () => {
+  const CANARY = "HOOKS_JSON_SECRET_CANARY";
+
+  const setupAfterHandler = async (): Promise<HookHandler> => {
+    const host = createV2Host(tmp);
+    const plugin = pluginOf(hooksModule)!;
+    await plugin.setup(host.ctx);
+    return host.registered.get("execute.after")!;
+  };
+
+  const runCompleted = async (handler: HookHandler) => {
+    const event = completedEvent({
+      id: "call-hook-config",
+      sessionID: "ses_v2_fixture",
+      command: "echo hi",
+      workdir: ".",
+    }) as Record<string, unknown> & { result: { output: string; content: unknown[] } };
+    const original = event.result;
+    await handler(event);
+    return { event, original };
+  };
+
+  it("un hooks.json global malformado se diagnostica sin volcar su contenido", async () => {
+    const globalRoot = path.join(tmp, "global-config");
+    fs.mkdirSync(globalRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(globalRoot, "hooks.json"),
+      `{"additionalContext":"${CANARY}"`,
+    );
+    stubHostBun(() => ({ stdout: "", stderr: "", exited: Promise.resolve(0) }));
+
+    const text = contentText((await runCompleted(await setupAfterHandler())).event.result);
+
+    expect(text, "el hooks.json corrupto no puede ser silencioso").toMatch(
+      /parse|json|invalid|corrupt/i,
+    );
+    expect(text, "no vuelca el contenido crudo del fichero").not.toContain(CANARY);
+  });
+
+  it.each([
+    ["EACCES", () => Object.assign(new Error("access denied"), { code: "EACCES" })],
+    ["EIO", () => Object.assign(new Error("i/o error"), { code: "EIO" })],
+  ])("un hooks.json global ilegible (%s) se diagnostica sin volcar contenido", async (_label, makeError) => {
+    const globalRoot = path.join(tmp, "global-config");
+    fs.mkdirSync(globalRoot, { recursive: true });
+    const hooksPath = path.join(globalRoot, "hooks.json");
+    fs.writeFileSync(
+      hooksPath,
+      JSON.stringify({ "tool.execute.after": { shell: { "*": [`scripts/${CANARY}.cjs`] } } }),
+    );
+    stubHostBunWithFileFailure(hooksPath, makeError());
+
+    const text = contentText((await runCompleted(await setupAfterHandler())).event.result);
+
+    expect(text, "el fallo de lectura no puede ser silencioso").toMatch(
+      /read|access|permission|denied|unreadable|i\/o|erro?r/i,
+    );
+    expect(text, "no vuelca el contenido del fichero").not.toContain(CANARY);
+  });
+
+  it("un hooks.json global ilegible por ser directorio (EISDIR) se diagnostica", async () => {
+    const globalRoot = path.join(tmp, "global-config");
+    fs.mkdirSync(path.join(globalRoot, "hooks.json"), { recursive: true });
+    stubHostBun(() => ({ stdout: "", stderr: "", exited: Promise.resolve(0) }));
+
+    const text = contentText((await runCompleted(await setupAfterHandler())).event.result);
+
+    expect(text, "el EISDIR no puede ser silencioso").toMatch(
+      /read|access|unreadable|directory|eisdir|erro?r/i,
+    );
+  });
+
+  it("un hooks.json global ausente (ENOENT) es legítimo y no añade diagnóstico", async () => {
+    stubHostBun(() => ({ stdout: "", stderr: "", exited: Promise.resolve(0) }));
+    const { event, original } = await runCompleted(await setupAfterHandler());
+
+    expect(event.result, "sin diagnóstico no se reemplaza el resultado").toBe(original);
+  });
+
+  it("hooks: un script con exit no cero lleva identidad/exit aunque stdout y stderr no estén vacíos", async () => {
+    const sessionDir = path.join(tmp, "session");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    writeHooks(sessionDir, outputHookConfig("partial-fail.cjs"));
+    writeScript(sessionDir, "partial-fail.cjs", "process.exit(3);\n");
+
+    const spawn = stubHostBun(() => ({
+      stdout: JSON.stringify({ additionalContext: "PARTIAL_STDOUT" }),
+      stderr: "partial stderr",
+      exited: Promise.resolve(3),
+    }));
+
+    const host = createV2Host(sessionDir);
+    const plugin = pluginOf(hooksModule)!;
+    await plugin.setup(host.ctx);
+
+    const handler = host.registered.get("execute.after")!;
+    const event = completedEvent({
+      id: "call-partial-exit3",
+      sessionID: host.sessionID,
+      command: "echo hi",
+      workdir: ".",
+    }) as Record<string, unknown> & { result: { output: string; content: unknown[] } };
+
+    await handler(event);
+
+    expect(spawn).toHaveBeenCalledOnce();
+    const text = contentText(event.result);
+    expect(text, "stdout parcial preservado").toContain("PARTIAL_STDOUT");
+    expect(text, "stderr parcial preservado").toContain("partial stderr");
+    expect(text, "identidad del script siempre presente").toContain("partial-fail.cjs");
+    expect(text, "exit explícito siempre presente").toMatch(/(exit|code|código)[^\d]{0,12}3/i);
+    expect(String(event.result.output), "output original preservado").toContain("original output");
   });
 });

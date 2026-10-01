@@ -193,6 +193,7 @@ const makePlugin = async (
       before: host.registered.get("execute.before")!,
       after: host.registered.get("execute.after")!,
     },
+    ctx: host.ctx,
     spawn,
     setPorcelain,
   };
@@ -1401,5 +1402,156 @@ describe("OpenCode v2 worktree plugin", () => {
     expect(text).not.toContain("Worktree setup complete");
     expect(text).not.toContain("remember");
     expect(text).toMatch(/unreadable/i);
+  });
+});
+
+/**
+ * RED de los dos fallos silenciosos de worktree.ts confirmados en el review de
+ * ff7a54f:
+ *
+ * 1. Un `after` con `status: "error"` retorna antes de retirar la captura
+ *    `pending` de ese ID. La captura queda "ready" para siempre y cualquier
+ *    comando `git worktree add` posterior se marca como solapamiento aunque no
+ *    lo sea. El error debe ser terminal: se limpia la captura, no se fabrica
+ *    result ni se toca el error original, y running/background se conservan.
+ * 2. Si `ctx.session.get` falla en un `after` completed con captura `ready`, el
+ *    plugin retorna en silencio al no poder resolver el cwd, sin explicar el
+ *    setup omitido ni usar jamás el cwd del servidor como fallback.
+ */
+describe("OpenCode v2 worktree plugin: errores terminales y resolución de cwd", () => {
+  it("un after status error es terminal: limpia la captura y un comando posterior sigue recibiendo setup", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { hooks, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+    });
+    const command = "git worktree add ../worktrees/canonical-name";
+    const failedID = "call-status-error-01";
+
+    setPorcelain(porcelainMain(tmp));
+    await hooks.before(shellEvent(failedID, command, srcDir));
+
+    const error = { message: "shell exploded", code: 7 };
+    const errored: Record<string, unknown> = {
+      ...shellEvent(failedID, command, srcDir),
+      status: "error",
+      error,
+    };
+    await hooks.after(errored);
+
+    expect(errored.result, "no se fabrica un result en error").toBeUndefined();
+    expect(errored.error, "error original preservado").toEqual(error);
+    expect(errored.status, "el status sigue siendo error").toBe("error");
+
+    // Segundo comando independiente: no debe heredar la captura del error
+    // terminal como solapamiento permanente.
+    setPorcelain(porcelainMain(tmp));
+    await hooks.before(shellEvent("call-status-error-02", command, srcDir));
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+    const output: Record<string, unknown> = {
+      ...shellEvent("call-status-error-02", command, srcDir),
+      status: "completed",
+      result: makeResult(0),
+    };
+    await hooks.after(output);
+    const text = resultText(output);
+
+    expect(text, "sin falso solapamiento").not.toMatch(
+      /ambiguo|ambiguous|cannot be attributed|overlapping/i,
+    );
+    expect(spawn, "el setup del segundo comando sí corre").toHaveBeenCalledOnce();
+    expect(text).toContain("Worktree setup complete: canonical-name");
+  });
+
+  it("un running/background no terminal conserva la captura para el completed del mismo ID", async () => {
+    const srcDir = path.join(tmp, "src");
+    fs.mkdirSync(srcDir);
+    const { hooks, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+    });
+    const command = "git worktree add ../worktrees/canonical-name";
+    const callID = "call-running-retained-01";
+
+    setPorcelain(porcelainMain(tmp));
+    await hooks.before(shellEvent(callID, command, srcDir));
+
+    const running: Record<string, unknown> = {
+      ...shellEvent(callID, command, srcDir),
+      status: "running",
+    };
+    await hooks.after(running);
+    expect(running.result, "running no fabrica un completed").toBeUndefined();
+
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+    const completed: Record<string, unknown> = {
+      ...shellEvent(callID, command, srcDir),
+      status: "completed",
+      result: makeResult(0),
+    };
+    await hooks.after(completed);
+    const text = resultText(completed);
+
+    expect(text, "la captura del mismo ID sigue disponible").not.toMatch(
+      /missing pre-execution inventory|ambiguous/i,
+    );
+    expect(spawn, "setup atribuido tras el completed real").toHaveBeenCalledOnce();
+    expect(text).toContain("Worktree setup complete: canonical-name");
+  });
+
+  it("un fallo de session.get en after completed con captura válida explica el setup omitido sin cwd del servidor", async () => {
+    // workdir relativo: sin sesión no hay cwd y no debe caer al cwd del servidor.
+    const { hooks, ctx, spawn, setPorcelain } = await makePlugin(tmp, {
+      setupScript: "setup.ps1",
+      pathContains: "worktrees/",
+    });
+
+    const session = (ctx as { session: { get: (args: { sessionID: string }) => Promise<unknown> } })
+      .session;
+    const originalGet = session.get.bind(session);
+    let lookups = 0;
+    session.get = async (args: { sessionID: string }) => {
+      lookups += 1;
+      // Solo el after de la primera llamada falla; before y la llamada de
+      // control posterior vuelven a resolver la sesión real.
+      if (lookups === 2) throw new Error("session lookup failed");
+      return originalGet(args);
+    };
+
+    const command = "git worktree add ../worktrees/canonical-name";
+    const callID = "call-session-fail-01";
+    setPorcelain(porcelainMain(tmp));
+    await hooks.before(shellEvent(callID, command, "."));
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+
+    const output: Record<string, unknown> = {
+      ...shellEvent(callID, command, "."),
+      status: "completed",
+      result: makeResult(0),
+    };
+    await hooks.after(output);
+    const text = resultText(output);
+
+    expect(spawn, "sin cwd resoluble no hay fallback al cwd del servidor").not.toHaveBeenCalled();
+    expect(text, "el setup omitido es visible").toMatch(/setup[\s\S]{0,80}(omit|skip|omitido)/i);
+    expect(text, "explica la causa de sesión/directorio").toMatch(/session|directory|cwd|workdir/i);
+    expect(text).not.toContain("Worktree setup complete");
+
+    // La captura fallida se limpia: un comando posterior no queda solapado.
+    setPorcelain(porcelainMain(tmp));
+    await hooks.before(shellEvent("call-session-fail-02", command, "."));
+    setPorcelain(porcelainWith(tmp, "worktrees/canonical-name", "canonical-name"));
+    const next: Record<string, unknown> = {
+      ...shellEvent("call-session-fail-02", command, "."),
+      status: "completed",
+      result: makeResult(0),
+    };
+    await hooks.after(next);
+    const nextText = resultText(next);
+    expect(nextText, "sin falso solapamiento tras limpiar la captura").not.toMatch(
+      /ambiguous|cannot be attributed|overlapping/i,
+    );
+    expect(nextText).toContain("Worktree setup complete: canonical-name");
   });
 });

@@ -250,9 +250,11 @@ const scriptDiagnostics = (result: ScriptResult): string[] => {
   const stderrMessage = extractScriptMessage(result.stderr);
   if (stdoutMessage) messages.push(stdoutMessage);
   if (stderrMessage) messages.push(stderrMessage);
-  if (result.exitCode !== 0 && messages.length === 0) {
+  // Un exit no cero nunca es silencioso: la identidad y el código van siempre,
+  // incluso cuando stdout/stderr traen salida parcial.
+  if (result.exitCode !== 0) {
     messages.push(
-      `Hook script failed: ${result.script} (exit code ${result.exitCode}).`,
+      `Hook script failed: ${result.scriptPath} (exit code ${result.exitCode}).`,
     );
   }
   return messages;
@@ -291,14 +293,51 @@ const buildHookPayload = (
   return { event, directory, tool: configToolName(tool), args };
 };
 
-const readHookFile = async (configPath: string): Promise<HookConfig | null> => {
+type HookFileResult =
+  | { status: "missing" }
+  | { status: "loaded"; config: HookConfig }
+  | { status: "invalid"; reason: string };
+
+const isMissingFileError = (error: unknown) => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return (
+    code === "ENOENT" ||
+    (error instanceof Error && /not found|no such file/i.test(error.message))
+  );
+};
+
+const errorCode = (error: unknown): string => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return typeof code === "string" && code ? code : "error";
+};
+
+// Un hooks.json ausente (ENOENT) es legítimo y no se diagnostica. Un fichero
+// existente pero corrupto o ilegible (EACCES/EIO/EISDIR) sí: se distingue el
+// fallo de lectura del de parseo y no se vuelca ni su contenido ni el mensaje
+// crudo del sistema.
+const readHookFile = async (configPath: string): Promise<HookFileResult> => {
+  let content: string;
   try {
-    const content = await (globalThis as any).Bun.file(configPath).text();
-    return JSON.parse(content);
+    content = await (globalThis as any).Bun.file(configPath).text();
+  } catch (error) {
+    if (isMissingFileError(error)) return { status: "missing" };
+    return { status: "invalid", reason: `could not be read (${errorCode(error)})` };
+  }
+
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!isPlainObject(parsed)) {
+      return { status: "invalid", reason: "must be a JSON object" };
+    }
+    return { status: "loaded", config: parsed };
   } catch {
-    // Un proyecto sin hooks.json es lo normal: cualquier fallo de lectura se
-    // resuelve como "sin config" en vez de romper la herramienta.
-    return null;
+    return { status: "invalid", reason: "could not be parsed as JSON" };
   }
 };
 
@@ -389,27 +428,38 @@ const tagScriptsWithBase = (config: HookConfig, baseDir: string): HookConfig => 
 const loadConfig = async (
   directory: string,
   globalConfigDir: string,
-): Promise<HookConfig> => {
+): Promise<{ config: HookConfig; diagnostics: string[] }> => {
+  const diagnostics: string[] = [];
+
   // Project-level hooks: prefer the runtime directory, fall back to the plugin directory.
   let projectConfig: HookConfig = {};
   let projectBase = directory;
 
-  const runtimeConfig = await readHookFile(`${directory}/.opencode/hooks.json`);
-  if (runtimeConfig) {
-    projectConfig = runtimeConfig;
+  const projectResult = await readHookFile(`${directory}/.opencode/hooks.json`);
+  if (projectResult.status === "loaded") {
+    projectConfig = projectResult.config;
     projectBase = directory;
+  } else if (projectResult.status === "invalid") {
+    diagnostics.push(`Project hooks config ignored: ${projectResult.reason}.`);
   }
   projectConfig = tagScriptsWithBase(projectConfig, projectBase);
 
   // Global user-level hooks (~/.config/opencode/hooks.json).
   let globalConfig: HookConfig = {};
   if (globalConfigDir) {
-    const raw = await readHookFile(`${globalConfigDir}/hooks.json`);
-    if (raw) globalConfig = tagScriptsWithBase(raw, globalConfigDir);
+    const globalResult = await readHookFile(`${globalConfigDir}/hooks.json`);
+    if (globalResult.status === "loaded") {
+      globalConfig = tagScriptsWithBase(globalResult.config, globalConfigDir);
+    } else if (globalResult.status === "invalid") {
+      diagnostics.push(`Global hooks config ignored: ${globalResult.reason}.`);
+    }
   }
 
   // Global first, then project (the project can add more scripts on top).
-  return mergeHookConfigs(globalConfig, projectConfig);
+  return {
+    config: mergeHookConfigs(globalConfig, projectConfig),
+    diagnostics,
+  };
 };
 
 const getEventConfig = (
@@ -537,8 +587,8 @@ export default {
       try {
         const directory = await resolveEventDirectory(ctx, event);
         if (!directory) return;
-        const config = await loadConfig(directory, globalConfigDir);
-        const warnings: string[] = [];
+        const { config, diagnostics } = await loadConfig(directory, globalConfigDir);
+        const warnings: string[] = [...diagnostics];
         const tool = configToolName(event?.tool);
         const payload = buildHookPayload(
           directory,
@@ -574,8 +624,8 @@ export default {
           return;
         }
 
-        const config = await loadConfig(directory, globalConfigDir);
-        const warnings: string[] = [];
+        const { config, diagnostics } = await loadConfig(directory, globalConfigDir);
+        const warnings: string[] = [...diagnostics];
         const tool = configToolName(event?.tool);
         const payload = buildHookPayload(
           directory,

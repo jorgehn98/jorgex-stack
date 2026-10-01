@@ -552,6 +552,15 @@ export default {
           return;
         }
 
+        // Un `error` es terminal: la captura de ese ID se retira para no dejar
+        // un solapamiento fantasma. El error original no se toca ni se fabrica
+        // result. `running`/`background` no son terminales y conservan la
+        // captura para el `completed` del mismo ID.
+        if (event?.status === "error") {
+          if (id) pending.delete(id);
+          return;
+        }
+
         // Sin un result terminal no hay éxito que validar: `running`/`background`
         // (o un error sin result) nunca fabrican setup.
         if (event?.status !== "completed" || !isPlainObject(event.result)) return;
@@ -625,7 +634,13 @@ export default {
             return;
           }
 
-          if (!commandCwd) return;
+          if (!commandCwd) {
+            appendToResult(event, [
+              "Worktree setup omitted: could not resolve the session directory or the command workdir.",
+              "The plugin never falls back to its own server cwd. Verify `ctx.session.get` and the command workdir, then retry.",
+            ]);
+            return;
+          }
 
           let postRaw: string;
           let gitRoot: string;
