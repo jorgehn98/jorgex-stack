@@ -5,11 +5,15 @@ import { isMainThread } from "node:worker_threads";
 /**
  * Bounded process runner shared by the acceptance suite and its regressions.
  *
- * Ownership contract: every child is spawned as its own POSIX process-group
- * leader (or Windows process tree root). Termination is by PID/group, never by
- * process name. A group that is already gone (`ESRCH`) is an expected absence;
- * any other cleanup failure is reported (`treeCleanupError`) instead of being
- * hidden by a child-only `kill` fallback.
+ * Ownership contract: a single owner tracks both owned process groups and
+ * registered root callbacks. Every child is spawned as its own POSIX
+ * process-group leader (or Windows process tree root). Termination is by
+ * PID/group, never by process name. A group that is already gone (`ESRCH`)
+ * is an expected absence; any other cleanup failure is reported
+ * (`treeCleanupError`) instead of being hidden by a child-only `kill`
+ * fallback. Groups stop first; root callbacks run only after every group
+ * stop is verified, and stay registered until the caller unregisters them
+ * after a confirmed cleanup.
  *
  * On Windows there is no POSIX group: `taskkill /pid <pid> /t /f` is the only
  * mechanism, bounded by a timeout. When taskkill is unavailable or reports a
@@ -114,7 +118,11 @@ export function stopOwnProcessTree(pid: number): TreeCleanupOutcome {
 
 type OwnedProcessGroup = { pid: number; stop: StopOwnProcessGroup };
 
+type OwnedCleanup = { label: string; cleanup: () => void };
+
 const ownedProcessGroups = new Map<number, OwnedProcessGroup>();
+const ownedCleanups = new Map<string, OwnedCleanup>();
+let cleanupSequence = 0;
 let lifecycleInstalled = false;
 
 /**
@@ -137,7 +145,7 @@ export function assertVerificationCancellationCapability(): void {
   }
 }
 
-function cleanupOwnedResources(): string[] {
+function cleanupOwnedProcessGroups(): string[] {
   const failures: string[] = [];
   for (const resource of [...ownedProcessGroups.values()]) {
     const outcome = resource.stop(resource.pid);
@@ -145,6 +153,26 @@ function cleanupOwnedResources(): string[] {
     else failures.push(`pid ${resource.pid}: ${outcome.cause}`);
   }
   return failures;
+}
+
+function cleanupOwnedCallbacks(): string[] {
+  const failures: string[] = [];
+  for (const entry of ownedCleanups.values()) {
+    try {
+      entry.cleanup();
+    } catch (error) {
+      // Keep the registration armed for retry and diagnosis.
+      failures.push(`${entry.label}: ${errorMessage(error)}`);
+    }
+  }
+  return failures;
+}
+
+function cleanupOwnedResources(): string[] {
+  const groupFailures = cleanupOwnedProcessGroups();
+  // Never delete owned roots while a group stop is still unverified.
+  if (groupFailures.length > 0) return groupFailures;
+  return cleanupOwnedCallbacks();
 }
 
 function reportOwnedCleanupFailure(failures: string[]): void {
@@ -195,6 +223,23 @@ function installOwnedResourceLifecycle(): void {
 /** Explicitly forgets an owned group whose cleanup the caller already handled. */
 export function releaseOwnedProcessGroup(pid: number): void {
   ownedProcessGroups.delete(pid);
+}
+
+/**
+ * Registers a synchronous cleanup for another owned resource (for example the
+ * acceptance temporary roots). The owner runs callbacks only after every owned
+ * group stop is verified, keeps failed registrations armed for retry, and
+ * leaves successful ones armed until the caller unregisters them after a
+ * confirmed cleanup.
+ */
+export function registerOwnedResourceCleanup(label: string, cleanup: () => void): () => void {
+  installOwnedResourceLifecycle();
+  cleanupSequence += 1;
+  const key = `${label}#${cleanupSequence}`;
+  ownedCleanups.set(key, { label, cleanup });
+  return () => {
+    ownedCleanups.delete(key);
+  };
 }
 
 export function runBoundedProcess(

@@ -18,7 +18,7 @@ import { removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
 /**
  * Regression seam for the bounded runner: real OS processes, no pnpm chain.
  * Cancellation signals go only to child harnesses, never to the vitest worker
- * itself (it still prepends the lifecycle before the first spawn).
+ * itself; the helper installs its lifecycle before the first spawn.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -89,6 +89,67 @@ const EXIT_FAILURE_HARNESS = path.join(
   "fixtures",
   "cancellation-exit-failure-harness.mjs",
 );
+const WORKER_HARNESS = path.join(
+  REPO_ROOT,
+  "tests",
+  "fixtures",
+  "worker-home-cancellation-harness.mjs",
+);
+const OWNED_ROOTS_HARNESS = path.join(
+  REPO_ROOT,
+  "tests",
+  "fixtures",
+  "owned-roots-failure-harness.mjs",
+);
+
+const REQUIRED_VERSION = "11.1.1";
+
+function findDiskBaseOutsideWorkspace(): string {
+  let current = REPO_ROOT;
+  for (;;) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      throw new Error(`No hay base de disco fuera del workspace desde ${REPO_ROOT}`);
+    }
+    current = parent;
+    const segments = current.split(path.sep);
+    const hasWorkspace = fs.existsSync(path.join(current, "pnpm-workspace.yaml"));
+    const badSegment = segments.includes("worktrees") || segments.includes("node_modules");
+    if (!hasWorkspace && !badSegment) return current;
+  }
+}
+
+function makeDiskBase(): string {
+  const base = fs.mkdtempSync(path.join(findDiskBaseOutsideWorkspace(), ".jx-verify-disk-base-"));
+  tempRoots.push(base);
+  return base;
+}
+
+function makeRepo(packageManager: string): string {
+  const root = makeTempRoot("jx-repo-");
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    `${JSON.stringify({ name: "fixture", packageManager })}\n`,
+    "utf8",
+  );
+  return root;
+}
+
+function makeFakePnpm(version: string): { entry: string } {
+  const packageRoot = path.join(makeTempRoot("jx-fake-pnpm-"), "node_modules", "pnpm");
+  fs.mkdirSync(path.join(packageRoot, "bin"), { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "bin", "pnpm.mjs"),
+    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(`${version}\n`)});\n`,
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: "pnpm", version, bin: { pnpm: "bin/pnpm.mjs" } })}\n`,
+    "utf8",
+  );
+  return { entry: path.join(packageRoot, "bin", "pnpm.mjs") };
+}
 
 describe("bounded runner process ownership", () => {
   it("limpia el grupo propio al cerrar el líder y no deja descendiente inerte", async () => {
@@ -257,5 +318,128 @@ describe("verification cancellation lifecycle", () => {
     () => {
       expect(() => assertVerificationCancellationCapability()).not.toThrow();
     },
+  );
+});
+
+describe("owned resource roots", () => {
+  function runWorkerHarness(
+    mode: "resignal" | "foreign",
+    signal: "SIGTERM" | "SIGINT",
+  ): {
+    result: ReturnType<typeof spawnSync>;
+    home: string | undefined;
+    pids: number[];
+    root: string;
+  } {
+    const diskBase = makeDiskBase();
+    const repoRoot = makeRepo(`pnpm@${REQUIRED_VERSION}`);
+    const fake = makeFakePnpm(REQUIRED_VERSION);
+    const root = makeTempRoot("jx-worker-cancel-");
+    const homeHandshake = path.join(root, "home.txt");
+    const leaderPidFile = path.join(root, "leader.pid");
+    const childPidFile = path.join(root, "child.pid");
+    const foreignMarker = path.join(root, "foreign-handler.txt");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        WORKER_HARNESS,
+        mode,
+        signal,
+        repoRoot,
+        homeHandshake,
+        leaderPidFile,
+        childPidFile,
+        foreignMarker,
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          JORGEX_PNPM_ENTRYPOINT: fake.entry,
+          JORGEX_VERIFICATION_DISK_ROOT: diskBase,
+          HOME: diskBase,
+          TEMP: diskBase,
+          TMP: diskBase,
+          TMPDIR: diskBase,
+        },
+      },
+    );
+
+    return {
+      result,
+      home: fs.existsSync(homeHandshake)
+        ? fs.readFileSync(homeHandshake, "utf8").trim()
+        : undefined,
+      pids: readHandshakePids(leaderPidFile, childPidFile),
+      root,
+    };
+  }
+
+  it.each(["SIGTERM", "SIGINT"] as const)(
+    "el worker elimina su propio HOME real antes de que el padre lo toque (%s)",
+    async (signal) => {
+      const { result, home, pids, root } = runWorkerHarness("resignal", signal);
+      const leakMarker = `${path.join(root, "home.txt")}.leak`;
+
+      try {
+        expect(result.error).toBeUndefined();
+        expect(result.signal).toBe(signal);
+        expect(result.status).toBeNull();
+        expect(home).toBeDefined();
+        expect(fs.existsSync(home ?? "")).toBe(false);
+        expect(await appearedWithin(leakMarker, 2_500)).toBe(false);
+      } finally {
+        for (const pid of pids) killIfAlive(pid);
+        if (home !== undefined && fs.existsSync(home)) removeTemporaryRoots([home]);
+      }
+    },
+    20_000,
+  );
+
+  it("el worker conserva el handler del framework pero elimina su HOME real", async () => {
+    const { result, home, pids, root } = runWorkerHarness("foreign", "SIGTERM");
+    const leakMarker = `${path.join(root, "home.txt")}.leak`;
+
+    try {
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.signal).toBeNull();
+      expect(fs.readFileSync(path.join(root, "foreign-handler.txt"), "utf8")).toBe(
+        "framework-handler",
+      );
+      expect(home).toBeDefined();
+      expect(fs.existsSync(home ?? "")).toBe(false);
+      expect(await appearedWithin(leakMarker, 2_500)).toBe(false);
+    } finally {
+      for (const pid of pids) killIfAlive(pid);
+      if (home !== undefined && fs.existsSync(home)) removeTemporaryRoots([home]);
+    }
+  }, 20_000);
+
+  it.each(["stop-fail", "rm-fail"] as const)(
+    "retiene el root propio y sale nonzero cuando el cleanup de raíces no se verifica (%s)",
+    (mode) => {
+      const diskBase = makeDiskBase();
+      const ownedRoot = path.join(diskBase, `owned-root-${mode}`);
+
+      const result = spawnSync(process.execPath, [OWNED_ROOTS_HARNESS, mode, ownedRoot], {
+        encoding: "utf8",
+        timeout: 20_000,
+        env: { ...process.env, HOME: diskBase, TEMP: diskBase, TMP: diskBase, TMPDIR: diskBase },
+      });
+
+      try {
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(fs.existsSync(ownedRoot)).toBe(true);
+        expect(result.stderr).toMatch(/No se pudo verificar la limpieza/);
+      } finally {
+        removeTemporaryRoots([ownedRoot]);
+      }
+    },
+    20_000,
   );
 });

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { QualityProfile } from "../src/lib/quality-policy.js";
 import {
+  registerOwnedResourceCleanup,
   runBoundedProcess,
   type BoundedProcessResult,
   type CliResult,
@@ -20,6 +21,10 @@ const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
 async function buildDist(): Promise<void> {
+  // Owned-resource owner armed before the first root is created.
+  releaseBuildRootsCleanup = registerOwnedResourceCleanup("acceptance-temp-roots", () =>
+    removeTemporaryRoots(temporaryRoots),
+  );
   const prepared = await prepareRepoBuildRun({
     repoRoot: REPO_ROOT,
     env: process.env,
@@ -126,6 +131,7 @@ type QualityReceipt = {
 };
 
 const temporaryRoots: string[] = [];
+let releaseBuildRootsCleanup: (() => void) | undefined;
 
 function createLayout(): TestLayout {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-quality-cli-"));
@@ -355,6 +361,9 @@ afterEach(() => {
 
 afterAll(() => {
   removeTemporaryRoots(temporaryRoots);
+  // Unregister only after the root cleanup is confirmed.
+  releaseBuildRootsCleanup?.();
+  releaseBuildRootsCleanup = undefined;
 });
 
 describe("quality CLI acceptance black-box", () => {
