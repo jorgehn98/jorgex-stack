@@ -209,6 +209,21 @@ export function authenticateStaticResource(
     const opened = fs.fstatSync(fd);
     if (!opened.isFile() || opened.nlink > 1) return { ...base, verdict: "not-regular" };
 
+    // Un ancestro puede cambiar entre la comprobación inicial y el open (el
+    // `O_NOFOLLOW` solo protege el leaf). Antes de leer un solo byte se
+    // re-acredita raíz/confinamiento físico y se vincula la identidad inicial
+    // (lstat) con el descriptor abierto: si el inodo abierto no es el verificado
+    // la lectura se descarta. Cota práctica: detecta el cambio en el punto
+    // determinista, no promete resistencia absoluta a un escritor del mismo UID.
+    const realRootAfter = tryRealpath(root);
+    if (!realRootAfter.ok || realRootAfter.path !== realRoot.path) return { ...base, verdict: "unreadable" };
+    const realTargetAfter = tryRealpath(target);
+    if (!realTargetAfter.ok) return { ...base, verdict: "unreadable" };
+    if (!physicallyInside(realTargetAfter.path, realRootAfter.path)) return { ...base, verdict: "escaping" };
+    if (opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size || opened.nlink !== stat.nlink) {
+      return { ...base, verdict: "unknown" };
+    }
+
     const candidateMax = Math.max(row.size, currentBytes === null ? -1 : currentBytes.length);
     if (opened.size > candidateMax) return { ...base, verdict: "unknown" };
     const limit = candidateMax + 1;

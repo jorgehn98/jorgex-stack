@@ -351,7 +351,11 @@ export function makeContext(
       && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), adapter.id) === true
       && (playwrightCapability ?? true),
     ownedMcpServers: owned,
-    ownedPrimaryModelFields: useBrowserPreferences
+    // El ownership verificado es independiente de las preferencias browser: un
+    // preflight que no consulta DevTools/Playwright sigue necesitándolo para
+    // reconocer la migración legacy propia. Solo el sandbox --target-dir queda
+    // aislado del ledger real (raíz de estado confinada ⇒ conjunto vacío).
+    ownedPrimaryModelFields: targetDir === undefined
       ? loadPrimaryModelOwnership(primaryModelOwnershipFile(), adapter.id, configDir)
       : new Set(),
   };
@@ -542,8 +546,11 @@ function recognizedOpenCodeOwnedTargets(ctx: InstallContext): Set<string> {
  * recurso retirado sin evidencia corroborable no se autentica por el manifest
  * editable: se preserva y se bloquea con diagnóstico. `pendingOrphans`, si
  * existe, es un array de strings subconjunto de `owned` dentro de la frontera.
+ *
+ * Se exporta para que `uninstall` exija la misma coherencia del perfil activo
+ * antes de dar autoridad a `prevOwned`, sin duplicar la validación.
  */
-function assertOpenCodeManifestCoherence(configDir: string): void {
+export function assertOpenCodeManifestCoherence(configDir: string): void {
   const read = readManifestStrict();
   if (read.status === "absent") return;
   if (read.status === "invalid") {
@@ -1050,7 +1057,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const staticAuths = id === "opencode"
       ? openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? [])
       : [];
-    const preservedStaticTargets = unownedCurrentTargets(staticAuths);
+    let preservedStaticTargets = unownedCurrentTargets(staticAuths);
     try {
       assertOpenCodeStaticResourcesUsable(staticAuths);
     } catch (error) {
@@ -1192,7 +1199,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
     if (id === "opencode") {
       try {
-        assertOpenCodeStaticResourcesUsable(openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? []));
+        // Autenticación FINAL (post-reconfirmación) que usa `writeManifest`: una
+        // creación ajena current durante el prompt debe ser un no-op unowned y
+        // no un owned reclamado por la lista cacheada anterior al prompt.
+        const finalStaticAuths = openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? []);
+        assertOpenCodeStaticResourcesUsable(finalStaticAuths);
+        preservedStaticTargets = unownedCurrentTargets(finalStaticAuths);
       } catch (error) {
         p.log.error(error instanceof Error ? error.message : String(error));
         exitCode = 1;

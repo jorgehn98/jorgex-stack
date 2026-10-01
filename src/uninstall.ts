@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import type { FileAction, OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
-import { ADAPTERS, buildContentPlan, makeContext } from "./install.js";
+import { ADAPTERS, assertOpenCodeManifestCoherence, buildContentPlan, makeContext } from "./install.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
@@ -162,6 +162,19 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     if (!detection.installed && opts.targetDir === undefined) {
       p.log.warn(`${adapter.name} no detectado — omitido.`);
       continue;
+    }
+    // Uninstall real: la misma coherencia manifest/configDir/inventario de
+    // install DEBE acreditarse antes de dar autoridad a `prevOwned` (backup,
+    // borrado o unmerge). Sin el version-gate de install: retirar configuración
+    // no exige v2. Con --target-dir no se lee el manifest real.
+    if (opts.targetDir === undefined && id === "opencode") {
+      try {
+        assertOpenCodeManifestCoherence(configDir);
+      } catch (error) {
+        p.log.error(error instanceof Error ? error.message : String(error));
+        exitCode = 1;
+        continue;
+      }
     }
     let ctx: ReturnType<typeof makeContext>;
     try { ctx = makeContext(adapter, configDir, undefined, useBrowserPreferences, undefined, undefined, opts.targetDir); }

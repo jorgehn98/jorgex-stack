@@ -660,3 +660,79 @@ describe("[T07-delta] helper: ancestro no determinable no cae en ausencia fail-o
     });
   });
 });
+
+/**
+ * Followup T07 (cota práctica aprobada por Jorge, spec 08 §validation): O_NOFOLLOW
+ * solo protege el leaf. Un ancestro (`plugins`) intercambiado por un symlink
+ * externo ENTRE el lstat/realpath iniciales y el open hace que `open` resuelva
+ * el leaf externo. La identidad inicial (lstat) debe vincularse con el fstat del
+ * descriptor abierto (dev/ino/tipo/nlink/size) y volver a acreditar
+ * raíz/confinamiento tras abrir, ANTES de leer/autenticar.
+ *
+ * Límite explícito (no prometer de más): este test certifica esa detección en el
+ * punto determinista del swap, no una protección portable absoluta frente a un
+ * escritor adversario del mismo usuario que mute el FS durante cada operación
+ * por ruta. No sustituye un mecanismo de mutación atómica condicional por inodo.
+ */
+describe("[T07-delta] rama física: swap de ancestro entre stat/realpath y open (cota práctica)", () => {
+  it.skipIf(process.platform === "win32")(
+    "bloquea el leaf externo alcanzado por un ancestro symlink aparecido tras el stat inicial sin leer sus bytes",
+    async () => {
+      await withIsolatedOpenCode(async (h) => {
+        const row = hooksRow();
+        // Interno: plugins/ regular conocido dentro del config root físico.
+        const internalPlugins = path.join(h.configDir, "plugins");
+        fs.mkdirSync(internalPlugins, { recursive: true });
+        fs.writeFileSync(h.hooksTarget, "export default {}; // interno regular conocido\n");
+
+        // Externo propio: bytes legacy v1 exactos que NO deben autenticarse.
+        const externalPlugins = path.join(h.externalDir, "plugins-out");
+        fs.mkdirSync(externalPlugins, { recursive: true });
+        const externalHooks = path.join(externalPlugins, "hooks.ts");
+        const legacy = decodeV1Hooks();
+        fs.writeFileSync(externalHooks, legacy);
+
+        // El ancestro se intercambia justo al abrir el target, después de que la
+        // función ya resolvió lstat/realpath sobre el interno regular.
+        const originalOpen = fs.openSync.bind(fs);
+        let swapped = false;
+        // Firma real del overload de `fs.openSync` (path, flags, mode?): el
+        // adaptador pasa `flags` y opcionalmente `mode`, así que el mock debe
+        // reenviarlos tal cual. Sin `as never` que oculte la interfaz.
+        const openSpy = vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+          const [file] = args;
+          if (!swapped && String(file) === h.hooksTarget) {
+            swapped = true;
+            fs.rmSync(internalPlugins, { recursive: true, force: true });
+            fs.symlinkSync(externalPlugins, internalPlugins);
+          }
+          return originalOpen(...args);
+        });
+        const readSpy = vi.spyOn(fs, "readSync");
+        readSpy.mockClear();
+
+        let auth: ReturnType<typeof authenticateStaticResource>;
+        try {
+          auth = authenticateStaticResource(h.hooksTarget, row, null, true, h.configDir);
+        } finally {
+          openSpy.mockRestore();
+        }
+        const readCalls = readSpy.mock.calls.length;
+        readSpy.mockRestore();
+
+        expect(swapped, "el fixture debe haber intercambiado el ancestro antes del open").toBe(true);
+        expect(
+          staticResourceBlockReason(auth),
+          "el leaf externo alcanzado por el ancestro debe rechazarse aunque sus bytes sean legacy conocidos",
+        ).not.toBeNull();
+        expect(["legacy", "current"], "no debe autenticarse un byte fuera de la identidad/confinamiento iniciales").not.toContain(auth.verdict);
+        expect(
+          readCalls,
+          "identidad fstat/confinamiento post-open deben validarse antes de leer el leaf externo",
+        ).toBe(0);
+        expect(fs.readFileSync(externalHooks).equals(legacy), "el externo no debe mutarse").toBe(true);
+        expect(fs.lstatSync(internalPlugins).isSymbolicLink(), "el ancestro intercambiado se conserva").toBe(true);
+      });
+    },
+  );
+});

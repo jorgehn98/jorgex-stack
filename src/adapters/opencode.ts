@@ -346,11 +346,23 @@ function ensureOwnedPrimaryObject(
   field: string,
   owned: ReadonlySet<string> | undefined,
   changes: PrimaryModelOwnershipChange[],
+  fieldPath: string = field,
 ): Record<string, unknown> {
   const created = parent[key] === undefined;
-  const value = ensureObject(parent, key, field);
+  const value = ensureObject(parent, key, fieldPath);
   if (created && owned?.has(field) !== true) changes.push({ field, owned: true });
   return value;
+}
+
+/** Poda un contenedor SOLO si su propio ID file-qualificado es owned y quedó vacío. */
+function pruneOwnedEmpty(
+  parent: Record<string, unknown>,
+  key: string,
+  owned: (...segments: string[]) => boolean,
+  ...ownerSegments: string[]
+): void {
+  if (!owned(...ownerSegments)) return;
+  pruneEmpty(parent, key);
 }
 
 function pruneEmpty(parent: Record<string, unknown>, key: string): void {
@@ -735,34 +747,30 @@ export const opencodeAdapter: Adapter = {
         claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "update");
       }
 
-      const agentsValue = root["agents"];
-      if (agentsValue !== undefined && objectValue(agentsValue) === null) {
-        throw new Error("OpenCode: 'agents' debe ser un objeto; corrígelo antes de reintentar sync.");
-      }
-      const agents = objectValue(agentsValue) ?? {};
-      if (agentsValue === undefined) {
-        root["agents"] = agents;
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents");
-      }
+      const agents = ensureOwnedPrimaryObject(
+        root, "agents", ownedField(base, "agents"), ctx.ownedPrimaryModelFields, primaryModelOwnership, "agents");
 
-      const plan = objectValue(agents["plan"]);
-      if (agents["plan"] !== undefined && plan === null) {
-        throw new Error("OpenCode: 'agents.plan' debe ser un objeto; corrígelo antes de reintentar sync.");
-      }
-      const planBlock = plan ?? {};
-      if (plan === null) {
-        agents["plan"] = planBlock;
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "plan");
-      }
-      if (planBlock["disabled"] === undefined) {
-        planBlock["disabled"] = true;
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "plan", "disabled");
+      // `agent.plan`/`agent.summary` legacy ya deciden ese rol (misma
+      // preservación efectiva que `small_model`/`agent.title` para title): un
+      // nativo por defecto lo ocultaría (native válido prevalece), así que no se
+      // siembra ni se reclama dentro de esa rama legacy.
+      const legacyAgent = objectValue(root["agent"]);
+      const legacyPlanAlias = legacyAgent?.["plan"] !== undefined;
+      const legacySummaryAlias = legacyAgent?.["summary"] !== undefined;
+
+      if (!legacyPlanAlias) {
+        const planBlock = ensureOwnedPrimaryObject(
+          agents, "plan", ownedField(base, "agents", "plan"), ctx.ownedPrimaryModelFields, primaryModelOwnership, "agents.plan");
+        if (planBlock["disabled"] === undefined) {
+          planBlock["disabled"] = true;
+          claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "plan", "disabled");
+        }
       }
 
       // `small_model` y el mapa V1 `agent.title` ya deciden el título: no se
       // siembra `agents.title.model` mientras cualquiera de ellos exista.
       const legacyTitle = root["small_model"] !== undefined
-        || objectValue(root["agent"])?.["title"] !== undefined;
+        || legacyAgent?.["title"] !== undefined;
       const title = objectValue(agents["title"]);
       if (agents["title"] !== undefined && title === null) {
         throw new Error("OpenCode: 'agents.title' debe ser un objeto; corrígelo antes de reintentar sync.");
@@ -777,29 +785,17 @@ export const opencodeAdapter: Adapter = {
         claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "title", "model");
       }
 
-      const summary = objectValue(agents["summary"]);
-      if (agents["summary"] !== undefined && summary === null) {
-        throw new Error("OpenCode: 'agents.summary' debe ser un objeto; corrígelo antes de reintentar sync.");
-      }
-      const summaryBlock = summary ?? {};
-      if (summary === null) {
-        agents["summary"] = summaryBlock;
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "summary");
-      }
-      if (summaryBlock["model"] === undefined) {
-        summaryBlock["model"] = "minimax/MiniMax-M3#thinking";
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "summary", "model");
+      if (!legacySummaryAlias) {
+        const summaryBlock = ensureOwnedPrimaryObject(
+          agents, "summary", ownedField(base, "agents", "summary"), ctx.ownedPrimaryModelFields, primaryModelOwnership, "agents.summary");
+        if (summaryBlock["model"] === undefined) {
+          summaryBlock["model"] = "minimax/MiniMax-M3#thinking";
+          claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "agents", "summary", "model");
+        }
       }
 
-      const compactionValue = root["compaction"];
-      if (compactionValue !== undefined && objectValue(compactionValue) === null) {
-        throw new Error("OpenCode: 'compaction' debe ser un objeto; corrígelo antes de reintentar sync.");
-      }
-      const compaction = objectValue(compactionValue) ?? {};
-      if (compactionValue === undefined) {
-        root["compaction"] = compaction;
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "compaction");
-      }
+      const compaction = ensureOwnedPrimaryObject(
+        root, "compaction", ownedField(base, "compaction"), ctx.ownedPrimaryModelFields, primaryModelOwnership, "compaction");
       if (compaction["auto"] === undefined) {
         compaction["auto"] = true;
         claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "compaction", "auto");
@@ -828,15 +824,8 @@ export const opencodeAdapter: Adapter = {
         claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "lsp");
       }
 
-      const worktreeValue = root["worktree"];
-      if (worktreeValue !== undefined && objectValue(worktreeValue) === null) {
-        throw new Error("OpenCode: 'worktree' debe ser un objeto; corrígelo antes de reintentar sync.");
-      }
-      const worktree = objectValue(worktreeValue) ?? {};
-      if (worktreeValue === undefined) {
-        root["worktree"] = worktree;
-        claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "worktree");
-      }
+      const worktree = ensureOwnedPrimaryObject(
+        root, "worktree", ownedField(base, "worktree"), ctx.ownedPrimaryModelFields, primaryModelOwnership, "worktree");
       if (worktree["directory"] === undefined) {
         worktree["directory"] = "worktrees";
         claimOwnedField(ctx.ownedPrimaryModelFields, primaryModelOwnership, base, "worktree", "directory");
@@ -991,22 +980,20 @@ export const opencodeAdapter: Adapter = {
           const modelsBlock = providerBlock === null ? null : objectValue(providerBlock["models"]);
           const modelBlock = modelsBlock === null ? null : objectValue(modelsBlock[descriptor.model]);
           const limitBlock = modelBlock === null ? null : objectValue(modelBlock["limit"]);
-          let removed = false;
           if (limitBlock !== null) {
             for (const [key, value] of Object.entries(descriptor.limit)) {
               const field = limitLeafFieldId(base, descriptor, key);
               if (ownedIds?.has(field) !== true) continue;
               // Solo se retira el valor que siga siendo el canónico del archivo.
-              if (limitBlock[key] === value) { delete limitBlock[key]; removed = true; }
+              if (limitBlock[key] === value) delete limitBlock[key];
               releasedIds.add(field);
             }
           }
-          // Un `limit` vacío tras retirar hojas owned es residuo nuestro: se poda
-          // (el contenedor puede haberse creado sin reclamarse). Los contenedores
-          // superiores se podan SOLO si están owned y vacíos, para no retirar
-          // estructura preexistente ajena (p.ej. `models: {}`).
+          // Los contenedores superiores se podan SOLO si su propio ID
+          // file-qualified es owned y quedan vacíos: un `{}` preexistente ajeno
+          // (p.ej. `limit: {}`) no es residuo nuestro y debe sobrevivir.
           if (modelBlock !== null && limitBlock !== null && Object.keys(limitBlock).length === 0
-            && (removed || ownedIds?.has(limitId) === true)) delete modelBlock["limit"];
+            && ownedIds?.has(limitId) === true) delete modelBlock["limit"];
           if (modelsBlock !== null && modelBlock !== null && Object.keys(modelBlock).length === 0
             && ownedIds?.has(modelId) === true) delete modelsBlock[descriptor.model];
           if (providerBlock !== null && modelsBlock !== null && Object.keys(modelsBlock).length === 0
@@ -1060,10 +1047,10 @@ export const opencodeAdapter: Adapter = {
           }
           release("agents", "summary");
           release("agents", "summary", "model");
-          pruneEmpty(agentsBlock, "plan");
-          pruneEmpty(agentsBlock, "title");
-          pruneEmpty(agentsBlock, "summary");
-          pruneEmpty(root, "agents");
+          pruneOwnedEmpty(agentsBlock, "plan", isOwned, "agents", "plan");
+          pruneOwnedEmpty(agentsBlock, "title", isOwned, "agents", "title");
+          pruneOwnedEmpty(agentsBlock, "summary", isOwned, "agents", "summary");
+          pruneOwnedEmpty(root, "agents", isOwned, "agents");
         }
 
         release("compaction");
@@ -1077,8 +1064,8 @@ export const opencodeAdapter: Adapter = {
           }
           release("compaction", "keep");
           release("compaction", "keep", "tokens");
-          pruneEmpty(compactionBlock, "keep");
-          pruneEmpty(root, "compaction");
+          pruneOwnedEmpty(compactionBlock, "keep", isOwned, "compaction", "keep");
+          pruneOwnedEmpty(root, "compaction", isOwned, "compaction");
         }
 
         release("worktree");
@@ -1088,7 +1075,7 @@ export const opencodeAdapter: Adapter = {
             delete worktreeBlock["directory"];
           }
           release("worktree", "directory");
-          pruneEmpty(root, "worktree");
+          pruneOwnedEmpty(root, "worktree", isOwned, "worktree");
         }
 
         const rawMcpBlock = root["mcp"];

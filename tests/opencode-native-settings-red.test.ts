@@ -826,4 +826,63 @@ describe("ledger v1 dotted → IDs file-qualificados (B5)", () => {
       expect(messages).toMatch(/remed|revisa|corrige|restaura|reintentar|acredita/i);
     });
   });
+
+  /**
+   * Fix de review ff7a54f (Spec 04:62): el preflight de coherencia con un
+   * manifest existente debe disponer del ownership verificado aunque no
+   * consulte preferencias browser. El fixture previo cubría solo el ledger sin
+   * manifest; con AMBOS, el preflight actual construye el plan con ownership
+   * vacío y el `provider.openai` v1 legítimo (9 marcas dotted propias) se
+   * clasifica como legacy ajeno: install falla cerrado y no migra.
+   */
+  it("migra el canon 5.6 owned con manifest gestionado y ledger v1 simultáneos", async () => {
+    await withIsolatedHome(async ({ homeDir, configDir }) => {
+      // 1) Instalación real previa: manifest gestionado + recursos estáticos
+      // actuales (bytes current, ownership neutral).
+      await runOpencodeInstall(configDir);
+      const manifestFile = path.join(homeDir, ".jorgex-stack", "manifest.json");
+      expect(fs.existsSync(manifestFile), "la instalación real debe crear el manifest").toBe(true);
+      const manifestOwned = (JSON.parse(fs.readFileSync(manifestFile, "utf8")) as {
+        runtimes: { opencode?: { owned?: string[] } };
+      }).runtimes.opencode?.owned ?? [];
+      expect(
+        manifestOwned.map((file) => path.resolve(file)),
+        "los recursos estáticos actuales quedan owned en el manifest",
+      ).toContain(path.resolve(configDir, "plugins", "hooks.ts"));
+
+      // 2) Estado v1 exacto: config legacy 5.6 con límites puros + las nueve
+      // marcas dotted owned.
+      const bytesBefore = writeConfig(configDir, legacyConfig());
+      const themeBefore = readConfig(configDir)["theme"];
+      const ledgerFile = writeLedger(homeDir, configDir, LEGACY_V1_FIELDS);
+
+      // 3) Con manifest + ledger simultáneos el pipeline real debe migrar.
+      expect(await installExitCode(configDir), "manifest+ledger v1 deben migrar, no bloquear").toBe(0);
+
+      const config = readConfig(configDir) as {
+        model?: string;
+        theme?: unknown;
+        provider?: unknown;
+        providers?: { openai?: { models?: Record<string, { limit?: Record<string, number> }> } };
+      };
+      expect(config.model).toBe(V2_MODEL);
+      expect(config.providers?.openai?.models?.[V2_MODEL_ID]?.limit).toEqual(LEGACY_LIMITS);
+      expect(config.provider, "sin provider legacy oculto ni doble home").toBeUndefined();
+      expect(config.theme).toEqual(themeBefore);
+
+      const { listBackups } = await import("../src/lib/backup.js");
+      const entry = listBackups()
+        .flatMap((backup) => backup.files.map((file) => ({ backup, file })))
+        .find(({ file }) => file.original === path.join(configDir, "opencode.json"));
+      expect(entry, "la migración debe respaldar el config v1").toBeDefined();
+      expect(fs.readFileSync(entry!.file.stored, "utf8")).toBe(bytesBefore);
+
+      const fields = ledgerFields(ledgerFile, configDir);
+      for (const legacy of LEGACY_V1_FIELDS) {
+        expect(fields, `el ID v1 ${legacy} debe liberarse`).not.toContain(legacy);
+      }
+      expect(fields).toContain(V2_MODEL_FIELD);
+      for (const field of V2_LIMIT_FIELDS) expect(fields).toContain(field);
+    });
+  });
 });

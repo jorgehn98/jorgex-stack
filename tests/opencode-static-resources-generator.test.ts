@@ -154,7 +154,10 @@ def system_exits(fn):
         fn()
         return False, "no SystemExit"
     except SystemExit as exc:
-        return True, "SystemExit(%s)" % (getattr(exc, "code", None),)
+        code = getattr(exc, "code", None)
+        # Un SystemExit(0)/None NO prueba rechazo: el oráculo exige código != 0.
+        rejected = code is not None and code != 0
+        return rejected, "SystemExit(%r)" % (code,)
     except BaseException as exc:
         return False, "%s: %s" % (type(exc).__name__, exc)
 
@@ -215,6 +218,12 @@ def run_group():
         targets = [row["target"] for row in rows]
         check("dict_deterministic", first == second)
         check("serialize_deterministic", text == text2)
+        # Control del oráculo: una salida sin error (SystemExit(0)) no puede
+        # contar como rechazo aunque lance SystemExit.
+        def _exit_zero():
+            raise SystemExit(0)
+        ok, detail = system_exits(_exit_zero)
+        check("control_exit_zero_is_not_rejection", ok is False, detail)
         check("exactly_four", len(rows) == 4, targets)
         check("sorted_by_target", targets == sorted(targets), targets)
         check("exact_targets", set(targets) == set(t for _, t in gen.PROJECTED), targets)

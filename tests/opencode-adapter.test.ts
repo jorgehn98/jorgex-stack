@@ -741,6 +741,21 @@ describe("opencodeAdapter v2: límites de provider restantes (Spec T04)", () => 
     Object.keys(NATIVE_LIMITS.find((entry) => entry.provider === provider && entry.model === model)!.limit)
       .map((key) => JSON.stringify(["opencode.json", "providers", provider, "models", model, "limit", key]));
 
+  /**
+   * IDs file-qualificados de los contenedores que Stack crea al sembrar el
+   * modelo (Spec 04:62): la poda exige el ID propio del contenedor, no basta
+   * con las hojas. Un fixture que representa contenedores creados por Stack
+   * debe incluirlos para que el unmerge los retire cuando queden vacíos.
+   */
+  const limitContainerFieldIds = (provider: string, model: string): string[] =>
+    [
+      ["providers"],
+      ["providers", provider],
+      ["providers", provider, "models"],
+      ["providers", provider, "models", model],
+      ["providers", provider, "models", model, "limit"],
+    ].map((segments) => JSON.stringify(["opencode.json", ...segments]));
+
   function providersOf(content: string): Record<string, { models?: Record<string, { limit?: Record<string, number> }> }> {
     return (JSON.parse(content) as { providers?: Record<string, { models?: Record<string, { limit?: Record<string, number> }> }> }).providers ?? {};
   }
@@ -783,7 +798,14 @@ describe("opencodeAdapter v2: límites de provider restantes (Spec T04)", () => 
   it("unmerge retira solo los límites owned canónicos y preserva lo ajeno", () => {
     const configDir = tempConfigDir();
     const configFile = path.join(configDir, "opencode.json");
-    const ownedFields = limitFieldIds("opencode-go", "deepseek-v4.1-flash");
+    // El fixture representa el modelo/limit creados por Stack (aunque el
+    // usuario añadiera luego `user-model` al mismo provider); el set owned
+    // incluye los contenedores de la cadena, no solo las hojas, para que el
+    // unmerge retire el límite canónico sin dejar residuo vacío.
+    const ownedFields = [
+      ...limitContainerFieldIds("opencode-go", "deepseek-v4.1-flash"),
+      ...limitFieldIds("opencode-go", "deepseek-v4.1-flash"),
+    ];
     const config = {
       providers: {
         openai: { models: { "gpt-6-astra": { limit: { context: 872000, input: 744000, output: 128000 } } } },
@@ -805,6 +827,89 @@ describe("opencodeAdapter v2: límites de provider restantes (Spec T04)", () => 
     expect(after["opencode-go"]?.models?.["deepseek-v4.1-flash"]?.limit, "owned canónico se retira").toBeUndefined();
     expect(after["opencode-go"]?.models?.["user-model"]?.limit, "lo ajeno se preserva").toEqual({ context: 1, output: 1 });
     expect(after["openai"]?.models?.["gpt-6-astra"]?.limit, "no owned: intacto").toEqual({ context: 872000, input: 744000, output: 128000 });
+  });
+});
+
+describe("opencodeAdapter v2: unmerge no poda contenedores preexistentes ajenos", () => {
+  it("preserva limit/agents.title/compaction/worktree vacíos preexistentes al retirar hojas owned", () => {
+    // Spec 04:62: los contenedores se podan SOLO cuando su propio ID
+    // file-qualified es owned y quedan vacíos. Un `{}` que ya existía antes de
+    // que Stack sembrara sus hojas es del usuario y debe sobrevivir; un
+    // `pruneEmpty`/`removed` incondicional lo borraría como residuo.
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const preexisting = {
+      providers: { openai: { models: { "gpt-6.1-sol": { limit: {} } } } },
+      agents: { title: {} },
+      compaction: {},
+      worktree: {},
+      foreign: { kept: true },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(preexisting, null, 2) + "\n");
+
+    const mcp = loadCanonicalMcp(stackRoot());
+    const actions = opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir));
+    const owned = primaryOwnership(actions, configFile);
+
+    // El plan no reclama los contenedores que ya existían: no los creó.
+    for (const segments of [
+      ["providers", "openai", "models", "gpt-6.1-sol", "limit"],
+      ["agents", "title"],
+      ["compaction"],
+      ["worktree"],
+    ]) {
+      expect(owned.has(JSON.stringify(["opencode.json", ...segments])), segments.join(".")).toBe(false);
+    }
+    // Las hojas que sí se crean quedan owned.
+    expect(owned.has(
+      JSON.stringify(["opencode.json", "providers", "openai", "models", "gpt-6.1-sol", "limit", "context"]),
+    )).toBe(true);
+
+    fs.writeFileSync(configFile, writeActionContent(actions, configFile));
+    const unmerged = JSON.parse(writeActionContent(
+      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+        ...opencodeContext(configDir),
+        ownedPrimaryModelFields: owned,
+      }),
+      configFile,
+    )) as Record<string, any>;
+
+    // Las hojas owned se retiran…
+    expect(unmerged.providers.openai.models["gpt-6.1-sol"].limit.context).toBeUndefined();
+    expect(unmerged.providers.openai.models["gpt-6.1-sol"].limit.input).toBeUndefined();
+    expect(unmerged.providers.openai.models["gpt-6.1-sol"].limit.output).toBeUndefined();
+    // …y los contenedores preexistentes ajenos sobreviven vacíos.
+    expect(unmerged.providers.openai.models["gpt-6.1-sol"].limit).toEqual({});
+    expect(unmerged.agents.title).toEqual({});
+    expect(unmerged.compaction).toEqual({});
+    expect(unmerged.worktree).toEqual({});
+    expect(unmerged.foreign).toEqual({ kept: true });
+
+    // Lo creado por Stack (otros providers/límites) sí desaparece por completo.
+    expect(unmerged.providers.openai.models["gpt-6-astra"]).toBeUndefined();
+    expect(unmerged.providers["opencode-go"]).toBeUndefined();
+  });
+});
+
+describe("opencodeAdapter v2: diagnóstico de contenedores no objeto", () => {
+  // Guardia para la reutilización de `ensureOwnedPrimaryObject` en los cinco
+  // contenedores: el rechazo de null/array/escalar debe conservar el `fieldPath`
+  // exacto (Spec 04:64), sin snapshots de prosa.
+  it.each([
+    ["agents array", { agents: [] }, "agents"],
+    ["agents.plan array", { agents: { plan: [] } }, "agents.plan"],
+    ["agents.summary null", { agents: { summary: null } }, "agents.summary"],
+    ["compaction null", { compaction: null }, "compaction"],
+    ["worktree escalar", { worktree: "x" }, "worktree"],
+  ])("rechaza %s con el campo en el diagnóstico", (_label, extra, fieldPath) => {
+    const configDir = tempConfigDir();
+    const configFile = path.join(configDir, "opencode.json");
+    const bytes = JSON.stringify({ model: "user/model", ...extra }, null, 2) + "\n";
+    fs.writeFileSync(configFile, bytes);
+
+    expect(() => opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir)))
+      .toThrow(new RegExp(`'${fieldPath.replaceAll(".", "\\.")}' debe ser un objeto`));
+    expect(fs.readFileSync(configFile, "utf8"), "sin writes sobre entrada inválida").toBe(bytes);
   });
 });
 
@@ -989,6 +1094,51 @@ describe("opencodeAdapter v2: defaults de servidor y roster", () => {
     // Un entry nativo legacy del usuario tampoco se pisa ni se oculta.
     expect(root.agents.plan.disabled).toBe(false);
     expect(root.agents.summary.model).toBe("user/legacy-summary");
+  });
+
+  it("no siembra agents.plan/summary nativos que tapen el alias legacy agent.plan/agent.summary", () => {
+    // Spec 04:62: la misma preservación efectiva que title rige plan/summary. Un
+    // `agent.plan`/`agent.summary` legacy personalizado ya decide ese rol; un
+    // `agents.*` por defecto lo ocultaría (native válido prevalece).
+    const configDir = tempConfigDir();
+    const jsoncFile = path.join(configDir, "opencode.jsonc");
+    const original = [
+      "// alias legacy del usuario",
+      "{",
+      '  "agent": {',
+      '    "plan": { "model": "user/custom-plan" },',
+      '    "summary": { "model": "user/custom-summary" }',
+      "  },",
+      '  "foreign": { "kept": true }',
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(jsoncFile, original);
+
+    const actions = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir));
+    const content = writeActionContent(actions, jsoncFile);
+    expect(content, "el comentario ajeno sobrevive").toContain("// alias legacy del usuario");
+    const root = parseJsonc(content) as Record<string, any>;
+
+    // El alias legacy manda y el archivo ajeno se preserva.
+    expect(root.agent.plan.model).toBe("user/custom-plan");
+    expect(root.agent.summary.model).toBe("user/custom-summary");
+    expect(root.agents?.plan, "no emitir el plan nativo que taparía agent.plan").toBeUndefined();
+    expect(root.agents?.summary, "no emitir el summary nativo que taparía agent.summary").toBeUndefined();
+    expect(root.foreign).toEqual({ kept: true });
+    // La guardia es por alias: el built-in sin alias (`agents.title`) sí se siembra.
+    expect(root.agents?.title?.model).toBe("openai/gpt-6-luna#none");
+
+    // No se reclama ownership de un bloque que no se escribió.
+    const owned = primaryOwnership(actions, jsoncFile);
+    for (const segments of [
+      ["agents", "plan"],
+      ["agents", "plan", "disabled"],
+      ["agents", "summary"],
+      ["agents", "summary", "model"],
+    ]) {
+      expect(owned.has(JSON.stringify(["opencode.jsonc", ...segments])), segments.join(".")).toBe(false);
+    }
   });
 
   it("un valor nativo válido prevalece y no convierte el alias legacy que convive con él", () => {
