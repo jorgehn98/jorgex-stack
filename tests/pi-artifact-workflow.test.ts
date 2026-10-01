@@ -35,6 +35,7 @@ type WorkflowStep = {
 type WorkflowJob = {
   name?: string;
   if?: string;
+  raw: string;
   steps: WorkflowStep[];
 };
 
@@ -59,7 +60,7 @@ function readWorkflowShape(workflow: string): { jobs: WorkflowJob[] } {
 
     const end = lines.findIndex((line, candidate) => candidate > index && (/^  [A-Za-z0-9_-]+:\s*$/.test(line) || /^[^\s].*:\s*$/.test(line)));
     const block = lines.slice(index, end < 0 ? lines.length : end);
-    const job: WorkflowJob = { steps: [] };
+    const job: WorkflowJob = { raw: block.join("\n"), steps: [] };
     for (const line of block) {
       const nameMatch = /^    name:\s*(.+)$/.exec(line);
       const ifMatch = /^    if:\s*(.+)$/.exec(line);
@@ -536,10 +537,58 @@ describe("JorgeX Pi artifact pull-request gate", () => {
       expect(acquire, "Cada job adquiere el artefacto verificado.").toBeDefined();
       expect(acquire?.raw).toContain('node dist/pi-ci-artifact.js "${{ env.JORGEX_PI_LIVE_ARTIFACT }}" "${{ env.PI_TEST_CANDIDATE }}"');
     }
+  });
 
-    // PR202's step-scoped GitHub auth belongs to the live smoke that resolves
-    // the Engram release; the native job must not copy it.
-    expect(native.steps.some((step) => step.raw.includes("GH_TOKEN"))).toBe(false);
+  it("limita GH_TOKEN a los dos pasos de verificación viva con contents: read", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+
+    const liveSteps = [
+      {
+        jobName: "Pi runtime (${{ matrix.os }})",
+        stepName: "Verify real Pi link layout and failure detection",
+      },
+      {
+        jobName: "Pi native runtime (${{ matrix.os }})",
+        stepName: "Verify authenticated native lifecycle and cleanup",
+      },
+    ];
+
+    // La autenticación debe reutilizar la identidad efímera del workflow:
+    // expresión exacta de github.token, sin PAT ni secreto adicional.
+    const ghTokenExpression = /^[ \t]+GH_TOKEN:[ \t]*\$\{\{[ \t]*github\.token[ \t]*\}\}[ \t]*$/m;
+
+    for (const { jobName, stepName } of liveSteps) {
+      const job = jobs.find((candidate) => candidate.name === jobName);
+      expect(job, `Falta el job ${jobName}.`).toBeDefined();
+      if (job === undefined) throw new Error(`Falta el job ${jobName}.`);
+
+      // El job conserva contents: read; el token no eleva permisos.
+      expect(job.raw, `El job ${jobName} debe declarar contents: read.`).toContain(
+        "permissions:\n      contents: read",
+      );
+
+      const step = job.steps.find((candidate) => candidate.name === stepName);
+      expect(step, `Falta el paso vivo ${stepName}.`).toBeDefined();
+      if (step === undefined) throw new Error(`Falta el paso vivo ${stepName}.`);
+      expect(step.raw, `El paso ${stepName} debe exponer GH_TOKEN en su env de paso.`).toMatch(
+        ghTokenExpression,
+      );
+    }
+
+    // El token aparece exactamente una vez por paso de verificación viva: ni
+    // en el env del job (scope amplio) ni en adquisición/instalador.
+    expect(workflow.match(/\bGH_TOKEN\b/g) ?? []).toHaveLength(liveSteps.length);
+
+    for (const { jobName } of liveSteps) {
+      const job = jobs.find((candidate) => candidate.name === jobName);
+      const acquire = (job?.steps ?? []).find((step) => step.raw.includes("dist/pi-ci-artifact.js"));
+      const installer = (job?.steps ?? []).find((step) => step.raw.includes("pnpm --dir"));
+      expect(acquire, `Falta la adquisición del artefacto en ${jobName}.`).toBeDefined();
+      expect(installer, `Falta el instalador del host aislado en ${jobName}.`).toBeDefined();
+      expect(acquire?.raw, "La adquisición no debe recibir GH_TOKEN.").not.toContain("GH_TOKEN");
+      expect(installer?.raw, "El instalador no debe recibir GH_TOKEN.").not.toContain("GH_TOKEN");
+    }
   });
 
   it("declares explicit routing, serialization, identity, and read-only contracts", () => {
