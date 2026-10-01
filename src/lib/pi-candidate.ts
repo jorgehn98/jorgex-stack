@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { timingSafeEqual } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { PI_RUNTIME_CANDIDATE } from "./pi-runtime.js";
 import { isStableSemverVersion } from "./npm-provider.js";
 import type { PiRuntimeCandidate } from "./pi-package-lifecycle.js";
@@ -41,6 +42,31 @@ const COMMIT40 = /^[0-9a-f]{40}$/;
 const MAX_JSON_BYTES = 1 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
 
+const NATIVE_MCP_CAPABILITY = "mcp-native-v1";
+const NATIVE_MCP_BINDING = {
+  schemaVersion: 1,
+  contractPath: "contract/native-mcp.v1.json",
+} as const;
+const NATIVE_MCP_CONTRACT = {
+  schemaVersion: 1,
+  capability: NATIVE_MCP_CAPABILITY,
+  transport: "native",
+  configurationPath: "PI_CODING_AGENT_DIR/mcp.json",
+  packageReceiptPath: "HOME/.jorgex-stack/pi-receipt.json",
+  projectionReceiptPath: "HOME/.jorgex-stack/pi-projection-receipt.json",
+  authorityField: "mcpNative",
+  servers: ["engram", "context7", "chrome-devtools"],
+  definitions: {
+    entrypoint: "extensions/mcp-engram.mjs",
+    digestExport: "digestNativeMcpDefinition",
+    devtoolsExport: "resolveNativeDevtoolsDefinition",
+  },
+  ownership: {
+    entrypoint: "extensions/native-mcp.mjs",
+    export: "inspectNativeMcpOwnership",
+  },
+} as const;
+
 function fail(message: string): never {
   throw new Error(`pi-candidate: ${message}`);
 }
@@ -78,6 +104,20 @@ function lstatOrNull(p: string): fs.Stats | null {
     return fs.lstatSync(p);
   } catch {
     return null;
+  }
+}
+
+function assertRealDirectory(dir: string, label: string): void {
+  const st = lstatOrNull(dir);
+  if (st === null || !st.isDirectory() || st.isSymbolicLink()) {
+    fail(`${label} must be a real directory: ${dir}`);
+  }
+}
+
+function assertRealRegularFile(file: string, label: string): void {
+  const st = lstatOrNull(file);
+  if (st === null || !st.isFile() || st.isSymbolicLink()) {
+    fail(`${label} must be a regular file: ${file}`);
   }
 }
 
@@ -120,6 +160,27 @@ function readBoundedJson(file: string, label: string): unknown {
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
   } catch {
     fail(`malformed ${label}: ${file}`);
+  }
+}
+
+/**
+ * Declaration/file presence validation does not execute modules or certify callable exports.
+ */
+function assertNativeProducer(pkgDir: string): void {
+  const contractDir = path.join(pkgDir, "contract");
+  assertRealDirectory(contractDir, "staged contract directory");
+  assertRealDirectory(path.join(pkgDir, "extensions"), "staged extensions directory");
+
+  const nativeContract = readBoundedJson(
+    path.join(contractDir, "native-mcp.v1.json"),
+    "staged native MCP contract",
+  );
+  if (!isDeepStrictEqual(nativeContract, NATIVE_MCP_CONTRACT)) {
+    fail("staged native MCP contract drifts from Stack native policy");
+  }
+
+  for (const entrypoint of [NATIVE_MCP_CONTRACT.definitions.entrypoint, NATIVE_MCP_CONTRACT.ownership.entrypoint]) {
+    assertRealRegularFile(path.join(pkgDir, entrypoint), "staged native MCP entrypoint");
   }
 }
 
@@ -202,7 +263,8 @@ function assertValidEvidence(evidence: unknown): void {
  * already staged Pi package. Reads only the isolated stage
  * (`stageDir/npm/node_modules/jorgex-pi` manifest plus
  * `contract/jorgex-pi.v1.json`, `contract/assets.v1.json`,
- * `contract/runner.v1.json`); no network, no HOME, no active npm/settings.
+ * `contract/runner.v1.json`, plus `contract/native-mcp.v1.json` when native
+ * is declared); no network, no HOME, no active npm/settings.
  *
  * Fail-closed with `pi-candidate:` before activation on any divergent
  * identity, release, digest, commit, or producer contract outside the Stack
@@ -271,11 +333,19 @@ export function buildStagedPiCandidate(input: BuildStagedPiCandidateInput): PiRu
   if (rootContractRaw["schemaVersion"] !== policy.schemaVersion) {
     fail("staged contract schemaVersion drifts from Stack policy");
   }
-  if (
-    stagedCapabilities.length !== policy.capabilities.length ||
-    !stagedCapabilities.every((cap, index) => cap === (policy.capabilities as readonly string[])[index])
-  ) {
+  const legacyCapabilities = [...(policy.capabilities as readonly string[])];
+  const hasNativeCapability = isDeepStrictEqual(stagedCapabilities, [...legacyCapabilities, NATIVE_MCP_CAPABILITY]);
+  if (!hasNativeCapability && !isDeepStrictEqual(stagedCapabilities, legacyCapabilities)) {
     fail("staged capabilities drift from Stack policy");
+  }
+  const declaredMcpNative = rootContractRaw["mcpNative"];
+  if (hasNativeCapability) {
+    if (!isDeepStrictEqual(declaredMcpNative, NATIVE_MCP_BINDING)) {
+      fail("staged root contract mcpNative binding drifts from Stack native policy");
+    }
+    assertNativeProducer(pkgDir);
+  } else if (declaredMcpNative !== undefined) {
+    fail("staged root contract declares mcpNative without the mcp-native-v1 capability");
   }
 
   const assetsRaw = readBoundedJson(path.join(pkgDir, "contract", "assets.v1.json"), "staged assets contract");
@@ -315,6 +385,7 @@ export function buildStagedPiCandidate(input: BuildStagedPiCandidateInput): PiRu
     contract: {
       schemaVersion: 1,
       capabilities: [...stagedCapabilities],
+      ...(hasNativeCapability ? { mcpNative: { ...NATIVE_MCP_BINDING } } : {}),
       runner: {
         bin: policy.runner.bin,
         commands: [...(policy.runner.commands as readonly string[])],
