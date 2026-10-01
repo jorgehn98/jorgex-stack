@@ -13,13 +13,14 @@ import { stackRoot } from "../src/lib/paths.js";
 
 /**
  * Verificación de los plugins Stack OpenCode v2 (`stack/plugins/opencode/hooks.ts`
- * y `worktree.ts`) contra el HOST REAL 2.0.20 con EVENTOS REALES de herramienta
+ * y `worktree.ts`) contra el HOST REAL 2.0.21 con EVENTOS REALES de herramienta
  * (Spec T05/T06, SC-04). No se afirma el registro `/api/plugin` ni un mock de
  * `ctx.tool.hook`: se carga el plugin proyectado por el propio instalador y se
  * observa el `tool_use` nativo que el host emite tras ejecutar el shell.
  *
- * Recipe probada empíricamente contra `opencode v2.0.20` (copia privada del
- * ejecutable, sha256 origen vs copia, ejecutada por separado):
+ * Recipe probada empíricamente contra `opencode v2.0.20`; versión reobservada en
+ * la copia privada actual: `opencode v2.0.21` (copia privada del ejecutable,
+ * sha256 origen vs copia, ejecutada por separado):
  *   - `opencode run --standalone --format json` arranca el motor con un provider
  *     LOCAL en proceso (`@opencode/ai/providers/openai-compatible` contra un
  *     stub HTTP efímero). Sin cuenta, credencial, modelo real ni configuración
@@ -61,7 +62,9 @@ import { stackRoot } from "../src/lib/paths.js";
  */
 const hostBinary = process.env.JORGEX_OPENCODE_V2_BIN;
 const repoRoot = path.resolve(stackRoot(), "..");
-const EXPECTED_VERSION = "opencode v2.0.20";
+// Versión observada en la copia privada actual (sha256 origen vs copia); la
+// captura original de la receta fue contra v2.0.20.
+const EXPECTED_VERSION = "opencode v2.0.21";
 const CASE_TIMEOUT_MS = 90_000;
 
 interface ToolUseEvent {
@@ -423,7 +426,7 @@ describe.skipIf(hostBinary === undefined)(
       expect(fs.existsSync(runRoot), "raíz privada eliminada").toBe(false);
     }, CASE_TIMEOUT_MS);
 
-    it("copia solo el ejecutable y observa el host real v2.0.20", () => {
+    it("copia solo el ejecutable y observa el host real v2.0.21", () => {
       expect(sha256(copy)).toBe(sha256(hostBinary!));
       expect(observedVersion).toBe(EXPECTED_VERSION);
       expect(Number(/^opencode v(\d+)\./.exec(observedVersion)?.[1]), "major 2").toBe(2);

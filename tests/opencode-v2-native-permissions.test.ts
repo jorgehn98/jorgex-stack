@@ -11,11 +11,12 @@ import { stackRoot } from "../src/lib/paths.js";
 
 /**
  * Verificación de la semántica de permisos NATIVOS v2 contra el motor real del
- * host OpenCode 2.0.20 (Spec T04:56: `deny` de secretos incluso con autoaccept,
+ * host OpenCode 2.0.21 (Spec T04:56: `deny` de secretos incluso con autoaccept,
  * `*.env.example` re-permitido después de los denies, y `edit` denegado por rol).
  *
- * Recipe probada empíricamente contra `opencode v2.0.20` (copia privada del
- * ejecutable, sha256 origen vs copia, ejecutada por separado):
+ * Recipe probada empíricamente contra `opencode v2.0.20`; versión reobservada en
+ * la copia privada actual: `opencode v2.0.21` (copia privada del ejecutable,
+ * sha256 origen vs copia, ejecutada por separado):
  *   1. `opencode run --standalone --format json` arranca el motor con un
  *      provider LOCAL en proceso (`@opencode/ai/providers/openai-compatible`
  *      apuntando a un stub HTTP efímero). No hay cuenta, credencial, modelo
@@ -32,13 +33,15 @@ import { stackRoot } from "../src/lib/paths.js";
  * pendientes, no un evaluador). Por eso este seam usa un provider stub offline
  * (sin modelo/credenciales reales) en vez de afirmar un seam de modelo libre.
  *
- * Skip por defecto: exige `JORGEX_OPENCODE_V2_BIN` (ruta del binario 2.0.20).
+ * Skip por defecto: exige `JORGEX_OPENCODE_V2_BIN` (ruta del binario 2.0.21).
  * A diferencia del contrato 1.18.30, este fichero NO reutiliza su runner: v2 usa
  * `providers`/`settings`/`package`, `permissions` array y el input `path`.
  */
 const hostBinary = process.env.JORGEX_OPENCODE_V2_BIN;
 const repoRoot = path.resolve(stackRoot(), "..");
-const EXPECTED_VERSION = "opencode v2.0.20";
+// Versión observada en la copia privada actual (sha256 origen vs copia); la
+// captura original de la receta fue contra v2.0.20.
+const EXPECTED_VERSION = "opencode v2.0.21";
 const CASE_TIMEOUT_MS = 90_000;
 
 type Outcome = "allow" | "deny" | "ask" | "unavailable" | "unknown";
@@ -53,7 +56,7 @@ interface Stub {
   close: () => Promise<void>;
 }
 
-describe.skipIf(hostBinary === undefined)("OpenCode v2.0.20: el motor real aplica deny/allow nativos", () => {
+describe.skipIf(hostBinary === undefined)("OpenCode v2.0.21: el motor real aplica deny/allow nativos", () => {
   let runRoot = "";
   let copy = "";
   let observedVersion = "";
