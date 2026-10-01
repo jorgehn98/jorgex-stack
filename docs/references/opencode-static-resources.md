@@ -68,6 +68,25 @@ proceder. La tabla siguiente es la única fuente de verdad:
   del instalador puede alterar el binario antes de que el loader del
   host lo lea. La verificación por bytes no protege contra esa clase de
   ataque.
+- **Límite operativo — carrera del filesystem**: el helper físico
+  acredita el leaf con `lstat` + `fstat` (`dev`/`ino`/`size`/`nlink`)
+  y vuelve a comprobar el `realpath` de `root` y `target` después
+  de abrir y antes de leer. El caller repite la autenticación antes de
+  los efectos destructivos; cada comprobación vincula la identidad
+  inicial del archivo con el descriptor abierto y vuelve a acreditar
+  el confinamiento físico. Si la revalidación detecta un cambio
+  (descriptor, ruta física o ascendencia escapada), la operación
+  aborta con remedio en lugar de continuar. Esto **no** equivale a
+  una escritura o borrado atómico portable condicional por inode:
+  Node no ofrece esa garantía. Otro proceso del mismo UID que
+  manipule deliberadamente el filesystem entre la comprobación y la
+  mutación por ruta puede superar estos controles. `install`/
+  `uninstall` permanecen operativos sobre los casos legítimos sin
+  nuevas dependencias ni backends nativos; no se afirma resistencia
+  universal ni atomicidad condicional por inode. Esta limitación
+  convive con la anterior (root que altera el paquete) y no la
+  sustituye: ambas describen techos distintos del mismo modelo de
+  amenazas.
 - **No es atestación externa**: el digest en bruto no se publica como
   prueba fuera del bundle; el runtime no usa el hash del JSON para
   acreditar nada más allá del contenido que proyecta.
