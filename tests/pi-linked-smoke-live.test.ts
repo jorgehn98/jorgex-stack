@@ -12,6 +12,9 @@ import { stagePiProviderPackages } from "../src/lib/pi-provider-stage.js";
 import { smokePiProviderRuntime } from "../src/lib/pi-provider-smoke.js";
 import { installMissingEngram } from "../src/lib/engram-install.js";
 
+const sha256Hex = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+const sha512Hex = (bytes: Buffer): string => createHash("sha512").update(bytes).digest("hex");
+
 const piExecutable = process.env.JORGEX_PI_BIN ?? (process.env.PI_TEST_HOST
   ? path.join(process.env.PI_TEST_HOST, "node_modules", ".bin", process.platform === "win32" ? "pi.cmd" : "pi")
   : undefined);
@@ -45,11 +48,73 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     materializeStagedPiRuntimeDependencies({ stageDir: staged.stageDir, tarballPath: artifact.path, release });
     const ready = await smokeLinkedPiRuntime(smoke);
     expect(ready.commands).toEqual(expect.arrayContaining(["permission-system", "subagents", "goal", "websearch"]));
-    const providers = await stagePiProviderPackages({ homeDir, agentDir, piExecutable: piExecutable!, releases: {
-      "gentle-engram": await resolveLatestNpmPackageRelease("gentle-engram", fetch),
-      "pi-mcp-adapter": await resolveLatestNpmPackageRelease("pi-mcp-adapter", fetch),
-    } });
+    const engramTypeboxCompat = process.env.JORGEX_PI_ENGRAM_TYPEBOX_COMPAT === "1";
+    const gentleRelease = await resolveLatestNpmPackageRelease("gentle-engram", fetch);
+    const adapterRelease = await resolveLatestNpmPackageRelease("pi-mcp-adapter", fetch);
+    const providers = await stagePiProviderPackages({
+      homeDir, agentDir, piExecutable: piExecutable!,
+      releases: { "gentle-engram": gentleRelease, "pi-mcp-adapter": adapterRelease },
+      engramTypeboxCompat,
+    });
     const roots = Object.fromEntries(providers.packages.map((provider) => [provider.name, provider.packageRoot])) as Record<"gentle-engram" | "pi-mcp-adapter", string>;
+    const gentle = providers.packages.find((provider) => provider.name === "gentle-engram")!;
+    const adapter = providers.packages.find((provider) => provider.name === "pi-mcp-adapter")!;
+    // The registry SRI resolved from latest stays the source of truth: the
+    // evidence never downgrades it to the effective (possibly derived) SRI.
+    expect(gentle.integrity).toBe(gentleRelease.integrity);
+    expect(adapter.integrity).toBe(adapterRelease.integrity);
+    // Only the opted-in gentle-engram transform may carry provenance.
+    expect(adapter.provenance).toBeUndefined();
+
+    if (engramTypeboxCompat) {
+      const provenance = gentle.provenance;
+      if (provenance === undefined) throw new Error("compat opt-in must record gentle-engram provenance");
+      expect(provenance.packageName).toBe("gentle-engram");
+      expect(provenance.version).toBe(gentleRelease.version);
+      expect(provenance.original.integrity).toBe(gentleRelease.integrity);
+      expect(provenance.original.integrity).toBe(`sha512-${Buffer.from(provenance.original.sha512, "hex").toString("base64")}`);
+
+      // Bind the recorded source digests to the real official bytes the stage
+      // acquired, not to the mutable release metadata alone.
+      const officialBytes = fs.readFileSync(
+        path.join(providers.stageDir, "gentle-engram", "downloads", `gentle-engram-${gentleRelease.version}.tgz`),
+      );
+      expect(sha256Hex(officialBytes)).toBe(provenance.original.sha256);
+      expect(sha512Hex(officialBytes)).toBe(provenance.original.sha512);
+
+      const installedManifest = fs.readFileSync(path.join(gentle.packageRoot, "package.json"));
+      const installedManifestSha256 = sha256Hex(installedManifest);
+      const lock = JSON.parse(fs.readFileSync(
+        path.join(path.dirname(path.dirname(gentle.packageRoot)), "package-lock.json"), "utf8",
+      )) as { packages: Record<string, { integrity?: string }> };
+
+      if (provenance.origin === "registry") {
+        // An official release already carrying the #1567 delta is installed
+        // untouched; no unpublished release is fabricated for it.
+        expect(provenance.derived).toBeUndefined();
+        expect(installedManifestSha256).toBe(provenance.original.manifestSha256);
+        expect(lock.packages["node_modules/gentle-engram"]?.integrity).toBe(gentleRelease.integrity);
+      } else {
+        const derived = provenance.derived;
+        expect(derived.integrity).not.toBe(gentleRelease.integrity);
+        const derivedBytes = fs.readFileSync(derived.path);
+        expect(sha256Hex(derivedBytes)).toBe(derived.sha256);
+        expect(sha512Hex(derivedBytes)).toBe(derived.sha512);
+        expect(installedManifestSha256).toBe(derived.manifestSha256);
+        const manifest = JSON.parse(installedManifest.toString("utf8")) as {
+          dependencies?: Record<string, unknown>;
+          peerDependencies?: Record<string, unknown>;
+        };
+        // The installed variant must rely on the host TypeBox, not its own.
+        expect(manifest.dependencies?.typebox).toBeUndefined();
+        expect(manifest.peerDependencies?.typebox).toBe("*");
+        expect(fs.existsSync(path.join(gentle.packageRoot, "node_modules", "typebox"))).toBe(false);
+        expect(lock.packages["node_modules/gentle-engram/node_modules/typebox"]).toBeUndefined();
+        expect(lock.packages["node_modules/gentle-engram"]?.integrity).toBe(derived.integrity);
+      }
+    } else {
+      expect(gentle.provenance).toBeUndefined();
+    }
     // The adapter may initialize its lazy MCP transport during startup. Use
     // the official verified binary, not Node pretending to be an MCP server.
     const engram = await installMissingEngram({ homeDir });
@@ -62,7 +127,17 @@ it.skipIf(!piExecutable || !artifactPath || !version)("real Pi loads the promote
     failed = true;
     throw error;
   } finally {
-    if (failed) console.error(`Failed Pi live stage retained for diagnosis: ${homeDir}`);
-    else fs.rmSync(homeDir, { recursive: true, force: true });
+    try {
+      // Always remove our own isolated home, even after a failure: only the
+      // compact diagnostic path is kept, never the whole environment.
+      fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      if (failed) console.error(`Pi live stage failed; own isolated home removed: ${homeDir}`);
+    } catch (cleanupError) {
+      // A successful removal is the only thing that prints "removed"; the
+      // original failure still propagates when cleanup cannot finish.
+      if (!failed) throw cleanupError;
+      const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      console.error(`Pi live stage cleanup failed; own isolated home retained at ${homeDir}: ${detail}`);
+    }
   }
 }, process.platform === "win32" ? 960_000 : 480_000);

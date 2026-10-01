@@ -123,6 +123,7 @@ jobs:
       PI_TEST_HOST: ${{ github.workspace }}/.validation-artifacts/pi-live-host
       JORGEX_PI_LIVE_ARTIFACT: ${{ github.workspace }}/.validation-artifacts/pi-live.tgz
       PI_TEST_CANDIDATE: ${{ github.workspace }}/.validation-artifacts/pi-live.json
+      JORGEX_PI_ENGRAM_TYPEBOX_COMPAT: '1'
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
