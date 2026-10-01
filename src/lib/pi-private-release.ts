@@ -391,7 +391,7 @@ export async function activateVerifiedPiRelease(
   const backupEntry = path.join(backupDir, "entry");
   const backupSettings = path.join(backupDir, "settings.json");
   const backupReceipt = path.join(backupDir, "receipt.json");
-  const expectedTarget = `../jorgex-pi-managed/releases/${releaseId}/node_modules/${EXPECTED_ENTRY}`;
+  const expectedTarget = path.join("..", "jorgex-pi-managed", "releases", releaseId, "node_modules", EXPECTED_ENTRY);
 
   assertStrictChild(agentDir, homeDir, "agentDir");
   assertStrictChild(receiptPath, homeDir, "receiptPath");
@@ -1085,7 +1085,7 @@ export function deactivateVerifiedPiRelease(
   if (path.dirname(releaseDir) !== releaseRoot || !HEX64_PATTERN.test(releaseId)) {
     throw new Error(`managed release must live under the private releases root: ${releaseDir}`);
   }
-  const expectedTarget = `../jorgex-pi-managed/releases/${releaseId}/node_modules/${EXPECTED_ENTRY}`;
+  const expectedTarget = path.join("..", "jorgex-pi-managed", "releases", releaseId, "node_modules", EXPECTED_ENTRY);
   const packageRoot = path.join(releaseDir, "node_modules", EXPECTED_ENTRY);
 
   assertStrictChild(agentDir, homeDir, "agentDir");

@@ -412,7 +412,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
   it("routes the real job conservatively across pull-request and manual events", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
-    expect(jobs).toHaveLength(3);
+    expect(jobs).toHaveLength(4);
 
     const [job] = jobs;
     expect(job).toBeDefined();
@@ -472,13 +472,74 @@ describe("JorgeX Pi artifact pull-request gate", () => {
       if (step.uses !== undefined) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
     }
     const livePi = jobs[2];
+    expect(livePi?.name).toBe("Pi runtime (${{ matrix.os }})");
     expect(livePi?.if).toBeUndefined();
     expect(workflow).toContain("os: [ubuntu-latest, windows-latest]");
     expect(livePi?.steps.some((step) => step.raw.includes("dist/pi-ci-artifact.js"))).toBe(true);
     expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-linked-smoke-live.test.ts"))).toBe(true);
-    expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-native-phase.test.ts"))).toBe(true);
+    expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-native-phase.test.ts"))).toBe(false);
+    const nativePi = jobs[3];
+    expect(nativePi?.name).toBe("Pi native runtime (${{ matrix.os }})");
+    expect(nativePi?.if).toBeUndefined();
+    expect(nativePi?.steps.some((step) => step.raw.includes("dist/pi-ci-artifact.js"))).toBe(true);
+    expect(nativePi?.steps.some((step) => step.run?.includes("tests/pi-native-phase.test.ts"))).toBe(true);
     expect(workflow).toContain("PI_TEST_HOST:");
     expect(workflow).toContain("PI_TEST_CANDIDATE:");
+  });
+
+  it("separates the linked and native live runtime into independent, equally-scoped jobs", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+    const linked = jobs.find((job) => job.name === "Pi runtime (${{ matrix.os }})");
+    const native = jobs.find((job) => job.name === "Pi native runtime (${{ matrix.os }})");
+    expect(linked, "El runtime enlazado conserva su nombre de check estable.").toBeDefined();
+    expect(native, "El runtime nativo corre en su propio job.").toBeDefined();
+    if (linked === undefined || native === undefined) {
+      throw new Error("Faltan los jobs de runtime Pi.");
+    }
+
+    // Neither split job is draft-routed, and both keep the two-OS matrix and
+    // the same 20-minute budget; the split only narrows the test scope.
+    expect(linked.if).toBeUndefined();
+    expect(native.if).toBeUndefined();
+    expect(workflow.match(/os: \[ubuntu-latest, windows-latest\]/g) ?? []).toHaveLength(2);
+    expect(workflow.match(/runs-on: \$\{\{ matrix\.os \}\}/g) ?? []).toHaveLength(2);
+    expect(workflow.match(/timeout-minutes: 20/g) ?? []).toHaveLength(2);
+
+    const liveFiles = (job: WorkflowJob, sentinel: string): string[] => {
+      const step = (job.steps ?? []).find((candidate) => candidate.run?.includes(sentinel));
+      expect(step, `Falta el paso del smoke vivo ${sentinel}.`).toBeDefined();
+      return (step?.run ?? "").match(/tests\/[A-Za-z0-9._-]+\.test\.ts/g) ?? [];
+    };
+    const linkedFiles = liveFiles(linked, "tests/pi-provider-update.test.ts");
+    const nativeFiles = liveFiles(native, "tests/pi-native-phase.test.ts");
+
+    // The union of both jobs is exactly the previous live suite: every file
+    // still runs once, none is dropped and none is duplicated.
+    expect(nativeFiles).toEqual(["tests/pi-native-phase.test.ts"]);
+    expect(linkedFiles).not.toContain("tests/pi-native-phase.test.ts");
+    expect([...linkedFiles, ...nativeFiles].sort()).toEqual([
+      "tests/pi-linked-smoke-live.test.ts",
+      "tests/pi-mcp-setup-integration.test.ts",
+      "tests/pi-native-phase.test.ts",
+      "tests/pi-provider-activation.test.ts",
+      "tests/pi-provider-stage.test.ts",
+      "tests/pi-provider-update.test.ts",
+      "tests/pi-stage-smoke.test.ts",
+      "tests/pi-staged-lock.test.ts",
+    ]);
+
+    // Both jobs acquire the same verified artifact with the same runner; the
+    // split must not change that acquisition.
+    for (const job of [linked, native]) {
+      const acquire = (job.steps ?? []).find((step) => step.raw.includes("dist/pi-ci-artifact.js"));
+      expect(acquire, "Cada job adquiere el artefacto verificado.").toBeDefined();
+      expect(acquire?.raw).toContain('node dist/pi-ci-artifact.js "${{ env.JORGEX_PI_LIVE_ARTIFACT }}" "${{ env.PI_TEST_CANDIDATE }}"');
+    }
+
+    // PR202's step-scoped GitHub auth belongs to the live smoke that resolves
+    // the Engram release; the native job must not copy it.
+    expect(native.steps.some((step) => step.raw.includes("GH_TOKEN"))).toBe(false);
   });
 
   it("declares explicit routing, serialization, identity, and read-only contracts", () => {

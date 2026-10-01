@@ -822,6 +822,205 @@ describe("[T77] managed native selection keeps legacy owned installs out of the 
   });
 });
 
+// --- T04 provider-receipt binding and the explicit compat opt-in ------------
+//
+// The native phase must read and bind the separate provider receipt BEFORE any
+// network or active write: a malformed receipt or a legacy-transport claim
+// blocks, a derived recipe is preserved, and an explicit compat opt-in becomes
+// the first-receipt snapshot (`null`). The stage/activation doubles stand in
+// for the network/stage boundary so the forwarded option and snapshot can be
+// observed without manufacturing a valid official receipt.
+
+const PROVIDER_RECEIPT_RELATIVE = path.join(".jorgex-stack", "pi-provider-receipt.json");
+
+/** Receipt binding requires agentDir to be a strict child of homeDir. */
+function receiptFixture(): Fixture {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-native-receipt-"));
+  roots.push(root);
+  return {
+    root,
+    homeDir: path.join(root, "home"),
+    agentDir: path.join(root, "home", "agent"),
+    stageDir: path.join(root, "stage"),
+    engramBin: path.join(root, "bin", "engram"),
+  };
+}
+
+/**
+ * Registers the stage/activation doubles and a fresh module graph so the phase
+ * forwards its option and snapshot. `priorVerification` doubles the read-only
+ * receipt verifier; the real receipt schema is never weakened.
+ */
+async function withNativeBoundaryDoubles<T>(
+  f: Fixture,
+  run: (
+    phase: typeof runNativePiMcpPhase,
+    stageInputs: unknown[],
+    activationInputs: unknown[],
+  ) => Promise<T>,
+  priorVerification?: unknown,
+): Promise<T> {
+  const stageInputs: unknown[] = [];
+  const activationInputs: unknown[] = [];
+  vi.resetModules();
+  if (priorVerification !== undefined) {
+    vi.doMock("../src/lib/pi-provider-receipt.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/lib/pi-provider-receipt.js")>("../src/lib/pi-provider-receipt.js")),
+      verifyPiProviderReceipt: vi.fn(() => priorVerification),
+    }));
+  }
+  vi.doMock("../src/lib/pi-provider-stage.js", async () => ({
+    ...(await vi.importActual<typeof import("../src/lib/pi-provider-stage.js")>("../src/lib/pi-provider-stage.js")),
+    stagePiProviderPackages: vi.fn(async (input: unknown) => {
+      stageInputs.push(input);
+      return buildProviderStage(f.homeDir, "compat");
+    }),
+  }));
+  vi.doMock("../src/lib/pi-provider-activation.js", async () => ({
+    ...(await vi.importActual<typeof import("../src/lib/pi-provider-activation.js")>("../src/lib/pi-provider-activation.js")),
+    activatePiProviderPackages: vi.fn(async (input: unknown) => {
+      activationInputs.push(input);
+      return { ok: true, changed: true, backupDir: null };
+    }),
+  }));
+  vi.doMock("../src/lib/pi-native-mcp.js", async () => ({
+    ...(await vi.importActual<typeof import("../src/lib/pi-native-mcp.js")>("../src/lib/pi-native-mcp.js")),
+    buildNativeMcpAuthority: vi.fn(async () => ({ schemaVersion: 1, entries: {} })),
+  }));
+  try {
+    const phase = (await import("../src/lib/pi-native-phase.js")).runNativePiMcpPhase as typeof runNativePiMcpPhase;
+    return await run(phase, stageInputs, activationInputs);
+  } finally {
+    vi.doUnmock("../src/lib/pi-provider-receipt.js");
+    vi.doUnmock("../src/lib/pi-provider-stage.js");
+    vi.doUnmock("../src/lib/pi-provider-activation.js");
+    vi.doUnmock("../src/lib/pi-native-mcp.js");
+    vi.resetModules();
+  }
+}
+
+describe("[T04] native provider receipt binding before effects", () => {
+  it("rejects a non-boolean compat opt-in before any effect", async () => {
+    const f = fixture();
+    stageWithContract(f);
+    const result = await runNativePiMcpPhase({
+      ...phaseInput(f, true),
+      engramTypeboxCompat: "yes" as unknown as boolean,
+    });
+    expect(result).toMatchObject({ kind: "blocked", reason: "native-compat-invalid" });
+    expect(fs.existsSync(path.join(f.agentDir, "mcp.json"))).toBe(false);
+  });
+
+  it("blocks a malformed managed provider receipt before any network or write", async () => {
+    const f = receiptFixture();
+    stageWithContract(f);
+    const receiptFile = path.join(f.homeDir, PROVIDER_RECEIPT_RELATIVE);
+    fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
+    fs.writeFileSync(receiptFile, "{ not json");
+    const fetchSpy = vi.fn();
+    const result = await runNativePiMcpPhase({
+      ...phaseInput(f, true),
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+    });
+    expect(result).toMatchObject({ kind: "blocked", reason: "native-provider-receipt-invalid" });
+    if (result.kind !== "blocked") return;
+    // Distinguish the receipt guard from an unrelated scope rejection.
+    expect(result.remedy).toMatch(/malformed JSON/);
+    // The real verifier rejects the malformed receipt before any acquisition.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(f.agentDir, "mcp.json"))).toBe(false);
+  });
+
+  it("refuses to claim a managed legacy receipt as native", async () => {
+    const f = receiptFixture();
+    stageWithContract(f);
+    const receiptFile = path.join(f.homeDir, PROVIDER_RECEIPT_RELATIVE);
+    fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
+    fs.writeFileSync(receiptFile, "{}\n");
+    vi.resetModules();
+    vi.doMock("../src/lib/pi-provider-receipt.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/lib/pi-provider-receipt.js")>("../src/lib/pi-provider-receipt.js")),
+      verifyPiProviderReceipt: vi.fn(() => ({
+        kind: "registry" as const,
+        receipt: { schemaVersion: 1 as const, agentDir: f.agentDir, mcpTransport: "legacy" as const, providers: [] },
+      })),
+    }));
+    try {
+      const { runNativePiMcpPhase: phase } = await import("../src/lib/pi-native-phase.js");
+      const fetchSpy = vi.fn();
+      const result = await phase({ ...phaseInput(f, true), fetchImpl: fetchSpy as unknown as typeof fetch });
+      expect(result).toMatchObject({ kind: "blocked", reason: "native-provider-receipt-transport" });
+      // The transport selection is a pre-network decision, not an acquisition.
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(f.agentDir, "mcp.json"))).toBe(false);
+    } finally {
+      vi.doUnmock("../src/lib/pi-provider-receipt.js");
+      vi.resetModules();
+    }
+  });
+
+  it("rejects the explicit compat opt-in on an isolated target before any effect", async () => {
+    const f = fixture();
+    stageWithContract(f);
+    const target = path.join(f.root, "target");
+    fs.mkdirSync(target, { recursive: true });
+    const result = await runNativePiMcpPhase({
+      homeDir: path.join(target, "home"),
+      agentDir: path.join(target, "pi-agent"),
+      engramBin: f.engramBin,
+      piExecutable: process.execPath,
+      stageDir: f.stageDir,
+      fresh: true,
+      bootstrapDirs: true,
+      targetDir: target,
+      engramTypeboxCompat: true,
+      providerStage: buildProviderStage(target, "compat-target"),
+    });
+    expect(result).toMatchObject({ kind: "blocked", reason: "native-compat-target-unsupported" });
+    expect(fs.existsSync(path.join(target, "pi-agent", "mcp.json"))).toBe(false);
+  });
+
+  it("forwards an explicit compat opt-in as a null first-receipt snapshot", async () => {
+    const f = receiptFixture();
+    stageWithContract(f);
+    const result = await withNativeBoundaryDoubles(f, async (phase, stageInputs, activationInputs) => {
+      const outcome = await phase({ ...phaseInput(f, true), engramTypeboxCompat: true, bootstrapDirs: true });
+      expect(stageInputs[0]).toMatchObject({ mcpTransport: "native", engramTypeboxCompat: true });
+      expect(activationInputs[0]).toMatchObject({
+        mcpTransport: "native",
+        providerReceiptSnapshot: null,
+        registrationPolicy: "create-if-absent",
+      });
+      return outcome;
+    });
+    expect(result).toMatchObject({ kind: "ready" });
+  });
+
+  it("preserves a derived receipt recipe and forwards its exact snapshot", async () => {
+    const f = receiptFixture();
+    stageWithContract(f);
+    managedReceipt(f);
+    // An update targets an already-bootstrapped agent directory.
+    fs.mkdirSync(f.agentDir, { recursive: true });
+    const receiptFile = path.join(f.homeDir, PROVIDER_RECEIPT_RELATIVE);
+    fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
+    const snapshot = "{}\n";
+    fs.writeFileSync(receiptFile, snapshot);
+    const prior = {
+      kind: "derived" as const,
+      receipt: { schemaVersion: 1 as const, agentDir: f.agentDir, mcpTransport: "native" as const, providers: [] },
+    };
+    const result = await withNativeBoundaryDoubles(f, async (phase, stageInputs, activationInputs) => {
+      // No explicit opt-in: the derived receipt alone must keep the recipe.
+      const outcome = await phase(phaseInput(f, false));
+      expect(stageInputs[0]).toMatchObject({ mcpTransport: "native", engramTypeboxCompat: true });
+      expect(activationInputs[0]).toMatchObject({ mcpTransport: "native", providerReceiptSnapshot: snapshot });
+      return outcome;
+    }, prior);
+    expect(result).toMatchObject({ kind: "ready" });
+  });
+});
+
 // --- Live authoritative flow against the observed published artifact --------
 //
 // Skipped only when NO live configuration is present. When any of
@@ -952,9 +1151,18 @@ let liveStage: LiveStage | undefined;
     liveStage = { stageDir: staged.stageDir, artifact, release, evidence: staged.evidence };
   }, 600_000);
 
-  afterAll(() => {
-    if (liveRoot !== "") fs.rmSync(liveRoot, { recursive: true, force: true });
-  });
+  // The published fixture contains full dependency trees; Windows cleanup can
+  // exceed the generic hook deadline even after every runtime assertion passes.
+  afterAll(async () => {
+    if (liveRoot === "") return;
+    const started = performance.now();
+    try {
+      await fs.promises.rm(liveRoot, { recursive: true, force: true });
+      expect(fs.lstatSync(liveRoot, { throwIfNoEntry: false })).toBeUndefined();
+    } finally {
+      console.error(`Native Pi fixture cleanup elapsed: ${Math.round(performance.now() - started)}ms`);
+    }
+  }, 120_000);
 
   function targetScope(label: string): { target: string; homeDir: string; agentDir: string } {
     const target = path.join(liveRoot, `target-${label}`);

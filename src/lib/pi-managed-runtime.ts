@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { updatePiProviderPackages } from "./pi-provider-update.js";
+import { piProviderReceiptPath, verifyPiProviderReceipt } from "./pi-provider-receipt.js";
 import { reconcileNativeAuthorityAfterCleanup, runNativePiMcpPhase, type NativeMcpPreparedWrite } from "./pi-native-phase.js";
 import {
   NATIVE_MCP_SERVER_NAMES,
@@ -384,7 +385,35 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
   playwrightRefresh?: boolean;
   packageOnly?: boolean;
   upgradePermissions?: boolean;
+  engramTypeboxCompat?: boolean;
 }): Promise<PiManagedOperationResult> {
+  // Authenticate existing provenance before acquiring or activating Pi itself;
+  // later provider checks still protect against concurrent changes.
+  if (input.targetDir === undefined) {
+    const guardHomeDir = os.homedir();
+    const guardAgentDir = path.dirname(piSystemPromptFile());
+    let receiptStat: fs.Stats | undefined;
+    try {
+      receiptStat = fs.lstatSync(piProviderReceiptPath(guardHomeDir), { throwIfNoEntry: false });
+    } catch (error) {
+      return {
+        kind: "blocked",
+        reason: "provider-receipt-invalid",
+        remedy: `No se pudo comprobar el recibo gestionado de providers Pi (${error instanceof Error ? error.message : String(error)}); no se modificó nada.`,
+      };
+    }
+    if (receiptStat !== undefined) {
+      try {
+        verifyPiProviderReceipt({ homeDir: guardHomeDir, agentDir: guardAgentDir });
+      } catch (error) {
+        return {
+          kind: "blocked",
+          reason: "provider-receipt-invalid",
+          remedy: `El recibo gestionado de providers Pi es inválido o drifted (${error instanceof Error ? error.message : String(error)}); no se modificó nada.`,
+        };
+      }
+    }
+  }
   // T06 deliberate install/update: the real CLI never passes a caller stage, so
   // resolve the live provider preflight before the obsolete host gate. TargetDir
   // never runs preflight network; injected candidate/prepared skip it.
@@ -441,6 +470,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
     writingStyle: suppliedStyle,
     writingStyleMode,
     upgradePermissions: requestedUpgrade,
+    engramTypeboxCompat: requestedEngramTypeboxCompat,
     ...runtimeInput
   } = input;
   const supportsPermissionsUpgrade = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("permissions-upgrade-v1");
@@ -691,6 +721,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       fresh: nativeFresh,
       bootstrapDirs: nativeFresh,
       ...(input.targetDir === undefined ? {} : { targetDir: input.targetDir }),
+      ...(requestedEngramTypeboxCompat === undefined ? {} : { engramTypeboxCompat: requestedEngramTypeboxCompat }),
       ...(nativeBackupRoot === undefined ? {} : { backupRoot: nativeBackupRoot }),
       ...(needsDevtoolsObservation ? { devtoolsManagedStateDir } : {}),
       ...(input.nativeProviderStage === undefined ? {} : { providerStage: input.nativeProviderStage }),
@@ -993,6 +1024,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
       const providers = await updatePiProviderPackages({
         homeDir: os.homedir(), agentDir: path.dirname(piSystemPromptFile()),
         piExecutable: input.detected.executable, engramBin: input.engramBin,
+        ...(requestedEngramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
       });
       if (providers.kind === "updated" && result.kind === "healthy") result = { kind: "updated" };
     } catch (error) {

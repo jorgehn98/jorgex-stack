@@ -6,6 +6,7 @@ import { resolveLatestNpmPackageRelease } from "./npm-provider.js";
 import { stagePiProviderPackages } from "./pi-provider-stage.js";
 import type { StageRun } from "./pi-release-stage.js";
 import { activatePiProviderPackages, type PiProviderPackage } from "./pi-provider-activation.js";
+import { piProviderReceiptPath, verifyPiProviderReceipt } from "./pi-provider-receipt.js";
 import { inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { trustedDevtoolsHandoff, type PiProjectionMcpNativeAuthority } from "./pi-projection-lifecycle.js";
 import {
@@ -63,6 +64,12 @@ export interface NativePiMcpPhaseInput {
   readonly targetDir?: string;
   /** Bootstrap absent agentDir/npm/node_modules/settings for a truly fresh install. */
   readonly bootstrapDirs?: boolean;
+  /**
+   * Deliberate compat opt-in for the bounded #1567 derived provider artifact.
+   * Only honored on a real install/update; the public flag forbids target-dir
+   * and the value is type-validated before any network or write.
+   */
+  readonly engramTypeboxCompat?: boolean;
 }
 
 export interface NativeMcpPreparedWrite {
@@ -415,6 +422,10 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
   const agentDir = path.resolve(input.agentDir);
   const stagePackageRoot = path.join(path.resolve(input.stageDir), "npm", "node_modules", "jorgex-pi");
 
+  if (input.engramTypeboxCompat !== undefined && typeof input.engramTypeboxCompat !== "boolean") {
+    return blocked("native-compat-invalid", "El opt-in de compatibilidad de Engram debe ser booleano; no se modificó nada.");
+  }
+
   // --- Isolation scope (read-only): real installs keep actual HOME containment
   // unchanged; a native target must prove the exact canonical relation before
   // any effect. The validated target root becomes the provider-promotion
@@ -456,6 +467,40 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
     readNativeMcpContract(stagePackageRoot);
   } catch (error) {
     return blocked("native-contract-invalid", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
+  }
+
+  // --- Read-only provider-receipt binding before any active write. ---
+  // A real install/update binds the separate provenance receipt to the canonical
+  // home so a derived recipe is preserved and an existing managed receipt is
+  // never silently coerced to native. A target-dir keeps its injected baseline:
+  // its agentDir is a sibling of the canonical home and the public opt-in
+  // forbids target, so no receipt is claimed there.
+  let effectiveEngramTypeboxCompat = input.engramTypeboxCompat === true;
+  let providerReceiptSnapshot: string | null | undefined;
+  if (input.targetDir === undefined) {
+    const receiptFile = piProviderReceiptPath(homeDir);
+    let receiptExists = false;
+    try {
+      receiptExists = fs.lstatSync(receiptFile, { throwIfNoEntry: false }) !== undefined;
+    } catch (error) {
+      return blocked("native-provider-receipt-invalid", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
+    }
+    if (!receiptExists) {
+      providerReceiptSnapshot = input.engramTypeboxCompat === true ? null : undefined;
+    } else {
+      try {
+        const prior = verifyPiProviderReceipt({ homeDir, agentDir });
+        if (prior.receipt !== null && prior.receipt.mcpTransport !== "native") {
+          return blocked("native-provider-receipt-transport", "El recibo gestionado de providers declara transporte legacy y no se reclama como native. Pi no quedó activado.");
+        }
+        providerReceiptSnapshot = fs.readFileSync(receiptFile, "utf8");
+        if (prior.kind === "derived") effectiveEngramTypeboxCompat = true;
+      } catch (error) {
+        return blocked("native-provider-receipt-invalid", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
+      }
+    }
+  } else if (input.engramTypeboxCompat === true) {
+    return blocked("native-compat-target-unsupported", "El opt-in de compatibilidad de Engram no se admite en un target-dir aislado; no se modificó nada.");
   }
 
   // --- Read-only: every snapshot and preflight before any active write. ---
@@ -586,7 +631,11 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
     } else {
       const release = await resolveLatestNpmPackageRelease("gentle-engram", input.fetchImpl ?? fetch);
       const staged = await stagePiProviderPackages(
-        { homeDir: isolationRoot, agentDir, piExecutable: input.piExecutable, mcpTransport: "native", releases: { "gentle-engram": release } },
+        {
+          homeDir: isolationRoot, agentDir, piExecutable: input.piExecutable, mcpTransport: "native",
+          engramTypeboxCompat: effectiveEngramTypeboxCompat,
+          releases: { "gentle-engram": release },
+        },
         { fetchImpl: input.fetchImpl ?? fetch, ...(input.run === undefined ? {} : { run: input.run }) },
       );
       providerStage = staged;
@@ -603,6 +652,7 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
       mcpTransport: "native",
       registrationPolicy: input.fresh ? "create-if-absent" : "existing",
       settingsJson: settingsBytes,
+      ...(providerReceiptSnapshot === undefined ? {} : { providerReceiptSnapshot }),
       verify: async () => {
         const readback = readRawOrNull(settingsPath);
         if (readback === null) throw new Error("settings.json disappeared during provider activation");
