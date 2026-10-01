@@ -16,6 +16,7 @@ import { readManifest } from "./manifest.js";
 import { DEFAULT_MODEL_MAP } from "./model-map.js";
 import { dataDir, HOME, stackRoot } from "./paths.js";
 import { filterProjectedPiPackage } from "./pi-package-lifecycle.js";
+import { parseNativeMcpAuthorityStrict } from "./pi-native-mcp.js";
 import { loadVerifiedManagedBrowserReceipt } from "./browser-managed.js";
 
 /** Pi v2 authenticates this Stack dispatcher; it rechecks the browser at every invocation. */
@@ -123,6 +124,13 @@ export interface PiProjectionLifecycleInput {
    * published after configuration/handoff, never derived from shape here.
    */
   nativeMcpAuthority?: PiProjectionMcpNativeAuthority;
+  /**
+   * Pending native MCP config write, coordinated by this existing lifecycle: it
+   * runs after the handoff is actually written/readback and before the final
+   * receipt/authority is published. On success it may expose `recover` to roll
+   * back its exact MCP write; a sync closure (no RPC, no second transaction).
+   */
+  pendingNativeConfigWrite?: () => PendingNativeConfigWriteResult;
 }
 
 export interface PiProjectionManifest {
@@ -297,6 +305,63 @@ function hasActionDrift(action: FileAction, deps: PiProjectionLifecycleDeps): bo
   return deps.readText(action.target) !== canonicalActionContent(action);
 }
 
+/** A file this operation owns the write for, with the exact previous/own bytes. */
+type ProjectionOwnedWrite = { file: string; previousRaw: string | null; ownRaw: string | null };
+
+/** A successful pending native write may expose rollback of its exact MCP write. */
+type PendingNativeConfigWriteResult =
+  | { kind: "ok"; recover?: () => boolean; paths?: readonly string[] }
+  | { kind: "blocked"; reason: string; remedy: string };
+
+/**
+ * Restores only while the file still holds this operation's own bytes; a
+ * concurrent user change (drift) is preserved and reported, never clobbered.
+ * Uses the supplied read/write/remove seam, not the real filesystem.
+ */
+function restoreProjectionWrite(deps: PiProjectionLifecycleDeps, entry: ProjectionOwnedWrite): boolean {
+  let current: string | null;
+  try { current = deps.readText(entry.file); } catch { return false; }
+  if (current === entry.previousRaw) return true; // already at the previous state
+  if (entry.ownRaw !== null) {
+    if (current !== entry.ownRaw) return false;
+    try {
+      if (entry.previousRaw === null) deps.removeFile(entry.file);
+      else deps.writeText(entry.file, entry.previousRaw);
+      return true;
+    } catch { return false; }
+  }
+  // This operation deleted the file: restore only while it is still absent.
+  if (current !== null) return false;
+  if (entry.previousRaw === null) return true;
+  try { deps.writeText(entry.file, entry.previousRaw); return true; } catch { return false; }
+}
+
+/**
+ * Attempts every safe local restoration (handoffs/receipt/settings this operation
+ * wrote, plus the pending MCP write) even if one fails or throws, and reports
+ * incomplete recovery instead of hiding it.
+ */
+function projectionWriteFailure(
+  deps: PiProjectionLifecycleDeps,
+  writes: readonly ProjectionOwnedWrite[],
+  pendingRecover: (() => boolean) | undefined,
+  pendingPaths: readonly string[],
+  detail: string,
+): PiProjectionBlocked {
+  let incomplete = false;
+  const paths: string[] = [...pendingPaths];
+  for (const entry of [...writes].reverse()) {
+    paths.push(entry.file);
+    if (!restoreProjectionWrite(deps, entry)) incomplete = true;
+  }
+  if (pendingRecover !== undefined) {
+    try { if (!pendingRecover()) incomplete = true; } catch { incomplete = true; }
+  }
+  const remedy = `La publicación nativa falló (${detail}); se restauraron los archivos que seguían siendo la escritura propia de esta operación. Revisa mcp.json y la autoridad antes de reintentar.`
+    + (incomplete ? " Recuperación incompleta: hay drift concurrente o una restauración falló." : "");
+  return { kind: "blocked", reason: "projection-write-failed", paths: uniquePaths(paths), remedy };
+}
+
 function applyActions(
   actions: FileAction[], deps: PiProjectionLifecycleDeps,
   handoffs: { kind: HandoffKind; file: string; previous: string | null }[] = [],
@@ -353,46 +418,23 @@ function hasExactKeys(record: object, expected: readonly string[]): boolean {
   return keys.length === expected.length && expected.every((key) => keys.includes(key));
 }
 
-const MCP_NATIVE_SERVERS = new Set(["engram", "context7", "chrome-devtools"]);
-
 type ParsedPiProjectionReceipt =
   | { kind: "valid"; receipt: PiProjectionReceipt }
   | { kind: "invalid" }
   | { kind: "authority-invalid" };
 
-function isSha256Hex(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-
 /**
- * Strictly parses the granular native authority extension. Returns null for a
- * present-but-malformed authority so callers block instead of silently
- * regenerating a receipt that still carries ownership claims.
+ * Wraps the single shared strict parser (pi-native-mcp) so a present-but-malformed
+ * authority yields null and callers keep blocking with `authority-invalid`
+ * instead of silently regenerating a receipt that still carries claims. The
+ * field serialization order and legacy shape are preserved by that parser.
  */
 function parseMcpNativeAuthority(value: unknown): PiProjectionMcpNativeAuthority | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  if (!hasExactKeys(value, ["schemaVersion", "entries"])) return null;
-  if (Reflect.get(value, "schemaVersion") !== 1) return null;
-  const entries = Reflect.get(value, "entries");
-  if (entries === null || typeof entries !== "object" || Array.isArray(entries)) return null;
-  const parsed: Record<string, PiProjectionMcpNativeEntry> = {};
-  for (const name of Object.keys(entries)) {
-    if (!MCP_NATIVE_SERVERS.has(name)) return null;
-    const entry = Reflect.get(entries, name);
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
-    const hasCleanup = Object.hasOwn(entry, "cleanupSha256");
-    if (!hasExactKeys(entry, hasCleanup ? ["definitionSha256", "cleanupSha256"] : ["definitionSha256"])) return null;
-    const definitionSha256 = Reflect.get(entry, "definitionSha256");
-    if (!isSha256Hex(definitionSha256)) return null;
-    if (hasCleanup) {
-      const cleanupSha256 = Reflect.get(entry, "cleanupSha256");
-      if (!isSha256Hex(cleanupSha256)) return null;
-      parsed[name] = { definitionSha256, cleanupSha256 };
-    } else {
-      parsed[name] = { definitionSha256 };
-    }
+  try {
+    return parseNativeMcpAuthorityStrict(value);
+  } catch {
+    return null;
   }
-  return { schemaVersion: 1, entries: parsed };
 }
 
 function parseReceipt(raw: string | null, expected: PiProjectionReceipt): ParsedPiProjectionReceipt {
@@ -895,7 +937,8 @@ export function runPiProjectionLifecycle(
     return { kind: "blocked", reason: "source-divergent" };
   }
   const packageWillChange = filteredSettings !== null && filteredSettings !== currentSettings;
-  const receiptChanged = deps.readText(scope.receiptFile) !== expectedReceipt;
+  const receiptOriginalRaw = deps.readText(scope.receiptFile);
+  const receiptChanged = receiptOriginalRaw !== expectedReceipt;
   if (drifted.length > 0 || packageWillChange || receiptChanged || removedHandoffs.length > 0) {
     const backup = backupExisting([
       ...drifted.map((action) => action.target),
@@ -906,6 +949,11 @@ export function runPiProjectionLifecycle(
     ], deps);
     if (backup.kind === "backup-failed") return backupFailure(backup.paths);
   }
+  // In the coordinated native path this lifecycle snapshots every file it is
+  // about to create/refresh/remove (handoffs, settings, receipt) so a later
+  // failure can cautiously restore only its own writes.
+  const coordinated = input.pendingNativeConfigWrite !== undefined;
+  const ownWrites: ProjectionOwnedWrite[] = [];
   for (const { kind, file } of removedHandoffs) {
     try {
       const current = deps.readText(file);
@@ -916,6 +964,13 @@ export function runPiProjectionLifecycle(
     try {
       const current = deps.readText(file);
       if (current !== null && contentHash(current) !== checked.previous?.[kind]?.sha256) return handoffConflict(kind, file);
+      if (coordinated) {
+        ownWrites.push({
+          file,
+          previousRaw: checked.handoffs.find((entry) => entry.kind === kind)?.content ?? current,
+          ownRaw: null,
+        });
+      }
       deps.removeFile(file);
     } catch { return cleanupFailure([file]); }
   }
@@ -923,12 +978,59 @@ export function runPiProjectionLifecycle(
     try { deps.removeFile(file); }
     catch { return cleanupFailure([file]); }
   }
-  const writeResult = applyActions(drifted, deps, checked.handoffs
-    .filter(({ kind }) => handoffEnabled(input, kind))
+  const enabledHandoffs = checked.handoffs.filter(({ kind }) => handoffEnabled(input, kind));
+  const writeResult = applyActions(drifted, deps, enabledHandoffs
     .map(({ kind, file, content }) => ({ kind, file, previous: content })));
   if (writeResult) return writeResult;
-  if (packageWillChange && filteredSettings !== null) deps.writeText(scope.settingsFile, filteredSettings);
-  if (receiptChanged) deps.writeText(scope.receiptFile, expectedReceipt);
+  if (coordinated) {
+    for (const action of drifted) {
+      const handoff = enabledHandoffs.find(({ file }) => path.resolve(file) === path.resolve(action.target));
+      if (handoff !== undefined) {
+        ownWrites.push({ file: handoff.file, previousRaw: handoff.content, ownRaw: canonicalActionContent(action) });
+      }
+    }
+  }
+  // Pending native MCP config write: coordinated by this lifecycle, after the
+  // handoff is written/readback and before the final receipt/authority publish.
+  let pendingRecover: (() => boolean) | undefined;
+  let pendingPaths: string[] = [];
+  if (input.pendingNativeConfigWrite !== undefined) {
+    let pending: PendingNativeConfigWriteResult;
+    try {
+      pending = input.pendingNativeConfigWrite();
+    } catch (error) {
+      return projectionWriteFailure(deps, ownWrites, undefined, pendingPaths, error instanceof Error ? error.message : String(error));
+    }
+    if (pending.kind === "blocked") {
+      return projectionWriteFailure(deps, ownWrites, undefined, pendingPaths, pending.remedy);
+    }
+    pendingRecover = pending.recover;
+    if (pending.paths !== undefined) pendingPaths = [...pending.paths];
+  }
+  if (packageWillChange && filteredSettings !== null) {
+    if (coordinated) ownWrites.push({ file: scope.settingsFile, previousRaw: currentSettings, ownRaw: filteredSettings });
+    try {
+      deps.writeText(scope.settingsFile, filteredSettings);
+    } catch (error) {
+      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (receiptChanged) {
+    // CAS: the initial receipt bytes must still be the ones we planned against,
+    // after the backup and before publishing the final receipt.
+    if (deps.readText(scope.receiptFile) !== receiptOriginalRaw) {
+      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, "el receipt cambió durante la operación");
+    }
+    if (coordinated) ownWrites.push({ file: scope.receiptFile, previousRaw: receiptOriginalRaw, ownRaw: expectedReceipt });
+    try {
+      deps.writeText(scope.receiptFile, expectedReceipt);
+    } catch (error) {
+      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, error instanceof Error ? error.message : String(error));
+    }
+    if (deps.readText(scope.receiptFile) !== expectedReceipt) {
+      return projectionWriteFailure(deps, ownWrites, pendingRecover, pendingPaths, "el readback del receipt no coincide");
+    }
+  }
 
   if (input.operation === "install") return { kind: "installed", receipt };
   return { kind: "synced", changed: drifted.length > 0 || packageWillChange || receiptChanged || removedHandoffs.length > 0 };
@@ -951,6 +1053,7 @@ export interface PiProjectionLifecycleSystemInput {
   playwrightManagedStateDir?: string;
   playwrightDispatcherPath?: string;
   nativeMcpAuthority?: PiProjectionMcpNativeAuthority;
+  pendingNativeConfigWrite?: () => PendingNativeConfigWriteResult;
   /** Canonical native target layout: projection receipt under `<target>/home/.jorgex-stack`. */
   nativeLayout?: boolean;
 }
@@ -989,6 +1092,7 @@ function systemProjectionLifecycle(
       playwrightManagedStateDir: input.playwrightManagedStateDir,
       playwrightDispatcherPath: input.playwrightDispatcherPath,
       nativeMcpAuthority: input.nativeMcpAuthority,
+      pendingNativeConfigWrite: input.pendingNativeConfigWrite,
     },
     deps: {
       readText: readTextOnlyIfMissing,

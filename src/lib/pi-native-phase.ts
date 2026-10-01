@@ -16,7 +16,6 @@ import {
   parseNativeMcpAuthorityStrict,
   planNativeContext7Entry,
   planNativeEngramEntry,
-  inspectNativeMcpOwnership,
   readNativeMcpContract,
   readNativeMcpSnapshot,
   resolveNativeDevtoolsDefinition,
@@ -25,6 +24,7 @@ import {
   type NativeMcpOwnedEntry,
   type NativeMcpOwnershipResult,
   type NativeMcpServerName,
+  type NativeMcpSnapshot,
 } from "./pi-native-mcp.js";
 import { createBackup } from "./backup.js";
 import { writeText } from "./fsx.js";
@@ -72,8 +72,21 @@ export interface NativePiMcpPhaseInput {
   readonly engramTypeboxCompat?: boolean;
 }
 
+export interface NativeMcpPreparedWrite {
+  readonly agentDir: string;
+  readonly created: readonly NativeMcpOwnedEntry[];
+  readonly removals: readonly NativeMcpServerName[];
+  readonly snapshot: NativeMcpSnapshot;
+  readonly backupRoot?: string;
+}
+
 export type NativePiMcpPhaseResult =
-  | { readonly kind: "ready"; readonly authority: PiProjectionMcpNativeAuthority; readonly gentleVersion: string }
+  | {
+      readonly kind: "ready";
+      readonly authority: PiProjectionMcpNativeAuthority;
+      readonly gentleVersion: string;
+      readonly prepared: NativeMcpPreparedWrite;
+    }
   | { readonly kind: "blocked"; readonly reason: string; readonly remedy: string };
 
 function blocked(reason: string, remedy: string): NativePiMcpPhaseResult {
@@ -179,6 +192,8 @@ function previousAuthorityFromReceipt(
   raw: string | null,
   homeDir: string,
   agentDir: string,
+  expectedKind: "real" | "target-dir",
+  expectedReceiptFile: string,
 ): PiProjectionMcpNativeAuthority | undefined {
   if (raw === null) return undefined;
   let parsed: unknown;
@@ -188,11 +203,17 @@ function previousAuthorityFromReceipt(
     throw new Error("native projection authority is invalid JSON");
   }
   if (!isRecord(parsed) || parsed.schemaVersion !== 1) throw new Error("native projection authority has an unsupported shape");
+  if (!Object.keys(parsed).every((key) => PROJECTION_ENVELOPE_KEYS.has(key))) {
+    throw new Error("native projection authority has an incoherent envelope");
+  }
   const scope = parsed.scope;
   if (!isRecord(scope)
-    || (scope.kind !== "real" && scope.kind !== "target-dir")
+    || Object.keys(scope).length !== 4
+    || !["kind", "home", "codingAgentDir", "receiptFile"].every((key) => Object.hasOwn(scope, key))
+    || scope.kind !== expectedKind
     || scope.home !== homeDir
-    || scope.codingAgentDir !== agentDir) {
+    || scope.codingAgentDir !== agentDir
+    || scope.receiptFile !== expectedReceiptFile) {
     throw new Error("native projection authority has an incoherent scope");
   }
   if (!Array.isArray(parsed.owned)) throw new Error("native projection authority has an invalid owned list");
@@ -293,6 +314,8 @@ function rollbackBootstrap(bootstrap: BootstrapResult): void {
   }
 }
 
+const PROJECTION_ENVELOPE_KEYS = new Set(["schemaVersion", "scope", "owned", "mcpNative", "playwright", "devtools"]);
+
 /**
  * Reconciles the granular authority after a native uninstall: removes the
  * claims of entries Stack deleted and releases (drops the cleanup stamp of)
@@ -302,21 +325,57 @@ function rollbackBootstrap(bootstrap: BootstrapResult): void {
 export function reconcileNativeAuthorityAfterCleanup(input: {
   readonly homeDir: string;
   readonly agentDir: string;
+  readonly scopeKind?: "real" | "target-dir";
   readonly removable: readonly NativeMcpServerName[];
   readonly ownership: NativeMcpOwnershipResult;
   readonly backupRoot?: string;
+  /**
+   * Authority bytes captured BEFORE the checker. When supplied, the receipt must
+   * still hold exactly these bytes after cleanup, before the backup, and before
+   * the write; an absent receipt with claims to remove blocks instead of dropping
+   * the guard.
+   */
+  readonly expectedAuthorityRaw?: string | null;
 }): void {
   const receiptFile = projectionReceiptPath(input.homeDir);
   const raw = readRawOrNull(receiptFile);
-  if (raw === null) return;
+  if (raw === null) {
+    const claimsExpected = input.removable.some((name) => {
+      const server = input.ownership.servers[name];
+      return server !== undefined && server.state === "managed" && server.cleanupEligible === true;
+    });
+    if (claimsExpected || (input.expectedAuthorityRaw !== undefined && input.expectedAuthorityRaw !== null)) {
+      throw new Error("native projection authority is missing but managed claims were expected");
+    }
+    return;
+  }
+  if (input.expectedAuthorityRaw !== undefined && input.expectedAuthorityRaw !== raw) {
+    throw new Error("native projection authority changed since it was captured before the checker");
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error("native projection authority is invalid JSON");
   }
-  if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !isRecord(parsed.scope)) {
+  if (!isRecord(parsed) || parsed.schemaVersion !== 1) {
     throw new Error("native projection authority has an unsupported shape");
+  }
+  if (!Object.keys(parsed).every((key) => PROJECTION_ENVELOPE_KEYS.has(key))) {
+    throw new Error("native projection authority has an incoherent envelope");
+  }
+  const scope = parsed.scope;
+  if (!isRecord(scope)
+    || Object.keys(scope).length !== 4
+    || !["kind", "home", "codingAgentDir", "receiptFile"].every((key) => Object.hasOwn(scope, key))
+    || (input.scopeKind !== undefined
+      ? scope.kind !== input.scopeKind
+      : (scope.kind !== "real" && scope.kind !== "target-dir"))
+    || scope.home !== input.homeDir
+    || scope.codingAgentDir !== input.agentDir
+    || scope.receiptFile !== receiptFile
+    || !Array.isArray(parsed.owned)) {
+    throw new Error("native projection authority has an incoherent envelope");
   }
   const authority = parseNativeMcpAuthorityStrict(parsed.mcpNative);
   if (authority === null) return;
@@ -332,9 +391,20 @@ export function reconcileNativeAuthorityAfterCleanup(input: {
   }
   const next = { ...parsed, mcpNative: { schemaVersion: 1, entries } };
   const nextRaw = `${JSON.stringify(next, null, 2)}\n`;
+  if (readRawOrNull(receiptFile) !== raw) {
+    throw new Error("native projection authority changed before the cleanup backup");
+  }
   createBackup([receiptFile], "pi-native-authority-cleanup", input.backupRoot);
+  if (readRawOrNull(receiptFile) !== raw) {
+    throw new Error("native projection authority changed after the cleanup backup");
+  }
   writeText(receiptFile, nextRaw, 0o600);
-  if (readRawOrNull(receiptFile) !== nextRaw) restoreOwnedWrite(receiptFile, nextRaw, raw);
+  if (readRawOrNull(receiptFile) !== nextRaw) {
+    const restored = restoreOwnedWrite(receiptFile, nextRaw, raw);
+    throw new Error(restored
+      ? "native authority readback mismatch; previous receipt restored"
+      : "native authority readback mismatch and previous receipt could not be restored");
+  }
 }
 
 export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise<NativePiMcpPhaseResult> {
@@ -362,6 +432,13 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
       return blocked("native-target-scope-invalid", `${error instanceof Error ? error.message : String(error)}; no se modificó nada.`);
     }
     isolationRoot = targetRoot;
+    if (input.backupRoot !== undefined) {
+      const backupRoot = path.resolve(input.backupRoot);
+      const rel = path.relative(targetRoot, backupRoot);
+      if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+        return blocked("native-target-backup-invalid", "El backupRoot nativo del target sale de la raíz validada; no se modificó nada.");
+      }
+    }
     if (input.providerStage === undefined) {
       return blocked("native-target-provider-required", "El target nativo exige el stage de provider ya verificado inyectado; no se descarga en el target.");
     }
@@ -418,14 +495,19 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
 
   // --- Read-only: every snapshot and preflight before any active write. ---
   const devtoolsEnabled = input.devtoolsManagedStateDir !== undefined;
-  const handoffPath = path.join(agentDir, "jorgex-pi", "devtools.v1.json");
   const settingsPath = path.join(agentDir, "settings.json");
   let mcpSnapshot;
   let previous: PiProjectionMcpNativeAuthority | undefined;
   let settingsJson: string;
   try {
     mcpSnapshot = readNativeMcpSnapshot(agentDir);
-    previous = previousAuthorityFromReceipt(readRawOrNull(projectionReceiptPath(homeDir)), homeDir, agentDir);
+    previous = previousAuthorityFromReceipt(
+      readRawOrNull(projectionReceiptPath(homeDir)),
+      homeDir,
+      agentDir,
+      input.targetDir === undefined ? "real" : "target-dir",
+      projectionReceiptPath(homeDir),
+    );
     settingsJson = readRawOrNull(settingsPath) ?? '{"packages":[]}';
     if (input.fresh) {
       if (readRawOrNull(mainReceiptPath(homeDir)) !== null) {
@@ -445,43 +527,20 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
   // --- Plan the protected servers (digest/shape/ownership) before effects. ---
   // On update, the active checker must confirm the old native claims are not in
   // conflict before any write; a scope/source match alone is not authority.
-  if (!input.fresh && previous !== undefined) {
-    try {
-      const activeEntry = resolveActivePiEntry(agentDir);
-      if (activeEntry.kind !== "absent") {
-        const ownership = await inspectNativeMcpOwnership(activeEntry.packageRoot, {
-          env: dataEnv(homeDir, agentDir),
-          platform: process.platform,
-          cwd: process.cwd(),
-          projectTrusted: false,
-        });
-        for (const name of Object.keys(previous.entries) as NativeMcpServerName[]) {
-          if (ownership.servers[name]?.state === "conflict") {
-            return blocked("native-authority-conflict", `La comprobación nativa activa reporta conflicto en ${name}; no se renueva la autoridad. Pi no quedó activado.`);
-          }
-        }
-      }
-    } catch (error) {
-      return blocked("native-authority-unverifiable", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
-    }
-  }
+  // Previous-claim checker validation runs after the read-only planning loop
+  // (below), so a claimed-but-absent entry keeps its precise block while a
+  // surviving claim still requires an authenticated active entry.
 
   const planned: { name: NativeMcpServerName; entry: Record<string, unknown> }[] = [
     { name: "engram", entry: planNativeEngramEntry(input.engramBin) },
     { name: "context7", entry: planNativeContext7Entry(mcpSnapshot.servers.context7) },
   ];
-  let handoffRaw: string | null = null;
   if (devtoolsEnabled) {
     try {
       const resolved = await resolveTrustedDevtools(stagePackageRoot, input.devtoolsManagedStateDir!, homeDir);
-      handoffRaw = resolved.handoffRaw;
       planned.push({ name: "chrome-devtools", entry: resolved.entry });
     } catch (error) {
       return blocked("native-devtools-definition-failed", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
-    }
-    const activeHandoff = readRawOrNull(handoffPath);
-    if (activeHandoff !== null && activeHandoff !== handoffRaw) {
-      return blocked("native-devtools-handoff-conflict", "El handoff DevTools activo difiere del materializado y verificado; se conserva sin sobrescribir. Pi no quedó activado.");
     }
   }
 
@@ -538,6 +597,11 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
         : {}),
     });
   }
+
+  // Previous-claim enforcement for an update runs in the operational checker
+  // (managed-runtime beforeInitialization), which authenticates the active
+  // package and requires every claim managed/verified; the phase itself stays a
+  // read-only planner plus bounded writer.
 
   // --- Active writes: bootstrap (fresh), promote gentle, commit config. ---
   let bootstrap: BootstrapResult | null = null;
@@ -602,33 +666,18 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
     return blocked("native-provider-failed", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
   }
 
-  // Commit the handoff (only when it differs) then mcp.json, with rechecks.
-  let committedHandoff = false;
-  let committedMcp: { file: string; previousRaw: string | null; writtenRaw: string } | null = null;
-  try {
-    if (handoffRaw !== null && readRawOrNull(handoffPath) !== handoffRaw) {
-      fs.mkdirSync(path.dirname(handoffPath), { recursive: true, mode: 0o700 });
-      const expectedHandoff = readRawOrNull(handoffPath);
-      writeText(handoffPath, handoffRaw, 0o600);
-      if (readRawOrNull(handoffPath) !== handoffRaw) {
-        restoreOwnedWrite(handoffPath, handoffRaw, expectedHandoff);
-        throw new Error("DevTools handoff readback mismatch");
-      }
-      committedHandoff = true;
+  // Explicit opt-out: when DevTools is disabled but a prior claim exists, the
+  // computed authority omits the chrome-devtools claim (explicit withdrawal,
+  // never by silent omission). The persistent mcpServers entry is removed only
+  // when it is still the exact full-stamp artifact Stack wrote; a personalized
+  // managed entry (cleanup false) is preserved and only its claim is withdrawn.
+  const removals: NativeMcpServerName[] = [];
+  if (!devtoolsEnabled && previous?.entries["chrome-devtools"] !== undefined) {
+    const existing = mcpSnapshot.servers["chrome-devtools"];
+    const priorCleanup = previous.entries["chrome-devtools"].cleanupSha256;
+    if (isRecord(existing) && priorCleanup !== undefined && nativeWholeEntrySha256(existing) === priorCleanup) {
+      removals.push("chrome-devtools");
     }
-    if (owned.length > 0) {
-      committedMcp = writeNativeMcpConfig({
-        agentDir,
-        servers: owned,
-        expectedRaw: mcpSnapshot.raw,
-        expectedParsed: mcpSnapshot.parsed,
-        backupRoot: input.backupRoot,
-      });
-    }
-  } catch (error) {
-    if (committedHandoff && handoffRaw !== null) restoreOwnedWrite(handoffPath, handoffRaw, null);
-    if (bootstrap !== null) rollbackBootstrap(bootstrap);
-    return blocked("native-config-write-failed", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
   }
 
   let authority: PiProjectionMcpNativeAuthority;
@@ -637,11 +686,24 @@ export async function runNativePiMcpPhase(input: NativePiMcpPhaseInput): Promise
       ? { schemaVersion: 1, entries: {} }
       : await buildNativeMcpAuthority(stagePackageRoot, owned);
   } catch (error) {
-    if (committedMcp !== null) restoreOwnedWrite(committedMcp.file, committedMcp.writtenRaw, committedMcp.previousRaw);
-    if (committedHandoff && handoffRaw !== null) restoreOwnedWrite(handoffPath, handoffRaw, null);
     if (bootstrap !== null) rollbackBootstrap(bootstrap);
     return blocked("native-authority-failed", `${error instanceof Error ? error.message : String(error)}; Pi no quedó activado.`);
   }
 
-  return { kind: "ready", authority, gentleVersion };
+  // The active handoff and mcp.json are written by the existing projection
+  // lifecycle (pendingNativeConfigWrite) after the handoff is applied/readback
+  // and before the final receipt/authority publish; the phase never prewrites
+  // the active handoff.
+  return {
+    kind: "ready",
+    authority,
+    gentleVersion,
+    prepared: {
+      agentDir,
+      created: owned,
+      removals,
+      snapshot: mcpSnapshot,
+      ...(input.backupRoot === undefined ? {} : { backupRoot: input.backupRoot }),
+    },
+  };
 }

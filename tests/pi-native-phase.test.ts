@@ -10,8 +10,12 @@ import { inspectPiHostVersion } from "../src/lib/pi-host-version.js";
 import { runPiStageProcess } from "../src/lib/pi-stage-process.js";
 import type { PiProviderPackage } from "../src/lib/pi-provider-activation.js";
 import {
+  digestNativeMcpDefinition,
+  inspectNativeMcpOwnership,
   isInstalledNativePackage,
+  nativeWholeEntrySha256,
   parseNativeMcpAuthorityStrict,
+  readNativeMcpSnapshot,
   removeNativeMcpEntries,
   restoreOwnedWrite,
   writeNativeMcpConfig,
@@ -19,6 +23,7 @@ import {
 import {
   reconcileNativeAuthorityAfterCleanup,
   runNativePiMcpPhase,
+  type NativeMcpPreparedWrite,
 } from "../src/lib/pi-native-phase.js";
 
 /**
@@ -442,6 +447,166 @@ describe("[T75] native uninstall authority reconciliation", () => {
     })).not.toThrow();
     expect(fs.existsSync(path.join(f.homeDir, ".jorgex-stack", "pi-projection-receipt.json"))).toBe(false);
   });
+
+  it("blocks an invalid receipt envelope carrying mcpNative instead of rewriting it away", () => {
+    const f = fixture();
+    const receiptFile = path.join(f.homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+    const absent = { state: "absent", cleanupEligible: false, availability: "unavailable" } as const;
+    const ownership = {
+      servers: { engram: absent, context7: absent, "chrome-devtools": absent },
+      package: { state: "not-required" },
+      connection: "not-verified",
+    } as const;
+    const authority = { schemaVersion: 1, entries: { engram: { definitionSha256: HEX } } } as const;
+    const validScope = { kind: "real", home: f.homeDir, codingAgentDir: f.agentDir, receiptFile };
+    // Each envelope is invalid around a valid mcpNative payload: the cleanup
+    // must block instead of normalizing the receipt (dropping the removed claim
+    // and silently rewriting the owned/scope evidence).
+    const invalidEnvelopes: Array<Record<string, unknown>> = [
+      { schemaVersion: 1, scope: validScope, owned: [], mcpNative: authority, surprise: true },
+      { schemaVersion: 1, scope: validScope, owned: "not-a-list", mcpNative: authority },
+      { schemaVersion: 1, scope: { kind: "elsewhere", home: f.homeDir, codingAgentDir: f.agentDir }, owned: [], mcpNative: authority },
+      { schemaVersion: 1, scope: { kind: "real", home: f.homeDir }, owned: [], mcpNative: authority },
+    ];
+    for (const envelope of invalidEnvelopes) {
+      writeJson(receiptFile, envelope);
+      const before = fs.readFileSync(receiptFile, "utf8");
+      expect(
+        () => reconcileNativeAuthorityAfterCleanup({ homeDir: f.homeDir, agentDir: f.agentDir, removable: ["engram"], ownership }),
+        JSON.stringify(envelope),
+      ).toThrow();
+      expect(fs.readFileSync(receiptFile, "utf8"), JSON.stringify(envelope)).toBe(before);
+    }
+  });
+});
+
+// --- Native export broker: bounded child rejection and DTO boundary ---------
+//
+// `runNativeMcpExport` spawns a bounded Node child for every export. A failing
+// child must still reject the returned promise and tear the owned child down;
+// the ownership result must be validated at the broker boundary, not just
+// shape-checked. The test-owned package root below carries only the literal
+// contract plus two small modules, so the seam runs without the published SDK.
+
+describe("[T77] native export broker rejects failures and malformed DTOs", () => {
+  const brokerRoot = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-native-broker-"));
+    roots.push(root);
+    const packageRoot = path.join(root, "jorgex-pi");
+    fs.mkdirSync(path.join(packageRoot, "contract"), { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, "extensions"), { recursive: true });
+    writeJson(path.join(packageRoot, "contract", "native-mcp.v1.json"), NATIVE_CONTRACT);
+    fs.writeFileSync(
+      path.join(packageRoot, "extensions", "mcp-engram.mjs"),
+      'export async function digestNativeMcpDefinition() { throw new Error("boom"); }\n'
+        + "export async function resolveNativeDevtoolsDefinition() { return null; }\n",
+    );
+    return root;
+  };
+  const serverEntry = { state: "absent", cleanupEligible: false, availability: "unavailable" } as const;
+
+  it("rejects an ownership DTO with an unrecognized package state at the broker boundary", async () => {
+    const root = brokerRoot();
+    const packageRoot = path.join(root, "jorgex-pi");
+    fs.writeFileSync(
+      path.join(packageRoot, "extensions", "native-mcp.mjs"),
+      "export async function inspectNativeMcpOwnership() { return {"
+        + ` servers: { engram: ${JSON.stringify(serverEntry)}, context7: ${JSON.stringify(serverEntry)},`
+        + ` "chrome-devtools": ${JSON.stringify(serverEntry)} },`
+        + ' package: { state: "banana" }, connection: "not-verified" }; }\n',
+    );
+    await expect(inspectNativeMcpOwnership(packageRoot, {
+      env: { HOME: root },
+      platform: process.platform,
+      cwd: root,
+      projectTrusted: false,
+    })).rejects.toThrow(/native ownership result is invalid/);
+  });
+
+  it("rejects a failing export child instead of hanging on an unsettled promise", async () => {
+    const root = brokerRoot();
+    const packageRoot = path.join(root, "jorgex-pi");
+    fs.writeFileSync(
+      path.join(packageRoot, "extensions", "native-mcp.mjs"),
+      "export async function inspectNativeMcpOwnership() { return { servers: {}, package: { state: \"not-required\" }, connection: \"not-verified\" }; }\n",
+    );
+    // Opaque normal header value, no dummy keys or tokens.
+    const definition = { command: "/test/bin", args: ["--marker", "opaque-fixture-value"] };
+    const outcome = await Promise.race([
+      digestNativeMcpDefinition(packageRoot, "engram", definition).then(
+        () => "resolved",
+        (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 8_000)),
+    ]);
+    expect(outcome, "a failing native export child must reject, never hang").toMatch(/^rejected:/);
+  }, 30_000);
+});
+
+// --- Native prepare contract: no active write before publication ------------
+//
+// R1 splits the phase: it prepares the owned entries plus the exact CAS
+// snapshots and returns them; the existing projection lifecycle publishes the
+// handoff first and then invokes the native config write before the final
+// receipt/authority. A standalone caller must see no active mcp.json/handoff
+// until it publishes through the public method.
+
+describe("[T77] native prepare contract leaves no active config before publication", () => {
+  it("prepares the owned write, publishes through the public method, and never touches HOME", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-native-prepare-"));
+    roots.push(root);
+    const target = path.join(root, "target");
+    const homeDir = path.join(target, "home");
+    const agentDir = path.join(target, "pi-agent");
+    const stageDir = path.join(root, "stage");
+    const packageRoot = path.join(stageDir, "npm", "node_modules", "jorgex-pi");
+    fs.mkdirSync(path.join(packageRoot, "contract"), { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, "extensions"), { recursive: true });
+    writeJson(path.join(packageRoot, "contract", "native-mcp.v1.json"), NATIVE_CONTRACT);
+    fs.writeFileSync(
+      path.join(packageRoot, "extensions", "mcp-engram.mjs"),
+      'export async function digestNativeMcpDefinition() { return "a".repeat(64); }\n'
+        + "export async function resolveNativeDevtoolsDefinition() { return null; }\n",
+    );
+    const serverEntry = { state: "absent", cleanupEligible: false, availability: "unavailable" } as const;
+    fs.writeFileSync(
+      path.join(packageRoot, "extensions", "native-mcp.mjs"),
+      "export async function inspectNativeMcpOwnership() { return {"
+        + ` servers: { engram: ${JSON.stringify(serverEntry)}, context7: ${JSON.stringify(serverEntry)},`
+        + ` "chrome-devtools": ${JSON.stringify(serverEntry)} },`
+        + ' package: { state: "verified" }, connection: "not-verified" }; }\n',
+    );
+    const engramBin = path.join(root, "bin", "engram");
+    const ready = await runNativePiMcpPhase({
+      homeDir, agentDir, engramBin, piExecutable: process.execPath, stageDir,
+      fresh: true, bootstrapDirs: true, targetDir: target,
+      backupRoot: path.join(target, "backups"),
+      providerStage: buildProviderStage(target, "prepare"),
+    });
+    expect(ready.kind, JSON.stringify(ready)).toBe("ready");
+    if (ready.kind !== "ready") return;
+
+    const mcpPath = path.join(agentDir, "mcp.json");
+    expect(fs.existsSync(mcpPath)).toBe(false);
+    expect(fs.existsSync(path.join(agentDir, "jorgex-pi", "devtools.v1.json"))).toBe(false);
+    expect(ready.prepared.agentDir).toBe(agentDir);
+    expect(ready.prepared.created.map((entry) => entry.name).sort()).toEqual(["context7", "engram"]);
+    expect(ready.prepared.removals).toEqual([]);
+    expect(path.resolve(ready.prepared.backupRoot!).startsWith(path.resolve(target))).toBe(true);
+    expect(ready.authority.entries.engram?.definitionSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    // The standalone caller publishes through the public method.
+    writeNativeMcpConfig({
+      agentDir,
+      servers: [...ready.prepared.created],
+      expectedRaw: ready.prepared.snapshot.raw,
+      expectedParsed: ready.prepared.snapshot.parsed,
+      ...(ready.prepared.backupRoot === undefined ? {} : { backupRoot: ready.prepared.backupRoot }),
+    });
+    const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as { mcpServers: Record<string, unknown> };
+    expect(mcp.mcpServers.engram).toEqual({ command: engramBin, args: ["mcp", "--tools=agent"] });
+    expect(mcp.mcpServers.context7).toEqual({ url: "https://mcp.context7.com/mcp" });
+  }, 60_000);
 });
 
 // --- Managed native selection: legacy owned installs stay legacy ------------
@@ -905,6 +1070,45 @@ let liveStage: LiveStage | undefined;
   it("runs a target-fresh native install with real digests and reconciles cleanup on update", async () => {
     const { target, homeDir, agentDir } = targetScope("phase");
     const engramBin = path.join(liveRoot, "bin", "engram");
+    const projectionReceiptFile = path.join(homeDir, ".jorgex-stack", "pi-projection-receipt.json");
+    const mcpPath = path.join(agentDir, "mcp.json");
+    // The phase only prepares the owned write; the caller publishes through the
+    // public method after the handoff is applied, exactly as the projection
+    // lifecycle does before the final receipt/authority publish.
+    const publishPrepared = (prepared: NativeMcpPreparedWrite): void => {
+      let raw = prepared.snapshot.raw;
+      let parsed = prepared.snapshot.parsed;
+      if (prepared.removals.length > 0) {
+        removeNativeMcpEntries({
+          agentDir: prepared.agentDir,
+          names: [...prepared.removals],
+          expectedRaw: raw,
+          expectedParsed: parsed,
+          ...(prepared.backupRoot === undefined ? {} : { backupRoot: prepared.backupRoot }),
+        });
+        const after = readNativeMcpSnapshot(prepared.agentDir);
+        raw = after.raw;
+        parsed = after.parsed;
+      }
+      if (prepared.created.length > 0) {
+        writeNativeMcpConfig({
+          agentDir: prepared.agentDir,
+          servers: [...prepared.created],
+          expectedRaw: raw,
+          expectedParsed: parsed,
+          ...(prepared.backupRoot === undefined ? {} : { backupRoot: prepared.backupRoot }),
+        });
+      }
+    };
+    const publishAuthority = (authority: unknown): void => {
+      writeJson(projectionReceiptFile, {
+        schemaVersion: 1,
+        scope: { kind: "target-dir", home: homeDir, codingAgentDir: agentDir, receiptFile: projectionReceiptFile },
+        owned: [],
+        mcpNative: authority,
+      });
+    };
+
     const fresh = await runNativePiMcpPhase({
       homeDir, agentDir, engramBin, piExecutable: LIVE!.piExecutable, stageDir: liveStage!.stageDir,
       fresh: true, bootstrapDirs: true, targetDir: target,
@@ -915,21 +1119,15 @@ let liveStage: LiveStage | undefined;
     expect(fresh.gentleVersion).toBe("9.1.0");
     expect(fresh.authority.entries.engram?.definitionSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(fresh.authority.entries.context7?.definitionSha256).toMatch(/^[0-9a-f]{64}$/);
-    const mcp = JSON.parse(fs.readFileSync(path.join(agentDir, "mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> };
+    // No active config before the public publication.
+    expect(fs.existsSync(mcpPath)).toBe(false);
+    publishPrepared(fresh.prepared);
+    const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as { mcpServers: Record<string, unknown> };
     expect(mcp.mcpServers.engram).toEqual({ command: engramBin, args: ["mcp", "--tools=agent"] });
     expect(mcp.mcpServers.context7).toEqual({ url: "https://mcp.context7.com/mcp" });
+    expect(nativeWholeEntrySha256(mcp.mcpServers.engram as Record<string, unknown>)).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.parse(fs.readFileSync(path.join(agentDir, "settings.json"), "utf8")))
       .toEqual({ packages: ["npm:gentle-engram@9.1.0"] });
-
-    const projectionReceiptFile = path.join(homeDir, ".jorgex-stack", "pi-projection-receipt.json");
-    const publishAuthority = (authority: unknown): void => {
-      writeJson(projectionReceiptFile, {
-        schemaVersion: 1,
-        scope: { kind: "target-dir", home: homeDir, codingAgentDir: agentDir, receiptFile: projectionReceiptFile },
-        owned: [],
-        mcpNative: authority,
-      });
-    };
     publishAuthority(fresh.authority);
     managedReceiptAt(homeDir, agentDir);
 
@@ -941,9 +1139,9 @@ let liveStage: LiveStage | undefined;
     if (unchanged.kind !== "ready") return;
     expect(unchanged.authority.entries.engram?.cleanupSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(unchanged.authority.entries.context7?.cleanupSha256).toMatch(/^[0-9a-f]{64}$/);
+    publishPrepared(unchanged.prepared);
     publishAuthority(unchanged.authority);
 
-    const mcpPath = path.join(agentDir, "mcp.json");
     const withPrefs = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as { mcpServers: Record<string, Record<string, unknown>> };
     withPrefs.mcpServers.engram!.exposure = "always";
     withPrefs.mcpServers.engram!.enabled = true;
@@ -955,6 +1153,7 @@ let liveStage: LiveStage | undefined;
     });
     expect(update).toMatchObject({ kind: "ready" });
     if (update.kind !== "ready") return;
+    publishPrepared(update.prepared);
     const after = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as { mcpServers: Record<string, Record<string, unknown>> };
     expect(after.mcpServers.engram!.exposure).toBe("always");
     expect(after.mcpServers.engram!.enabled).toBe(true);

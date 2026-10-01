@@ -476,6 +476,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
     expect(workflow).toContain("os: [ubuntu-latest, windows-latest]");
     expect(livePi?.steps.some((step) => step.raw.includes("dist/pi-ci-artifact.js"))).toBe(true);
     expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-linked-smoke-live.test.ts"))).toBe(true);
+    expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-native-phase.test.ts"))).toBe(true);
     expect(workflow).toContain("PI_TEST_HOST:");
     expect(workflow).toContain("PI_TEST_CANDIDATE:");
   });
