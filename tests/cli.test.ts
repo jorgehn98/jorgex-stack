@@ -9,6 +9,26 @@ it("passes Playwright CLI flags through the managed browser command", () => {
   });
 });
 
+it("passes Browser Control provider flags through the managed browser command", () => {
+  // Flags documentados del CLI Browser Control: no deben interpretarse como
+  // flags globales de Stack (--help) ni caer a unknown-flags.
+  const providerArgs = [
+    "execute",
+    "--session", "docs",
+    "--json",
+    "--file", "script.js",
+    "--help",
+    "return page.getByText('Continue').click()",
+  ];
+  const parsed = parseCliArgs(["browser", "control", ...providerArgs]);
+
+  expect(parsed.action).toBe("run");
+  expect(parsed.command).toBe("browser");
+  expect(parsed.flags.positional).toEqual(["control", ...providerArgs]);
+  expect(parsed.flags.unknownFlags).toEqual([]);
+  expect(parsed.flags.help).toBe(false);
+});
+
 describe("CLI argument parsing", () => {
   it.each([
     [["--help"], "install"],

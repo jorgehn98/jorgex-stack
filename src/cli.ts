@@ -36,7 +36,7 @@ import { writeText } from "./lib/fsx.js";
 import { runQualityPlan } from "./lib/quality-runner.js";
 import { serializeQualityReceipt } from "./lib/quality-receipt.js";
 import { installMissingEngram } from "./lib/engram-install.js";
-import { runManagedPlaywrightCommand } from "./lib/browser-command.js";
+import { runManagedBrowserControlCommand, runManagedPlaywrightCommand } from "./lib/browser-command.js";
 
 const VERSION = readPackageVersion();
 
@@ -662,6 +662,7 @@ Comandos:
                desregistrarlo exige --remove-engram o el sí explícito
   quality     Ejecuta un plan JSON explícito y emite un receipt local
   browser playwright <args>  Ejecuta Playwright desde el árbol gestionado verificado
+  browser control <args>     Ejecuta Browser Control CLI desde el runtime gestionado verificado
 
 Opciones:
   --agents, -a opencode,claude-code,codex,pi   Runtimes destino (default: detectados)
@@ -747,13 +748,20 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "browser": {
-      if (flags.positional[0] !== "playwright") {
-        console.error("Uso: jorgex-stack browser playwright <argumentos de Playwright CLI>");
+      const subcommand = flags.positional[0];
+      if (subcommand !== "playwright" && subcommand !== "control") {
+        console.error(
+          "Uso: jorgex-stack browser playwright <argumentos de Playwright CLI> | " +
+            "jorgex-stack browser control <argumentos de Browser Control CLI>",
+        );
         process.exitCode = 1;
         return;
       }
-      try { process.exitCode = runManagedPlaywrightCommand(flags.positional.slice(1)); }
-      catch (error) {
+      try {
+        process.exitCode = subcommand === "playwright"
+          ? runManagedPlaywrightCommand(flags.positional.slice(1))
+          : runManagedBrowserControlCommand(flags.positional.slice(1));
+      } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
       }
