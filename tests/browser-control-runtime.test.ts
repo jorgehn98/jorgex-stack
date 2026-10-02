@@ -16,6 +16,7 @@ import {
   resolveVerificationDiskBase,
 } from "./helpers/pnpm-tooling.js";
 import type { StageVerifiedBrowserTreeResult } from "../src/lib/browser-stage.js";
+import type { RuntimeDetection } from "../src/lib/detect.js";
 
 /**
  * T12/T13 vertical — integración raíz de Browser Control (Spec 12/13).
@@ -854,6 +855,202 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
         },
       );
     } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  it("reuses the verified active without promotion when the relay is present and latest already matches", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-relay-present-reuse-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+    const relayRequests: string[] = [];
+    let relay: Server | undefined;
+    let stageCalls = 0;
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-relay-present-",
+        register: (root) => ownedRoots.push(root),
+      });
+      // First install: genuine absence on our own reserved-and-closed port.
+      const closedPort = await reserveClosedRelayPort();
+
+      await withIsolatedEnv(
+        { ...process.env, ...owned.env, BROWSER_CONTROL_PORT: String(closedPort) },
+        async () => {
+          const witness = writeWitnessTree(owned.root);
+          const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+            output: "opencode v2.0.20",
+          });
+          const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
+          const configPath = path.join(configDir, "opencode.json");
+          const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+          const actualStage = await import("../src/lib/browser-stage.js");
+          const witnessStaged = {
+            treePath: witness.treePath,
+            nodeModulesPath: witness.nodeModulesPath,
+            treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
+            closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
+          };
+          vi.doMock("../src/lib/browser-stage.js", async () => {
+            const actual =
+              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                "../src/lib/browser-stage.js",
+              );
+            return {
+              ...actual,
+              stageVerifiedBrowserTree: async () => {
+                stageCalls += 1;
+                return witnessStaged;
+              },
+            };
+          });
+          vi.stubGlobal("fetch", registryFetch(fetched));
+
+          const install = await import("../src/install.js");
+          const { dataDir } = await import("../src/lib/paths.js");
+          const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+
+          const activePointer = path.join(
+            dataDir(),
+            ".browser-managed",
+            BROWSER_CONTROL_SERVER,
+            "active.v1.json",
+          );
+          const opencode = install.ADAPTERS.opencode!;
+          const originalDetect = opencode.detect;
+          const detection = (): RuntimeDetection => ({
+            id: "opencode",
+            name: "OpenCode",
+            installed: true,
+            binPath: opencodeBin,
+            configDir,
+          });
+          opencode.detect = detection;
+
+          try {
+            // 1) First real install with the relay absent publishes verified active A.
+            await install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+            const activeA = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(activeA, "the first install must publish verified active A").not.toBeNull();
+            if (activeA === null) return;
+            expect(activeA.version).toBe(RELEASE_A.version);
+            const firstActive = {
+              version: activeA.version,
+              integrity: activeA.integrity,
+              rootPath: activeA.rootPath,
+              launcherPath: activeA.launcherPath,
+              launcherSha256: activeA.launcherSha256,
+              treeSha256: activeA.treeSha256,
+              entryPath: activeA.entryPath,
+            };
+            const firstPointerBytes = fs.readFileSync(activePointer);
+            const configA = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, { command?: string[] }> };
+            };
+            const firstCommand = configA.mcp?.servers?.[BROWSER_CONTROL_SERVER]?.command;
+            expect(firstCommand, "the first install must project the managed MCP").toBeDefined();
+            const firstSkill = fs.readFileSync(projectedSkill);
+            expect(firstSkill).toEqual(BC_SKILL_BYTES);
+            expect(stageCalls, "the first install stages the verified candidate exactly once").toBe(1);
+
+            // 2) The relay becomes present with a valid /version identity while
+            //    the provider latest still resolves to the already-active A.
+            const startedRelay = await startRelayVersionServer(relayRequests);
+            relay = startedRelay.server;
+            process.env.BROWSER_CONTROL_PORT = String(startedRelay.port);
+
+            // 3) A real second install re-resolves latest A and verifies its SRI.
+            vi.clearAllMocks();
+            opencode.detect = detection;
+            await install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+
+            expect(fetched.slice(2), "the second install must re-resolve latest A and verify its SRI").toEqual([
+              BC_METADATA_URL,
+              BC_TARBALL_URL,
+            ]);
+            expect(relayRequests, "the relay gate must probe /version on BROWSER_CONTROL_PORT").toContain(
+              "GET /version",
+            );
+
+            // 4) No promotion/restart: no re-staging, and the active pointer
+            //    bytes, launcher and roots stay byte-identical.
+            expect(stageCalls, "reuse must not stage/promote the retained candidate again").toBe(1);
+            expect(fs.readFileSync(activePointer), "the active pointer bytes must not change").toEqual(
+              firstPointerBytes,
+            );
+            const secondActive = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(secondActive, "the reused active receipt must remain").not.toBeNull();
+            expect({
+              version: secondActive?.version,
+              integrity: secondActive?.integrity,
+              rootPath: secondActive?.rootPath,
+              launcherPath: secondActive?.launcherPath,
+              launcherSha256: secondActive?.launcherSha256,
+              treeSha256: secondActive?.treeSha256,
+              entryPath: secondActive?.entryPath,
+            }).toEqual(firstActive);
+
+            // 5) Projection unchanged: managed MCP invocation and skill bytes.
+            const configSecond = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, { command?: string[] }> };
+            };
+            expect(
+              configSecond.mcp?.servers?.[BROWSER_CONTROL_SERVER]?.command,
+              "the projected MCP invocation must not change on relay-present reuse",
+            ).toEqual(firstCommand);
+            expect(
+              fs.existsSync(projectedSkill),
+              "the projected skill must survive relay-present reuse",
+            ).toBe(true);
+            expect(
+              fs.readFileSync(projectedSkill),
+              "the projected skill bytes must not change on relay-present reuse",
+            ).toEqual(firstSkill);
+
+            // 6) The already-active matching release is reused as ready: no
+            //    pending fallback despite the live relay. This is the exact kind
+            //    trace; the aggregate exit code stays nonzero because of the
+            //    independent Engram prerequisite, so only this diagnostic is read.
+            const secondLogs = loggedLines();
+            expect(
+              secondLogs.some((line) => /Browser Control: .*verificado y activo/.test(line)),
+              `the relay-present second install must reuse the verified active (ready): ${secondLogs.join(" | ")}`,
+            ).toBe(true);
+            expect(
+              secondLogs.some((line) => /Browser Control: .*No se proyecta MCP\/skill/.test(line)),
+              "the relay-present second install must not fall back to pending",
+            ).toBe(false);
+          } finally {
+            opencode.detect = originalDetect;
+          }
+        },
+      );
+    } finally {
+      await closeRelayServer(relay);
       cleanupOwnedResourcesOrThrow();
       releaseRoots();
     }

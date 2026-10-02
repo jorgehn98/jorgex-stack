@@ -366,11 +366,13 @@ function browserControlReadyFromReceipt(
  * verificado (metadata + SRI del tarball raíz), lo retiene en el namespace
  * candidato, sondea el relay y decide `ready | pending | unavailable`.
  *
- * - Relay presente/incierto: nunca promueve ni reinicia; conserva el candidato y
- *   reporta pending (con el active previo si existe).
- * - Ausencia comprobada: reutiliza un active verificado que ya coincide en
- *   paquete/versión/SRI; si no, promueve el candidato validado al namespace real
- *   y devuelve la proyección del active.
+ * - Active verificado que ya coincide en paquete/versión/SRI con el latest
+ *   recién resuelto: se reutiliza como `ready` (con validación de skill) antes
+ *   del gate, sin promover ni tocar pointer/launcher/relay.
+ * - Relay presente/incierto sin active coincidente: nunca promueve ni reinicia;
+ *   conserva el candidato y reporta pending (con el active previo si existe).
+ * - Ausencia comprobada: promueve el candidato validado al namespace real y
+ *   devuelve la proyección del active.
  * - Corrupción/orfandad en cualquiera de los dos namespaces falla cerrado.
  */
 export async function prepareBrowserControlRuntime(
@@ -405,15 +407,13 @@ export async function prepareBrowserControlRuntime(
   }
 
   const candidateVersion = candidate.receipt.version;
-  if (relay !== "absent") {
-    return {
-      kind: "pending",
-      candidateVersion,
-      reason: relayPendingReason(relay),
-      ...(previousActive === null ? {} : { activeVersion: previousActive.version }),
-    };
-  }
 
+  // El gate de presencia/inactividad aplaza una NUEVA activación, no invalida un
+  // active ya autenticado que coincide con el latest/SRI recién verificado. Se
+  // resuelve la reutilización ANTES del gate: sin nada que promover se devuelve
+  // su proyección ready (con validación de skill) sin tocar pointer/launcher/
+  // relay, aunque haya relay presente, en vez de fabricar un pending del mismo
+  // release.
   if (
     previousActive !== null &&
     previousActive.version === candidate.receipt.version &&
@@ -424,6 +424,15 @@ export async function prepareBrowserControlRuntime(
     } catch (error) {
       return { kind: "unavailable", reason: runtimeReason(error) };
     }
+  }
+
+  if (relay !== "absent") {
+    return {
+      kind: "pending",
+      candidateVersion,
+      reason: relayPendingReason(relay),
+      ...(previousActive === null ? {} : { activeVersion: previousActive.version }),
+    };
   }
 
   // Pre-publicación: un árbol verificado sin la skill oficial no es una release
