@@ -11,7 +11,11 @@ import { modelMapFile } from "./lib/model-map.js";
 import { piAdapter, readPiProviderReceiptReport, type PiProviderReceiptReport } from "./adapters/pi.js";
 import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
 import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
-import { HOME } from "./lib/paths.js";
+import { dataDir, HOME } from "./lib/paths.js";
+import {
+  inspectCachedBrowserControlCandidate,
+  inspectCachedBrowserControlRuntime,
+} from "./lib/browser-control-runtime.js";
 import { OPENCODE_OFFICIAL_SETUP_V2_REASON } from "./lib/official-engram-setup.js";
 import {
   type PlaywrightBrowserCacheState,
@@ -128,6 +132,42 @@ export function resolvePlaywrightDoctorState(input: PlaywrightDoctorState): Reso
   if (input.browserVerified === false && input.browserCache?.status === "ready") return { status: "broken" };
   if (!input.browserReady) return { status: "missing", missing: "browser" };
   return { status: "healthy" };
+}
+
+/**
+ * Diagnóstico solo-lectura de Browser Control (Spec T13, SC-06): separa el
+ * active operativo ya autenticado del candidato verificado retenido usando las
+ * lecturas cacheadas del complemento, sin adquirir el proveedor, sondear el
+ * relay, invocar el manager, activar, reparar ni usar el candidato como
+ * fallback. El candidato nunca se presenta como la release activa/utilizable:
+ * solo active acreditado cuenta como proyección operativa; extensión, navegador
+ * y relay conservan su diagnóstico independiente. Cuenta como problema el
+ * active ausente/inválido y el candidato corrupto; un candidato pendiente
+ * retenido es informativo.
+ */
+function reportBrowserControl(stateDir: string): number {
+  let problems = 0;
+  const active = inspectCachedBrowserControlRuntime(stateDir);
+  if (active.kind === "ready") {
+    p.log.success(
+      `Browser Control: active ${active.version} verificado con su proyección gestionada; la extensión, el navegador y el relay se diagnostican aparte.`,
+    );
+  } else {
+    p.log.warn(`Browser Control: no hay un active gestionado verificado (${active.reason}).`);
+    problems++;
+  }
+  const candidate = inspectCachedBrowserControlCandidate(stateDir);
+  if (candidate.kind === "retained") {
+    p.log.info(
+      `Browser Control: candidato ${candidate.version} retenido y verificado, pendiente de activación; no sustituye ni se presenta como la release activa. Coordina la parada del relay si debe promoverse.`,
+    );
+  } else if (candidate.kind === "invalid") {
+    p.log.error(
+      `Browser Control: el candidato retenido no es válido (${candidate.reason}); no se usa como fallback ni se repara.`,
+    );
+    problems++;
+  }
+  return problems;
 }
 
 /** Dónde mirar la key de context7 en la config de cada runtime. */
@@ -503,6 +543,10 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       .map((capability) => `${capability.id}=${capability.state}`)
       .join(", ");
     p.log.info(`${adapter.name}: capabilities diagnostic (${capabilitySummary}); no certifica enforcement local.`);
+
+    // Browser Control solo aplica al runtime OpenCode; no se filtra la capacidad
+    // ni el estado del complemento a Claude/Codex/Pi.
+    if (adapter.id === "opencode") problems += reportBrowserControl(dataDir());
 
     let pending: number;
     let stalePermissions = false;

@@ -540,3 +540,26 @@ export function inspectCachedBrowserControlRuntime(
     return { kind: "unavailable", reason: runtimeReason(error) };
   }
 }
+
+/**
+ * Lectura offline mínima del namespace candidato, separada del active: usa el
+ * mismo verificador estricto del receipt sobre el directorio candidato fijo,
+ * sin adquirir, sondear, activar, reparar ni caer de vuelta al active. Solo
+ * expone la versión retenida o la ausencia/el motivo de invalidez; nunca el
+ * receipt crudo ni sus sha. Una ausencia es un estado legítimo, no un fallback.
+ */
+export type BrowserControlCachedCandidate =
+  | { readonly kind: "retained"; readonly version: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "invalid"; readonly reason: string };
+
+export function inspectCachedBrowserControlCandidate(stateDir: string): BrowserControlCachedCandidate {
+  const candidateDir = browserControlCandidateDir(stateDir);
+  let receipt: ManagedBrowserReceipt | null;
+  try {
+    receipt = loadVerifiedManagedBrowserReceipt(candidateDir, BROWSER_CONTROL_PACKAGE);
+  } catch (error) {
+    return { kind: "invalid", reason: runtimeReason(error) };
+  }
+  return receipt === null ? { kind: "absent" } : { kind: "retained", version: receipt.version };
+}
