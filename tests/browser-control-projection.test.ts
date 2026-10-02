@@ -183,6 +183,24 @@ describe("Browser Control en AGENTS.md de OpenCode v2 [T10-RED]", () => {
     expect(withoutDevtools).not.toMatch(/Playwright CLI/i);
   });
 
+  it("señala el prefijo CLI gestionado `jorgex-stack browser control` para los ejemplos de la skill oficial", () => {
+    const configDir = path.join(tempDir(), "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    const ctx: BrowserControlContext = {
+      ...baseContext(configDir),
+      mode: "human",
+      enabledMcpServers: new Set(),
+      playwrightCliEnabled: true,
+    };
+
+    const content = promptContentFor(opencodeAdapter, ctx);
+
+    // RED: el bloque browser de v2 describe la skill y el namespace, pero aún no
+    // señala el dispatcher gestionado que deben usar los ejemplos CLI de la skill
+    // oficial; el prompt debe exponer ese prefijo para no caer en un CLI global.
+    expect(content).toContain("jorgex-stack browser control");
+  });
+
   it.each([claudeCodeAdapter, codexAdapter])(
     "control: %s conserva la guía Playwright CLI y no recibe Browser Control",
     (adapter) => {
