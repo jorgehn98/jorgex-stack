@@ -1369,6 +1369,233 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
   });
 
   /**
+   * T12/T13 caller RED (spec 12/13 causal additions): el puerto EFECTIVO del MCP
+   * gestionado preservado manda sobre el shell. Con active A ya publicado y un
+   * MCP `browser-control` cuyo `environment.BROWSER_CONTROL_PORT` apunta a un
+   * relay propio VIVO, mientras el shell `BROWSER_CONTROL_PORT` apunta a otro
+   * puerto propio reservado-y-cerrado, un segundo install con latest B debe
+   * sondear el puerto efectivo, verlo presente y quedar pendiente: A sigue
+   * activo, B queda retenido como candidato, config/claim/skill de A no cambian
+   * y el caller diagnostica AMBAS versiones. Hoy el controlador solo lee el
+   * shell, ve ausencia, promueve B y pierde A.
+   *
+   * Criterios etiquetados (primer fallo = A):
+   * - A (puerto/promoción): active A + pointer/config/claim/skill intactos, B
+   *   retenido y el relay efectivo realmente sondeado (`GET /version`).
+   * - B (salida): el diagnóstico del caller nombra el candidato B y el active A
+   *   con su rol, sin depender de doctor ni de snapshots de prosa.
+   */
+  it("sondea el puerto efectivo del MCP preservado y diagnostica active A + candidato B sin promover", async () => {
+    const ownedRoots: string[] = [];
+    // Cleanup de raíces/servidor armado ANTES del primer root o listener.
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-effective-port-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+    const relayRequests: string[] = [];
+    let relay: Server | undefined;
+    let currentRelease = RELEASE_A;
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-effective-port-",
+        register: (root) => ownedRoots.push(root),
+      });
+      // Shell: puerto propio reservado-y-cerrado (ECONNREFUSED genuino), nunca 19989.
+      const shellPort = await reserveClosedRelayPort();
+
+      await withIsolatedEnv(
+        { ...process.env, ...owned.env, BROWSER_CONTROL_PORT: String(shellPort) },
+        async () => {
+          const witnessA = writeWitnessTree(owned.root, RELEASE_A);
+          const witnessB = writeWitnessTree(owned.root, RELEASE_B);
+          const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+            output: "opencode v2.0.20",
+          });
+          const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
+          const configPath = path.join(configDir, "opencode.json");
+          const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+          const actualStage = await import("../src/lib/browser-stage.js");
+          const stagedByVersion = new Map<string, StageVerifiedBrowserTreeResult>([
+            [RELEASE_A.version, stagedWitness(witnessA, RELEASE_A, actualStage.browserTreeSha256)],
+            [RELEASE_B.version, stagedWitness(witnessB, RELEASE_B, actualStage.browserTreeSha256)],
+          ]);
+          vi.doMock("../src/lib/browser-stage.js", async () => {
+            const actual =
+              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                "../src/lib/browser-stage.js",
+              );
+            return {
+              ...actual,
+              stageVerifiedBrowserTree: async (options: { release: { version: string } }) => {
+                const staged = stagedByVersion.get(options.release.version);
+                if (staged === undefined) {
+                  throw new Error(
+                    `browser-control-runtime: unexpected stage version ${options.release.version}`,
+                  );
+                }
+                return staged;
+              },
+            };
+          });
+          vi.stubGlobal("fetch", registryFetch(fetched, () => currentRelease));
+
+          const install = await import("../src/install.js");
+          const { dataDir } = await import("../src/lib/paths.js");
+          const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+          const { devtoolsMcpPreferenceFile, loadDevtoolsMcpOwnership } = await import(
+            "../src/lib/tool-preferences.js"
+          );
+
+          const opencode = install.ADAPTERS.opencode!;
+          const originalDetect = opencode.detect;
+          const detection = (): RuntimeDetection => ({
+            id: "opencode",
+            name: "OpenCode",
+            installed: true,
+            binPath: opencodeBin,
+            configDir,
+          });
+          opencode.detect = detection;
+
+          const runInstall = () =>
+            install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+
+          try {
+            // 1) Primer install real (relay ausente en el shell): promueve A y
+            //    proyecta el MCP guard A + la skill A.
+            await runInstall();
+            const activeA = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(activeA, "el primer install debe publicar el active A").not.toBeNull();
+            if (activeA === null) return;
+            expect(activeA.version).toBe(RELEASE_A.version);
+            const activePointer = path.join(
+              dataDir(),
+              ".browser-managed",
+              BROWSER_CONTROL_SERVER,
+              "active.v1.json",
+            );
+            const pointerBytesA = fs.readFileSync(activePointer);
+            const skillA = fs.readFileSync(projectedSkill);
+            expect(skillA).toEqual(RELEASE_A.skillBytes);
+
+            // 2) El MCP gestionado preserva el puerto EFECTIVO: un relay propio
+            //    VIVO en ese puerto. El shell se mueve a OTRO puerto propio
+            //    reservado-y-cerrado, así que shell y MCP discrepan.
+            const startedRelay = await startRelayVersionServer(relayRequests);
+            relay = startedRelay.server;
+            const effectivePort = startedRelay.port;
+            expect(relay.listening, "el relay del puerto efectivo debe estar vivo").toBe(true);
+            expect(effectivePort).not.toBe(shellPort);
+            // Control no vacuo: el shell apunta a un puerto genuinamente cerrado
+            // (ausencia real), distinto del efectivo, que sí tiene el relay vivo.
+            // El sondeo de control no toca el puerto efectivo para no contaminar
+            // la señal de `relayRequests` que debe producir el código bajo prueba.
+            const { probeBrowserControlRelay } = await import("../src/lib/browser-control-runtime.js");
+            expect(
+              await probeBrowserControlRelay({ BROWSER_CONTROL_PORT: String(shellPort) }),
+              "el puerto shell debe estar cerrado (ausencia real)",
+            ).toBe("absent");
+            const installedConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+              [key: string]: unknown;
+            };
+            const managedEntry = installedConfig.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+            expect(managedEntry, "el primer install debe proyectar el MCP gestionado").toBeDefined();
+            installedConfig.mcp!.servers![BROWSER_CONTROL_SERVER]!["environment"] = {
+              BROWSER_CONTROL_PORT: String(effectivePort),
+            };
+            fs.writeFileSync(configPath, `${JSON.stringify(installedConfig, null, 2)}\n`);
+            const managedEntryBefore = installedConfig.mcp!.servers![BROWSER_CONTROL_SERVER];
+            process.env.BROWSER_CONTROL_PORT = String(await reserveClosedRelayPort());
+
+            // 3) Segundo install real con latest B: el puerto efectivo está vivo,
+            //    así que B no puede promoverse.
+            vi.clearAllMocks();
+            currentRelease = RELEASE_B;
+            await runInstall();
+
+            // Criterio A — puerto efectivo / no promoción.
+            const activeAfter = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(activeAfter, "el active A debe seguir publicado").not.toBeNull();
+            expect(
+              activeAfter?.version,
+              "el active no debe avanzar a B mientras el relay del puerto EFECTIVO está presente",
+            ).toBe(RELEASE_A.version);
+            expect(
+              fs.readFileSync(activePointer),
+              "el pointer del active A debe conservar sus bytes",
+            ).toEqual(pointerBytesA);
+            expect(
+              relayRequests,
+              "el gate debe sondear /version en el puerto EFECTIVO del MCP (señal de relay vivo)",
+            ).toContain("GET /version");
+
+            const candidateDir = path.join(dataDir(), BC_CANDIDATE_DIRNAME);
+            const candidate = loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE);
+            expect(candidate, "el candidato B debe quedar retenido").not.toBeNull();
+            expect(candidate?.version, "el candidato retenido debe ser B").toBe(RELEASE_B.version);
+            expect(candidate?.integrity, "el candidato B debe conservar su SRI").toBe(RELEASE_B.integrity);
+
+            const afterConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+            };
+            expect(
+              afterConfig.mcp?.servers?.[BROWSER_CONTROL_SERVER],
+              "la proyección gestionada A (comando + puerto efectivo) no debe cambiar",
+            ).toEqual(managedEntryBefore);
+            expect(
+              fs.readFileSync(projectedSkill),
+              "la skill del active A no debe cambiar",
+            ).toEqual(skillA);
+            expect(
+              loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), "opencode", BROWSER_CONTROL_SERVER),
+              "el claim del MCP gestionado debe conservarse",
+            ).toBe(true);
+
+            // Criterio B — diagnóstico conjunto active A + candidato B en el caller.
+            const secondLogs = loggedLines();
+            const pendingLine = secondLogs.find(
+              (line) => line.includes(RELEASE_B.version) && /candidat/i.test(line),
+            );
+            expect(
+              pendingLine,
+              `el caller debe diagnosticar el candidato B pendiente: ${secondLogs.join(" | ")}`,
+            ).toBeDefined();
+            expect(
+              pendingLine ?? "",
+              "el diagnóstico conjunto debe nombrar el active A",
+            ).toContain(RELEASE_A.version);
+            expect(
+              pendingLine ?? "",
+              "el diagnóstico conjunto debe marcar A como active",
+            ).toMatch(/active|activo/i);
+          } finally {
+            opencode.detect = originalDetect;
+          }
+        },
+      );
+    } finally {
+      await closeRelayServer(relay);
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
    * T12/T13 late-authentication RED (spec 12/13 §validation): the skill target
    * is absent and unowned before the confirm, a foreign writer creates it during
    * the real prompt, and the post-confirmation authentication must decide. An

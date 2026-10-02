@@ -152,6 +152,20 @@ async function readRelayVersionAtPort(port: number): Promise<BrowserControlRelay
 }
 
 /**
+ * Sondeo del gate en un puerto ya validado por el caller (procedente del MCP
+ * preservado o del binding del servicio). No acepta URLs ni proxy: reutiliza el
+ * mismo transporte acotado. Un puerto fuera de rango es procedencia incierta.
+ */
+export function probeBrowserControlRelayAtPort(port: number): Promise<BrowserControlRelayStatus> {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return Promise.resolve("unknown");
+  return readRelayVersionAtPort(port).then((read) => {
+    if (read.status !== "present") return read.status;
+    const version = read.payload.version;
+    return typeof version === "string" && version.trim() !== "" ? "present" : "unknown";
+  });
+}
+
+/**
  * Sondeo del gate de relay: ausente/presente/incierto. Reutiliza el transporte
  * anterior; `present` exige un 200 con un objeto JSON que declare `version` como
  * string no vacío.
@@ -159,11 +173,7 @@ async function readRelayVersionAtPort(port: number): Promise<BrowserControlRelay
 export function probeBrowserControlRelay(env: NodeJS.ProcessEnv = process.env): Promise<BrowserControlRelayStatus> {
   const port = resolveBrowserControlRelayPort(env);
   if (port === null) return Promise.resolve("unknown");
-  return readRelayVersionAtPort(port).then((read) => {
-    if (read.status !== "present") return read.status;
-    const version = read.payload.version;
-    return typeof version === "string" && version.trim() !== "" ? "present" : "unknown";
-  });
+  return probeBrowserControlRelayAtPort(port);
 }
 
 /** Lectura del `/version` en un puerto explícito ya validado (prueba de readiness). */
@@ -286,6 +296,13 @@ export interface PrepareBrowserControlRuntimeOptions {
   readonly pnpmBin: string;
   readonly fetchImpl: typeof fetch;
   readonly stageParent?: string;
+  /**
+   * Puerto efectivo del relay ya resuelto y validado por el caller desde la
+   * configuración MCP preservada o el binding autenticado del servicio. Manda
+   * sobre el entorno del proceso. Ausente: se conserva el contrato anterior
+   * (entorno del proceso o `probeRelay` inyectado en tests unitarios).
+   */
+  readonly relayPort?: number;
   readonly probeRelay?: () => Promise<BrowserControlRelayStatus>;
 }
 
@@ -413,7 +430,13 @@ function browserControlReadyFromReceipt(
 export async function prepareBrowserControlRuntime(
   options: PrepareBrowserControlRuntimeOptions,
 ): Promise<BrowserControlRuntimeResult> {
-  const probe = options.probeRelay ?? (() => probeBrowserControlRelay());
+  // El puerto efectivo ya resuelto por el caller manda: se sondea exactamente
+  // ese destino local, nunca el shell ni una URL/proxy arbitrarios. Sin puerto
+  // explícito se conserva el contrato anterior.
+  const relayPort = options.relayPort;
+  const probe = relayPort === undefined
+    ? (options.probeRelay ?? (() => probeBrowserControlRelay()))
+    : () => probeBrowserControlRelayAtPort(relayPort);
   const relay = await probe();
 
   let previousActive: ManagedBrowserReceipt | null;

@@ -391,6 +391,84 @@ export function inspectBrowserControlEnvironmentRetirement(
   return { kind: "retired" };
 }
 
+export type PreservedBrowserControlRelayPort =
+  | { readonly kind: "resolved"; readonly port: number }
+  | { readonly kind: "none" }
+  | { readonly kind: "ambiguous"; readonly reason: string };
+
+/**
+ * Puerto de relay EFECTIVO preservado en la configuración OpenCode que el host
+ * usará: la entrada `browser-control` nativa (`mcp.servers`) o la legacy plana
+ * (`mcp.<nombre>`), con la misma precedencia nativa que `planMainConfig`. Es de
+ * SOLO LECTURA: no muta, no adquiere ni sondea. Un archivo efectivo ambiguo, una
+ * entrada o un `environment` malformados o un puerto no literal 1–65535 producen
+ * `ambiguous` (procedencia incierta, sin adivinar); la ausencia de configuración
+ * o de puerto declarado es `none` y deja actuar al entorno del proceso.
+ */
+export function resolvePreservedBrowserControlRelayPort(configDir: string): PreservedBrowserControlRelayPort {
+  const selection = selectOpenCodeServerFile(configDir);
+  if ("conflict" in selection) {
+    return { kind: "ambiguous", reason: "coexisten 'opencode.json' y 'opencode.jsonc'; el archivo efectivo es ambiguo" };
+  }
+  // Reutiliza el lector estricto existente: ENOENT es ausencia real, pero un
+  // error de lectura (EACCES/EIO/EISDIR…) o un JSONC inválido es procedencia
+  // incierta, no `none`. Se captura sin volcar contenido crudo ni credenciales.
+  let source: string | null;
+  try {
+    source = readMcpConfig(selection.selection.file);
+  } catch {
+    return { kind: "ambiguous", reason: "la configuración MCP de OpenCode no se pudo leer o no es JSONC válido" };
+  }
+  if (source === null || source.trim() === "") return { kind: "none" };
+  const parsed = parseJsoncObject(source);
+  if (parsed.value === null) {
+    return { kind: "ambiguous", reason: "la configuración OpenCode no es JSONC válido" };
+  }
+  const rawMcp = parsed.value["mcp"];
+  if (rawMcp === undefined) return { kind: "none" };
+  const mcp = objectValue(rawMcp);
+  if (mcp === null) return { kind: "ambiguous", reason: "la clave 'mcp' no es un objeto" };
+
+  // Un contenedor nativo presente pero no-objeto es ambiguo: nunca se infiere el
+  // puerto desde la proyección legacy cuando el host nativo es conflictivo.
+  const rawNativeServers = mcp["servers"];
+  let nativeServers: Record<string, unknown> | null = null;
+  if (rawNativeServers !== undefined) {
+    nativeServers = objectValue(rawNativeServers);
+    if (nativeServers === null) {
+      return { kind: "ambiguous", reason: "el contenedor 'mcp.servers' no es un objeto" };
+    }
+  }
+  const rawNative = nativeServers?.[BROWSER_CONTROL_SERVER];
+  const rawLegacy = mcp[BROWSER_CONTROL_SERVER];
+  let entry: Record<string, unknown>;
+  if (rawNative !== undefined) {
+    const parsedNative = objectValue(rawNative);
+    if (parsedNative === null) return { kind: "ambiguous", reason: "el MCP 'browser-control' nativo no es un objeto" };
+    entry = parsedNative;
+  } else if (rawLegacy !== undefined) {
+    const parsedLegacy = objectValue(rawLegacy);
+    if (parsedLegacy === null) return { kind: "ambiguous", reason: "el MCP 'browser-control' legacy no es un objeto" };
+    entry = parsedLegacy;
+  } else {
+    return { kind: "none" };
+  }
+
+  const rawEnvironment = entry["environment"];
+  if (rawEnvironment === undefined) return { kind: "none" };
+  const environment = objectValue(rawEnvironment);
+  if (environment === null) {
+    return { kind: "ambiguous", reason: "el 'environment' del MCP 'browser-control' no es un objeto" };
+  }
+  const rawPort = environment[BROWSER_CONTROL_PORT_FIELD];
+  if (rawPort === undefined) return { kind: "none" };
+  const port = parseManualBrowserControlPort(rawPort);
+  if (port === null) {
+    return { kind: "ambiguous", reason: "el 'environment' del MCP 'browser-control' declara un puerto no literal válido" };
+  }
+  return { kind: "resolved", port };
+}
+
 function writeBrowserControlEnvironment(source: string, environment: Record<string, unknown>): string {
   return editConfigContent(source, (root) => {
     const mcp = objectValue(root["mcp"]);

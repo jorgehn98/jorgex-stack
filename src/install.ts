@@ -5,7 +5,12 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
-import { opencodeAdapter, reconcileBrowserControlEnvironment, retireBrowserControlEnvironment } from "./adapters/opencode.js";
+import {
+  opencodeAdapter,
+  reconcileBrowserControlEnvironment,
+  resolvePreservedBrowserControlRelayPort,
+  retireBrowserControlEnvironment,
+} from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
 import { HOME, dataDir, samePath, stackRoot } from "./lib/paths.js";
@@ -1310,11 +1315,38 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     try {
       const pnpmBin = resolvePnpmBin();
       if (pnpmBin === null) throw new Error("pnpm no disponible para verificar el árbol gestionado");
-      browserControlRuntime = await prepareBrowserControlRuntime({
-        stateDir: dataDir(),
-        pnpmBin,
-        fetchImpl: globalThis.fetch,
-      });
+      // Puerto EFECTIVO resuelto ANTES de adquirir/promover/sondear: el MCP
+      // `browser-control` preservado (nativo o legacy) manda sobre el shell, y el
+      // binding `serviceUnit` autenticado por el manifest (forma y co-presencia
+      // con la unidad owned, validado por `assertOpenCodeManifestCoherence`) debe
+      // ser coherente. Sin fuente preservada se conserva el contrato anterior.
+      const bcConfigDir = ADAPTERS.opencode?.detect().configDir;
+      const preserved = bcConfigDir === undefined
+        ? { kind: "none" as const }
+        : resolvePreservedBrowserControlRelayPort(bcConfigDir);
+      const bindingPort = readManifest().runtimes.opencode?.serviceUnit?.port;
+      if (preserved.kind === "ambiguous") {
+        browserControlRuntime = {
+          kind: "unavailable",
+          reason: `no se puede resolver de forma inequívoca el puerto efectivo del relay desde el MCP preservado (${preserved.reason}); no se adquiere ni se promueve`,
+        };
+      } else {
+        const preservedPort = preserved.kind === "resolved" ? preserved.port : undefined;
+        if (preservedPort !== undefined && bindingPort !== undefined && preservedPort !== bindingPort) {
+          browserControlRuntime = {
+            kind: "unavailable",
+            reason: `el puerto efectivo del MCP preservado (${preservedPort}) no coincide con el binding del servicio (${bindingPort}); procedencia incoherente, no se adquiere ni se promueve`,
+          };
+        } else {
+          const relayPort = preservedPort ?? bindingPort;
+          browserControlRuntime = await prepareBrowserControlRuntime({
+            stateDir: dataDir(),
+            pnpmBin,
+            fetchImpl: globalThis.fetch,
+            ...(relayPort === undefined ? {} : { relayPort }),
+          });
+        }
+      }
     } catch (error) {
       browserControlRuntime = {
         kind: "unavailable",
@@ -1329,7 +1361,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     } else {
       browserControlPending = true;
       const detail = browserControlRuntime.kind === "pending"
-        ? `candidato verificado ${browserControlRuntime.candidateVersion} retenido en el namespace candidato, pero ${browserControlRuntime.reason}`
+        ? (browserControlRuntime.activeVersion === undefined
+            ? `candidato verificado ${browserControlRuntime.candidateVersion} retenido en el namespace candidato y aún NO activado (no hay un active gestionado utilizable), pero ${browserControlRuntime.reason}`
+            : `candidato verificado ${browserControlRuntime.candidateVersion} retenido en el namespace candidato y aún NO activado; el active ${browserControlRuntime.activeVersion} se conserva sin cambios, pero ${browserControlRuntime.reason}`)
         : browserControlRuntime.reason;
       p.log.error(
         `Browser Control: ${detail}. No se proyecta MCP/skill ni se declara la capacidad; el resultado queda pendiente y revisa el diagnóstico antes de reintentar.`,
