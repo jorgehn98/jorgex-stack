@@ -1,22 +1,29 @@
 /**
- * Doble sintético de la frontera `prepareBrowserControlRuntime` (Spec T13) para
- * suites de core OpenCode que prueban modelo/config/ownership/backup, no el
- * publicador de Browser Control.
- *
- * El caller (`install`) confía en el resultado del coordinador, así que este
- * doble entrega un `ready` sintético —versión ficticia, skill privada en un root
- * de disco y una invocación MCP opaca completa (sus args ya incluyen `mcp`)—
- * para que el pipeline real (adapter, backups, manifest, permisos, Engram) siga
- * corriendo. NO adquiere el paquete publicado, NO sondea el relay, NO ejecuta el
- * launcher y NO certifica bytes oficiales: no es evidencia del contrato Browser
+ * Doble sintético de las fronteras `prepareBrowserControlRuntime` e
+ * `inspectCachedBrowserControlRuntime` (Spec T13) para suites de core OpenCode
+ * que prueban modelo/config/ownership/backup, no el publicador de Browser
  * Control.
+ *
+ * El caller (`install`/`uninstall`) confía en el resultado del coordinador, así
+ * que este doble entrega un `ready` sintético —versión ficticia, skill privada
+ * en un root de disco y una invocación MCP opaca completa (sus args ya incluyen
+ * `mcp`)— para que el pipeline real (adapter, backups, manifest, permisos,
+ * Engram) siga corriendo. `inspect` es la lectura cacheada equivalente, para que
+ * el uninstall offline autentique la misma proyección sintética. NO adquiere el
+ * paquete publicado, NO sondea el relay, NO ejecuta el launcher, NO lee ni
+ * fabrica un receipt y NO certifica bytes oficiales: no es evidencia del
+ * contrato Browser Control.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
-import type { BrowserControlRuntimeResult } from "../../src/lib/browser-control-runtime.js";
+import type {
+  BrowserControlReady,
+  BrowserControlRuntimeResult,
+  BrowserControlUnavailable,
+} from "../../src/lib/browser-control-runtime.js";
 import { resolveVerificationDiskBase } from "./pnpm-tooling.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -71,6 +78,13 @@ export const SYNTHETIC_BROWSER_CONTROL_SKILL = [
 export interface BrowserControlReadyDouble {
   /** Sustituto de `prepareBrowserControlRuntime`; siempre resuelve `ready`. */
   readonly prepare: ReturnType<typeof vi.fn<() => Promise<BrowserControlRuntimeResult>>>;
+  /**
+   * Sustituto síncrono de `inspectCachedBrowserControlRuntime`; siempre resuelve
+   * el MISMO `ready` sintético que `prepare` (no un receipt ni bytes oficiales).
+   */
+  readonly inspect: ReturnType<
+    typeof vi.fn<(stateDir: string) => BrowserControlReady | BrowserControlUnavailable>
+  >;
   /** Ruta de la skill privada (se materializa en la primera llamada). */
   skillSource(): string;
   /** Elimina el root privado; idempotente. */
@@ -106,8 +120,16 @@ export function createBrowserControlReadyDouble(): BrowserControlReadyDouble {
     skillSource: materialize(),
   }));
 
+  const inspect = vi.fn<(stateDir: string) => BrowserControlReady | BrowserControlUnavailable>(() => ({
+    kind: "ready",
+    version: SYNTHETIC_BROWSER_CONTROL_VERSION,
+    invocation: SYNTHETIC_BROWSER_CONTROL_INVOCATION,
+    skillSource: materialize(),
+  }));
+
   return {
     prepare,
+    inspect,
     skillSource: () => materialize(),
     cleanup: () => {
       if (root !== null) {

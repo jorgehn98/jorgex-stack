@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
@@ -5,8 +6,11 @@ import type { FileAction, OpenCodeTargetEvidenceOption, RuntimeId } from "./adap
 import { ADAPTERS, assertOpenCodeManifestCoherence, buildContentPlan, makeContext } from "./install.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
-import { planManagedBrowserInvocation } from "./lib/browser-managed.js";
-import { BROWSER_CONTROL_PACKAGE } from "./lib/browser-control-runtime.js";
+import {
+  inspectCachedBrowserControlRuntime,
+  type BrowserControlReady,
+  type BrowserControlUnavailable,
+} from "./lib/browser-control-runtime.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import {
@@ -65,6 +69,47 @@ export function resolvePlaywrightUninstallPlan(input: { disableManaged: boolean 
 export function isOfficialEngramPluginFile(file: string): boolean {
   const state = inspectOpencodePluginFile(file);
   return state === "official" || state === "unknown";
+}
+
+/**
+ * Preflight offline de la skill Browser Control owned. La autoridad del canon es
+ * la lectura cacheada del active verificado (`inspectCachedBrowserControlRuntime`,
+ * nunca el candidato ni el preparador de adquisición): de ella se deriva la
+ * fuente retenida —ya validada regular/confinada/UTF-8 estricta— y se autentica
+ * la copia proyectada con la misma clasificación estática que el resto de
+ * recursos OpenCode. Un target unowned no se autentica ni se borra (la
+ * coincidencia manual no crea propiedad). Un owned que no se pueda acreditar
+ * —sin active verificado o bytes distintos— se conserva y bloquea la retirada en
+ * vez de borrarse a ciegas.
+ */
+function browserControlSkillBlockReason(
+  configDir: string,
+  ownedPaths: readonly string[],
+  browserControl: BrowserControlReady | BrowserControlUnavailable,
+): string | null {
+  const target = path.resolve(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+  if (!ownedPaths.some((file) => path.resolve(file) === target)) return null;
+
+  const preserve = (detail: string): string => `${target}: ${detail}; se conserva sin borrar ni reclamar.`;
+  if (browserControl.kind !== "ready") {
+    return preserve(
+      `no hay un active gestionado verificado que acredite los bytes de la skill (${browserControl.reason})`,
+    );
+  }
+  const source = browserControl.skillSource;
+  let currentBytes: Buffer;
+  try {
+    currentBytes = fs.readFileSync(source);
+  } catch {
+    return preserve(`la fuente verificada de la skill no se puede leer (${source})`);
+  }
+  const row: StaticResourceRow = {
+    source,
+    target,
+    size: currentBytes.length,
+    sha256: createHash("sha256").update(currentBytes).digest("hex"),
+  };
+  return staticResourceBlockReason(authenticateStaticResource(target, row, currentBytes, true, configDir));
 }
 
 /**
@@ -164,6 +209,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     }
     const detection = adapter.detect();
     const configDir = opts.targetDir ?? detection.configDir;
+    const usingRealConfig = opts.targetDir === undefined;
     if (!detection.installed && opts.targetDir === undefined) {
       p.log.warn(`${adapter.name} no detectado — omitido.`);
       continue;
@@ -191,17 +237,21 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
 
-    // Browser Control gestionado: la invocación del launcher `active` se
-    // resuelve offline desde el receipt cacheado (sin prepareRuntime, red ni
-    // sondeo). El adapter solo retira el objeto canónico EXACTO con esa
-    // invocación; sin ella falla cerrado. Un receipt ausente/drift se
-    // diagnostica aquí y se conserva la entrada y su ownership sin borrar.
+    // Browser Control gestionado: la lectura offline cacheada del active
+    // verificado (`inspectCachedBrowserControlRuntime`, sin prepareRuntime, red ni
+    // sondeo) aporta la invocación del launcher y la fuente de skill ya
+    // validadas. El adapter solo retira el objeto canónico EXACTO con esa
+    // invocación; sin ella falla cerrado. Un active ausente/drift se diagnostica
+    // aquí y se conserva la entrada, la skill y su ownership sin borrar.
+    const browserControl = usingRealConfig && id === "opencode"
+      ? inspectCachedBrowserControlRuntime(dataDir())
+      : null;
     if (id === "opencode" && ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) === true) {
-      try {
-        ctx.browserControlInvocation = planManagedBrowserInvocation(dataDir(), BROWSER_CONTROL_PACKAGE, ["mcp"]);
-      } catch (error) {
+      if (browserControl !== null && browserControl.kind === "ready") {
+        ctx.browserControlInvocation = browserControl.invocation;
+      } else {
         p.log.warn(
-          `OpenCode: no se pudo autenticar el MCP gestionado 'browser-control' (${error instanceof Error ? error.message : String(error)}); se conserva la entrada y su ownership sin borrar nada. Revisa el receipt gestionado antes de reintentar.`,
+          `OpenCode: no se pudo autenticar el MCP gestionado 'browser-control' (${browserControl?.reason ?? "no hay un active gestionado verificado"}); se conserva la entrada y su ownership sin borrar nada. Revisa el receipt gestionado antes de reintentar.`,
         );
       }
     }
@@ -227,7 +277,6 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     const mergedTargets = new Set(unmerge.map((a) => path.resolve(a.target)));
     // Lo instalado = plan actual ∪ manifest (cubre archivos que versiones
     // anteriores instalaron y el plan actual ya no genera).
-    const usingRealConfig = opts.targetDir === undefined;
     const prevOwned = usingRealConfig ? (readManifest().runtimes[id]?.owned ?? []) : [];
     // En instalación real los targets pueden vivir fuera del configDir
     // (~/.agents/skills): borrado y poda se anclan a HOME. Nada fuera de esa
@@ -258,6 +307,12 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
           break;
         }
       }
+    }
+    // Skill Browser Control: mismo preflight estático ANTES de cualquier backup
+    // o borrado, sobre la lectura offline cacheada. Solo se autentica cuando está
+    // owned; unowned no se borra.
+    if (staticBlock === null && id === "opencode" && usingRealConfig && browserControl !== null) {
+      staticBlock = browserControlSkillBlockReason(configDir, prevOwned, browserControl);
     }
     if (staticBlock !== null) {
       p.log.error(`OpenCode: ${staticBlock} No se borra ni respalda nada; el ownership se conserva.`);

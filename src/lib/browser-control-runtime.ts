@@ -505,3 +505,38 @@ export async function prepareBrowserControlRuntime(
     return { kind: "unavailable", reason: primary };
   }
 }
+
+/**
+ * Frontera offline real del mismo complemento: lee ÚNICAMENTE el active
+ * operativo ya verificado y sus datos mínimos de proyección (`ready |
+ * unavailable`), sin adquirir el `latest`, sondear relay/manager, activar,
+ * retener/usar el candidato ni reparar. Reutiliza la validación estricta del
+ * receipt activo y la proyección cacheada —skill regular/confinada/UTF-8 estricta
+ * e invocación MCP completa—, nunca el preparador de adquisición. Uninstall y
+ * doctor consumen esta lectura; ausencia o corrupción se diagnostican como
+ * `unavailable` sin lanzar.
+ */
+export function inspectCachedBrowserControlRuntime(
+  stateDir: string,
+): BrowserControlReady | BrowserControlUnavailable {
+  let receipt: ManagedBrowserReceipt | null;
+  try {
+    receipt = loadVerifiedManagedBrowserReceipt(stateDir, BROWSER_CONTROL_PACKAGE);
+  } catch (error) {
+    return {
+      kind: "unavailable",
+      reason: `el namespace activo gestionado no es válido (${runtimeReason(error)}); no se declara la capacidad`,
+    };
+  }
+  if (receipt === null) {
+    return {
+      kind: "unavailable",
+      reason: "no hay un active gestionado verificado que acredite la proyección de Browser Control",
+    };
+  }
+  try {
+    return browserControlReadyFromReceipt(stateDir, receipt);
+  } catch (error) {
+    return { kind: "unavailable", reason: runtimeReason(error) };
+  }
+}

@@ -1649,4 +1649,173 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       }
     },
   );
+
+  /**
+   * T12/T13 uninstall fail-closed (spec 12/13, SC-03): la skill Browser Control
+   * está owned y proyectada byte-identical al active, pero el usuario modifica
+   * sus bytes tras el install. El uninstall no puede borrar ni reemplazar un
+   * recurso owned modificado: debe preservarlo byte a byte e identidad, no
+   * declarar en el manifest una limpieza que no ocurrió y bloquear con
+   * diagnóstico accionable (exit != 0, nunca "Hecho.").
+   *
+   * Solo cambia la copia proyectada; el árbol gestionado y su SRI/tree siguen
+   * válidos, así que la autenticación offline del launcher no se degrada y un
+   * setup inválido no puede enmascarar el RED. El fetch queda envenenado tras el
+   * install y el puerto centinela es inválido: el uninstall sigue siendo offline.
+   */
+  it("preserva una skill Browser Control owned modificada y bloquea el uninstall en vez de borrarla", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-uninstall-modified-skill-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-uninstall-modified-",
+        register: (root) => ownedRoots.push(root),
+      });
+      // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989.
+      const closedPort = await reserveClosedRelayPort();
+      const isolatedXdgConfig = path.join(owned.env.HOME!, ".config");
+
+      await withIsolatedEnv(
+        {
+          ...process.env,
+          ...owned.env,
+          XDG_CONFIG_HOME: isolatedXdgConfig,
+          BROWSER_CONTROL_PORT: String(closedPort),
+        },
+        async () => {
+          const witness = writeWitnessTree(owned.root);
+          const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+            output: "opencode v2.0.20",
+          });
+          const configDir = path.join(isolatedXdgConfig, "opencode");
+          const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+          const actualStage = await import("../src/lib/browser-stage.js");
+          const witnessStaged = {
+            treePath: witness.treePath,
+            nodeModulesPath: witness.nodeModulesPath,
+            treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
+            closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
+          };
+          vi.doMock("../src/lib/browser-stage.js", async () => {
+            const actual =
+              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                "../src/lib/browser-stage.js",
+              );
+            return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
+          });
+          vi.stubGlobal("fetch", registryFetch(fetched));
+
+          const install = await import("../src/install.js");
+          const uninstall = await import("../src/uninstall.js");
+          const { dataDir } = await import("../src/lib/paths.js");
+          const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+          const { readManifest } = await import("../src/lib/manifest.js");
+
+          const opencode = install.ADAPTERS.opencode!;
+          const originalDetect = opencode.detect;
+          const detection = (): RuntimeDetection => ({
+            id: "opencode",
+            name: "OpenCode",
+            installed: true,
+            binPath: opencodeBin,
+            configDir,
+          });
+          opencode.detect = detection;
+
+          try {
+            // 1) Instalación real: active verificado + skill owned proyectada.
+            await install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+
+            const active = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(active, "el install debe publicar el active gestionado").not.toBeNull();
+            if (active === null) return;
+            expect(fs.readFileSync(projectedSkill)).toEqual(BC_SKILL_BYTES);
+            expect(
+              (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file)),
+              "el manifest debe declarar owned la skill proyectada",
+            ).toContain(path.resolve(projectedSkill));
+
+            // 2) El usuario modifica la copia proyectada. Solo cambia la
+            //    proyección: el árbol gestionado y su SRI/tree siguen válidos.
+            const userDrift = Buffer.from(
+              "---\nname: browser-control\ndescription: user-authored drift\n---\n\n# user-authored skill\n",
+              "utf8",
+            );
+            fs.writeFileSync(projectedSkill, userDrift);
+            const inoAfterModify = fs.statSync(projectedSkill).ino;
+
+            // 3) Offline forzado: cualquier fetch durante el uninstall es un
+            //    fallo; el puerto centinela inválido no puede contactar relay.
+            const uninstallFetch = vi.fn(async (input: RequestInfo | URL) => {
+              throw new Error(`unexpectedNetwork: el uninstall no debe tocar la red (${String(input)})`);
+            });
+            vi.stubGlobal("fetch", uninstallFetch);
+            process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+            const exit = await uninstall.runUninstall({
+              runtimes: ["opencode"],
+              dryRun: false,
+              yes: true,
+              removeEngram: false,
+              removePlaywright: false,
+            });
+
+            // 4) No puede destruir bytes owned modificados: se preservan byte a
+            //    byte y sin reescritura (mismo inodo físico).
+            expect(fs.existsSync(projectedSkill), "la skill owned modificada no debe borrarse").toBe(true);
+            expect(
+              fs.readFileSync(projectedSkill),
+              "la skill owned modificada debe preservarse byte a byte",
+            ).toEqual(userDrift);
+            expect(
+              fs.statSync(projectedSkill).ino,
+              "la skill owned modificada no debe reescribirse",
+            ).toBe(inoAfterModify);
+
+            // 5) Sin claim falso de limpieza: el manifest conserva el ownership.
+            expect(
+              (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file)),
+              "el manifest no debe declarar limpiada una skill que se conserva",
+            ).toContain(path.resolve(projectedSkill));
+
+            // 6) Resultado honesto: bloqueado, nonzero y nunca "Hecho.".
+            expect(exit, `el uninstall debe fallar cerrado: ${loggedLines().join(" | ")}`).not.toBe(0);
+            expect(
+              prompts.outro.mock.calls.map((call) => String(call[0])).some((line) => line.startsWith("Hecho.")),
+              "un uninstall bloqueado no debe anunciar 'Hecho.'",
+            ).toBe(false);
+            const diagnostics = loggedLines().join("\n");
+            expect(diagnostics).toMatch(/SKILL\.md/);
+            expect(diagnostics).toMatch(/conserv|preserv|modificad|reclamar/i);
+            expect(
+              uninstallFetch,
+              "el uninstall debe ser offline: sin resolución de latest ni sondeo",
+            ).not.toHaveBeenCalled();
+          } finally {
+            opencode.detect = originalDetect;
+          }
+        },
+      );
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
 });

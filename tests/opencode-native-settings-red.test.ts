@@ -61,10 +61,11 @@ vi.mock("../src/lib/detect.js", async () => {
  * Frontera Browser Control (Spec T13): estas suites prueban modelo/config/
  * ownership/backup, no el publicador de Browser Control. El coordinador real
  * adquiriría el paquete publicado (`latest` + SRI) y sondearía el relay del
- * usuario; aquí se sustituye SOLO esa frontera por un `ready` sintético para que
- * el pipeline real (runInstall, adapter, backups, manifest, permisos, Engram)
- * siga ejecutándose sin red, relay ni perfiles. El doble NO certifica bytes
- * oficiales ni es evidencia del contrato Browser Control.
+ * usuario; aquí se sustituyen SOLO las fronteras de adquisición y lectura
+ * cacheada por un `ready` sintético para que el pipeline real (runInstall,
+ * adapter, backups, manifest, permisos, Engram) y el uninstall offline sigan
+ * ejecutándose sin red, relay ni perfiles. El doble NO certifica bytes oficiales
+ * ni es evidencia del contrato Browser Control.
  */
 const browserControlReady = createBrowserControlReadyDouble();
 
@@ -73,7 +74,7 @@ vi.mock("../src/lib/browser-control-runtime.js", async () => {
     await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
       "../src/lib/browser-control-runtime.js",
     );
-  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare, inspectCachedBrowserControlRuntime: browserControlReady.inspect };
 });
 
 // Defensa independiente del mock: si algún camino importara el módulo real, un

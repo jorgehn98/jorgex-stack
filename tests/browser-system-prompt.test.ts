@@ -141,8 +141,9 @@ vi.mock("@clack/prompts", () => prompts);
  * Frontera Browser Control (Spec T13): esta suite prueba el contenido del system
  * prompt y la proyección real de OpenCode, no el publicador de Browser Control.
  * El coordinador real adquiriría el paquete publicado y sondearía el relay; aquí
- * se sustituye SOLO esa frontera por un `ready` sintético, conservando reales
- * install/adapter/backups/manifest/Engram. El doble NO certifica bytes oficiales.
+ * se sustituyen SOLO las fronteras de adquisición y lectura cacheada por un
+ * `ready` sintético, conservando reales install/adapter/backups/manifest/Engram.
+ * El doble NO certifica bytes oficiales.
  */
 const browserControlReady = createBrowserControlReadyDouble();
 
@@ -151,7 +152,7 @@ vi.mock("../src/lib/browser-control-runtime.js", async () => {
     await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
       "../src/lib/browser-control-runtime.js",
     );
-  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare, inspectCachedBrowserControlRuntime: browserControlReady.inspect };
 });
 
 // Defensa independiente del mock: un puerto inválido nunca contacta el relay del
