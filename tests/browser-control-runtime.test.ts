@@ -359,6 +359,151 @@ async function withIsolatedEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>)
   }
 }
 
+/**
+ * Observables of the late-authentication window: a foreign writer creates the
+ * official Browser Control skill target inside the real apply-changes
+ * confirmation, after the pre-prompt plan/authentication and before the
+ * post-prompt re-plan/final authentication.
+ */
+interface LateAuthObservables {
+  readonly exitCode: number;
+  readonly confirmOpened: boolean;
+  readonly bytesAtCreation: Buffer;
+  readonly inoAtCreation: number;
+  readonly bytesAfter: Buffer;
+  readonly inoAfter: number;
+  readonly ownedIncludesSkill: boolean;
+  readonly errors: string[];
+}
+
+/**
+ * Runs a real OpenCode v2 install that promotes the verified active Browser
+ * Control release, with the interactive confirmation window (`yes: false`, fake
+ * TTY). The foreign writer creates `<configDir>/skills/browser-control/SKILL.md`
+ * inside `p.confirm` before it resolves `true`; only the post-confirmation
+ * authentication may decide whether that file is claimed or replaced.
+ */
+async function runBrowserSkillConfirmWindow(foreignBytes: Buffer): Promise<LateAuthObservables> {
+  const ownedRoots: string[] = [];
+  const releaseRoots = registerOwnedResourceCleanup("browser-control-late-auth-roots", () =>
+    removeTemporaryRoots(ownedRoots),
+  );
+  const fetched: string[] = [];
+  let originalTty: PropertyDescriptor | undefined;
+  try {
+    const base = resolveVerificationDiskBase({
+      repoRoot: REPO_ROOT,
+      env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+    });
+    const owned = createOwnedVerificationHome({
+      base,
+      prefix: ".jorgex-browser-control-late-auth-",
+      register: (root) => ownedRoots.push(root),
+    });
+    // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
+    const closedPort = await reserveClosedRelayPort();
+    originalTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true, writable: true });
+
+    let observables: LateAuthObservables | undefined;
+    await withIsolatedEnv(
+      { ...process.env, ...owned.env, BROWSER_CONTROL_PORT: String(closedPort) },
+      async () => {
+        const witness = writeWitnessTree(owned.root);
+        const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+          output: "opencode v2.0.20",
+        });
+        const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
+        const skillTarget = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+        const actualStage = await import("../src/lib/browser-stage.js");
+        const witnessStaged = {
+          treePath: witness.treePath,
+          nodeModulesPath: witness.nodeModulesPath,
+          treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
+          closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
+        };
+        vi.doMock("../src/lib/browser-stage.js", async () => {
+          const actual =
+            await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+              "../src/lib/browser-stage.js",
+            );
+          return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
+        });
+        vi.stubGlobal("fetch", registryFetch(fetched));
+
+        const install = await import("../src/install.js");
+        const { readManifest } = await import("../src/lib/manifest.js");
+
+        const opencode = install.ADAPTERS.opencode!;
+        const originalDetect = opencode.detect;
+        opencode.detect = () => ({
+          id: "opencode",
+          name: "OpenCode",
+          installed: true,
+          binPath: opencodeBin,
+          configDir,
+        });
+
+        let confirmOpened = false;
+        let bytesAtCreation = Buffer.alloc(0);
+        let inoAtCreation = -1;
+        // The foreign writer acts exactly inside the real apply-changes
+        // confirmation: after the pre-prompt plan/authentication and before the
+        // post-prompt re-plan/final authentication. Only this window is
+        // represented; no internal call ordering is asserted.
+        prompts.confirm.mockReset();
+        prompts.confirm.mockImplementation(async (options) => {
+          const message = String((options as { message?: unknown } | undefined)?.message ?? "");
+          if (!confirmOpened && message.includes("Aplicar") && message.includes("OpenCode")) {
+            confirmOpened = true;
+            fs.mkdirSync(path.dirname(skillTarget), { recursive: true, mode: 0o700 });
+            fs.writeFileSync(skillTarget, foreignBytes);
+            bytesAtCreation = fs.readFileSync(skillTarget);
+            inoAtCreation = fs.statSync(skillTarget).ino;
+          }
+          return true;
+        });
+
+        let exitCode: number;
+        try {
+          exitCode = await install.runInstall({
+            runtimes: ["opencode"],
+            command: "install",
+            dryRun: false,
+            yes: false,
+            mode: { mode: "human", subagentConcurrency: "serial" },
+            engramBin: null,
+          });
+        } finally {
+          opencode.detect = originalDetect;
+        }
+
+        const ownedPaths = readManifest().runtimes.opencode?.owned ?? [];
+        observables = {
+          exitCode,
+          confirmOpened,
+          bytesAtCreation,
+          inoAtCreation,
+          bytesAfter: fs.readFileSync(skillTarget),
+          inoAfter: fs.statSync(skillTarget).ino,
+          ownedIncludesSkill: ownedPaths.some((file) => path.resolve(file) === path.resolve(skillTarget)),
+          errors: prompts.log.error.mock.calls.map((call) => String(call[0] ?? "")),
+        };
+      },
+    );
+    if (observables === undefined) {
+      throw new Error("browser-control-runtime: the late-authentication window did not run");
+    }
+    return observables;
+  } finally {
+    if (originalTty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+    else Object.defineProperty(process.stdout, "isTTY", originalTty);
+    cleanupOwnedResourcesOrThrow();
+    releaseRoots();
+  }
+}
+
 describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime integration", () => {
   it("retains a verified Browser Control candidate without activating it while the relay is present", async () => {
     const ownedRoots: string[] = [];
@@ -1025,4 +1170,59 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       releaseRoots();
     }
   });
+
+  /**
+   * T12/T13 late-authentication RED (spec 12/13 §validation): the skill target
+   * is absent and unowned before the confirm, a foreign writer creates it during
+   * the real prompt, and the post-confirmation authentication must decide. An
+   * unowned file identical to the active is a no-op without claim and without
+   * replacing its inode; an unowned file with different bytes blocks and is
+   * preserved byte a byte, still without claim. Today the final authentication
+   * only re-checks the four static resources, so the skill created late is
+   * falsely claimed (identical) or overwritten (different).
+   */
+  const lateAuthCases = [
+    { label: "identical current bytes", foreignBytes: BC_SKILL_BYTES, blocked: false },
+    {
+      label: "different user bytes",
+      foreignBytes: Buffer.from(
+        "---\nname: browser-control\ndescription: user-authored drift\n---\n\n# user-authored skill\n",
+        "utf8",
+      ),
+      blocked: true,
+    },
+  ];
+
+  it.each(lateAuthCases)(
+    "does not claim or clobber a Browser Control skill created by a foreign writer during the confirm window ($label)",
+    async ({ foreignBytes, blocked }) => {
+      const observables = await runBrowserSkillConfirmWindow(foreignBytes);
+
+      // The window was actually represented: the foreign file existed with its
+      // own bytes and inode before the confirmation resolved.
+      expect(observables.confirmOpened, "the apply-changes confirmation must open the window").toBe(true);
+      expect(
+        observables.bytesAtCreation.equals(foreignBytes),
+        "the foreign writer bytes must exist at creation",
+      ).toBe(true);
+      expect(observables.inoAtCreation).toBeGreaterThan(0);
+
+      // No mutation may adopt or overwrite the foreign file: its bytes and its
+      // physical inode must survive the run.
+      expect(observables.bytesAfter.equals(foreignBytes), "the foreign skill bytes must be preserved").toBe(true);
+      expect(observables.inoAfter, "the foreign skill inode must not be replaced").toBe(observables.inoAtCreation);
+
+      // Coincidencia manual no crea propiedad: the manifest must not claim it.
+      expect(observables.ownedIncludesSkill, "the manifest must not claim the foreign skill").toBe(false);
+
+      if (blocked) {
+        expect(
+          observables.errors.some(
+            (line) => line.includes("SKILL.md") && /conserva|preserva|reemplazar|reclamar/i.test(line),
+          ),
+          `a foreign drift must block with an actionable diagnostic: ${observables.errors.join(" | ")}`,
+        ).toBe(true);
+      }
+    },
+  );
 });
