@@ -26,7 +26,7 @@ interface FileIdentity {
   readonly ino: number;
 }
 
-export type ManagedBrowserPackageName = "@playwright/cli" | "chrome-devtools-mcp";
+export type ManagedBrowserPackageName = "@playwright/cli" | "chrome-devtools-mcp" | "@opencode-ai/browser-control";
 
 /** The exact provider release whose bytes were verified before staging. */
 export type ManagedBrowserRelease = NpmPackageRelease;

@@ -76,6 +76,7 @@ export interface PrepareVerifiedBrowserReleaseOptions {
 
 const PLAYWRIGHT_PKG = "@playwright/cli";
 const DEVTOOLS_PKG = "chrome-devtools-mcp";
+const BROWSER_CONTROL_PKG = "@opencode-ai/browser-control";
 
 function fail(message: string): never {
   throw new Error(`browser-provider: ${message}`);
@@ -92,8 +93,15 @@ function asBrowserError(error: unknown): Error {
   return new Error(`browser-provider: ${String(error)}`);
 }
 
-function assertBrowserPackage(packageName: unknown): asserts packageName is typeof PLAYWRIGHT_PKG | typeof DEVTOOLS_PKG {
-  if (packageName !== PLAYWRIGHT_PKG && packageName !== DEVTOOLS_PKG) {
+/**
+ * Verified provider allowlist. Browser Control joins acquisition first; its
+ * managed retention/activation still fails closed in `browser-managed.ts`
+ * until the following vertical adds it.
+ */
+function assertBrowserPackage(
+  packageName: unknown,
+): asserts packageName is typeof PLAYWRIGHT_PKG | typeof DEVTOOLS_PKG | typeof BROWSER_CONTROL_PKG {
+  if (packageName !== PLAYWRIGHT_PKG && packageName !== DEVTOOLS_PKG && packageName !== BROWSER_CONTROL_PKG) {
     fail("unknown browser package");
   }
 }
@@ -114,8 +122,9 @@ function resolveStageParent(stageParent: unknown): string {
 }
 
 /**
- * Shared verified acquisition for browser opt-ins (`@playwright/cli` and
- * `chrome-devtools-mcp`). Resolves the exact stable `dist-tags.latest`
+ * Shared verified acquisition for browser opt-ins (`@playwright/cli`,
+ * `chrome-devtools-mcp` and `@opencode-ai/browser-control`). Resolves the
+ * exact stable `dist-tags.latest`
  * candidate via the generic npm provider, then verifies the tarball SRI in
  * a unique private stage under the provided real absolute parent (default
  * `os.tmpdir()`). Returns only the observed `{ version, tarballUrl,

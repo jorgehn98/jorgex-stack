@@ -3,9 +3,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } from "../src/lib/browser-managed.js";
 import { resolvePnpmBin } from "../src/lib/external-tools.js";
+import { cleanupOwnedResourcesOrThrow, registerOwnedResourceCleanup } from "./helpers/bounded-process.js";
 
 /**
  * T14 RED: minimal generic npm provider resolver for browser opt-ins.
@@ -57,12 +58,16 @@ async function loadResolver(): Promise<NpmProviderModule> {
 
 const PLAYWRIGHT_PKG = "@playwright/cli";
 const DEVTOOLS_PKG = "chrome-devtools-mcp";
+const BROWSER_CONTROL_PKG = "@opencode-ai/browser-control";
 
 function canonicalTarballFor(packageName: string, version: string): string {
-  if (packageName === PLAYWRIGHT_PKG) {
-    return `https://registry.npmjs.org/@playwright/cli/-/cli-${version}.tgz`;
-  }
-  return `https://registry.npmjs.org/${packageName}/-/${packageName}-${version}.tgz`;
+  // Mirror src/lib/npm-provider.ts#canonicalTarballUrl: scoped packages use only
+  // the basename in the tarball file name (`@playwright/cli` -> `cli-<v>.tgz`,
+  // `@opencode-ai/browser-control` -> `browser-control-<v>.tgz`).
+  const shortName = packageName.includes("/")
+    ? packageName.slice(packageName.lastIndexOf("/") + 1)
+    : packageName;
+  return `https://registry.npmjs.org/${packageName}/-/${shortName}-${version}.tgz`;
 }
 
 function syntheticPackument(packageName: string, latest: string, integrity: string): unknown {
@@ -1168,5 +1173,127 @@ describe("[T14-RED] DevTools artifact keeps the mandatory privacy flags", () => 
     ).rejects.toThrow(/browser-provider:/);
     expect(fs.readdirSync(parent).sort()).toEqual(["chrome-devtools-mcp.tgz", "sentinel", "stage"]);
     expect(fs.readFileSync(path.join(parent, "sentinel"), "utf8")).toBe("keep\n");
+  });
+});
+
+/**
+ * T12-RED tracer bullet: Browser Control is the third verified provider opt-in,
+ * so `@opencode-ai/browser-control` must flow through the same shared
+ * acquisition as the other two. The fixtures serve a synthetic packument whose
+ * tarball URL uses the published registry shape
+ * (`https://registry.npmjs.org/@opencode-ai/browser-control/-/browser-control-<v>.tgz`)
+ * and real `node:crypto` digests; there is no network, credential, or package
+ * install. Generic npm-provider behaviors stay covered by the T14 block above.
+ */
+type BrowserReleaseLeaseContext = {
+  packageName: string;
+  release: { version: string; tarballUrl: string; integrity: string };
+  artifactPath: string;
+  stageDir: string;
+};
+
+const BROWSER_CONTROL_VERSION = "9.9.30";
+const browserControlParents: string[] = [];
+
+function browserControlStageParent(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jx-browser-control-provider-"));
+  browserControlParents.push(dir);
+  return dir;
+}
+
+describe("[T12-RED] Browser Control rolling acquisition leases verified bytes through the shared release seam", () => {
+  // Owned-root owner armed before the first root is created.
+  const releaseOwnedRoots = registerOwnedResourceCleanup("browser-control-provider-temp-roots", () => {
+    for (const dir of browserControlParents.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  afterAll(() => {
+    cleanupOwnedResourcesOrThrow();
+    releaseOwnedRoots();
+  });
+
+  it("resolves the observed @opencode-ai/browser-control latest and leases its exact verified bytes while alive", async () => {
+    const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
+    const bytes = syntheticTarballBytes(BROWSER_CONTROL_PKG, BROWSER_CONTROL_VERSION);
+    const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    const tarball = canonicalTarballFor(BROWSER_CONTROL_PKG, BROWSER_CONTROL_VERSION);
+    const parent = browserControlStageParent();
+    fs.writeFileSync(path.join(parent, "sentinel"), "keep\n");
+    const seen: string[] = [];
+    const fetch = providerFetch(
+      syntheticPackument(BROWSER_CONTROL_PKG, BROWSER_CONTROL_VERSION, integrity),
+      bytes,
+      tarball,
+      seen,
+    );
+    const leases: BrowserReleaseLeaseContext[] = [];
+    let leasedBytes: Buffer | undefined;
+    let leasedSha512 = "";
+    let leasedStageAlive = false;
+    let leasedStageInsideParent = false;
+    let leasedArtifactInsideStage = false;
+
+    const release = await prepareVerifiedBrowserRelease(BROWSER_CONTROL_PKG, {
+      fetchImpl: fetch,
+      stageParent: parent,
+      withVerifiedArtifact: (context) => {
+        const lease: BrowserReleaseLeaseContext = context;
+        leases.push(lease);
+        leasedStageAlive = fs.statSync(lease.stageDir).isDirectory();
+        leasedStageInsideParent = path.resolve(lease.stageDir).startsWith(`${path.resolve(parent)}${path.sep}`);
+        leasedArtifactInsideStage = path
+          .resolve(lease.artifactPath)
+          .startsWith(`${path.resolve(lease.stageDir)}${path.sep}`);
+        const leaseBytes = fs.readFileSync(lease.artifactPath);
+        leasedBytes = leaseBytes;
+        leasedSha512 = createHash("sha512").update(leaseBytes).digest("base64");
+      },
+    });
+
+    expect(release).toEqual({ version: BROWSER_CONTROL_VERSION, tarballUrl: tarball, integrity });
+    expect(leases).toHaveLength(1);
+    const lease = leases[0]!;
+    expect(lease.packageName).toBe(BROWSER_CONTROL_PKG);
+    expect(lease.release).toEqual(release);
+    expect(leasedStageAlive).toBe(true);
+    expect(leasedStageInsideParent).toBe(true);
+    expect(leasedArtifactInsideStage).toBe(true);
+    expect(leasedBytes).toEqual(bytes);
+    expect(`sha512-${leasedSha512}`).toBe(integrity);
+    expect(seen).toEqual([`https://registry.npmjs.org/${BROWSER_CONTROL_PKG}`, tarball]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(lease.stageDir)).toBe(false);
+    expect(fs.readdirSync(parent)).toEqual(["sentinel"]);
+  });
+
+  it("control: a wrong SRI is rejected before any lease and its own stage is removed", async () => {
+    const { prepareVerifiedBrowserRelease } = await loadBrowserProvider();
+    const bytes = syntheticTarballBytes(BROWSER_CONTROL_PKG, BROWSER_CONTROL_VERSION);
+    const wrongIntegrity = `sha512-${createHash("sha512").update("unrelated-browser-control-bytes").digest("base64")}`;
+    const tarball = canonicalTarballFor(BROWSER_CONTROL_PKG, BROWSER_CONTROL_VERSION);
+    const parent = browserControlStageParent();
+    fs.writeFileSync(path.join(parent, "sentinel"), "keep\n");
+    const seen: string[] = [];
+    const fetch = providerFetch(
+      syntheticPackument(BROWSER_CONTROL_PKG, BROWSER_CONTROL_VERSION, wrongIntegrity),
+      bytes,
+      tarball,
+      seen,
+    );
+    let leased = 0;
+
+    await expect(
+      prepareVerifiedBrowserRelease(BROWSER_CONTROL_PKG, {
+        fetchImpl: fetch,
+        stageParent: parent,
+        withVerifiedArtifact: () => {
+          leased += 1;
+        },
+      }),
+    ).rejects.toThrow(/browser-provider:/);
+
+    expect(leased).toBe(0);
+    expect(seen).toEqual([`https://registry.npmjs.org/${BROWSER_CONTROL_PKG}`, tarball]);
+    expect(fs.readdirSync(parent)).toEqual(["sentinel"]);
   });
 });
