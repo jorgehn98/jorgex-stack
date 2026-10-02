@@ -726,6 +726,31 @@ export function assertOpenCodeV2Preflight(
   assertOpenCodeV2Detection(adapter.detect(), evidence);
 }
 
+/**
+ * OpenCode v2 no ofrece el selector Playwright CLI (Spec T11): el caller CLI ya
+ * lo rechaza, pero la API `runInstall` también debe fallar de forma honesta en
+ * vez de adquirir Playwright y escribir un AGENTS.md que el runtime ya no
+ * ofrece. Un runtime `pi` no es un destino Playwright de este pipeline (vive
+ * fuera de `runtimes`), así que la comprobación solo mira los destinos de
+ * fichero reales. Devuelve el diagnóstico o `null` si la selección es admisible.
+ */
+function playwrightSelectionError(opts: InstallOptions): string | null {
+  const consent = opts.playwrightToolConsent;
+  if (consent === undefined) return null;
+  if (consent.runtimeSelection?.opencode === true) {
+    return "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio. Retira la selección Playwright de OpenCode.";
+  }
+  const targetDir = opts.targetDir !== undefined || consent.targetDir;
+  const approved = consent.command === "install" && !targetDir
+    && (consent.interactive
+      ? (consent.yes ? consent.explicitToolSelection : consent.confirmed)
+      : consent.yes && consent.explicitToolSelection);
+  if (approved && opts.runtimes.length > 0 && opts.runtimes.every((id) => id === "opencode")) {
+    return "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio; no hay otro runtime elegible para la selección Playwright.";
+  }
+  return null;
+}
+
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
@@ -738,6 +763,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     : normalizeInstallModePreference(opts.mode);
 
   try {
+    // Un consentimiento Playwright que incluya OpenCode v2 se rechaza aquí,
+    // antes de adquirir el paquete o escribir cualquier archivo: el selector
+    // está retirado y no debe degradar a un skip silencioso.
+    const playwrightError = playwrightSelectionError(opts);
+    if (playwrightError !== null) throw new Error(playwrightError);
     // Gate OpenCode v2 antes de cualquier escritura (y aunque el runtime no
     // esté detectado): un `--agents opencode` explícito sin binario v2 es
     // error accionable, no un skip que parezca éxito.

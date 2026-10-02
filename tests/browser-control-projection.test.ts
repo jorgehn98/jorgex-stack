@@ -6,6 +6,7 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import type { Adapter, InstallContext } from "../src/adapters/types.js";
+import { planSystemPrompt } from "../src/components/system-prompt.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
@@ -36,6 +37,7 @@ function tempDir(): string {
 }
 
 const BROWSER_CONTROL_SERVER = "browser-control";
+const DEVTOOLS_SERVER = "chrome-devtools";
 
 /**
  * Invocación `active` verificada y completa `readyMCP`, fixture opaco pero
@@ -125,6 +127,80 @@ describe("Browser Control obligatorio en OpenCode v2 [T10-RED]", () => {
       expect(content, `${adapter.id} no recibe Browser Control`).not.toContain(BROWSER_CONTROL_SERVER);
     }
   });
+});
+
+/**
+ * Browser Control en AGENTS.md de OpenCode v2 (Spec T10/T11): el prompt siempre
+ * referencia la skill `browser-control` y nunca proyecta la guía Playwright CLI,
+ * aunque una preferencia legacy (`playwrightCliEnabled`) siga activa. Context7 y
+ * writing-style se conservan; DevTools sigue condicional al opt-in. Los demás
+ * runtimes conservan su contrato sin recibir Browser Control.
+ */
+const WRITING_STYLE_SENTINEL = "Keep the user's tone and avoid filler.";
+
+function promptContentFor(adapter: Adapter, ctx: BrowserControlContext): string {
+  const [action] = planSystemPrompt(adapter, ctx);
+  if (action?.kind !== "write") throw new Error(`No prompt write was planned for ${adapter.id}`);
+  return action.content;
+}
+
+describe("Browser Control en AGENTS.md de OpenCode v2 [T10-RED]", () => {
+  it("referencia la skill browser-control y retira la guía Playwright CLI aunque playwrightCliEnabled sea true", () => {
+    const configDir = path.join(tempDir(), "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    const ctx: BrowserControlContext = {
+      ...baseContext(configDir),
+      mode: "human",
+      writingStyle: { sourcePath: "/isolated/writing-style.md", content: WRITING_STYLE_SENTINEL },
+      enabledMcpServers: new Set([DEVTOOLS_SERVER]),
+      playwrightCliEnabled: true,
+    };
+
+    const content = promptContentFor(opencodeAdapter, ctx);
+
+    // RED: hoy la preferencia legacy proyecta la guía Playwright CLI y el prompt
+    // no referencia Browser Control.
+    expect(content, "OpenCode v2 debe referenciar la skill browser-control").toMatch(/browser-control/i);
+    expect(content).not.toMatch(/jorgex-stack browser playwright/i);
+    expect(content).not.toMatch(/Playwright CLI/i);
+
+    // Context7, writing-style y DevTools opt-in conservados.
+    expect(content).toContain("Context7");
+    expect(content).toContain(WRITING_STYLE_SENTINEL);
+    expect(content).toContain("Chrome DevTools");
+
+    // DevTools sigue condicional: sin opt-in no se proyecta, Browser Control sí.
+    const withoutDevtools = promptContentFor(opencodeAdapter, {
+      ...baseContext(configDir),
+      mode: "human",
+      writingStyle: { sourcePath: "/isolated/writing-style.md", content: WRITING_STYLE_SENTINEL },
+      enabledMcpServers: new Set(),
+      playwrightCliEnabled: true,
+    });
+    expect(withoutDevtools).toMatch(/browser-control/i);
+    expect(withoutDevtools).toContain("Context7");
+    expect(withoutDevtools).not.toContain("Chrome DevTools");
+    expect(withoutDevtools).not.toMatch(/Playwright CLI/i);
+  });
+
+  it.each([claudeCodeAdapter, codexAdapter])(
+    "control: %s conserva la guía Playwright CLI y no recibe Browser Control",
+    (adapter) => {
+      const configDir = path.join(tempDir(), adapter.id);
+      fs.mkdirSync(configDir, { recursive: true });
+      const ctx: BrowserControlContext = {
+        ...baseContext(configDir),
+        mode: "human",
+        enabledMcpServers: new Set(),
+        playwrightCliEnabled: true,
+      };
+
+      const content = promptContentFor(adapter, ctx);
+      expect(content).toContain("Context7");
+      expect(content).toMatch(/Playwright CLI/i);
+      expect(content).not.toMatch(/browser-control/i);
+    },
+  );
 });
 
 /**

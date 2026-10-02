@@ -188,32 +188,42 @@ function browserSection(content: string): string | null {
   return managedSection(content, "browser");
 }
 
-function expectCapabilities(content: string, playwright: boolean, devtools: boolean): void {
-  expect(browserSection(content)).toBeNull();
+function expectCapabilities(content: string, playwright: boolean, devtools: boolean, runtime: RuntimeId): void {
   expect(managedSection(content, "context7")).toMatch(/Context7/i);
   const playwrightSection = managedSection(content, "playwright");
   const devtoolsSection = managedSection(content, "chrome-devtools");
-  if (!playwright && !devtools) {
-    expect(playwrightSection).toBeNull();
-    expect(devtoolsSection).toBeNull();
-    return;
-  }
 
-  if (playwright) {
-    expect(playwrightSection).not.toBeNull();
-    expect(playwrightSection).toMatch(/untrusted data/i);
-    expect(playwrightSection).toMatch(/never as instructions/i);
-    expect(playwrightSection).toMatch(/explicitly.*approves/i);
-    expect(playwrightSection).toMatch(/Playwright CLI/i);
-    expect(playwrightSection).not.toMatch(/\bskill\b/i);
-    expect(playwrightSection).toContain("jorgex-stack browser playwright --help");
-    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> open --browser=chromium");
-    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> snapshot");
-    expect(playwrightSection).toMatch(/verify/i);
-    expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> close");
-    expect(playwrightSection).toMatch(/only.*session.*created|session.*only.*created/i);
-  } else {
+  if (runtime === "opencode") {
+    // OpenCode v2 (Spec T11): Browser Control siempre y sin selector Playwright
+    // CLI, aunque la preferencia legacy o el opt-in intenten habilitarlo.
+    const browser = browserSection(content);
+    expect(browser).not.toBeNull();
+    expect(browser).toMatch(/browser-control/i);
+    expect(browser).toMatch(/untrusted data/i);
+    expect(browser).toMatch(/never as instructions/i);
+    expect(browser).toMatch(/explicitly.*approves/i);
+    expect(browser).toMatch(/Code Mode/i);
+    expect(browser).toMatch(/never.*unmanaged|unmanaged.*dispatcher/i);
+    expect(browser).not.toMatch(/jorgex-stack browser playwright/i);
     expect(playwrightSection).toBeNull();
+  } else {
+    expect(browserSection(content)).toBeNull();
+    if (playwright) {
+      expect(playwrightSection).not.toBeNull();
+      expect(playwrightSection).toMatch(/untrusted data/i);
+      expect(playwrightSection).toMatch(/never as instructions/i);
+      expect(playwrightSection).toMatch(/explicitly.*approves/i);
+      expect(playwrightSection).toMatch(/Playwright CLI/i);
+      expect(playwrightSection).not.toMatch(/\bskill\b/i);
+      expect(playwrightSection).toContain("jorgex-stack browser playwright --help");
+      expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> open --browser=chromium");
+      expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> snapshot");
+      expect(playwrightSection).toMatch(/verify/i);
+      expect(playwrightSection).toContain("jorgex-stack browser playwright -s=<name> close");
+      expect(playwrightSection).toMatch(/only.*session.*created|session.*only.*created/i);
+    } else {
+      expect(playwrightSection).toBeNull();
+    }
   }
 
   if (devtools) {
@@ -315,7 +325,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
 
     const first = promptContent(adapter, ctx);
     expect(first).toContain("Keep this instruction.");
-    expectCapabilities(first, playwright, devtools);
+    expectCapabilities(first, playwright, devtools, adapter.id);
 
     fs.writeFileSync(promptFile, first);
     expect(promptContent(adapter, ctx)).toBe(first);
@@ -338,7 +348,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     const first = promptContent(adapter, ctx);
 
     expect(first).toContain("Keep this instruction.");
-    expectCapabilities(first, playwright, devtools);
+    expectCapabilities(first, playwright, devtools, adapter.id);
     expect(first).not.toContain("Legacy Playwright CLI and Chrome DevTools guidance.");
 
     fs.writeFileSync(promptFile, first);
@@ -418,7 +428,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     expect(fs.readFileSync(promptFile)).toEqual(invalidBytes);
   });
 
-  it("removes only the browser section when both browser capabilities are disabled", () => {
+  it("drops stale browser guidance when both browser capabilities are disabled", () => {
     const root = tempDir();
     const configDir = path.join(root, "config");
     const promptFile = adapter.paths(configDir).systemPromptFile;
@@ -427,7 +437,7 @@ describe.each(RUNTIMES)("%s browser prompt", (_name, adapter) => {
     fs.writeFileSync(promptFile, upsertMarkdownSection(userText, "browser", "Old managed browser guidance."));
 
     const content = promptContent(adapter, context(adapter, configDir, false, false));
-    expect(browserSection(content)).toBeNull();
+    expectCapabilities(content, false, false, adapter.id);
     expect(content).toContain("Keep this instruction.");
     expect(content).not.toContain("Old managed browser guidance.");
   });
@@ -510,7 +520,7 @@ describe("Playwright prompt install ordering", () => {
     const homeDir = path.join(root, "home");
     const configRoot = path.join(homeDir, "configs");
     const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
-    writeRuntimeModelMap(homeDir, ["opencode"]);
+    writeRuntimeModelMap(homeDir, ["codex"]);
     fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
     fs.writeFileSync(preferenceFile, JSON.stringify({
       version: 2,
@@ -533,12 +543,12 @@ describe("Playwright prompt install ordering", () => {
         })),
       }));
       const install = await import("../src/install.js");
-      const restoreDetect = setOnlyOpenCodeDetected(install, path.join(configRoot, "opencode"));
+      const restoreDetect = setDetectedRuntimes(install, ["codex"], configRoot);
       const fetchEvents: string[] = [];
       stubPlaywrightProviderFetch(fetchEvents);
       try {
         await expect(install.runInstall({
-          runtimes: ["opencode"],
+          runtimes: ["codex"],
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -549,13 +559,13 @@ describe("Playwright prompt install ordering", () => {
             targetDir: false,
             explicitToolSelection: true,
             confirmed: false,
-            runtimeSelection: { opencode: true, pi: false },
+            runtimeSelection: { codex: true, pi: false },
           },
           playwrightToolDeps: {
             run: async () => true,
             verify: () => true,
             persistEnabled: (enabled, observed) =>
-              savePlaywrightCliPreference(preferenceFile, enabled, { opencode: true }, observed),
+              savePlaywrightCliPreference(preferenceFile, enabled, { codex: true }, observed),
           },
         })).resolves.toBe(0);
 
@@ -565,7 +575,7 @@ describe("Playwright prompt install ordering", () => {
         ]);
         expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toMatchObject({
           version: 2,
-          enabled: { opencode: true, "claude-code": false, codex: false, pi: true },
+          enabled: { opencode: false, "claude-code": false, codex: true, pi: true },
           observed: { version: PLAYWRIGHT_OBSERVED.version, integrity: PLAYWRIGHT_OBSERVED.integrity },
         });
       } finally {
@@ -582,16 +592,16 @@ describe("Playwright prompt install ordering", () => {
     const homeDir = path.join(root, "home");
     const configRoot = path.join(homeDir, "configs");
     const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
-    const selection = { opencode: true, codex: false } as const;
-    writeRuntimeModelMap(homeDir, ["opencode", "codex"]);
+    const selection = { codex: true, "claude-code": false } as const;
+    writeRuntimeModelMap(homeDir, ["codex", "claude-code"]);
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
-      const restoreDetect = setDetectedRuntimes(install, ["opencode", "codex"], configRoot);
+      const restoreDetect = setDetectedRuntimes(install, ["codex", "claude-code"], configRoot);
       const actions: string[] = [];
       try {
         const code = await install.runInstall({
-          runtimes: ["opencode", "codex"],
+          runtimes: ["codex", "claude-code"],
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -613,20 +623,82 @@ describe("Playwright prompt install ordering", () => {
           },
         });
 
-        const opencodePrompt = fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8");
         const codexPrompt = fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8");
+        const claudePrompt = fs.readFileSync(path.join(configRoot, "claude-code", "CLAUDE.md"), "utf8");
         expect(code).toBe(0);
         expect(actions).toEqual(["install", "install-browser"]);
         expect(JSON.parse(fs.readFileSync(preferenceFile, "utf8"))).toEqual({
           version: 2,
-          enabled: { opencode: true, codex: false, "claude-code": false, pi: false },
+          enabled: { opencode: false, codex: true, "claude-code": false, pi: false },
         });
-        expect(managedSection(opencodePrompt, "playwright")).toMatch(/Playwright CLI/i);
-        expect(managedSection(opencodePrompt, "chrome-devtools")).toBeNull();
-        expect(managedSection(codexPrompt, "playwright")).toBeNull();
+        expect(managedSection(codexPrompt, "playwright")).toMatch(/Playwright CLI/i);
         expect(managedSection(codexPrompt, "chrome-devtools")).toBeNull();
+        expect(managedSection(claudePrompt, "playwright")).toBeNull();
+        expect(managedSection(claudePrompt, "chrome-devtools")).toBeNull();
       } finally {
         restoreDetect();
+      }
+    });
+  });
+
+  it("rechaza un consentimiento que explicita OpenCode sin adquirir ni escribir (selector retirado)", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configRoot = path.join(homeDir, "configs");
+    const configDir = path.join(configRoot, "opencode");
+    const promptFile = path.join(configDir, "AGENTS.md");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    const initial = { version: 2, enabled: { opencode: false, "claude-code": false, codex: false, pi: true } };
+    writeRuntimeModelMap(homeDir, ["opencode"]);
+    fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+    fs.writeFileSync(preferenceFile, JSON.stringify(initial) + "\n");
+    const initialBytes = fs.readFileSync(preferenceFile, "utf8");
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const acquisitionActions: string[] = [];
+      const persistEnabled = vi.fn();
+      stubPlaywrightProviderFetch([]);
+      try {
+        const code = await install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+            runtimeSelection: { opencode: true },
+          },
+          playwrightToolDeps: {
+            run: async (action) => {
+              acquisitionActions.push(action);
+              return true;
+            },
+            persistEnabled,
+          },
+        });
+
+        // T11 retira el selector Playwright CLI en OpenCode v2: una selección
+        // explícita que incluya OpenCode se rechaza antes de adquirir o escribir,
+        // nunca en silencio con éxito. El callback `run` es la frontera de
+        // adquisición y el guard de preflight precede a cualquier escritura.
+        const diagnostics = prompts.log.error.mock.calls.flat().join("\n");
+        expect(code).toBe(1);
+        expect(diagnostics).toMatch(/OpenCode/i);
+        expect(diagnostics).toMatch(/Browser Control/i);
+        expect(acquisitionActions).toEqual([]);
+        expect(persistEnabled).not.toHaveBeenCalled();
+        expect(fs.readFileSync(preferenceFile, "utf8")).toBe(initialBytes);
+        expect(fs.existsSync(promptFile)).toBe(false);
+      } finally {
+        restoreDetect();
+        vi.unstubAllGlobals();
       }
     });
   });
@@ -636,19 +708,20 @@ describe("Playwright prompt install ordering", () => {
     const homeDir = path.join(root, "home");
     const configRoot = path.join(homeDir, "configs");
     const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
-    const before = { version: 2, enabled: { opencode: false, codex: true } };
-    const requested = { opencode: true, codex: false } as const;
-    writeRuntimeModelMap(homeDir, ["opencode", "codex"]);
+    const before = { version: 2, enabled: { codex: false, "claude-code": true } };
+    const requested = { codex: true, "claude-code": false } as const;
+    writeRuntimeModelMap(homeDir, ["codex", "claude-code"]);
     fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
     fs.writeFileSync(preferenceFile, JSON.stringify(before) + "\n");
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
-      const restoreDetect = setDetectedRuntimes(install, ["opencode", "codex"], configRoot);
+      const restoreDetect = setDetectedRuntimes(install, ["codex", "claude-code"], configRoot);
       const persistEnabled = vi.fn();
+      stubPlaywrightProviderFetch([]);
       try {
         const code = await install.runInstall({
-          runtimes: ["opencode", "codex"],
+          runtimes: ["codex", "claude-code"],
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -670,11 +743,14 @@ describe("Playwright prompt install ordering", () => {
         expect(code).toBe(1);
         expect(persistEnabled).not.toHaveBeenCalled();
         expect(fs.readFileSync(preferenceFile, "utf8")).toBe(`${JSON.stringify(before)}\n`);
-        expect(managedSection(fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8"), "playwright")).toBeNull();
-        expect(managedSection(fs.readFileSync(path.join(configRoot, "opencode", "AGENTS.md"), "utf8"), "chrome-devtools")).toBeNull();
-        expect(managedSection(fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8"), "playwright")).toBeNull();
+        const codexPrompt = fs.readFileSync(path.join(configRoot, "codex", "AGENTS.md"), "utf8");
+        const claudePrompt = fs.readFileSync(path.join(configRoot, "claude-code", "CLAUDE.md"), "utf8");
+        expect(managedSection(codexPrompt, "playwright")).toBeNull();
+        expect(managedSection(codexPrompt, "chrome-devtools")).toBeNull();
+        expect(managedSection(claudePrompt, "playwright")).toBeNull();
       } finally {
         restoreDetect();
+        vi.unstubAllGlobals();
       }
     });
   });
@@ -682,14 +758,14 @@ describe("Playwright prompt install ordering", () => {
   it.each([true, false])("retira la guía en sync cuando Chromium no arranca y conserva la preferencia (consent=%s)", async (withConsent) => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
-    const configDir = path.join(homeDir, ".config", "opencode");
+    const configDir = path.join(homeDir, ".config", "codex");
     const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
     const preference = {
       version: 2,
-      enabled: { opencode: true, codex: false, "claude-code": false, pi: false },
+      enabled: { opencode: false, codex: true, "claude-code": false, pi: false },
       observed: { ...PLAYWRIGHT_OBSERVED },
     } as const;
-    writeOpenCodeModelMap(homeDir);
+    writeRuntimeModelMap(homeDir, ["codex"]);
     fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
     fs.writeFileSync(preferenceFile, JSON.stringify(preference) + "\n");
     await seedManagedPlaywright(path.dirname(preferenceFile));
@@ -718,10 +794,10 @@ describe("Playwright prompt install ordering", () => {
         verifyManagedPlaywrightBrowser,
       }));
       const install = await import("../src/install.js");
-      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const restoreDetect = setDetectedRuntimes(install, ["codex"], path.join(homeDir, ".config"));
       try {
         await expect(install.runInstall({
-          runtimes: ["opencode"],
+          runtimes: ["codex"],
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -751,23 +827,23 @@ describe("Playwright prompt install ordering", () => {
   it("dry-run --playwright previews the browser prompt diff without running setup or persisting state", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
-    const configDir = path.join(homeDir, ".config", "opencode");
+    const configDir = path.join(homeDir, ".config", "codex");
     const promptFile = path.join(configDir, "AGENTS.md");
     const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
     const toolRun = vi.fn(async () => true);
     const persistEnabled = vi.fn();
-    writeOpenCodeModelMap(homeDir);
+    writeRuntimeModelMap(homeDir, ["codex"]);
 
     await withTempHome(homeDir, async () => {
-      const baseline = promptContent(opencodeAdapter, context(opencodeAdapter, configDir, false, false));
+      const baseline = promptContent(codexAdapter, context(codexAdapter, configDir, false, false));
       fs.mkdirSync(path.dirname(promptFile), { recursive: true });
       fs.writeFileSync(promptFile, baseline);
 
       const install = await import("../src/install.js");
-      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const restoreDetect = setDetectedRuntimes(install, ["codex"], path.join(homeDir, ".config"));
       try {
         await expect(install.runInstall({
-          runtimes: ["opencode"],
+          runtimes: ["codex"],
           dryRun: true,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -799,15 +875,16 @@ describe("Playwright prompt install ordering", () => {
   ])("$name fresh --playwright install advertises Playwright only after successful setup", async ({ toolResult, expectedCode, announcesPlaywright }) => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
-    const configDir = path.join(homeDir, ".config", "opencode");
-    writeOpenCodeModelMap(homeDir);
+    const configDir = path.join(homeDir, ".config", "codex");
+    writeRuntimeModelMap(homeDir, ["codex"]);
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
-      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const restoreDetect = setDetectedRuntimes(install, ["codex"], path.join(homeDir, ".config"));
+      stubPlaywrightProviderFetch([]);
       try {
         const code = await install.runInstall({
-          runtimes: ["opencode"],
+          runtimes: ["codex"],
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -835,6 +912,7 @@ describe("Playwright prompt install ordering", () => {
         expect(content.includes("Playwright CLI")).toBe(announcesPlaywright);
       } finally {
         restoreDetect();
+        vi.unstubAllGlobals();
       }
     });
   });
@@ -842,19 +920,20 @@ describe("Playwright prompt install ordering", () => {
   it("reports an actionable recovery when setup succeeds but browser prompt reconciliation fails", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
-    const configDir = path.join(homeDir, ".config", "opencode");
+    const configDir = path.join(homeDir, ".config", "codex");
     const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
-    writeOpenCodeModelMap(homeDir);
+    writeRuntimeModelMap(homeDir, ["codex"]);
 
     await withTempHome(homeDir, async () => {
       const install = await import("../src/install.js");
-      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
-      const adapter = install.ADAPTERS.opencode!;
+      const restoreDetect = setDetectedRuntimes(install, ["codex"], path.join(homeDir, ".config"));
+      const adapter = install.ADAPTERS.codex!;
       const originalAdaptSystemPromptSections = adapter.adaptSystemPromptSections;
       let browserReconciliationCalls = 0;
+      stubPlaywrightProviderFetch([]);
       try {
         const code = await install.runInstall({
-          runtimes: ["opencode"],
+          runtimes: ["codex"],
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -899,11 +978,12 @@ describe("Playwright prompt install ordering", () => {
       } finally {
         adapter.adaptSystemPromptSections = originalAdaptSystemPromptSections;
         restoreDetect();
+        vi.unstubAllGlobals();
       }
     });
   });
 
-  it("renders and removes independent browser sections from persisted Playwright and DevTools preferences", async () => {
+  it("ignores a persisted Playwright preference for OpenCode but renders and removes DevTools sections", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");
     const configDir = path.join(homeDir, ".config", "opencode");
@@ -938,7 +1018,7 @@ describe("Playwright prompt install ordering", () => {
           mode: { mode: "human", subagentConcurrency: "serial" },
         })).resolves.toBe(0);
 
-        expectCapabilities(fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8"), true, true);
+        expectCapabilities(fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8"), true, true, "opencode");
 
         fs.writeFileSync(playwrightPreference, JSON.stringify({ version: 1, enabled: false }) + "\n");
         const devtools = JSON.parse(fs.readFileSync(devtoolsPreference, "utf8"));
@@ -959,7 +1039,7 @@ describe("Playwright prompt install ordering", () => {
         })).resolves.toBe(0);
 
         const disabledPrompt = fs.readFileSync(path.join(configDir, "AGENTS.md"), "utf8");
-        expect(browserSection(disabledPrompt)).toBeNull();
+        expectCapabilities(disabledPrompt, false, false, "opencode");
         expect(managedSection(disabledPrompt, "playwright")).toBeNull();
         expect(managedSection(disabledPrompt, "chrome-devtools")).toBeNull();
         expect(JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).mcp?.servers?.[DEVTOOLS_SERVER]).toBeUndefined();
@@ -1044,7 +1124,7 @@ describe("Playwright prompt install ordering", () => {
         })).resolves.toBe(0);
 
         const content = fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8");
-        expectCapabilities(content, false, false);
+        expectCapabilities(content, false, false, "opencode");
         expect(content).not.toContain("Playwright CLI");
         expect(content).not.toContain("Chrome DevTools");
 
@@ -1060,7 +1140,7 @@ describe("Playwright prompt install ordering", () => {
           devtoolsMcpObservedVersion: { ...DEVTOOLS_OBSERVED },
         })).resolves.toBe(0);
 
-        expectCapabilities(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8"), false, true);
+        expectCapabilities(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8"), false, true, "opencode");
         const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.servers?.[DEVTOOLS_SERVER] as {
           command?: unknown;
         };
