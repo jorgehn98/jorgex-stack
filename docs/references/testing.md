@@ -356,9 +356,14 @@ visible según el evento:
 - **Quality gate**: una pull request cuyo payload no marca `draft: true`,
   incluida la transición `ready_for_review`, y cualquier ejecución de
   `workflow_dispatch`.
-  Además de la lane común, descarga el tarball exacto fijado por el workflow y
-  ejecuta `tests/pi-cross-repo-contract.test.ts`, la suite completa
-  (`pnpm test`) y el build (`pnpm build`).
+  Además de la lane común, resuelve dinámicamente el `dist-tags.latest`
+  publicado de `jorgex-pi` mediante `dist/pi-ci-artifact.js` y verifica
+  el tarball contra la SRI del registro. Congela versión, URL y SRI
+  junto con el tamaño y hashes calculados localmente; `JORGEX_PI_TARBALL`
+  identifica el archivo y `JORGEX_PI_CANDIDATE` el JSON de esa
+  observación. Ejecuta `tests/pi-cross-repo-contract.test.ts` contra ese
+  candidato, además de la suite completa (`pnpm test`) y el build
+  (`pnpm build`).
 
 Los pasos caros usan la misma expresión de GitHub Actions que decide el nombre
 del job: `workflow_dispatch` siempre es full; una pull request es full cuando
@@ -366,6 +371,20 @@ la acción es `ready_for_review` o `draft != true`. En borrador, que un paso
 guardado figure como `skipped` o que **Draft checks** termine en verde solo
 prueba la comprobación barata; no es un pase del contrato Pi, de la suite ni
 del build completo.
+
+La prueba del artefacto observado comprueba `schemaVersion: 2` del
+documento `parity.v2.json`, `source.repository` esperado de Stack y
+`source.commit` de 40 caracteres hexadecimales minúsculos (forma de
+SHA de repositorio, no attestation de Git ni paridad completa).
+`pi.testedVersions` debe ser una lista no vacía de strings no vacíos,
+evidencia de versión host del productor registrada verbatim, no una
+lista histórica de elegibilidad ni una garantía de rango de versiones.
+Estas comprobaciones CI de metadata declarada no demuestran paridad
+byte-exact contra Git ni attestation npm y no modifican los guards
+productivos. Un verde local tampoco acredita los jobs paralelos
+`browser-windows`, `pi-runtime` (transporte legacy, matriz
+`ubuntu-latest`/`windows-latest`) ni `pi-native-runtime` (transporte
+nativo, misma matriz) del mismo workflow.
 
 El job tiene `timeout-minutes: 10`, `concurrency` por número de pull request o
 por ref manual y `cancel-in-progress: true`. Así se cancelan validaciones

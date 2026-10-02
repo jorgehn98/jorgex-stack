@@ -73,6 +73,27 @@ function canonicalObservedSource(version: string): string {
   return `npm:jorgex-pi@${version}`;
 }
 
+// Declared traceability (parity schema 2 + Stack repository + full lowercase-hex commit), not Git attestation.
+function requireObservedSourceTraceability(parity: unknown): void {
+  expect(parity).toMatchObject({
+    schemaVersion: 2,
+    source: {
+      repository: "https://github.com/jorgehn98/jorgex-stack",
+      commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+    },
+  });
+}
+
+// Producer host-version evidence recorded verbatim, not an eligibility list.
+function requireObservedTestedVersions(testedVersions: unknown): void {
+  expect(Array.isArray(testedVersions)).toBe(true);
+  expect(testedVersions).not.toHaveLength(0);
+  for (const version of testedVersions as unknown[]) {
+    expect(version).toBeTypeOf("string");
+    expect(version).not.toBe("");
+  }
+}
+
 function readObservedCandidate(): ObservedPiCandidate {
   const raw = process.env.JORGEX_PI_CANDIDATE;
   expect(raw, "JORGEX_PI_CANDIDATE must be set for observed registry checks").toBeTypeOf("string");
@@ -155,7 +176,6 @@ function expectObservedArtifactIntegrity(tarball: string, observed: ObservedPiCa
 
 const OBSERVED_NATIVE_CAPABILITY = "mcp-native-v1";
 const OBSERVED_NATIVE_BINDING = { schemaVersion: 1, contractPath: "contract/native-mcp.v1.json" } as const;
-const OBSERVED_PARITY_REPOSITORY = "https://github.com/jorgehn98/jorgex-stack";
 
 function extractObservedNativeProducer(tarball: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-observed-native-"));
@@ -376,6 +396,54 @@ afterEach(() => {
   }
 });
 
+describe("observed candidate traceability guards (offline)", () => {
+  const historicalCommit = PI_RUNTIME_ARCHIVE.parity.source.commit;
+  const observedCommit = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567";
+  const validParity = {
+    schemaVersion: 2,
+    source: { repository: "https://github.com/jorgehn98/jorgex-stack", commit: observedCommit },
+  };
+  const invalidParityCases: Array<{ label: string; parity: unknown }> = [
+    { label: "a non-2 schemaVersion", parity: { ...validParity, schemaVersion: 3 } },
+    {
+      label: "a foreign source repository",
+      parity: { ...validParity, source: { ...validParity.source, repository: "https://github.com/other/repo" } },
+    },
+    {
+      label: "an uppercase commit",
+      parity: { ...validParity, source: { ...validParity.source, commit: observedCommit.toUpperCase() } },
+    },
+    {
+      label: "a truncated commit",
+      parity: { ...validParity, source: { ...validParity.source, commit: observedCommit.slice(0, 39) } },
+    },
+    { label: "a missing source", parity: { schemaVersion: 2 } },
+  ];
+  const invalidTestedVersionsCases: Array<{ label: string; testedVersions: unknown }> = [
+    { label: "an empty list", testedVersions: [] },
+    { label: "an empty-string member", testedVersions: [""] },
+    { label: "a non-string member", testedVersions: [42] },
+    { label: "a non-array value", testedVersions: "0.90.0" },
+  ];
+
+  it("admits a valid Stack source commit distinct from the historical fixture commit", () => {
+    expect(observedCommit).not.toBe(historicalCommit);
+    expect(() => requireObservedSourceTraceability(validParity)).not.toThrow();
+  });
+
+  it.each(invalidParityCases)("rejects $label", ({ parity }) => {
+    expect(() => requireObservedSourceTraceability(parity)).toThrow();
+  });
+
+  it("admits a non-empty host testedVersions list", () => {
+    expect(() => requireObservedTestedVersions(["0.90.0", "0.91.0"])).not.toThrow();
+  });
+
+  it.each(invalidTestedVersionsCases)("rejects $label", ({ testedVersions }) => {
+    expect(() => requireObservedTestedVersions(testedVersions)).toThrow();
+  });
+});
+
 registryArtifact("observed npm artifact for the published jorgex-pi candidate", () => {
   let observed: ObservedPiCandidate;
   beforeAll(() => {
@@ -421,7 +489,7 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
     // plus the recognized native capability with its canonical binding and the
     // validated producer native contract. Writes below still equal Stack policy.
     expectObservedRootContractPolicy(tarball, contract);
-    expect(contract.pi?.testedVersions).toEqual(expect.arrayContaining([...PI_RUNTIME_CANDIDATE.pi.testedVersions]));
+    requireObservedTestedVersions(contract.pi?.testedVersions);
     expect(runner).toMatchObject({
       schemaVersion: PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion,
       bin: PI_RUNTIME_CANDIDATE.contract.runner.bin,
@@ -429,14 +497,10 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       stdout: { maxBytes: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes },
     });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
-    // Producer provenance: the observed snapshot must come from the Stack canon
-    // repository. Its commit advances with each release, so the frozen .29
-    // fixture only anchors the exact equality when the observed version is the
-    // frozen one; the live lane validates the commit shape instead.
-    expect(parity.source?.repository).toBe(OBSERVED_PARITY_REPOSITORY);
-    expect(
-      typeof parity.source?.commit === "string" && /^[0-9a-f]{40}$/.test(parity.source.commit as string),
-    ).toBe(true);
+    // The commit advances with each release, so the frozen .29 fixture only anchors
+    // the exact equality when the observed version is the frozen one; the live
+    // lane validates the declared shape instead.
+    requireObservedSourceTraceability(parity);
     if (observedLocal.version === PI_RUNTIME_CANDIDATE.package.version) {
       expect(parity.source?.commit).toBe(PI_RUNTIME_ARCHIVE.parity.source.commit);
     }

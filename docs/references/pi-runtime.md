@@ -53,6 +53,24 @@ Estos identificadores describen objetos distintos y no deben intercambiarse:
 
 La procedencia documentada se limita al commit productor del JSON y al `parity.source.commit` de la fixture. La verificación local vincula el tarball al tamaño y a los SHA-256/SHA-512 del JSON; son comprobaciones del mismo checkout, no raíces de confianza independientes. La attestation de provenance de npm es externa al runtime de Stack: `provenance.commit` es informativo salvo que se verifique expresamente esa attestation fuera de Stack.
 
+La metadata declarada del productor es trazabilidad estructural, no
+attestation: `parity.v2.json` exige `schemaVersion: 2` con
+`source.repository` (canon Stack) y `source.commit` con forma de SHA
+de 40 hexadecimales minúsculos. Es un anchor de repositorio, no paridad
+completa contra un commit Git ni verificación de attestation. La lista
+`testedVersions` de `pi.testedVersions` se admite como evidencia de
+versión host del productor registrada verbatim (lista no vacía de
+strings no vacíos); no es admission histórica ni garantía de rango de
+versiones.
+
+La validación CI del candidato observado distingue la integridad
+adquirida y los contratos declarados de la trazabilidad de su snapshot;
+no exige el commit o la lista host de una fixture histórica. Sus
+comprobaciones y límites se describen en
+[testing.md § CI interno del artefacto Pi](testing.md#ci-interno-del-artefacto-pi).
+Esta corrección afecta a tests de CI, no añade validaciones nuevas a
+los comandos productivos.
+
 ## Inventario y contrato 0.8.0 (histórico)
 
 La snapshot validada declara:
