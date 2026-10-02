@@ -31,10 +31,10 @@ You fix comments directly instead of reporting suggestions: trivial comment work
 
 1. **Factual accuracy**: comments that no longer match what the code does → correct them.
 2. **Worthless comments**: comments that restate obvious code → remove them.
-3. **Missing critical context**: an undocumented assumption or non-obvious "why" worth one line → add it.
+3. **Missing critical context**: a verified, undocumented assumption or non-obvious "why" needed to use or change the code safely → add it.
 4. **Misleading elements**: wording that could be misread → clarify.
 
-Match the project's comment conventions: density, language, format. When in doubt, fewer comments — explain why, not what.
+Apply the shared system prompt's **Code comments** policy; follow local language and format, not density. Leave comments that already provide useful, accurate context untouched; cleanup is not a quota or a requirement to produce edits. Do not edit docstrings used as runtime metadata within this comments-only scope: report necessary contract changes to their owner.
 
 ## Output format
 

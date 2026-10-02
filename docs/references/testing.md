@@ -144,6 +144,23 @@ son evidencia de esa ejecución, no defaults ni requisitos de esta política. La
 documentación de `install`/`sync` describe la entrega y el aislamiento; no muta el
 HOME, configuración, Engram o servicios del lector.
 
+### Tooling diagnóstico y comentarios
+
+La disciplina operativa — reutilización del harness existente, tooling temporal
+por defecto, retención ante necesidad recurrente (consumidor, gap del harness,
+owner) y evidencia compacta y reproducible — vive en el canon:
+[lean-code → Diagnostic tooling](../../stack/skills/lean-code/SKILL.md#diagnostic-tooling)
+y [diagnose → Phase 6](../../stack/skills/diagnose/SKILL.md#phase-6--cleanup--post-mortem).
+
+Los comentarios siguen la pauta única
+[Code comments](../../stack/system-prompt/AGENTS.md#code-comments) del system
+prompt: añadir solo cuando aporten información que el código no hace obvia y
+preservar contractuales, legales, directivas y docstrings usados como
+metadatos de runtime. El pase de revisión es opcional: xreview inspecciona los
+hunks y lanza [`comment-fixer`](../../stack/agents/comment-fixer.md) solo
+cuando hace falta un pase de accuracy, usefulness o context crítico; un no-change
+del fixer es un resultado válido.
+
 ### CI solo cuando sea el alcance
 
 La orientación de CI se activa únicamente si la tarea afecta workflows, gates,

@@ -54,13 +54,13 @@ For a manual xreview without an explicit work context, continue without PRD/plan
 
 ## 4. Comment pass FIRST (conditional)
 
-If the diff adds or changes comments/docstrings, run `comment-fixer` ALONE before the analysts — it edits comments in place (comments only, never code), so the analysts then review a diff already clean of comment noise instead of re-reporting it or mistaking its edits for contamination.
+Inspect relevant comment/docstring hunks first. Run `comment-fixer` ALONE before the analysts when source-code comments/docstrings need an accuracy, usefulness or critical-context pass under the shared system prompt's **Code comments** policy. It already owns comment cleanup; do not add a separate cleanup agent. Instruction prose, documentation pages and illustrative code fences alone do not trigger this pass. It edits comments in place (comments only, never code), so analysts review the resulting working state rather than mistaking its edits for contamination.
 
 - Pass the frozen refs or working-state identity and the relevant comment/docstring scope.
 - When the orchestrator supplied one, pass it the same exact work context path as every other review subagent.
 - If it changed anything and the scope is a committed diff (branch/PR): comment-fixer itself never commits — YOU commit its fixes before launching reviewers, staging ONLY its files (never `-a`/`-A`). Then freeze the new candidate SHA and refresh scopes. If a commit cannot be made, report the uncommitted state; it cannot certify the committed candidate.
 - For working-tree reviews: leave its edits uncommitted (they join the user's pending work) and say so in the report.
-- If the diff touches no comments, skip it and move on.
+- If no comment pass is needed, skip it and state why. A pass that leaves all comments unchanged is valid.
 
 ## 5. Launch the remaining subagents in PARALLEL
 
