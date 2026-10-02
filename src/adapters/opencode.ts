@@ -77,6 +77,7 @@ function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][str
 const CONFIG_FILENAME = "opencode.json";
 const CONFIG_FILENAME_JSONC = "opencode.jsonc";
 const CLI_FILENAME = "cli.json";
+const BROWSER_CONTROL_SERVER = "browser-control";
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";
 const PRIMARY_MODEL_ID = "gpt-6.1-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
@@ -903,6 +904,22 @@ export const opencodeAdapter: Adapter = {
           if (name === "context7" && existing === undefined && !owned) {
             mcpOwnership.push({ server: name, owned: true });
           }
+        }
+      }
+
+      // Browser Control v2 (Spec T11): la única fuente es el contexto interno,
+      // que el lifecycle llena solo con un launcher `active` verificado. Se crea
+      // el MCP local cuando falta y se reclama; una entrada manual nativa/legacy
+      // se preserva sin shadow, sobreescritura ni claim por igualdad (una
+      // invocación ausente deja Browser Control pendiente, nunca un MCP roto).
+      const browserControl = ctx.browserControlInvocation;
+      if (browserControl !== undefined && inContext(BROWSER_CONTROL_SERVER) === undefined) {
+        writableServers()[BROWSER_CONTROL_SERVER] = {
+          type: "local",
+          command: [browserControl.command, ...browserControl.args, "mcp"],
+        };
+        if (ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) !== true) {
+          mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });
         }
       }
 
