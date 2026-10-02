@@ -80,12 +80,12 @@ const CLI_FILENAME = "cli.json";
 const BROWSER_CONTROL_SERVER = "browser-control";
 
 /**
- * Bloque browser de OpenCode v2 (Spec T11): sustituye siempre la guía Playwright
+ * Bloque browser de OpenCode v2: sustituye siempre la guía Playwright
  * CLI, que v2 ya no ofrece. Describe la skill `browser-control` y sus
  * herramientas MCP expuestas en Code Mode; no declara la invocación MCP como
- * activa (la resuelve T13), pero sí señala el prefijo CLI gestionado
- * `jorgex-stack browser control` para los ejemplos de la skill oficial, sin
- * modificar sus bytes.
+ * activa (la resuelve el lifecycle del complemento), pero sí señala el prefijo
+ * CLI gestionado `jorgex-stack browser control` para los ejemplos de la skill
+ * oficial, sin modificar sus bytes.
  */
 const OPENCODE_BROWSER_SECTION = [
   "## Browser automation",
@@ -854,7 +854,7 @@ export const opencodeAdapter: Adapter = {
     return { file, content: content.replace(/\{\{input\}\}/g, "$ARGUMENTS") };
   },
 
-  // OpenCode v2 no ofrece el selector Playwright CLI (Spec T11): se retira su
+  // OpenCode v2 no ofrece el selector Playwright CLI: se retira su
   // guía en todos los casos, aunque la preferencia legacy siga activa, y se
   // proyecta el bloque browser-control. Context7, writing-style y DevTools
   // conservan su contrato condicional sin cambios.
@@ -1243,7 +1243,7 @@ export const opencodeAdapter: Adapter = {
         }
       }
 
-      // Browser Control v2 (Spec T11): la única fuente es el contexto interno,
+      // Browser Control v2: la única fuente es el contexto interno,
       // que el lifecycle llena solo con la invocación MCP completa de un launcher
       // `active` verificado. Se crea el MCP local cuando falta y se reclama; una
       // entrada manual nativa/legacy equivalente se preserva con sus campos
@@ -1511,7 +1511,7 @@ export const opencodeAdapter: Adapter = {
               mcpOwnership.push({ server: name, owned: false });
             }
           }
-          // Browser Control gestionado (Spec T13): no vive en el canon
+          // Browser Control gestionado: no vive en el canon
           // compartido, así que se trata aparte y solo en uninstall
           // (`preserveEngram` lo fija runUninstall; install/sync usan
           // planUnmerge únicamente para inventariar targets). El adapter no

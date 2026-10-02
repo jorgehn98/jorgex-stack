@@ -18,7 +18,7 @@ import {
 import type { StageVerifiedBrowserTreeResult } from "./browser-stage.js";
 
 /**
- * Browser Control (Spec T13): adquisición verificada del complemento externo y
+ * Browser Control: adquisición verificada del complemento externo y
  * sondeo cerrado del relay. El namespace candidato es fijo y se deriva dentro
  * del state root verificado; el pointer que escribe selecciona SOLO un
  * candidato, nunca el active operativo, y el caller MCP/CLI/skill no lo usa

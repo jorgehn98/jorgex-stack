@@ -658,7 +658,7 @@ function assertManagedBrowserControlServiceBinding(
 }
 
 /**
- * Valida el progreso de retirada de servicio Browser Control (T13) cuando existe:
+ * Valida el progreso de retirada de servicio Browser Control cuando existe:
  * forma estricta (`schemaVersion`/`phase` exactos, fase conocida) y co-presencia
  * con el binding, la estampa de autostart, el perfil y la unidad owned fija. Una
  * row legacy sin fase queda intacta; un progreso huérfano o malformado bloquea
@@ -946,7 +946,7 @@ export function assertOpenCodeV2Preflight(
 }
 
 /**
- * OpenCode v2 no ofrece el selector Playwright CLI (Spec T11): el caller CLI ya
+ * OpenCode v2 no ofrece el selector Playwright CLI: el caller CLI ya
  * lo rechaza, pero la API `runInstall` también debe fallar de forma honesta en
  * vez de adquirir Playwright y escribir un AGENTS.md que el runtime ya no
  * ofrece. Un runtime `pi` no es un destino Playwright de este pipeline (vive
@@ -1276,7 +1276,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     opts.onRuntimeStatus?.(name, status);
   };
 
-  // Browser Control (Spec T13): toda operación real de OpenCode
+  // Browser Control: toda operación real de OpenCode
   // (install/sync/update) ejecuta el controlador cerrado. Adquiere y retiene el
   // candidato verificado en el namespace fijo `.browser-control-candidate`; con
   // el relay presente/incierto no promueve ni reinicia; con ausencia comprobada

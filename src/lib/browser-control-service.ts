@@ -20,11 +20,11 @@ import type { ManagedBrowserControlServiceBinding } from "./manifest.js";
 import { samePath } from "./paths.js";
 
 /**
- * T13 (vertical artifact): renderer/creación de la unidad de usuario Linux del
+ * Renderer/creación de la unidad de usuario Linux del
  * relay Browser Control. El artifact solo materializa el archivo fijo a partir
  * del active verificado; no invoca manager, no habilita/arranca y no emite el
- * marcador `BROWSER_CONTROL_AUTOSTART=false`. El supervisor/endpoint pertenecen
- * al siguiente vertical.
+ * marcador `BROWSER_CONTROL_AUTOSTART=false`. El supervisor y la verificación
+ * del endpoint se ejecutan por separado.
  */
 
 export const BROWSER_CONTROL_SERVICE_UNIT_FILENAME = "jorgex-stack-browser-control.service";
@@ -541,7 +541,7 @@ export function ensureBrowserControlServiceUnit(
 }
 
 // ---------------------------------------------------------------------------
-// Supervisor Linux opt-in (Spec T13): prueba de readiness del servicio de
+// Supervisor Linux opt-in: prueba de readiness del servicio de
 // usuario. Reutiliza el transporte HTTP acotado y el verificador estricto de la
 // release retenida; no parsea `ExecStart`, no adquiere nada y no toca unidades
 // ajenas. Todas las fronteras externas (manager) pasan por `systemctlRunner`,
@@ -1097,10 +1097,10 @@ export async function superviseBrowserControlServiceUnit(
 }
 
 // ---------------------------------------------------------------------------
-// Retirada real de la unidad propia (Spec T13): preflight de solo lectura,
+// Retirada real de la unidad propia: preflight de solo lectura,
 // stop/disable exactos y retirada del archivo con backup/readback. Reutiliza el
-// transporte/parser/autenticador existentes; nunca reinicia, fuerza, recarga ni
-// toca una unidad ajena.
+// transporte/parser/autenticador existentes; no reinicia ni fuerza procesos ni
+// toca unidades ajenas. `daemon-reload` relee definiciones, no recarga servicios.
 // ---------------------------------------------------------------------------
 
 export interface BrowserControlServiceRetirementInput {

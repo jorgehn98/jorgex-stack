@@ -14,7 +14,7 @@ import { isContainedIn, readTextIfExists, writeText } from "./fsx.js";
  */
 
 /**
- * Binding de la unidad de usuario Browser Control (T13). Evidencia de la release
+ * Binding de la unidad de usuario Browser Control. Evidencia de la release
  * retenida que autoriza los bytes de la unidad; `owned` sigue siendo la única
  * autoridad de propiedad, este digest no la reclama por sí solo. `releaseDirectory`
  * es siempre el basename `release-*` del namespace operativo, nunca una ruta
@@ -30,7 +30,7 @@ export interface ManagedBrowserControlServiceBinding {
 }
 
 /**
- * Autoridad granular del entorno del servicio Browser Control verificado (T13).
+ * Autoridad granular del entorno del servicio Browser Control verificado.
  * `projectionSha256` liga la proyección local+comando completo+puerto+autostart
  * false; `portOwned` distingue el puerto introducido por Stack de uno manual.
  */
@@ -41,8 +41,8 @@ export interface BrowserControlAutostartStamp {
 }
 
 /**
- * Fase de recuperación de una retirada de servicio Browser Control a medias
- * (T13). `environment-retired` acredita el entorno ENV ya retirado con la unidad
+ * Fase de recuperación de una retirada de servicio Browser Control a medias:
+ * `environment-retired` acredita el entorno ENV ya retirado con la unidad
  * aún presente; `unit-removed` acredita el archivo de unidad ya retirado y solo
  * el `daemon-reload` final pendiente; `manager-reloaded` acredita la limpieza
  * del manager y permite terminar el unmerge/manifest ordinario sin repetir

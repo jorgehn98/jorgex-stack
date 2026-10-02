@@ -135,7 +135,7 @@ export function resolvePlaywrightDoctorState(input: PlaywrightDoctorState): Reso
 }
 
 /**
- * Diagnóstico solo-lectura de Browser Control (Spec T13, SC-06): separa el
+ * Diagnóstico solo-lectura de Browser Control: separa el
  * active operativo ya autenticado del candidato verificado retenido usando las
  * lecturas cacheadas del complemento, sin adquirir el proveedor, sondear el
  * relay, invocar el manager, activar, reparar ni usar el candidato como
