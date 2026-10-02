@@ -143,16 +143,40 @@ export interface BrowserControlEnvironmentReconcileInput {
 }
 
 export type BrowserControlEnvironmentReconcileResult =
-  | { readonly kind: "written"; readonly file: string; readonly content: string }
+  | { readonly kind: "written"; readonly file: string; readonly content: string; readonly portOwned: boolean }
   | { readonly kind: "unchanged"; readonly file: string }
   | { readonly kind: "blocked"; readonly reason: string };
 
+const BROWSER_CONTROL_AUTOSTART_FIELD = "BROWSER_CONTROL_AUTOSTART";
+const BROWSER_CONTROL_PORT_FIELD = "BROWSER_CONTROL_PORT";
+
+/** Puerto manual literal: decimal sin ceros a la izquierda, rango 1–65535. */
+function parseManualBrowserControlPort(value: unknown): number | null {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) return null;
+  const port = Number(value);
+  return port <= 65_535 ? port : null;
+}
+
 /**
- * Reconciliación final del entorno del servicio verificado sobre el MCP
- * `browser-control` YA generado: exige que la entrada existente sea el launcher
- * gestionado (comando completo), y solo entonces añade el `environment`
- * canónico si falta. Un `environment` ajeno/corrupto bloquea sin sobrescribir;
- * un valor ya canónico es un no-op. No crea el MCP ni recompone el comando.
+ * Reconciliación granular del entorno del servicio verificado sobre el MCP
+ * `browser-control` YA generado. Exige que la entrada existente sea el launcher
+ * gestionado (comando completo) y entonces:
+ *
+ * - Si el `environment` falta, proyecta la pareja canónica completa
+ *   (`portOwned: true`).
+ * - Si ya declara `BROWSER_CONTROL_AUTOSTART`, exige readback de la proyección
+ *   ACTUAL: solo la pareja exacta AUTOSTART + puerto iguales al `environment`
+ *   deseado es `unchanged`. Un valor desviado, un campo ausente o un tipo
+ *   incoherente bloquean conservando los bytes. Stack no adopta un entorno por
+ *   igualdad; el caller decide con su estampa previa acreditada y un FALSE
+ *   manual sin claim se conserva con conflicto.
+ * - Si falta el FALSE, introduce solo ese campo preservando las claves ajenas
+ *   verbatim; un puerto manual literal válido y coherente con el gestionado se
+ *   conserva sin claim (`portOwned: false`), uno ausente se añade
+ *   (`portOwned: true`) y uno incompatible bloquea.
+ *
+ * No crea el MCP, no recompone el comando y nunca sobrescribe un entorno
+ * corrupto, con flags manuales o con un AUTOSTART manual.
  */
 export function reconcileBrowserControlEnvironment(
   input: BrowserControlEnvironmentReconcileInput,
@@ -178,23 +202,64 @@ export function reconcileBrowserControlEnvironment(
   if (!isCompatibleBrowserControlServer(entry, input.invocation)) {
     return { kind: "blocked", reason: "el MCP 'browser-control' existente no coincide con el launcher gestionado verificado" };
   }
-  const canonical = { ...input.environment };
+  const canonicalPort = input.environment[BROWSER_CONTROL_PORT_FIELD];
+  const canonicalAutostart = input.environment[BROWSER_CONTROL_AUTOSTART_FIELD];
+
   const existing = entry["environment"];
-  if (existing !== undefined) {
-    const current = objectValue(existing);
-    if (current === null || !isDeepStrictEqual(current, canonical)) {
-      return { kind: "blocked", reason: "el 'environment' del MCP 'browser-control' es ajeno o corrupto; se conserva sin sobrescribir" };
+  if (existing === undefined) {
+    return {
+      kind: "written",
+      file,
+      content: writeBrowserControlEnvironment(source, { ...input.environment }),
+      portOwned: true,
+    };
+  }
+  const current = objectValue(existing);
+  if (current === null) {
+    return { kind: "blocked", reason: "el 'environment' del MCP 'browser-control' no es un objeto; se conserva sin sobrescribir" };
+  }
+  if (Object.prototype.hasOwnProperty.call(current, BROWSER_CONTROL_AUTOSTART_FIELD)) {
+    // Readback de la proyección ACTUAL: con AUTOSTART ya presente solo la pareja
+    // exacta (valor y puerto iguales al `environment` deseado) es un no-op
+    // estable. Drift, campo ausente o tipo incoherente bloquean conservando los
+    // bytes; Stack no adopta un entorno por igualdad y el caller resuelve el
+    // FALSE manual sin claim con su estampa previa acreditada.
+    if (
+      current[BROWSER_CONTROL_AUTOSTART_FIELD] !== canonicalAutostart
+      || current[BROWSER_CONTROL_PORT_FIELD] !== canonicalPort
+    ) {
+      return {
+        kind: "blocked",
+        reason: "el 'environment' del MCP 'browser-control' no coincide con la proyección gestionada (AUTOSTART/puerto); se conserva sin sobrescribir",
+      };
     }
     return { kind: "unchanged", file };
   }
-  const content = editConfigContent(source, (root) => {
+  const existingPort = current[BROWSER_CONTROL_PORT_FIELD];
+  let portOwned = true;
+  if (existingPort !== undefined) {
+    const parsedPort = parseManualBrowserControlPort(existingPort);
+    if (parsedPort === null || canonicalPort === undefined || String(parsedPort) !== canonicalPort) {
+      return {
+        kind: "blocked",
+        reason: "el 'environment' del MCP 'browser-control' declara un puerto manual incompatible; se conserva sin sobrescribir",
+      };
+    }
+    portOwned = false;
+  }
+  const merged: Record<string, unknown> = { ...current, [BROWSER_CONTROL_AUTOSTART_FIELD]: canonicalAutostart };
+  if (portOwned) merged[BROWSER_CONTROL_PORT_FIELD] = canonicalPort;
+  return { kind: "written", file, content: writeBrowserControlEnvironment(source, merged), portOwned };
+}
+
+function writeBrowserControlEnvironment(source: string, environment: Record<string, unknown>): string {
+  return editConfigContent(source, (root) => {
     const mcp = objectValue(root["mcp"]);
     const serversRoot = objectValue(mcp?.["servers"]);
     const target = objectValue(serversRoot?.[BROWSER_CONTROL_SERVER]);
     if (target === null) throw new Error("OpenCode: el MCP 'browser-control' desapareció durante la reconciliación de entorno");
-    target["environment"] = canonical;
+    target["environment"] = environment;
   });
-  return { kind: "written", file, content };
 }
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";
 const PRIMARY_MODEL_ID = "gpt-6.1-sol";

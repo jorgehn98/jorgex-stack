@@ -474,18 +474,21 @@ async function reserveOwnedLoopbackPort(): Promise<number> {
 
 /**
  * External write at the FS boundary: the user hand-writes the native MCP
- * `environment` (the exact canonical FALSE + literal port) on the managed
- * launcher already projected. Like a late manual config confirmation, it is
- * genuine external state, not a forged controller/manager reply.
+ * `environment` (the exact map given by the case) on the managed launcher
+ * already projected. Like a late manual config confirmation, it is genuine
+ * external state, not a forged controller/manager reply.
  */
-function writeManualBrowserControlEnvironment(configDir: string, port: number): void {
+function writeManualBrowserControlEnvironment(
+  configDir: string,
+  environment: Readonly<Record<string, string>>,
+): void {
   const file = path.join(configDir, "opencode.json");
   const config = JSON.parse(fs.readFileSync(file, "utf8")) as {
     mcp?: { servers?: Record<string, { environment?: Record<string, string> }> };
   };
   const entry = config.mcp?.servers?.[BROWSER_CONTROL_SERVER];
   if (entry === undefined) throw new Error("fixture: the managed MCP must be projected before start");
-  entry.environment = { BROWSER_CONTROL_AUTOSTART: "false", BROWSER_CONTROL_PORT: String(port) };
+  entry.environment = { ...environment };
   fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
 }
 
@@ -520,6 +523,14 @@ interface RunServiceInput {
    * runs — i.e. between the original MCP projection and the final reconcile.
    */
   readonly manualEnvironmentAtStart?: boolean;
+  /**
+   * When present, an EXTERNAL writer (the user) sets the manual native MCP
+   * `environment` to this exact map while the manager `start` verb runs. Unlike
+   * `manualEnvironmentAtStart` it can carry user extras and omit canonical
+   * fields, modelling a hand-written environment Stack must merge into rather
+   * than adopt by equality.
+   */
+  readonly manualEnvironment?: Readonly<Record<string, string>>;
   /**
    * Runs INSIDE the isolated HOME after `runInstall` verified the service and
    * BEFORE the observables are read, so a case can act on the verified root
@@ -616,16 +627,21 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
     const install = await import("../src/install.js");
     const { readManifest } = await import("../src/lib/manifest.js");
     const supervisorSpec = input.supervisor;
-    const supervisor = supervisorSpec === undefined
-      ? undefined
-      : createSupervisorManagerFixture({
-          unitPath,
-          port: supervisorSpec.port,
-          ...(supervisorSpec.versionPid === undefined ? {} : { versionPid: supervisorSpec.versionPid }),
-          ...(input.manualEnvironmentAtStart === true
-            ? { onStart: () => writeManualBrowserControlEnvironment(configDir, supervisorSpec.port) }
-            : {}),
-        });
+    let supervisor: SupervisorManagerFixture | undefined;
+    if (supervisorSpec !== undefined) {
+      const manualEnvironment = input.manualEnvironment
+        ?? (input.manualEnvironmentAtStart === true
+          ? { BROWSER_CONTROL_AUTOSTART: "false", BROWSER_CONTROL_PORT: String(supervisorSpec.port) }
+          : undefined);
+      supervisor = createSupervisorManagerFixture({
+        unitPath,
+        port: supervisorSpec.port,
+        ...(supervisorSpec.versionPid === undefined ? {} : { versionPid: supervisorSpec.versionPid }),
+        ...(manualEnvironment === undefined
+          ? {}
+          : { onStart: () => writeManualBrowserControlEnvironment(configDir, manualEnvironment) }),
+      });
+    }
     const runner: ManagerRunner = supervisor ?? createRecordingRunner();
 
     const opencode = install.ADAPTERS.opencode!;
@@ -897,6 +913,92 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
         BROWSER_CONTROL_AUTOSTART: "false",
         BROWSER_CONTROL_PORT: String(port),
       });
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * Granular merge (Spec T13): the user hand-writes a valid/coherent manual
+   * environment on the managed MCP — the literal managed port (equal to the one
+   * the service will use) plus an unrelated `USER_NOTE`, and NO autostart flag.
+   * Stack introduces the canonical `BROWSER_CONTROL_AUTOSTART=false` into that
+   * existing environment, preserving the manual port literal and the user extra
+   * verbatim, and records the granular authority with `portOwned:false`: the
+   * port was already there, so it must not be claimed by equality with the
+   * managed port. The verified-service marker is emitted only after the full
+   * manager/version proof. Today the reconcile rejects any non-exact
+   * `environment` as foreign/corrupt, so this is RED on the missing merge, the
+   * missing `false`, the missing stamp and the missing marker.
+   */
+  it("merges the introduced FALSE into a manual MCP environment without claiming the manual port or dropping user extras", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-manual-merge-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const port = await reserveOwnedLoopbackPort();
+    const manualEnvironment = { BROWSER_CONTROL_PORT: String(port), USER_NOTE: "preserve-me" } as const;
+    try {
+      const observables = await runServiceInstall({
+        prefix: ".jorgex-browser-control-service-manual-merge-",
+        registerOwnedRoot: (root) => ownedRoots.push(root),
+        base: verificationBase(),
+        browserControlService: true,
+        supervisor: { port },
+        manualEnvironment,
+      });
+
+      // 1) Stack introduces the canonical FALSE while preserving the manual
+      //    port literal and the user's extra field verbatim.
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART,
+        "the verified service must introduce the canonical autostart FALSE",
+      ).toBe("false");
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_PORT,
+        "the manual port literal must survive verbatim",
+      ).toBe(String(port));
+      expect(
+        observables.mcpEnvironment?.USER_NOTE,
+        "the user extra must survive verbatim",
+      ).toBe("preserve-me");
+
+      // 2) The granular authority carries only the introduced fields, and the
+      //    port was NOT introduced by Stack: `portOwned` must be false, never
+      //    adopted by equality with the managed port.
+      const stamp = observables.manifestAutostart;
+      expect(stamp, "the verified service must record its granular autostart authority").toBeDefined();
+      expect(Object.keys(stamp!).sort(), "only the introduced stamp fields are present").toEqual([
+        "portOwned",
+        "projectionSha256",
+        "schemaVersion",
+      ]);
+      expect(stamp!.schemaVersion).toBe(1);
+      expect(stamp!.portOwned).toBe(false);
+      expect(stamp!.projectionSha256).toMatch(/^[0-9a-f]{64}$/);
+
+      // 3) The managed-autostart success marker is emitted only after the full
+      //    manager/version proof.
+      const successMessages = prompts.log.success.mock.calls.map((call) => String(call[0] ?? ""));
+      expect(
+        successMessages.some((message) => /autostart/i.test(message)),
+        `the verified service must emit the managed-autostart marker (got ${JSON.stringify(successMessages)})`,
+      ).toBe(true);
+
+      // 4) The owned unit, its claim and its serviceUnit binding survive the
+      //    merge, bound to the preserved unit bytes.
+      expect(observables.unitBytes, "the owned unit must be preserved").not.toBeNull();
+      expect(
+        observables.manifestOwned.map((file) => path.resolve(file)),
+        "the created unit must remain claimed",
+      ).toContain(path.resolve(observables.unitPath));
+      expect(observables.manifestServiceUnit, "the serviceUnit binding must remain").toBeDefined();
+      expect(observables.manifestServiceUnit?.port, "the binding must witness the managed port").toBe(port);
+      expect(
+        observables.manifestServiceUnit?.unitSha256,
+        "the binding must witness the preserved unit",
+      ).toBe(createHash("sha256").update(observables.unitBytes!).digest("hex"));
     } finally {
       cleanupOwnedResourcesOrThrow();
       releaseRoots();

@@ -1746,7 +1746,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
                   && prior.projectionSha256 === projectionSha256;
                 let stampReady = reconciled;
                 let introduced = false;
+                // El bit de ownership del puerto se captura de la PRIMERA
+                // reconciliación `written` (lo que Stack introduce ahora), no del
+                // readback posterior: un readback `unchanged` sobre una pareja ya
+                // existente no debe recapturar un claim manual por igualdad.
+                let introducedPortOwned = false;
                 if (reconciled.kind === "written") {
+                  introducedPortOwned = reconciled.portOwned;
                   const backup = createBackup([reconciled.file], "install-browser-control-service");
                   if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
                   try {
@@ -1784,7 +1790,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
                         browserControlAutostart: {
                           schemaVersion: 1,
                           projectionSha256,
-                          portOwned: true,
+                          portOwned: introducedPortOwned,
                         },
                         updatedAt: new Date().toISOString(),
                       });
