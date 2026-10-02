@@ -64,7 +64,10 @@ export function runVerifiedManagedPlaywright(
  * active Browser Control runtime, without adding an `mcp` argument.
  */
 export function runManagedBrowserControlCommand(args: readonly string[], stateDir = dataDir()): number {
-  const result = runVerifiedManagedBrowser(stateDir, "@opencode-ai/browser-control", args);
+  // `timeoutMs: 0` disables Stack's spawnSync deadline: foreground `serve`,
+  // human handoff and recording outlive any fixed budget, so the provider's own
+  // deadline or the caller governs. Playwright keeps its 120s default.
+  const result = runVerifiedManagedBrowser(stateDir, "@opencode-ai/browser-control", args, { timeoutMs: 0 });
   if (result.error !== undefined) throw result.error;
   return result.status ?? 1;
 }
