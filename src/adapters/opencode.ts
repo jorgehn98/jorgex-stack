@@ -117,7 +117,7 @@ function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value
 function ensureObject(parent: Record<string, unknown>, key: string, fieldPath: string): Record<string, unknown> {
   if (parent[key] === undefined) parent[key] = {};
   const value = objectValue(parent[key]);
-  if (value === null) throw new Error(`OpenCode: '${fieldPath}' debe ser un objeto; corrígelo antes de reintentar sync.`);
+  if (value === null) throw new Error(`OpenCode: '${fieldPath}' debe ser un objeto; corrígelo antes de reintentar install.`);
   return value;
 }
 
@@ -343,7 +343,7 @@ export const opencodeAdapter: Adapter = {
     const content = upsertJson(contentSource, (root) => {
       const rawMcp = root["mcp"];
       if (rawMcp !== undefined && objectValue(rawMcp) === null) {
-        throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar sync.");
+        throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar install.");
       }
       const existingMcp = rawMcp as Record<string, unknown> | undefined;
       const context7 = canonical.servers.context7;
@@ -356,7 +356,7 @@ export const opencodeAdapter: Adapter = {
           primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: true });
         }
       } else if (typeof root[PRIMARY_MODEL_FIELD] !== "string" || root[PRIMARY_MODEL_FIELD].trim() === "") {
-        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar sync.");
+        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar install.");
       }
 
       const provider = ensureOwnedPrimaryObject(root, "provider", PRIMARY_PROVIDER_FIELD, ctx.ownedPrimaryModelFields, primaryModelOwnership);
@@ -441,7 +441,7 @@ export const opencodeAdapter: Adapter = {
         if (server.transport === "stdio") {
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
-              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
+              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta install.",
             );
             continue;
           }

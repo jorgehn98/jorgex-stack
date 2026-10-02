@@ -40,7 +40,7 @@ import { runManagedPlaywrightCommand } from "./lib/browser-command.js";
 
 const VERSION = readPackageVersion();
 
-const COMMANDS = ["install", "sync", "models", "update", "doctor", "restore", "uninstall", "quality", "browser"] as const;
+const COMMANDS = ["install", "models", "update", "doctor", "restore", "uninstall", "quality", "browser"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export interface Flags {
@@ -86,20 +86,19 @@ const QUALITY_REJECTED_VALUE_FLAGS = new Set([
 ]);
 
 async function ensureOpenCodeModelsForInstall(
-  command: "install" | "sync",
   flags: Flags,
   runtimes: SelectableRuntimeId[],
 ): Promise<boolean> {
   if (!runtimes.includes("opencode") || loadModelMap().opencode) return true;
 
-  const canPrompt = command === "install" && !flags.yes && !flags.dryRun && process.stdout.isTTY;
+  const canPrompt = !flags.yes && !flags.dryRun && process.stdout.isTTY;
   if (canPrompt) {
     const code = await runModelsPicker({ yes: false, runtimes: ["opencode"] });
     if (code === 0 && loadModelMap().opencode) return true;
   }
 
   console.error(
-    "OpenCode no tiene modelos configurados. Ejecuta 'jorgex-stack models --agents opencode' de forma interactiva antes de install/sync.",
+    "OpenCode no tiene modelos configurados. Ejecuta 'jorgex-stack models --agents opencode' de forma interactiva antes de install.",
   );
   return false;
 }
@@ -241,7 +240,7 @@ async function resolveInstallMode(flags: Flags, promptIfMissing = true): Promise
     }
   }
   if (!promptIfMissing) {
-    console.error("No hay modo guardado; usa --mode explícito para este sync.");
+    console.error("No hay modo guardado; usa --mode explícito para esta aplicación.");
     process.exitCode = 1;
     return null;
   }
@@ -281,11 +280,10 @@ async function resolveInstallMode(flags: Flags, promptIfMissing = true): Promise
 }
 
 async function resolvePlaywrightToolConsent(
-  command: "install" | "sync",
   flags: Flags,
   runtimes: SelectableRuntimeId[],
 ): Promise<{
-  command: "install" | "sync";
+  command: "install";
   interactive: boolean;
   yes: boolean;
   targetDir: boolean;
@@ -308,13 +306,13 @@ async function resolvePlaywrightToolConsent(
     }
     if (error) { console.error(error); process.exitCode = 1; return null; }
   }
-  if (command === "install" && flags.playwright && supported.length === 0 && runtimes.includes("pi")) {
+  if (flags.playwright && supported.length === 0 && runtimes.includes("pi")) {
     console.error("Pi no declara el handoff Playwright requerido.");
     process.exitCode = 1;
     return null;
   }
   let confirmed = false;
-  if (command === "install" && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
+  if (interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
     const answer = await p.confirm({
       message: "Recomendado: ¿instalar Playwright CLI gestionado y descargar Chromium?",
       initialValue: false,
@@ -324,7 +322,7 @@ async function resolvePlaywrightToolConsent(
   }
   let runtimeSelection: PlaywrightRuntimeSelection | undefined;
   const approved = interactive && !flags.yes ? confirmed : flags.yes && flags.playwright;
-  if (command === "install" && approved && supported.length > 0) {
+  if (approved && supported.length > 0) {
     let selected = flags.playwrightRuntimes ?? supported;
     if (interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined && flags.playwrightRuntimes === undefined) {
       const answer = await p.multiselect({
@@ -339,7 +337,7 @@ async function resolvePlaywrightToolConsent(
     runtimeSelection = Object.fromEntries(supported.map((runtime) => [runtime, selected.includes(runtime)]));
   }
   return {
-    command,
+    command: "install",
     interactive,
     yes: flags.yes,
     targetDir: flags.targetDir !== undefined,
@@ -350,7 +348,6 @@ async function resolvePlaywrightToolConsent(
 }
 
 async function resolveDevtoolsMcpSelection(
-  command: "install" | "sync",
   flags: Flags,
   runtimes: SelectableRuntimeId[],
 ): Promise<Partial<Record<SelectableRuntimeId, boolean>> | null> {
@@ -364,7 +361,7 @@ async function resolveDevtoolsMcpSelection(
     return Object.fromEntries(runtimes.map((runtime) => [runtime, flags.devtools]));
   }
 
-  if (command !== "install" || flags.yes || flags.dryRun || flags.targetDir !== undefined || !process.stdout.isTTY) {
+  if (flags.yes || flags.dryRun || flags.targetDir !== undefined || !process.stdout.isTTY) {
     return {};
   }
 
@@ -622,7 +619,6 @@ Uso: pnpm dlx jorgex-stack [comando] [opciones]
 
 Comandos:
   install     Instala el stack; OpenCode fresh exige elegir modelos conectados
-  sync        Re-aplica la config y el model-map existente (idempotente; sin picker)
   models      Picker por tier o subagente (OpenCode: 'opencode models' en vivo)
   update      --check: compara stack/Engram/skills con sus upstreams
   doctor      Estado: Engram, drift de config, hooks de Codex, key de context7
@@ -642,9 +638,9 @@ Opciones:
   --yes, -y             No interactivo
   --playwright          Autoriza Playwright CLI gestionado y Chromium (requerido con --yes/sin TTY)
   --engram              (install) autoriza instalar el binario Engram si falta
-  --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
-  --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
-  --upgrade-permissions (install/sync) re-aplica permisos gestionados sobre config existente (opt-in)
+  --devtools            (install) activa Chrome DevTools MCP para los runtimes destino (opt-in)
+  --no-devtools         (install) desactiva Chrome DevTools MCP (incompatible con --devtools)
+  --upgrade-permissions (install) re-aplica permisos gestionados sobre config existente (opt-in)
   --engram-typebox-compat (install/update con Pi) opt-in explícito a la variante temporal #1567;
                         sin el flag no se adquiere ni persiste ninguna preferencia
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
@@ -775,9 +771,8 @@ async function main(): Promise<void> {
       }
       return;
     }
-    case "install":
-    case "sync": {
-      const runtimes = await resolveRuntimes(flags, command === "install");
+    case "install": {
+      const runtimes = await resolveRuntimes(flags, true);
       if (runtimes === null) return;
       if (runtimes.length === 0) {
         console.error("Ningún runtime detectado (opencode, claude-code, codex, pi).");
@@ -810,9 +805,9 @@ async function main(): Promise<void> {
         const mode = fileRuntimes.length > 0 || flags.mode !== undefined || flags.subagentConcurrency !== undefined
           ? await resolveInstallMode(flags) : undefined;
         if (mode === null) return;
-        const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(command, flags, runtimes);
+        const devtoolsMcpSelection = await resolveDevtoolsMcpSelection(flags, runtimes);
         if (devtoolsMcpSelection === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
-        const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags, runtimes);
+        const playwrightToolConsent = await resolvePlaywrightToolConsent(flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolPlan = resolvePlaywrightToolPlan(playwrightToolConsent);
         let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
@@ -824,14 +819,11 @@ async function main(): Promise<void> {
         };
         p.log.info(`Estilo de escritura: ${writingStyle.sourcePath}${flags.dryRun ? " (instalación prevista; sin escrituras)" : ""}.`);
         applyWritingStyle(writingStyle, flags.dryRun);
-        if (!await ensureOpenCodeModelsForInstall(command, flags, fileRuntimes)) { exitCode = 1; return; }
+        if (!await ensureOpenCodeModelsForInstall(flags, fileRuntimes)) { exitCode = 1; return; }
 
-        let engramBin: string | null | undefined;
-        if (command === "install") {
-          const engram = await resolveHostEngramForInstall(flags);
-          if (!engram.ok) { p.log.error(engram.message); exitCode = 1; return; }
-          engramBin = engram.bin;
-        }
+        const engram = await resolveHostEngramForInstall(flags);
+        if (!engram.ok) { p.log.error(engram.message); exitCode = 1; return; }
+        const engramBin = engram.bin;
         if (fileRuntimes.length > 0) {
           exitCode = await runInstall({
             runtimes: fileRuntimes,
@@ -852,7 +844,7 @@ async function main(): Promise<void> {
           });
         }
         let piCanRun = true;
-        if (command === "install" && fileRuntimes.length === 0 && runtimes.includes("pi")
+        if (fileRuntimes.length === 0 && runtimes.includes("pi")
           && playwrightToolPlan.actions.length > 0) {
           if (flags.dryRun) {
             p.log.info("Playwright CLI: instalación global y navegador previstos (dry-run; no se ejecutan).");
@@ -875,7 +867,7 @@ async function main(): Promise<void> {
           } else {
             const piExitCode = await runSelectedPi({
               operation: command,
-              ...(command === "install" && playwrightToolConsent.interactive && !flags.yes
+              ...(playwrightToolConsent.interactive && !flags.yes
                 && flags.targetDir === undefined && !playwrightToolConsent.confirmed ? { playwrightRefresh: false } : {}),
               targetDir: flags.targetDir,
               yes: flags.yes,
@@ -1103,9 +1095,9 @@ async function main(): Promise<void> {
       }
       // Solo skills/stack cambian los artefactos que el sync propaga.
       if (result.syncRequired && fileRuntimes.length > 0 && (result.exitCode !== 0 || !canSync)) {
-        p.log.warn("Skills/stack actualizados, pero el sync con los runtimes sigue pendiente. Ejecuta jorgex-stack sync --mode human|programmatic.");
+        p.log.warn("Skills/stack actualizados, pero su aplicación a los runtimes sigue pendiente. Ejecuta jorgex-stack install --mode human|programmatic.");
       } else if (!playwrightReconciled && result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && !flags.yes && process.stdout.isTTY) {
-        const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora? (sync)" });
+        const apply = await p.confirm({ message: "¿Re-aplicar a los runtimes ahora?" });
         if (!p.isCancel(apply) && apply) {
           process.exitCode = await runInstall({
             runtimes: fileRuntimes,
@@ -1117,10 +1109,10 @@ async function main(): Promise<void> {
             ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
           });
         } else {
-          console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
+          console.log("Sin aplicar. Cuando quieras: jorgex-stack install");
         }
       } else if (result.exitCode === 0 && result.syncRequired && fileRuntimes.length > 0 && canSync && (flags.yes || !process.stdout.isTTY)) {
-        console.log("Skills/stack actualizados. Ejecuta jorgex-stack sync para aplicarlos a los runtimes.");
+        console.log("Skills/stack actualizados. Ejecuta jorgex-stack install para aplicarlos a los runtimes.");
       }
       if (runtimes.includes("pi")) {
         persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, process.exitCode ?? result.exitCode);
@@ -1147,14 +1139,14 @@ async function main(): Promise<void> {
       // agentes instalados es trabajo de sync. Ofrecerlo aquí evita el paso
       // manual que nadie recuerda.
       if (code === 0 && fileRuntimes.length > 0 && !flags.yes && process.stdout.isTTY) {
-        const apply = await p.confirm({ message: "¿Aplicar ahora los modelos a los agentes instalados? (sync)" });
+        const apply = await p.confirm({ message: "¿Aplicar ahora los modelos a los agentes instalados?" });
         if (!p.isCancel(apply) && apply) {
           const preferenceFile = installModePreferenceFile();
           const explicitMode = flags.mode !== undefined || flags.subagentConcurrency !== undefined;
           const hasSavedMode = hasInstallModePreference(preferenceFile);
           const canResolveMode = flags.targetDir !== undefined || explicitMode || hasSavedMode;
           if (!canResolveMode) {
-            p.log.warn("Model-map guardado: se omite el sync con los runtimes porque falta un modo. Ejecuta jorgex-stack sync --mode human|programmatic.");
+            p.log.warn("Model-map guardado: su aplicación a los runtimes requiere un modo. Ejecuta jorgex-stack install --mode human|programmatic.");
             return;
           }
           const mode = await resolveInstallMode(flags, false);
@@ -1171,7 +1163,7 @@ async function main(): Promise<void> {
             ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
           });
         } else {
-          console.log("Sin aplicar. Cuando quieras: jorgex-stack sync");
+          console.log("Sin aplicar. Cuando quieras: jorgex-stack install");
         }
       }
       return;

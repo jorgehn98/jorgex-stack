@@ -1,6 +1,6 @@
 # Estilo global de escritura
 
-Stack incluye un prompt genérico de estilo de escritura como parte de su canon. Durante `install` y `sync` crea o actualiza automáticamente `~/.jorgex-stack/writing-style.md` y, en modo humano, proyecta su contenido efectivo en las instrucciones globales de Claude Code, Codex, OpenCode y Pi seleccionados. El prompt está escrito en inglés para mantener el idioma del resto de las instrucciones del sistema, pero indica al modelo que responda en el idioma que usa el usuario, salvo que este pida otro. No necesitas crear el archivo ni instalar otra skill.
+Stack incluye un prompt genérico de estilo de escritura como parte de su canon. Durante `install` (que reconcilia internamente el canon y el estado gestionado) crea o actualiza automáticamente `~/.jorgex-stack/writing-style.md` y, en modo humano, proyecta su contenido efectivo en las instrucciones globales de Claude Code, Codex, OpenCode y Pi seleccionados. El prompt está escrito en inglés para mantener el idioma del resto de las instrucciones del sistema, pero indica al modelo que responda en el idioma que usa el usuario, salvo que este pida otro. No necesitas crear el archivo ni instalar otra skill.
 
 ## Configurar y actualizar
 
@@ -10,10 +10,10 @@ El uso normal no requiere preparar nada:
 
 ```bash
 pnpm dlx jorgex-stack install --agents claude-code,codex,opencode,pi --mode human
-pnpm dlx jorgex-stack sync --agents claude-code,codex,opencode,pi --mode human
+pnpm dlx jorgex-stack install --agents claude-code,codex,opencode,pi --mode human
 ```
 
-Si editas el archivo para añadir notas propias, mantenlas fuera del bloque gestionado. En cada `sync`, Stack vuelve a aplicar el canon incluido y conserva esas notas. El canon ya contiene las instrucciones de estilo necesarias y deja fuera corpus, informes y activación como skill.
+Si editas el archivo para añadir notas propias, mantenlas fuera del bloque gestionado. En cada `install`, Stack reconcilia el canon incluido y conserva esas notas. El canon ya contiene las instrucciones de estilo necesarias y deja fuera corpus, informes y activación como skill.
 
 El archivo local resultante tiene esta forma conceptual:
 
@@ -31,14 +31,14 @@ Un ejemplo sintético de nota local sería:
 Cuando el encargo sea para un cliente, mantén el registro profesional que ya use ese cliente.
 ```
 
-Después de cambiar notas locales, sincroniza los runtimes que utilices:
+Después de cambiar notas locales, reconcilia los runtimes que utilices con `install`:
 
 ```bash
-pnpm dlx jorgex-stack sync --agents claude-code,codex,opencode,pi --mode human
+pnpm dlx jorgex-stack install --agents claude-code,codex,opencode,pi --mode human
 pnpm dlx jorgex-stack doctor --agents claude-code,codex,opencode,pi
 ```
 
-La lista selecciona los destinos; no instala runtimes que falten. Cada cambio en el canon o en las notas locales requiere otra sincronización y una sesión nueva del runtime. No hay selector de estilos, recarga en caliente ni estilos distintos por runtime.
+La lista selecciona los destinos; no instala runtimes que falten. Cada cambio en el canon o en las notas locales requiere otra reconciliación con `install` y una sesión nueva del runtime. No hay selector de estilos, recarga en caliente ni estilos distintos por runtime.
 
 Stack limita esta capa a la prosa dirigida al usuario. El encargo, los formatos de máquina, el código, las instrucciones técnicas y las autorizaciones conservan sus reglas. La capa no cambia modelos, permisos, agentes primarios ni configuraciones nativas de personalidad.
 
@@ -55,14 +55,14 @@ Stack toma el canon del paquete y prepara una instantánea del archivo local ant
 
 Los adapters resuelven los destinos efectivos. El texto proyectado pasa a formar parte del contexto que recibe el modelo cuando el runtime carga ese archivo. El canon forma parte del paquete; el archivo local, las proyecciones y sus backups permanecen en el equipo del usuario.
 
-Install/sync, sus dry-runs y el sync interno de update validan el canon y el archivo local antes de sus escrituras. Un canon ausente o vacío, un directorio, un error de lectura, UTF-8 inválido o marcadores locales ambiguos producen un error; no se interpretan como desactivación. Se normalizan saltos de línea y espacios exteriores, conservando el contenido interior. Los enlaces escritos en el Markdown no se descargan ni se expanden como imports.
+`install` (con su `--dry-run`/`--target-dir`) y el sync interno de `update` validan el canon y el archivo local antes de sus escrituras. Un canon ausente o vacío, un directorio, un error de lectura, UTF-8 inválido o marcadores locales ambiguos producen un error; no se interpretan como desactivación. Se normalizan saltos de línea y espacios exteriores, conservando el contenido interior. Los enlaces escritos en el Markdown no se descargan ni se expanden como imports.
 
 ## Desactivar, desinstalar y recuperar
 
-- **Archivo local ausente o vacío:** `install` y `sync` vuelven a crear o completar el bloque desde el canon incluido. No es un mecanismo de desactivación.
-- **Modo programático:** install/sync con `--mode programmatic` retira la sección aunque la fuente siga presente. Volver a `--mode human` permite proyectarla otra vez. En Pi esta selección filtra la capa de estilo; no sustituye el prompt base del runtime.
+- **Archivo local ausente o vacío:** `install` vuelve a crear o completar el bloque desde el canon incluido. No es un mecanismo de desactivación.
+- **Modo programático:** `install` con `--mode programmatic` retira la sección aunque la fuente siga presente. Volver a `--mode human` permite proyectarla otra vez. En Pi esta selección filtra la capa de estilo; no sustituye el prompt base del runtime.
 - **Uninstall:** retira la proyección conforme al ownership y los backups del lifecycle existente. Conserva el archivo local instalado y el contenido ajeno.
-- **Restore:** repone los archivos incluidos en el backup elegido mediante el comando habitual. Si el backup `writing-style` contiene el archivo local, también puede restaurarlo. Restore no valida el contenido contra el canon; el siguiente sync vuelve a aplicar el canon actual y conserva las notas ajenas válidas.
+- **Restore:** repone los archivos incluidos en el backup elegido mediante el comando habitual. Si el backup `writing-style` contiene el archivo local, también puede restaurarlo. Restore no valida el contenido contra el canon; el siguiente `install` vuelve a aplicar el canon actual y conserva las notas ajenas válidas.
 
 Uninstall no necesita leer el archivo local y no queda bloqueado si está dañado. Restore opera sobre el backup seleccionado y puede recuperar ese archivo sin depender de que su contenido sea válido. Los backups pueden contener el estilo anterior; trátalos como parte de tu configuración privada. Consulta también el [lifecycle de Pi](pi-runtime.md).
 
@@ -71,8 +71,8 @@ Uninstall no necesita leer el archivo local y no queda bloqueado si está dañad
 Con `--target-dir`, Stack instala el canon únicamente en `<target-dir>/writing-style.md` y no busca el archivo local del HOME real. Rechaza enlaces de esa fuente que salgan del destino. Prepara allí el destino aislado:
 
 ```bash
-pnpm dlx jorgex-stack sync --agents codex --target-dir ./prueba-estilo --mode human --dry-run
-pnpm dlx jorgex-stack sync --agents codex --target-dir ./prueba-estilo --mode human
+pnpm dlx jorgex-stack install --agents codex --target-dir ./prueba-estilo --mode human --dry-run
+pnpm dlx jorgex-stack install --agents codex --target-dir ./prueba-estilo --mode human
 pnpm dlx jorgex-stack doctor --agents codex --target-dir ./prueba-estilo
 ```
 
@@ -90,7 +90,7 @@ El diagnóstico de Stack con `doctor --target-dir` se limita explícitamente al 
 
 ## Diagnóstico y límites de carga
 
-Doctor muestra la ruta del canon, la ruta del archivo local, si este está instalado, pendiente o desactualizado, su tamaño normalizado y si la sección proyectada coincide. No imprime el cuerpo ni afirma que el modelo esté siguiendo el estilo. Si hay diferencias, sincroniza; si no puede leer un archivo, revisa la ruta y los permisos.
+Doctor muestra la ruta del canon, la ruta del archivo local, si este está instalado, pendiente o desactualizado, su tamaño normalizado y si la sección proyectada coincide. No imprime el cuerpo ni afirma que el modelo esté siguiendo el estilo. Si hay diferencias, ejecuta `install`; si no puede leer un archivo, revisa la ruta y los permisos.
 
 «Global» significa ámbito de usuario, no prioridad absoluta. La configuración de proyecto, las instrucciones superiores y las opciones del runtime pueden cambiar lo que llega al modelo:
 

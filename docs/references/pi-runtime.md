@@ -190,7 +190,7 @@ Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad 
 La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
 
 - `install` verifica primero el tarball y prepara el stage aislado. Para un candidato con transporte nativo, ejecuta `runNativePiMcpPhase` antes de la promoción del paquete y de la proyección; con candidato legacy, ejecuta `engram setup pi` con backup y rollback de `settings.json`, `mcp.json`, `mcp-adapter.json` y el árbol `npm`. El candidato verificado debe declarar el lector MCP que va a usar antes de migrar la configuración. Después hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete. El checker nativo activo (`beforeInitialization`/`beforePackageDeactivation`) corre contra el módulo Pi realmente instalado y bloquea antes del sync interno y antes de desactivar el paquete privado.
-- `sync` reaplica la proyección del paquete autenticado y comprueba la configuración MCP existente sin resolver versiones ni descargar providers; dos pasadas consecutivas son idempotentes. Si hay un paquete activo obsoleto, usa `update --agents pi`, no `sync`. Cuando el paquete instalado es nativo, `sync` valida la autoridad granular sin reclamar entradas ajenas y conserva `mcp.json` y la autoridad tal como están.
+- La reconciliación interna reaplica la proyección del paquete autenticado sin duplicar recursos y valida la autoridad granular sin reclamar entradas ajenas. No existe un comando público Stack `sync`: usa `install --agents pi` para aplicar configuración o `update --agents pi` para actualizar; ambos pueden adquirir releases verificadas y no heredan una garantía offline.
 - `doctor` comprueba package receipt, projection receipt, entradas exactas, rutas y drift, pero no repara. El diagnóstico de Stack puede marcar el runner como no saludable de forma genérica; para el estado detallado de Context7 (`available`, `conflict` o `invalid`) consulta el `doctor` nativo de Pi. `available` no implica un handshake HTTP. En modo nativo la autoridad `mcpNative` del receipt de proyección se verifica por su forma; una autoridad presente pero mal formada bloquea la operación en lugar de inventar ausencia.
 - `uninstall` hace backup antes de retirar, elimina únicamente lo declarado por los receipts y conserva archivos compartidos que sigan siendo propiedad de otro runtime. En modo nativo corre la comprobación activa de ownership antes de desactivar el paquete privado, retira sólo las entradas con sello de cleanup completo y libera el sello de las personalizadas conservadas.
 - Si un receipt es ilegible, de otro scope, parcial o de historial desconocido, la operación destructiva falla cerrada; no se adopta ni se elimina estado manual silenciosamente.
@@ -202,7 +202,7 @@ Las operaciones con `--target-dir` aíslan home, `PI_CODING_AGENT_DIR`, estado, 
 
 ## Receipt exacto y rollback
 
-Los receipts históricos schema 1 sin `managedPackage` requieren la ruta explícita de migración autenticada o uninstall legacy offline. Una vez gestionado, `sync`, `models`, `doctor` y `uninstall` verifican el receipt y los bytes/cache del release sin resolver una versión nueva. Nunca edites receipts ni hashes ni borres `HOME`, Engram o la proyección de otro runtime para forzar confianza.
+Los receipts históricos schema 1 sin `managedPackage` requieren la ruta explícita de migración autenticada o uninstall legacy offline. Una vez gestionado, `models`, `doctor` y `uninstall` verifican el receipt y los bytes/cache del release sin resolver una versión nueva. Nunca edites receipts ni hashes ni borres `HOME`, Engram o la proyección de otro runtime para forzar confianza.
 
 La migración de un receipt histórico se realiza mediante `install --agents pi` deliberado: el lifecycle autentica el receipt legacy y el estado propio, respalda lo necesario y solo continúa con el candidato staged verificado. Si no puede autenticar el estado, falla cerrado y no modifica estado ajeno.
 
@@ -228,15 +228,17 @@ pnpm dlx jorgex-stack@1.9.6 uninstall --agents pi
 pnpm dlx jorgex-stack@1.9.5 install --agents pi
 ```
 
-La resolución dinámica no equivale a una migración automática durante `sync`: solo un `install`/`update` deliberado adquiere y activa una release nueva. La adopción de una release Pi requiere que esté publicada y que su declaración de lector MCP, tarball e integridad pasen la verificación del stage; no se inventa ni se fija una versión futura en Stack. El updater nativo de Pi (`pi update --extensions`) y las actualizaciones de paquetes gestionadas por el provider no son un sustituto seguro del lifecycle privado verificado de Stack, porque no aportan su receipt ni sus garantías de activación y recuperación. Los receipts antiguos siguen necesitando migración autenticada.
+La resolución dinámica no equivale a una migración automática durante la reconciliación interna: solo un `install`/`update` deliberado adquiere y activa una release nueva. La adopción de una release Pi requiere que esté publicada y que su declaración de lector MCP, tarball e integridad pasen la verificación del stage; no se inventa ni se fija una versión futura en Stack. El updater nativo de Pi (`pi update --extensions`) y las actualizaciones de paquetes gestionadas por el provider no son un sustituto seguro del lifecycle privado verificado de Stack, porque no aportan su receipt ni sus garantías de activación y recuperación. Los receipts antiguos siguen necesitando migración autenticada.
 
-## Variante temporal del provider y recibo separado (candidato, devtool)
+<a id="variante-temporal-del-provider-y-recibo-separado-candidato-devtool"></a>
 
-> **Estado actual**: candidato / devtool, todavía no publicado en npm. La fase nativa del padre (PR203) ya viene importada como base de este candidato; este contrato **extiende** esa fase nativa con el hook de provenance/compat bajo la misma política de input/receipt de la flag candidata verificada y no duplica authority, config ni cardinality. El caller nativo del padre ejecuta su fase propia (`runNativePiMcpPhase` y receipts análogos del padre) —no se reutiliza aquí como updater ni se sustituye. Las garantías de Windows, del set de providers nativo, del MCP nativo, de la autorización personal y de la publicación/adopción del release oficial corregido **no están verificadas** por este candidato; este texto no las declara. La variante descrita es un artefacto local derivado —no es un fork ni un release npm— que aplica exclusivamente el diff de la corrección upstream `#1567` sobre bytes oficiales verificados, registra su procedencia en un recibo separado (con `provenance.origin` igual a `derived` mientras el oficial siga afectado por `#1567`, o a `registry` cuando el oficial ya venga corregido) y se retira cuando el release oficial corregido se active como `registry` sin etapa derivada.
+## Variante del provider y recibo separado (publicada en 1.9.69)
+
+> **Estado actual**: la compat del provider #1567 y su recibo están publicados en Stack 1.9.69. La variante no sustituye ni duplica la autoridad de la fase nativa. Los gates CI Windows controlados del release están verdes; la instalación personal en Windows no está probada. Es un artefacto local derivado —no un fork ni un release npm— que aplica exclusivamente el diff de `#1567` sobre bytes oficiales verificados y registra su procedencia en un recibo separado: `provenance.origin` es `derived` mientras el oficial siga afectado, o `registry` cuando ya venga corregido y se active sin etapa derivada.
 
 ### Contexto y límites
 
-La corrección upstream `#1567` (retirar la dependencia propia `typebox` y declarar `peerDependencies.typebox` como opcional en el manifest del provider) está fusionada en el repositorio oficial de `gentle-engram` pero todavía no publicada en npm. Mientras el release oficial no la incorpore, los providers gestionados disparan el warning legítimo del host Pi y bloquean el smoke estricto. Esperar la corrección bloquea los PRs relacionados; parchear el árbol instalado sin registrar su procedencia lo confundiría con un artefacto oficial.
+La corrección upstream `#1567` retira la dependencia propia `typebox` y declara `peerDependencies.typebox` como opcional en el manifest del provider. Stack 1.9.69 permite aplicar ese diff mediante el opt-in explícito. Mientras el release oficial siga afectado, los providers gestionados disparan el warning legítimo del host Pi y bloquean el smoke estricto hasta activar un release corregido o aplicar el opt-in. Parchear el árbol instalado sin registrar su procedencia lo confundiría con un artefacto oficial.
 
 Stack puede, sólo bajo opt-in explícito, instalar y registrar una variante local derivada de los bytes oficiales verificados. La variante:
 
@@ -254,7 +256,7 @@ Esta sección describe el contrato, no una adopción personal: el lector debe en
 
 - Se acepta únicamente en `install` y `update` deliberados cuyo `--agents` incluya `pi` y **sin** combinar con `--dry-run` ni `--target-dir`.
 - `update --check` rechaza el flag antes de cualquier efecto, al igual que `--dry-run` o `--target-dir` en `install` o `update`. `--dry-run` y `--target-dir` siguen sin adquirir providers ni escribir estado personal.
-- `sync`, `models`, `doctor`, `uninstall` e `install` sin `pi` también rechazan el flag antes de cualquier efecto.
+- `models`, `doctor`, `uninstall` e `install` sin `pi` también rechazan el flag antes de cualquier efecto. El comando retirado `sync` se rechaza como desconocido, sin alias, incluso con `--help` o `--version`.
 - Cualquier valor no booleano en el campo propagado falla antes de iniciar el stage (CLI, install, managed runtime y updater del provider).
 
 El flag no es global: aplica al comando actual, al agent Pi presente y a un release verificado. Su activación no muta el árbol de un Pi ya sano; sólo participa cuando la receta derivada es coherente con el opt-in del caller.
@@ -302,13 +304,12 @@ El plugin oficial de Claude sigue requiriendo Engram estable 2.0.0 o superior. U
 
 ## Comandos
 
-Stack reconoce la versión del host Pi sin ejecutarlo: admite tanto el binario de un paquete npm directo como el launcher POSIX observado del instalador gestionado de Pi (`install/managed-install.json` con layout `releases-v1`). Para este último comprueba la versión actual contra el manifest de `@earendil-works/pi-coding-agent` dentro del release; si la metadata no coincide, bloquea la operación en lugar de adivinar la versión o usar el `.bin` interno como atajo. No se afirma compatibilidad con un layout gestionado de Windows no verificado. En un PC nuevo, ejecuta primero `install --agents pi`; `sync --agents pi` solo reconcilia una instalación Stack que ya tiene receipt gestionado y no crea ese receipt desde cero.
+Stack reconoce la versión del host Pi sin ejecutarlo: admite tanto el binario de un paquete npm directo como el launcher POSIX observado del instalador gestionado de Pi (`install/managed-install.json` con layout `releases-v1`). Para este último comprueba la versión actual contra el manifest de `@earendil-works/pi-coding-agent` dentro del release; si la metadata no coincide, bloquea la operación en lugar de adivinar la versión o usar el `.bin` interno como atajo. No se afirma compatibilidad con un layout gestionado de Windows no verificado. En un PC nuevo, ejecuta `install --agents pi`; sobre un receipt gestionado válido, ese mismo comando continúa por la actualización autenticada.
 
 | Comando Stack | Comportamiento Pi |
 | --- | --- |
 | `install --agents pi` | En un Pi nuevo verifica el tarball, instala y normaliza el paquete, proyecta recursos, ejecuta `sync` para inicializar Pi y escribe ambos receipts; sobre un receipt gestionado válido continúa por la actualización autenticada. |
-| `sync --agents pi` | Reconcilia receipt, proyección y configuración MCP ya gestionada; no resuelve versiones, no descarga providers ni duplica skills/prompts. |
-| `update --agents pi` | Resuelve y verifica `jorgex-pi`, `gentle-engram` y `pi-mcp-adapter` en stages aislados; sobre un receipt gestionado válido actualiza el release y los dos providers sin tocar el host Pi, Engram ni datos ajenos. |
+| `update --agents pi` | Resuelve y verifica `jorgex-pi` y sus providers en stages aislados: solo `gentle-engram` con transporte nativo; también `pi-mcp-adapter` en legacy. Sobre un receipt gestionado válido actualiza sin tocar el host Pi, Engram ni datos ajenos. |
 | `models --agents pi` | Devuelve la información primaria gestionada del paquete Pi; no escribe model map de Stack. |
 | `doctor --agents pi` | Comprueba package/projection receipts, scope, entradas y drift. |
 | `update --check --agents pi` | Ejecuta mediante el runner una comprobación de solo lectura del paquete y del registro; no compara la proyección compartida, no ejecuta el smoke del navegador y no entra en el updater global. Usa `doctor --agents pi` para el diagnóstico completo de paquete y proyección. |
@@ -328,7 +329,7 @@ Pi gestiona su propia proyección primaria: `openai-codex/gpt-5.6-sol` y `contex
 | `unsupported-pi-version` / contrato incompatible | La release staged no satisface el contrato actual. No relajes la validación ni edites hashes; conserva el stage para diagnóstico y reintenta cuando el paquete publicado sea compatible. |
 | `engram-required` / `engram-missing-target` | Configura Engram explícitamente; en target añade el binario dentro de `<target>/bin/engram`. |
 | `manual-existing` | El paquete existe sin package receipt; consérvalo o retíralo explícitamente antes de pedir ownership gestionado. |
-| `duplicate-package` / `source-divergent` | Conserva una única entrada exacta con `skills: []` y `prompts: []`, y vuelve a ejecutar `sync`. |
+| `duplicate-package` / `source-divergent` | Conserva una única entrada exacta con `skills: []` y `prompts: []`, y vuelve a ejecutar `install --agents pi`. |
 | `receipt-corrupt` / `receipt-untrusted` / `partial-state` | No borres el receipt a ciegas; inspecciona settings, proyección y scope, y usa el Stack publicado que reconoce ese pin para el rollback o la limpieza. |
 | `projection-cleanup-failed` | Corrige el estado o restaura el backup y reintenta `uninstall`; no fuerces la eliminación. |
 | `runner-output` / `runner-unhealthy` | Comprueba integridad, Engram y receipts antes de reinstalar. |

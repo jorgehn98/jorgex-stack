@@ -274,7 +274,7 @@ export const claudeCodeAdapter: Adapter = {
     const content = upsertJson(readMcpConfig(file), (root) => {
       const rawServers = root["mcpServers"];
       if (rawServers !== undefined && !isRecord(rawServers)) {
-        throw new Error("Claude Code: la clave 'mcpServers' debe ser un objeto; corrígela antes de reintentar sync.");
+        throw new Error("Claude Code: la clave 'mcpServers' debe ser un objeto; corrígela antes de reintentar install.");
       }
       const existingServers = rawServers as Record<string, unknown> | undefined;
       const context7 = canonical.servers.context7;
@@ -321,7 +321,7 @@ export const claudeCodeAdapter: Adapter = {
         if (server.transport === "stdio") {
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
-              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
+              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta install.",
             );
             continue;
           }
