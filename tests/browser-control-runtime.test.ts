@@ -1818,4 +1818,257 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       releaseRoots();
     }
   });
+
+  /**
+   * T12/T13 uninstall con cache ausente (spec 12/13, SC-06/SC-08): una
+   * instalación real publica el active gestionado y proyecta MCP + skill owned.
+   * Después se mueve TODO el namespace del active owned
+   * (`<stateDir>/.browser-managed/browser-control`) a una ruta propia de backup,
+   * sin borrar ni forjar/editar ningún receipt: el candidato verificado sigue
+   * retenido en su namespace. Con el active ausente, `runUninstall` no puede
+   * autenticar la proyección offline y debe bloquear (exit != 0) conservando
+   * byte a byte la skill proyectada (mismo inodo), el MCP, el claim, el manifest
+   * y los datos ajenos. La autoridad es la lectura cacheada del active: el
+   * candidato NUNCA es fallback, no se resuelve `latest` ni se sondea el relay
+   * (fetch envenenado y puerto centinela inválido tras el install).
+   */
+  it("bloquea el uninstall y conserva la proyección cuando el active gestionado está ausente aunque el candidato siga retenido", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-uninstall-missing-cache-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-uninstall-missing-cache-",
+        register: (root) => ownedRoots.push(root),
+      });
+      // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
+      const closedPort = await reserveClosedRelayPort();
+      const isolatedXdgConfig = path.join(owned.env.HOME!, ".config");
+      // Ruta propia (dentro del root owned) donde se aparca el namespace activo:
+      // un rename completo, nunca un borrado ni un receipt forjado/editado.
+      const movedActiveNamespace = path.join(owned.root, "moved-active-namespace");
+
+      await withIsolatedEnv(
+        {
+          ...process.env,
+          ...owned.env,
+          XDG_CONFIG_HOME: isolatedXdgConfig,
+          BROWSER_CONTROL_PORT: String(closedPort),
+        },
+        async () => {
+          const witness = writeWitnessTree(owned.root);
+          const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+            output: "opencode v2.0.20",
+          });
+          const configDir = path.join(isolatedXdgConfig, "opencode");
+          const configPath = path.join(configDir, "opencode.json");
+          const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+          const actualStage = await import("../src/lib/browser-stage.js");
+          const witnessStaged = {
+            treePath: witness.treePath,
+            nodeModulesPath: witness.nodeModulesPath,
+            treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
+            closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
+          };
+          vi.doMock("../src/lib/browser-stage.js", async () => {
+            const actual =
+              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                "../src/lib/browser-stage.js",
+              );
+            return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
+          });
+          vi.stubGlobal("fetch", registryFetch(fetched));
+
+          const install = await import("../src/install.js");
+          const uninstall = await import("../src/uninstall.js");
+          const { dataDir } = await import("../src/lib/paths.js");
+          const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+          const { devtoolsMcpPreferenceFile, loadDevtoolsMcpOwnership } = await import(
+            "../src/lib/tool-preferences.js"
+          );
+          const { readManifest } = await import("../src/lib/manifest.js");
+          const { listBackups } = await import("../src/lib/backup.js");
+
+          const opencode = install.ADAPTERS.opencode!;
+          const originalDetect = opencode.detect;
+          const detection = (): RuntimeDetection => ({
+            id: "opencode",
+            name: "OpenCode",
+            installed: true,
+            binPath: opencodeBin,
+            configDir,
+          });
+          opencode.detect = detection;
+
+          const activeNamespace = path.join(dataDir(), ".browser-managed", BROWSER_CONTROL_SERVER);
+          const candidateDir = path.join(dataDir(), BC_CANDIDATE_DIRNAME);
+
+          try {
+            // 1) Instalación real: active publicado, MCP + skill owned, claim y
+            //    manifest declarados.
+            await install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+
+            const active = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(active, "el install debe publicar el active gestionado").not.toBeNull();
+            if (active === null) return;
+            expect(fs.readFileSync(projectedSkill)).toEqual(BC_SKILL_BYTES);
+            expect(
+              loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), "opencode", BROWSER_CONTROL_SERVER),
+              "el install debe reclamar la autoridad del MCP",
+            ).toBe(true);
+            expect(
+              (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file)),
+              "el manifest debe declarar owned la skill proyectada",
+            ).toContain(path.resolve(projectedSkill));
+
+            // 2) El candidato verificado queda retenido y es re-verificable: es
+            //    el único estado de Browser Control que sobrevive al rename.
+            const candidate = loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE);
+            expect(candidate, "el candidato verificado debe estar retenido").not.toBeNull();
+            if (candidate === null) return;
+            expect(candidate.version).toBe(BC_VERSION);
+
+            // Datos ajenos que deben sobrevivir a cualquier intento de uninstall.
+            const installedConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+              [key: string]: unknown;
+            };
+            installedConfig.mcp!.servers!["user-custom"] = { type: "local", command: ["/usr/bin/true"] };
+            installedConfig.mcp!.servers!["engram"] = { type: "local", command: ["/usr/bin/engram", "mcp"] };
+            installedConfig["user-top-level"] = { keep: true };
+            fs.writeFileSync(configPath, `${JSON.stringify(installedConfig, null, 2)}\n`);
+            const managedEntry = installedConfig.mcp!.servers![BROWSER_CONTROL_SERVER];
+
+            const skillBytesBefore = fs.readFileSync(projectedSkill);
+            const skillInoBefore = fs.statSync(projectedSkill).ino;
+
+            // 3) Active ausente por rename completo del namespace owned a una
+            //    ruta propia: no se borra nada ni se forja/edita el receipt. El
+            //    candidato permanece intacto.
+            expect(fs.existsSync(activeNamespace), "el namespace activo debe existir tras el install").toBe(true);
+            fs.renameSync(activeNamespace, movedActiveNamespace);
+            expect(
+              loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE),
+              "el rename debe dejar el active canónico genuinamente ausente",
+            ).toBeNull();
+            expect(
+              fs.existsSync(path.join(movedActiveNamespace, "active.v1.json")),
+              "el namespace activo debe conservarse completo en su ruta propia",
+            ).toBe(true);
+            expect(
+              loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE),
+              "el candidato debe seguir retenido tras mover el active",
+            ).not.toBeNull();
+
+            // 4) Offline forzado tras el install: cualquier fetch es un fallo y
+            //    el puerto centinela inválido no puede sondear relay.
+            const uninstallFetch = vi.fn(async (input: RequestInfo | URL) => {
+              throw new Error(`unexpectedNetwork: el uninstall no debe tocar la red (${String(input)})`);
+            });
+            vi.stubGlobal("fetch", uninstallFetch);
+            process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+            const exit = await uninstall.runUninstall({
+              runtimes: ["opencode"],
+              dryRun: false,
+              yes: true,
+              removeEngram: false,
+              removePlaywright: false,
+            });
+
+            // 5) Resultado honesto: bloqueado, nonzero, nunca "Hecho." y con la
+            //    causa real (active gestionado ausente), no una capacidad falsa.
+            expect(exit, `el uninstall debe fallar cerrado: ${loggedLines().join(" | ")}`).not.toBe(0);
+            expect(
+              prompts.outro.mock.calls.map((call) => String(call[0])).some((line) => line.startsWith("Hecho.")),
+              "un uninstall bloqueado no debe anunciar 'Hecho.'",
+            ).toBe(false);
+            const diagnostics = loggedLines().join("\n");
+            expect(diagnostics).toMatch(/browser.?control/i);
+            expect(diagnostics).toMatch(/no hay un active gestionado verificado/i);
+            expect(diagnostics).toMatch(/conserv|preserv/i);
+
+            // 6) Nada mutado: la skill proyectada conserva bytes e inodo; el MCP,
+            //    el claim, el manifest y los datos ajenos quedan intactos.
+            expect(fs.existsSync(projectedSkill), "la skill no debe borrarse sin active que la acredite").toBe(true);
+            expect(fs.readFileSync(projectedSkill), "la skill debe conservar sus bytes").toEqual(skillBytesBefore);
+            expect(fs.statSync(projectedSkill).ino, "la skill no debe reescribirse").toBe(skillInoBefore);
+            expect(
+              listBackups().some((info) =>
+                info.files.some((file) => path.resolve(file.original) === path.resolve(projectedSkill)),
+              ),
+              "un uninstall bloqueado no debe respaldar ni borrar la skill",
+            ).toBe(false);
+
+            const afterConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+              [key: string]: unknown;
+            };
+            expect(
+              afterConfig.mcp?.servers?.[BROWSER_CONTROL_SERVER],
+              "el MCP gestionado no debe retirarse sin active autenticado",
+            ).toEqual(managedEntry);
+            expect(
+              loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), "opencode", BROWSER_CONTROL_SERVER),
+              "el claim de ownership no debe liberarse",
+            ).toBe(true);
+            expect(
+              (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file)),
+              "el manifest no debe declarar limpiada la skill conservada",
+            ).toContain(path.resolve(projectedSkill));
+            expect(afterConfig.mcp?.servers?.["user-custom"]).toEqual({
+              type: "local",
+              command: ["/usr/bin/true"],
+            });
+            expect(afterConfig.mcp?.servers?.["engram"]).toEqual({
+              type: "local",
+              command: ["/usr/bin/engram", "mcp"],
+            });
+            expect(afterConfig["user-top-level"]).toEqual({ keep: true });
+
+            // 7) Sin fallback al candidato ni red: el candidato sigue retenido y
+            //    el fetch envenenado nunca se invocó.
+            expect(
+              loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE),
+              "el candidato retenido no debe usarse como fallback ni borrarse",
+            ).not.toBeNull();
+            expect(
+              uninstallFetch,
+              "el uninstall debe ser offline: sin resolución de latest ni sondeo",
+            ).not.toHaveBeenCalled();
+          } finally {
+            // Restaurar el namespace movido antes de la limpieza de roots para
+            // que una cancelación no deje el fixture a medias.
+            if (!fs.existsSync(activeNamespace) && fs.existsSync(movedActiveNamespace)) {
+              try {
+                fs.renameSync(movedActiveNamespace, activeNamespace);
+              } catch {
+                // La limpieza del root owned elimina el fixture completo.
+              }
+            }
+            opencode.detect = originalDetect;
+          }
+        },
+      );
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
 });
