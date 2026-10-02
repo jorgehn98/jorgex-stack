@@ -72,6 +72,7 @@ type PiProjectionLifecycleInput = {
   playwrightCliVersion?: string | null;
   playwrightManagedStateDir?: string;
   playwrightDispatcherPath?: string;
+  pendingNativeConfigWrite?: () => { kind: "ok"; recover?: () => boolean; paths?: readonly string[] } | { kind: "blocked"; reason: string; remedy: string };
 };
 
 type PiProjectionLifecycle = {
@@ -176,6 +177,34 @@ function playwrightHandoffContent(command: string): string {
     command: path.resolve(command),
     version: "0.1.18",
   }, null, 2)}\n`;
+}
+
+// Reuses the verified managed-tree fixture so the lifecycle sees the real
+// trusted DevTools handoff (v3) without network, SDK or the real HOME.
+async function activateTrustedDevtoolsState(root: string, home: string): Promise<string> {
+  const stateDir = path.join(home, ".jorgex-stack");
+  const stageDir = path.join(root, "stage");
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treePath = path.join(nodeModulesPath, "chrome-devtools-mcp");
+  const entryPath = path.join(treePath, "entry.js");
+  const version = "9.9.20";
+  const integrity = `sha512-${Buffer.alloc(64, 14).toString("base64")}`;
+  fs.mkdirSync(treePath, { recursive: true });
+  fs.writeFileSync(path.join(treePath, "package.json"), JSON.stringify({ name: "chrome-devtools-mcp", version }));
+  fs.writeFileSync(entryPath, "export {};\n");
+  await activateManagedBrowserTree({
+    stateDir,
+    packageName: "chrome-devtools-mcp",
+    release: { version, integrity, tarballUrl: `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${version}.tgz` },
+    staged: {
+      treePath,
+      nodeModulesPath,
+      treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+      closure: [{ name: "chrome-devtools-mcp", version, integrity }],
+    },
+    entryPath,
+  });
+  return stateDir;
 }
 
 function observedPlaywrightHandoffContent(command: string, version: string): string {
@@ -477,6 +506,332 @@ describe("Pi shared projection lifecycle", () => {
       events.length = 0;
       expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
       expect(events).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  describe("native config and receipt publication failure recovery", () => {
+    it("restores a freshly written trusted DevTools handoff and keeps the prior receipt bytes when the pending native config write blocks", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-native-config-blocked-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        fs.mkdirSync(target.home, { recursive: true });
+        const stateDir = await activateTrustedDevtoolsState(root, target.home);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const baseInput = {
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+          devtoolsManagedStateDir: stateDir,
+        };
+        // First pass without DevTools: a real receipt exists but no handoff yet.
+        expect(runPiProjectionLifecycle({ ...baseInput, operation: "install", devtoolsMcpEnabled: false }, deps).kind).toBe("installed");
+        const receiptBefore = fs.readFileSync(target.projectionReceipt, "utf8");
+        const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+        expect(fs.existsSync(handoff)).toBe(false);
+
+        const pending = vi.fn(() => ({
+          kind: "blocked" as const,
+          reason: "native-config-write-failed",
+          remedy: "revisa mcp.json y reintenta",
+        }));
+        events.length = 0;
+        const result = runPiProjectionLifecycle({
+          ...baseInput,
+          operation: "install",
+          devtoolsMcpEnabled: true,
+          pendingNativeConfigWrite: pending,
+        }, deps);
+
+        expect(result.kind).toBe("blocked");
+        expect(pending).toHaveBeenCalledTimes(1);
+        // The handoff was absent before this pass: a blocked operation must not
+        // leave the freshly written owned file published.
+        expect(fs.existsSync(handoff)).toBe(false);
+        // Neither the receipt nor its authority may be half-published.
+        expect(fs.readFileSync(target.projectionReceipt, "utf8")).toBe(receiptBefore);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("blocks and restores the freshly written DevTools handoff instead of throwing when the final receipt publication fails", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-native-receipt-failed-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        fs.mkdirSync(target.home, { recursive: true });
+        const stateDir = await activateTrustedDevtoolsState(root, target.home);
+        const events: string[] = [];
+        const baseDeps = temporaryDeps(root, events, { runtimes: {} });
+        const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+        const pending = vi.fn(() => ({ kind: "ok" as const }));
+        const deps: ProjectionDeps = {
+          ...baseDeps,
+          writeText(file, content) {
+            if (path.resolve(file) === path.resolve(target.projectionReceipt)) {
+              throw new Error("simulated projected receipt publication failure");
+            }
+            baseDeps.writeText(file, content);
+          },
+        };
+
+        const result = runPiProjectionLifecycle({
+          operation: "install",
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+          devtoolsMcpEnabled: true,
+          devtoolsManagedStateDir: stateDir,
+          pendingNativeConfigWrite: pending,
+        }, deps);
+
+        expect(result).toMatchObject({ kind: "blocked" });
+        expect(pending).toHaveBeenCalledTimes(1);
+        // Handoff and receipt that followed a successful config write must be
+        // recovered locally instead of surfacing a raw exception.
+        expect(fs.existsSync(handoff)).toBe(false);
+        expect(fs.existsSync(target.projectionReceipt)).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps concurrent raw DevTools handoff bytes instead of clobbering them when the pending native config write blocks", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-native-config-drift-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        fs.mkdirSync(target.home, { recursive: true });
+        const stateDir = await activateTrustedDevtoolsState(root, target.home);
+        const events: string[] = [];
+        const deps = temporaryDeps(root, events, { runtimes: {} });
+        const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+        const userBytes = "{\n  \"schemaVersion\": 3,\n  \"userChange\": true\n}\n";
+        const pending = vi.fn(() => {
+          // The user edits the handoff after Stack wrote it but before the
+          // blocked operation unwinds: recovery must preserve these bytes.
+          fs.writeFileSync(handoff, userBytes);
+          return { kind: "blocked" as const, reason: "native-config-write-failed", remedy: "revisa mcp.json y reintenta" };
+        });
+
+        const result = runPiProjectionLifecycle({
+          operation: "install",
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+          devtoolsMcpEnabled: true,
+          devtoolsManagedStateDir: stateDir,
+          pendingNativeConfigWrite: pending,
+        }, deps);
+
+        expect(result.kind).toBe("blocked");
+        expect(fs.readFileSync(handoff, "utf8")).toBe(userBytes);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("blocks and restores the handoff and runs the config recovery when the final receipt readback throws", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-receipt-readback-eio-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        fs.mkdirSync(target.home, { recursive: true });
+        const stateDir = await activateTrustedDevtoolsState(root, target.home);
+        const events: string[] = [];
+        const baseDeps = temporaryDeps(root, events, { runtimes: {} });
+        const handoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+        let receiptPublished = false;
+        const recover = vi.fn(() => true);
+        const pending = vi.fn(() => ({ kind: "ok" as const, recover, paths: [target.projectionReceipt] }));
+        const deps: ProjectionDeps = {
+          ...baseDeps,
+          writeText(file, content) {
+            baseDeps.writeText(file, content);
+            if (path.resolve(file) === path.resolve(target.projectionReceipt)) receiptPublished = true;
+          },
+          readText(file) {
+            // The receipt is published, then the readback fails once: this must
+            // become a structured block with recovery, never an uncaught EIO.
+            if (receiptPublished && path.resolve(file) === path.resolve(target.projectionReceipt)) {
+              receiptPublished = false;
+              throw Object.assign(new Error("EIO: receipt readback failed"), { code: "EIO" });
+            }
+            return baseDeps.readText(file);
+          },
+        };
+
+        const result = runPiProjectionLifecycle({
+          operation: "install",
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+          devtoolsMcpEnabled: true,
+          devtoolsManagedStateDir: stateDir,
+          pendingNativeConfigWrite: pending,
+        }, deps);
+
+        expect(result).toMatchObject({ kind: "blocked", reason: "projection-write-failed" });
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect(fs.existsSync(handoff)).toBe(false);
+        expect(fs.existsSync(target.projectionReceipt)).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("blocks and restores the already written DevTools handoff when a later projection write throws", async () => {
+      const { runPiProjectionLifecycle } = await lifecycle();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-apply-actions-failure-"));
+      const source = "npm:jorgex-pi@0.4.0";
+
+      try {
+        const target = seedTarget(root, source);
+        const events: string[] = [];
+        const baseDeps = temporaryDeps(root, events, { runtimes: {} });
+        const pnpmBin = path.join(root, "bin", "pnpm");
+        const playwrightBin = path.join(root, "bin", "playwright-cli");
+        fs.mkdirSync(path.dirname(pnpmBin), { recursive: true });
+        fs.writeFileSync(pnpmBin, "#!/bin/sh\n");
+        fs.writeFileSync(playwrightBin, "#!/bin/sh\n");
+        const devtoolsHandoff = path.join(target.agentDir, "jorgex-pi", "devtools.v1.json");
+        const playwrightHandoff = path.join(target.agentDir, "jorgex-pi", "playwright.v1.json");
+        // Failure keyed by the target path, not by call order: the DevTools
+        // handoff is applied first, so it must be rolled back when the later
+        // projection write throws.
+        const deps: ProjectionDeps = {
+          ...baseDeps,
+          writeText(file, content) {
+            if (path.resolve(file) === path.resolve(playwrightHandoff)) {
+              throw new Error("simulated projection write failure after the DevTools handoff");
+            }
+            baseDeps.writeText(file, content);
+          },
+        };
+
+        const result = runPiProjectionLifecycle({
+          operation: "install",
+          scope: target.scope,
+          packageSource: source,
+          stackDir: stackRoot(),
+          engramBin: path.join(root, "bin", "engram"),
+          playwrightCliEnabled: false,
+          devtoolsMcpEnabled: true,
+          pnpmBin,
+          devtoolsMcpVersion: OBSERVED_DEVTOOLS_VERSION,
+          playwrightHandoffEnabled: true,
+          playwrightCliCommand: playwrightBin,
+          playwrightCliVersion: OBSERVED_PLAYWRIGHT_VERSION,
+        }, deps);
+
+        expect(result).toMatchObject({ kind: "blocked" });
+        expect(fs.existsSync(devtoolsHandoff)).toBe(false);
+        expect(fs.existsSync(playwrightHandoff)).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("blocks instead of regenerating a projection receipt whose envelope is invalid but still carries valid native authority", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-envelope-invalid-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const deps = temporaryDeps(root, events, { runtimes: {} });
+      const input = {
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+      };
+      expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+      // A real previous receipt whose projection envelope is incoherent (unknown
+      // key) around a structurally valid mcpNative authority: the lifecycle must
+      // block instead of normalizing the envelope and dropping the claims.
+      const seeded = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as Record<string, unknown>;
+      seeded.mcpNative = {
+        schemaVersion: 1,
+        entries: { context7: { definitionSha256: "a".repeat(64), cleanupSha256: "b".repeat(64) } },
+      };
+      seeded.surprise = true;
+      fs.writeFileSync(target.projectionReceipt, `${JSON.stringify(seeded, null, 2)}\n`);
+      const before = fs.readFileSync(target.projectionReceipt, "utf8");
+      events.length = 0;
+
+      const result = runPiProjectionLifecycle({ ...input, operation: "sync" }, deps);
+
+      expect(result).toMatchObject({ kind: "blocked" });
+      expect(fs.readFileSync(target.projectionReceipt, "utf8")).toBe(before);
+      expect(mutationEvents(events)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a valid mcpNative authority entry across a no-op sync", async () => {
+    const { runPiProjectionLifecycle } = await lifecycle();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-pi-projection-mcp-native-receipt-"));
+    const source = "npm:jorgex-pi@0.4.0";
+
+    try {
+      const target = seedTarget(root, source);
+      const events: string[] = [];
+      const deps = temporaryDeps(root, events, { runtimes: {} });
+      const input = {
+        scope: target.scope,
+        packageSource: source,
+        stackDir: stackRoot(),
+        engramBin: path.join(root, "bin", "engram"),
+        playwrightCliEnabled: false,
+      };
+      expect(runPiProjectionLifecycle({ ...input, operation: "install" }, deps).kind).toBe("installed");
+
+      // The receipt file is untrusted JSON metadata: Stack must parse and retain
+      // this opaque authority entry without recomputing or rewriting it.
+      const mcpNative = {
+        schemaVersion: 1,
+        entries: {
+          context7: {
+            definitionSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            cleanupSha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+          },
+        },
+      };
+      const seeded = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as Record<string, unknown>;
+      seeded.mcpNative = mcpNative;
+      fs.writeFileSync(target.projectionReceipt, `${JSON.stringify(seeded, null, 2)}\n`);
+
+      events.length = 0;
+      expect(runPiProjectionLifecycle({ ...input, operation: "sync" }, deps)).toEqual({ kind: "synced", changed: false });
+      expect(events).toEqual([]);
+      const preserved = JSON.parse(fs.readFileSync(target.projectionReceipt, "utf8")) as Record<string, unknown>;
+      expect(preserved.mcpNative).toEqual(mcpNative);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
