@@ -8,15 +8,16 @@ import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { parseOpenCodeHostVersion } from "./helpers/opencode-host-version.js";
 
 /**
  * Verificación de la semántica de permisos NATIVOS v2 contra el motor real del
- * host OpenCode 2.0.21 (Spec T04:56: `deny` de secretos incluso con autoaccept,
+ * host OpenCode v2 (major 2) (Spec T04:56: `deny` de secretos incluso con autoaccept,
  * `*.env.example` re-permitido después de los denies, y `edit` denegado por rol).
  *
- * Recipe probada empíricamente contra `opencode v2.0.20`; versión reobservada en
- * la copia privada actual: `opencode v2.0.21` (copia privada del ejecutable,
- * sha256 origen vs copia, ejecutada por separado):
+ * Recipe probada empíricamente contra `opencode v2.0.20` y reobservada contra la
+ * última versión instalada major 2 (copia privada del ejecutable, sha256 origen
+ * vs copia, ejecutada por separado):
  *   1. `opencode run --standalone --format json` arranca el motor con un
  *      provider LOCAL en proceso (`@opencode/ai/providers/openai-compatible`
  *      apuntando a un stub HTTP efímero). No hay cuenta, credencial, modelo
@@ -33,15 +34,12 @@ import { stackRoot } from "../src/lib/paths.js";
  * pendientes, no un evaluador). Por eso este seam usa un provider stub offline
  * (sin modelo/credenciales reales) en vez de afirmar un seam de modelo libre.
  *
- * Skip por defecto: exige `JORGEX_OPENCODE_V2_BIN` (ruta del binario 2.0.21).
+ * Skip por defecto: exige `JORGEX_OPENCODE_V2_BIN` (ruta de un binario major 2).
  * A diferencia del contrato 1.18.30, este fichero NO reutiliza su runner: v2 usa
  * `providers`/`settings`/`package`, `permissions` array y el input `path`.
  */
 const hostBinary = process.env.JORGEX_OPENCODE_V2_BIN;
 const repoRoot = path.resolve(stackRoot(), "..");
-// Versión observada en la copia privada actual (sha256 origen vs copia); la
-// captura original de la receta fue contra v2.0.20.
-const EXPECTED_VERSION = "opencode v2.0.21";
 const CASE_TIMEOUT_MS = 90_000;
 
 type Outcome = "allow" | "deny" | "ask" | "unavailable" | "unknown";
@@ -56,7 +54,7 @@ interface Stub {
   close: () => Promise<void>;
 }
 
-describe.skipIf(hostBinary === undefined)("OpenCode v2.0.21: el motor real aplica deny/allow nativos", () => {
+describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real aplica deny/allow nativos", () => {
   let runRoot = "";
   let copy = "";
   let observedVersion = "";
@@ -251,7 +249,9 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2.0.21: el motor real aplic
       const { code, stdout, stderr } = await runHost(root, ["--version"]);
       expect(code, sanitized(stderr)).toBe(0);
       observedVersion = stdout.trim();
-      expect(observedVersion, `versión observada: ${observedVersion}`).toBe(EXPECTED_VERSION);
+      const parsedVersion = parseOpenCodeHostVersion(observedVersion);
+      expect(parsedVersion, `versión observada semver parseable: ${observedVersion}`).toBeDefined();
+      expect(parsedVersion!.major, `major 2 en ${observedVersion}`).toBe(2);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
