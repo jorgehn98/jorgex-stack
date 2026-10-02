@@ -349,6 +349,13 @@ function createSupervisorManagerFixture(input: {
   readonly unitPath: string;
   readonly port: number;
   /**
+   * pid declared by the served `/version`, independent of the manager
+   * `MainPID`. Defaults to this process so the positive readiness contract
+   * (`HTTP pid === readback MainPID`) is grounded in a real process; a distinct
+   * value models an external responder that is NOT the unit the manager started.
+   */
+  readonly versionPid?: number;
+  /**
    * External write that lands WHILE the `start` verb runs, after the real
    * external start and before the caller's final reconcile. It represents a
    * concurrent user/manual config write, never a forged manager/controller
@@ -387,7 +394,7 @@ function createSupervisorManagerFixture(input: {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end(
           JSON.stringify({
-            pid: process.pid,
+            pid: input.versionPid ?? process.pid,
             version: BC_VERSION,
             buildId: BC_BUILD_ID,
             managed: false,
@@ -506,7 +513,7 @@ interface RunServiceInput {
   readonly browserControlService?: boolean;
   readonly foreignUnitBytes?: Buffer;
   /** When present, installs the supervisor-protocol fake on the owned port. */
-  readonly supervisor?: { readonly port: number };
+  readonly supervisor?: { readonly port: number; readonly versionPid?: number };
   /**
    * When true, an EXTERNAL writer (the user) sets the manual native MCP
    * `environment` to the exact canonical values while the manager `start` verb
@@ -614,6 +621,7 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
       : createSupervisorManagerFixture({
           unitPath,
           port: supervisorSpec.port,
+          ...(supervisorSpec.versionPid === undefined ? {} : { versionPid: supervisorSpec.versionPid }),
           ...(input.manualEnvironmentAtStart === true
             ? { onStart: () => writeManualBrowserControlEnvironment(configDir, supervisorSpec.port) }
             : {}),
@@ -889,6 +897,98 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
         BROWSER_CONTROL_AUTOSTART: "false",
         BROWSER_CONTROL_PORT: String(port),
       });
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * Negative readiness (Spec T12/T13): the manager reports the owned unit
+   * active/running with `MainPID` = this process, but the served `/version`
+   * declares a DIFFERENT pid. The pid equality is the identity proof that the
+   * HTTP responder is the process the manager started; a mismatch means the
+   * endpoint is not attributable to the unit, so the service must stay pending.
+   * Stack must not claim the granular autostart authority, must not project the
+   * canonical `BROWSER_CONTROL_AUTOSTART=false` + literal port on the managed
+   * MCP, must not print the managed-autostart success marker, and must not roll
+   * back the service it just started (no stop/disable/restart). The unit, its
+   * owned claim and its binding must survive.
+   */
+  it("keeps the service pending without claiming autostart when the /version pid is not the unit MainPID", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-pid-mismatch-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const port = await reserveOwnedLoopbackPort();
+    try {
+      const observables = await runServiceInstall({
+        prefix: ".jorgex-browser-control-service-pid-mismatch-",
+        registerOwnedRoot: (root) => ownedRoots.push(root),
+        base: verificationBase(),
+        browserControlService: true,
+        // The served /version reports a pid that is NOT the manager MainPID
+        // (process.pid) on the same owned loopback port: a genuine external
+        // responder, never a forged manager reply.
+        supervisor: { port, versionPid: process.pid + 1 },
+      });
+
+      // Scenario integrity: the mismatch is observed during readiness, after
+      // the service was created, enabled, started and its /version probed.
+      expect(observables.unitBytes, "the owned unit must exist before readiness fails").not.toBeNull();
+      const verbs = observables.systemctlCalls.map((argv) => serviceVerb(argv));
+      expect(verbs, "the readiness comparison requires the started unit").toContain("start");
+      expect(
+        observables.versionRequests.length,
+        "the supervisor must probe the owned /version endpoint",
+      ).toBeGreaterThanOrEqual(1);
+
+      // 1) Honest pending: an actionable diagnostic naming the preserved unit,
+      //    never the managed-autostart success marker.
+      const diagnostics = [
+        ...prompts.log.warn.mock.calls.map((call) => String(call[0] ?? "")),
+        ...prompts.log.error.mock.calls.map((call) => String(call[0] ?? "")),
+      ];
+      expect(
+        diagnostics.some(
+          (message) => message.includes(SERVICE_UNIT_FILENAME) && /pendiente|operativo/i.test(message),
+        ),
+        `the pid mismatch must be reported as a pending service (got ${JSON.stringify(diagnostics)})`,
+      ).toBe(true);
+      const successMessages = prompts.log.success.mock.calls.map((call) => String(call[0] ?? ""));
+      expect(
+        successMessages.some((message) => /autostart/i.test(message)),
+        `the managed-autostart success marker must not be emitted for a pid mismatch (got ${JSON.stringify(successMessages)})`,
+      ).toBe(false);
+
+      // 2) No granular authority is stamped and no canonical managed
+      //    environment is projected: the `false`/port pair belongs only to a
+      //    VERIFIED service.
+      expect(
+        observables.manifestAutostart,
+        "a pid mismatch must not stamp the granular autostart authority",
+      ).toBeUndefined();
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART,
+        "an unverified service must not project the managed autostart environment",
+      ).toBeUndefined();
+      expect(observables.mcpEnvironment?.BROWSER_CONTROL_PORT).toBeUndefined();
+
+      // 3) The failed readiness must not mutate the manager beyond the intended
+      //    initial activation: no rollback, stop, disable or relaunch.
+      const flattened = observables.systemctlCalls.flat();
+      for (const forbidden of ["stop", "restart", "disable", "reload"]) {
+        expect(flattened, `the pid mismatch must not issue ${forbidden}`).not.toContain(forbidden);
+      }
+
+      // 4) The owned artifact, its claim and its binding survive the pending
+      //    readiness.
+      expect(observables.unitBytes, "the owned unit file must survive").not.toBeNull();
+      expect(
+        observables.manifestOwned.map((file) => path.resolve(file)),
+        "the created unit must remain claimed",
+      ).toContain(path.resolve(observables.unitPath));
+      expect(observables.manifestServiceUnit, "the serviceUnit binding must remain").toBeDefined();
     } finally {
       cleanupOwnedResourcesOrThrow();
       releaseRoots();
