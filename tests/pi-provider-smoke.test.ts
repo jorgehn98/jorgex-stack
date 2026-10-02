@@ -42,12 +42,20 @@ it("retains the original smoke failure when Windows-style cleanup fails", async 
   expect((error as Error).cause).toBe(original);
 });
 
-it("cleans successful probes with bounded transient-lock retries", async () => {
+it("writes isolated legacy settings and cleans successful probes with bounded retries", async () => {
   const input = fixture();
-  vi.mocked(smokeStagedPiRuntime).mockResolvedValue({ commands: ["mcp"] });
+  let observedSettings: unknown = undefined;
+  vi.mocked(smokeStagedPiRuntime).mockImplementation(async ({ stageDir }) => {
+    observedSettings = JSON.parse(fs.readFileSync(path.join(stageDir, "settings.json"), "utf8"));
+    return { commands: ["mcp"] };
+  });
   const remove = vi.spyOn(fs, "rmSync");
   await expect(smokePiProviderRuntime(input)).resolves.toEqual({ commands: ["mcp"] });
   expect(remove).toHaveBeenCalledWith(expect.stringContaining("stage-providers-smoke-"), {
     recursive: true, force: true, maxRetries: 10, retryDelay: 100,
+  });
+  expect(observedSettings).toEqual({
+    packages: ["npm:jorgex-pi@3.2.0", "npm:gentle-engram@3.2.0", "npm:pi-mcp-adapter@3.2.0"],
+    extensions: ["-builtin:mcp"],
   });
 });
