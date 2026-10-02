@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
 
 /**
@@ -47,6 +48,36 @@ vi.mock("@clack/prompts", () => ({
   outro: mocks.outro,
   log: mocks.log,
 }));
+
+/**
+ * Frontera Browser Control (Spec T13): esta suite prueba el contrato público del
+ * install real de OpenCode v2 (proyección Stack, manifest, prerrequisito Engram
+ * v2), no el publicador de Browser Control. El coordinador real adquiriría el
+ * paquete publicado y sondearía el relay; aquí se sustituye SOLO esa frontera
+ * por un `ready` sintético, conservando reales install/adapter/backups/manifest/
+ * Engram. El doble NO certifica bytes oficiales. Sin él, el exit 1 lo produciría
+ * un Browser Control pendiente y enmascararía el prerrequisito externo real.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
+});
 
 const tempRoots: string[] = [];
 

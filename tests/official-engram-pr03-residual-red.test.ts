@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { OPEN_CODE_TEST_MODELS } from "./fixtures/model-map.js";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 
 const mocks = vi.hoisted(() => ({
   modelMapOverride: undefined as undefined | Record<string, unknown>,
@@ -43,6 +44,35 @@ vi.mock("../src/lib/detect.js", async () => {
     detectEngram: mocks.detectEngram,
     runDetectedBin: mocks.runDetectedBin,
   };
+});
+
+/**
+ * Frontera Browser Control (Spec T13): esta suite prueba la conservación de
+ * huérfanos y la recuperación del setup oficial, no el publicador de Browser
+ * Control. El coordinador real adquiriría el paquete publicado y sondearía el
+ * relay; aquí se sustituye SOLO esa frontera por un `ready` sintético,
+ * conservando reales install/uninstall/adapter/backups/manifest/Engram. El doble
+ * NO certifica bytes oficiales ni altera el exit esperado por fallo de setup.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
 });
 
 const tempRoots: string[] = [];

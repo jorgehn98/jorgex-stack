@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
 
 /** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
@@ -134,6 +135,35 @@ vi.mock("../src/lib/tool-preferences.js", async (importOriginal) => {
       return actual.saveDevtoolsMcpOwnership(...args);
     },
   };
+});
+
+/**
+ * Frontera Browser Control (Spec T13): esta suite prueba seguridad de
+ * preferencias (sandbox de HOME, backup, no reimposición), no el publicador de
+ * Browser Control. El coordinador real adquiriría el paquete publicado y
+ * sondearía el relay; aquí se sustituye SOLO esa frontera por un `ready`
+ * sintético, conservando reales install/uninstall/adapter/backups/manifest/
+ * preferencias/Engram. El doble NO certifica bytes oficiales.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
 });
 
 function isStrictChild(child: string, root: string): boolean {
