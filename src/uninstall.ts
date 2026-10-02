@@ -13,6 +13,7 @@ import {
 } from "./lib/browser-control-runtime.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import {
+  isBrowserControlAutostartStamp,
   readManifest,
   removeRuntimeManifest,
   writeRuntimeManifest,
@@ -32,6 +33,7 @@ import {
   removeOwnedServiceUnitFile,
   resolveBrowserControlServiceConfigBase,
   resolveBrowserControlServiceUnitPath,
+  restoreOwnedServiceUnitFile,
   stopOwnedServiceUnit,
   type BrowserControlSystemctlRunner,
 } from "./lib/browser-control-service.js";
@@ -182,9 +184,9 @@ async function retireOwnedBrowserControlService(input: {
   const progress = row?.browserControlServiceRetirement;
   const unitPath = path.resolve(input.unitPath);
 
-  // Autenticación común: perfil, target fijo, forma del progreso, binding
-  // retenido/guard y estampa contra el active verificado. Un flag de fase por sí
-  // solo nunca acredita propiedad.
+  // Autenticación común: perfil, target fijo, forma del progreso y binding
+  // retenido/guard. La estampa ENV es OPCIONAL: la autoridad de la unidad es el
+  // binding/owned autenticado, nunca un FALSE manual fabricado.
   const derived = resolveBrowserControlServiceUnitPath();
   if (derived === null || path.resolve(derived) !== unitPath) {
     return pending("la unidad no está en la ruta fija derivada del XDG config/HOME efectivo");
@@ -197,16 +199,25 @@ async function retireOwnedBrowserControlService(input: {
   if (progress !== undefined && (progress.schemaVersion !== 1 || !isRetirementPhase(progress.phase))) {
     return pending("el progreso de retirada del manifest es incoherente");
   }
-  if (stamp === undefined || stamp.schemaVersion !== 1) {
-    return pending("falta la estampa de autostart que autoriza la retirada");
+
+  // Estampa granular opcional: forma/schema/digest/`portOwned` estrictos y
+  // autenticación contra el active verificado ANTES de cualquier mutación. Sin
+  // estampa no se retira ningún campo ENV ajeno y la unidad se autentica por su
+  // binding histórico (la invocación actual B puede diferir de la unidad A).
+  let invocation: { readonly command: string; readonly args: readonly string[] } | undefined;
+  if (stamp !== undefined) {
+    if (!isBrowserControlAutostartStamp(stamp)) {
+      return pending("la estampa browserControlAutostart del manifest es incoherente (forma/schema/digest/portOwned); se conserva sin mutar");
+    }
+    invocation = input.invocation;
+    if (invocation === undefined) {
+      return pending("no hay una invocación MCP gestionada verificada para autenticar la estampa");
+    }
+    if (stamp.projectionSha256 !== browserControlAutostartProjectionSha256(invocation, binding.port)) {
+      return pending("la estampa de autostart no autentica contra el active verificado");
+    }
   }
-  const invocation = input.invocation;
-  if (invocation === undefined) {
-    return pending("no hay una invocación MCP gestionada verificada para autenticar la retirada");
-  }
-  if (stamp.projectionSha256 !== browserControlAutostartProjectionSha256(invocation, binding.port)) {
-    return pending("la estampa de autostart no autentica contra el active verificado");
-  }
+
   // Con la unidad ya ausente (unit-removed/manager-reloaded) la fase se apoya en
   // el binding retenido/guard autenticados, no solo en el flag; en
   // environment-retired los bytes reales se autentican en su rama.
@@ -215,15 +226,15 @@ async function retireOwnedBrowserControlService(input: {
     if (bindingAuth !== null) return pending(bindingAuth);
   }
 
-  // Persiste la fase tras el readback. El binding/estampa históricos se
-  // conservan como evidencia de recuperación hasta cerrar la limpieza.
+  // Persiste la fase tras el readback conservando el row COMPLETO (inventario,
+  // pendingOrphans, binding y estampa históricos): un checkpoint nunca trunca la
+  // autoridad que el reintento aún necesita.
   const persistPhase = (phase: BrowserControlServiceRetirementPhase): string | null => {
     try {
       writeRuntimeManifest("opencode", {
+        ...(row ?? { configDir: input.configDir, owned: [unitPath], updatedAt: new Date().toISOString() }),
         configDir: input.configDir,
-        owned: [unitPath],
-        serviceUnit: binding,
-        browserControlAutostart: stamp,
+        owned: row?.owned ?? [unitPath],
         browserControlServiceRetirement: { schemaVersion: 1, phase },
         updatedAt: new Date().toISOString(),
       });
@@ -233,7 +244,9 @@ async function retireOwnedBrowserControlService(input: {
     }
   };
 
+  // Sin estampa no hay claim ENV que verificar: la fase ENV es un no-op.
   const environmentRetired = (): { readonly kind: "retired" } | { readonly kind: "pending"; readonly reason: string } => {
+    if (stamp === undefined || invocation === undefined) return { kind: "retired" };
     const inspection = inspectBrowserControlEnvironmentRetirement({
       configDir: input.configDir,
       invocation,
@@ -258,6 +271,9 @@ async function retireOwnedBrowserControlService(input: {
     return { kind: "retired" };
   }
 
+  // Prefijo específico de fase: autenticación de recursos, retirada de ENV y
+  // stop/disable. Tras él, TODAS las ramas convergen en una única continuación
+  // `remove → persist(unit-removed) → reload → persist(manager-reloaded)`.
   if (phase === "unit-removed") {
     // Archivo ya retirado: solo queda el reload final. No se repite stop/disable
     // ni se reincorporan bytes de unidad/ENV.
@@ -267,14 +283,7 @@ async function retireOwnedBrowserControlService(input: {
     if (env.kind !== "retired") return pending(env.reason);
     const state = await inspectStoppedOwnedServiceUnit(input.runner, unitPath, binding.port);
     if (state.kind === "pending") return pending(state.reason);
-    const reloaded = await reloadOwnedServiceUnitManager(input.runner);
-    if (reloaded.kind === "pending") return pending(reloaded.reason ?? "daemon-reload incierto");
-    const persisted = persistPhase("manager-reloaded");
-    if (persisted !== null) return pending(persisted);
-    return { kind: "retired" };
-  }
-
-  if (phase === "environment-retired") {
+  } else if (phase === "environment-retired") {
     // ENV ya retirado: la unidad debe seguir presente y canónica, el manager
     // inactivo con el relay ausente; no se repite stop.
     const env = environmentRetired();
@@ -288,66 +297,84 @@ async function retireOwnedBrowserControlService(input: {
     if (state.kind !== "inactive") {
       return pending(state.kind === "pending" ? state.reason : "la unidad no está inactiva tras 'environment-retired'");
     }
-    const removed = removeOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
-    if (removed.kind === "pending") return pending(removed.reason ?? "retirada del archivo incierta");
-    const persisted = persistPhase("unit-removed");
-    if (persisted !== null) return pending(persisted);
-    const reloaded = await reloadOwnedServiceUnitManager(input.runner);
-    if (reloaded.kind === "pending") return pending(reloaded.reason ?? "daemon-reload incierto");
-    const persistedReload = persistPhase("manager-reloaded");
-    if (persistedReload !== null) return pending(persistedReload);
-    return { kind: "retired" };
-  }
-
-  // Sin fase acreditada: flujo completo. Una unidad ausente sin progreso sigue
-  // siendo drift y falla cerrado.
-  const state = await inspectOwnedServiceUnitRetirement({
-    stateDir: input.stateDir,
-    configDir: input.configDir,
-    unitPath,
-    binding,
-    runner: input.runner,
-  });
-  if (state.kind === "pending") return pending(state.reason);
-
-  const envPlan = retireBrowserControlEnvironment({
-    configDir: input.configDir,
-    invocation,
-    port: binding.port,
-    portOwned: stamp.portOwned,
-  });
-  if (envPlan.kind === "blocked") return pending(envPlan.reason);
-
-  if (state.kind === "operational") {
-    const stopped = await stopOwnedServiceUnit({ runner: input.runner, unitPath, port: binding.port });
-    if (stopped.kind === "pending") return pending(stopped.reason ?? "stop incierto");
-  }
-  const disabled = await disableOwnedServiceUnit(input.runner);
-  if (disabled.kind === "pending") return pending(disabled.reason ?? "disable incierto");
-
-  if (envPlan.kind === "retired") {
-    try {
-      createBackup([envPlan.file], "uninstall-browser-control-service");
-      writeText(envPlan.file, envPlan.content);
-    } catch (error) {
-      return pending(`no se pudo retirar el entorno gestionado (${error instanceof Error ? error.message : String(error)})`);
-    }
-    const readback = retireBrowserControlEnvironment({
+  } else {
+    // Sin fase acreditada: flujo completo. Una unidad ausente sin progreso sigue
+    // siendo drift y falla cerrado.
+    const state = await inspectOwnedServiceUnitRetirement({
+      stateDir: input.stateDir,
       configDir: input.configDir,
-      invocation,
-      port: binding.port,
-      portOwned: stamp.portOwned,
+      unitPath,
+      binding,
+      runner: input.runner,
     });
-    if (readback.kind !== "unchanged") return pending("el readback de la retirada del entorno no quedó estable");
-  }
-  const persistedEnv = persistPhase("environment-retired");
-  if (persistedEnv !== null) return pending(persistedEnv);
+    if (state.kind === "pending") return pending(state.reason);
 
+    // Preflight de SOLO LECTURA antes de cualquier efecto: un entorno no
+    // retirable bloquea sin parar/deshabilitar. El snapshot no se reutiliza tras
+    // la espera del manager (se recomputa abajo).
+    const envPreflight = stamp !== undefined && invocation !== undefined
+      ? retireBrowserControlEnvironment({
+        configDir: input.configDir,
+        invocation,
+        port: binding.port,
+        portOwned: stamp.portOwned,
+      })
+      : null;
+    if (envPreflight !== null && envPreflight.kind === "blocked") return pending(envPreflight.reason);
+
+    if (state.kind === "operational") {
+      const stopped = await stopOwnedServiceUnit({ runner: input.runner, unitPath, port: binding.port });
+      if (stopped.kind === "pending") return pending(stopped.reason ?? "stop incierto");
+    }
+    const disabled = await disableOwnedServiceUnit(input.runner);
+    if (disabled.kind === "pending") return pending(disabled.reason ?? "disable incierto");
+
+    if (stamp !== undefined && invocation !== undefined) {
+      // Recomputar tras la espera del manager: nunca se escribe el snapshot
+      // capturado antes de `stop`. Se releen los bytes y se retiran solo los
+      // campos propios, preservando ediciones ajenas compatibles; un drift
+      // incompatible bloquea.
+      const envPlan = retireBrowserControlEnvironment({
+        configDir: input.configDir,
+        invocation,
+        port: binding.port,
+        portOwned: stamp.portOwned,
+      });
+      if (envPlan.kind === "blocked") return pending(envPlan.reason);
+      if (envPlan.kind === "retired") {
+        try {
+          createBackup([envPlan.file], "uninstall-browser-control-service");
+          writeText(envPlan.file, envPlan.content);
+        } catch (error) {
+          return pending(`no se pudo retirar el entorno gestionado (${error instanceof Error ? error.message : String(error)})`);
+        }
+        const readback = retireBrowserControlEnvironment({
+          configDir: input.configDir,
+          invocation,
+          port: binding.port,
+          portOwned: stamp.portOwned,
+        });
+        if (readback.kind !== "unchanged") return pending("el readback de la retirada del entorno no quedó estable");
+      }
+    }
+    const persistedEnv = persistPhase("environment-retired");
+    if (persistedEnv !== null) return pending(persistedEnv);
+  }
+
+  // Continuación común única.
   const removed = removeOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
   if (removed.kind === "pending") return pending(removed.reason ?? "retirada del archivo incierta");
   const persistedUnit = persistPhase("unit-removed");
-  if (persistedUnit !== null) return pending(persistedUnit);
-
+  if (persistedUnit !== null) {
+    // El unlink se completó pero su checkpoint no: se restauran los bytes propios
+    // autenticados (sin clobber) para reentrar legítimamente desde
+    // 'environment-retired'. Un reemplazo ajeno se conserva.
+    const restored = restoreOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
+    if (restored.kind === "restored") {
+      return pending(`${persistedUnit}; se restauraron los bytes propios autenticados de la unidad y se reentra desde 'environment-retired'`);
+    }
+    return pending(`${persistedUnit}; la restauración de los bytes propios de la unidad falló (${restored.reason}). No se finge que la unidad esté presente: revisa el estado antes de reintentar`);
+  }
   const reloaded = await reloadOwnedServiceUnitManager(input.runner);
   if (reloaded.kind === "pending") return pending(reloaded.reason ?? "daemon-reload incierto");
   const persistedReload = persistPhase("manager-reloaded");
@@ -597,6 +624,19 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       }
     }
 
+    // Una retirada de servicio pendiente INTERRUMPE la limpieza ordinaria de
+    // OpenCode: se preserva el row COMPLETO (inventario, binding, estampa, fase)
+    // y también el MCP/skill/recursos estáticos y la config de usuario, para que
+    // el reintento pueda retirar cada recurso canónico. Nunca se libera el claim
+    // MCP ni se trunca `owned` a la unidad.
+    if (!opts.dryRun && usingRealConfig && id === "opencode" && ownedServiceUnit && serviceUnitPath !== null && !serviceRetired) {
+      p.log.warn(
+        `${adapter.name}: retirada de servicio Browser Control pendiente: ${serviceUnitPath} se conserva con su claim, binding y fase (${servicePendingReason ?? "estado incierto"}). No se continúa la limpieza ordinaria ni se libera el inventario/MCP; corrige el estado indicado y reintenta el uninstall.`,
+      );
+      exitCode = 1;
+      continue;
+    }
+
     let unmerge: FileAction[];
     try {
       unmerge = adapter.planUnmerge(scopedMcp, hooks, ctx);
@@ -677,47 +717,13 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       }
     }
     if (usingRealConfig) {
-      if (ownedServiceUnit && serviceUnitPath !== null) {
-        if (serviceRetired) {
-          // Retirada completa: el archivo de unidad ya se eliminó con
-          // backup/readback y el entorno canónico se retiró. El row completo se
-          // libera; el paquete retenido, el candidato, los datos del navegador y
-          // la configuración de usuario de Engram permanecen.
-          removeRuntimeManifest(id);
-        } else {
-          // Preservar la autoridad y el progreso del mismo row: la unidad owned,
-          // su binding y la fase de retirada sobreviven al uninstall hasta
-          // completar la limpieza. Un estado incierto/drift conserva recursos
-          // para recovery y no pierde la fase ya acreditada.
-          const row = readManifest().runtimes[id];
-          writeRuntimeManifest(id, {
-            configDir,
-            owned: [path.resolve(serviceUnitPath)],
-            ...(row?.serviceUnit === undefined ? {} : { serviceUnit: row.serviceUnit }),
-            ...(row?.browserControlAutostart === undefined ? {} : { browserControlAutostart: row.browserControlAutostart }),
-            ...(row?.browserControlServiceRetirement === undefined
-              ? {}
-              : { browserControlServiceRetirement: row.browserControlServiceRetirement }),
-            updatedAt: new Date().toISOString(),
-          });
-          // Diagnóstico del estado real: con el archivo ya retirado no se declara
-          // "se conserva la unidad" (sería falso); se informa la retirada parcial.
-          const unitStillPresent = fs.existsSync(serviceUnitPath);
-          p.log.warn(
-            unitStillPresent
-              ? `${adapter.name}: retirada pendiente: la unidad de servicio Browser Control ${serviceUnitPath} se conserva (claim/binding intactos) porque no se pudo acreditar el lifecycle verificado (${servicePendingReason ?? "estado incierto"}). No se fuerza la muerte del proceso ni se descarta la autoridad; corrige el estado indicado y reintenta el uninstall.`
-              : `${adapter.name}: retirada parcial pendiente: el archivo de la unidad de servicio Browser Control ${serviceUnitPath} ya fue retirado con backup, pero la retirada no se pudo cerrar (${servicePendingReason ?? "estado incierto"}). Se conservan el claim, el binding y la fase de recuperación; corrige el estado indicado y reintenta el uninstall para completar el cierre.`,
-          );
-          // La retirada no está completa: el código de salida no puede anunciar
-          // el éxito global del uninstall (outro existente) ni reclamar el stack
-          // retirado por runtime.
-          exitCode = 1;
-        }
-      } else {
-        removeRuntimeManifest(id);
-      }
+      // Solo se llega aquí sin retirada pendiente: no hay unidad owned o la
+      // unidad ya se retiró con backup/readback. El row completo se libera; el
+      // paquete retenido, el candidato, los datos del navegador y la
+      // configuración de usuario de Engram permanecen.
+      removeRuntimeManifest(id);
     }
-    if (!ownedServiceUnit || serviceRetired) p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
+    p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 
   // --target-dir no modifica la preferencia real; un global ajeno nunca es propio.

@@ -1023,6 +1023,31 @@ export async function superviseBrowserControlServiceUnit(
     return { kind: "pending", reason: `la unidad no quedó cargada e inactiva tras recargar definiciones: ${inactiveError}` };
   }
 
+  // Revalidación tras la espera del manager: la unidad debe seguir siendo
+  // exactamente los bytes propios autenticados del binding antes de
+  // enable/start. Una sustitución externa durante `daemon-reload` falla cerrado
+  // sin habilitar ni arrancar un servicio no autenticado.
+  const ancestorError = inspectAncestors(unitPath);
+  if (ancestorError !== null) {
+    return { kind: "pending", reason: `${ancestorError} No se habilita ni arranca.` };
+  }
+  const unitFile = inspectOwnedServiceUnitFile(unitPath);
+  if (unitFile.kind !== "regular") {
+    return {
+      kind: "pending",
+      reason: unitFile.kind === "unsafe"
+        ? `${unitFile.reason}; no se habilita ni arranca.`
+        : "la unidad propia no está presente tras recargar definiciones; no se habilita ni arranca.",
+    };
+  }
+  const unitAuthError = authenticateOwnedServiceUnitBytes(input.stateDir, input.binding, unitFile.bytes);
+  if (unitAuthError !== null) {
+    return {
+      kind: "pending",
+      reason: `la unidad cambió tras recargar definiciones (${unitAuthError}); no se habilita ni arranca.`,
+    };
+  }
+
   const relay = await readBrowserControlRelayVersion(port);
   if (relay.status !== "absent") {
     return {
@@ -1321,6 +1346,74 @@ export function removeOwnedServiceUnitFile(input: {
   }
   if (fs.existsSync(unitPath)) return { kind: "pending", reason: "la unidad sigue presente tras la retirada" };
   return { kind: "removed" };
+}
+
+/**
+ * Restaura los bytes propios autenticados de la unidad tras un unlink cuyo
+ * checkpoint `unit-removed` no pudo persistirse, sin clobber: revalida
+ * ancestros, escribe con `wx` (un archivo reaparecido se conserva) y hace
+ * readback de bytes. Si la restauración falla, se preserva lo observado y se
+ * devuelve el motivo; nunca se finge que la unidad está presente. No promete
+ * atomicidad portable entre la comprobación y la syscall.
+ */
+export function restoreOwnedServiceUnitFile(input: {
+  readonly stateDir: string;
+  readonly unitPath: string;
+  readonly binding: ManagedBrowserControlServiceBinding;
+}): { readonly kind: "restored" } | { readonly kind: "pending"; readonly reason: string } {
+  const unitPath = path.resolve(input.unitPath);
+  const rendered = renderAuthenticatedOwnedServiceUnit(input.stateDir, input.binding);
+  if (!rendered.ok) return { kind: "pending", reason: rendered.reason };
+  const ancestorError = inspectAncestors(unitPath);
+  if (ancestorError !== null) return { kind: "pending", reason: ancestorError };
+  const existing = inspectExistingUnit(unitPath);
+  if (existing.kind !== "absent") {
+    return {
+      kind: "pending",
+      reason: "la ruta de la unidad ya no está libre; se conserva el archivo presente sin sobrescribir",
+    };
+  }
+  let fd: number;
+  try {
+    fd = fs.openSync(unitPath, "wx", 0o644);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return {
+        kind: "pending",
+        reason: "apareció un archivo en la ruta durante la restauración; se conserva sin sobrescribir",
+      };
+    }
+    return {
+      kind: "pending",
+      reason: `no se pudo restaurar la unidad propia (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  try {
+    fs.writeFileSync(fd, rendered.bytes);
+  } catch (error) {
+    // Un archivo propio parcial es preferible a perder datos: se conserva.
+    try { fs.closeSync(fd); } catch { /* descriptor ambiguo */ }
+    return {
+      kind: "pending",
+      reason: `no se pudieron escribir los bytes restaurados de la unidad (${error instanceof Error ? error.message : String(error)}); se conserva el archivo parcial`,
+    };
+  }
+  try {
+    fs.closeSync(fd);
+  } catch (error) {
+    return {
+      kind: "pending",
+      reason: `no se pudo cerrar el descriptor de la unidad restaurada (${error instanceof Error ? error.message : String(error)}); se conserva sin reclamar`,
+    };
+  }
+  const readback = inspectExistingUnit(unitPath);
+  if (readback.kind !== "regular" || !readback.bytes.equals(rendered.bytes)) {
+    return {
+      kind: "pending",
+      reason: "el readback de la unidad restaurada no coincide con los bytes propios autenticados; se conserva sin fingir que está presente",
+    };
+  }
+  return { kind: "restored" };
 }
 
 /** Proyección canónica de entorno del servicio verificado: solo los dos campos propios. */

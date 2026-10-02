@@ -29,7 +29,14 @@ import {
 } from "./lib/official-engram-setup.js";
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, materializeCanonicalDevtoolsServerForRemoval, type CanonicalMcp } from "./lib/canonical.js";
-import { findOrphans, readManifest, readManifestStrict, writeRuntimeManifest, type RuntimeManifest } from "./lib/manifest.js";
+import {
+  findOrphans,
+  isBrowserControlAutostartStamp,
+  readManifest,
+  readManifestStrict,
+  writeRuntimeManifest,
+  type RuntimeManifest,
+} from "./lib/manifest.js";
 import {
   authenticateStaticResource,
   projectedBytesByTarget,
@@ -663,11 +670,40 @@ function assertManagedBrowserControlServiceBinding(
 }
 
 /**
+ * Valida la estampa granular de autostart cuando existe: forma exacta, schema 1,
+ * digest válido y `portOwned` booleano estricto (nunca truthiness) más
+ * co-presencia con el binding y la unidad owned fija. No concede ownership: un
+ * estado malformado bloquea conservando recursos antes de reutilizar la
+ * autoridad.
+ */
+function assertManagedBrowserControlAutostartStamp(
+  value: unknown,
+  entry: Record<string, unknown>,
+  ownedPaths: readonly string[],
+  inRoots: (file: string) => boolean,
+  unitTarget: string | null,
+): void {
+  if (value === undefined) return;
+  const fail = (detail: string): never => {
+    throw new Error(
+      `OpenCode: la estampa 'browserControlAutostart' del manifest es incoherente (${detail}); se conserva el manifest y no se toca la unidad ni ningún archivo. Revisa o restaura el manifest antes de reintentar install/sync.`,
+    );
+  };
+  if (!isBrowserControlAutostartStamp(value)) fail("forma/schema/digest/portOwned inválidos");
+  if (entry.serviceUnit === undefined) fail("falta la evidencia serviceUnit correspondiente");
+  if (unitTarget === null || !ownedPaths.some((file) => path.resolve(file) === unitTarget) || !inRoots(unitTarget)) {
+    fail("falta la unidad owned fija correspondiente");
+  }
+}
+
+/**
  * Valida el progreso de retirada de servicio Browser Control cuando existe:
  * forma estricta (`schemaVersion`/`phase` exactos, fase conocida) y co-presencia
- * con el binding, la estampa de autostart, el perfil y la unidad owned fija. Una
- * row legacy sin fase queda intacta; un progreso huérfano o malformado bloquea
- * antes de reutilizar cualquier autoridad.
+ * con el binding y la unidad owned fija. La estampa ENV es opcional: una
+ * retirada unit-only legítima (A→B ya retiró la estampa, o nunca hubo claim ENV)
+ * no la exige; cuando existe se valida por separado. Una row legacy sin fase
+ * queda intacta; un progreso huérfano o malformado bloquea antes de reutilizar
+ * cualquier autoridad.
  */
 function assertManagedBrowserControlServiceRetirement(
   value: unknown,
@@ -695,7 +731,6 @@ function assertManagedBrowserControlServiceRetirement(
     fail("phase desconocida");
   }
   if (entry.serviceUnit === undefined) fail("falta la evidencia serviceUnit correspondiente");
-  if (entry.browserControlAutostart === undefined) fail("falta la estampa browserControlAutostart correspondiente");
   if (unitTarget === null || !ownedPaths.some((file) => path.resolve(file) === unitTarget) || !inRoots(unitTarget)) {
     fail("falta la unidad owned fija correspondiente");
   }
@@ -774,6 +809,13 @@ export function assertOpenCodeManifestCoherence(configDir: string): void {
   }
 
   assertManagedBrowserControlServiceBinding(entry.serviceUnit, owned as string[], inRoots, serviceUnitTarget);
+  assertManagedBrowserControlAutostartStamp(
+    entry.browserControlAutostart,
+    entry,
+    owned as string[],
+    inRoots,
+    serviceUnitTarget,
+  );
   assertManagedBrowserControlServiceRetirement(
     entry.browserControlServiceRetirement,
     entry,
@@ -948,6 +990,18 @@ export function assertOpenCodeV2Preflight(
   const adapter = ADAPTERS.opencode;
   if (adapter === undefined) return;
   assertOpenCodeV2Detection(adapter.detect(), evidence);
+}
+
+/**
+ * Elegibilidad de Playwright por runtime, alineada con el selector de CLI y el
+ * fallback de doctor: OpenCode v2 usa Browser Control y ya no ofrece Playwright
+ * CLI, así que una preferencia legacy `enabled.opencode` nunca debe disparar la
+ * inspección del Playwright gestionado ni el smoke de Chromium. `runtimes` de
+ * install solo contiene destinos de fichero reales (Pi vive fuera del pipeline),
+ * por lo que el handoff de Pi no aplica aquí.
+ */
+function isPlaywrightEligibleRuntime(runtime: RuntimeId): boolean {
+  return runtime !== "opencode";
 }
 
 /**
@@ -1236,10 +1290,18 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     });
   const projectPlaywrightPrompt = opts.dryRun && toolPlan?.persistEnabledOnSuccess === true;
   const hasFileRuntimes = opts.runtimes.length > 0;
+  // Sin runtimes resueltos se asume el conjunto completo (como el fallback de
+  // doctor), pero solo los elegibles cuentan: una preferencia legacy
+  // `enabled.opencode` no dispara la inspección para un destino OpenCode-only.
+  const inspectableRuntimes: readonly RuntimeId[] = opts.runtimes.length > 0
+    ? opts.runtimes
+    : (Object.keys(ADAPTERS) as RuntimeId[]);
   const shouldInspectPlaywright = useManifest
     && !opts.dryRun
     && (toolPlan === null || toolPlan.actions.length === 0)
-    && loadPlaywrightCliPreference() === true;
+    && inspectableRuntimes
+      .filter(isPlaywrightEligibleRuntime)
+      .some((runtime) => loadPlaywrightCliPreference(playwrightCliPreferenceFile(), runtime) === true);
   const playwrightCapability = opts.dryRun || !useManifest
     ? undefined
     : opts.playwrightCapability ?? (shouldInspectPlaywright ? inspectManagedPlaywrightCapability() : undefined);

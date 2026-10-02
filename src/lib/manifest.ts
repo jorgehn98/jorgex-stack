@@ -146,6 +146,27 @@ export function readManifestStrict(file = manifestFile()): ManifestRead {
   return { status: "ok", manifest: { runtimes: runtimes as StackManifest["runtimes"] } };
 }
 
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Validación estricta del borde del manifest para la estampa granular de
+ * autostart: claves exactas, schema 1, digest válido y `portOwned` booleano
+ * estricto (nunca truthiness). La co-presencia con binding/unidad/perfil la
+ * decide el caller. Un estado malformado nunca se adopta ni se repara: bloquea
+ * conservando recursos.
+ */
+export function isBrowserControlAutostartStamp(value: unknown): value is BrowserControlAutostartStamp {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 3 || keys[0] !== "portOwned" || keys[1] !== "projectionSha256" || keys[2] !== "schemaVersion") {
+    return false;
+  }
+  if (value["schemaVersion"] !== 1) return false;
+  if (typeof value["projectionSha256"] !== "string" || !SHA256_HEX.test(value["projectionSha256"])) return false;
+  if (typeof value["portOwned"] !== "boolean") return false;
+  return true;
+}
+
 export function writeRuntimeManifest(id: RuntimeId, entry: RuntimeManifest, file = manifestFile()): void {
   const manifest = readManifest(file);
   manifest.runtimes[id] = entry;

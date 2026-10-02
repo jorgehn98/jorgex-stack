@@ -318,7 +318,7 @@ export function retireBrowserControlEnvironment(
       reason: "el 'environment' del MCP 'browser-control' no declara el FALSE canónico; se conserva sin sobrescribir",
     };
   }
-  if (input.portOwned && hasPort && current[BROWSER_CONTROL_PORT_FIELD] !== String(input.port)) {
+  if (input.portOwned === true && hasPort && current[BROWSER_CONTROL_PORT_FIELD] !== String(input.port)) {
     return {
       kind: "blocked",
       reason: "el 'environment' del MCP 'browser-control' declara un puerto distinto al gestionado; se conserva sin sobrescribir",
@@ -331,7 +331,7 @@ export function retireBrowserControlEnvironment(
     delete next[BROWSER_CONTROL_AUTOSTART_FIELD];
     changed = true;
   }
-  if (input.portOwned && hasPort) {
+  if (input.portOwned === true && hasPort) {
     delete next[BROWSER_CONTROL_PORT_FIELD];
     changed = true;
   }
