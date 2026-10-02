@@ -60,6 +60,10 @@ Do not add a new dependency unless the task explicitly requires it or the projec
 Before adding a new helper, wrapper, abstraction, or dependency, run the ladder again.
 Prefer the narrowest change that solves the real need.
 
+### Diagnostic tooling
+
+Reuse the project's runner, fixtures, helpers and existing diagnostic commands before building a harness. New probes, replay scripts and diagnostic harnesses are temporary by default, with explicit resource ownership and automatic teardown arranged before execution. Keep tooling only for a concrete recurring need: identify its consumer, why the existing harness cannot cover it, and who maintains it in the current task or PR. A successful one-off investigation alone does not justify a permanent command, framework or dependency. Preserve the authoritative regression test and compact reproduction evidence, not the disposable environment.
+
 ### Review / simplification
 
 Use it as a bloat filter: delete, stdlib, native/platform, reuse, or shrink.

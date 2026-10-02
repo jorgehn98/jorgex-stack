@@ -23,6 +23,8 @@ Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give
 
 ### Ways to construct one — try them in roughly this order
 
+Inspect the project's existing runner, fixtures, helpers and diagnostic commands first. Reuse the closest suitable harness; the options below are not an instruction to build a second testing stack. Apply `lean-code`'s diagnostic tooling policy before adding or retaining tooling.
+
 1. **Failing test** at whatever seam reaches the bug — unit, integration, e2e.
 2. **Curl / HTTP script** against a running dev server.
 3. **CLI invocation** with a fixture input, diffing stdout against a known-good snapshot.
@@ -38,7 +40,7 @@ Build the right feedback loop, and the bug is 90% fixed.
 
 ### Tighten the loop
 
-Treat the loop as a product. Once you have _a_ loop, **tighten it**:
+Tighten the loop for this investigation, not into a permanent product:
 
 - Can I make it faster? (Cache setup, skip unrelated init, narrow the test scope.)
 - Can I make the signal sharper? (Assert on the specific symptom, not "didn't crash".)
@@ -134,7 +136,9 @@ Required before declaring done:
 - [ ] Original repro no longer reproduces (re-run the Phase 1 loop)
 - [ ] Regression test passes (or absence of seam is documented)
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
-- [ ] Throwaway prototypes deleted (or moved to a clearly-marked debug location)
+- [ ] Throwaway probes, scripts, harnesses and their owned resources cleaned up; moving them to a debug folder is not cleanup. Retain tooling only when the recurring need, consumer, harness gap and maintenance owner are justified under `lean-code`; preserve the regression test.
 - [ ] The hypothesis that turned out correct is stated in the commit / PR message — so the next debugger learns
+
+Keep compact, redacted, reproducible evidence in the existing task or PR: exact command, relevant environment/version and fixture or seed, observed failure and post-fix result. Distinguish verified observations from hypotheses. Preserve the first failure and any necessary diagnostic artifact when it carries unique evidence; do not retain full dumps or disposable environments by default. Report cleanup that could not safely finish.
 
 **Then ask: what would have prevented this bug?** If the answer involves architectural change (no good test seam, tangled callers, hidden coupling) hand off to the `/improve-codebase-architecture` skill with the specifics. Make the recommendation **after** the fix is in, not before — you have more information now than when you started.
