@@ -11,18 +11,20 @@ const OPENCODE_V2_BIN = opencodeV2Binary();
 afterAll(cleanupOpenCodeBinaries);
 
 const mocks = vi.hoisted(() => {
-  const inspectPlaywrightCapability = vi.fn(() => ({
+  const legacyBrowserCapability = () => ({
     cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
     browserCache: { status: "ready", path: "/isolated/browser" },
     browserVerified: true,
     effective: true,
-  }));
-  const inspectManagedPlaywrightCapability = vi.fn(() => ({
+  });
+  const managedBrowserCapability = () => ({
     cli: { status: "current", binPath: "/isolated/managed-launcher", detectedVersion: "0.1.18" },
     browserCache: { status: "ready", path: "/isolated/browser" },
     browserVerified: true,
     effective: true,
-  }));
+  });
+  const inspectPlaywrightCapability = vi.fn(legacyBrowserCapability);
+  const inspectManagedPlaywrightCapability = vi.fn(managedBrowserCapability);
   const runInstall = vi.fn().mockResolvedValue(0);
   const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
@@ -56,6 +58,8 @@ const mocks = vi.hoisted(() => {
   };
   return {
     prompts,
+    legacyBrowserCapability,
+    managedBrowserCapability,
     inspectPlaywrightCapability,
     inspectManagedPlaywrightCapability,
     runInteractiveUpdate,
@@ -214,6 +218,10 @@ async function runCli(
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
+  // `clearAllMocks` no vacía las colas de `*Once`: sin reset explícito, una cola
+  // no consumida contaminaría la siguiente prueba con una capacidad obsoleta.
+  mocks.inspectPlaywrightCapability.mockReset().mockImplementation(mocks.legacyBrowserCapability);
+  mocks.inspectManagedPlaywrightCapability.mockReset().mockImplementation(mocks.managedBrowserCapability);
   mocks.detectPiRuntime.mockReset().mockReturnValue({
     id: "pi",
     name: "Pi",
@@ -844,11 +852,10 @@ describe("CLI effective browser capability", () => {
     const afterUpdate = { ...beforeUpdate, browserVerified: true, effective: true };
 
     try {
-      writeOpenCodeModelMap(homeDir);
       fs.mkdirSync(path.join(homeDir, ".jorgex-stack"), { recursive: true });
       fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
         version: 2,
-        enabled: { opencode: true },
+        enabled: { "claude-code": true },
       }) + "\n");
       mocks.inspectManagedPlaywrightCapability
         .mockReturnValueOnce(beforeUpdate)
@@ -860,7 +867,7 @@ describe("CLI effective browser capability", () => {
         playwrightCapability: afterUpdate,
       });
 
-      await runCli(["update", "--agents", "opencode", "--mode", "human"], homeDir, true);
+      await runCli(["update", "--agents", "claude-code", "--mode", "human"], homeDir, true);
 
       expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(2);
       expect(mocks.runInstall).toHaveBeenCalledTimes(2);
@@ -991,6 +998,105 @@ describe("CLI effective browser capability", () => {
       }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CLI no inspecciona Playwright para destinos OpenCode-only", () => {
+  const OPENCODE_ONLY_PREFERENCE = JSON.stringify({
+    version: 2,
+    enabled: { opencode: true, "claude-code": false, codex: false, pi: false },
+  }, null, 2) + "\n";
+
+  function writeRawPlaywrightPreference(homeDir: string, raw: string): string {
+    const file = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, raw);
+    return file;
+  }
+
+  it.each(["install", "sync"])(
+    "%s con OpenCode-only y preferencia legacy no inspecciona la capacidad ni muta la preferencia",
+    async (command) => {
+      const tmp = makeTempDir(path.join(os.tmpdir(), `jx-cli-opencode-no-inspect-${command}-`));
+      const homeDir = path.join(tmp, "home");
+      const preferenceFile = writeRawPlaywrightPreference(homeDir, OPENCODE_ONLY_PREFERENCE);
+      writeOpenCodeModelMap(homeDir);
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        const exitCode = await runCli(
+          [command, "--agents", "opencode", "--mode", "human", "--yes"],
+          homeDir,
+          false,
+          { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
+        );
+
+        expect(exitCode).toBe(0);
+        expect(mocks.runInstall).toHaveBeenCalledTimes(1);
+        expect(mocks.inspectManagedPlaywrightCapability).not.toHaveBeenCalled();
+        expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
+        expect(fs.readFileSync(preferenceFile, "utf8")).toBe(OPENCODE_ONLY_PREFERENCE);
+      } finally {
+        log.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it("update con OpenCode-only y preferencia legacy no inspecciona la capacidad ni muta la preferencia", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-opencode-no-inspect-update-"));
+    const homeDir = path.join(tmp, "home");
+    const preferenceFile = writeRawPlaywrightPreference(homeDir, OPENCODE_ONLY_PREFERENCE);
+    writeOpenCodeModelMap(homeDir);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["update", "--agents", "opencode", "--mode", "human", "--yes"],
+        homeDir,
+        false,
+        { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
+      );
+
+      expect(exitCode).toBe(0);
+      expect(mocks.inspectManagedPlaywrightCapability).not.toHaveBeenCalled();
+      expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
+      expect(fs.readFileSync(preferenceFile, "utf8")).toBe(OPENCODE_ONLY_PREFERENCE);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("un destino de fichero distinto de OpenCode conserva la inspección habilitada", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-other-runtime-inspect-"));
+    const homeDir = path.join(tmp, "home");
+    const rawPreference = JSON.stringify({
+      version: 2,
+      enabled: { opencode: false, "claude-code": true, codex: false, pi: false },
+    }, null, 2) + "\n";
+    const preferenceFile = writeRawPlaywrightPreference(homeDir, rawPreference);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "claude-code", "--mode", "human", "--yes"],
+        homeDir,
+        false,
+        { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
+      );
+
+      expect(exitCode).toBe(0);
+      expect(mocks.runInstall).toHaveBeenCalledTimes(1);
+      expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(1);
+      expect(fs.readFileSync(preferenceFile, "utf8")).toBe(rawPreference);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
     }
   });
 });

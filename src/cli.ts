@@ -104,11 +104,24 @@ async function ensureOpenCodeModelsForInstall(
   return false;
 }
 
-function shouldInspectPlaywrightCapability(targetDir: string | undefined, dryRun: boolean): boolean {
-  return targetDir === undefined
-    && !dryRun
-    && browserPreferenceErrors().length === 0
-    && loadPlaywrightCliPreference() === true;
+function isPlaywrightEligibleRuntime(runtime: SelectableRuntimeId): boolean {
+  const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  return runtime !== "opencode" && (runtime !== "pi" || supportsPiPlaywright);
+}
+
+function shouldInspectPlaywrightCapability(
+  targetDir: string | undefined,
+  dryRun: boolean,
+  runtimes?: readonly SelectableRuntimeId[],
+): boolean {
+  if (targetDir !== undefined || dryRun || browserPreferenceErrors().length > 0) return false;
+  // Sin destinos resueltos se asume el conjunto completo, pero sólo los runtimes
+  // elegibles cuentan: una preferencia legacy `enabled.opencode` no debe disparar
+  // la inspección de Playwright, que OpenCode v2 ya no ofrece.
+  const inspectable = runtimes ?? [...(Object.keys(ADAPTERS) as RuntimeId[]), "pi"];
+  return inspectable
+    .filter(isPlaywrightEligibleRuntime)
+    .some((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true);
 }
 
 export function parseFlags(args: string[], allowReceipt = false): Flags {
@@ -294,14 +307,12 @@ async function resolvePlaywrightToolConsent(
   runtimeSelection?: PlaywrightRuntimeSelection;
 } | null> {
   const interactive = Boolean(process.stdout.isTTY);
-  const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  const supportsPiPlaywright = isPlaywrightEligibleRuntime("pi");
   // OpenCode v2 usa Browser Control (CLI/skill/MCP) obligatorio y no ofrece el
   // selector Playwright CLI; el resto conserva su contrato (Pi condicionado a su
   // handoff). `eligible` es la única lista que alimenta confirm/multiselect y la
   // selección resultante.
-  const eligible: SelectableRuntimeId[] = runtimes.filter(
-    (runtime) => runtime !== "opencode" && (runtime !== "pi" || supportsPiPlaywright),
-  );
+  const eligible: SelectableRuntimeId[] = runtimes.filter(isPlaywrightEligibleRuntime);
   if (flags.playwrightRuntimes !== undefined) {
     const requested = flags.playwrightRuntimes;
     let error: string | undefined;
@@ -837,7 +848,7 @@ async function main(): Promise<void> {
         const playwrightToolConsent = await resolvePlaywrightToolConsent(command, flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolPlan = resolvePlaywrightToolPlan(playwrightToolConsent);
-        let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+        let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
           && playwrightToolPlan.actions.length === 0
           ? inspectManagedPlaywrightCapability()
           : undefined;
@@ -907,7 +918,7 @@ async function main(): Promise<void> {
               modePreference: mode,
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
-              playwrightCapability: playwrightCapability ?? (shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+              playwrightCapability: playwrightCapability ?? (shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
                 ? inspectManagedPlaywrightCapability() : undefined),
               ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
               ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
@@ -981,7 +992,7 @@ async function main(): Promise<void> {
               ...(piSelected ? ["pi" as const] : []),
             ]
           : [...Object.keys(ADAPTERS) as RuntimeId[], ...(piSelected ? ["pi" as const] : [])];
-      const doctorCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+      const doctorCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, doctorRuntimes)
         ? inspectManagedPlaywrightCapability()
         : undefined;
       let exitCode = await runDoctor({
@@ -998,7 +1009,7 @@ async function main(): Promise<void> {
             operation: "doctor",
             targetDir: flags.targetDir,
             modePreference: mode,
-            playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+            playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, doctorRuntimes)
               ? inspectManagedPlaywrightCapability() : undefined,
           }));
         }
@@ -1059,7 +1070,7 @@ async function main(): Promise<void> {
         { rootDir: flags.targetDir },
       );
       applyWritingStyle(writingStyle, flags.dryRun);
-      let updateCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+      let updateCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
         ? inspectManagedPlaywrightCapability()
         : undefined;
       if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
@@ -1068,7 +1079,7 @@ async function main(): Promise<void> {
           targetDir: flags.targetDir,
           writingStyle,
           modePreference: mode,
-          playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+          playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
             ? inspectManagedPlaywrightCapability() : undefined,
           ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
         });
@@ -1186,7 +1197,7 @@ async function main(): Promise<void> {
           }
           const mode = await resolveInstallMode(flags, false);
           if (mode === null) return;
-          const playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+          const playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
             ? inspectManagedPlaywrightCapability()
             : undefined;
           process.exitCode = await runInstall({
