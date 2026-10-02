@@ -42,14 +42,8 @@ const VERIFIED_LAUNCHER = {
   args: ["--relay-socket", "/run/jorgex/browser-control.sock"] as readonly string[],
 };
 
-/**
- * Campo en validación por T10: el tipo del contexto aún no lo declara porque el
- * RED precede al writer. La intersección mantiene el typecheck verde durante el
- * RED y sigue siendo válida cuando T11 lo añada a `InstallContext`.
- */
-type BrowserControlContext = InstallContext & {
-  browserControlInvocation?: { command: string; args: readonly string[] };
-};
+/** Contexto del seam: `browserControlInvocation` ya forma parte de `InstallContext` (T11). */
+type BrowserControlContext = InstallContext;
 
 function baseContext(configDir: string): BrowserControlContext {
   return {
@@ -118,4 +112,126 @@ describe("Browser Control obligatorio en OpenCode v2 [T10-RED]", () => {
       expect(content, `${adapter.id} no recibe Browser Control`).not.toContain(BROWSER_CONTROL_SERVER);
     }
   });
+});
+
+/**
+ * MCP manual de Browser Control (Spec T10/T11): una entrada nativa
+ * (`mcp.servers.browser-control`) o legacy (`mcp.browser-control`) equivalente a
+ * la invocación gestionada se preserva sin reclamarla; una incompatible se
+ * conserva en disco y produce un conflicto accionable, sin shadow y sin volcar
+ * la config cruda ni secretos del usuario.
+ */
+const PLACEMENTS = ["native", "legacy"] as const;
+type ManualPlacement = (typeof PLACEMENTS)[number];
+
+const SECRET_SENTINEL = "SENTINEL-SECRET-SHOULD-NOT-LEAK";
+
+function managedCommand(): string[] {
+  return [VERIFIED_LAUNCHER.command, ...VERIFIED_LAUNCHER.args, "mcp"];
+}
+
+type ManualEntry = {
+  type: "local";
+  command: string[];
+  user_marker: { source: string };
+  user_secret_token: string;
+};
+
+function manualEntry(command: string[]): ManualEntry {
+  return {
+    type: "local",
+    command,
+    user_marker: { source: "manual" },
+    user_secret_token: SECRET_SENTINEL,
+  };
+}
+
+function manualConfig(placement: ManualPlacement, entry: ManualEntry): string {
+  const document = placement === "native"
+    ? { mcp: { servers: { [BROWSER_CONTROL_SERVER]: entry } } }
+    : { mcp: { [BROWSER_CONTROL_SERVER]: entry } };
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+function seedManualConfig(
+  configDir: string,
+  placement: ManualPlacement,
+  entry: ManualEntry,
+): { file: string; raw: string } {
+  fs.mkdirSync(configDir, { recursive: true });
+  const file = path.join(configDir, "opencode.json");
+  const raw = manualConfig(placement, entry);
+  fs.writeFileSync(file, raw);
+  return { file, raw };
+}
+
+function preservedManualEntry(placement: ManualPlacement, content: string): unknown {
+  const parsed = JSON.parse(content) as { mcp: Record<string, unknown> };
+  if (placement === "native") {
+    return (parsed.mcp["servers"] as Record<string, unknown>)[BROWSER_CONTROL_SERVER];
+  }
+  return parsed.mcp[BROWSER_CONTROL_SERVER];
+}
+
+describe("Browser Control MCP manual nativo/legacy [T10-RED]", () => {
+  it.each(PLACEMENTS)(
+    "control: una entrada manual %s equivalente a la invocación gestionada se preserva con sus campos desconocidos y sin claim",
+    (placement) => {
+      const configDir = path.join(tempDir(), "opencode");
+      const { file, raw } = seedManualConfig(configDir, placement, manualEntry(managedCommand()));
+      const ctx: BrowserControlContext = {
+        ...baseContext(configDir),
+        browserControlInvocation: VERIFIED_LAUNCHER,
+      };
+
+      const action = opencodeAdapter
+        .planMainConfig(loadCanonicalMcp(stackRoot()), ctx)
+        .find((candidate) => candidate.kind === "write" && candidate.target === file);
+      expect(action, "el plan escribe la config principal").toBeDefined();
+      const content = (action as { content: string }).content;
+
+      expect(preservedManualEntry(placement, content)).toMatchObject({
+        type: "local",
+        command: managedCommand(),
+        user_marker: { source: "manual" },
+        user_secret_token: SECRET_SENTINEL,
+      });
+
+      const ownership = (action as { mcpOwnership?: Array<{ server: string; owned: boolean }> }).mcpOwnership ?? [];
+      expect(ownership).not.toContainEqual({ server: BROWSER_CONTROL_SERVER, owned: true });
+      expect(fs.readFileSync(file, "utf8")).toBe(raw);
+    },
+  );
+
+  it.each(PLACEMENTS)(
+    "conflicto: una entrada manual %s incompatible se conserva y produce diagnóstico accionable sin filtrar config ni secretos",
+    (placement) => {
+      const configDir = path.join(tempDir(), "opencode");
+      const { file, raw } = seedManualConfig(configDir, placement, manualEntry(["/opt/custom/browser-mcp", "--legacy"]));
+      const ctx: BrowserControlContext = {
+        ...baseContext(configDir),
+        browserControlInvocation: VERIFIED_LAUNCHER,
+      };
+
+      let caught: unknown;
+      try {
+        opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+      } catch (error) {
+        caught = error;
+      }
+
+      // RED: hoy se preserva en silencio; falta el conflicto accionable.
+      expect(caught, "un MCP manual incompatible debe producir conflicto, no un falso éxito").toBeInstanceOf(Error);
+      if (!(caught instanceof Error)) return;
+
+      const message = caught.message;
+      expect(message).toMatch(/browser-control/i);
+      expect(message).toMatch(/incompatible|conflicto/i);
+      expect(message).toMatch(/revisa|retira|corrige/i);
+      expect(message).not.toContain(SECRET_SENTINEL);
+
+      // Ni shadow ni mutación: los bytes en disco siguen intactos.
+      expect(fs.readFileSync(file, "utf8")).toBe(raw);
+    },
+  );
 });

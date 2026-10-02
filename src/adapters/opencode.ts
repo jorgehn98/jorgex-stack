@@ -78,6 +78,27 @@ const CONFIG_FILENAME = "opencode.json";
 const CONFIG_FILENAME_JSONC = "opencode.jsonc";
 const CLI_FILENAME = "cli.json";
 const BROWSER_CONTROL_SERVER = "browser-control";
+
+/**
+ * Un MCP manual `browser-control` solo equivale al launcher gestionado si es
+ * local, está efectivamente habilitado y expuesto por Code Mode, y su command
+ * es exactamente `[command, ...args, "mcp"]`. No se exige igualdad del objeto
+ * completo: los campos desconocidos del usuario se preservan. Un `type` remoto,
+ * un command ausente/distinto, `disabled: true` nativo, `enabled: false` legacy
+ * o `codemode: false` no pueden anunciar el MCP obligatorio de Code Mode.
+ */
+function isCompatibleBrowserControlServer(
+  value: unknown,
+  invocation: { command: string; args: readonly string[] },
+): boolean {
+  const entry = objectValue(value);
+  if (entry === null || entry["type"] !== "local") return false;
+  if (entry["disabled"] === true || entry["enabled"] === false || entry["codemode"] === false) return false;
+  const command = entry["command"];
+  return Array.isArray(command)
+    && command.every((part) => typeof part === "string")
+    && isDeepStrictEqual(command, [invocation.command, ...invocation.args, "mcp"]);
+}
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";
 const PRIMARY_MODEL_ID = "gpt-6.1-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
@@ -910,16 +931,24 @@ export const opencodeAdapter: Adapter = {
       // Browser Control v2 (Spec T11): la única fuente es el contexto interno,
       // que el lifecycle llena solo con un launcher `active` verificado. Se crea
       // el MCP local cuando falta y se reclama; una entrada manual nativa/legacy
-      // se preserva sin shadow, sobreescritura ni claim por igualdad (una
-      // invocación ausente deja Browser Control pendiente, nunca un MCP roto).
+      // equivalente se preserva con sus campos ajenos y sin claim. Una
+      // incompatible se falla cerrado antes de escribir, sin recomponerla ni
+      // volcar la config/secretos del usuario.
       const browserControl = ctx.browserControlInvocation;
-      if (browserControl !== undefined && inContext(BROWSER_CONTROL_SERVER) === undefined) {
-        writableServers()[BROWSER_CONTROL_SERVER] = {
-          type: "local",
-          command: [browserControl.command, ...browserControl.args, "mcp"],
-        };
-        if (ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) !== true) {
-          mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });
+      if (browserControl !== undefined) {
+        const existingBrowserControl = inContext(BROWSER_CONTROL_SERVER);
+        if (existingBrowserControl === undefined) {
+          writableServers()[BROWSER_CONTROL_SERVER] = {
+            type: "local",
+            command: [browserControl.command, ...browserControl.args, "mcp"],
+          };
+          if (ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) !== true) {
+            mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });
+          }
+        } else if (!isCompatibleBrowserControlServer(existingBrowserControl, browserControl)) {
+          throw new Error(
+            "OpenCode: 'browser-control' es un MCP manual incompatible con el launcher Browser Control verificado (type/command/disabled/enabled/codemode); se conserva sin shadow ni sobrescritura. Revisa, retira o corrige esa entrada antes de reintentar sync.",
+          );
         }
       }
 
