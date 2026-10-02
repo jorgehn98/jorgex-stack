@@ -295,26 +295,45 @@ async function resolvePlaywrightToolConsent(
 } | null> {
   const interactive = Boolean(process.stdout.isTTY);
   const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
-  const supported: SelectableRuntimeId[] = runtimes.filter((runtime) => runtime !== "pi" || supportsPiPlaywright);
+  // OpenCode v2 usa Browser Control (CLI/skill/MCP) obligatorio y no ofrece el
+  // selector Playwright CLI; el resto conserva su contrato (Pi condicionado a su
+  // handoff). `eligible` es la única lista que alimenta confirm/multiselect y la
+  // selección resultante.
+  const eligible: SelectableRuntimeId[] = runtimes.filter(
+    (runtime) => runtime !== "opencode" && (runtime !== "pi" || supportsPiPlaywright),
+  );
   if (flags.playwrightRuntimes !== undefined) {
     const requested = flags.playwrightRuntimes;
     let error: string | undefined;
     if (requested.length === 0) error = "--playwright-runtimes requiere al menos un runtime.";
+    // Identidad y cobertura de TODOS los runtimes pedidos primero: un nombre
+    // desconocido o fuera de --agents no queda enmascarado por el rechazo de
+    // OpenCode (que se evalúa después).
     for (const runtime of requested) {
       if (!["opencode", "claude-code", "codex", "pi"].includes(runtime)) error = `Runtime Playwright desconocido: ${runtime}.`;
       else if (!runtimes.includes(runtime)) error = `El runtime ${runtime} no está en --agents/destinos de esta instalación.`;
-      else if (!supported.includes(runtime)) error = "Pi no declara el handoff Playwright requerido.";
       if (error) break;
+    }
+    if (error === undefined) {
+      for (const runtime of requested) {
+        if (runtime === "opencode") error = "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio. Retira --playwright-runtimes opencode.";
+        else if (!eligible.includes(runtime)) error = "Pi no declara el handoff Playwright requerido.";
+        if (error) break;
+      }
     }
     if (error) { console.error(error); process.exitCode = 1; return null; }
   }
-  if (command === "install" && flags.playwright && supported.length === 0 && runtimes.includes("pi")) {
-    console.error("Pi no declara el handoff Playwright requerido.");
+  if (command === "install" && flags.playwright && eligible.length === 0) {
+    console.error(
+      runtimes.includes("pi") && !supportsPiPlaywright
+        ? "Pi no declara el handoff Playwright requerido."
+        : "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio; no hay runtime elegible para --playwright.",
+    );
     process.exitCode = 1;
     return null;
   }
   let confirmed = false;
-  if (command === "install" && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
+  if (command === "install" && eligible.length > 0 && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
     const answer = await p.confirm({
       message: "Recomendado: ¿instalar Playwright CLI gestionado y descargar Chromium?",
       initialValue: false,
@@ -324,19 +343,19 @@ async function resolvePlaywrightToolConsent(
   }
   let runtimeSelection: PlaywrightRuntimeSelection | undefined;
   const approved = interactive && !flags.yes ? confirmed : flags.yes && flags.playwright;
-  if (command === "install" && approved && supported.length > 0) {
-    let selected = flags.playwrightRuntimes ?? supported;
+  if (command === "install" && approved && eligible.length > 0) {
+    let selected = flags.playwrightRuntimes ?? eligible;
     if (interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined && flags.playwrightRuntimes === undefined) {
       const answer = await p.multiselect({
         message: "¿En qué runtimes activar la guía de Playwright gestionado?",
         required: false,
-        options: supported.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
-        initialValues: supported.filter((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true),
+        options: eligible.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
+        initialValues: eligible.filter((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true),
       });
       if (p.isCancel(answer)) return null;
       selected = answer as SelectableRuntimeId[];
     }
-    runtimeSelection = Object.fromEntries(supported.map((runtime) => [runtime, selected.includes(runtime)]));
+    runtimeSelection = Object.fromEntries(eligible.map((runtime) => [runtime, selected.includes(runtime)]));
   }
   return {
     command,

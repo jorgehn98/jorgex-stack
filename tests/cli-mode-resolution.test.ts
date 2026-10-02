@@ -603,26 +603,45 @@ describe("opciones de navegador en main()", () => {
     }
   });
 
-  it("entrega el consentimiento de Playwright y la selección DevTools a install", async () => {
+  it("OpenCode conserva la selección DevTools sin ofrecer Playwright CLI", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-install-flags-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
 
-    await runCli(
-      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--playwright", "--devtools"],
+    const exitCode = await runCli(
+      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--devtools"],
       homeDir,
     );
 
+    expect(exitCode).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
-      playwrightToolConsent: expect.objectContaining({
-        command: "install",
-        explicitToolSelection: true,
-      }),
       devtoolsMcpSelection: { opencode: true },
     }));
   });
 
-  it("accepts --playwright-runtimes with --playwright and passes true/false for current agents", async () => {
+  it("rechaza --playwright cuando OpenCode es el único destino sin runtime elegible", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-opencode-only-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    writeOpenCodeModelMap(homeDir);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "opencode", "--mode", "human", "--yes", "--playwright"],
+        homeDir,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      const messages = collectedMessages([error]);
+      expect(messages.some((message) => /browser.?control/i.test(message))).toBe(true);
+      expect(messages.some((message) => /opencode/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("acepta --playwright-runtimes con solo runtimes elegibles y omite OpenCode de la selección", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-flag-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
@@ -635,19 +654,47 @@ describe("opciones de navegador en main()", () => {
       "human",
       "--yes",
       "--playwright",
-      "--playwright-runtimes=opencode,codex",
+      "--playwright-runtimes=codex",
     ], homeDir);
 
     expect(exitCode).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       playwrightToolConsent: expect.objectContaining({
         explicitToolSelection: true,
-        runtimeSelection: { opencode: true, "claude-code": false, codex: true },
+        runtimeSelection: { "claude-code": false, codex: true },
       }),
     }));
   });
 
-  it("opens the runtime selector only after Playwright consent and passes partial choices", async () => {
+  it("rechaza --playwright-runtimes opencode antes de ejecutar install", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-opencode-reject-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    writeOpenCodeModelMap(homeDir);
+
+    try {
+      const exitCode = await runCli([
+        "install",
+        "--agents",
+        "opencode,claude-code,codex",
+        "--mode",
+        "human",
+        "--yes",
+        "--playwright",
+        "--playwright-runtimes=opencode,codex",
+      ], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      const messages = collectedMessages([error]);
+      expect(messages.some((message) => /browser.?control/i.test(message))).toBe(true);
+      expect(messages.some((message) => /opencode/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("abre el selector solo tras el consentimiento y ofrece únicamente runtimes elegibles", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-picker-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
@@ -670,10 +717,12 @@ describe("opciones de navegador en main()", () => {
         && /Playwright/i.test(String(Reflect.get(input, "message"))),
     );
     expect(playwrightPicker?.[0]).toMatchObject({ required: false });
+    const pickerOptions = (playwrightPicker?.[0] as { options?: Array<{ value: string }> } | undefined)?.options;
+    expect(pickerOptions?.map((option) => option.value)).toEqual(["claude-code", "codex"]);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       playwrightToolConsent: expect.objectContaining({
         confirmed: true,
-        runtimeSelection: { opencode: false, "claude-code": false, codex: true },
+        runtimeSelection: { "claude-code": false, codex: true },
       }),
     }));
     const playwrightPickerIndex = mocks.prompts.multiselect.mock.calls.findIndex(([input]) =>
