@@ -82,10 +82,11 @@ const BROWSER_CONTROL_SERVER = "browser-control";
 /**
  * Un MCP manual `browser-control` solo equivale al launcher gestionado si es
  * local, está efectivamente habilitado y expuesto por Code Mode, y su command
- * es exactamente `[command, ...args, "mcp"]`. No se exige igualdad del objeto
- * completo: los campos desconocidos del usuario se preservan. Un `type` remoto,
- * un command ausente/distinto, `disabled: true` nativo, `enabled: false` legacy
- * o `codemode: false` no pueden anunciar el MCP obligatorio de Code Mode.
+ * es exactamente `[command, ...args]` (la invocación ya es `readyMCP`). No se
+ * exige igualdad del objeto completo: los campos desconocidos del usuario se
+ * preservan. Un `type` remoto, un command ausente/distinto, `disabled: true`
+ * nativo, `enabled: false` legacy o `codemode: false` no pueden anunciar el MCP
+ * obligatorio de Code Mode.
  */
 function isCompatibleBrowserControlServer(
   value: unknown,
@@ -97,7 +98,7 @@ function isCompatibleBrowserControlServer(
   const command = entry["command"];
   return Array.isArray(command)
     && command.every((part) => typeof part === "string")
-    && isDeepStrictEqual(command, [invocation.command, ...invocation.args, "mcp"]);
+    && isDeepStrictEqual(command, [invocation.command, ...invocation.args]);
 }
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";
 const PRIMARY_MODEL_ID = "gpt-6.1-sol";
@@ -929,18 +930,23 @@ export const opencodeAdapter: Adapter = {
       }
 
       // Browser Control v2 (Spec T11): la única fuente es el contexto interno,
-      // que el lifecycle llena solo con un launcher `active` verificado. Se crea
-      // el MCP local cuando falta y se reclama; una entrada manual nativa/legacy
-      // equivalente se preserva con sus campos ajenos y sin claim. Una
-      // incompatible se falla cerrado antes de escribir, sin recomponerla ni
-      // volcar la config/secretos del usuario.
+      // que el lifecycle llena solo con la invocación MCP completa de un launcher
+      // `active` verificado. Se crea el MCP local cuando falta y se reclama; una
+      // entrada manual nativa/legacy equivalente se preserva con sus campos
+      // ajenos y sin claim. Una incompatible se falla cerrado antes de escribir,
+      // sin recomponerla ni volcar la config/secretos del usuario. Sin
+      // invocación no se proyecta ningún MCP roto y se diagnostica el pendiente.
       const browserControl = ctx.browserControlInvocation;
-      if (browserControl !== undefined) {
+      if (browserControl === undefined) {
+        ctx.warnings.push(
+          "OpenCode: Browser Control pendiente — no hay una invocación MCP gestionada y verificada (launcher active), así que no se proyecta el MCP 'browser-control'. Reintenta sync cuando la verificación esté disponible: revisa o instala el launcher gestionado.",
+        );
+      } else {
         const existingBrowserControl = inContext(BROWSER_CONTROL_SERVER);
         if (existingBrowserControl === undefined) {
           writableServers()[BROWSER_CONTROL_SERVER] = {
             type: "local",
-            command: [browserControl.command, ...browserControl.args, "mcp"],
+            command: [browserControl.command, ...browserControl.args],
           };
           if (ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) !== true) {
             mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });

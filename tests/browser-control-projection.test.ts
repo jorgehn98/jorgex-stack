@@ -15,8 +15,9 @@ import { stackRoot } from "../src/lib/paths.js";
  *
  * Contrato (Spec T10): el contexto interno `browserControlInvocation` solo lo
  * llena el lifecycle con un launcher `active` verificado; NO autoriza un
- * PATH/global arbitrario. El adapter lo traduce a un MCP local
- * `mcp.servers['browser-control']` con `command: [command, ...args, 'mcp']`.
+ * PATH/global arbitrario. La invocación ya es `readyMCP` (incluye `mcp`) y el
+ * adapter la traduce a un MCP local `mcp.servers['browser-control']` con
+ * `command: [command, ...args]`, sin volver a añadir `mcp`.
  * Sin invocación disponible se diagnostica Browser Control pendiente, nunca un
  * MCP roto apuntando a bytes ausentes. OpenCode v2 no expone selector Playwright
  * y los demás runtimes conservan su contrato (Context7 incluido).
@@ -36,10 +37,22 @@ function tempDir(): string {
 
 const BROWSER_CONTROL_SERVER = "browser-control";
 
-/** Launcher `active` verificado: la proyección local es `[command, ...args, "mcp"]`. */
+/**
+ * Invocación `active` verificada y completa `readyMCP`, fixture opaco pero
+ * realista: comando Node literal con guard `--eval` y launcher, sin inventar
+ * flags de Browser Control (el provider real usa HTTP loopback:PORT, no un flag
+ * CLI). Sus args ya incluyen `mcp`; no se ejecuta ni se reclama prueba cripto,
+ * eso es del seam T12.
+ */
 const VERIFIED_LAUNCHER = {
-  command: "/verified/browser-control/launcher",
-  args: ["--relay-socket", "/run/jorgex/browser-control.sock"] as readonly string[],
+  command: "/verified/node",
+  args: [
+    "--input-type=module",
+    "--eval",
+    "/* guarded invocation fixture */",
+    "/verified/browser-control/launcher.mjs",
+    "mcp",
+  ] as readonly string[],
 };
 
 /** Contexto del seam: `browserControlInvocation` ya forma parte de `InstallContext` (T11). */
@@ -90,7 +103,7 @@ describe("Browser Control obligatorio en OpenCode v2 [T10-RED]", () => {
     // queda sin Browser Control y esta proyección local falta.
     expect(parsed.mcp?.servers?.[BROWSER_CONTROL_SERVER]).toMatchObject({
       type: "local",
-      command: [VERIFIED_LAUNCHER.command, ...VERIFIED_LAUNCHER.args, "mcp"],
+      command: goldenMcpCommand(),
     });
   });
 
@@ -126,8 +139,22 @@ type ManualPlacement = (typeof PLACEMENTS)[number];
 
 const SECRET_SENTINEL = "SENTINEL-SECRET-SHOULD-NOT-LEAK";
 
-function managedCommand(): string[] {
-  return [VERIFIED_LAUNCHER.command, ...VERIFIED_LAUNCHER.args, "mcp"];
+/**
+ * Golden del command MCP local observable (un único `mcp`): literal
+ * independiente del código y del fixture. El adapter proyecta `[command,
+ * ...args]` sin volver a añadir `mcp` porque la invocación ya es `readyMCP`.
+ */
+const GOLDEN_MCP_COMMAND = [
+  "/verified/node",
+  "--input-type=module",
+  "--eval",
+  "/* guarded invocation fixture */",
+  "/verified/browser-control/launcher.mjs",
+  "mcp",
+] as const;
+
+function goldenMcpCommand(): string[] {
+  return [...GOLDEN_MCP_COMMAND];
 }
 
 type ManualEntry = {
@@ -146,7 +173,7 @@ function manualEntry(command: string[]): ManualEntry {
   };
 }
 
-function manualConfig(placement: ManualPlacement, entry: ManualEntry): string {
+function manualConfig(placement: ManualPlacement, entry: Record<string, unknown>): string {
   const document = placement === "native"
     ? { mcp: { servers: { [BROWSER_CONTROL_SERVER]: entry } } }
     : { mcp: { [BROWSER_CONTROL_SERVER]: entry } };
@@ -156,7 +183,7 @@ function manualConfig(placement: ManualPlacement, entry: ManualEntry): string {
 function seedManualConfig(
   configDir: string,
   placement: ManualPlacement,
-  entry: ManualEntry,
+  entry: Record<string, unknown>,
 ): { file: string; raw: string } {
   fs.mkdirSync(configDir, { recursive: true });
   const file = path.join(configDir, "opencode.json");
@@ -178,7 +205,7 @@ describe("Browser Control MCP manual nativo/legacy [T10-RED]", () => {
     "control: una entrada manual %s equivalente a la invocación gestionada se preserva con sus campos desconocidos y sin claim",
     (placement) => {
       const configDir = path.join(tempDir(), "opencode");
-      const { file, raw } = seedManualConfig(configDir, placement, manualEntry(managedCommand()));
+      const { file, raw } = seedManualConfig(configDir, placement, manualEntry(goldenMcpCommand()));
       const ctx: BrowserControlContext = {
         ...baseContext(configDir),
         browserControlInvocation: VERIFIED_LAUNCHER,
@@ -192,7 +219,7 @@ describe("Browser Control MCP manual nativo/legacy [T10-RED]", () => {
 
       expect(preservedManualEntry(placement, content)).toMatchObject({
         type: "local",
-        command: managedCommand(),
+        command: goldenMcpCommand(),
         user_marker: { source: "manual" },
         user_secret_token: SECRET_SENTINEL,
       });
@@ -231,6 +258,121 @@ describe("Browser Control MCP manual nativo/legacy [T10-RED]", () => {
       expect(message).not.toContain(SECRET_SENTINEL);
 
       // Ni shadow ni mutación: los bytes en disco siguen intactos.
+      expect(fs.readFileSync(file, "utf8")).toBe(raw);
+    },
+  );
+});
+
+/**
+ * Browser Control pendiente (Spec T11): sin `browserControlInvocation` (launcher
+ * `active` verificado no disponible) no se proyecta ningún MCP —nativo ni
+ * legacy— con un command roto apuntando a bytes ausentes, y el usuario recibe un
+ * diagnóstico accionable.
+ */
+describe("Browser Control pendiente sin invocación verificada [T10-RED]", () => {
+  it("diagnostica Browser Control pendiente y no proyecta un MCP roto", () => {
+    const configDir = path.join(tempDir(), "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    const file = path.join(configDir, "opencode.json");
+    fs.writeFileSync(file, `${JSON.stringify({ user_marker: "preserve" }, null, 2)}\n`);
+    const ctx: BrowserControlContext = baseContext(configDir); // sin browserControlInvocation
+
+    const content = plannedContent(opencodeAdapter, ctx);
+
+    // RED: hoy es un no-op silencioso; falta el diagnóstico accionable.
+    const pending = ctx.warnings.filter((warning) => /browser-control/i.test(warning));
+    expect(pending, "falta el diagnóstico accionable de Browser Control pendiente").not.toHaveLength(0);
+    if (pending.length === 0) return;
+    const message = pending[0]!;
+    expect(message).toMatch(/pendiente|sin verificar|sin verificación|no verificad/i);
+    expect(message).toMatch(/reintenta|instala|verifica|revisa/i);
+
+    // Nunca un MCP apuntando a bytes ausentes: ni `mcp.servers` ni legacy plano.
+    const parsed = JSON.parse(content) as { mcp?: Record<string, unknown>; user_marker?: unknown };
+    const nativeServers = parsed.mcp?.["servers"] as Record<string, unknown> | undefined;
+    expect(nativeServers?.[BROWSER_CONTROL_SERVER]).toBeUndefined();
+    expect(parsed.mcp?.[BROWSER_CONTROL_SERVER]).toBeUndefined();
+    expect(parsed.user_marker).toBe("preserve");
+  });
+
+  it.each(PLACEMENTS)(
+    "control: sin invocación una entrada manual %s equivalente se conserva sin claim ni shadow",
+    (placement) => {
+      const configDir = path.join(tempDir(), "opencode");
+      const { file, raw } = seedManualConfig(configDir, placement, manualEntry(goldenMcpCommand()));
+      const ctx: BrowserControlContext = baseContext(configDir); // sin invocación
+
+      const action = opencodeAdapter
+        .planMainConfig(loadCanonicalMcp(stackRoot()), ctx)
+        .find((candidate) => candidate.kind === "write" && candidate.target === file);
+      expect(action, "el plan escribe la config principal").toBeDefined();
+      const content = (action as { content: string }).content;
+
+      expect(preservedManualEntry(placement, content)).toMatchObject({
+        type: "local",
+        command: goldenMcpCommand(),
+        user_marker: { source: "manual" },
+        user_secret_token: SECRET_SENTINEL,
+      });
+      const ownership = (action as { mcpOwnership?: Array<{ server: string; owned: boolean }> }).mcpOwnership ?? [];
+      expect(ownership).not.toContainEqual({ server: BROWSER_CONTROL_SERVER, owned: true });
+      expect(fs.readFileSync(file, "utf8")).toBe(raw);
+    },
+  );
+});
+
+/**
+ * Entradas manuales que anuncian Browser Control pero no pueden servirlo (type
+ * remoto, `disabled: true`, `enabled: false` legacy o `codemode: false`): ya son
+ * GREEN y cada una protege un tipo de malreporte distinto en la comprobación de
+ * compatibilidad. El command se mantiene equivalente para no medir recetas
+ * incidentales.
+ */
+const MISREPORTED_VARIANTS: Array<{ label: string; placement: ManualPlacement; entry: Record<string, unknown> }> = [
+  {
+    label: "type remote",
+    placement: "native",
+    entry: { type: "remote", url: "https://example.invalid/mcp", user_marker: { source: "manual" } },
+  },
+  {
+    label: "disabled true",
+    placement: "native",
+    entry: { type: "local", command: goldenMcpCommand(), disabled: true, user_marker: { source: "manual" } },
+  },
+  {
+    label: "legacy enabled false",
+    placement: "legacy",
+    entry: { type: "local", command: goldenMcpCommand(), enabled: false, user_marker: { source: "manual" } },
+  },
+  {
+    label: "codemode false",
+    placement: "native",
+    entry: { type: "local", command: goldenMcpCommand(), codemode: false, user_marker: { source: "manual" } },
+  },
+];
+
+describe("Browser Control manual malreportado [T10 control]", () => {
+  it.each(MISREPORTED_VARIANTS)(
+    "una entrada manual $label se conserva y produce conflicto accionable",
+    ({ placement, entry }) => {
+      const configDir = path.join(tempDir(), "opencode");
+      const { file, raw } = seedManualConfig(configDir, placement, entry);
+      const ctx: BrowserControlContext = {
+        ...baseContext(configDir),
+        browserControlInvocation: VERIFIED_LAUNCHER,
+      };
+
+      let caught: unknown;
+      try {
+        opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught, "un MCP manual malreportado debe producir conflicto").toBeInstanceOf(Error);
+      if (!(caught instanceof Error)) return;
+      expect(caught.message).toMatch(/browser-control/i);
+      expect(caught.message).toMatch(/incompatible|conflicto/i);
       expect(fs.readFileSync(file, "utf8")).toBe(raw);
     },
   );

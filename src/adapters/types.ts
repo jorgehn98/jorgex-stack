@@ -88,11 +88,12 @@ export interface InstallContext {
   /** Verified Stack-owned Node guard, supplied by the managed browser lifecycle. */
   devtoolsMcpInvocation?: { command: string; args: readonly string[] };
   /**
-   * Launcher `active` de Browser Control verificado por el lifecycle. Solo lo
-   * llena T13; T11 lo traduce al MCP local `mcp.servers['browser-control']` con
-   * `command: [command, ...args, "mcp"]`. No autoriza un PATH/global arbitrario:
-   * su ausencia es Browser Control pendiente, nunca un MCP apuntando a bytes
-   * ausentes.
+   * Invocación MCP completa del guard Browser Control verificado (launcher
+   * `active`): sus `args` ya incluyen el subcomando `mcp`. No autoriza un
+   * PATH/global arbitrario. El adapter proyecta `command: [command, ...args]`
+   * sin anexar `mcp` de nuevo, porque el guard verifica exactamente esos
+   * argumentos. Su ausencia es Browser Control pendiente, nunca un MCP
+   * apuntando a bytes ausentes.
    */
   browserControlInvocation?: { command: string; args: readonly string[] };
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
