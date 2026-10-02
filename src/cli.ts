@@ -681,7 +681,8 @@ Opciones:
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
   --upgrade-permissions (install/sync) re-aplica permisos gestionados sobre config existente (opt-in)
   --browser-control-service (install/sync/update, Linux) opt-in al servicio de usuario
-                        Browser Control; no promete autostart operativo completo todavía
+                        Browser Control; arranque inicial propio y autostart externo
+                        sólo tras verificación; bloquea si hay recuperación pendiente
   --engram-typebox-compat (install/update con Pi) opt-in explícito a la variante temporal #1567;
                         sin el flag no se adquiere ni persiste ninguna preferencia
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
