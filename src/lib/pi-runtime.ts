@@ -16,6 +16,7 @@ import { inspectStagedPiNpm, inventoryTreeSha256 } from "./pi-staged-lock.js";
 import { smokeStagedPiRuntime, smokeLinkedPiRuntime } from "./pi-stage-smoke.js";
 import { runPiStageProcess } from "./pi-stage-process.js";
 import { completeUpdatedPiMcp } from "./pi-provider-update.js";
+import type { PiProviderPackage } from "./pi-provider-activation.js";
 import { verifyCachedPiArtifact } from "./pi-cached-artifact.js";
 import { deactivateVerifiedLegacyPiEntry, deactivateVerifiedPiRelease } from "./pi-private-release.js";
 import { writeText } from "./fsx.js";
@@ -228,6 +229,13 @@ export interface PiRuntimeInput {
    * stage-unverified and the old static acquisition never runs.
    */
   prepared?: PiInstallPreflightResult;
+  /**
+   * Verified provider stage injected for a native target-dir, keeping the
+   * target network-off. The real CLI threads it from the provider preflight.
+   */
+  nativeProviderStage?: { stageDir: string; packages: readonly PiProviderPackage[] };
+  /** Canonical native target layout: receipts/artifact cache under `<target>/home/.jorgex-stack`. */
+  nativeLayout?: boolean;
   /** Explicit opt-in to rewrite owned/absent Pi policy. Seed-only unless true with the upgrade capability. */
   upgradePermissions?: boolean;
 }
@@ -455,14 +463,30 @@ function runtimePath(piExecutable?: string): string {
   return [...new Set(entries.filter((entry): entry is string => entry !== null))].join(path.delimiter);
 }
 
-function targetPaths(targetDir: string, engramBin: string | null, piExecutable?: string): PiRuntimePaths {
+/**
+ * Artifact-cache directory for the current scope. A native target keeps the
+ * canonical `<root>/home/.jorgex-stack/packages` (matching the active checker
+ * HOME); the historical target keeps `<root>/downloads`; real scope keeps the
+ * actual HOME cache.
+ */
+function targetDownloadsDir(input: PiRuntimeInput): string {
+  if (input.targetDir === undefined) return path.join(dataDir(), "packages");
+  const root = path.resolve(input.targetDir);
+  return input.nativeLayout === true
+    ? path.join(root, "home", ".jorgex-stack", "packages")
+    : path.join(root, "downloads");
+}
+
+function targetPaths(targetDir: string, engramBin: string | null, piExecutable?: string, nativeLayout = false): PiRuntimePaths {
   const root = path.resolve(targetDir);
   const codingAgentDir = path.join(root, "pi-agent");
   const home = path.join(root, "home");
   const temporary = path.join(root, "tmp");
   return {
     codingAgentDir,
-    receiptPath: path.join(root, "state", "pi-receipt.json"),
+    receiptPath: nativeLayout
+      ? path.join(home, ".jorgex-stack", "pi-receipt.json")
+      : path.join(root, "state", "pi-receipt.json"),
     packageRunner: path.join(codingAgentDir, "npm", "node_modules", "jorgex-pi", "bin", "jorgex-pi.mjs"),
     environment: {
       HOME: home,
@@ -534,7 +558,7 @@ export function runPiRuntime(input: PiRuntimeInput, deps: PiRuntimeDeps): Runtim
   const candidate = input.candidate ?? PI_RUNTIME_CANDIDATE;
   const paths = input.targetDir === undefined
     ? userPaths(input.engramBin, input.detected.executable)
-    : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
+    : targetPaths(input.targetDir, input.engramBin, input.detected.executable, input.nativeLayout === true);
   const settingsJson = deps.readSettings(path.join(paths.codingAgentDir, "settings.json"));
   const receiptJson = deps.readReceipt(paths.receiptPath);
   const lifecycleInput = {
@@ -1028,7 +1052,7 @@ function routesInstalledPiToUpdate(input: PiRuntimeInput): boolean {
   if (input.operation !== "install") return false;
   const paths = input.targetDir === undefined
     ? userPaths(input.engramBin, input.detected.executable)
-    : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
+    : targetPaths(input.targetDir, input.engramBin, input.detected.executable, input.nativeLayout === true);
   const receipt = readOptional(paths.receiptPath, null);
   // This only selects the route. The update gate still authenticates every
   // receipt/settings/artifact byte before any acquisition or activation.
@@ -1327,7 +1351,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
 
   const paths = input.targetDir === undefined
     ? userPaths(input.engramBin, input.detected.executable)
-    : targetPaths(input.targetDir, input.engramBin, input.detected.executable);
+    : targetPaths(input.targetDir, input.engramBin, input.detected.executable, input.nativeLayout === true);
   if (input.operation === "install") {
     // T06/T07 deliberate install: the injected candidate plus the trusted
     // preflight proof route to prepared activation. The old static
@@ -1365,6 +1389,10 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         remedy: `${mismatch}; Pi no quedó activado y no se descargó ni modificó nada.`,
       };
     }
+    // Native transport is selected only from the verified candidate contract,
+    // never from a version or array length. Native install skips the legacy
+    // official Engram setup (which requires the adapter) entirely.
+    const native = candidate.contract?.mcpNative !== undefined;
     const settingsPath = path.join(paths.codingAgentDir, "settings.json");
     // Pre-setup bytes: FRESH gate only. The POST-setup re-read below is the
     // source of truth passed to activation; this stale object never is.
@@ -1443,8 +1471,9 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
     }
     // Setup oficial solo en install real (targetDir undefined), tras la
     // prueba del stage y antes de activar. Con --target-dir se omite
-    // (no-op global) y todo queda en el destino aislado.
-    if (input.targetDir === undefined) {
+    // (no-op global) y todo queda en el destino aislado. La rama native no
+    // reutiliza el setup oficial (exigiría adapter) ni inserta su metadata.
+    if (!native && input.targetDir === undefined) {
       const { runOfficialSetupIfNeeded, validateOfficialSetupDestination } = await import("./official-engram-setup.js");
       const destinationError = validateOfficialSetupDestination("pi", paths.codingAgentDir, os.homedir());
       if (destinationError !== null) return { kind: "blocked", reason: "setup-pi-failed", remedy: destinationError };
@@ -1652,12 +1681,13 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         remedy: `${updateMismatch}; Pi no quedó activado y no se descargó ni modificó nada.`,
       };
     }
+    // Native transport from the verified contract: a managed native update does
+    // not fall back to the adapter-required official setup or its MCP migration.
+    const nativeUpdate = updateCandidate.contract?.mcpNative !== undefined;
     const updateSettingsPath = path.join(paths.codingAgentDir, "settings.json");
     const updateScopeKind = input.targetDir === undefined ? "real" : "target-dir";
     const updateHomeDir = input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir);
-    const updateDownloadsDir = input.targetDir === undefined
-      ? path.join(dataDir(), "packages")
-      : path.join(path.resolve(input.targetDir), "downloads");
+    const updateDownloadsDir = targetDownloadsDir(input);
     const stripUpdateNewline = (value: string): string => value.endsWith("\n") ? value.slice(0, -1) : value;
     let updateSettingsRaw: string;
     let updateReceiptRaw: string | null;
@@ -1755,7 +1785,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
       && Array.isArray(updateOldManaged.dependencies)
       && updateOldManaged.dependencies.length === 6
       && sortedDepIdentities(updateOldManaged.dependencies) === sortedDepIdentities([...updatePrepared.evidence.dependencies])) {
-      if (input.targetDir === undefined) {
+      if (!nativeUpdate && input.targetDir === undefined) {
         try { await completeUpdatedPiMcp(paths.codingAgentDir, engramBinForUpdate); }
         catch (error) { return { kind: "blocked", reason: "mcp-config-incomplete", remedy: error instanceof Error ? error.message : String(error) }; }
       }
@@ -1848,7 +1878,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         },
         { verifyStage: updateVerifyStage, smokeStage: updateSmokeStage, verifyActive: updateVerifyActive },
       );
-      if (input.targetDir === undefined) {
+      if (!nativeUpdate && input.targetDir === undefined) {
         try { await completeUpdatedPiMcp(updateAgentDir, engramBinForUpdate); }
         catch (error) {
           return { kind: "blocked", reason: "mcp-config-incomplete", remedy: `Paquete Pi activado y verificado; configuración MCP pendiente, conservada con su backup. ${error instanceof Error ? error.message : String(error)}` };
@@ -1942,9 +1972,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
             verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({
               receipt,
               homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
-              downloadsDir: input.targetDir === undefined
-                ? path.join(dataDir(), "packages")
-                : path.join(path.resolve(input.targetDir), "downloads"),
+              downloadsDir: targetDownloadsDir(input),
             }),
             isPackageAbsent: () => !fs.existsSync(packageRoot),
             deleteReceipt: () => fs.rmSync(paths.receiptPath, { force: true }),
@@ -2023,9 +2051,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({
           receipt,
           homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
-          downloadsDir: input.targetDir === undefined
-            ? path.join(dataDir(), "packages")
-            : path.join(path.resolve(input.targetDir), "downloads"),
+          downloadsDir: targetDownloadsDir(input),
         }),
         isPackageAbsent: () => !fs.existsSync(packageRoot),
         deleteReceipt: () => fs.rmSync(paths.receiptPath, { force: true }),
@@ -2053,9 +2079,7 @@ export async function runPiRuntimeSystem(input: PiRuntimeInput): Promise<Runtime
         verifyManagedArtifact: (receipt) => verifyCachedPiArtifact({
           receipt,
           homeDir: input.targetDir === undefined ? os.homedir() : path.resolve(input.targetDir),
-          downloadsDir: input.targetDir === undefined
-            ? path.join(dataDir(), "packages")
-            : path.join(path.resolve(input.targetDir), "downloads"),
+          downloadsDir: targetDownloadsDir(input),
         }),
         readSettings: () => fs.readFileSync(path.join(paths.codingAgentDir, "settings.json"), "utf8"),
         verifyLegacyPackage: (receipt) => {

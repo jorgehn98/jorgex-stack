@@ -6,6 +6,7 @@ import { resolveLatestNpmPackageRelease } from "./npm-provider.js";
 import { stagePiProviderPackages } from "./pi-provider-stage.js";
 import { activatePiProviderPackages } from "./pi-provider-activation.js";
 import { smokePiProviderRuntime } from "./pi-provider-smoke.js";
+import { piProviderReceiptPath, verifyPiProviderReceipt } from "./pi-provider-receipt.js";
 
 function isStrictChildPath(child: string, root: string): boolean {
   const rel = path.relative(path.resolve(root), path.resolve(child));
@@ -24,9 +25,33 @@ export async function completeUpdatedPiMcp(configDir: string, engramBin: string)
 /** Deliberate provider update after the managed Pi package/projection gate. */
 export async function updatePiProviderPackages(input: {
   homeDir: string; agentDir: string; piExecutable: string; engramBin: string;
+  /** Opt-in explícito a la variante temporal #1567; ausente/false conserva la ruta previa. */
+  engramTypeboxCompat?: boolean;
 }): Promise<{ kind: "updated" | "healthy"; versions: Record<"gentle-engram" | "pi-mcp-adapter", string> }> {
-  const { homeDir, agentDir } = input;
+  const { homeDir, agentDir, engramTypeboxCompat } = input;
+  if (engramTypeboxCompat !== undefined && typeof engramTypeboxCompat !== "boolean") {
+    throw new Error("Pi provider update requires a boolean engramTypeboxCompat");
+  }
   if (!isStrictChildPath(agentDir, homeDir)) throw new Error("Pi provider agent directory is outside HOME");
+  // Verificación read-only del recibo separado ANTES de red o mutación de raíces.
+  // Malformado/drift lanza y nunca se convierte en un estado sano.
+  const priorReceipt = verifyPiProviderReceipt({ homeDir, agentDir });
+  if (priorReceipt.kind !== "absent" && priorReceipt.receipt?.mcpTransport !== "legacy") {
+    // El transporte nativo pertenece a la fase nativa coordinada (PR203); este
+    // updater legacy jamás lo degrada silenciosamente.
+    throw new Error("Pi provider update cannot manage a native transport receipt");
+  }
+  const explicitCompat = engramTypeboxCompat === true;
+  // Snapshot antes del stage: la activación lo revalida tras el lock. Ausencia
+  // sin opt-in conserva la ruta previa (sin recibo); el opt-in publica el
+  // primero con `null`.
+  const providerReceiptSnapshot: string | null | undefined = priorReceipt.kind === "absent"
+    ? (explicitCompat ? null : undefined)
+    : fs.readFileSync(piProviderReceiptPath(homeDir), "utf8");
+  // Un recibo derived mantiene la receta acotada en actualizaciones deliberadas;
+  // si el oficial ya está corregido el builder devuelve registry y el retiro
+  // ocurre solo tras activación verificada.
+  const engramTypeboxCompatEffective = explicitCompat || priorReceipt.kind === "derived";
   const receiptPath = path.join(homeDir, ".jorgex-stack", "pi-receipt.json");
   const settingsPath = path.join(agentDir, "settings.json");
   for (const file of [receiptPath, settingsPath]) {
@@ -56,7 +81,7 @@ export async function updatePiProviderPackages(input: {
     "gentle-engram": await resolveLatestNpmPackageRelease("gentle-engram", fetch),
     "pi-mcp-adapter": await resolveLatestNpmPackageRelease("pi-mcp-adapter", fetch),
   };
-  const staged = await stagePiProviderPackages({ ...input, releases });
+  const staged = await stagePiProviderPackages({ ...input, engramTypeboxCompat: engramTypeboxCompatEffective, releases });
   assertPrivateUnchanged();
   const providerRoots = Object.fromEntries(staged.packages.map((provider) => [provider.name, provider.packageRoot])) as Record<"gentle-engram" | "pi-mcp-adapter", string>;
   const activeRoots = { "gentle-engram": path.join(modules, "gentle-engram"), "pi-mcp-adapter": path.join(modules, "pi-mcp-adapter") };
@@ -73,6 +98,7 @@ export async function updatePiProviderPackages(input: {
   assertPrivateUnchanged();
   const activation = await activatePiProviderPackages({
     homeDir, agentDir, stageDir: staged.stageDir, packages: staged.packages, settingsJson,
+    ...(providerReceiptSnapshot === undefined ? {} : { providerReceiptSnapshot }),
     verify: async () => {
       assertPrivateUnchanged();
       await smokePiProviderRuntime({ ...smoke, providerRoots: activeRoots });
