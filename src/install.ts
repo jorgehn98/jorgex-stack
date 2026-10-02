@@ -1166,7 +1166,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           }
           if (promptReconciliationFailed) {
             exitCode = 1;
-            p.log.error("Playwright CLI y navegador se han instalado y la preferencia quedó activa, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack sync' para repararla.");
+            p.log.error("Playwright CLI y navegador se han instalado y la preferencia quedó activa, pero la guía de navegador quedó en estado parcial. Ejecuta 'jorgex-stack install' para repararla.");
           } else {
             const verified = verifiedCapability ?? (preparedEnv === undefined
               ? inspectPlaywrightCapability({ browserVerified: true, expectedVersion: candidate.version })

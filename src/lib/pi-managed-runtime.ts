@@ -116,10 +116,10 @@ async function completeProjection(
   return projectionResult.kind === "blocked" ? projectionResult : packageResult;
 }
 
-const INSTALL_INIT_REMEDY = "Corrige la causa y ejecuta sync --agents pi para completar la inicialización.";
+const INSTALL_INIT_REMEDY = "Corrige la causa y ejecuta install --agents pi para completar la inicialización.";
 
 const INSTALL_INIT_TARGET_REMEDY =
-  "Corrige la causa y ejecuta sync --agents pi con el mismo --target-dir para completar la inicialización.";
+  "Corrige la causa y ejecuta install --agents pi con el mismo --target-dir para completar la inicialización.";
 
 function withInstallInitRemedy(
   result: Extract<PiManagedPackageResult, { kind: "blocked" }>,
@@ -220,7 +220,7 @@ function managedPackageResult(
   if (result.kind === "manual-existing") {
     return {
       kind: "manual-existing",
-      remedy: result.remedy ?? "Pi ya está configurado manualmente; conserva esa configuración o elimínala antes de ejecutar sync --agents pi.",
+      remedy: result.remedy ?? "Pi ya está configurado manualmente; conserva esa configuración o elimínala antes de ejecutar install --agents pi.",
     };
   }
   if (result.kind === "models") return { kind: "models", models: result.models };
@@ -919,7 +919,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
         ? {
             kind: "drift" as const,
             paths: result.paths,
-            remedy: "Ejecuta sync --agents pi para reparar la proyección de Pi.",
+            remedy: "Ejecuta install --agents pi para reparar la proyección de Pi.",
           }
         : result);
     },
@@ -993,7 +993,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
             return {
               kind: "blocked" as const,
               reason: "native-checker-conflict",
-              remedy: "El paquete Pi quedó activado; la comprobación nativa detectó un conflicto de propiedad sobre mcp.json/autoridad. Resuélvelo y ejecuta sync --agents pi para completar la inicialización.",
+              remedy: "El paquete Pi quedó activado; la comprobación nativa detectó un conflicto de propiedad sobre mcp.json/autoridad. Resuélvelo y ejecuta install --agents pi para completar la inicialización.",
             };
           }
           const expectedClaims = nativeAuthority === undefined
@@ -1012,7 +1012,7 @@ export async function runManagedPiSystem(input: PiRuntimeInput & {
           return {
             kind: "blocked" as const,
             reason: "native-checker-failed",
-            remedy: `El paquete Pi quedó activado; la comprobación nativa falló: ${error instanceof Error ? error.message : String(error)}. Inicialización nativa pendiente; ejecuta sync --agents pi para reintentar.`,
+            remedy: `El paquete Pi quedó activado; la comprobación nativa falló: ${error instanceof Error ? error.message : String(error)}. Inicialización nativa pendiente; ejecuta install --agents pi para reintentar.`,
           };
         }
       },
