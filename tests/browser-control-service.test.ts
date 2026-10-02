@@ -794,6 +794,15 @@ interface ServiceRotationInput {
    * authority no longer authenticates against active A.
    */
   readonly tamperProjectionSha256?: string;
+  /**
+   * Origin of the port already declared on the managed MCP before the rotation.
+   * `"stack"` (default): the first supervised install introduced the canonical
+   * pair, so this helper seeds the unrelated user extra. `"manual"`: the user
+   * hand-wrote the coherent literal port plus the extra during the first install
+   * (`manualEnvironment`), so the helper must not re-seed them and the case
+   * proves they came from the harness, not from the rotation.
+   */
+  readonly portOrigin?: "stack" | "manual";
 }
 
 /**
@@ -836,7 +845,12 @@ async function advanceInactiveServiceAToB(
     throw new Error("fixture: the managed Browser Control MCP must exist before the rotation");
   }
   // External user write: an unrelated extra must survive the environment removal.
-  entryBefore.environment = { ...(entryBefore.environment ?? {}), USER_NOTE: "preserve-me" };
+  // With a Stack-owned port this helper seeds it; with a manual port the first
+  // install already carried it, so the case proves the harness, not the helper,
+  // introduced the manual literal and the extra.
+  if ((input.portOrigin ?? "stack") === "stack") {
+    entryBefore.environment = { ...(entryBefore.environment ?? {}), USER_NOTE: "preserve-me" };
+  }
   fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
   const commandBefore = entryBefore.command;
   const environmentBefore = entryBefore.environment;
@@ -1170,6 +1184,133 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
         observables.mcpEnvironment?.BROWSER_CONTROL_PORT,
         "the Stack-introduced canonical port must be retired",
       ).toBeUndefined();
+      expect(observables.mcpEnvironment?.USER_NOTE, "the user extra must survive").toBe("preserve-me");
+
+      // The granular authority is retired after the readback.
+      expect(
+        observables.manifestAutostart,
+        "the retired environment must not keep its autostart authority",
+      ).toBeUndefined();
+
+      // Unit A and its binding are preserved verbatim: no rewrite, no restart.
+      expect(observables.unitBytes, "unit A must survive the rotation").not.toBeNull();
+      expect(observables.unitBytes, "unit A bytes must be untouched").toEqual(shown.unitBytesBefore);
+      expect(observables.manifestServiceUnit, "binding A must survive verbatim").toEqual(shown.bindingBefore);
+
+      // The second run issues read-only manager probes only: it must credit the
+      // unit inactive (at least one `show`) and never mutate it.
+      const secondVerbs = shown.secondInstallCalls
+        .map((argv) => serviceVerb(argv))
+        .filter((verb): verb is string => verb !== undefined);
+      expect(
+        secondVerbs,
+        "the second run must credit unit A inactive with a manager read",
+      ).toContain("show");
+      for (const forbidden of [
+        "daemon-reload",
+        "enable",
+        "start",
+        "restart",
+        "reload",
+        "stop",
+        "disable",
+        "mask",
+        "linger",
+      ]) {
+        expect(
+          secondVerbs,
+          `the second run must not issue ${forbidden} on an already-verified unit`,
+        ).not.toContain(forbidden);
+      }
+      expect(
+        secondVerbs.every((verb) => verb === "show"),
+        `the second run may only read the manager state (got ${JSON.stringify(secondVerbs)})`,
+      ).toBe(true);
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * A→B rotation with a MANUAL port (Spec T13, autoridad granular del entorno).
+   * The real supervised install of A introduces only the canonical FALSE into an
+   * environment whose literal managed port and `USER_NOTE` were hand-written by
+   * the user (`manualEnvironment`), so the recorded stamp is the real
+   * `portOwned:false` authority. Then ONLY the fixture's own `/version` server is
+   * stopped and the fake manager reports unit A loaded/inactive/dead/MainPID=0;
+   * the distinct verified active B is promoted through the real managed
+   * activation and a second real `runInstall` projects B's managed launcher.
+   *
+   * Contract: Stack retires ONLY the FALSE it introduced and the stamp, and
+   * preserves the manual port literal and the user extra verbatim — the manual
+   * port was never Stack's, so it must not be removed with the owned pair. Unit A
+   * and binding A survive untouched and the second run issues only read-only
+   * manager probes. Result is GREEN when the code is correct: no RED is fabricated
+   * for an already-implemented branch.
+   */
+  it("retires only the introduced FALSE and preserves the manual port and extras when an inactive service A is advanced to B", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-manual-port-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const port = await reserveOwnedLoopbackPort();
+    const manualEnvironment = { BROWSER_CONTROL_PORT: String(port), USER_NOTE: "preserve-me" } as const;
+    let rotation: ServiceRotationEvidence | undefined;
+    try {
+      const observables = await runServiceInstall({
+        prefix: ".jorgex-browser-control-service-rotation-manual-port-",
+        registerOwnedRoot: (root) => ownedRoots.push(root),
+        base: verificationBase(),
+        browserControlService: true,
+        supervisor: { port },
+        manualEnvironment,
+        onVerified: async (ctx) => {
+          rotation = await advanceInactiveServiceAToB(ctx, { portOrigin: "manual" });
+        },
+      });
+      if (rotation === undefined) throw new Error("fixture: the rotation callback did not run");
+      const shown = rotation;
+
+      // Scenario integrity: the real supervised A recorded a `portOwned:false`
+      // authority (the manual literal was never claimed by Stack), introduced the
+      // canonical FALSE and the harness landed the user extra before the second
+      // run.
+      expect(shown.stampBefore, "the supervised A must have recorded its granular authority").toBeDefined();
+      expect(
+        shown.stampBefore?.portOwned,
+        "the manual literal port must not be claimed by Stack",
+      ).toBe(false);
+      expect(shown.bindingBefore, "the supervised A must have recorded its unit binding").toBeDefined();
+      expect(shown.bindingBefore?.port, "the binding must witness the managed port").toBe(port);
+      expect(shown.environmentBefore).toMatchObject({
+        BROWSER_CONTROL_AUTOSTART: "false",
+        BROWSER_CONTROL_PORT: String(port),
+        USER_NOTE: "preserve-me",
+      });
+      expect(
+        shown.commandBefore,
+        "scenario integrity: the pre-rotation MCP command must be A's, not B's",
+      ).not.toEqual(shown.expectedCommandB);
+
+      // B is projected with its real managed launcher guard.
+      expect(
+        observables.mcpCommand,
+        "the MCP must advance to B's real managed invocation",
+      ).toEqual(shown.expectedCommandB);
+      expect(observables.mcpCommand?.[0]).toBe(process.execPath);
+      expect(observables.mcpCommand?.slice(-1)).toEqual(["mcp"]);
+
+      // Stack retires ONLY the FALSE it introduced: the manual port literal and
+      // the user extra survive verbatim.
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART,
+        "the Stack-introduced FALSE must be retired",
+      ).toBeUndefined();
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_PORT,
+        "the manual port literal must survive verbatim",
+      ).toBe(String(port));
       expect(observables.mcpEnvironment?.USER_NOTE, "the user extra must survive").toBe("preserve-me");
 
       // The granular authority is retired after the readback.
