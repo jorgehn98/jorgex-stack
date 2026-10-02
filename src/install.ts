@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,7 @@ import {
   staticResourceTargets,
   unownedCurrentTargets,
   type StaticResourceAuth,
+  type StaticResourceRow,
 } from "./lib/opencode-static-resources.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
@@ -53,7 +55,7 @@ import {
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
-import { probeBrowserControlRelay, retainVerifiedBrowserControlCandidate } from "./lib/browser-control-runtime.js";
+import { prepareBrowserControlRuntime, type BrowserControlRuntimeResult } from "./lib/browser-control-runtime.js";
 import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation, rollbackManagedBrowserActivation } from "./lib/browser-managed.js";
 import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
 import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./lib/browser-command.js";
@@ -362,6 +364,24 @@ export function makeContext(
   };
 }
 
+const BROWSER_CONTROL_SERVER = "browser-control";
+
+/** Target fijo de la skill oficial Browser Control dentro del configDir OpenCode. */
+function browserControlSkillTarget(configDir: string): string {
+  return path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+}
+
+/**
+ * Proyecta el SKILL.md oficial retenido en la release `active` verificada como
+ * copia byte-identical en el configDir de OpenCode. Nunca usa el canon
+ * compartido `~/.agents/skills`. Sin fuente (pending/unavailable) no se proyecta
+ * skill alguna; el adapter ya diagnostica el MCP pendiente.
+ */
+function planBrowserControlSkill(adapter: Adapter, ctx: InstallContext): FileAction[] {
+  if (adapter.id !== "opencode" || ctx.browserControlSkillSource === undefined) return [];
+  return [{ kind: "copy", source: ctx.browserControlSkillSource, target: browserControlSkillTarget(ctx.configDir) }];
+}
+
 export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   return [
     ...planSystemPrompt(adapter, ctx),
@@ -370,6 +390,7 @@ export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAct
     ...planCommands(adapter, ctx),
     ...planHooks(adapter, ctx),
     ...planPlugins(adapter, ctx),
+    ...planBrowserControlSkill(adapter, ctx),
   ];
 }
 
@@ -435,6 +456,9 @@ export function collectAllCurrentTargets(
         continue;
       }
       for (const action of buildPlan(adapter, ctx)) targets.add(path.resolve(action.target));
+      // Target fijo Browser Control: se reclama aunque el plan actual no lo
+      // genere (pending) para no borrar como huérfana la skill del active previo.
+      if (adapter.id === "opencode") targets.add(path.resolve(browserControlSkillTarget(detection.configDir)));
     } catch (error) {
       complete = false;
       warnings.push(
@@ -536,6 +560,10 @@ function recognizedOpenCodeOwnedTargets(ctx: InstallContext): Set<string> {
       recognized.add(path.resolve(path.join(pluginsDir, basename)));
     }
   }
+  // La skill Browser Control es un target fijo del adapter, aunque el plan
+  // canónico actual no la genere (pending) o no cargue el estado managed: un
+  // manifest coherente que la liste no debe bloquear ni quedar sin corroborar.
+  recognized.add(path.resolve(browserControlSkillTarget(ctx.configDir)));
   return recognized;
 }
 
@@ -641,6 +669,37 @@ function openCodeStaticResourceAuths(
   const ownedSet = new Set(ownedPaths.map((file) => path.resolve(file)));
   return [...targets].map(([target, row]) =>
     authenticateStaticResource(target, row, bytesByTarget.get(target) ?? null, ownedSet.has(target), configDir));
+}
+
+/**
+ * Autentica los bytes de la skill Browser Control como un recurso estático
+ * adicional: unowned idéntica al active es un no-op sin claim; unowned/owned con
+ * contenido distinto o estado inseguro bloquea y se preserva sin reemplazo.
+ * El digest del "canon" es el de los bytes retenidos de la release activa.
+ */
+function browserControlSkillAuth(
+  configDir: string,
+  ctx: InstallContext,
+  ownedPaths: readonly string[],
+): StaticResourceAuth | null {
+  const source = ctx.browserControlSkillSource;
+  if (source === undefined) return null;
+  const target = path.resolve(browserControlSkillTarget(configDir));
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(source);
+  } catch {
+    // Fuente ilegible: sin bytes actuales autenticables; el plan fallará cerrado.
+    return null;
+  }
+  const row: StaticResourceRow = {
+    source,
+    target,
+    size: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  const owned = new Set(ownedPaths.map((file) => path.resolve(file))).has(target);
+  return authenticateStaticResource(target, row, bytes, owned, path.resolve(configDir));
 }
 
 function assertOpenCodeStaticResourcesUsable(auths: readonly StaticResourceAuth[]): void {
@@ -985,42 +1044,60 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     opts.onRuntimeStatus?.(name, status);
   };
 
-  // Browser Control (Spec T13, primer vertical): toda operación real de
-  // OpenCode (install/sync/update) adquiere el candidato verificado desde el
-  // registro (metadata latest + SRI del tarball raíz) y lo retiene en el
-  // namespace fijo `.browser-control-candidate`, con independencia del estado del
-  // relay. El resultado es pendiente honesto y nunca éxito: con el relay presente
-  // o incierto no se promueve ni se reinicia; con el relay ausente la promoción
-  // verificada pertenece a un vertical posterior. Nunca se proyecta MCP/skill
-  // apuntando al candidato. dry-run y --target-dir no tocan la red del proveedor
-  // ni el relay.
+  // Browser Control (Spec T13): toda operación real de OpenCode
+  // (install/sync/update) ejecuta el controlador cerrado. Adquiere y retiene el
+  // candidato verificado en el namespace fijo `.browser-control-candidate`; con
+  // el relay presente/incierto no promueve ni reinicia; con ausencia comprobada
+  // publica el active y entrega la invocación MCP completa + la skill oficial.
+  // dry-run y --target-dir no tocan la red del proveedor ni el relay.
   let browserControlPending = false;
+  let browserControlRuntime: BrowserControlRuntimeResult | undefined;
+  let browserControlRollback: (() => Promise<void>) | undefined;
   if (useManifest && !opts.dryRun && opts.runtimes.includes("opencode")) {
-    const relayStatus = await probeBrowserControlRelay();
     try {
       const pnpmBin = resolvePnpmBin();
       if (pnpmBin === null) throw new Error("pnpm no disponible para verificar el árbol gestionado");
-      const candidate = await retainVerifiedBrowserControlCandidate({
+      browserControlRuntime = await prepareBrowserControlRuntime({
         stateDir: dataDir(),
         pnpmBin,
         fetchImpl: globalThis.fetch,
       });
-      browserControlPending = true;
-      const relayDetail = relayStatus === "present"
-        ? "el relay de Browser Control está presente y no se puede acreditar que esté inactivo; coordina manualmente con quien lo opera antes de reintentar"
-        : relayStatus === "unknown"
-          ? "no se pudo determinar si el relay de Browser Control está presente; compruébalo y coordina antes de reintentar"
-          : "la promoción verificada del relay ausente todavía no está habilitada";
-      p.log.error(
-        `Browser Control: candidato verificado ${candidate.release.version} retenido en ${candidate.candidateDir}, pero ${relayDetail}. No se proyecta MCP/skill ni se declara la capacidad todavía.`,
-      );
     } catch (error) {
+      browserControlRuntime = {
+        kind: "unavailable",
+        reason: `no se pudo verificar el candidato del proveedor (${error instanceof Error ? error.message : String(error)})`,
+      };
+    }
+    if (browserControlRuntime.kind === "ready") {
+      p.log.info(
+        `Browser Control: ${browserControlRuntime.version} verificado y activo; se proyecta el MCP gestionado y la skill oficial.`,
+      );
+      browserControlRollback = browserControlRuntime.rollback;
+    } else {
       browserControlPending = true;
+      const detail = browserControlRuntime.kind === "pending"
+        ? `candidato verificado ${browserControlRuntime.candidateVersion} retenido en el namespace candidato, pero ${browserControlRuntime.reason}`
+        : browserControlRuntime.reason;
       p.log.error(
-        `Browser Control: no se pudo verificar el candidato del proveedor (${error instanceof Error ? error.message : String(error)}). No se proyecta MCP/skill ni se declara la capacidad; revisa tu conexión y la metadata oficial antes de reintentar.`,
+        `Browser Control: ${detail}. No se proyecta MCP/skill ni se declara la capacidad; el resultado queda pendiente y revisa el diagnóstico antes de reintentar.`,
       );
     }
   }
+  // Recuperación acotada: si la proyección del caller falla tras promover una
+  // release nueva, se restaura el active previo (o se retira). El candidato
+  // retenido nunca se toca. Un fallo independiente de Engram no la dispara.
+  const rollbackBrowserControlProjection = async (): Promise<void> => {
+    const rollback = browserControlRollback;
+    browserControlRollback = undefined;
+    if (rollback === undefined) return;
+    try {
+      await rollback();
+    } catch (error) {
+      p.log.error(
+        `Browser Control: el rollback del active quedó incompleto (${error instanceof Error ? error.message : String(error)}). Revisa el receipt gestionado antes de reintentar.`,
+      );
+    }
+  };
 
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
@@ -1093,6 +1170,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       ...((enabledForRuntime.has(DEVTOOLS_MCP_SERVER) || ownedForRuntime.has(DEVTOOLS_MCP_SERVER))
         && devtoolsManagedInvocation !== undefined
         ? { devtoolsMcpInvocation: devtoolsManagedInvocation } : {}),
+      ...(id === "opencode" && browserControlRuntime?.kind === "ready"
+        ? {
+            browserControlInvocation: browserControlRuntime.invocation,
+            browserControlSkillSource: browserControlRuntime.skillSource,
+          }
+        : {}),
       playwrightCliEnabled: projectPlaywrightPrompt
         ? (opts.playwrightToolConsent?.runtimeSelection?.[id] ?? true)
         : (useManifest && loadPlaywrightCliPreference(playwrightCliPreferenceFile(), id) === true
@@ -1133,6 +1216,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const staticAuths = id === "opencode"
       ? openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? [])
       : [];
+    if (id === "opencode") {
+      const browserSkillAuth = browserControlSkillAuth(configDir, ctx, prevManifest?.owned ?? []);
+      if (browserSkillAuth !== null) staticAuths.push(browserSkillAuth);
+    }
     let preservedStaticTargets = unownedCurrentTargets(staticAuths);
     try {
       assertOpenCodeStaticResourcesUsable(staticAuths);
@@ -1140,6 +1227,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.error(error instanceof Error ? error.message : String(error));
       exitCode = 1;
       reportStatus(adapter.name, "failed");
+      await rollbackBrowserControlProjection();
       continue;
     }
 
@@ -1172,6 +1260,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const keepTarget = (target: string): boolean => !unmergeTargets.has(target) && !preservedStaticTargets.has(target);
       const liveOwned = plan.map((a) => path.resolve(a.target)).filter(keepTarget);
       const previousOwned = (prevManifest?.owned ?? []).map((target) => path.resolve(target)).filter(keepTarget);
+      // Un pending de Browser Control no sustituye al active: si la skill ya era
+      // owned, se conserva su ownership aunque el plan actual no la regenere.
+      if (id === "opencode") {
+        const bcSkill = path.resolve(browserControlSkillTarget(configDir));
+        if (previousOwned.includes(bcSkill) && !liveOwned.includes(bcSkill)) liveOwned.push(bcSkill);
+      }
       const officialFailed = official?.ran === true && !official.ok;
       let owned: string[];
       let pendingOrphans: string[];
@@ -1252,6 +1346,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
+      if (id === "opencode") browserControlRollback = undefined;
       reportStatus(adapter.name, browserControlPending && id === "opencode" ? "failed" : "ok");
       continue;
     }
@@ -1262,6 +1357,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       if (p.isCancel(ok) || !ok) {
         p.log.warn(`${adapter.name}: omitido por el usuario.`);
         reportStatus(adapter.name, "skipped");
+        if (id === "opencode") await rollbackBrowserControlProjection();
         continue;
       }
       // La confirmación puede quedar abierta un buen rato: re-planificar para
@@ -1312,6 +1408,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       for (const d of dirty.slice(0, 10)) p.log.message(`  ! ${d.action.target}`);
       exitCode = 1;
       reportStatus(adapter.name, "failed");
+      // No se hace rollback aquí: la config ya apunta al active promovido y
+      // retirarlo dejaría un MCP colgando. La pasada ya falla y un sync posterior
+      // repara; el rollback solo aplica antes de cualquier escritura.
     } else {
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
@@ -1360,6 +1459,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
           successfulRuns++;
           successfulContexts.push({ adapter, ctx });
+          if (id === "opencode") browserControlRollback = undefined;
           reportStatus(adapter.name, browserControlPending && id === "opencode" ? "failed" : "ok");
         }
       }

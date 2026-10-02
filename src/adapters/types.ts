@@ -96,6 +96,13 @@ export interface InstallContext {
    * apuntando a bytes ausentes.
    */
   browserControlInvocation?: { command: string; args: readonly string[] };
+  /**
+   * SKILL.md oficial retenido en la release `active` verificada (byte-identical).
+   * Solo lo llena el lifecycle Browser Control para OpenCode; se proyecta en
+   * `<configDir>/skills/browser-control/SKILL.md`, nunca en el canon compartido
+   * `~/.agents/skills`. Su ausencia no proyecta skill ni declara la capacidad.
+   */
+  browserControlSkillSource?: string;
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
   playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */

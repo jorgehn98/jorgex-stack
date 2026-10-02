@@ -17,27 +17,36 @@ import {
 } from "./helpers/pnpm-tooling.js";
 
 /**
- * T12 RED — integración raíz de Browser Control pendiente (Spec T12/T13).
+ * T12/T13 vertical — integración raíz de Browser Control (Spec 12/13).
  *
  * Contrato observable a través de la API `runInstall` existente, sin importar
- * módulos inexistentes: una instalación real de OpenCode v2 adquiere el paquete
+ * módulos inexistentes. Una instalación real de OpenCode v2 adquiere el paquete
  * obligatorio `@opencode-ai/browser-control` desde el registro (metadata latest
- * + tarball SRI), lo retiene como candidato verificado en
- * `<stateDir>/.browser-control-candidate` y NO lo publica como active cuando el
- * relay está presente en `BROWSER_CONTROL_PORT`. La capacidad no se declara:
- * no hay MCP `browser-control` ni skill que apunten al candidato, el namespace
- * operativo queda vacío y el comando no reporta éxito.
+ * + tarball SRI) y lo retiene como candidato verificado en
+ * `<stateDir>/.browser-control-candidate`.
+ *
+ * - Relay presente/incierto: el candidato queda pendiente y NO se promueve; no
+ *   hay MCP `browser-control` ni skill que apunten al candidato.
+ * - Ausencia comprobada (`ECONNREFUSED` en el puerto efectivo): el candidato se
+ *   promueve al namespace operativo real, el MCP usa la invocación completa del
+ *   launcher `active` (`planManagedBrowserInvocation(stateDir, pkg, ["mcp"])`) y
+ *   la skill oficial del paquete se proyecta byte-identical en
+ *   `<configDir>/skills/browser-control/SKILL.md`. Nunca se apunta al candidato.
  *
  * Frontera del doble (deliberadamente estrecha): solo se sustituye
  * `stageVerifiedBrowserTree` por un testigo real en disco; `node:crypto`,
  * `browserTreeSha256`, `activateManagedBrowserTree` y
  * `loadVerifiedManagedBrowserReceipt` corren reales. El fetch externo se
  * stubea (packument + tarball del root) y el relay es un servidor HTTP propio
- * en un puerto aleatorio. Cualquier otro fetch falla cerrado.
+ * o un puerto efímero ya cerrado. Cualquier otro fetch falla cerrado.
  *
- * RED de primera ejecución: hoy `runInstall` no consulta el registro de
- * Browser Control (`fetch` no recibe la URL de metadata), así que la primera
- * aserción falla por comportamiento ausente, no por setup inválido.
+ * El SKILL.md sintético del testigo es un payload de fixture explícito: no
+ * acredita la skill oficial publicada, solo comprueba que los bytes retenidos
+ * se proyectan byte-exactos.
+ *
+ * RED de primera ejecución (caso ausencia): hoy la retención ya funciona pero
+ * `runInstall` no promueve ni proyecta el active, así que el receipt activo es
+ * nulo y la aserción falla por comportamiento ausente, no por setup inválido.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,6 +59,24 @@ const BC_ROOT_BYTES = Buffer.from("official-browser-control-root-9.9.30\n");
 const BC_ROOT_INTEGRITY = `sha512-${createHash("sha512").update(BC_ROOT_BYTES).digest("base64")}`;
 
 const BROWSER_CONTROL_SERVER = "browser-control";
+const BC_CANDIDATE_DIRNAME = ".browser-control-candidate";
+
+/**
+ * Payload sintético de la skill oficial: bytes de fixture, NO una prueba de la
+ * skill publicada. La proyección real debe ser byte-identical a lo retenido.
+ */
+const BC_SKILL_BYTES = Buffer.from(
+  [
+    "---",
+    "name: browser-control",
+    "description: synthetic fixture payload, not the published skill",
+    "---",
+    "",
+    "# Browser Control (fixture)",
+    "",
+  ].join("\n"),
+  "utf8",
+);
 
 const prompts = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -90,7 +117,7 @@ type Witness = {
   entryPath: string;
 };
 
-function writeWitnessTree(root: string): Witness {
+function writeWitnessTree(root: string, options: { includeSkill?: boolean } = {}): Witness {
   const stageDir = path.join(root, "witness-stage");
   const nodeModulesPath = path.join(stageDir, "node_modules");
   const treePath = path.join(nodeModulesPath, "@opencode-ai", "browser-control");
@@ -110,6 +137,13 @@ function writeWitnessTree(root: string): Witness {
     )}\n`,
   );
   fs.writeFileSync(entryPath, BC_ROOT_BYTES);
+  if (options.includeSkill !== false) {
+    // Skill oficial dentro del paquete verificado (package.json: files). Se
+    // escribe antes del digest para que el árbol real la incluya.
+    const skillPath = path.join(treePath, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(skillPath, BC_SKILL_BYTES);
+  }
   return { stageDir, nodeModulesPath, treePath, entryPath };
 }
 
@@ -271,7 +305,7 @@ async function withIsolatedEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>)
   }
 }
 
-describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control pending integration", () => {
+describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime integration", () => {
   it("retains a verified Browser Control candidate without activating it while the relay is present", async () => {
     const ownedRoots: string[] = [];
     // Owned-resource owner armed before the first root or server exists.
@@ -404,13 +438,12 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control pending
     }
   });
 
-  it("acquires the verified candidate and reports honest pending when the relay is absent", async () => {
+  it("promotes the verified candidate to the real state and projects MCP+skill when the relay is absent", async () => {
     const ownedRoots: string[] = [];
     const releaseRoots = registerOwnedResourceCleanup("browser-control-absent-roots", () =>
       removeTemporaryRoots(ownedRoots),
     );
     const fetched: string[] = [];
-    const runtimeStatuses: [string, string][] = [];
 
     try {
       const base = resolveVerificationDiskBase({
@@ -452,7 +485,8 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control pending
 
           const install = await import("../src/install.js");
           const { dataDir } = await import("../src/lib/paths.js");
-          const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+          const { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } =
+            await import("../src/lib/browser-managed.js");
 
           const opencode = install.ADAPTERS.opencode!;
           const originalDetect = opencode.detect;
@@ -464,68 +498,279 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control pending
             configDir,
           });
 
-          let code: number;
           try {
-            code = await install.runInstall({
+            await install.runInstall({
               runtimes: ["opencode"],
               command: "install",
               dryRun: false,
               yes: true,
               mode: { mode: "human", subagentConcurrency: "serial" },
               engramBin: null,
-              onRuntimeStatus: (name, status) => runtimeStatuses.push([name, status]),
             });
           } finally {
             opencode.detect = originalDetect;
           }
 
-          // 1) Mandatory acquisition is not skipped just because the relay is
-          //    absent: registry latest + root tarball SRI only.
-          expect(fetched, "Browser Control acquisition must run even when the relay is absent").toEqual([
+          // 1) Acquisition runs exactly once even though the relay is absent:
+          //    registry latest + root tarball SRI, no re-fetch on promotion.
+          expect(fetched, "Browser Control acquisition must hit the registry latest + root tarball").toEqual([
             BC_METADATA_URL,
             BC_TARBALL_URL,
           ]);
 
-          // 2) Verified candidate retained under the fixed candidate namespace.
-          const candidateDir = path.join(dataDir(), ".browser-control-candidate");
-          const candidate = loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE);
-          expect(candidate, "a verified candidate receipt must be retained").not.toBeNull();
-          expect(candidate).toMatchObject({
+          // 2) Verified absence promotes the candidate to the real operational
+          //    namespace; the active receipt points at the managed release,
+          //    never at the candidate.
+          const active = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+          expect(
+            active,
+            "verified relay absence must publish the active managed Browser Control receipt",
+          ).not.toBeNull();
+          if (active === null) return;
+          expect(active).toMatchObject({
             schemaVersion: 1,
             packageName: BC_PACKAGE,
             version: BC_VERSION,
             integrity: BC_ROOT_INTEGRITY,
           });
-          expect(path.resolve(candidate!.rootPath).startsWith(path.resolve(candidateDir))).toBe(true);
+          const managedRoot = path.join(dataDir(), ".browser-managed", BROWSER_CONTROL_SERVER);
+          expect(path.resolve(active.rootPath).startsWith(path.resolve(managedRoot))).toBe(true);
+          expect(active.rootPath).not.toContain(BC_CANDIDATE_DIRNAME);
 
-          // 3) Never activated: the operational namespace stays empty.
-          expect(loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE)).toBeNull();
-          expect(
-            fs.existsSync(path.join(dataDir(), ".browser-managed", BROWSER_CONTROL_SERVER, "active.v1.json")),
-          ).toBe(false);
-
-          // 4) The runtime status is a real failure, not a silent complete.
-          expect(runtimeStatuses).toContainEqual(["OpenCode", "failed"]);
-
-          // 5) No active projection may point at the candidate.
+          // 3) The caller MCP is the full active launcher guard invocation with
+          //    exactly one `mcp` runtime arg, never the candidate.
+          const planner = planManagedBrowserInvocation(dataDir(), BC_PACKAGE, ["mcp"]);
           const configPath = path.join(configDir, "opencode.json");
           const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-            mcp?: { servers?: Record<string, unknown> };
+            mcp?: { servers?: Record<string, { type?: string; command?: string[] }> };
           };
-          expect(config.mcp?.servers?.[BROWSER_CONTROL_SERVER]).toBeUndefined();
-          expect(fs.existsSync(path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md"))).toBe(false);
-          expect(findFilesContaining(configDir, candidateDir), "no projection may reference the candidate").toEqual(
-            [],
-          );
+          const projected = config.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+          expect(projected?.type).toBe("local");
+          expect(projected?.command, "MCP must carry the verified active invocation").toEqual([
+            planner.command,
+            ...planner.args,
+          ]);
+          // Independent golden: Node + guard eval + non-empty guard source +
+          // active launcher + the single `mcp` runtime arg. Only the guard's
+          // presence is asserted, never its algorithm.
+          expect(projected?.command?.[0]).toBe(process.execPath);
+          expect(projected?.command?.slice(1, 3)).toEqual(["--input-type=module", "--eval"]);
+          expect(typeof projected?.command?.[3]).toBe("string");
+          expect((projected?.command?.[3] ?? "").length).toBeGreaterThan(0);
+          expect(projected?.command?.slice(-2)).toEqual([active.launcherPath, "mcp"]);
+          expect((projected?.command ?? []).filter((arg) => arg === "mcp")).toHaveLength(1);
 
-          // 6) Honest pending: not complete, nonzero, actionable diagnostic.
-          expect(code).not.toBe(0);
-          expect(prompts.outro).not.toHaveBeenCalledWith("Hecho.");
-          const diagnostics = loggedLines().join("\n");
-          expect(diagnostics).toMatch(/browser.?control/i);
-          expect(diagnostics).toMatch(/pendient|candidat/i);
+          // 4) The official skill payload is projected byte-identical into the
+          //    OpenCode config dir, never the shared global ~/.agents/skills.
+          const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+          expect(fs.existsSync(projectedSkill), "the active skill must be projected").toBe(true);
+          if (fs.existsSync(projectedSkill)) {
+            expect(fs.readFileSync(projectedSkill)).toEqual(BC_SKILL_BYTES);
+          }
+          expect(
+            fs.existsSync(
+              path.join(owned.env.HOME!, ".agents", "skills", BROWSER_CONTROL_SERVER, "SKILL.md"),
+            ),
+            "the shared global .agents skills home must not be a projection requirement",
+          ).toBe(false);
+
+          // 5) No projection may reference the candidate namespace.
+          expect(
+            findFilesContaining(configDir, BC_CANDIDATE_DIRNAME),
+            "no projection may reference the candidate",
+          ).toEqual([]);
+
+          // 6) A real second install is idempotent: the matching verified active
+          //    is reused without re-promotion, and the active receipt, MCP
+          //    invocation and skill bytes stay byte-identical.
+          const firstActive = {
+            version: active.version,
+            integrity: active.integrity,
+            rootPath: active.rootPath,
+            launcherPath: active.launcherPath,
+            launcherSha256: active.launcherSha256,
+            treeSha256: active.treeSha256,
+            entryPath: active.entryPath,
+          };
+          const firstCommand = projected?.command ?? [];
+          const firstSkill = fs.readFileSync(projectedSkill);
+
+          vi.clearAllMocks();
+          opencode.detect = () => ({
+            id: "opencode",
+            name: "OpenCode",
+            installed: true,
+            binPath: opencodeBin,
+            configDir,
+          });
+          try {
+            await install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+          } finally {
+            opencode.detect = originalDetect;
+          }
+          // The aggregate OpenCode status is "failed" because of the independent
+          // Engram prerequisite (SC-07), so the Browser Control result is read
+          // from its own diagnostic: the second install must reuse the verified
+          // active, never fall back to pending/unavailable.
+          const secondLogs = loggedLines();
+          expect(
+            secondLogs.some((line) => /Browser Control: .*verificado y activo/.test(line)),
+            `the second install must reuse the verified active (ready): ${secondLogs.join(" | ")}`,
+          ).toBe(true);
+          expect(
+            secondLogs.some((line) => /Browser Control: .*No se proyecta MCP\/skill/.test(line)),
+            "the second install must not fall back to pending/unavailable",
+          ).toBe(false);
+
+          const secondActive = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+          expect(secondActive, "the reused active receipt must remain").not.toBeNull();
+          expect({
+            version: secondActive?.version,
+            integrity: secondActive?.integrity,
+            rootPath: secondActive?.rootPath,
+            launcherPath: secondActive?.launcherPath,
+            launcherSha256: secondActive?.launcherSha256,
+            treeSha256: secondActive?.treeSha256,
+            entryPath: secondActive?.entryPath,
+          }).toEqual(firstActive);
+          const secondConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+            mcp?: { servers?: Record<string, { command?: string[] }> };
+          };
+          expect(
+            secondConfig.mcp?.servers?.[BROWSER_CONTROL_SERVER]?.command,
+            "the projected MCP invocation must not change on a second install",
+          ).toEqual(firstCommand);
+          expect(
+            fs.readFileSync(projectedSkill),
+            "the projected skill bytes must not change on a second install",
+          ).toEqual(firstSkill);
+          expect(firstSkill).toEqual(BC_SKILL_BYTES);
         },
       );
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  it("rolls back a promoted release that lacks the official skill and keeps the verified candidate", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-missing-skill-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-missing-skill-",
+        register: (root) => ownedRoots.push(root),
+      });
+
+      await withIsolatedEnv({ ...process.env, ...owned.env }, async () => {
+        const stateDir = path.join(owned.root, "state");
+        // The operational state root exists; it starts with no active receipt.
+        fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+        // First root is NONE (no prior active) and the verified witness omits
+        // `skills/browser-control/SKILL.md`: the bytes are SRI-verified but do
+        // not form a functional package, so promoting it cannot be ready.
+        const witness = writeWitnessTree(owned.root, { includeSkill: false });
+
+        const actualStage = await import("../src/lib/browser-stage.js");
+        const witnessStaged = {
+          treePath: witness.treePath,
+          nodeModulesPath: witness.nodeModulesPath,
+          treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
+          closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
+        };
+        vi.doMock("../src/lib/browser-stage.js", async () => {
+          const actual =
+            await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+              "../src/lib/browser-stage.js",
+            );
+          return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
+        });
+        // The injected fetch is the only allowed network source; a global fetch
+        // would mean an unintended real acquisition.
+        vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+          throw new Error(`browser-control-runtime: unexpected global fetch ${String(input)}`);
+        });
+
+        const { prepareBrowserControlRuntime, browserControlCandidateDir } = await import(
+          "../src/lib/browser-control-runtime.js"
+        );
+        const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+
+        const result = await prepareBrowserControlRuntime({
+          stateDir,
+          pnpmBin: path.join(owned.root, "bin", "pnpm"),
+          fetchImpl: registryFetch(fetched),
+          stageParent: owned.env.TMPDIR,
+          // Known absence via the injected seam: no global loopback probe.
+          probeRelay: async () => "absent",
+        });
+
+        // 1) Real acquisition: registry latest + root tarball SRI only.
+        expect(fetched, "Browser Control acquisition must hit the registry latest + root tarball").toEqual([
+          BC_METADATA_URL,
+          BC_TARBALL_URL,
+        ]);
+
+        // 2) Actionable unavailable that names the missing official skill, never
+        //    a false ready.
+        expect(result.kind).toBe("unavailable");
+        if (result.kind !== "unavailable") return;
+        expect(result.reason).toMatch(/skill/i);
+        expect(result.reason).toMatch(/oficial/i);
+
+        // 3) The failed promotion is rolled back: no broken active pointer and
+        //    no orphaned release left in the operational namespace.
+        expect(
+          loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE),
+          "a promotion that cannot project the official skill must not leave an active receipt",
+        ).toBeNull();
+        expect(
+          fs.existsSync(
+            path.join(stateDir, ".browser-managed", BROWSER_CONTROL_SERVER, "active.v1.json"),
+          ),
+        ).toBe(false);
+
+        // 4) The verified candidate survives intact: retained, re-verifiable and
+        //    never deleted nor replaced with fabricated bytes.
+        const candidateDir = browserControlCandidateDir(stateDir);
+        const candidate = loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE);
+        expect(candidate, "the verified candidate must be retained after rollback").not.toBeNull();
+        expect(candidate).toMatchObject({
+          schemaVersion: 1,
+          packageName: BC_PACKAGE,
+          version: BC_VERSION,
+          integrity: BC_ROOT_INTEGRITY,
+        });
+        expect(
+          fs.existsSync(
+            path.join(
+              candidate!.treePath,
+              "@opencode-ai",
+              "browser-control",
+              "skills",
+              BROWSER_CONTROL_SERVER,
+              "SKILL.md",
+            ),
+          ),
+          "the retained candidate must still lack the skill by fixture construction",
+        ).toBe(false);
+      });
     } finally {
       cleanupOwnedResourcesOrThrow();
       releaseRoots();
