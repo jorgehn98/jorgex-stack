@@ -62,30 +62,41 @@ export function resolveBrowserControlRelayPort(env: NodeJS.ProcessEnv = process.
 }
 
 /**
- * Sondeo HTTP Node directo y acotado a `http://127.0.0.1:<puerto>/version`, sin
- * proxy/redirects/credenciales ni SDK. Solo `ECONNREFUSED` directo contra ese
- * destino significa ausencia puntual; una respuesta 200 con un registro JSON que
- * declara `version` como string no vacío es presencia; cualquier otro error,
- * timeout, aborto o schema inválido es incierto. Nunca registra cuerpos ni URLs
- * de sesión.
+ * Resultado crudo y acotado del `/version`: solo ausencia puntual, lectura
+ * incierta o el payload JSON objeto. El cuerpo nunca se registra; el caller
+ * decide qué campos exige. Compartido por el gate de relay y por la prueba de
+ * readiness del servicio, para no duplicar el transporte (agente propio sin
+ * proxy, deadline total y tope de bytes).
  */
-export function probeBrowserControlRelay(env: NodeJS.ProcessEnv = process.env): Promise<BrowserControlRelayStatus> {
-  const port = resolveBrowserControlRelayPort(env);
-  if (port === null) return Promise.resolve("unknown");
-  return new Promise((resolve) => {
+export type BrowserControlRelayVersionRead =
+  | { readonly status: "absent" }
+  | { readonly status: "unknown"; readonly reason: string }
+  | { readonly status: "present"; readonly payload: Record<string, unknown> };
+
+/**
+ * HTTP Node directo y acotado a `http://127.0.0.1:<puerto>/version`, sin
+ * proxy/redirects/credenciales ni SDK. Solo `ECONNREFUSED` directo contra ese
+ * destino significa ausencia puntual; una respuesta 200 con un objeto JSON es
+ * `present` (el caller valida los campos); cualquier otro error, timeout, aborto
+ * o schema inválido es `unknown`. Nunca registra cuerpos ni URLs de sesión.
+ */
+async function readRelayVersionAtPort(port: number): Promise<BrowserControlRelayVersionRead> {
+  return await new Promise((resolve) => {
     // Agente propio: nunca el global, de modo que NODE_USE_ENV_PROXY no pueda
     // reclasificar ECONNREFUSED a través de un proxy implícito.
     const agent = new http.Agent({ keepAlive: false });
     let settled = false;
     let request: http.ClientRequest | null = null;
+    let response: http.IncomingMessage | null = null;
     let timer: NodeJS.Timeout | null = null;
-    const finish = (status: BrowserControlRelayStatus): void => {
+    const finish = (result: BrowserControlRelayVersionRead): void => {
       if (settled) return;
       settled = true;
       if (timer !== null) clearTimeout(timer);
       if (request !== null) request.destroy();
+      if (response !== null) response.destroy();
       agent.destroy();
-      resolve(status);
+      resolve(result);
     };
     request = http.request(
       {
@@ -96,47 +107,71 @@ export function probeBrowserControlRelay(env: NodeJS.ProcessEnv = process.env): 
         agent,
         headers: { accept: "application/json" },
       },
-      (response) => {
+      (res) => {
+        response = res;
         const chunks: Buffer[] = [];
         let bytes = 0;
-        response.on("data", (chunk: Buffer) => {
+        res.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
           if (bytes > RELAY_MAX_RESPONSE_BYTES) {
-            finish("unknown");
+            finish({ status: "unknown", reason: "respuesta del relay demasiado grande" });
             return;
           }
           chunks.push(chunk);
         });
-        response.on("error", () => finish("unknown"));
-        response.on("end", () => {
+        res.on("error", () => finish({ status: "unknown", reason: "error al leer la respuesta del relay" }));
+        res.on("end", () => {
           if (settled) return;
-          if (response.statusCode !== 200) {
-            finish("unknown");
+          if (res.statusCode !== 200) {
+            finish({ status: "unknown", reason: `el relay devolvió HTTP ${res.statusCode ?? "desconocido"}` });
             return;
           }
           try {
             const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-            const version =
-              parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-                ? (parsed as { version?: unknown }).version
-                : undefined;
-            finish(typeof version === "string" && version.trim() !== "" ? "present" : "unknown");
+            if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+              finish({ status: "unknown", reason: "el payload del relay no es un objeto JSON" });
+              return;
+            }
+            finish({ status: "present", payload: parsed as Record<string, unknown> });
           } catch {
-            finish("unknown");
+            finish({ status: "unknown", reason: "JSON del relay inválido" });
           }
         });
       },
     );
     request.on("error", (error: NodeJS.ErrnoException) => {
-      finish(error.code === "ECONNREFUSED" ? "absent" : "unknown");
+      finish(error.code === "ECONNREFUSED" ? { status: "absent" } : { status: "unknown", reason: `error de red ${error.code ?? "UNKNOWN"}` });
     });
     request.on("close", () => {
       if (timer !== null) clearTimeout(timer);
     });
-    timer = setTimeout(() => finish("unknown"), RELAY_DEADLINE_MS);
+    timer = setTimeout(() => finish({ status: "unknown", reason: "timeout al sondear el relay" }), RELAY_DEADLINE_MS);
     timer.unref();
     request.end();
   });
+}
+
+/**
+ * Sondeo del gate de relay: ausente/presente/incierto. Reutiliza el transporte
+ * anterior; `present` exige un 200 con un objeto JSON que declare `version` como
+ * string no vacío.
+ */
+export function probeBrowserControlRelay(env: NodeJS.ProcessEnv = process.env): Promise<BrowserControlRelayStatus> {
+  const port = resolveBrowserControlRelayPort(env);
+  if (port === null) return Promise.resolve("unknown");
+  return readRelayVersionAtPort(port).then((read) => {
+    if (read.status !== "present") return read.status;
+    const version = read.payload.version;
+    return typeof version === "string" && version.trim() !== "" ? "present" : "unknown";
+  });
+}
+
+/** Lectura del `/version` en un puerto explícito ya validado (prueba de readiness). */
+export function readBrowserControlRelayVersion(port: number): Promise<BrowserControlRelayVersionRead> {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    return Promise.resolve({ status: "unknown", reason: "puerto de relay inválido" });
+  }
+  return readRelayVersionAtPort(port);
 }
 
 /**

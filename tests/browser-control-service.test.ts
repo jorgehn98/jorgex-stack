@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,35 +23,39 @@ import type {
 import type { ManagedBrowserControlServiceBinding } from "../src/lib/manifest.js";
 
 /**
- * T12 Linux service vertical (Spec 12/13) — first RED at the EXISTING
- * `runInstall` API, without importing any module that does not exist yet.
+ * T12/T13 Linux service vertical (Spec 12/13) — the positive `runInstall` case
+ * evolves to the complete supervisor contract at the EXISTING API, without
+ * importing any module that does not exist yet.
  *
  * Contract under test: the explicit Linux opt-in (`browserControlService`)
- * reaches `runInstall` and materializes the fixed managed user unit
- * `jorgex-stack-browser-control.service` under `$XDG_CONFIG_HOME/systemd/user`,
- * built from the authenticated managed Browser Control active (Node + guard +
- * launcher + the complete `serve` runtime arg), and recorded as an owned
- * resource. It must never adopt or overwrite a foreign unit at the same path,
- * and the default (no flag) must create no unit, invoke no manager and leave the
- * native MCP projection without the external-service autostart marker.
- *
- * Artifact-only scope: creating the owned unit file is the whole effect here.
- * This fixture invokes NO manager (`systemctlCalls === []`: no
- * daemon-reload/enable/start and no HTTP probe) and leaves the native MCP
- * autostart marker untouched. The supervisor/endpoint proof and
- * `BROWSER_CONTROL_AUTOSTART=false` belong to the next vertical.
+ * reaches `runInstall`, materializes the fixed managed user unit
+ * `jorgex-stack-browser-control.service` under `$XDG_CONFIG_HOME/systemd/user`
+ * (built from the authenticated managed active: Node + guard + launcher + the
+ * complete `serve` runtime arg), records it as owned, and then supervises it:
+ * `daemon-reload`, `--no-reload enable` and `start` (and nothing else), probes
+ * the served `/version` on the owned loopback port, performs a stable readback,
+ * pins `BROWSER_CONTROL_AUTOSTART=false` + the literal port in the native MCP
+ * projection and records the `browserControlAutostart` stamp `{schemaVersion:1,
+ * projectionSha256, portOwned:true}`. It must never adopt or overwrite a foreign
+ * unit at the same path. Default (no flag) and foreign-preservation controls keep
+ * their zero-effect contracts; the artifact-only guarantee of the unit creator is
+ * retained by the direct `ensureBrowserControlServiceUnit` cases below, so no
+ * fictitious artifact-only product mode is introduced.
  *
  * Boundary (deliberately narrow): the Browser Control acquisition coordinator is
  * replaced by a REAL managed active projection seeded on disk through the public
  * `activateManagedBrowserTree` with a real `browserTreeSha256` (real FS, crypto
- * and managed state). The registry/relay acquisition path is not exercised here;
- * it is covered by tests/browser-control-runtime.test.ts. `systemctl` is a narrow
- * DI effect seam (`systemctlRunner`) so no real manager, DBus or personal session
- * is touched.
+ * and managed state). `systemctl` is a narrow DI effect seam
+ * (`systemctlRunner`) that answers the exact Name=Value protocol and starts an
+ * OWN loopback `/version` on the reserved port when `start` is issued; no real
+ * manager, DBus, personal session or browser is touched, and the reserved port is
+ * owned and closed by this test.
  *
- * RED today: `parseFlags` recognizes `--browser-control-service`, but `runInstall`
- * ignores it, so no unit file is created. The positive case fails on the missing
- * artifact — not on an API import or an invalid fixture.
+ * RED today: `parseFlags` recognizes `--browser-control-service` and the unit is
+ * created, but `runInstall` ignores the supervisor — no manager verb is issued,
+ * no `/version` is probed, and neither `BROWSER_CONTROL_AUTOSTART=false` nor the
+ * `browserControlAutostart` stamp is produced. The positive case fails on the
+ * missing supervisor operations, not on an API import or an invalid fixture.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -60,7 +66,21 @@ const SERVICE_UNIT_FILENAME = "jorgex-stack-browser-control.service";
 
 /** Fixed release fixture: real bytes, real SRI; a version bump is data, not a new framework. */
 const BC_VERSION = "9.9.30";
-const BC_ROOT_BYTES = Buffer.from("browser-control-service-root-bytes\n");
+/**
+ * Synthetic identity of the retained entry, never the published literal. The
+ * supervisor extracts `browserControlBuildId` statically from the authenticated
+ * launcher and must match it against the served `/version` buildId; a valid UTC
+ * millisecond string so the production `Date` roundtrip holds.
+ */
+const BC_BUILD_ID = "2026-10-02T00:00:00.000Z";
+const BC_ROOT_BYTES = Buffer.from(
+  [
+    `var browserControlBuildId = "${BC_BUILD_ID}";`,
+    `var browserControlVersion = "${BC_VERSION}";`,
+    "",
+  ].join("\n"),
+  "utf8",
+);
 const BC_SKILL_BYTES = Buffer.from(
   ["---", "name: browser-control", "description: service fixture, not the published skill", "---", "", "# fixture", ""].join("\n"),
   "utf8",
@@ -79,9 +99,9 @@ const BC_INTEGRITY_B = `sha512-${createHash("sha512").update(BC_ROOT_BYTES_B).di
 const BC_TARBALL_URL_B = `https://registry.npmjs.org/${BC_PACKAGE}/-/${BROWSER_CONTROL_SERVER}-${BC_VERSION_B}.tgz`;
 
 /**
- * Narrow DI seam requested from the root API. Production currently ignores it;
- * the shape is declared here so the RED is unambiguous and a real implementation
- * can wire it without inventing a second contract.
+ * Narrow DI seam of the manager process boundary: argv in, bounded
+ * `{status, stdout}` out. It represents only the external `systemctl` edge — it
+ * never returns a controller `ready` or simulated receipts.
  */
 export interface BrowserControlSystemctlRunner {
   (args: readonly string[]): Promise<{ status: number; stdout: string }>;
@@ -92,6 +112,24 @@ export type BrowserControlServiceInstallOptions = InstallOptions & {
   browserControlService?: boolean;
   systemctlRunner?: BrowserControlSystemctlRunner;
 };
+
+/**
+ * Granular autostart authority of the verified external service in the manifest
+ * row (Spec T13). Declared locally until the source field exists, so the RED
+ * does not import a not-yet-existing API; it is layered on the public manifest
+ * shape, never cast into an unrelated type.
+ */
+export interface BrowserControlAutostartStamp {
+  readonly schemaVersion: number;
+  readonly projectionSha256: string;
+  readonly portOwned: boolean;
+}
+
+interface AutostartManifestRow {
+  readonly owned?: readonly string[];
+  readonly serviceUnit?: ManagedBrowserControlServiceBinding;
+  readonly browserControlAutostart?: BrowserControlAutostartStamp;
+}
 
 const prompts = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -154,6 +192,28 @@ afterEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
 });
+
+/**
+ * The four process-boundary delegates whose invocation the uninstall guards
+ * observe. `runUninstall` has no DI runner, so the real spawn surface is the
+ * seam; the install and uninstall phases share it in the same private HOME.
+ */
+const childProcessDelegates = [
+  childProcessSpies.spawn,
+  childProcessSpies.spawnSync,
+  childProcessSpies.execFile,
+  childProcessSpies.execFileSync,
+] as const;
+
+/**
+ * Aggregate invocation count across every process-boundary delegate. Callers
+ * compare two snapshots to obtain a delta: the install phase legitimately runs
+ * real delegates (the OpenCode v2 `--version` gate), so an absolute count would
+ * misattribute those calls to the removal.
+ */
+function processDelegateCallTotal(): number {
+  return childProcessDelegates.reduce((total, delegate) => total + delegate.mock.calls.length, 0);
+}
 
 const ISOLATED_KEYS = [
   "HOME",
@@ -231,18 +291,18 @@ function writeWitnessTree(
   return { stageDir, nodeModulesPath, treePath, entryPath };
 }
 
-interface RecordingRunner {
+interface ManagerRunner {
   readonly calls: string[][];
   readonly run: BrowserControlSystemctlRunner;
 }
 
 /**
- * Fake manager effect seam. It only records argv: the artifact-only contract
- * expects zero calls, so any `systemctl` invocation fails the test instead of
- * being answered. The effective-unit/endpoint proof, `start` and its private
- * listener belong to the later verified case.
+ * Recording-only runner for the zero-effect controls (default/foreign). Every
+ * invocation is recorded and answered with an empty, successful reply; the
+ * controls assert the call log stays empty, so an unexpected manager mutation
+ * fails the test instead of being simulated.
  */
-function createRecordingRunner(): RecordingRunner {
+function createRecordingRunner(): ManagerRunner {
   const calls: string[][] = [];
   const run: BrowserControlSystemctlRunner = async (args) => {
     calls.push([...args]);
@@ -251,14 +311,192 @@ function createRecordingRunner(): RecordingRunner {
   return { calls, run };
 }
 
+/** Manager verbs that mutate state; a read-only `show` is never one of them. */
+const SERVICE_MUTATING_VERBS = new Set([
+  "daemon-reload",
+  "enable",
+  "disable",
+  "start",
+  "stop",
+  "restart",
+  "reload",
+  "mask",
+  "unmask",
+  "linger",
+]);
+
+/** First non-option argv token: the systemctl verb, independent of option order. */
+function serviceVerb(argv: readonly string[]): string | undefined {
+  return argv.find((token) => token !== "systemctl" && !token.startsWith("-"));
+}
+
+interface SupervisorManagerFixture extends ManagerRunner {
+  /** Ordered external-boundary log: manager calls and the served `/version`. */
+  readonly events: string[];
+  readonly versionRequests: string[];
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Fake manager that answers only the closed supervisor protocol and, when
+ * `start` is issued, brings up this test's OWN loopback `/version` on the
+ * reserved port. The returned pid is the current process, so the production
+ * readiness check (HTTP pid === readback MainPID) is grounded in a real process
+ * without spawning Node, systemctl, DBus or a browser. `connections` are closed
+ * by `close()` before the caller removes any file.
+ */
+function createSupervisorManagerFixture(input: {
+  readonly unitPath: string;
+  readonly port: number;
+  /**
+   * External write that lands WHILE the `start` verb runs, after the real
+   * external start and before the caller's final reconcile. It represents a
+   * concurrent user/manual config write, never a forged manager/controller
+   * reply.
+   */
+  readonly onStart?: () => void | Promise<void>;
+}): SupervisorManagerFixture {
+  const calls: string[][] = [];
+  const events: string[] = [];
+  const versionRequests: string[] = [];
+  let reloaded = false;
+  let started = false;
+  let server: Server | undefined;
+
+  const showOutput = (): string => {
+    const lines = [
+      `Id=${SERVICE_UNIT_FILENAME}`,
+      `LoadState=${reloaded ? "loaded" : "not-found"}`,
+      `FragmentPath=${reloaded ? input.unitPath : ""}`,
+      "DropInPaths=",
+      "NeedDaemonReload=no",
+      `ActiveState=${started ? "active" : "inactive"}`,
+      `SubState=${started ? "running" : "dead"}`,
+    ];
+    if (started) lines.push(`MainPID=${process.pid}`);
+    return `${lines.join("\n")}\n`;
+  };
+
+  const startVersionServer = async (): Promise<void> => {
+    if (server !== undefined) return;
+    const created = createServer((request, response) => {
+      versionRequests.push(`${request.method ?? ""} ${request.url ?? ""}`);
+      events.push("version:GET /version");
+      if (request.method === "GET" && request.url === "/version") {
+        // Identity/build/protocol only: never sessions, targets or URLs.
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(
+          JSON.stringify({
+            pid: process.pid,
+            version: BC_VERSION,
+            buildId: BC_BUILD_ID,
+            managed: false,
+            protocol: 2,
+          }),
+        );
+        return;
+      }
+      response.writeHead(404, { "Content-Type": "text/plain" });
+      response.end("not found");
+    });
+    await new Promise<void>((resolve, reject) => {
+      created.once("error", reject);
+      created.listen(input.port, "127.0.0.1", () => resolve());
+    });
+    server = created;
+  };
+
+  const run: BrowserControlSystemctlRunner = async (args) => {
+    calls.push([...args]);
+    const verb = serviceVerb(args);
+    events.push(`call:${verb ?? "unknown"}`);
+    switch (verb) {
+      case "show":
+        return { status: 0, stdout: showOutput() };
+      case "daemon-reload":
+        reloaded = true;
+        return { status: 0, stdout: "" };
+      case "enable":
+        return { status: 0, stdout: "" };
+      case "start":
+        started = true;
+        await startVersionServer();
+        await input.onStart?.();
+        return { status: 0, stdout: "" };
+      default:
+        return { status: 1, stdout: "" };
+    }
+  };
+
+  return {
+    calls,
+    events,
+    versionRequests,
+    run,
+    close: async () => {
+      const active = server;
+      server = undefined;
+      if (active === undefined) return;
+      await new Promise<void>((resolve) => {
+        active.closeAllConnections?.();
+        active.close(() => resolve());
+      });
+    },
+  };
+}
+
+/**
+ * Reserves an ephemeral loopback port and closes its listener, leaving a
+ * genuine `ECONNREFUSED` behind: the preflight must observe relay absence on
+ * this exact owned port, never the default 19989 or a personal relay. The same
+ * port is later bound exclusively by the fake supervisor `start`.
+ */
+async function reserveOwnedLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  probe.on("clientError", () => undefined);
+  await new Promise<void>((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => resolve());
+  });
+  const port = (probe.address() as AddressInfo).port;
+  await new Promise<void>((resolve, reject) => {
+    probe.close((error) => (error === undefined ? resolve() : reject(error)));
+  });
+  return port;
+}
+
+/**
+ * External write at the FS boundary: the user hand-writes the native MCP
+ * `environment` (the exact canonical FALSE + literal port) on the managed
+ * launcher already projected. Like a late manual config confirmation, it is
+ * genuine external state, not a forged controller/manager reply.
+ */
+function writeManualBrowserControlEnvironment(configDir: string, port: number): void {
+  const file = path.join(configDir, "opencode.json");
+  const config = JSON.parse(fs.readFileSync(file, "utf8")) as {
+    mcp?: { servers?: Record<string, { environment?: Record<string, string> }> };
+  };
+  const entry = config.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+  if (entry === undefined) throw new Error("fixture: the managed MCP must be projected before start");
+  entry.environment = { BROWSER_CONTROL_AUTOSTART: "false", BROWSER_CONTROL_PORT: String(port) };
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+}
+
 interface ServiceObservables {
   readonly exitCode: number;
   readonly unitPath: string;
   readonly unitBytes: Buffer | null;
   readonly manifestOwned: readonly string[];
+  readonly manifestAutostart: BrowserControlAutostartStamp | undefined;
+  readonly manifestServiceUnit: ManagedBrowserControlServiceBinding | undefined;
   readonly mcpCommand: readonly string[] | undefined;
   readonly mcpEnvironment: Record<string, unknown> | undefined;
   readonly systemctlCalls: readonly string[][];
+  /** Ordered external-boundary log (manager calls and served `/version`). */
+  readonly supervisorEvents: readonly string[];
+  readonly versionRequests: readonly string[];
+  /** The real managed launcher invocation the MCP projection must reproduce. */
+  readonly expectedMcpCommand: readonly string[];
 }
 
 interface RunServiceInput {
@@ -267,6 +505,27 @@ interface RunServiceInput {
   readonly base: string;
   readonly browserControlService?: boolean;
   readonly foreignUnitBytes?: Buffer;
+  /** When present, installs the supervisor-protocol fake on the owned port. */
+  readonly supervisor?: { readonly port: number };
+  /**
+   * When true, an EXTERNAL writer (the user) sets the manual native MCP
+   * `environment` to the exact canonical values while the manager `start` verb
+   * runs — i.e. between the original MCP projection and the final reconcile.
+   */
+  readonly manualEnvironmentAtStart?: boolean;
+  /**
+   * Runs INSIDE the isolated HOME after `runInstall` verified the service and
+   * BEFORE the observables are read, so a case can act on the verified root
+   * (e.g. run the real `runUninstall`) in the same private HOME and have the
+   * returned observables reflect that later state.
+   */
+  readonly onVerified?: (ctx: VerifiedServiceContext) => void | Promise<void>;
+}
+
+/** Private paths of a verified install, exposed only for the in-place callback. */
+interface VerifiedServiceContext {
+  readonly configDir: string;
+  readonly unitPath: string;
 }
 
 /**
@@ -283,7 +542,14 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
   });
   let observables: ServiceObservables | undefined;
 
-  await withIsolatedEnv({ ...process.env, ...owned.env }, async () => {
+  const isolatedEnv: NodeJS.ProcessEnv = { ...process.env, ...owned.env };
+  if (input.supervisor !== undefined) {
+    // The owned, reserved-then-closed port: absent at preflight, served by the
+    // fake supervisor `start`, and pinned literally in the MCP projection.
+    isolatedEnv.BROWSER_CONTROL_PORT = String(input.supervisor.port);
+  }
+
+  await withIsolatedEnv(isolatedEnv, async () => {
     const home = owned.env.HOME!;
     const stateDir = path.join(home, ".jorgex-stack");
     const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
@@ -325,6 +591,8 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
         "SKILL.md",
       ),
     };
+    // The exact managed launcher argv the MCP projection must reproduce.
+    const expectedMcpCommand = [ready.invocation.command, ...ready.invocation.args];
     vi.doMock("../src/lib/browser-control-runtime.js", async () => {
       const actual =
         await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
@@ -340,7 +608,17 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
     const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), { output: "opencode v2.0.20" });
     const install = await import("../src/install.js");
     const { readManifest } = await import("../src/lib/manifest.js");
-    const runner = createRecordingRunner();
+    const supervisorSpec = input.supervisor;
+    const supervisor = supervisorSpec === undefined
+      ? undefined
+      : createSupervisorManagerFixture({
+          unitPath,
+          port: supervisorSpec.port,
+          ...(input.manualEnvironmentAtStart === true
+            ? { onStart: () => writeManualBrowserControlEnvironment(configDir, supervisorSpec.port) }
+            : {}),
+        });
+    const runner: ManagerRunner = supervisor ?? createRecordingRunner();
 
     const opencode = install.ADAPTERS.opencode!;
     const originalDetect = opencode.detect;
@@ -367,6 +645,15 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
       exitCode = await install.runInstall(options);
     } finally {
       opencode.detect = originalDetect;
+      // Close this test's own listener (and its connections) before any owned
+      // root is removed by the caller's cleanup.
+      await supervisor?.close();
+    }
+
+    // The case may now act on the verified root (same private HOME). Observables
+    // below are read afterwards, so they witness the later state.
+    if (input.onVerified !== undefined) {
+      await input.onVerified({ configDir, unitPath });
     }
 
     const unitBytes = fs.existsSync(unitPath) ? fs.readFileSync(unitPath) : null;
@@ -378,14 +665,20 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
       ? (JSON.parse(fs.readFileSync(configPath, "utf8")) as ProjectedConfig)
       : {};
     const projected = config.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+    const manifestRow = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
     observables = {
       exitCode,
       unitPath,
       unitBytes,
-      manifestOwned: readManifest().runtimes.opencode?.owned ?? [],
+      manifestOwned: manifestRow?.owned ?? [],
+      manifestAutostart: manifestRow?.browserControlAutostart,
+      manifestServiceUnit: manifestRow?.serviceUnit,
       mcpCommand: projected?.command,
       mcpEnvironment: projected?.environment,
       systemctlCalls: runner.calls,
+      supervisorEvents: supervisor?.events ?? [],
+      versionRequests: supervisor?.versionRequests ?? [],
+      expectedMcpCommand,
     };
   });
 
@@ -403,26 +696,31 @@ function verificationBase(): string {
 }
 
 describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux user service", () => {
-  it("creates the fixed owned unit with the authenticated `serve` invocation when the opt-in is explicit", async () => {
+  it("creates the fixed owned unit and supervises it with the authenticated `serve` invocation when the opt-in is explicit", async () => {
     const ownedRoots: string[] = [];
     const releaseRoots = registerOwnedResourceCleanup("browser-control-service-roots", () =>
       removeTemporaryRoots(ownedRoots),
     );
+    const port = await reserveOwnedLoopbackPort();
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-",
         registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
+        supervisor: { port },
       });
 
-      // 1) The fixed user unit is materialized. This is the first RED: today the
-      //    explicit opt-in is parsed but ignored, so no file exists.
+      // 1) The fixed user unit is materialized and recorded as owned.
       expect(
         observables.unitBytes,
         `the fixed user unit must be created at ${observables.unitPath}`,
       ).not.toBeNull();
       const unit = observables.unitBytes!.toString("utf8");
+      expect(
+        observables.manifestOwned.map((file) => path.resolve(file)),
+        "the created unit must be recorded as an owned resource",
+      ).toContain(path.resolve(observables.unitPath));
 
       // 2) ExecStart is direct argv (no shell, no elevation), uses the
       //    authenticated Node and the complete `serve` runtime arg.
@@ -440,32 +738,157 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       // Literal `%` must be doubled for systemd specifier safety.
       expect(unit.replaceAll("%%", "")).not.toContain("%");
 
-      // 3) Ownership: the fixed unit is recorded in the known owned list only
-      //    when the explicit opt-in created it.
+      // 3) The supervisor issues EXACTLY daemon-reload, --no-reload enable and
+      //    start (this order), and never restart/stop/--now/--force/linger.
+      const mutating = observables.systemctlCalls
+        .map((argv) => serviceVerb(argv))
+        .filter((verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb));
       expect(
-        observables.manifestOwned.map((file) => path.resolve(file)),
-        "the created unit must be recorded as an owned resource",
-      ).toContain(path.resolve(observables.unitPath));
+        mutating,
+        "the only manager mutations must be daemon-reload, --no-reload enable and start",
+      ).toEqual(["daemon-reload", "enable", "start"]);
+      const preflightShowEvent = observables.supervisorEvents.indexOf("call:show");
+      const daemonReloadEvent = observables.supervisorEvents.indexOf("call:daemon-reload");
+      expect(
+        preflightShowEvent,
+        "the absent-unit preflight read must precede any mutating verb",
+      ).toBeGreaterThanOrEqual(0);
+      expect(preflightShowEvent).toBeLessThan(daemonReloadEvent);
+      const enableArgs = observables.systemctlCalls.find((argv) => serviceVerb(argv) === "enable") ?? [];
+      expect(enableArgs, "enable must suppress the implicit daemon reload").toContain("--no-reload");
+      const flattened = observables.systemctlCalls.flat();
+      for (const forbidden of ["restart", "stop", "reload", "disable", "mask", "linger", "--now", "--force"]) {
+        expect(flattened, `the supervisor must never issue ${forbidden}`).not.toContain(forbidden);
+      }
+      expect(
+        flattened,
+        "the supervisor must operate in the user scope, never system/global",
+      ).not.toContain("--system");
+      expect(flattened).not.toContain("--global");
+      expect(flattened).toContain("--user");
 
-      // 4) Artifact-only creation writes the unit file only: it invokes NO
-      //    manager. No daemon-reload/enable/start and no HTTP probe happen here;
-      //    the supervisor/endpoint proof and the daemon lifecycle belong to the
-      //    later verified case. Asserting the whole call log is empty is the
-      //    strongest form of the restart/stop/linger/foreign negatives.
+      // 4) The owned `/version` endpoint is probed after `start` and a stable
+      //    operational readback follows it (observed at the process boundary).
       expect(
-        observables.systemctlCalls,
-        "the artifact-only creation must not invoke the manager",
-      ).toEqual([]);
+        observables.versionRequests.length,
+        "the supervisor must probe the owned /version endpoint",
+      ).toBeGreaterThanOrEqual(1);
+      const startEvent = observables.supervisorEvents.indexOf("call:start");
+      const firstVersionEvent = observables.supervisorEvents.indexOf("version:GET /version");
+      expect(startEvent, "start must be issued before the endpoint exists").toBeGreaterThanOrEqual(0);
+      expect(
+        firstVersionEvent,
+        "the /version probe must happen after start",
+      ).toBeGreaterThan(startEvent);
+      expect(
+        observables.supervisorEvents.lastIndexOf("call:show"),
+        "a stable manager readback must follow the /version probe",
+      ).toBeGreaterThan(firstVersionEvent);
 
-      // 5) Without the supervisor/endpoint proof this fixture cannot produce,
-      //    the external service is NOT authenticated: the native MCP autostart
-      //    marker must stay native (unset or `true`), never pinned to `false`.
-      //    `BROWSER_CONTROL_AUTOSTART=false` belongs to the next vertical.
-      const autostart = observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART;
-      expect(
-        autostart === undefined || autostart === "true",
-        `an unverified external service must not pin native autostart to false (got ${String(autostart)})`,
+      // 5) The pinned MCP projection is the REAL managed launcher (same guarded
+      //    CLI), so the `false` below is grounded in the authenticated active —
+      //    not in a fabricated artifact-only mode.
+      expect(observables.mcpCommand).toEqual(observables.expectedMcpCommand);
+      expect(observables.mcpCommand?.[0]).toBe(process.execPath);
+      expect(observables.mcpCommand?.slice(-1)).toEqual(["mcp"]);
+      expect(observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART).toBe("false");
+      expect(observables.mcpEnvironment?.BROWSER_CONTROL_PORT).toBe(String(port));
+
+      // 6) The autostart authority is the introduced stamp, with no extra fields.
+      const stamp = observables.manifestAutostart;
+      expect(stamp, "the verified service must record its autostart authority").toBeDefined();
+      expect(Object.keys(stamp!).sort(), "only the introduced stamp fields are present").toEqual([
+        "portOwned",
+        "projectionSha256",
+        "schemaVersion",
+      ]);
+      expect(stamp!.schemaVersion).toBe(1);
+      expect(stamp!.portOwned).toBe(true);
+      expect(stamp!.projectionSha256).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * Negative granularity of the autostart authority (Spec T13): a
+   * `BROWSER_CONTROL_AUTOSTART=false` + literal port that the USER wrote by hand
+   * on the managed MCP before Stack ever claimed it must be preserved with a
+   * conflict, never adopted by equality. The external write lands exactly while
+   * the manager `start` verb runs (between the original projection and the final
+   * environment reconcile) and there is no prior `browserControlAutostart`
+   * stamp. Stack must not stamp `portOwned:true` for an environment it did not
+   * create, must not print the managed-autostart success marker, and must not
+   * roll back or stop the just-started service to hide the conflict: the unit,
+   * its claim/binding and the manual environment all survive.
+   */
+  it("preserves a manual canonical MCP environment with conflict instead of adopting it by equality", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-manual-env-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const port = await reserveOwnedLoopbackPort();
+    try {
+      const observables = await runServiceInstall({
+        prefix: ".jorgex-browser-control-service-manual-env-",
+        registerOwnedRoot: (root) => ownedRoots.push(root),
+        base: verificationBase(),
+        browserControlService: true,
+        supervisor: { port },
+        manualEnvironmentAtStart: true,
+      });
+
+      // 1) No authority is stamped for an environment Stack never created and
+      //    had no prior claim for. (RED today: reconcile reports `unchanged` and
+      //    install stamps `portOwned:true` by equality.)
+      expect.soft(
+        observables.manifestAutostart,
+        "a manual FALSE without a prior claim must never be adopted by equality",
+      ).toBeUndefined();
+
+      // 2) The conflict is explicit and actionable, never the managed-autostart
+      //    ready/success marker.
+      const conflictDiagnostics = [
+        ...prompts.log.warn.mock.calls.map((call) => String(call[0] ?? "")),
+        ...prompts.log.error.mock.calls.map((call) => String(call[0] ?? "")),
+      ];
+      expect.soft(
+        conflictDiagnostics.some(
+          (message) => /browser.?control/i.test(message) && /(manual|entorno|environment)/i.test(message),
+        ),
+        `the manual environment must be reported as an actionable conflict (got ${JSON.stringify(conflictDiagnostics)})`,
       ).toBe(true);
+      const successMessages = prompts.log.success.mock.calls.map((call) => String(call[0] ?? ""));
+      expect.soft(
+        successMessages.some((message) => /autostart/i.test(message)),
+        `the managed-autostart success marker must not be emitted for a manual environment (got ${JSON.stringify(successMessages)})`,
+      ).toBe(false);
+
+      // 3) The own initial activation legitimately ran: the conflict must not be
+      //    hidden by rolling back, stopping or disabling the service.
+      const verbs = observables.systemctlCalls.map((argv) => serviceVerb(argv));
+      expect.soft(verbs, "the own initial activation may run the manager start").toContain("start");
+      const flattened = observables.systemctlCalls.flat();
+      for (const forbidden of ["stop", "restart", "disable"]) {
+        expect.soft(flattened, `the conflict must not issue ${forbidden}`).not.toContain(forbidden);
+      }
+
+      // 4) The unit, its claim/binding and the manual environment survive
+      //    verbatim.
+      expect.soft(observables.unitBytes, "the created unit must be preserved").not.toBeNull();
+      expect.soft(
+        observables.manifestOwned.map((file) => path.resolve(file)),
+        "the created unit must remain claimed",
+      ).toContain(path.resolve(observables.unitPath));
+      expect.soft(observables.manifestServiceUnit, "the serviceUnit binding must remain").toBeDefined();
+      expect.soft(observables.manifestServiceUnit?.unitSha256, "the binding must witness the preserved unit").toBe(
+        createHash("sha256").update(observables.unitBytes!).digest("hex"),
+      );
+      expect.soft(observables.mcpEnvironment, "the manual environment must be preserved verbatim").toEqual({
+        BROWSER_CONTROL_AUTOSTART: "false",
+        BROWSER_CONTROL_PORT: String(port),
+      });
     } finally {
       cleanupOwnedResourcesOrThrow();
       releaseRoots();
@@ -1199,6 +1622,225 @@ describe.skipIf(process.platform !== "linux")(
             }
           },
         );
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
+
+interface PendingUninstallAuthority {
+  readonly uninstallExitCode: number;
+  /** Granular autostart authority copied verbatim from the manifest before uninstall. */
+  readonly stampBefore: BrowserControlAutostartStamp | undefined;
+  readonly serviceUnitBefore: ManagedBrowserControlServiceBinding | undefined;
+  readonly unitBytesBefore: Buffer;
+  readonly unitInodeBefore: number;
+  /** Poison-call baseline immediately before the removal and its post-run delta. */
+  readonly fetchCallBaseline: number;
+  readonly fetchCallDelta: number;
+  readonly managerCallBaseline: number;
+  readonly managerCallDelta: number;
+  readonly diagnostics: readonly string[];
+}
+
+/**
+ * Real `runUninstall` against the service a real `runInstall` just verified, in
+ * the same private HOME. `fetch` and the process boundary are poisoned so the
+ * pending removal must prove no acquisition and no manager mutation, mirroring
+ * the direct uninstall case. The code under test is the existing uninstall
+ * manifest-write branch, never a forged manager/controller reply.
+ */
+async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<PendingUninstallAuthority> {
+  const { readManifest } = await import("../src/lib/manifest.js");
+  const rowBefore = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
+  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
+  const unitInodeBefore = fs.statSync(ctx.unitPath).ino;
+
+  // Ambient relay port defense: uninstall must never parse or use it.
+  process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+  const fetchPoison = vi.fn(() => {
+    throw new Error("uninstall must not acquire Browser Control over the network");
+  });
+  vi.stubGlobal("fetch", fetchPoison);
+
+  const managerSpies = [...childProcessDelegates];
+  const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
+  const poisonManager = (): never => {
+    throw new Error("uninstall must not invoke a process manager");
+  };
+  for (const spy of managerSpies) spy.mockImplementation(poisonManager);
+
+  const install = await import("../src/install.js");
+  const adapter = install.ADAPTERS.opencode!;
+  const originalDetect = adapter.detect;
+  adapter.detect = () => ({
+    id: "opencode",
+    name: "OpenCode",
+    installed: true,
+    binPath: null,
+    configDir: ctx.configDir,
+  });
+
+  let uninstallExitCode: number;
+  let fetchCallBaseline = 0;
+  let fetchCallDelta = 0;
+  let managerCallBaseline = 0;
+  let managerCallDelta = 0;
+  try {
+    const uninstall = await import("../src/uninstall.js");
+    // Snapshot immediately before the removal: the preceding install phase runs
+    // real delegates (the OpenCode v2 `--version` gate), so the absolute count
+    // would misattribute those calls to the uninstall. The contract is the
+    // DELTA over all four process delegates.
+    fetchCallBaseline = fetchPoison.mock.calls.length;
+    managerCallBaseline = processDelegateCallTotal();
+    uninstallExitCode = await uninstall.runUninstall({
+      runtimes: ["opencode"],
+      dryRun: false,
+      yes: true,
+      removeEngram: false,
+      removePlaywright: false,
+    });
+    fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
+    managerCallDelta = processDelegateCallTotal() - managerCallBaseline;
+  } finally {
+    adapter.detect = originalDetect;
+    managerSpies.forEach((spy, index) => {
+      const previous = previousImplementations[index];
+      if (previous === undefined) spy.mockReset();
+      else spy.mockImplementation(previous);
+    });
+  }
+
+  return {
+    uninstallExitCode,
+    stampBefore: rowBefore?.browserControlAutostart,
+    serviceUnitBefore: rowBefore?.serviceUnit,
+    unitBytesBefore,
+    unitInodeBefore,
+    fetchCallBaseline,
+    fetchCallDelta,
+    managerCallBaseline,
+    managerCallDelta,
+    diagnostics: [...prompts.log.warn.mock.calls, ...prompts.log.error.mock.calls]
+      .map((call) => String(call[0] ?? "")),
+  };
+}
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12-RED] Browser Control pending uninstall preserves the verified service autostart authority",
+  () => {
+    /**
+     * Authority-loss case on the REAL install→uninstall lifecycle. A real
+     * `runInstall` with the explicit Linux opt-in creates and supervises the
+     * owned unit, pins the canonical `BROWSER_CONTROL_AUTOSTART=false` + literal
+     * port on the managed MCP and records the granular
+     * `browserControlAutostart` stamp. The authenticated stop/disable lifecycle
+     * does not exist yet, so the real `runUninstall` must leave the unit, its
+     * claim and its binding pending.
+     *
+     * The granular authority must survive exactly as recorded: the pending
+     * branch currently rewrites the manifest row with only `owned` and
+     * `serviceUnit`, silently dropping `browserControlAutostart` while the
+     * canonical manual-free environment it authorizes stays in the config, so a
+     * later recovery can no longer tell a Stack-introduced environment from a
+     * user's manual one. The first RED is the lost stamp (`manifestAutostart`
+     * undefined after the pending uninstall); the preserved unit/claim/binding
+     * and environment are scenario integrity.
+     */
+    it("keeps the granular autostart authority verbatim across a pending uninstall", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-pending-authority-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let evidence: PendingUninstallAuthority | undefined;
+      try {
+        // The install runs the real supervisor and produces the stamp; the
+        // callback then runs the real uninstall in the same private HOME, so the
+        // observables below witness the pending-removal state.
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-pending-authority-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            evidence = await runPendingUninstallInPlace(ctx);
+          },
+        });
+
+        if (evidence === undefined) {
+          throw new Error("fixture: the in-place uninstall callback did not run");
+        }
+        const shown = evidence;
+
+        // Scenario integrity: the supervised install produced the granular
+        // authority the uninstall must not drop. The install exit code is not
+        // asserted here because the harness reports other unrelated pending
+        // state; the stamp itself is the precondition.
+        expect(
+          shown.stampBefore,
+          "the verified install must have recorded the granular autostart authority before uninstall",
+        ).toBeDefined();
+
+        // The removal is honestly pending: never a clean success.
+        expect(
+          shown.uninstallExitCode,
+          "a pending Browser Control removal must not return the clean-success exit 0",
+        ).not.toBe(0);
+        expect(
+          prompts.outro.mock.calls.map((call) => String(call[0] ?? "")).some((message) => /^Hecho\./.test(message)),
+          "the global success outro must not be printed while the service is pending",
+        ).toBe(false);
+        expect(
+          shown.diagnostics.some((message) =>
+            message.includes(SERVICE_UNIT_FILENAME) && /conserva|pendiente/i.test(message),
+          ),
+          `the pending-service diagnostic must name the preserved unit (got ${JSON.stringify(shown.diagnostics)})`,
+        ).toBe(true);
+
+        // The owned artifact, its claim and its binding survive verbatim.
+        expect(observables.unitBytes, "the owned unit file must survive the pending uninstall").not.toBeNull();
+        expect(observables.unitBytes, "the unit bytes must be untouched").toEqual(shown.unitBytesBefore);
+        expect(fs.statSync(observables.unitPath).ino, "the unit inode must be untouched").toBe(shown.unitInodeBefore);
+        expect(
+          observables.manifestOwned.map((file) => path.resolve(file)),
+          "the manifest must keep the unit claim",
+        ).toContain(path.resolve(observables.unitPath));
+        expect(
+          observables.manifestServiceUnit,
+          "the serviceUnit binding must survive verbatim",
+        ).toEqual(shown.serviceUnitBefore);
+
+        // PRIMARY RED: the pending manifest write only preserves `owned` and
+        // `serviceUnit` today, so the granular authority is lost here.
+        expect(
+          observables.manifestAutostart,
+          "the pending uninstall must preserve the granular autostart authority verbatim",
+        ).toEqual(shown.stampBefore);
+
+        // The canonical manual-free environment the authority covers is retained,
+        // asserting only the two owned fields (no whole-object ownership of user
+        // extras), so recovery can still resolve what Stack introduced.
+        expect(observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART).toBe("false");
+        expect(observables.mcpEnvironment?.BROWSER_CONTROL_PORT).toBe(String(port));
+
+        // The install phase legitimately invokes the process boundary (the
+        // OpenCode v2 `--version` gate), so the contract is the removal's DELTA
+        // across all four delegates: none may advance past the pre-removal
+        // snapshot. No acquisition and no manager boundary were touched.
+        expect(
+          shown.fetchCallDelta,
+          "the uninstall must not perform network acquisition",
+        ).toBe(0);
+        expect(
+          shown.managerCallDelta,
+          "the uninstall must not spawn a manager process",
+        ).toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
         releaseRoots();

@@ -133,6 +133,69 @@ function isExactCanonicalBrowserControlServer(
 ): boolean {
   return isDeepStrictEqual(value, { type: "local", command: [invocation.command, ...invocation.args] });
 }
+
+export interface BrowserControlEnvironmentReconcileInput {
+  readonly configDir: string;
+  /** Invocación MCP gestionada ya proyectada; autentica el comando existente. */
+  readonly invocation: { command: string; args: readonly string[] };
+  /** Proyección de entorno canónica (solo campos propios). */
+  readonly environment: Readonly<Record<string, string>>;
+}
+
+export type BrowserControlEnvironmentReconcileResult =
+  | { readonly kind: "written"; readonly file: string; readonly content: string }
+  | { readonly kind: "unchanged"; readonly file: string }
+  | { readonly kind: "blocked"; readonly reason: string };
+
+/**
+ * Reconciliación final del entorno del servicio verificado sobre el MCP
+ * `browser-control` YA generado: exige que la entrada existente sea el launcher
+ * gestionado (comando completo), y solo entonces añade el `environment`
+ * canónico si falta. Un `environment` ajeno/corrupto bloquea sin sobrescribir;
+ * un valor ya canónico es un no-op. No crea el MCP ni recompone el comando.
+ */
+export function reconcileBrowserControlEnvironment(
+  input: BrowserControlEnvironmentReconcileInput,
+): BrowserControlEnvironmentReconcileResult {
+  const selection = selectOpenCodeServerFile(input.configDir);
+  if ("conflict" in selection) {
+    return { kind: "blocked", reason: "coexisten 'opencode.json' y 'opencode.jsonc'; el archivo efectivo es ambiguo" };
+  }
+  const file = selection.selection.file;
+  const source = readTextIfExists(file);
+  if (source === null || source.trim() === "") {
+    return { kind: "blocked", reason: "no existe la configuración OpenCode generada donde reconciliar el entorno" };
+  }
+  const parsed = parseJsoncObject(source);
+  if (parsed.value === null) {
+    return { kind: "blocked", reason: "la configuración OpenCode no es JSONC válido" };
+  }
+  const servers = objectValue(objectValue(parsed.value["mcp"])?.["servers"]);
+  const entry = objectValue(servers?.[BROWSER_CONTROL_SERVER]);
+  if (entry === null) {
+    return { kind: "blocked", reason: "no hay un MCP 'browser-control' proyectado que autenticar" };
+  }
+  if (!isCompatibleBrowserControlServer(entry, input.invocation)) {
+    return { kind: "blocked", reason: "el MCP 'browser-control' existente no coincide con el launcher gestionado verificado" };
+  }
+  const canonical = { ...input.environment };
+  const existing = entry["environment"];
+  if (existing !== undefined) {
+    const current = objectValue(existing);
+    if (current === null || !isDeepStrictEqual(current, canonical)) {
+      return { kind: "blocked", reason: "el 'environment' del MCP 'browser-control' es ajeno o corrupto; se conserva sin sobrescribir" };
+    }
+    return { kind: "unchanged", file };
+  }
+  const content = editConfigContent(source, (root) => {
+    const mcp = objectValue(root["mcp"]);
+    const serversRoot = objectValue(mcp?.["servers"]);
+    const target = objectValue(serversRoot?.[BROWSER_CONTROL_SERVER]);
+    if (target === null) throw new Error("OpenCode: el MCP 'browser-control' desapareció durante la reconciliación de entorno");
+    target["environment"] = canonical;
+  });
+  return { kind: "written", file, content };
+}
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";
 const PRIMARY_MODEL_ID = "gpt-6.1-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;

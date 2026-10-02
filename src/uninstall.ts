@@ -395,6 +395,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
           configDir,
           owned: [path.resolve(serviceUnitPath)],
           ...(row?.serviceUnit === undefined ? {} : { serviceUnit: row.serviceUnit }),
+          ...(row?.browserControlAutostart === undefined ? {} : { browserControlAutostart: row.browserControlAutostart }),
           updatedAt: new Date().toISOString(),
         });
         p.log.warn(

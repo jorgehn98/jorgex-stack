@@ -29,6 +29,17 @@ export interface ManagedBrowserControlServiceBinding {
   unitSha256: string;
 }
 
+/**
+ * Autoridad granular del entorno del servicio Browser Control verificado (T13).
+ * `projectionSha256` liga la proyección local+comando completo+puerto+autostart
+ * false; `portOwned` distingue el puerto introducido por Stack de uno manual.
+ */
+export interface BrowserControlAutostartStamp {
+  schemaVersion: 1;
+  projectionSha256: string;
+  portOwned: boolean;
+}
+
 export interface RuntimeManifest {
   configDir: string;
   /** Rutas absolutas resueltas de los archivos enteramente nuestros. */
@@ -42,6 +53,8 @@ export interface RuntimeManifest {
   pendingOrphans?: string[];
   /** Binding de la unidad de servicio gestionada, si existe (solo OpenCode/Linux). */
   serviceUnit?: ManagedBrowserControlServiceBinding;
+  /** Estampa de autostart del MCP cuando un servicio externo quedó verificado. */
+  browserControlAutostart?: BrowserControlAutostartStamp;
   updatedAt: string;
 }
 

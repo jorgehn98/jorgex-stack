@@ -5,7 +5,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
-import { opencodeAdapter } from "./adapters/opencode.js";
+import { opencodeAdapter, reconcileBrowserControlEnvironment } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
 import { HOME, dataDir, samePath, stackRoot } from "./lib/paths.js";
@@ -55,11 +55,21 @@ import {
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
-import { prepareBrowserControlRuntime, type BrowserControlRuntimeResult } from "./lib/browser-control-runtime.js";
 import {
+  prepareBrowserControlRuntime,
+  resolveBrowserControlRelayPort,
+  type BrowserControlRuntimeResult,
+} from "./lib/browser-control-runtime.js";
+import {
+  browserControlAutostartEnvironment,
+  browserControlAutostartProjectionSha256,
+  createSystemctlRunner,
   ensureBrowserControlServiceUnit,
+  preflightBrowserControlServiceUnit,
   resolveBrowserControlServiceConfigBase,
   resolveBrowserControlServiceUnitPath,
+  superviseBrowserControlServiceUnit,
+  type BrowserControlSystemctlRunner,
 } from "./lib/browser-control-service.js";
 import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation, rollbackManagedBrowserActivation } from "./lib/browser-managed.js";
 import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
@@ -127,12 +137,15 @@ export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   /**
    * Opt-in Linux explícito al servicio de usuario Browser Control
    * (`jorgex-stack-browser-control.service`). Solo install/sync/update reales en
-   * Linux: `--target-dir`/dry-run nunca lo tocan. El artifact actual materializa
-   * únicamente la unidad fija desde el active verificado; no invoca manager ni
-   * emite `BROWSER_CONTROL_AUTOSTART=false` (supervisor/endpoint = siguiente
-   * vertical).
+   * Linux: `--target-dir`/dry-run nunca lo tocan. Crea la unidad fija desde el
+   * active verificado y, para una unidad NUEVA, ejecuta el supervisor (preflight
+   * de ausencia relay+manager, daemon-reload, enable/start y prueba de readiness
+   * HTTP) antes de estampar `BROWSER_CONTROL_AUTOSTART=false`. Una unidad ya
+   * existente solo se verifica, sin mutaciones.
    */
   browserControlService?: boolean;
+  /** Frontera externa del manager (tests); undefined usa `systemctl` absoluto verificado. */
+  systemctlRunner?: BrowserControlSystemctlRunner;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
   engramBin?: string | null;
   /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
@@ -1456,6 +1469,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         owned,
         pendingOrphans,
         ...(prevManifest?.serviceUnit === undefined ? {} : { serviceUnit: prevManifest.serviceUnit }),
+        ...(prevManifest?.browserControlAutostart === undefined
+          ? {}
+          : { browserControlAutostart: prevManifest.browserControlAutostart }),
         updatedAt: new Date().toISOString(),
       });
     };
@@ -1626,11 +1642,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // obligatoria. El estado del runtime ya se reportó como fallido en el bucle.
   if (browserControlPending) exitCode = 1;
 
-  // T13 artifact: opt-in Linux explícito. Materializa SOLO la unidad fija desde
-  // el active verificado. No invoca manager (daemon-reload/enable/start), no
-  // sondea HTTP y no emite `BROWSER_CONTROL_AUTOSTART=false`: sin la prueba de
-  // supervisor/endpoint el servicio queda pendiente/no operativo. Un opt-in
-  // ausente o un runtime pendiente nunca toca la unidad.
+  // T13: opt-in Linux explícito. Con el active verificado, materializa la unidad
+  // fija. Una unidad ausente se preflight-ea (ausencia relay+manager), se crea y
+  // el supervisor la activa (`daemon-reload`, verificación de la unidad propia
+  // inactiva, `--no-reload enable`, `start`, manager operativo + `/version` con
+  // pid/version/build y readback estable); después se reconcilia el entorno
+  // canónico en el MCP ya generado. La autoridad solo se estampa si esta
+  // ejecución introdujo el entorno ausente (readback no-op) o si reutiliza una
+  // estampa previa acreditada por hash; un entorno canónico manual sin claim se
+  // conserva con conflicto. Una unidad ya existente solo se verifica, sin
+  // recargar/arrancar/reescribir. Un opt-in ausente o un runtime pendiente
+  // nunca toca la unidad.
   if (
     opts.browserControlService === true
     && process.platform === "linux"
@@ -1653,30 +1675,133 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         );
         exitCode = 1;
       } else {
+        const invocation = browserControlRuntime.invocation;
+        const runner = opts.systemctlRunner ?? createSystemctlRunner();
         const row = readManifest().runtimes.opencode;
-        const result = ensureBrowserControlServiceUnit({
-          stateDir: dataDir(),
-          unitPath,
-          prevOwned: row?.owned ?? [],
-          ...(row?.serviceUnit === undefined ? {} : { prevBinding: row.serviceUnit }),
-        });
-        if (result.kind === "created" || result.kind === "unchanged") {
-          if (row !== undefined) {
-            writeRuntimeManifest("opencode", {
-              ...row,
-              owned: [...new Set([...row.owned, path.resolve(unitPath)])],
-              serviceUnit: result.binding,
-              updatedAt: new Date().toISOString(),
-            });
+        const unitResolved = path.resolve(unitPath);
+        let occupied = false;
+        try {
+          fs.lstatSync(unitPath);
+          occupied = true;
+        } catch {
+          occupied = false;
+        }
+        // Una unidad nueva exige ausencia comprobada de relay y manager ANTES de crear.
+        let preflightPending: string | null = null;
+        if (!occupied) {
+          const relayPort = resolveBrowserControlRelayPort();
+          if (relayPort === null) {
+            preflightPending = "BROWSER_CONTROL_PORT no es un entero válido (1-65535); no se crea ni arranca el servicio.";
+          } else {
+            const preflight = await preflightBrowserControlServiceUnit({ runner, port: relayPort });
+            if (preflight.kind === "pending") preflightPending = preflight.reason;
           }
-          p.log.warn(
-            `Browser Control: unidad de servicio ${result.kind === "created" ? "creada" : "ya presente"} en ${result.unitPath} (release ${result.binding.releaseDirectory}). Servicio pendiente/no operativo: no se ha habilitado, arrancado ni recargado, y no se declara autostart externo hasta verificar supervisor y endpoint.`,
-          );
-        } else if (result.kind === "preserved") {
-          p.log.warn(`Browser Control: se conserva la unidad existente en ${result.unitPath} (${result.reason})`);
-        } else if (result.kind === "error") {
-          p.log.error(`Browser Control: ${result.reason}`);
+        }
+        if (preflightPending !== null) {
+          p.log.error(`Browser Control: ${preflightPending} La unidad no se ha modificado ni arrancado.`);
           exitCode = 1;
+        } else {
+          const result = ensureBrowserControlServiceUnit({
+            stateDir: dataDir(),
+            unitPath,
+            prevOwned: row?.owned ?? [],
+            ...(row?.serviceUnit === undefined ? {} : { prevBinding: row.serviceUnit }),
+          });
+          if (result.kind === "created" || result.kind === "unchanged") {
+            if (row !== undefined) {
+              writeRuntimeManifest("opencode", {
+                ...row,
+                owned: [...new Set([...row.owned, unitResolved])],
+                serviceUnit: result.binding,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+            if (result.kind === "unchanged") {
+              p.log.warn(
+                `Browser Control: unidad de servicio ya presente en ${result.unitPath} (release ${result.binding.releaseDirectory}); se verifica sin recargar, arrancar ni reescribir.`,
+              );
+            } else {
+              const supervised = await superviseBrowserControlServiceUnit({
+                stateDir: dataDir(),
+                unitPath,
+                binding: result.binding,
+                runner,
+              });
+              if (supervised.kind === "pending") {
+                p.log.error(
+                  `Browser Control: la unidad ${result.unitPath} se creó pero el servicio queda pendiente/no operativo (${supervised.reason}); no se declara autostart externo.`,
+                );
+                exitCode = 1;
+              } else {
+                const environment = browserControlAutostartEnvironment(supervised.port);
+                const projectionSha256 = browserControlAutostartProjectionSha256(invocation, supervised.port);
+                // Origen de la autoridad: `written` en la PRIMERA fase significa
+                // que Stack introduce ahora el `environment` ausente. Un
+                // `unchanged` inicial es un entorno preexistente que Stack no ha
+                // creado, y solo una estampa previa acreditada puede reutilizarse.
+                const reconciled = reconcileBrowserControlEnvironment({ configDir, invocation, environment });
+                const prior = row?.browserControlAutostart;
+                const priorAccredited = prior !== undefined
+                  && prior.schemaVersion === 1
+                  && prior.projectionSha256 === projectionSha256;
+                let stampReady = reconciled;
+                let introduced = false;
+                if (reconciled.kind === "written") {
+                  const backup = createBackup([reconciled.file], "install-browser-control-service");
+                  if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+                  try {
+                    writeText(reconciled.file, reconciled.content);
+                    // Secuencia distinta de un `unchanged` inicial: aquí se sabe
+                    // que esta ejecución escribió el campo y el readback debe ser
+                    // un no-op, no una adopción por igualdad.
+                    stampReady = reconcileBrowserControlEnvironment({ configDir, invocation, environment });
+                    introduced = stampReady.kind === "unchanged";
+                  } catch (error) {
+                    stampReady = { kind: "blocked", reason: error instanceof Error ? error.message : String(error) };
+                  }
+                }
+                if (stampReady.kind !== "unchanged") {
+                  const detail = "reason" in stampReady ? stampReady.reason : "estado inesperado";
+                  p.log.error(
+                    `Browser Control: el readback del entorno gestionado no quedó estable (${detail}); no se estampa el autostart.`,
+                  );
+                  exitCode = 1;
+                } else if (!introduced && !priorAccredited) {
+                  // `environment` canónico ya presente (p. ej. escritura manual
+                  // del usuario) sin que Stack lo haya creado ni exista estampa
+                  // previa acreditada: se conserva con conflicto accionable, sin
+                  // adoptarlo por igualdad ni tocar la unidad ya arrancada.
+                  p.log.error(
+                    `Browser Control: el MCP gestionado ya contenía un entorno (AUTOSTART=false / puerto ${supervised.port}) que no ha introducido Stack y no tiene una estampa previa acreditada; se conserva sin adoptar ni sobrescribir. Ajuste manual requerido.`,
+                  );
+                  exitCode = 1;
+                } else {
+                  if (!priorAccredited) {
+                    const currentRow = readManifest().runtimes.opencode;
+                    if (currentRow !== undefined) {
+                      writeRuntimeManifest("opencode", {
+                        ...currentRow,
+                        browserControlAutostart: {
+                          schemaVersion: 1,
+                          projectionSha256,
+                          portOwned: true,
+                        },
+                        updatedAt: new Date().toISOString(),
+                      });
+                    }
+                  }
+                  p.log.success(
+                    `Browser Control: servicio de usuario verificado en ${result.unitPath} (release ${result.binding.releaseDirectory}, puerto ${supervised.port}); autostart externo gestionado activo.`,
+                  );
+                }
+              }
+            }
+          } else if (result.kind === "preserved") {
+            p.log.warn(`Browser Control: se conserva la unidad existente en ${result.unitPath} (${result.reason})`);
+          } else if (result.kind === "error") {
+            p.log.error(`Browser Control: ${result.reason}`);
+            exitCode = 1;
+          }
         }
       }
     }

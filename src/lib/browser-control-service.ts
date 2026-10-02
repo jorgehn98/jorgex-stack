@@ -1,13 +1,19 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { BROWSER_CONTROL_PACKAGE, resolveBrowserControlRelayPort } from "./browser-control-runtime.js";
+import {
+  BROWSER_CONTROL_PACKAGE,
+  readBrowserControlRelayVersion,
+  resolveBrowserControlRelayPort,
+} from "./browser-control-runtime.js";
 import {
   loadVerifiedRetainedBrowserRelease,
   loadVerifiedRetainedBrowserReleaseByBinding,
   planManagedBrowserInvocation,
   planManagedBrowserInvocationForRetainedRelease,
   type ManagedBrowserInvocationPlan,
+  type VerifiedRetainedBrowserRelease,
 } from "./browser-managed.js";
 import type { ManagedBrowserControlServiceBinding } from "./manifest.js";
 
@@ -488,4 +494,474 @@ export function ensureBrowserControlServiceUnit(
     };
   }
   return { kind: "created", unitPath, binding };
+}
+
+// ---------------------------------------------------------------------------
+// Supervisor Linux opt-in (Spec T13): prueba de readiness del servicio de
+// usuario. Reutiliza el transporte HTTP acotado y el verificador estricto de la
+// release retenida; no parsea `ExecStart`, no adquiere nada y no toca unidades
+// ajenas. Todas las fronteras externas (manager) pasan por `systemctlRunner`,
+// cuyo default de producción es un `systemctl` absoluto verificado.
+// ---------------------------------------------------------------------------
+
+/** Borde externo del proceso manager: argv in, salida acotada out. */
+export interface BrowserControlSystemctlRunner {
+  (args: readonly string[]): Promise<{ status: number; stdout: string }>;
+}
+
+const SYSTEMCTL_TIMEOUT_MS = 10_000;
+const SYSTEMCTL_MAX_OUTPUT_BYTES = 64 * 1024;
+/** Rutas absolutas de sistema; nunca se resuelve `systemctl` por PATH. */
+const SYSTEMCTL_CANDIDATES = ["/usr/bin/systemctl", "/bin/systemctl"] as const;
+
+const SHOW_PROPERTIES = [
+  "Id",
+  "LoadState",
+  "FragmentPath",
+  "DropInPaths",
+  "NeedDaemonReload",
+  "ActiveState",
+  "SubState",
+] as const;
+
+function systemctlShowArgs(withMainPid: boolean): string[] {
+  const properties = withMainPid ? [...SHOW_PROPERTIES, "MainPID"] : [...SHOW_PROPERTIES];
+  return [
+    "--user",
+    "--no-pager",
+    "--all",
+    `--property=${properties.join(",")}`,
+    "show",
+    BROWSER_CONTROL_SERVICE_UNIT_FILENAME,
+  ];
+}
+
+/** `systemctl` absoluto y ejecutable de rutas verificadas; nunca PATH. */
+function resolveSystemctlBin(): string | null {
+  for (const candidate of SYSTEMCTL_CANDIDATES) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile()) continue;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Siguiente candidato fijo.
+    }
+  }
+  return null;
+}
+
+/**
+ * Runner de producción: binario absoluto verificado, `shell: false`, deadline y
+ * tope de bytes. La salida capturada nunca se incluye en los errores (solo el
+ * estado/código), así que no se filtran valores del manager.
+ */
+export function createSystemctlRunner(): BrowserControlSystemctlRunner {
+  return (args) =>
+    new Promise((resolve, reject) => {
+      const bin = resolveSystemctlBin();
+      if (bin === null) {
+        reject(new Error("systemctl no está disponible en las rutas de sistema verificadas"));
+        return;
+      }
+      const child = spawn(bin, [...args], {
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: process.env,
+      });
+      let stdout = "";
+      let bytes = 0;
+      let settled = false;
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const overflow = (): void => {
+        child.kill("SIGKILL");
+        finish(() => reject(new Error("la salida de systemctl superó el límite acotado")));
+      };
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(() => reject(new Error("systemctl superó el tiempo de espera")));
+      }, SYSTEMCTL_TIMEOUT_MS);
+      timer.unref();
+      child.stdout?.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > SYSTEMCTL_MAX_OUTPUT_BYTES) {
+          overflow();
+          return;
+        }
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > SYSTEMCTL_MAX_OUTPUT_BYTES) overflow();
+      });
+      child.on("error", (error) => finish(() => reject(error)));
+      child.on("close", (code) => finish(() => resolve({ status: code ?? 1, stdout })));
+    });
+}
+
+interface RunnerOutcome {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly stdout: string;
+  readonly reason?: string;
+}
+
+async function runSystemctl(
+  runner: BrowserControlSystemctlRunner,
+  args: readonly string[],
+): Promise<RunnerOutcome> {
+  let result: { status: number; stdout: string };
+  try {
+    result = await runner(args);
+  } catch (error) {
+    return { ok: false, status: 1, stdout: "", reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (typeof result.status !== "number" || typeof result.stdout !== "string") {
+    return { ok: false, status: 1, stdout: "", reason: "respuesta inválida del runner de systemctl" };
+  }
+  return { ok: true, status: result.status, stdout: result.stdout };
+}
+
+/**
+ * Parser cerrado de la salida `Nombre=Valor` de `systemctl show`: separa por el
+ * primer `=`, exige cada propiedad solicitada exactamente una vez y no depende
+ * del orden. Una línea sin `=` o una propiedad duplicada es un estado incierto,
+ * nunca ausencia.
+ */
+function parseShowProperties(
+  stdout: string,
+  required: readonly string[],
+): { ok: true; props: Record<string, string> } | { ok: false; reason: string } {
+  const props: Record<string, string> = {};
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line === "") continue;
+    const separator = line.indexOf("=");
+    if (separator < 0) return { ok: false, reason: "la salida de systemctl contiene una línea sin `=`" };
+    const name = line.slice(0, separator);
+    if (Object.prototype.hasOwnProperty.call(props, name)) {
+      return { ok: false, reason: `la salida de systemctl repite la propiedad ${name}` };
+    }
+    props[name] = line.slice(separator + 1);
+  }
+  for (const name of required) {
+    if (!Object.prototype.hasOwnProperty.call(props, name)) {
+      return { ok: false, reason: `la salida de systemctl omite la propiedad ${name}` };
+    }
+  }
+  return { ok: true, props };
+}
+
+export interface BrowserControlServicePreflightInput {
+  readonly runner: BrowserControlSystemctlRunner;
+  /** Puerto efectivo de la unidad/MCP; la ausencia se exige en ese destino exacto. */
+  readonly port: number;
+}
+
+export type BrowserControlServicePreflightResult =
+  | { readonly kind: "clear" }
+  | { readonly kind: "pending"; readonly reason: string };
+
+/**
+ * Preflight de una activación inicial: exige ausencia puntual del relay en el
+ * puerto efectivo Y ausencia conocida de la unidad en el manager. Presente o
+ * incierto no autoriza ninguna mutación.
+ */
+export async function preflightBrowserControlServiceUnit(
+  input: BrowserControlServicePreflightInput,
+): Promise<BrowserControlServicePreflightResult> {
+  const relay = await readBrowserControlRelayVersion(input.port);
+  if (relay.status !== "absent") {
+    return {
+      kind: "pending",
+      reason: relay.status === "present"
+        ? "el relay de Browser Control responde en el puerto gestionado; no se crea ni arranca el servicio"
+        : `no se pudo comprobar la ausencia del relay en el puerto gestionado (${relay.reason})`,
+    };
+  }
+  const outcome = await runSystemctl(input.runner, systemctlShowArgs(false));
+  if (!outcome.ok) return { kind: "pending", reason: `no se pudo consultar el manager (${outcome.reason})` };
+  if (outcome.status !== 0) return { kind: "pending", reason: `systemctl show devolvió estado ${outcome.status}` };
+  const parsed = parseShowProperties(outcome.stdout, SHOW_PROPERTIES);
+  if (!parsed.ok) return { kind: "pending", reason: parsed.reason };
+  const props = parsed.props;
+  const identityError = ownUnitIdError(props);
+  if (identityError !== null) return { kind: "pending", reason: identityError };
+  const absent = props["LoadState"] === "not-found"
+    && props["FragmentPath"] === ""
+    && props["DropInPaths"] === ""
+    && props["NeedDaemonReload"] === "no"
+    && props["ActiveState"] === "inactive"
+    && props["SubState"] === "dead";
+  if (!absent) {
+    return {
+      kind: "pending",
+      reason: `el manager no acredita la ausencia de la unidad (LoadState=${props["LoadState"]}, NeedDaemonReload=${props["NeedDaemonReload"]}, ActiveState=${props["ActiveState"]}, SubState=${props["SubState"]})`,
+    };
+  }
+  return { kind: "clear" };
+}
+
+interface OperationalReadback {
+  readonly mainPid: number;
+}
+
+/**
+ * Identidad declarada por el manager: debe ser exactamente la unidad propia. Un
+ * `Id` ajeno contradice tanto la ausencia como el readback operativo de la
+ * unidad propia; la regla se comparte para no duplicarla en cada comprobación.
+ */
+function ownUnitIdError(props: Record<string, string>): string | null {
+  if (props["Id"] !== BROWSER_CONTROL_SERVICE_UNIT_FILENAME) {
+    return `la unidad consultada no declara la identidad propia (Id=${props["Id"]})`;
+  }
+  return null;
+}
+
+/** Guardas comunes: la unidad propia está cargada, sin drop-ins ni recarga pendiente. */
+function ownUnitLoadedError(props: Record<string, string>, unitPath: string): string | null {
+  const idError = ownUnitIdError(props);
+  if (idError !== null) return idError;
+  if (props["LoadState"] !== "loaded") return `la unidad no está cargada (LoadState=${props["LoadState"]})`;
+  if (props["FragmentPath"] !== unitPath) return "FragmentPath no coincide literalmente con la unidad propia";
+  if (props["DropInPaths"] !== "") return "la unidad propia tiene drop-ins ajenos";
+  if (props["NeedDaemonReload"] !== "no") return "el manager exige recargar definiciones (NeedDaemonReload)";
+  return null;
+}
+
+async function inspectInactiveOwnUnit(
+  runner: BrowserControlSystemctlRunner,
+  unitPath: string,
+): Promise<string | null> {
+  const outcome = await runSystemctl(runner, systemctlShowArgs(false));
+  if (!outcome.ok) return `no se pudo consultar el manager (${outcome.reason})`;
+  if (outcome.status !== 0) return `systemctl show devolvió estado ${outcome.status}`;
+  const parsed = parseShowProperties(outcome.stdout, SHOW_PROPERTIES);
+  if (!parsed.ok) return parsed.reason;
+  const common = ownUnitLoadedError(parsed.props, unitPath);
+  if (common !== null) return common;
+  const props = parsed.props;
+  if (props["ActiveState"] !== "inactive" || props["SubState"] !== "dead") {
+    return `la unidad no quedó inactiva (ActiveState=${props["ActiveState"]}, SubState=${props["SubState"]})`;
+  }
+  return null;
+}
+
+async function inspectOperationalUnit(
+  runner: BrowserControlSystemctlRunner,
+  unitPath: string,
+): Promise<{ ok: true; readback: OperationalReadback } | { ok: false; reason: string }> {
+  const outcome = await runSystemctl(runner, systemctlShowArgs(true));
+  if (!outcome.ok) return { ok: false, reason: `no se pudo consultar el manager (${outcome.reason})` };
+  if (outcome.status !== 0) return { ok: false, reason: `systemctl show devolvió estado ${outcome.status}` };
+  const parsed = parseShowProperties(outcome.stdout, [...SHOW_PROPERTIES, "MainPID"]);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  const props = parsed.props;
+  const common = ownUnitLoadedError(props, unitPath);
+  if (common !== null) return { ok: false, reason: common };
+  if (props["ActiveState"] !== "active" || props["SubState"] !== "running") {
+    return { ok: false, reason: `la unidad no está operativa (ActiveState=${props["ActiveState"]}, SubState=${props["SubState"]})` };
+  }
+  const mainPidRaw = props["MainPID"] ?? "";
+  if (!/^\d+$/.test(mainPidRaw)) return { ok: false, reason: "MainPID no es decimal" };
+  const mainPid = Number(mainPidRaw);
+  if (!Number.isInteger(mainPid) || mainPid < 1 || mainPid > 0xffff_ffff) {
+    return { ok: false, reason: "MainPID fuera del rango uint32 positivo" };
+  }
+  return { ok: true, readback: { mainPid } };
+}
+
+/** Entry acotado y UTF-8 estricto; una sola asignación exacta de build id. */
+const BUILD_ID_ASSIGNMENT = /^var browserControlBuildId = "([^"]+)";$/;
+const MAX_BUILD_ENTRY_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Extrae estáticamente `browserControlBuildId` del entry autenticado que el
+ * guard ejecutará. No importa/eval y falla cerrado (`null`) ante ausencia,
+ * duplicación, formato cambiado, bytes no UTF-8 o fecha que no sobrevive el
+ * roundtrip `Date.toISOString`.
+ */
+function extractBrowserControlBuildId(entryPath: string): string | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(entryPath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_BUILD_ENTRY_BYTES) return null;
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(entryPath);
+  } catch {
+    return null;
+  }
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(bytes)) return null;
+  const matches = text
+    .split("\n")
+    .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
+    .filter((line) => BUILD_ID_ASSIGNMENT.test(line));
+  if (matches.length !== 1) return null;
+  const value = BUILD_ID_ASSIGNMENT.exec(matches[0]!)?.[1];
+  if (value === undefined) return null;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) return null;
+  return value;
+}
+
+export interface BrowserControlServiceSupervisorInput {
+  readonly stateDir: string;
+  readonly unitPath: string;
+  /** Binding de la unidad creada/verificada; su `releaseDirectory`/`receiptSha256` autentican la release. */
+  readonly binding: ManagedBrowserControlServiceBinding;
+  readonly runner: BrowserControlSystemctlRunner;
+}
+
+export type BrowserControlServiceSupervisorResult =
+  | { readonly kind: "ready"; readonly port: number; readonly version: string; readonly buildId: string }
+  | { readonly kind: "pending"; readonly reason: string };
+
+/**
+ * Supervisor de la activación inicial (`created`): autentica la release retenida
+ * del binding y su build estático ANTES de tocar el manager; recarga
+ * definiciones, verifica la unidad propia inactiva, revalida ausencia del relay,
+ * habilita `--no-reload`, arranca y exige manager operativo + `/version`
+ * coherente (pid==MainPID, version/build autenticados) + readback estable. Un
+ * fallo en cualquier paso es `pending` honesto: nunca `ready`, nunca se declara
+ * `BROWSER_CONTROL_AUTOSTART=false` de forma provisional.
+ */
+export async function superviseBrowserControlServiceUnit(
+  input: BrowserControlServiceSupervisorInput,
+): Promise<BrowserControlServiceSupervisorResult> {
+  const unitPath = path.resolve(input.unitPath);
+  const port = input.binding.port;
+
+  let release: VerifiedRetainedBrowserRelease;
+  try {
+    release = loadVerifiedRetainedBrowserReleaseByBinding(input.stateDir, BROWSER_CONTROL_PACKAGE, {
+      releaseDirectory: input.binding.releaseDirectory,
+      receiptSha256: input.binding.receiptSha256,
+    });
+  } catch (error) {
+    return {
+      kind: "pending",
+      reason: `no se pudo autenticar la release retenida de la unidad (${error instanceof Error ? error.message : String(error)}); el servicio queda pendiente`,
+    };
+  }
+  const buildId = extractBrowserControlBuildId(release.receipt.entryPath);
+  if (buildId === null) {
+    return {
+      kind: "pending",
+      reason: "no se pudo extraer un browserControlBuildId único y válido del entry autenticado; el servicio queda pendiente sin activar",
+    };
+  }
+  const expectedVersion = release.receipt.version;
+
+  const reload = await runSystemctl(input.runner, ["--user", "--no-pager", "daemon-reload"]);
+  if (!reload.ok || reload.status !== 0) {
+    return { kind: "pending", reason: `daemon-reload falló (${reload.reason ?? `estado ${reload.status}`})` };
+  }
+
+  const inactiveError = await inspectInactiveOwnUnit(input.runner, unitPath);
+  if (inactiveError !== null) {
+    return { kind: "pending", reason: `la unidad no quedó cargada e inactiva tras recargar definiciones: ${inactiveError}` };
+  }
+
+  const relay = await readBrowserControlRelayVersion(port);
+  if (relay.status !== "absent") {
+    return {
+      kind: "pending",
+      reason: relay.status === "present"
+        ? "el relay responde en el puerto gestionado antes de habilitar; no se arranca el servicio"
+        : `no se pudo revalidar la ausencia del relay (${relay.reason})`,
+    };
+  }
+
+  const enable = await runSystemctl(input.runner, [
+    "--user",
+    "--no-pager",
+    "--no-reload",
+    "enable",
+    BROWSER_CONTROL_SERVICE_UNIT_FILENAME,
+  ]);
+  if (!enable.ok || enable.status !== 0) {
+    return { kind: "pending", reason: `enable falló (${enable.reason ?? `estado ${enable.status}`})` };
+  }
+
+  const start = await runSystemctl(input.runner, [
+    "--user",
+    "--no-pager",
+    "start",
+    BROWSER_CONTROL_SERVICE_UNIT_FILENAME,
+  ]);
+  if (!start.ok || start.status !== 0) {
+    return { kind: "pending", reason: `start falló (${start.reason ?? `estado ${start.status}`}); el servicio no se declara operativo` };
+  }
+
+  const operational = await inspectOperationalUnit(input.runner, unitPath);
+  if (!operational.ok) {
+    return { kind: "pending", reason: `readback operativo incierto: ${operational.reason}` };
+  }
+  const firstPid = operational.readback.mainPid;
+
+  const version = await readBrowserControlRelayVersion(port);
+  if (version.status !== "present") {
+    return {
+      kind: "pending",
+      reason: version.status === "absent"
+        ? "el endpoint /version no responde tras arrancar el servicio"
+        : `no se pudo verificar /version (${version.reason})`,
+    };
+  }
+  const reportedPid = version.payload.pid;
+  const reportedVersion = version.payload.version;
+  const reportedBuild = version.payload.buildId;
+  if (typeof reportedPid !== "number" || !Number.isInteger(reportedPid) || reportedPid < 1 || reportedPid > 0xffff_ffff) {
+    return { kind: "pending", reason: "/version no declara un pid uint32 positivo" };
+  }
+  if (reportedPid !== firstPid) {
+    return { kind: "pending", reason: "el pid de /version no coincide con el MainPID de la unidad" };
+  }
+  if (reportedVersion !== expectedVersion) {
+    return { kind: "pending", reason: "la version de /version no coincide con la release autenticada de la unidad" };
+  }
+  if (reportedBuild !== buildId) {
+    return { kind: "pending", reason: "el buildId de /version no coincide con el entry autenticado" };
+  }
+
+  const stable = await inspectOperationalUnit(input.runner, unitPath);
+  if (!stable.ok) {
+    return { kind: "pending", reason: `segundo readback operativo incierto: ${stable.reason}` };
+  }
+  if (stable.readback.mainPid !== firstPid) {
+    return { kind: "pending", reason: "el MainPID cambió entre readbacks; el servicio no es estable" };
+  }
+
+  return { kind: "ready", port, version: expectedVersion, buildId };
+}
+
+/** Proyección canónica de entorno del servicio verificado: solo los dos campos propios. */
+export function browserControlAutostartEnvironment(port: number): Record<string, string> {
+  return { BROWSER_CONTROL_AUTOSTART: "false", BROWSER_CONTROL_PORT: String(port) };
+}
+
+/**
+ * SHA-256 de la proyección gestionada que autoriza la estampa de autostart:
+ * forma local + comando completo del guard + puerto literal + AUTOSTART=false.
+ */
+export function browserControlAutostartProjectionSha256(
+  invocation: { command: string; args: readonly string[] },
+  port: number,
+): string {
+  const projection = JSON.stringify({
+    type: "local",
+    command: [invocation.command, ...invocation.args],
+    environment: browserControlAutostartEnvironment(port),
+  });
+  return createHash("sha256").update(projection, "utf8").digest("hex");
 }
