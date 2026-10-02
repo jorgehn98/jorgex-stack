@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
  * [T05-RED] Staged Pi host/package ABI smoke before private-release activation.
@@ -42,11 +42,17 @@ import { afterEach, describe, expect, it } from "vitest";
  *   sources are synthetic `"fake-test"`; no real Pi CLI, no npm network, no LLM.
  * - The hang fake collects stdin, records the capture, spawns a grandchild that
  *   inherits the parent's process group (`detached: false`, stdio ignore) and
- *   records its pid, then hangs. A correct implementation kills its owned Pi
+ *   records its pid, then hangs. Capture and grandchild pid are written
+ *   atomically (`tmp` + `rename`) so a reader never sees a half-written pid,
+ *   and a failed grandchild spawn records an explicit `{ error }` instead of
+ *   writing `undefined` as a pid. A correct implementation kills its owned Pi
  *   process group (e.g. `process.kill(-piPid, "SIGTERM")` on POSIX) on timeout;
  *   killing only the parent would leak the same-group grandchild and fail the
  *   leak assertion. Detached escapes (separate groups) are out of scope:
  *   production must not scan /proc or kill unrelated processes.
+ * - The timeout test owns the SUT's 400ms deadline (capture, wait for the real
+ *   root+grandchild pids, then fire) so slow startup cannot race the kill; its
+ *   finally still fires the deadline and verifies the owned pids are dead.
  * - Symlinked Pi CLI (the real npm/global install shape: a `pi` symlink pointing
  *   at the package CLI file outside the stage) is permitted only when realpath
  *   resolves to a regular executable file; the target may live outside the stage.
@@ -90,6 +96,13 @@ async function loadSmoke(): Promise<PiStageSmokeModule> {
 const REQUIRED_COMMANDS = ["goal", "subagents", "permission-system", "websearch", "jorgex:header"] as const;
 
 const EXPECTED_ARGV = ["--mode", "rpc", "--no-session", "--no-approve", "--offline", "--no-context-files"] as const;
+
+// The timeout test separates fixture startup (bounded, generous) from the SUT
+// deadline and kill-settlement contracts (driven and measured by the test).
+const STARTUP_WATCHDOG_MS = 20_000;
+const KILL_SETTLE_WATCHDOG_MS = 5_000;
+// Bounds each finally-step so cleanup finishes before the sandbox is removed.
+const CLEANUP_WATCHDOG_MS = 2_000;
 
 type FakeMode =
   | "valid"
@@ -185,18 +198,32 @@ function snapshotEnv() {
     GH_TOKEN: process.env.GH_TOKEN ?? ""
   };
 }
-function writeCapture(stdin) {
-  const payload = { pid: process.pid, args: process.argv.slice(2), env: snapshotEnv(), cwd: process.cwd(), stdin };
-  try { fs.writeFileSync(capturePath, JSON.stringify(payload)); } catch {}
+function atomicWrite(file, value) {
+  const tmp = file + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, value);
+  fs.renameSync(tmp, file);
 }
 setTimeout(() => {
   const stdin = Buffer.concat(chunks).toString("utf8");
-  writeCapture(stdin);
+  const payload = { pid: process.pid, args: process.argv.slice(2), env: snapshotEnv(), cwd: process.cwd(), stdin };
+  try { atomicWrite(capturePath, JSON.stringify(payload)); } catch {}
+  let g;
   try {
-    const g = spawn(process.execPath, ["-e", "setInterval(()=>{},1000);"], { detached: false, stdio: "ignore" });
-    g.unref();
-    try { fs.writeFileSync(capturePath + ".grandchild", String(g.pid)); } catch {}
-  } catch {}
+    g = spawn(process.execPath, ["-e", "setInterval(()=>{},1000);"], { detached: false, stdio: "ignore" });
+  } catch (error) {
+    try { atomicWrite(capturePath + ".grandchild", JSON.stringify({ error: "grandchild spawn threw: " + (error && error.message ? error.message : String(error)) })); } catch {}
+    return;
+  }
+  if (g) g.once("error", (error) => {
+    try { atomicWrite(capturePath + ".grandchild", JSON.stringify({ error: "grandchild spawn error: " + (error && error.message ? error.message : String(error)) })); } catch {}
+  });
+  const pid = g && g.pid;
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    try { atomicWrite(capturePath + ".grandchild", JSON.stringify({ error: "grandchild spawn produced no pid" })); } catch {}
+    return;
+  }
+  g.unref();
+  try { atomicWrite(capturePath + ".grandchild", JSON.stringify({ pid: pid })); } catch {}
 }, 120);
 setInterval(() => {}, 1000);
 `;
@@ -415,6 +442,109 @@ function expectPidDead(pid: number, label: string): void {
   expect(alive, `${label} pid ${pid} must not leak`).toBe(false);
 }
 
+type RecordedPid = { ok: true; pid: number } | { ok: false; reason: string };
+
+/** Tolerant reader: a partial, absent, or explicitly failed record is not a pid. */
+function readRecordedPid(file: string): RecordedPid {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return { ok: false, reason: `${path.basename(file)} is not written yet` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return { ok: false, reason: `${path.basename(file)} is not complete JSON` };
+  }
+  if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+    const detail = (parsed as { error?: unknown }).error;
+    throw new Error(`hang fixture ${path.basename(file)} reported: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+  }
+  const pid = typeof parsed === "object" && parsed !== null ? (parsed as { pid?: unknown }).pid : undefined;
+  if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0) {
+    return { ok: true, pid };
+  }
+  return { ok: false, reason: `${path.basename(file)} has no valid pid` };
+}
+
+type RecordedTree = { rootPid: number; grandchildPid: number };
+
+async function waitForHangTree(
+  fake: FakePi,
+  watchdogMs: number,
+  earlySettlement: () => Error | null,
+  onPid: (pid: number) => void,
+): Promise<RecordedTree> {
+  const startedAt = Date.now();
+  let lastReason = "fixture has not started";
+  while (Date.now() - startedAt < watchdogMs) {
+    const early = earlySettlement();
+    if (early !== null) {
+      throw new Error(`smoke settled before the owned process tree was recorded: ${early.message}`);
+    }
+    const root = readRecordedPid(fake.capturePath);
+    if (root.ok) onPid(root.pid);
+    const grandchild: RecordedPid = root.ok
+      ? readRecordedPid(fake.grandchildPath)
+      : { ok: false, reason: "grandchild pid is not written yet" };
+    if (grandchild.ok) onPid(grandchild.pid);
+    if (root.ok && grandchild.ok) {
+      return { rootPid: root.pid, grandchildPid: grandchild.pid };
+    }
+    if (!root.ok) {
+      lastReason = root.reason;
+    } else if (!grandchild.ok) {
+      lastReason = grandchild.reason;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`hang fixture did not record root+grandchild within ${watchdogMs}ms: ${lastReason}`);
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function pidsDead(pids: Iterable<number>): boolean {
+  for (const pid of pids) {
+    if (pidAlive(pid)) return false;
+  }
+  return true;
+}
+
+async function pollUntil(predicate: () => boolean, watchdogMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < watchdogMs) {
+    if (predicate()) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return predicate();
+}
+
+/** Last-resort cleanup for the owned pid graph when the SUT teardown fails. */
+function forceKillOwnedPid(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already stopped.
+  }
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // Already stopped.
+    }
+  }
+}
+
 describe("[T05-RED] staged Pi host/package ABI smoke before activation", () => {
   it("returns the required public commands through an isolated rpc launch with no leaks", async () => {
     const { smokeStagedPiRuntime } = await loadSmoke();
@@ -527,32 +657,108 @@ describe("[T05-RED] staged Pi host/package ABI smoke before activation", () => {
     const sentinel = `jx-sentinel-hang-${Date.now()}`;
     process.env["JORGEX_SMOKE_SENTINEL"] = sentinel;
 
-    const startedAt = Date.now();
-    const failure = await smokeStagedPiRuntime({
-      piExecutable: fake.piExecutable,
-      stageDir: topology.stageDir,
-      timeoutMs: 400,
-    }).then(
-      () => null,
-      (error: unknown) => error,
+    const ownedPids = new Set<number>();
+    let deadlineCallback: (() => void) | undefined;
+    let deadlineHandle: NodeJS.Timeout | undefined;
+    let timerRestored = false;
+    let earlySettlement: Error | null = null;
+    let smokePromise: Promise<Error | null> | undefined;
+    const registeredDeadlineDelays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(
+      ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+        const handle = realSetTimeout(callback, delay, ...args);
+        if (delay === 400 && typeof callback === "function") {
+          registeredDeadlineDelays.push(delay);
+          deadlineCallback = callback as () => void;
+          deadlineHandle = handle;
+        }
+        return handle;
+      }) as unknown as typeof setTimeout,
     );
-    const elapsed = Date.now() - startedAt;
-    expect(failure).toBeInstanceOf(Error);
-    expect(String((failure as Error).message)).toMatch(/pi-stage-smoke:/);
-    expect(elapsed).toBeLessThan(5000);
 
-    const captured = readCapture(fake.capturePath);
-    expectSandboxIsolation(captured, topology, sentinel);
-    expectPidDead(captured.pid, "timed-out smoke child");
-    if (fs.existsSync(fake.grandchildPath)) {
-      const grandchildPid = Number(fs.readFileSync(fake.grandchildPath, "utf8").trim());
-      expectPidDead(grandchildPid, "timed-out smoke grandchild");
-    } else {
-      // The hang fake always records a grandchild when it starts; its absence
-      // means the fake never started and the timeout did not exercise group kill.
-      expect.unreachable("hang fake must record a grandchild pid to prove group termination");
+    try {
+      // Hold the SUT's 400ms deadline so real fixture startup cannot race it:
+      // the tree is recorded first, then the captured callback fires the kill.
+      smokePromise = smokeStagedPiRuntime({
+        piExecutable: fake.piExecutable,
+        stageDir: topology.stageDir,
+        timeoutMs: 400,
+      }).then(
+        (): null => {
+          earlySettlement = new Error("smoke resolved before the deadline fired");
+          return null;
+        },
+        (error: unknown): Error => {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          earlySettlement = failure;
+          return failure;
+        },
+      );
+
+      expect(registeredDeadlineDelays, "the SUT must register its 400ms deadline").toContain(400);
+      expect(deadlineCallback, "the smoke must register a deadline callback").toBeTypeOf("function");
+      // Neutralize the wall-clock timer; the test owns when the deadline fires.
+      if (deadlineHandle !== undefined) clearTimeout(deadlineHandle);
+      timerSpy.mockRestore();
+      timerRestored = true;
+
+      // Synchronize on the real owned tree before triggering the kill, so a slow
+      // Windows fixture start is never mistaken for a group-kill leak.
+      const tree = await waitForHangTree(fake, STARTUP_WATCHDOG_MS, () => earlySettlement, (pid) => ownedPids.add(pid));
+
+      const triggeredAt = Date.now();
+      // Repeat calls are harmless: the SUT's settle guard makes them no-ops.
+      deadlineCallback?.();
+      const failure = await smokePromise;
+
+      expect(failure).toBeInstanceOf(Error);
+      expect(String((failure as Error).message)).toBe("pi-stage-smoke: timed out after 400ms");
+
+      // Kill settlement is bounded and measured from the trigger; fixture
+      // startup latency before the trigger is not part of the deadline contract.
+      await pollUntil(() => pidsDead(ownedPids), KILL_SETTLE_WATCHDOG_MS);
+      expect(Date.now() - triggeredAt).toBeLessThan(KILL_SETTLE_WATCHDOG_MS);
+      expectPidDead(tree.rootPid, "timed-out smoke child");
+      expectPidDead(tree.grandchildPid, "timed-out smoke grandchild");
+
+      const captured = readCapture(fake.capturePath);
+      expect(captured.pid).toBe(tree.rootPid);
+      expectSandboxIsolation(captured, topology, sentinel);
+    } finally {
+      if (deadlineHandle !== undefined) clearTimeout(deadlineHandle);
+      if (!timerRestored) timerSpy.mockRestore();
+      // Setup failures must still settle the SUT-owned tree; repeat calls are
+      // no-ops via the SUT's settle guard.
+      deadlineCallback?.();
+      if (smokePromise !== undefined) {
+        await pollUntil(() => earlySettlement !== null, CLEANUP_WATCHDOG_MS);
+      }
+      // Read what the fixture actually recorded, once; absent/error records
+      // contribute no pid.
+      for (const file of [fake.capturePath, fake.grandchildPath]) {
+        try {
+          const recorded = readRecordedPid(file);
+          if (recorded.ok) ownedPids.add(recorded.pid);
+        } catch {
+          // Explicit failure record: no pid to own.
+        }
+      }
+      for (const pid of [...ownedPids].filter(pidAlive)) forceKillOwnedPid(pid);
+      await pollUntil(() => pidsDead(ownedPids), CLEANUP_WATCHDOG_MS);
+      const alive = [...ownedPids].filter(pidAlive);
+      const settled = smokePromise === undefined || earlySettlement !== null;
+      if (!settled || alive.length > 0) {
+        // Preserve the owned sandbox instead of removing paths under a live or
+        // unsettled owned tree, and fail rather than pass with bad teardown.
+        const index = sandboxes.indexOf(topology.sandbox);
+        if (index >= 0) sandboxes.splice(index, 1);
+        throw new Error(
+          `pi-stage-smoke cleanup incomplete; retained ${topology.sandbox} (settled=${settled}, alivePids=${alive.join(",") || "none"})`,
+        );
+      }
     }
-  });
+  }, 40_000);
 
   it.skipIf(process.platform === "win32")("accepts a symlinked Pi CLI resolving to a regular executable file outside the stage", async () => {
     const { smokeStagedPiRuntime } = await loadSmoke();

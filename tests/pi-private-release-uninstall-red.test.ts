@@ -236,7 +236,10 @@ function setupUninstallSandbox(): UninstallSandbox {
   // Owned relative symlink to the private release realpath.
   fs.mkdirSync(path.dirname(linkPath), { recursive: true });
   const expectedLinkTarget = path.relative(path.dirname(linkPath), packageRoot);
-  expect(expectedLinkTarget).toBe(`../jorgex-pi-managed/releases/${releaseId}/node_modules/jorgex-pi`);
+  // Native separator: path.relative emits backslashes on Windows and that is
+  // the exact string fs.symlinkSync persists, so the expectation must follow
+  // the platform instead of a POSIX literal.
+  expect(expectedLinkTarget).toBe(path.join("..", "jorgex-pi-managed", "releases", releaseId, "node_modules", "jorgex-pi"));
   expect(path.isAbsolute(expectedLinkTarget)).toBe(false);
   fs.symlinkSync(expectedLinkTarget, linkPath, "dir");
   expect(fs.realpathSync(linkPath)).toBe(packageRoot);
@@ -378,21 +381,44 @@ describe("pi private-release safe uninstall RED (T05 for T07)", () => {
     };
 
     // Synchronous contract: direct return, no Promise/await on the helper.
-    const result = deactivateVerifiedPiRelease({
-      homeDir: sb.homeDir,
-      agentDir: sb.agentDir,
-      receiptPath: sb.receiptPath,
-      managedPackage: {
-        releaseDir: sb.releaseDir,
-        linkPath: sb.linkPath,
-        backupDir: sb.backupDir,
-        lockSha256: sb.lockSha256,
-        treeSha256: sb.treeSha256,
-        dependencies: sb.dependencies.map((dep) => ({ ...dep })),
-      },
-      nextSettings: sb.nextSettings,
-      verify,
-    });
+    // On failure, surface the observed owned-entry readlink and the native
+    // expected target to distinguish representation errors from native I/O
+    // failures, without any config/auth data.
+    const result = (() => {
+      try {
+        return deactivateVerifiedPiRelease({
+          homeDir: sb.homeDir,
+          agentDir: sb.agentDir,
+          receiptPath: sb.receiptPath,
+          managedPackage: {
+            releaseDir: sb.releaseDir,
+            linkPath: sb.linkPath,
+            backupDir: sb.backupDir,
+            lockSha256: sb.lockSha256,
+            treeSha256: sb.treeSha256,
+            dependencies: sb.dependencies.map((dep) => ({ ...dep })),
+          },
+          nextSettings: sb.nextSettings,
+          verify,
+        });
+      } catch (error: unknown) {
+        const linkStat = lstatOrNull(sb.linkPath);
+        let observed: string | null = null;
+        if (linkStat !== null && linkStat.isSymbolicLink()) {
+          try { observed = fs.readlinkSync(sb.linkPath); }
+          catch { observed = "<unreadable>"; }
+        }
+        const err: Partial<NodeJS.ErrnoException> = error instanceof Error ? error : {};
+        const parts = [
+          `observedLinkTarget=${JSON.stringify(observed)}`,
+          `expectedLinkTarget=${JSON.stringify(sb.expectedLinkTarget)}`,
+        ];
+        if (typeof err.code === "string") parts.push(`code=${err.code}`);
+        if (typeof err.syscall === "string") parts.push(`syscall=${err.syscall}`);
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message} [${parts.join("; ")}]`, { cause: error });
+      }
+    })();
 
     expect(verifyRan).toBe(true);
     expect(result.kind).toBe("uninstalled");
@@ -470,7 +496,8 @@ describe("pi private-release safe uninstall RED (T05 for T07)", () => {
 
     // Previous state restored byte-identically (not left removed).
     expect(fs.lstatSync(sb.linkPath).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(sb.linkPath)).toBe(sb.expectedLinkTarget);
+    const observedLinkTarget = fs.readlinkSync(sb.linkPath);
+    expect(observedLinkTarget, `owned entry readlink observed=${JSON.stringify(observedLinkTarget)} expected=${JSON.stringify(sb.expectedLinkTarget)}`).toBe(sb.expectedLinkTarget);
     expect(fs.realpathSync(sb.linkPath)).toBe(sb.packageRoot);
     expect(fs.readFileSync(sb.releaseIndex, "utf8")).toBe(beforeReleaseIndex);
     expect(fs.readFileSync(sb.releaseIndex, "utf8")).toBe(NEW_PI_INDEX);
@@ -529,7 +556,8 @@ describe("pi private-release safe uninstall RED (T05 for T07)", () => {
     // Nothing mutated and the marker plus live state are preserved.
     expect(fs.readFileSync(markerPath, "utf8")).toBe(markerContent);
     expect(fs.lstatSync(sb.linkPath).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(sb.linkPath)).toBe(sb.expectedLinkTarget);
+    const observedLinkTarget = fs.readlinkSync(sb.linkPath);
+    expect(observedLinkTarget, `owned entry readlink observed=${JSON.stringify(observedLinkTarget)} expected=${JSON.stringify(sb.expectedLinkTarget)}`).toBe(sb.expectedLinkTarget);
     expect(fs.realpathSync(sb.linkPath)).toBe(sb.packageRoot);
     expect(fs.readFileSync(sb.releaseIndex, "utf8")).toBe(NEW_PI_INDEX);
     expect(fs.readFileSync(sb.settingsPath, "utf8")).toBe(sb.oldSettings);
@@ -568,7 +596,8 @@ describe("pi private-release safe uninstall RED (T05 for T07)", () => {
 
     // Rolled back byte-identically: no success claimed, no partial removal.
     expect(fs.lstatSync(sb.linkPath).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(sb.linkPath)).toBe(sb.expectedLinkTarget);
+    const observedLinkTarget = fs.readlinkSync(sb.linkPath);
+    expect(observedLinkTarget, `owned entry readlink observed=${JSON.stringify(observedLinkTarget)} expected=${JSON.stringify(sb.expectedLinkTarget)}`).toBe(sb.expectedLinkTarget);
     expect(fs.realpathSync(sb.linkPath)).toBe(sb.packageRoot);
     expect(fs.readFileSync(sb.releaseIndex, "utf8")).toBe(NEW_PI_INDEX);
     expect(crypto.createHash("sha256").update(fs.readFileSync(sb.lockPath)).digest("hex")).toBe(sb.lockSha256);
@@ -654,7 +683,8 @@ describe("pi managed uninstall backup mkdir fault (T07 silent-failure RED)", () 
 
     // Live state untouched.
     expect(fs.lstatSync(sb.linkPath).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(sb.linkPath)).toBe(sb.expectedLinkTarget);
+    const observedLinkTarget = fs.readlinkSync(sb.linkPath);
+    expect(observedLinkTarget, `owned entry readlink observed=${JSON.stringify(observedLinkTarget)} expected=${JSON.stringify(sb.expectedLinkTarget)}`).toBe(sb.expectedLinkTarget);
     expect(fs.realpathSync(sb.linkPath)).toBe(sb.packageRoot);
     expect(fs.readFileSync(sb.releaseIndex, "utf8")).toBe(NEW_PI_INDEX);
     expect(fs.readFileSync(sb.settingsPath, "utf8")).toBe(sb.oldSettings);

@@ -34,6 +34,10 @@ export interface PiRuntimeCandidate {
   readonly contract: {
     readonly schemaVersion: number;
     readonly capabilities: readonly string[];
+    readonly mcpNative?: {
+      readonly schemaVersion: 1;
+      readonly contractPath: "contract/native-mcp.v1.json";
+    };
     readonly runner: {
       readonly bin: string;
       readonly commands: readonly string[];
