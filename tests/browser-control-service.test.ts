@@ -22,7 +22,10 @@ import type {
   EnsureBrowserControlServiceInput,
 } from "../src/lib/browser-control-service.js";
 import type { BrowserControlReady } from "../src/lib/browser-control-runtime.js";
-import type { ManagedBrowserControlServiceBinding } from "../src/lib/manifest.js";
+import type {
+  BrowserControlServiceRetirement,
+  ManagedBrowserControlServiceBinding,
+} from "../src/lib/manifest.js";
 
 /**
  * T12/T13 Linux service vertical (Spec 12/13) — the positive `runInstall` case
@@ -145,6 +148,7 @@ interface AutostartManifestRow {
   readonly owned?: readonly string[];
   readonly serviceUnit?: ManagedBrowserControlServiceBinding;
   readonly browserControlAutostart?: BrowserControlAutostartStamp;
+  readonly browserControlServiceRetirement?: BrowserControlServiceRetirement;
 }
 
 const prompts = vi.hoisted(() => ({
@@ -3623,6 +3627,336 @@ describe.skipIf(process.platform !== "linux")(
         );
         expect.soft(retryMutating, "the retry must not re-stop the inactive unit").not.toContain("stop");
         expect.soft(retryMutating, "the retry must not restart the inactive unit").not.toContain("restart");
+
+        // User config and the retained active stay intact.
+        expect.soft(closed.userCustomSurvived, "an unrelated user config key must survive the retry").toBe(true);
+        expect.soft(
+          closed.activeRootPathAfter,
+          "the retained active root must survive the retry",
+        ).toBe(closed.activeRootPathBefore);
+        expect.soft(
+          closed.activeReceiptShaAfter,
+          "the retained active must still authenticate after the retry",
+        ).toBe(closed.activeReceiptShaBefore);
+
+        // The retry completes honestly: global success and no pending diagnostic.
+        expect.soft(
+          closed.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the closed removal must print the global success outro",
+        ).toBe(true);
+        expect.soft(
+          closed.diagnostics.some((message) => message.includes(SERVICE_UNIT_FILENAME)),
+          `no pending-service diagnostic must remain after the retry (got ${JSON.stringify(closed.diagnostics)})`,
+        ).toBe(false);
+        expect.soft(closed.fetchCallDelta, "the retry must not acquire over the network").toBe(0);
+        expect.soft(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+
+    /**
+     * Recovery at the `environment-retired` checkpoint on the REAL
+     * install→uninstall lifecycle. A real `runInstall` with the explicit Linux
+     * opt-in creates and supervises the owned unit. The first real `runUninstall`
+     * stops/disables the OWN unit, retires the canonical environment and persists
+     * the `environment-retired` phase, but its own unit-file removal fails at the
+     * real FS boundary (`rmSync` over the exact owned path faults once with EIO),
+     * so the removal is left pending with the file still present and the
+     * claim/binding/authority recoverable.
+     *
+     * A retry in the same private HOME must resume from the persisted phase:
+     * retire the file (backup+readback), complete the final `daemon-reload`,
+     * persist `unit-removed`/`manager-reloaded` and release the claims WITHOUT
+     * repeating stop/disable/start, exiting 0 while user config and the retained
+     * active stay intact. This is the distinct `environment-retired` recovery
+     * seam; the existing partial-reload case covers `unit-removed`.
+     */
+    it("resumes a retirement whose own unit-file removal failed after the environment phase was persisted", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-env-retired-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let firstRun: FullServiceUninstallEvidence | undefined;
+      let retry: ServiceRetirementRetryEvidence | undefined;
+      let phaseAfterFirstRun: BrowserControlServiceRetirement | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-env-retired-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            const { readManifest } = await import("../src/lib/manifest.js");
+            // Bounded FS fault: ONLY the first removal of the exact owned unit
+            // path faults (EIO); the retry and every unrelated removal run real.
+            const originalRmSync = fs.rmSync;
+            const rmSpy = vi.spyOn(fs, "rmSync");
+            let faulted = false;
+            rmSpy.mockImplementation(((target: fs.PathLike, options?: fs.RmDirOptions) => {
+              if (!faulted && path.resolve(String(target)) === path.resolve(ctx.unitPath)) {
+                faulted = true;
+                const error = new Error("EIO: simulated fault retiring the own unit file") as NodeJS.ErrnoException;
+                error.code = "EIO";
+                throw error;
+              }
+              return originalRmSync(target, options);
+            }) as typeof fs.rmSync);
+            try {
+              firstRun = await runFullUninstallInPlace(ctx);
+            } finally {
+              // Restore the global spy before the retry and the owned-root teardown.
+              rmSpy.mockRestore();
+            }
+            if (!faulted) throw new Error("fixture: the own unit-file removal was never faulted");
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+              ?.browserControlServiceRetirement;
+            retry = await runServiceRetirementRetryInPlace(ctx);
+          },
+        });
+        if (firstRun === undefined || retry === undefined) {
+          throw new Error("fixture: the in-place environment-retired callbacks did not run");
+        }
+        const partial = firstRun;
+        const closed = retry;
+
+        // --- First run: the removal stopped/disabled, retired the environment and
+        //     persisted the checkpoint, but the own file removal faulted, so the
+        //     file survives and the state is recoverable.
+        expect(partial.stampBefore, "the supervised install must record the granular authority").toBeDefined();
+        expect(partial.serviceUnitBefore, "the supervised install must record its unit binding").toBeDefined();
+        expect(partial.serviceUnitBefore?.port, "the binding must witness the managed port").toBe(port);
+        expect(partial.unitBytesBefore.length, "the canonical unit must exist before the removal").toBeGreaterThan(0);
+
+        expect(partial.uninstallExitCode, "a partial removal must exit non-zero").not.toBe(0);
+        expect(partial.unitBytesAfter, "the faulted removal must keep the unit file present").not.toBeNull();
+        expect(partial.unitBytesAfter, "the unit bytes must be untouched").toEqual(partial.unitBytesBefore);
+        expect(partial.unitInodeAfter, "the unit inode must be untouched").toBe(partial.unitInodeBefore);
+
+        // The persisted `environment-retired` checkpoint is the recovery state.
+        expect(
+          phaseAfterFirstRun,
+          "the faulted removal must persist the environment-retired checkpoint",
+        ).toEqual({ schemaVersion: 1, phase: "environment-retired" });
+
+        // The claims, binding and granular authority survive the partial state.
+        expect(
+          partial.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the partial removal must keep the unit claim recoverable",
+        ).toContain(partial.unitPathResolved);
+        expect(
+          partial.manifestServiceUnitAfter,
+          "the partial removal must keep the binding recoverable",
+        ).toEqual(partial.serviceUnitBefore);
+        expect(
+          partial.manifestAutostartAfter,
+          "the partial removal must keep the authority recoverable",
+        ).toEqual(partial.stampBefore);
+
+        // The canonical environment is already retired.
+        const partialEntryRemoved = partial.mcpCommandAfter === undefined && partial.mcpEnvironmentAfter === undefined;
+        const partialEnvRetired = partial.mcpEnvironmentAfter?.BROWSER_CONTROL_AUTOSTART === undefined
+          && partial.mcpEnvironmentAfter?.BROWSER_CONTROL_PORT === undefined;
+        expect(partialEntryRemoved || partialEnvRetired, "the canonical environment must already be retired").toBe(true);
+
+        // Scenario integrity: the faulted run already stopped and disabled the
+        // OWN unit before the file removal faulted.
+        const firstMutating = partial.uninstallManagerCalls
+          .map((argv) => serviceVerb(argv))
+          .filter((verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb));
+        expect(firstMutating, "the faulted run must have stopped and disabled the unit").toEqual(["stop", "disable"]);
+
+        // --- Retry: the file is still present and the manager is
+        //     inactive/dead/PID0 with the OWN relay absent. The retry must resume
+        //     from the persisted phase, retire the file, complete the final reload
+        //     and release the claims WITHOUT re-stopping/disabling.
+        expect(closed.unitExistsBefore, "the unit file must still exist before the retry").toBe(true);
+        expect.soft(closed.uninstallExitCode, "the retry must close the removal with exit 0").toBe(0);
+        expect.soft(
+          closed.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the retry must retire the owned unit claim",
+        ).not.toContain(path.resolve(observables.unitPath));
+        expect.soft(closed.manifestServiceUnitAfter, "the retry must retire the serviceUnit binding").toBeUndefined();
+        expect.soft(closed.manifestAutostartAfter, "the retry must retire the granular authority").toBeUndefined();
+
+        const retryMutating = closed.managerVerbs.filter(
+          (verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb),
+        );
+        expect.soft(retryMutating, "the retry must not re-stop the inactive unit").not.toContain("stop");
+        expect.soft(retryMutating, "the retry must not re-disable the inactive unit").not.toContain("disable");
+        expect.soft(retryMutating, "the retry must not restart the inactive unit").not.toContain("restart");
+        expect.soft(retryMutating, "the retry must complete the final daemon-reload").toContain("daemon-reload");
+
+        // User config and the retained active stay intact.
+        expect.soft(closed.userCustomSurvived, "an unrelated user config key must survive the retry").toBe(true);
+        expect.soft(
+          closed.activeRootPathAfter,
+          "the retained active root must survive the retry",
+        ).toBe(closed.activeRootPathBefore);
+        expect.soft(
+          closed.activeReceiptShaAfter,
+          "the retained active must still authenticate after the retry",
+        ).toBe(closed.activeReceiptShaBefore);
+
+        // The retry completes honestly: global success and no pending diagnostic.
+        expect.soft(
+          closed.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the closed removal must print the global success outro",
+        ).toBe(true);
+        expect.soft(
+          closed.diagnostics.some((message) => message.includes(SERVICE_UNIT_FILENAME)),
+          `no pending-service diagnostic must remain after the retry (got ${JSON.stringify(closed.diagnostics)})`,
+        ).toBe(false);
+        expect.soft(closed.fetchCallDelta, "the retry must not acquire over the network").toBe(0);
+        expect.soft(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+
+    /**
+     * Recovery at the `manager-reloaded` checkpoint on the REAL
+     * install→uninstall lifecycle. A real `runInstall` with the explicit Linux
+     * opt-in creates and supervises the owned unit. The first real `runUninstall`
+     * completes the whole manager lifecycle (stop/disable, environment retirement,
+     * own-file removal and final `daemon-reload`) and persists the
+     * `manager-reloaded` phase, but the LATER ordinary cleanup fails at the real FS
+     * boundary (the ordinary backup copy of the shared OpenCode config faults once
+     * with EIO), so the run exits non-zero with the claim/binding/authority still
+     * recorded.
+     *
+     * A retry in the same private HOME must recognize the persisted final phase and
+     * close the ordinary cleanup with NO manager mutation at all: only read-only
+     * `show` queries are allowed, never stop/disable/start/reload/restart. The
+     * claims are released, user config and the retained active stay intact and the
+     * run exits 0. This is the distinct `manager-reloaded` recovery seam.
+     */
+    it("resumes ordinary cleanup after the manager-reloaded checkpoint without repeating any manager mutation", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-manager-reloaded-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let firstRun: FullServiceUninstallEvidence | undefined;
+      let retry: ServiceRetirementRetryEvidence | undefined;
+      let phaseAfterFirstRun: BrowserControlServiceRetirement | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-manager-reloaded-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            const { readManifest } = await import("../src/lib/manifest.js");
+            // Bounded FS fault: ONLY the ordinary cleanup backup of the shared
+            // OpenCode config faults (EIO), and only once the unit file is already
+            // gone — i.e. after the manager phase was persisted. The earlier
+            // environment backup still sees the unit present and runs real.
+            const configPath = path.join(ctx.configDir, "opencode.json");
+            const originalCopyFileSync = fs.copyFileSync;
+            const copySpy = vi.spyOn(fs, "copyFileSync");
+            let faulted = false;
+            copySpy.mockImplementation(((source: fs.PathLike, destination: fs.PathLike, mode?: number) => {
+              if (
+                !faulted
+                && path.resolve(String(source)) === path.resolve(configPath)
+                && !fs.existsSync(ctx.unitPath)
+              ) {
+                faulted = true;
+                const error = new Error(
+                  "EIO: simulated ordinary backup failure after the manager phase",
+                ) as NodeJS.ErrnoException;
+                error.code = "EIO";
+                throw error;
+              }
+              return originalCopyFileSync(source, destination, mode as never);
+            }) as typeof fs.copyFileSync);
+            try {
+              firstRun = await runFullUninstallInPlace(ctx);
+            } finally {
+              // Restore the global spy before the retry and the owned-root teardown.
+              copySpy.mockRestore();
+            }
+            if (!faulted) throw new Error("fixture: the ordinary cleanup backup was never faulted");
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+              ?.browserControlServiceRetirement;
+            retry = await runServiceRetirementRetryInPlace(ctx);
+          },
+        });
+        if (firstRun === undefined || retry === undefined) {
+          throw new Error("fixture: the in-place manager-reloaded callbacks did not run");
+        }
+        const partial = firstRun;
+        const closed = retry;
+
+        // --- First run: the manager lifecycle completed and its final phase was
+        //     persisted, but the later ordinary backup faulted, so the run exits
+        //     non-zero with the authority still recorded.
+        expect(partial.stampBefore, "the supervised install must record the granular authority").toBeDefined();
+        expect(partial.serviceUnitBefore, "the supervised install must record its unit binding").toBeDefined();
+        expect(partial.serviceUnitBefore?.port, "the binding must witness the managed port").toBe(port);
+
+        expect(partial.uninstallExitCode, "a faulted ordinary cleanup must exit non-zero").not.toBe(0);
+        expect(partial.unitBytesAfter, "the completed manager phase must have removed the unit file").toBeNull();
+        expect(partial.unitBackedUp, "the removed unit must have been backed up").toBe(true);
+
+        // The persisted `manager-reloaded` checkpoint is the recovery state.
+        expect(
+          phaseAfterFirstRun,
+          "the faulted run must persist the manager-reloaded checkpoint",
+        ).toEqual({ schemaVersion: 1, phase: "manager-reloaded" });
+
+        // The claims, binding and granular authority survive until the retry closes.
+        expect(
+          partial.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the faulted run must keep the unit claim recoverable",
+        ).toContain(partial.unitPathResolved);
+        expect(
+          partial.manifestServiceUnitAfter,
+          "the faulted run must keep the binding recoverable",
+        ).toEqual(partial.serviceUnitBefore);
+        expect(
+          partial.manifestAutostartAfter,
+          "the faulted run must keep the authority recoverable",
+        ).toEqual(partial.stampBefore);
+
+        // Scenario integrity: the manager lifecycle was fully completed first.
+        const firstMutating = partial.uninstallManagerCalls
+          .map((argv) => serviceVerb(argv))
+          .filter((verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb));
+        expect(firstMutating, "the faulted run must have stopped, disabled and reloaded").toEqual([
+          "stop",
+          "disable",
+          "daemon-reload",
+        ]);
+
+        // --- Retry: the final phase is already accredited, so the retry may only
+        //     read the manager and must finish the ordinary cleanup without any
+        //     mutation.
+        expect.soft(closed.uninstallExitCode, "the retry must close the removal with exit 0").toBe(0);
+        expect.soft(
+          closed.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the retry must retire the owned unit claim",
+        ).not.toContain(path.resolve(observables.unitPath));
+        expect.soft(closed.manifestServiceUnitAfter, "the retry must retire the serviceUnit binding").toBeUndefined();
+        expect.soft(closed.manifestAutostartAfter, "the retry must retire the granular authority").toBeUndefined();
+
+        const retryMutating = closed.managerVerbs.filter(
+          (verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb),
+        );
+        expect.soft(
+          retryMutating,
+          `the manager-reloaded retry must not mutate the manager (got ${JSON.stringify(closed.managerVerbs)})`,
+        ).toEqual([]);
+        expect.soft(
+          closed.managerVerbs.every((verb) => verb === "show"),
+          `the manager-reloaded retry may only read the manager (got ${JSON.stringify(closed.managerVerbs)})`,
+        ).toBe(true);
 
         // User config and the retained active stay intact.
         expect.soft(closed.userCustomSurvived, "an unrelated user config key must survive the retry").toBe(true);
