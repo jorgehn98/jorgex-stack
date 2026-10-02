@@ -275,7 +275,9 @@ async def get_user(user_id: str) -> Dict[str, Any]:
 
 ## Tool Docstrings
 
-Every tool must have comprehensive docstrings with explicit type information:
+Every tool needs a concise docstring describing the contract clients need: purpose, non-obvious input constraints, output shape, side effects and relevant errors. Preserve information used to generate MCP descriptions or schemas; these docstrings are runtime metadata, not merely code comments. Do not repeat types or field descriptions already exposed by the generated schema unless needed to disambiguate behavior. Document dict/JSON return structure when it is not exposed by an output schema.
+
+The example below illustrates possible contract details, not mandatory sections for every tool:
 
 ```python
 async def search_users(params: UserSearchInput) -> str:
@@ -419,7 +421,7 @@ def _handle_api_error(e: Exception) -> str:
 async def example_search_users(params: UserSearchInput) -> str:
     '''Search for users in the Example system by name, email, or team.
 
-    [Full docstring as shown above]
+    [Concise tool contract docstring]
     '''
     try:
         # Make API request using validated parameters
@@ -692,8 +694,8 @@ Before finalizing your Python MCP server implementation, ensure:
 - [ ] Annotations correctly set (readOnlyHint, destructiveHint, idempotentHint, openWorldHint)
 - [ ] All tools use Pydantic BaseModel for input validation with Field() definitions
 - [ ] All Pydantic Fields have explicit types and descriptions with constraints
-- [ ] All tools have comprehensive docstrings with explicit input/output types
-- [ ] Docstrings include complete schema structure for dict/JSON returns
+- [ ] All tools expose concise, sufficient contract descriptions without duplicating generated schema information
+- [ ] Dict/JSON return structure is exposed through an output schema or documented when no schema is exposed
 - [ ] Pydantic models handle input validation (no manual validation needed)
 
 ### Advanced Features (where applicable)

@@ -162,7 +162,22 @@ son evidencia de esa ejecución, no defaults ni requisitos de esta política. La
 documentación de `install`/`sync` describe la entrega y el aislamiento; no muta el
 HOME, configuración, Engram o servicios del lector.
 
-Antes de escribir tooling diagnóstico nuevo, reutiliza harness, helpers y plataforma. El tooling diagnóstico es temporal por defecto: solo se conserva como código mantenido cuando exista una necesidad recurrente y un consumidor identificado dentro del scope aprobado; probarlo en un cambio no basta. Conserva la regresión relevante y la evidencia compacta (comando, setup, refs/inputs, resultado y límites) en el registro de trabajo existente, sin añadir una segunda herramienta ni su propia suite solo para preservar evidencia. Elimina la instrumentación temporal propia tras capturar la evidencia, sin retirar protección de regresión significativa (permisos, concurrencia, borrado) para reducir el diff. Canon: [Diagnostic tooling and evidence](../../stack/skills/lean-code/SKILL.md#diagnostic-tooling-and-evidence).
+### Tooling diagnóstico y comentarios
+
+La disciplina operativa — reutilización del harness existente, tooling temporal
+por defecto, retención ante necesidad recurrente (consumidor, gap del harness,
+owner) y evidencia compacta y reproducible — vive en el canon:
+[lean-code → Diagnostic tooling](../../stack/skills/lean-code/SKILL.md#diagnostic-tooling)
+y [diagnose → Phase 6](../../stack/skills/diagnose/SKILL.md#phase-6--cleanup--post-mortem).
+
+Los comentarios siguen la pauta única
+[Code comments](../../stack/system-prompt/AGENTS.md#code-comments) del system
+prompt: añadir solo cuando aporten información que el código no hace obvia y
+preservar contractuales, legales, directivas y docstrings usados como
+metadatos de runtime. El pase de revisión es opcional: xreview inspecciona los
+hunks y lanza [`comment-fixer`](../../stack/agents/comment-fixer.md) solo
+cuando hace falta un pase de accuracy, usefulness o context crítico; un no-change
+del fixer es un resultado válido.
 
 ### CI solo cuando sea el alcance
 

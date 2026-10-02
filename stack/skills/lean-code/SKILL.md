@@ -53,22 +53,16 @@ If simplification weakens any of those, stop.
 
 Do not add a new dependency unless the task explicitly requires it or the project already has approval for that dependency.
 
-## Diagnostic tooling and evidence
-
-Reuse the existing harness, test helpers and platform tools before writing a custom profiler, wrapper or diagnostic runner.
-
-New diagnostic tooling is temporary by default. Keep it as maintained code only for a concrete recurring need and an identified consumer within the approved scope; proving one change is not enough. If maintaining it expands the scope, seek approval before keeping it. Moving it into a `debug/` directory does not justify retention.
-
-For a one-off diagnosis or performance comparison, preserve the relevant regressions and compact reproducible evidence in the existing work record: command, setup, refs/inputs, result and limits. Do not commit repeated raw captures or build a second tool and its own suite merely to preserve that evidence. Existing recurring benchmarks and tools remain valid when they serve a real ongoing need.
-
-Remove owned temporary instrumentation after capturing the necessary evidence. Do not remove permission, concurrency, deletion or other meaningful regression protection just to shrink the diff.
-
 ## How to use it
 
 ### Implementation
 
 Before adding a new helper, wrapper, abstraction, or dependency, run the ladder again.
 Prefer the narrowest change that solves the real need.
+
+### Diagnostic tooling
+
+Reuse the project's runner, fixtures, helpers and existing diagnostic commands before building a harness. New probes, replay scripts and diagnostic harnesses are temporary by default, with explicit resource ownership and automatic teardown arranged before execution. Keep tooling only for a concrete recurring need within the approved scope: identify its consumer, why the existing harness cannot cover it, and who maintains it in the current task or PR. Seek approval if retaining it expands the scope. A successful one-off investigation alone does not justify a permanent command, framework or dependency. Preserve the authoritative regression test and compact reproduction evidence, not the disposable environment; do not remove meaningful permission, concurrency or deletion protection just to shrink the diff.
 
 ### Review / simplification
 
