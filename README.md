@@ -200,7 +200,7 @@ jorgex-stack browser playwright -s=mi-tarea close
 pnpm dlx jorgex-stack install --devtools
 ```
 
-`install`/`update` reconcilian el receipt local internamente sin resolver ni descargar paquetes browser y retiran la guía si el estado gestionado falla. `doctor` revalida offline. `doctor` revisa receipt, versión, caché Chromium y arranque headless local sin reparar. `update --check` observa solo estado local; `install` o `update` interactivo deliberados pueden adquirir un nuevo release verificado. `uninstall` conserva por defecto el árbol gestionado y los datos del navegador; `--remove-playwright` desactiva preferencia y guía con backup, sin retirar un CLI global ajeno. Una preferencia ilegible bloquea mutaciones y `doctor` señala su ruta. Con `--target-dir` Stack no toca el estado browser del HOME real. Consulta [automatización de navegador](docs/references/browser-automation.md) para receipts, reparación y handoffs Pi.
+`install`/`update` pueden adquirir un nuevo release browser verificado con opt-in explícito o preferencia persistida; no son una alternativa offline al comando retirado `sync`. `doctor` revisa receipt, versión, caché Chromium y arranque headless local sin reparar. `update --check` observa solo estado local. `uninstall` conserva por defecto el árbol gestionado y los datos del navegador; `--remove-playwright` desactiva preferencia y guía con backup, sin retirar un CLI global ajeno. Una preferencia ilegible bloquea mutaciones y `doctor` señala su ruta. Con `--target-dir` Stack no toca el estado browser del HOME real. Consulta [automatización de navegador](docs/references/browser-automation.md) para receipts, reparación y handoffs Pi.
 
 ### Update: Interactive Flow
 

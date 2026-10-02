@@ -118,7 +118,7 @@ El picker permite elegir voluntariamente **por tier** o **por subagente**, uno a
 uno. La segunda opción guarda solo las diferencias como overrides por nombre
 de agente; así se puede asignar, por ejemplo, Astra/max únicamente a roles
 concretos. No cambia el modelo primary ni convierte una elección existente en
-un override gestionado por Stack; `install` tampoco sobrescribe elecciones guardado
+un override gestionado por Stack; `install` tampoco sobrescribe elecciones
 guardadas.
 ## Recuperar un model-map inválido
 
