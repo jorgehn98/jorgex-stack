@@ -14,6 +14,10 @@ import {
   resolveVerificationDiskBase,
 } from "./helpers/pnpm-tooling.js";
 import type { StageVerifiedBrowserTreeResult } from "../src/lib/browser-stage.js";
+import type {
+  BrowserControlReady,
+  BrowserControlUnavailable,
+} from "../src/lib/browser-control-runtime.js";
 
 /**
  * T13 doctor boundary (Spec 12/13, SC-06): the offline doctor must separate the
@@ -80,6 +84,13 @@ function loggedLines(): string[] {
     prompts.log.success,
     prompts.log.message,
   ].flatMap((group) => group.mock.calls.map((call) => String(call[0])));
+}
+
+/** Warn/error output only: a healthy projection never lands here. */
+function problemLines(): string[] {
+  return [prompts.log.warn, prompts.log.error].flatMap((group) =>
+    group.mock.calls.map((call) => String(call[0])),
+  );
 }
 
 interface ReleaseFixture {
@@ -195,6 +206,7 @@ interface ReceiptFingerprint {
 interface OfflineDoctorRun {
   readonly lines: string[];
   readonly text: string;
+  readonly problems: string[];
   readonly activeBefore: ReceiptFingerprint;
   readonly activeAfter: ReceiptFingerprint;
   readonly candidateBefore: ReceiptFingerprint;
@@ -210,6 +222,77 @@ function receiptFingerprint(
 }
 
 /**
+ * Estado de la proyección nativa obligatoria (skill oficial + MCP) dentro del
+ * configDir OpenCode. `canonical` es el control: debe diagnosticarse sano.
+ */
+type ProjectionState = "missing" | "modified" | "canonical";
+
+/**
+ * Proyecta la skill oficial y el MCP `browser-control` en el configDir. Solo se
+ * usa tras sembrar el active real; la invocación esperada se obtiene del lector
+ * cacheado real, no se inventa. `missing` no escribe nada; `modified` desvía
+ * ambos bytes y comando; `canonical` reproduce exactamente lo que proyectaría
+ * install (skill byte-identical + `{ type: local, command: [command, ...args] }`).
+ */
+function seedProjection(
+  configDir: string,
+  stateDir: string,
+  inspectActive: (stateDir: string) => BrowserControlReady | BrowserControlUnavailable,
+  kind: ProjectionState,
+): void {
+  if (kind === "missing") return;
+  const active = inspectActive(stateDir);
+  if (active.kind !== "ready") {
+    throw new Error(`fixture: el active debe estar ready para sembrar la proyección (${active.kind})`);
+  }
+  const skillTarget = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+  fs.mkdirSync(path.dirname(skillTarget), { recursive: true, mode: 0o700 });
+  const mcpFile = path.join(configDir, "opencode.json");
+  if (kind === "canonical") {
+    fs.copyFileSync(active.skillSource, skillTarget);
+    fs.writeFileSync(
+      mcpFile,
+      `${JSON.stringify(
+        {
+          mcp: {
+            servers: {
+              [BROWSER_CONTROL_SERVER]: {
+                type: "local",
+                command: [active.invocation.command, ...active.invocation.args],
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+  fs.writeFileSync(
+    skillTarget,
+    "<!-- skill desviada: no son los bytes de la release activa -->\n",
+  );
+  fs.writeFileSync(
+    mcpFile,
+    `${JSON.stringify(
+      {
+        mcp: {
+          servers: {
+            [BROWSER_CONTROL_SERVER]: {
+              type: "local",
+              command: ["/drifted/browser-control", "mcp"],
+            },
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+/**
  * Boots a private HOME, seeds the given verified receipts through the real
  * activation pipeline, poisons fetch, runs the offline doctor and returns the
  * captured output plus the receipt fingerprints before and after the run. Probe
@@ -220,6 +303,7 @@ async function runOfflineDoctor(options: {
   readonly activeRelease: ReleaseFixture;
   readonly candidateRelease: ReleaseFixture;
   readonly prefix: string;
+  readonly projection?: ProjectionState;
 }): Promise<OfflineDoctorRun> {
   const ownedRoots: string[] = [];
   const releaseRoots = registerOwnedResourceCleanup("browser-control-doctor-roots", () =>
@@ -255,13 +339,16 @@ async function runOfflineDoctor(options: {
 
     vi.resetModules();
     const { dataDir } = await import("../src/lib/paths.js");
-    const { browserControlCandidateDir } = await import("../src/lib/browser-control-runtime.js");
+    const { browserControlCandidateDir, inspectCachedBrowserControlRuntime } = await import(
+      "../src/lib/browser-control-runtime.js"
+    );
     const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
 
     const stateDir = dataDir();
     const candidateDir = browserControlCandidateDir(stateDir);
     await seedVerifiedReceipt(stateDir, options.activeRelease, owned.root);
     await seedVerifiedReceipt(candidateDir, options.candidateRelease, owned.root);
+    seedProjection(configDir, stateDir, inspectCachedBrowserControlRuntime, options.projection ?? "missing");
 
     const activeBefore = receiptFingerprint(loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE));
     const candidateBefore = receiptFingerprint(
@@ -281,6 +368,7 @@ async function runOfflineDoctor(options: {
     return {
       lines,
       text: lines.join("\n"),
+      problems: problemLines(),
       activeBefore,
       activeAfter: receiptFingerprint(loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE)),
       candidateBefore,
@@ -415,5 +503,78 @@ describe("doctor: Browser Control active/candidate separation (T13)", () => {
     // Read-only: neither namespace is mutated by the diagnostic.
     expect(run.activeAfter).toEqual(run.activeBefore);
     expect(run.candidateAfter).toEqual(run.candidateBefore);
+  });
+});
+
+describe("doctor: Browser Control projected native skill/MCP integrity (T13)", () => {
+  it.each([
+    { state: "missing" as const, label: "missing" },
+    { state: "modified" as const, label: "drifted" },
+  ])(
+    "diagnoses a $label projected skill/MCP instead of declaring the active projection healthy",
+    async ({ state }) => {
+      const run = await runOfflineDoctor({
+        activeRelease: ACTIVE_RELEASE,
+        candidateRelease: CANDIDATE_RELEASE,
+        prefix: `.jorgex-doctor-projection-${state}-`,
+        projection: state,
+      });
+
+      // Setup guard: the cached authenticated active A really exists, so a
+      // failure below is missing doctor behavior, not a bad fixture.
+      expect(run.activeBefore).toEqual({
+        present: true,
+        version: ACTIVE_VERSION,
+        integrity: ACTIVE_RELEASE.integrity,
+      });
+
+      // Offline contract: no acquisition and no relay probe.
+      expect(network.calls, "the doctor must not fetch the provider").toEqual([]);
+      expect(probe.calls, "the doctor must not probe the relay").toBe(0);
+
+      // Honest layer evidence: the authenticated active is still reported...
+      expect(run.text, "the active version must be reported").toContain(ACTIVE_VERSION);
+
+      // ...but the mandatory projected native skill/MCP are absent/drifted, so
+      // the doctor must diagnose the projection at its own layer rather than
+      // declaring the active healthy "with its managed projection".
+      const browserControlProblems = run.problems.filter((line) => /browser.?control/i.test(line));
+      expect(
+        browserControlProblems,
+        `the doctor must diagnose the ${state} projected browser-control skill/MCP at the browser-control layer:\n${run.text}`,
+      ).not.toEqual([]);
+      expect(
+        run.text,
+        `the doctor must not claim the managed projection is healthy while it is ${state}:\n${run.text}`,
+      ).not.toMatch(/verificado con su proyección gestionada/i);
+
+      // Read-only: neither namespace is mutated by the diagnostic.
+      expect(run.activeAfter).toEqual(run.activeBefore);
+      expect(run.candidateAfter).toEqual(run.candidateBefore);
+    },
+  );
+
+  it("does not report a browser-control projection problem when the native skill and MCP are canonical", async () => {
+    const run = await runOfflineDoctor({
+      activeRelease: ACTIVE_RELEASE,
+      candidateRelease: CANDIDATE_RELEASE,
+      prefix: ".jorgex-doctor-projection-canonical-",
+      projection: "canonical",
+    });
+
+    // Setup guard: the active exists and the projection was seeded from it.
+    expect(run.activeBefore.present).toBe(true);
+    expect(network.calls, "the doctor must not fetch the provider").toEqual([]);
+    expect(probe.calls, "the doctor must not probe the relay").toBe(0);
+
+    // Control: a canonical projection must not be flagged as a problem, so the
+    // fix cannot pass by always warning.
+    const browserControlProblems = run.problems.filter((line) => /browser.?control/i.test(line));
+    expect(
+      browserControlProblems,
+      `a canonical projected skill/MCP must not be reported as a problem:\n${run.text}`,
+    ).toEqual([]);
+
+    expect(run.activeAfter).toEqual(run.activeBefore);
   });
 });
