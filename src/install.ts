@@ -5,7 +5,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { Adapter, FileAction, InstallContext, InstallModePreference, OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
-import { opencodeAdapter, reconcileBrowserControlEnvironment } from "./adapters/opencode.js";
+import { opencodeAdapter, reconcileBrowserControlEnvironment, retireBrowserControlEnvironment } from "./adapters/opencode.js";
 import { claudeCodeAdapter } from "./adapters/claude-code.js";
 import { codexAdapter } from "./adapters/codex.js";
 import { HOME, dataDir, samePath, stackRoot } from "./lib/paths.js";
@@ -24,7 +24,7 @@ import {
 } from "./lib/official-engram-setup.js";
 import { shouldRetireLegacyEngram } from "./adapters/opencode.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServer, materializeCanonicalDevtoolsServerForRemoval, type CanonicalMcp } from "./lib/canonical.js";
-import { findOrphans, readManifest, readManifestStrict, writeRuntimeManifest } from "./lib/manifest.js";
+import { findOrphans, readManifest, readManifestStrict, writeRuntimeManifest, type RuntimeManifest } from "./lib/manifest.js";
 import {
   authenticateStaticResource,
   projectedBytesByTarget,
@@ -58,6 +58,7 @@ import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "
 import {
   prepareBrowserControlRuntime,
   resolveBrowserControlRelayPort,
+  type BrowserControlPreviousProjection,
   type BrowserControlRuntimeResult,
 } from "./lib/browser-control-runtime.js";
 import {
@@ -66,6 +67,7 @@ import {
   createSystemctlRunner,
   ensureBrowserControlServiceUnit,
   preflightBrowserControlServiceUnit,
+  probeInactiveOwnedServiceUnit,
   resolveBrowserControlServiceConfigBase,
   resolveBrowserControlServiceUnitPath,
   superviseBrowserControlServiceUnit,
@@ -929,6 +931,79 @@ function playwrightSelectionError(opts: InstallOptions): string | null {
   return null;
 }
 
+/** Decisión de preflight del retiro del entorno de autostart propio en una rotación A→B. */
+type BrowserControlRetirement =
+  | { readonly kind: "none" }
+  | { readonly kind: "retire"; readonly port: number; readonly portOwned: boolean }
+  | { readonly kind: "block"; readonly reason: string };
+
+/**
+ * T13: preflight de SOLO LECTURA que decide si el entorno de autostart que Stack
+ * introdujo para el servicio A puede retirarse ANTES de publicar la proyección
+ * B. Autentica la estampa contra la proyección del active PREVIO A (nunca contra
+ * B), exige que el MCP gestionado actual siga siendo la proyección A retirable y
+ * comprueba por el manager que la unidad A está inactiva con el relay ausente en
+ * su puerto propio. Una autoridad modificada o un estado incierto bloquea antes
+ * de cualquier escritura: el caller restaura A con el rollback real.
+ */
+async function resolveBrowserControlRetirement(input: {
+  readonly configDir: string;
+  readonly row: RuntimeManifest | undefined;
+  readonly previous: BrowserControlPreviousProjection | undefined;
+  readonly runner: BrowserControlSystemctlRunner;
+}): Promise<BrowserControlRetirement> {
+  const priorStamp = input.row?.browserControlAutostart;
+  if (input.previous === undefined || priorStamp === undefined) return { kind: "none" };
+  const serviceConfigBase = resolveBrowserControlServiceConfigBase();
+  const unitPath = resolveBrowserControlServiceUnitPath();
+  if (serviceConfigBase === null || unitPath === null) {
+    return { kind: "block", reason: "el XDG config efectivo no es una ruta absoluta válida" };
+  }
+  if (!samePath(input.configDir, path.join(serviceConfigBase, "opencode"))) {
+    return {
+      kind: "block",
+      reason: `el perfil de la unidad (${serviceConfigBase}) no coincide con el configDir de OpenCode (${input.configDir})`,
+    };
+  }
+  const binding = input.row?.serviceUnit;
+  if (binding === undefined) {
+    return {
+      kind: "block",
+      reason: "hay una estampa de autostart previa pero falta la evidencia serviceUnit que autentica su puerto",
+    };
+  }
+  if (
+    priorStamp.schemaVersion !== 1
+    || priorStamp.projectionSha256 !== browserControlAutostartProjectionSha256(input.previous.invocation, binding.port)
+  ) {
+    return {
+      kind: "block",
+      reason: `la estampa de autostart previa no autentica contra el active A (puerto ${binding.port})`,
+    };
+  }
+  const projected = retireBrowserControlEnvironment({
+    configDir: input.configDir,
+    invocation: input.previous.invocation,
+    port: binding.port,
+    portOwned: priorStamp.portOwned,
+  });
+  if (projected.kind === "blocked") return { kind: "block", reason: projected.reason };
+  if (projected.kind !== "retired") {
+    return {
+      kind: "block",
+      reason: "la estampa previa no corresponde a un entorno gestionado retirable; se conserva sin sobrescribir",
+    };
+  }
+  const probe = await probeInactiveOwnedServiceUnit({ runner: input.runner, unitPath, port: binding.port });
+  if (probe.kind !== "inactive") {
+    return {
+      kind: "block",
+      reason: `no se acredita la unidad histórica inactiva con el relay ausente (${probe.reason})`,
+    };
+  }
+  return { kind: "retire", port: binding.port, portOwned: priorStamp.portOwned };
+}
+
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
@@ -1169,6 +1244,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // pendiente no la invalida.
   let opencodeProjectionApplied = false;
   let opencodeConfigDir: string | undefined;
+  // Decisión del preflight A→B (solo OpenCode/Linux): se calcula una vez antes
+  // de escribir y el bloque de servicio posterior solo la aplica.
+  let browserControlRetire: BrowserControlRetirement = { kind: "none" };
   if (useManifest && !opts.dryRun && opts.runtimes.includes("opencode")) {
     try {
       const pnpmBin = resolvePnpmBin();
@@ -1476,6 +1554,36 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       });
     };
 
+    // T13: preflight transaccional del retiro A→B. Antes de cualquier escritura
+    // de la proyección B se autentica la estampa de autostart propia contra el
+    // active PREVIO A y se acredita de solo lectura la unidad A inactiva con el
+    // relay ausente. Una autoridad modificada o un estado incierto restaura el
+    // active A con el rollback real y NO escribe config/manifest/proyección B.
+    if (
+      id === "opencode"
+      && useManifest
+      && !opts.dryRun
+      && process.platform === "linux"
+      && browserControlRuntime?.kind === "ready"
+    ) {
+      const decision = await resolveBrowserControlRetirement({
+        configDir,
+        row: prevManifest,
+        previous: browserControlRuntime.previous,
+        runner: opts.systemctlRunner ?? createSystemctlRunner(),
+      });
+      if (decision.kind === "block") {
+        p.log.error(
+          `Browser Control: ${decision.reason}. No se escribe la proyección B ni el manifest; se restaura el active A.`,
+        );
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        await rollbackBrowserControlProjection();
+        continue;
+      }
+      browserControlRetire = decision;
+    }
+
     if (changes.length === 0 && orphans.length === 0) {
       if (id === "opencode") opencodeProjectionApplied = true;
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
@@ -1652,9 +1760,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // estampa previa acreditada por hash; un entorno canónico manual sin claim se
   // conserva con conflicto. Una unidad ya existente solo se verifica, sin
   // recargar/arrancar/reescribir. Un opt-in ausente o un runtime pendiente
-  // nunca toca la unidad.
+  // nunca toca la unidad. La autoridad granular previa (estampa propia) también
+  // habilita la reconciliación de solo lectura: un update A→B sin nuevo opt-in
+  // no debe dejar un FALSE/puerto stale ni conservar una estampa ya inaplicable.
+  const opencodeServiceRow = useManifest ? readManifest().runtimes.opencode : undefined;
+  const ownAutostartAuthority = opencodeServiceRow?.browserControlAutostart !== undefined;
   if (
-    opts.browserControlService === true
+    (opts.browserControlService === true || ownAutostartAuthority)
     && process.platform === "linux"
     && useManifest
     && !opts.dryRun
@@ -1688,7 +1800,14 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         }
         // Una unidad nueva exige ausencia comprobada de relay y manager ANTES de crear.
         let preflightPending: string | null = null;
-        if (!occupied) {
+        if (!occupied && opts.browserControlService !== true) {
+          // Sin opt-in explícito solo se verifica una unidad ya gestionada: una
+          // estampa previa sin unidad presente es drift y no autoriza crear ni
+          // arrancar nada (falla cerrado conservando la autoridad).
+          preflightPending =
+            `hay una estampa de autostart previa pero la unidad ${unitPath} no está presente (drift); ` +
+            "se conserva la autoridad y no se crea ni arranca sin el opt-in explícito.";
+        } else if (!occupied) {
           const relayPort = resolveBrowserControlRelayPort();
           if (relayPort === null) {
             preflightPending = "BROWSER_CONTROL_PORT no es un entero válido (1-65535); no se crea ni arranca el servicio.";
@@ -1720,6 +1839,72 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
               p.log.warn(
                 `Browser Control: unidad de servicio ya presente en ${result.unitPath} (release ${result.binding.releaseDirectory}); se verifica sin recargar, arrancar ni reescribir.`,
               );
+              // Rotación A→B: el preflight ya autenticó (solo lectura) la estampa
+              // previa contra el active A y acreditó la unidad A inactiva con el
+              // relay ausente ANTES de escribir B. Aquí solo se aplica la
+              // retirada del entorno propio y su readback; la estampa solo se
+              // retira tras confirmar que la proyección ya no contiene los
+              // campos propios. Nunca se recrea con el hash deseado de B ni se
+              // recarga/arranca/reescribe la unidad histórica.
+              if (browserControlRetire.kind === "retire") {
+                const retired = retireBrowserControlEnvironment({
+                  configDir,
+                  invocation,
+                  port: browserControlRetire.port,
+                  portOwned: browserControlRetire.portOwned,
+                });
+                if (retired.kind === "blocked") {
+                  p.log.error(
+                    `Browser Control: ${retired.reason}; se conserva la autoridad y el entorno sin retirar.`,
+                  );
+                  exitCode = 1;
+                } else {
+                  let wrote = false;
+                  if (retired.kind === "retired") {
+                    const backup = createBackup([retired.file], "install-browser-control-service");
+                    if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+                    try {
+                      writeText(retired.file, retired.content);
+                      wrote = true;
+                    } catch (error) {
+                      p.log.error(
+                        `Browser Control: no se pudo retirar el entorno gestionado (${error instanceof Error ? error.message : String(error)}); se conserva la autoridad.`,
+                      );
+                      exitCode = 1;
+                    }
+                  }
+                  if (wrote || retired.kind === "unchanged") {
+                    // Readback: la estampa solo se retira tras confirmar que la
+                    // proyección gestionada ya no contiene los campos propios.
+                    const readback = retireBrowserControlEnvironment({
+                      configDir,
+                      invocation,
+                      port: browserControlRetire.port,
+                      portOwned: browserControlRetire.portOwned,
+                    });
+                    if (readback.kind !== "unchanged") {
+                      const detail = "reason" in readback ? readback.reason : "estado inesperado";
+                      p.log.error(
+                        `Browser Control: el readback de la retirada no quedó estable (${detail}); no se retira la estampa.`,
+                      );
+                      exitCode = 1;
+                    } else {
+                      const currentRow = readManifest().runtimes.opencode;
+                      if (currentRow !== undefined && currentRow.browserControlAutostart !== undefined) {
+                        const nextRow = { ...currentRow };
+                        delete nextRow.browserControlAutostart;
+                        writeRuntimeManifest("opencode", {
+                          ...nextRow,
+                          updatedAt: new Date().toISOString(),
+                        });
+                      }
+                      p.log.success(
+                        `Browser Control: entorno de autostart gestionado retirado; la unidad ${result.unitPath} y su binding A se conservan sin recargar ni reiniciar.`,
+                      );
+                    }
+                  }
+                }
+              }
             } else {
               const supervised = await superviseBrowserControlServiceUnit({
                 stateDir: dataDir(),

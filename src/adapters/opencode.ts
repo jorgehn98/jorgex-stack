@@ -252,13 +252,104 @@ export function reconcileBrowserControlEnvironment(
   return { kind: "written", file, content: writeBrowserControlEnvironment(source, merged), portOwned };
 }
 
+export interface BrowserControlEnvironmentRetireInput {
+  readonly configDir: string;
+  /** Invocación MCP gestionada ya proyectada (B); autentica el comando existente. */
+  readonly invocation: { command: string; args: readonly string[] };
+  /** Puerto canónico del servicio que autorizó la estampa previa. */
+  readonly port: number;
+  /** `true` si la estampa acredita que Stack introdujo también el puerto. */
+  readonly portOwned: boolean;
+}
+
+export type BrowserControlEnvironmentRetireResult =
+  | { readonly kind: "retired"; readonly file: string; readonly content: string }
+  | { readonly kind: "unchanged"; readonly file: string }
+  | { readonly kind: "blocked"; readonly reason: string };
+
+/**
+ * Retira de la proyección gestionada el entorno de autostart que Stack introdujo
+ * al verificar un servicio externo, cuando una rotación A→B ya no lo necesita.
+ * Exige que la entrada existente sea el launcher gestionado y que los valores
+ * actuales sean la pareja canónica autenticada contra la estampa previa; retira
+ * SOLO el `BROWSER_CONTROL_AUTOSTART=false` propio y, con `portOwned`, el puerto
+ * canónico. Una desviación (FALSE no canónico, puerto distinto, entrada ajena)
+ * bloquea conservando los bytes; las claves ajenas (p. ej. `USER_NOTE`) se
+ * preservan verbatim y un `environment` que queda vacío se retira por completo.
+ * No recompone el comando ni reclama el entorno: la autoridad la decide el caller
+ * con su estampa previa acreditada.
+ */
+export function retireBrowserControlEnvironment(
+  input: BrowserControlEnvironmentRetireInput,
+): BrowserControlEnvironmentRetireResult {
+  const selection = selectOpenCodeServerFile(input.configDir);
+  if ("conflict" in selection) {
+    return { kind: "blocked", reason: "coexisten 'opencode.json' y 'opencode.jsonc'; el archivo efectivo es ambiguo" };
+  }
+  const file = selection.selection.file;
+  const source = readTextIfExists(file);
+  if (source === null || source.trim() === "") {
+    return { kind: "blocked", reason: "no existe la configuración OpenCode generada donde retirar el entorno" };
+  }
+  const parsed = parseJsoncObject(source);
+  if (parsed.value === null) {
+    return { kind: "blocked", reason: "la configuración OpenCode no es JSONC válido" };
+  }
+  const servers = objectValue(objectValue(parsed.value["mcp"])?.["servers"]);
+  const entry = objectValue(servers?.[BROWSER_CONTROL_SERVER]);
+  if (entry === null) {
+    return { kind: "blocked", reason: "no hay un MCP 'browser-control' proyectado que autenticar" };
+  }
+  if (!isCompatibleBrowserControlServer(entry, input.invocation)) {
+    return { kind: "blocked", reason: "el MCP 'browser-control' existente no coincide con el launcher gestionado verificado" };
+  }
+  const existing = entry["environment"];
+  if (existing === undefined) return { kind: "unchanged", file };
+  const current = objectValue(existing);
+  if (current === null) {
+    return { kind: "blocked", reason: "el 'environment' del MCP 'browser-control' no es un objeto; se conserva sin sobrescribir" };
+  }
+
+  const hasAutostart = Object.prototype.hasOwnProperty.call(current, BROWSER_CONTROL_AUTOSTART_FIELD);
+  const hasPort = Object.prototype.hasOwnProperty.call(current, BROWSER_CONTROL_PORT_FIELD);
+  if (hasAutostart && current[BROWSER_CONTROL_AUTOSTART_FIELD] !== "false") {
+    return {
+      kind: "blocked",
+      reason: "el 'environment' del MCP 'browser-control' no declara el FALSE canónico; se conserva sin sobrescribir",
+    };
+  }
+  if (input.portOwned && hasPort && current[BROWSER_CONTROL_PORT_FIELD] !== String(input.port)) {
+    return {
+      kind: "blocked",
+      reason: "el 'environment' del MCP 'browser-control' declara un puerto distinto al gestionado; se conserva sin sobrescribir",
+    };
+  }
+
+  const next: Record<string, unknown> = { ...current };
+  let changed = false;
+  if (hasAutostart) {
+    delete next[BROWSER_CONTROL_AUTOSTART_FIELD];
+    changed = true;
+  }
+  if (input.portOwned && hasPort) {
+    delete next[BROWSER_CONTROL_PORT_FIELD];
+    changed = true;
+  }
+  if (!changed) return { kind: "unchanged", file };
+
+  return { kind: "retired", file, content: writeBrowserControlEnvironment(source, next) };
+}
+
 function writeBrowserControlEnvironment(source: string, environment: Record<string, unknown>): string {
   return editConfigContent(source, (root) => {
     const mcp = objectValue(root["mcp"]);
     const serversRoot = objectValue(mcp?.["servers"]);
     const target = objectValue(serversRoot?.[BROWSER_CONTROL_SERVER]);
     if (target === null) throw new Error("OpenCode: el MCP 'browser-control' desapareció durante la reconciliación de entorno");
-    target["environment"] = environment;
+    // Un entorno gestionado que queda vacío tras retirar los campos propios se
+    // elimina por completo; así no se conserva un `environment: {}` residual.
+    if (Object.keys(environment).length === 0) delete target["environment"];
+    else target["environment"] = environment;
   });
 }
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";

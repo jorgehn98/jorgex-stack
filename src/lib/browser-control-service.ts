@@ -776,6 +776,57 @@ async function inspectOperationalUnit(
   return { ok: true, readback: { mainPid } };
 }
 
+export interface BrowserControlServiceInactiveProbeInput {
+  readonly runner: BrowserControlSystemctlRunner;
+  readonly unitPath: string;
+  /** Puerto propio de la unidad; la ausencia del relay se exige en ese destino exacto. */
+  readonly port: number;
+}
+
+export type BrowserControlServiceInactiveProbeResult =
+  | { readonly kind: "inactive" }
+  | { readonly kind: "pending"; readonly reason: string };
+
+/**
+ * Introspección de SOLO LECTURA para decidir la retirada del entorno gestionado
+ * en una rotación A→B: exige la unidad propia cargada/canónica e inactiva
+ * (`inactive`/`dead`/`MainPID=0`, sin drop-ins ni recarga pendiente) Y ausencia
+ * puntual del relay en el puerto propio. Nunca recarga, arranca, para ni
+ * reescribe la unidad; una observación incierta o no inactiva es `pending`.
+ */
+export async function probeInactiveOwnedServiceUnit(
+  input: BrowserControlServiceInactiveProbeInput,
+): Promise<BrowserControlServiceInactiveProbeResult> {
+  const unitPath = path.resolve(input.unitPath);
+  const outcome = await runSystemctl(input.runner, systemctlShowArgs(true));
+  if (!outcome.ok) return { kind: "pending", reason: `no se pudo consultar el manager (${outcome.reason})` };
+  if (outcome.status !== 0) return { kind: "pending", reason: `systemctl show devolvió estado ${outcome.status}` };
+  const parsed = parseShowProperties(outcome.stdout, [...SHOW_PROPERTIES, "MainPID"]);
+  if (!parsed.ok) return { kind: "pending", reason: parsed.reason };
+  const props = parsed.props;
+  const common = ownUnitLoadedError(props, unitPath);
+  if (common !== null) return { kind: "pending", reason: common };
+  if (props["ActiveState"] !== "inactive" || props["SubState"] !== "dead") {
+    return {
+      kind: "pending",
+      reason: `la unidad no está inactiva (ActiveState=${props["ActiveState"]}, SubState=${props["SubState"]})`,
+    };
+  }
+  if (props["MainPID"] !== "0") {
+    return { kind: "pending", reason: `MainPID no es 0 (${props["MainPID"]})` };
+  }
+  const relay = await readBrowserControlRelayVersion(input.port);
+  if (relay.status !== "absent") {
+    return {
+      kind: "pending",
+      reason: relay.status === "present"
+        ? "el relay responde en el puerto propio; no se retira el entorno gestionado"
+        : `no se pudo comprobar la ausencia del relay en el puerto propio (${relay.reason})`,
+    };
+  }
+  return { kind: "inactive" };
+}
+
 /** Entry acotado y UTF-8 estricto; una sola asignación exacta de build id. */
 const BUILD_ID_ASSIGNMENT = /^var browserControlBuildId = "([^"]+)";$/;
 const MAX_BUILD_ENTRY_BYTES = 16 * 1024 * 1024;

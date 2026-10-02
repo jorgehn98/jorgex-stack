@@ -20,6 +20,7 @@ import type {
   BrowserControlServiceResult,
   EnsureBrowserControlServiceInput,
 } from "../src/lib/browser-control-service.js";
+import type { BrowserControlReady } from "../src/lib/browser-control-runtime.js";
 import type { ManagedBrowserControlServiceBinding } from "../src/lib/manifest.js";
 
 /**
@@ -335,6 +336,13 @@ interface SupervisorManagerFixture extends ManagerRunner {
   readonly events: string[];
   readonly versionRequests: string[];
   readonly close: () => Promise<void>;
+  /**
+   * Stops ONLY this fixture's own `/version` server and makes the fake manager
+   * report the owned unit loaded/inactive/dead/MainPID=0 (no mutation verb is
+   * recorded): the rotation case needs unit A credibly inactive and the relay
+   * absent before it promotes B.
+   */
+  readonly deactivate: () => Promise<void>;
 }
 
 /**
@@ -379,8 +387,10 @@ function createSupervisorManagerFixture(input: {
       "NeedDaemonReload=no",
       `ActiveState=${started ? "active" : "inactive"}`,
       `SubState=${started ? "running" : "dead"}`,
+      // MainPID is part of the manager identity: 0 is the documented
+      // "no main process" value for an inactive/dead unit.
+      `MainPID=${started ? process.pid : 0}`,
     ];
-    if (started) lines.push(`MainPID=${process.pid}`);
     return `${lines.join("\n")}\n`;
   };
 
@@ -435,19 +445,26 @@ function createSupervisorManagerFixture(input: {
     }
   };
 
+  const stopServer = async (): Promise<void> => {
+    const active = server;
+    server = undefined;
+    if (active === undefined) return;
+    await new Promise<void>((resolve) => {
+      active.closeAllConnections?.();
+      active.close(() => resolve());
+    });
+  };
+
   return {
     calls,
     events,
     versionRequests,
     run,
-    close: async () => {
-      const active = server;
-      server = undefined;
-      if (active === undefined) return;
-      await new Promise<void>((resolve) => {
-        active.closeAllConnections?.();
-        active.close(() => resolve());
-      });
+    close: stopServer,
+    deactivate: async () => {
+      // Own-server control: the unit is now inactive and the relay is absent.
+      started = false;
+      await stopServer();
     },
   };
 }
@@ -544,6 +561,16 @@ interface RunServiceInput {
 interface VerifiedServiceContext {
   readonly configDir: string;
   readonly unitPath: string;
+  /** OpenCode binary used by the detection double, for an in-place second install. */
+  readonly opencodeBin: string;
+  /**
+   * Mutable `ready` projection the mocked coordinator returns on each call: a
+   * case may authenticate a promoted active B and hand its real invocation (with
+   * the previous active A projection) to a second `runInstall`.
+   */
+  readonly runtime: { current: BrowserControlReady };
+  /** Supervisor manager fixture: own-server control plus runner/call log. */
+  readonly manager?: SupervisorManagerFixture;
 }
 
 /**
@@ -596,8 +623,8 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
       entryPath: witness.entryPath,
     });
     // Real authenticated projection of the active: Node + guard eval + launcher.
-    const ready = {
-      kind: "ready" as const,
+    const ready: BrowserControlReady = {
+      kind: "ready",
       version: receipt.version,
       invocation: planManagedBrowserInvocation(stateDir, BC_PACKAGE, ["mcp"]),
       skillSource: path.join(
@@ -611,6 +638,9 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
     };
     // The exact managed launcher argv the MCP projection must reproduce.
     const expectedMcpCommand = [ready.invocation.command, ...ready.invocation.args];
+    // Mutable coordinator projection: a case may hand the next call an
+    // authenticated active B (with the previous A projection) without re-mocking.
+    const runtime: { current: BrowserControlReady } = { current: ready };
     vi.doMock("../src/lib/browser-control-runtime.js", async () => {
       const actual =
         await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
@@ -618,8 +648,8 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
         );
       return {
         ...actual,
-        prepareBrowserControlRuntime: async () => ready,
-        inspectCachedBrowserControlRuntime: () => ready,
+        prepareBrowserControlRuntime: async () => runtime.current,
+        inspectCachedBrowserControlRuntime: () => runtime.current,
       };
     });
 
@@ -677,7 +707,13 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
     // The case may now act on the verified root (same private HOME). Observables
     // below are read afterwards, so they witness the later state.
     if (input.onVerified !== undefined) {
-      await input.onVerified({ configDir, unitPath });
+      await input.onVerified({
+        configDir,
+        unitPath,
+        opencodeBin,
+        runtime,
+        ...(supervisor === undefined ? {} : { manager: supervisor }),
+      });
     }
 
     const unitBytes = fs.existsSync(unitPath) ? fs.readFileSync(unitPath) : null;
@@ -717,6 +753,232 @@ function verificationBase(): string {
     repoRoot: REPO_ROOT,
     env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
   });
+}
+
+interface ServiceRotationEvidence {
+  /** Granular authority recorded by the real supervised A before B is promoted. */
+  readonly stampBefore: BrowserControlAutostartStamp | undefined;
+  /** Unit A binding recorded by the real supervised A. */
+  readonly bindingBefore: ManagedBrowserControlServiceBinding | undefined;
+  readonly unitBytesBefore: Buffer;
+  /** MCP command projected by the real supervised A. */
+  readonly commandBefore: readonly string[] | undefined;
+  /** MCP environment (with the external user extra) right before the second run. */
+  readonly environmentBefore: Record<string, unknown> | undefined;
+  /** Exact managed launcher argv B must be projected with. */
+  readonly expectedCommandB: readonly string[];
+  /** Manager calls issued ONLY by the second `runInstall`. */
+  readonly secondInstallCalls: readonly string[][];
+  /** Exit code reported by the second real `runInstall`. */
+  readonly secondInstallExitCode: number;
+  /** Byte-for-byte managed config right before the second run (command A + user extra). */
+  readonly configBytesBefore: Buffer;
+  /** Byte-for-byte managed config right after the second run. */
+  readonly configBytesAfter: Buffer;
+  /** Authenticated active A identity captured while A is still the active. */
+  readonly activeRootPathBefore: string;
+  readonly activeReceiptShaBefore: string;
+  /** Active identity after the second run: A when a failed rotation rolled back. */
+  readonly activeRootPathAfter: string | null;
+  readonly activeReceiptShaAfter: string | null;
+  /** Exact authority row present during the second run (the tampered variant when requested). */
+  readonly stampDuringSecondRun: BrowserControlAutostartStamp | undefined;
+}
+
+/** Optional tamper of the recorded authority applied before the second run. */
+interface ServiceRotationInput {
+  /**
+   * Valid-but-wrong 64-hex digest written into the recorded autostart authority
+   * before the second run. The environment, unit file and launcher guard stay
+   * untouched: only the recorded `projectionSha256` is corrupted, so the
+   * authority no longer authenticates against active A.
+   */
+  readonly tamperProjectionSha256?: string;
+}
+
+/**
+ * Rotation control for the `portOwned:true` case. After the real supervised
+ * install of A produced its granular authority, it stops ONLY this fixture's own
+ * `/version` server (so the fake manager reports the owned unit
+ * loaded/inactive/dead/MainPID=0 without any mutation verb), promotes the
+ * distinct verified active B through the real managed activation (real
+ * FS/crypto) and runs a second real `runInstall` whose coordinator projection is
+ * B with the authenticated previous A. The ENV reconcile under test runs real:
+ * nothing here fakes it.
+ *
+ * The acquisition DTO is modelled faithfully: `previous` carries A's
+ * authenticated invocation and `rollback` is the REAL public
+ * `rollbackManagedBrowserActivation` bound to B's receipt and A's receipt, so a
+ * failed rotation that must restore A is never simulated by a mock. With
+ * `tamperProjectionSha256` the recorded authority is corrupted in place (and
+ * only there) right before the second run, modelling a drifted/foreign stamp
+ * whose provenance Stack cannot authenticate.
+ */
+async function advanceInactiveServiceAToB(
+  ctx: VerifiedServiceContext,
+  input: ServiceRotationInput = {},
+): Promise<ServiceRotationEvidence> {
+  const manager = ctx.manager;
+  if (manager === undefined) {
+    throw new Error("fixture: the service rotation requires the supervisor manager");
+  }
+  const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
+  const rowBefore = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
+
+  const configPath = path.join(ctx.configDir, "opencode.json");
+  type ProjectedConfig = {
+    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
+  };
+  const configBefore = JSON.parse(fs.readFileSync(configPath, "utf8")) as ProjectedConfig;
+  const entryBefore = configBefore.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+  if (entryBefore === undefined) {
+    throw new Error("fixture: the managed Browser Control MCP must exist before the rotation");
+  }
+  // External user write: an unrelated extra must survive the environment removal.
+  entryBefore.environment = { ...(entryBefore.environment ?? {}), USER_NOTE: "preserve-me" };
+  fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
+  const commandBefore = entryBefore.command;
+  const environmentBefore = entryBefore.environment;
+  // Snapshot the exact managed config the second run must leave untouched when
+  // the authority cannot be authenticated.
+  const configBytesBefore = fs.readFileSync(configPath);
+
+  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
+  const {
+    activateManagedBrowserTree,
+    loadVerifiedRetainedBrowserRelease,
+    planManagedBrowserInvocation,
+    planManagedBrowserInvocationForRetainedRelease,
+    rollbackManagedBrowserActivation,
+  } = await import("../src/lib/browser-managed.js");
+  const { browserTreeSha256 } = await import("../src/lib/browser-stage.js");
+
+  // A's authenticated projection is captured while A is still the active.
+  const activeA = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  if (activeA === null) throw new Error("fixture: the first install must retain an active A");
+  const activeRootPathBefore = activeA.receipt.rootPath;
+  const activeReceiptShaBefore = activeA.receiptSha256;
+  const invocationA = planManagedBrowserInvocationForRetainedRelease(activeA, ["mcp"]);
+  const skillSourceA = path.join(
+    activeA.receipt.treePath,
+    "@opencode-ai",
+    "browser-control",
+    "skills",
+    BROWSER_CONTROL_SERVER,
+    "SKILL.md",
+  );
+
+  // Corrupt ONLY the recorded projection digest when requested: the environment,
+  // unit file and launcher guard remain untouched, so the authority no longer
+  // authenticates against active A while every other input stays real.
+  if (input.tamperProjectionSha256 !== undefined) {
+    const fullRow = readManifest().runtimes.opencode;
+    if (fullRow === undefined || fullRow.browserControlAutostart === undefined) {
+      throw new Error("fixture: the tamper variant requires the recorded autostart authority");
+    }
+    writeRuntimeManifest("opencode", {
+      ...fullRow,
+      browserControlAutostart: {
+        ...fullRow.browserControlAutostart,
+        projectionSha256: input.tamperProjectionSha256,
+      },
+      updatedAt: new Date().toISOString(),
+    });
+  }
+  const stampDuringSecondRun = readManifest().runtimes.opencode?.browserControlAutostart;
+
+  // Stop ONLY this fixture's own HTTP server: unit A is now credibly inactive
+  // and the relay is absent on the owned port.
+  await manager.deactivate();
+
+  // Promote the distinct active B for real (managed FS + crypto).
+  const witnessB = writeWitnessTree(path.join(path.dirname(stateDir), "witness-b"), {
+    version: BC_VERSION_B,
+    entryBytes: BC_ROOT_BYTES_B,
+  });
+  const receiptB = await activateManagedBrowserTree({
+    stateDir,
+    packageName: BC_PACKAGE,
+    release: { version: BC_VERSION_B, tarballUrl: BC_TARBALL_URL_B, integrity: BC_INTEGRITY_B },
+    staged: {
+      treePath: witnessB.treePath,
+      nodeModulesPath: witnessB.nodeModulesPath,
+      treeSha256: browserTreeSha256(witnessB.nodeModulesPath, witnessB.stageDir),
+      closure: [{ name: BC_PACKAGE, version: BC_VERSION_B, integrity: BC_INTEGRITY_B }],
+    },
+    entryPath: witnessB.entryPath,
+  });
+  const readyB: BrowserControlReady = {
+    kind: "ready",
+    version: receiptB.version,
+    invocation: planManagedBrowserInvocation(stateDir, BC_PACKAGE, ["mcp"]),
+    skillSource: path.join(
+      receiptB.treePath,
+      "@opencode-ai",
+      "browser-control",
+      "skills",
+      BROWSER_CONTROL_SERVER,
+      "SKILL.md",
+    ),
+    previous: { version: activeA.receipt.version, invocation: invocationA, skillSource: skillSourceA },
+    // The real acquisition DTO always ships this bounded recovery when it
+    // promoted a new active: restore A (or remove B) through the public API.
+    rollback: async () => {
+      await rollbackManagedBrowserActivation(stateDir, BC_PACKAGE, receiptB, activeA.receipt);
+    },
+  };
+  ctx.runtime.current = readyB;
+  const expectedCommandB = [readyB.invocation.command, ...readyB.invocation.args];
+
+  const install = await import("../src/install.js");
+  const opencode = install.ADAPTERS.opencode!;
+  const originalDetect = opencode.detect;
+  opencode.detect = () => ({
+    id: "opencode",
+    name: "OpenCode",
+    installed: true,
+    binPath: ctx.opencodeBin,
+    configDir: ctx.configDir,
+  });
+
+  const callsBefore = manager.calls.length;
+  let secondInstallExitCode: number;
+  try {
+    secondInstallExitCode = await install.runInstall({
+      runtimes: ["opencode"],
+      command: "install",
+      dryRun: false,
+      yes: true,
+      mode: { mode: "human", subagentConcurrency: "serial" },
+      engramBin: null,
+      browserControlService: true,
+      systemctlRunner: manager.run,
+    });
+  } finally {
+    opencode.detect = originalDetect;
+  }
+
+  const configBytesAfter = fs.readFileSync(configPath);
+  const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+
+  return {
+    stampBefore: rowBefore?.browserControlAutostart,
+    bindingBefore: rowBefore?.serviceUnit,
+    unitBytesBefore,
+    commandBefore,
+    environmentBefore,
+    expectedCommandB,
+    secondInstallCalls: manager.calls.slice(callsBefore),
+    secondInstallExitCode,
+    configBytesBefore,
+    configBytesAfter,
+    activeRootPathBefore,
+    activeReceiptShaBefore,
+    activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
+    activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
+    stampDuringSecondRun,
+  };
 }
 
 describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux user service", () => {
@@ -829,6 +1091,253 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       expect(stamp!.schemaVersion).toBe(1);
       expect(stamp!.portOwned).toBe(true);
       expect(stamp!.projectionSha256).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * A→B rotation with a Stack-owned port (Spec T13, authority granular del
+   * entorno). A real supervised install of A records the `portOwned:true`
+   * authority and introduces the canonical FALSE + literal port on the managed
+   * MCP. Then ONLY the fixture's own `/version` server is stopped and the fake
+   * manager reports unit A loaded/inactive/dead/MainPID=0; the distinct verified
+   * active B is promoted through the real managed activation and a second real
+   * `runInstall` projects B's managed launcher.
+   *
+   * Contract: before changing the command A→B Stack authenticates the recorded
+   * authority against A, and because the service is credibly inactive and the
+   * relay absent it retires ONLY the environment it introduced — the canonical
+   * FALSE and the still-canonical owned port — preserving the user extra, unit A
+   * and binding A, and projects B with native autostart. The stamp is retired
+   * after the readback and the second run issues only read-only manager probes
+   * (no daemon-reload/enable/start/restart/reload). RED today: the occupied unit
+   * branch keeps the stale FALSE/port and the stamp while the command advances.
+   */
+  it("retires the Stack-owned autostart environment and preserves unit/binding A when an inactive service A is advanced to B", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const port = await reserveOwnedLoopbackPort();
+    let rotation: ServiceRotationEvidence | undefined;
+    try {
+      const observables = await runServiceInstall({
+        prefix: ".jorgex-browser-control-service-rotation-",
+        registerOwnedRoot: (root) => ownedRoots.push(root),
+        base: verificationBase(),
+        browserControlService: true,
+        supervisor: { port },
+        onVerified: async (ctx) => {
+          rotation = await advanceInactiveServiceAToB(ctx);
+        },
+      });
+      if (rotation === undefined) throw new Error("fixture: the rotation callback did not run");
+      const shown = rotation;
+
+      // Scenario integrity: the real supervised A recorded its granular
+      // authority, introduced the canonical pair and the user extra landed
+      // before the second run.
+      expect(shown.stampBefore, "the supervised A must have recorded its granular authority").toBeDefined();
+      expect(shown.stampBefore?.portOwned, "the introduced port belongs to Stack").toBe(true);
+      expect(shown.bindingBefore, "the supervised A must have recorded its unit binding").toBeDefined();
+      expect(shown.environmentBefore).toMatchObject({
+        BROWSER_CONTROL_AUTOSTART: "false",
+        BROWSER_CONTROL_PORT: String(port),
+        USER_NOTE: "preserve-me",
+      });
+      expect(
+        shown.commandBefore,
+        "scenario integrity: the pre-rotation MCP command must be A's, not B's",
+      ).not.toEqual(shown.expectedCommandB);
+
+      // B is projected with its real managed launcher guard.
+      expect(
+        observables.mcpCommand,
+        "the MCP must advance to B's real managed invocation",
+      ).toEqual(shown.expectedCommandB);
+      expect(observables.mcpCommand?.[0]).toBe(process.execPath);
+      expect(observables.mcpCommand?.slice(-1)).toEqual(["mcp"]);
+
+      // Stack retires ONLY the environment it introduced: the canonical FALSE
+      // and the still-canonical port disappear, the user extra survives.
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART,
+        "the Stack-introduced FALSE must be retired",
+      ).toBeUndefined();
+      expect(
+        observables.mcpEnvironment?.BROWSER_CONTROL_PORT,
+        "the Stack-introduced canonical port must be retired",
+      ).toBeUndefined();
+      expect(observables.mcpEnvironment?.USER_NOTE, "the user extra must survive").toBe("preserve-me");
+
+      // The granular authority is retired after the readback.
+      expect(
+        observables.manifestAutostart,
+        "the retired environment must not keep its autostart authority",
+      ).toBeUndefined();
+
+      // Unit A and its binding are preserved verbatim: no rewrite, no restart.
+      expect(observables.unitBytes, "unit A must survive the rotation").not.toBeNull();
+      expect(observables.unitBytes, "unit A bytes must be untouched").toEqual(shown.unitBytesBefore);
+      expect(observables.manifestServiceUnit, "binding A must survive verbatim").toEqual(shown.bindingBefore);
+
+      // The second run issues read-only manager probes only: it must credit the
+      // unit inactive (at least one `show`) and never mutate it.
+      const secondVerbs = shown.secondInstallCalls
+        .map((argv) => serviceVerb(argv))
+        .filter((verb): verb is string => verb !== undefined);
+      expect(
+        secondVerbs,
+        "the second run must credit unit A inactive with a manager read",
+      ).toContain("show");
+      for (const forbidden of [
+        "daemon-reload",
+        "enable",
+        "start",
+        "restart",
+        "reload",
+        "stop",
+        "disable",
+        "mask",
+        "linger",
+      ]) {
+        expect(
+          secondVerbs,
+          `the second run must not issue ${forbidden} on an already-verified unit`,
+        ).not.toContain(forbidden);
+      }
+      expect(
+        secondVerbs.every((verb) => verb === "show"),
+        `the second run may only read the manager state (got ${JSON.stringify(secondVerbs)})`,
+      ).toBe(true);
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * Negative authority authentication before the A→B transition (Spec T13): the
+   * recorded granular authority is corrupted at the exact field that proves
+   * which projection Stack introduced (`projectionSha256`), while the
+   * environment, unit file and launcher guard stay untouched. Because the
+   * authority no longer authenticates against active A, Stack must not advance
+   * the managed MCP to B's command: it must fail closed and restore active A
+   * through the acquisition DTO's REAL rollback BEFORE any write, leaving the
+   * config byte-for-byte A (command, canonical FALSE/port and the user extra),
+   * unit/binding A and the recorded authority unrewritten.
+   *
+   * RED today: the command is advanced to B first and the authority is only
+   * checked afterwards, so the managed config keeps B's launcher with the stale
+   * FALSE while active B is never rolled back to A.
+   */
+  it("fails closed and keeps the A projection when the recorded autostart authority does not authenticate before an A→B rotation", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-tamper-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const port = await reserveOwnedLoopbackPort();
+    const tamperedProjectionSha256 = "ab".repeat(32);
+    let rotation: ServiceRotationEvidence | undefined;
+    try {
+      const observables = await runServiceInstall({
+        prefix: ".jorgex-browser-control-service-rotation-tamper-",
+        registerOwnedRoot: (root) => ownedRoots.push(root),
+        base: verificationBase(),
+        browserControlService: true,
+        supervisor: { port },
+        onVerified: async (ctx) => {
+          rotation = await advanceInactiveServiceAToB(ctx, { tamperProjectionSha256: tamperedProjectionSha256 });
+        },
+      });
+      if (rotation === undefined) throw new Error("fixture: the rotation callback did not run");
+      const shown = rotation;
+
+      // Scenario integrity: A's real authority and binding were recorded, the
+      // user extra landed and ONLY the recorded digest was corrupted.
+      expect(shown.stampBefore, "the supervised A must have recorded its granular authority").toBeDefined();
+      expect(shown.bindingBefore, "the supervised A must have recorded its unit binding").toBeDefined();
+      expect(shown.stampDuringSecondRun, "the tampered authority must be present for the second run").toBeDefined();
+      expect(shown.stampDuringSecondRun!.projectionSha256).toBe(tamperedProjectionSha256);
+      expect(
+        shown.stampDuringSecondRun!.projectionSha256,
+        "the tampered digest must differ from A's authenticated digest",
+      ).not.toBe(shown.stampBefore!.projectionSha256);
+      expect(shown.stampDuringSecondRun!.schemaVersion).toBe(shown.stampBefore!.schemaVersion);
+      expect(shown.stampDuringSecondRun!.portOwned).toBe(shown.stampBefore!.portOwned);
+      expect(shown.environmentBefore).toMatchObject({
+        BROWSER_CONTROL_AUTOSTART: "false",
+        BROWSER_CONTROL_PORT: String(port),
+        USER_NOTE: "preserve-me",
+      });
+      expect(
+        shown.commandBefore,
+        "scenario integrity: the pre-rotation MCP command must be A's, not B's",
+      ).not.toEqual(shown.expectedCommandB);
+
+      // The invalid authority is an honest failure, never a clean success.
+      expect(
+        shown.secondInstallExitCode,
+        "an authority that does not authenticate must fail the run",
+      ).not.toBe(0);
+
+      // PRIMARY: the managed MCP must not advance to B before authenticating A.
+      expect.soft(
+        observables.mcpCommand,
+        "the MCP must stay on A's launcher when the authority cannot authenticate",
+      ).toEqual(shown.commandBefore);
+      expect.soft(
+        observables.mcpEnvironment,
+        "the Stack-introduced FALSE/port and the user extra must stay A's",
+      ).toEqual(shown.environmentBefore);
+      expect.soft(
+        shown.configBytesAfter,
+        "the managed config must remain byte-for-byte A",
+      ).toEqual(shown.configBytesBefore);
+
+      // The preparation promoted B for real, so the REAL rollback must restore A.
+      expect.soft(
+        shown.activeRootPathAfter,
+        "the promoted B must be rolled back to active A before any write",
+      ).toBe(shown.activeRootPathBefore);
+      expect.soft(
+        shown.activeReceiptShaAfter,
+        "active A must authenticate again after the rollback",
+      ).toBe(shown.activeReceiptShaBefore);
+
+      // Unit, binding and the (corrupt) authority must not be overwritten.
+      expect.soft(observables.unitBytes, "unit A must survive untouched").toEqual(shown.unitBytesBefore);
+      expect.soft(
+        observables.manifestServiceUnit,
+        "binding A must survive verbatim",
+      ).toEqual(shown.bindingBefore);
+      expect.soft(
+        observables.manifestAutostart,
+        "the recorded authority must not be rewritten or dropped",
+      ).toEqual(shown.stampDuringSecondRun);
+
+      // The failed rotation never mutates the manager: no reload/start/stop.
+      const secondVerbs = shown.secondInstallCalls
+        .map((argv) => serviceVerb(argv))
+        .filter((verb): verb is string => verb !== undefined);
+      for (const forbidden of [
+        "daemon-reload",
+        "enable",
+        "start",
+        "restart",
+        "reload",
+        "stop",
+        "disable",
+        "mask",
+        "linger",
+      ]) {
+        expect.soft(
+          secondVerbs,
+          `the failed rotation must not issue ${forbidden} on unit A`,
+        ).not.toContain(forbidden);
+      }
     } finally {
       cleanupOwnedResourcesOrThrow();
       releaseRoots();
