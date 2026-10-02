@@ -37,7 +37,8 @@ export async function smokePiProviderRuntime(input: {
       fs.symlinkSync(path.relative(modules, packageRoot), path.join(modules, name), "dir");
       packages.push(`npm:${name}@${metadata.version}`);
     }
-    fs.writeFileSync(path.join(stageDir, "settings.json"), JSON.stringify({ packages }));
+    // Select the legacy provider contract explicitly: the newer builtin MCP warns on stderr, which the strict RPC check rejects.
+    fs.writeFileSync(path.join(stageDir, "settings.json"), JSON.stringify({ packages, extensions: ["-builtin:mcp"] }));
     fs.writeFileSync(resolvePiAdapterConfigPath(stageDir), JSON.stringify({ mcpServers: {
       engram: { command: input.engramBin, args: ["mcp", "--tools=agent"], lifecycle: "lazy", directTools: false },
     } }));
