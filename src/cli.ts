@@ -62,6 +62,8 @@ export interface Flags {
   devtools: boolean;
   noDevtools: boolean;
   upgradePermissions: boolean;
+  /** Opt-in explícito a la variante temporal #1567 solo en install/update con Pi. */
+  engramTypeboxCompat?: boolean;
   receipt?: string;
   positional: string[];
   unknownFlags: string[];
@@ -204,6 +206,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     else if (arg === "--devtools") flags.devtools = true;
     else if (arg === "--no-devtools") flags.noDevtools = true;
     else if (arg === "--upgrade-permissions") flags.upgradePermissions = true;
+    else if (arg === "--engram-typebox-compat") flags.engramTypeboxCompat = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
   }
@@ -496,6 +499,7 @@ interface RunSelectedPiOptions {
   playwrightRefresh?: boolean;
   packageOnly?: boolean;
   upgradePermissions?: boolean;
+  engramTypeboxCompat?: boolean;
 }
 
 async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
@@ -577,6 +581,7 @@ async function runSelectedPi(options: RunSelectedPiOptions): Promise<number> {
     detected: { executable: detected.executable, version: detected.version },
     engramBin,
     ...(devtoolsMcpEnabled === undefined ? {} : { devtoolsMcpEnabled }),
+    ...(options.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
     ...(playwrightCliEnabled === undefined ? {} : { playwrightCliEnabled }),
     ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
     ...(options.playwrightRefresh === undefined ? {} : { playwrightRefresh: options.playwrightRefresh }),
@@ -640,6 +645,8 @@ Opciones:
   --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
   --upgrade-permissions (install/sync) re-aplica permisos gestionados sobre config existente (opt-in)
+  --engram-typebox-compat (install/update con Pi) opt-in explícito a la variante temporal #1567;
+                        sin el flag no se adquiere ni persiste ninguna preferencia
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
                         memorias y binario quedan intactos igualmente
   --playwright-runtimes <csv>  Activa su guía sólo en estos runtimes de --agents (con --playwright)
@@ -693,6 +700,19 @@ async function main(): Promise<void> {
     console.error("--target-dir requiere exactamente un runtime en --agents.");
     process.exitCode = 1;
     return;
+  }
+
+  if (flags.engramTypeboxCompat === true) {
+    if (command !== "install" && command !== "update") {
+      console.error("--engram-typebox-compat solo se admite en install/update deliberados con Pi.");
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.dryRun || flags.targetDir !== undefined || (command === "update" && flags.check)) {
+      console.error("--engram-typebox-compat requiere install/update real, sin --check/--dry-run/--target-dir.");
+      process.exitCode = 1;
+      return;
+    }
   }
 
   switch (command) {
@@ -761,6 +781,11 @@ async function main(): Promise<void> {
       if (runtimes === null) return;
       if (runtimes.length === 0) {
         console.error("Ningún runtime detectado (opencode, claude-code, codex, pi).");
+        process.exitCode = 1;
+        return;
+      }
+      if (flags.engramTypeboxCompat === true && !runtimes.includes("pi")) {
+        console.error("--engram-typebox-compat requiere Pi entre los runtimes destino.");
         process.exitCode = 1;
         return;
       }
@@ -866,6 +891,7 @@ async function main(): Promise<void> {
               playwrightCapability: playwrightCapability ?? (shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
                 ? inspectManagedPlaywrightCapability() : undefined),
               ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
+              ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
             });
             exitCode = Math.max(exitCode, piExitCode);
             piStatus = piExitCode === 0 ? "ok" : "failed";
@@ -984,6 +1010,11 @@ async function main(): Promise<void> {
       // Sin --check ni --dry-run: sync primero, luego flujo interactivo de update.
       const runtimes = await resolveRuntimes(flags);
       if (runtimes === null) return;
+      if (flags.engramTypeboxCompat === true && !runtimes.includes("pi")) {
+        console.error("--engram-typebox-compat requiere Pi entre los runtimes destino.");
+        process.exitCode = 1;
+        return;
+      }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       try {
         // Mismo invariante que install/sync: rejectar OpenCode no-v2 antes de
@@ -1020,6 +1051,7 @@ async function main(): Promise<void> {
           modePreference: mode,
           playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
             ? inspectManagedPlaywrightCapability() : undefined,
+          ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
         });
         process.exitCode = piExitCode;
         persistSuccessfulGlobalMode(mode, flags.targetDir, flags.dryRun, piExitCode);
@@ -1074,6 +1106,7 @@ async function main(): Promise<void> {
           writingStyle,
           modePreference: mode,
           playwrightCapability: result.playwrightCapability,
+          ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
         }));
       }
       // Solo skills/stack cambian los artefactos que el sync propaga.

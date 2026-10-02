@@ -8,7 +8,7 @@ import { readTextIfExists } from "./lib/fsx.js";
 import { DEFAULT_INSTALL_MODE_PREFERENCE, loadInstallModePreference } from "./lib/install-mode.js";
 import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
-import { piAdapter } from "./adapters/pi.js";
+import { piAdapter, readPiProviderReceiptReport, type PiProviderReceiptReport } from "./adapters/pi.js";
 import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
 import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
 import { HOME } from "./lib/paths.js";
@@ -44,6 +44,23 @@ function piAgentDir(targetDir?: string): string {
   return targetDir === undefined
     ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
     : path.join(targetDir, "pi-agent");
+}
+
+/**
+ * Diagnóstico solo-lectura del recibo separado de providers. Ausencia no es
+ * problema; malformado/drift es error y nunca se presenta como setup sano.
+ * Fuera de HOME no aplica el contrato y se omite sin tocar el HOME real.
+ */
+async function reportPiProviderReceipt(): Promise<number> {
+  try {
+    const report = await readPiProviderReceiptReport({ homeDir: HOME, agentDir: piAgentDir() });
+    if (report === null) return 0;
+    p.log.info(`Pi: provider receipt: ${report.detail}.`);
+    return 0;
+  } catch (error) {
+    p.log.error(`Pi: provider receipt inválido o drifted (${error instanceof Error ? error.message : String(error)}); no se presenta como setup sano.`);
+    return 1;
+  }
 }
 
 /**
@@ -231,7 +248,7 @@ async function verifyOfficialForRuntime(
   engramBin: string,
   homeDir?: string,
   isExplicitClaudeConfigDir?: boolean,
-): Promise<{ ok: boolean; layers: string[]; reason?: string }> {
+): Promise<{ ok: boolean; layers: string[]; reason?: string; providerReceipt?: PiProviderReceiptReport }> {
   if (runtime === "claude-code") {
     const { verifyOfficialSetup } = await import("./adapters/claude-code.js");
     const explicit = isExplicitClaudeConfigDir ?? (process.env.CLAUDE_CONFIG_DIR !== undefined);
@@ -258,6 +275,7 @@ async function verifyOfficialForRuntime(
       ok: report.ok,
       layers: report.layers,
       ...(report.reason === undefined ? {} : { reason: report.reason }),
+      ...(report.providerReceipt === undefined ? {} : { providerReceipt: report.providerReceipt }),
     };
   }
   const { verifyOfficialSetup } = await import("./adapters/opencode.js");
@@ -298,7 +316,7 @@ async function doctorHasOpencodeSetup(
 async function doctorHasPiSetup(
   homeDir: string,
   engramBin: string,
-): Promise<{ ok: boolean; layers: string[]; reason?: string }> {
+): Promise<{ ok: boolean; layers: string[]; reason?: string; providerReceipt?: PiProviderReceiptReport }> {
   // Mismo PI_CODING_AGENT_DIR efectivo que el runtime: env explícito o
   // <homeDir>/.pi/agent; nunca el default cuando el env apunta a otro dir.
   const effective = process.env.PI_CODING_AGENT_DIR ?? path.join(homeDir, ".pi", "agent");
@@ -377,6 +395,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
   let problems = reportWritingStyle(options, writingStyle, modePreference);
   if (options.runtimes === undefined || options.runtimes.includes("pi")) {
     problems += reportPiPermissions(options.targetDir);
+    if (options.targetDir === undefined) problems += await reportPiProviderReceipt();
   }
   if (options.targetDir !== undefined || (options.runtimes !== undefined && options.runtimes.length > 0 && options.runtimes.every((id) => id === "pi"))) {
     p.outro(problems > 0

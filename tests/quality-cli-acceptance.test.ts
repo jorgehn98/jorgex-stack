@@ -2,99 +2,42 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { QualityProfile } from "../src/lib/quality-policy.js";
+import {
+  cleanupOwnedResourcesOrThrow,
+  registerOwnedResourceCleanup,
+  runBoundedProcess,
+  type BoundedProcessResult,
+  type CliResult,
+} from "./helpers/bounded-process.js";
+import { prepareRepoBuildRun, removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
 const CLI_TIMEOUT_MS = 10_000;
 const BUILD_TIMEOUT_MS = 30_000;
-const TREE_KILL_TIMEOUT_MS = 1_000;
-const CLI_KILL_GRACE_MS = 250;
-const WINDOWS_SHELL_METACHARACTERS = /["%&|<>^!`()\r\n]/;
+const PNPM_VERSION_CHECK_TIMEOUT_MS = 10_000;
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
-type ProcessInvocation = {
-  command: string;
-  args: string[];
-};
-
-type BoundedProcessOptions = {
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  timeoutMs: number;
-};
-
-function resolveWindowsPnpmShim(): string | undefined {
-  const result = spawnSync("where.exe", ["pnpm.cmd"], {
-    encoding: "utf8",
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  if (result.error !== undefined || result.status !== 0) return undefined;
-
-  const pnpmShim = String(result.stdout ?? "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line !== "");
-  if (
-    pnpmShim === undefined
-    || !fs.existsSync(pnpmShim)
-    || WINDOWS_SHELL_METACHARACTERS.test(pnpmShim)
-  ) {
-    return undefined;
-  }
-  return pnpmShim;
-}
-
-function resolveBuildInvocation(): ProcessInvocation {
-  const nodeDirectory = path.dirname(process.execPath);
-  const corepackScript = [
-    path.join(nodeDirectory, "node_modules", "corepack", "dist", "corepack.js"),
-    path.resolve(nodeDirectory, "..", "lib", "node_modules", "corepack", "dist", "corepack.js"),
-  ].find((candidate) => fs.existsSync(candidate));
-
-  if (corepackScript !== undefined) {
-    return { command: process.execPath, args: [corepackScript, "pnpm", "build"] };
-  }
-
-  if (process.platform === "win32") {
-    const corepackShim = path.join(nodeDirectory, "corepack.cmd");
-    if (fs.existsSync(corepackShim) && !WINDOWS_SHELL_METACHARACTERS.test(corepackShim)) {
-      const comspec = process.env.ComSpec
-        ?? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
-      return {
-        command: comspec,
-        args: ["/d", "/s", "/c", `"${corepackShim}" pnpm build`],
-      };
-    }
-
-    const pnpmShim = resolveWindowsPnpmShim();
-    if (pnpmShim !== undefined) {
-      const comspec = process.env.ComSpec
-        ?? process.env.COMSPEC
-        ?? path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows", "System32", "cmd.exe");
-      return {
-        command: comspec,
-        args: ["/d", "/s", "/c", `"${pnpmShim}" build`],
-      };
-    }
-  } else {
-    return { command: "pnpm", args: ["build"] };
-  }
-
-  throw new Error(`No se pudo resolver Corepack ni pnpm.cmd desde ${process.execPath}`);
-}
-
 async function buildDist(): Promise<void> {
-  const invocation = resolveBuildInvocation();
+  // Owned-resource owner armed before the first root is created.
+  releaseBuildRootsCleanup = registerOwnedResourceCleanup("acceptance-temp-roots", () =>
+    removeTemporaryRoots(temporaryRoots),
+  );
+  const prepared = await prepareRepoBuildRun({
+    repoRoot: REPO_ROOT,
+    env: process.env,
+    runProcess: runBoundedProcess,
+    versionCheckTimeoutMs: PNPM_VERSION_CHECK_TIMEOUT_MS,
+    registerTempRoot: (root) => temporaryRoots.push(root),
+  });
   let result: BoundedProcessResult;
   try {
-    result = await runBoundedProcess(invocation, {
+    result = await runBoundedProcess(prepared.invocation, {
       cwd: REPO_ROOT,
+      env: prepared.env,
       timeoutMs: BUILD_TIMEOUT_MS,
     });
   } catch (error) {
@@ -157,18 +100,6 @@ type TestLayout = {
   isolated: IsolatedRoots;
 };
 
-type CliResult = {
-  status: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-};
-
-type BoundedProcessResult = CliResult & {
-  timedOut: boolean;
-  error?: Error;
-};
-
 type ReceiptCommand = {
   commandId: string;
   executable: string;
@@ -201,6 +132,7 @@ type QualityReceipt = {
 };
 
 const temporaryRoots: string[] = [];
+let releaseBuildRootsCleanup: (() => void) | undefined;
 
 function createLayout(): TestLayout {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-quality-cli-"));
@@ -302,131 +234,8 @@ function qualityPlan(command: PlanCommand, profile: QualityProfile = "routine"):
   };
 }
 
-function killProcessTree(child: ChildProcess): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
-
-  if (process.platform === "win32") {
-    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
-    const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
-    let killed = false;
-    try {
-      const result = spawnSync(taskkill, ["/pid", String(pid), "/t", "/f"], {
-        shell: false,
-        stdio: "ignore",
-        timeout: TREE_KILL_TIMEOUT_MS,
-        windowsHide: true,
-      });
-      killed = result.error === undefined && result.status === 0;
-    } catch {
-      // Fall back to the direct child when taskkill is unavailable.
-    }
-    if (!killed) {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The process may have exited between the timeout and the kill attempt.
-      }
-    }
-    return;
-  }
-
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // The process may have exited between the timeout and the kill attempt.
-    }
-  }
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function runBoundedProcess(
-  invocation: ProcessInvocation,
-  options: BoundedProcessOptions,
-): Promise<BoundedProcessResult> {
-  return new Promise<BoundedProcessResult>((resolve, reject) => {
-    let child: ChildProcess;
-    try {
-      child = spawn(invocation.command, invocation.args, {
-        cwd: options.cwd,
-        detached: true,
-        env: options.env,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-    } catch (error) {
-      reject(error);
-      return;
-    }
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-    let childError: Error | undefined;
-    let timeout: NodeJS.Timeout | undefined;
-    let killGrace: NodeJS.Timeout | undefined;
-
-    const onStdoutData = (chunk: string | Buffer): void => {
-      stdout += chunk.toString();
-    };
-    const onStderrData = (chunk: string | Buffer): void => {
-      stderr += chunk.toString();
-    };
-    const onLateError = (error: Error): void => {
-      childError ??= error;
-    };
-    const cleanup = (): void => {
-      if (timeout !== undefined) clearTimeout(timeout);
-      if (killGrace !== undefined) clearTimeout(killGrace);
-      child.stdout?.removeListener("data", onStdoutData);
-      child.stderr?.removeListener("data", onStderrData);
-      child.removeListener("error", onChildError);
-      child.removeListener("close", onClose);
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      // A terminated child can report an asynchronous error after cleanup.
-      child.on("error", onLateError);
-      child.unref();
-    };
-    const settle = (result: CliResult): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve({ ...result, timedOut, ...(childError === undefined ? {} : { error: childError }) });
-    };
-    const onChildError = (error: Error): void => {
-      childError ??= error;
-    };
-    const onClose = (status: number | null, signal: NodeJS.Signals | null): void => {
-      settle({ status, signal, stdout, stderr });
-    };
-    const onTimeout = (): void => {
-      if (settled) return;
-      timedOut = true;
-      killProcessTree(child);
-      killGrace = setTimeout(() => {
-        if (settled) return;
-        killProcessTree(child);
-        settle({ status: null, signal: "SIGKILL", stdout, stderr });
-      }, CLI_KILL_GRACE_MS);
-    };
-
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", onStdoutData);
-    child.stderr?.on("data", onStderrData);
-    child.on("error", onChildError);
-    child.once("close", onClose);
-    timeout = setTimeout(onTimeout, options.timeoutMs);
-  });
 }
 
 async function runQuality(
@@ -548,9 +357,15 @@ function writeManagedSentinels(layout: TestLayout): void {
 }
 
 afterEach(() => {
-  for (const root of temporaryRoots.splice(0)) {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
-  }
+  // Same owner boundary as signals/exit: groups first, roots only if verified.
+  cleanupOwnedResourcesOrThrow();
+});
+
+afterAll(() => {
+  cleanupOwnedResourcesOrThrow();
+  // Unregister only after the owner confirms every owned resource.
+  releaseBuildRootsCleanup?.();
+  releaseBuildRootsCleanup = undefined;
 });
 
 describe("quality CLI acceptance black-box", () => {

@@ -179,6 +179,16 @@ describe("CLI argument parsing", () => {
     expect(parsed.flags.upgradePermissions).toBe(true);
     expect(parsed.flags.unknownFlags).toEqual([]);
   });
+
+  it("solo marca --engram-typebox-compat cuando está presente, sin default falso", () => {
+    const enabled = parseCliArgs(["install", "--engram-typebox-compat"]);
+    expect(enabled.action).toBe("run");
+    expect(enabled.flags.engramTypeboxCompat).toBe(true);
+    expect(enabled.flags.unknownFlags).toEqual([]);
+
+    const absent = parseCliArgs(["install"]);
+    expect(absent.flags.engramTypeboxCompat).toBeUndefined();
+  });
 });
 
 describe("flags desconocidos", () => {

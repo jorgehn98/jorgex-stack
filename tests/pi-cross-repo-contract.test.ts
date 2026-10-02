@@ -4,11 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PI_RUNTIME_ARCHIVE, PI_RUNTIME_CANDIDATE, STACK_ENGRAM_PROVIDER_ONLY } from "./fixtures/pi-runtime.js";
 import { runPiProjectionLifecycleSystem } from "../src/lib/pi-projection-lifecycle.js";
 import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
 import { browserTreeSha256 } from "../src/lib/browser-stage.js";
+import { readNativeMcpContract } from "../src/lib/pi-native-mcp.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { requirePiBrowserHandoffSchemas } from "../src/lib/pi-browser-contract.js";
 
@@ -138,6 +140,81 @@ function expectObservedArtifactIntegrity(tarball: string, observed: ObservedPiCa
   expect(digest("sha512", tarball)).toBe(observed.sha512);
   const expectedIntegrity = `sha512-${Buffer.from(observed.sha512, "hex").toString("base64")}`;
   expect(observed.integrity).toBe(expectedIntegrity);
+}
+
+// ---------------------------------------------------------------------------
+// Observed-lane Stack compatibility policy. The published latest may declare
+// the recognized `mcp-native-v1` variant appended to the frozen legacy list,
+// but never an unknown or reordered capability. A native claim always requires
+// its canonical `mcpNative` binding and the validated producer native contract;
+// a binding without the capability is forbidden. This mirrors
+// src/lib/pi-candidate.ts (capability/binding policy) and reuses the exported
+// src/lib/pi-native-mcp.ts validator, without mutating the historical .29
+// fixture. The explicit old-checkout lane keeps its own frozen equality.
+// ---------------------------------------------------------------------------
+
+const OBSERVED_NATIVE_CAPABILITY = "mcp-native-v1";
+const OBSERVED_NATIVE_BINDING = { schemaVersion: 1, contractPath: "contract/native-mcp.v1.json" } as const;
+const OBSERVED_PARITY_REPOSITORY = "https://github.com/jorgehn98/jorgex-stack";
+
+function extractObservedNativeProducer(tarball: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-pi-observed-native-"));
+  temporaryPaths.push(root);
+  fs.mkdirSync(path.join(root, "contract"), { recursive: true });
+  fs.mkdirSync(path.join(root, "extensions"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "contract", "native-mcp.v1.json"),
+    execFileSync("tar", ["-xOf", tarball, "package/contract/native-mcp.v1.json"]),
+  );
+  for (const entrypoint of ["extensions/mcp-engram.mjs", "extensions/native-mcp.mjs"]) {
+    fs.writeFileSync(path.join(root, entrypoint), execFileSync("tar", ["-xOf", tarball, `package/${entrypoint}`]));
+  }
+  return root;
+}
+
+function expectObservedRootContractPolicy(
+  tarball: string,
+  rootContract: { capabilities?: unknown; mcpNative?: unknown },
+): { capabilities: string[]; native: boolean } {
+  const capabilities = rootContract.capabilities;
+  expect(Array.isArray(capabilities), "observed capabilities must be an array").toBe(true);
+  const observed = capabilities as unknown[];
+  expect(observed.every((entry) => typeof entry === "string"), "observed capabilities must be strings").toBe(true);
+  const legacy = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
+  const nativeVariant = [...legacy, OBSERVED_NATIVE_CAPABILITY];
+  const native = isDeepStrictEqual(observed, nativeVariant);
+  expect(
+    native || isDeepStrictEqual(observed, legacy),
+    "observed capabilities drift from the Stack compatibility policy",
+  ).toBe(true);
+  const binding = rootContract.mcpNative;
+  if (native) {
+    expect(binding, "native capability requires the canonical mcpNative binding").toEqual(OBSERVED_NATIVE_BINDING);
+    expect(() => readNativeMcpContract(extractObservedNativeProducer(tarball))).not.toThrow();
+  } else {
+    expect(binding, "mcpNative without the mcp-native-v1 capability is forbidden").toBeUndefined();
+  }
+  return { capabilities: observed as string[], native };
+}
+
+function extractObservedExtensions(tarball: string, destination: string): void {
+  const root = path.resolve(destination);
+  const prefix = "package/extensions/";
+  const entries = listTarEntries(tarball).filter((entry) => entry.startsWith(prefix) && !entry.endsWith("/"));
+  expect(entries.length).toBeGreaterThan(0);
+  for (const entry of entries) {
+    const relative = entry.slice(prefix.length);
+    const segments = relative.split("/");
+    expect(
+      segments.every((segment) => segment !== "" && segment !== "." && segment !== ".." && !segment.includes("\\")),
+      `unsafe extension entry ${entry}`,
+    ).toBe(true);
+    const target = path.resolve(root, relative);
+    expect(target.startsWith(`${root}${path.sep}`), `extension entry escapes its root ${entry}`).toBe(true);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, execFileSync("tar", ["-xOf", tarball, entry]));
+  }
+  expect(fs.statSync(path.join(root, "playwright.ts")).isFile()).toBe(true);
 }
 
 const OBSERVED_UNBUNDLED_RUNTIME_DEPS = [
@@ -323,6 +400,7 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       package?: unknown;
       pi?: { testedVersions?: unknown };
       capabilities?: unknown;
+      mcpNative?: unknown;
     };
     const runner = readTarJson(tarball, "package/contract/runner.v1.json") as {
       schemaVersion?: unknown;
@@ -334,13 +412,15 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
     };
     const assets = readTarJson(tarball, "package/contract/assets.v1.json") as { managedExternalWrites?: unknown };
     const parity = readTarJson(tarball, "package/contract/parity.v2.json") as {
-      source?: { commit?: unknown };
+      source?: { repository?: unknown; commit?: unknown };
     };
     // Actual package version comes from observed metadata, never the .29 fixture.
     expect(manifest).toMatchObject({ name: "jorgex-pi", version: observedLocal.version });
     expect(contract.package).toEqual({ name: "jorgex-pi", version: observedLocal.version, source: expectedSource });
-    // Stack compatibility policy: capabilities + writes must equal Stack's contract.
-    expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    // Stack compatibility policy: the frozen legacy list, or that exact list
+    // plus the recognized native capability with its canonical binding and the
+    // validated producer native contract. Writes below still equal Stack policy.
+    expectObservedRootContractPolicy(tarball, contract);
     expect(contract.pi?.testedVersions).toEqual(expect.arrayContaining([...PI_RUNTIME_CANDIDATE.pi.testedVersions]));
     expect(runner).toMatchObject({
       schemaVersion: PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion,
@@ -349,7 +429,17 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       stdout: { maxBytes: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes },
     });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
-    expect(parity.source?.commit).toBe(PI_RUNTIME_ARCHIVE.parity.source.commit);
+    // Producer provenance: the observed snapshot must come from the Stack canon
+    // repository. Its commit advances with each release, so the frozen .29
+    // fixture only anchors the exact equality when the observed version is the
+    // frozen one; the live lane validates the commit shape instead.
+    expect(parity.source?.repository).toBe(OBSERVED_PARITY_REPOSITORY);
+    expect(
+      typeof parity.source?.commit === "string" && /^[0-9a-f]{40}$/.test(parity.source.commit as string),
+    ).toBe(true);
+    if (observedLocal.version === PI_RUNTIME_CANDIDATE.package.version) {
+      expect(parity.source?.commit).toBe(PI_RUNTIME_ARCHIVE.parity.source.commit);
+    }
     // Unbundled: six provider-managed runtime deps via npm, no nested bundle.
     expectUnbundledProducerInventory(tarball, manifest);
     // Engram bridge preserved, legacy retired.
@@ -479,10 +569,13 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
     const tarball = path.resolve(registryTarball!);
     const observedLocal = readObservedCandidate();
     expectObservedArtifactIntegrity(tarball, observedLocal);
-    const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as { capabilities?: unknown };
+    const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {
+      capabilities?: unknown;
+      mcpNative?: unknown;
+    };
     // Browser handoff capabilities stay in the Stack-compatible contract.
     expect(contract.capabilities).toEqual(expect.arrayContaining(["playwright-handoff-v1"]));
-    expect(contract.capabilities).toEqual(PI_RUNTIME_CANDIDATE.contract.capabilities);
+    expectObservedRootContractPolicy(tarball, contract);
     expect(contract.capabilities).toEqual(
       expect.arrayContaining(["chrome-devtools-handoff-v1", "context7-http-v1"]),
     );
@@ -587,10 +680,10 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
     const piPackage = path.join(root, "published-pi");
     const piExtensions = path.join(piPackage, "extensions");
     fs.mkdirSync(piExtensions, { recursive: true });
-    for (const file of ["playwright.ts", "mcp-engram.ts", "context7-config.mjs"]) {
-      const bytes = execFileSync("tar", ["-xOf", tarball, `package/extensions/${file}`]);
-      fs.writeFileSync(path.join(piExtensions, file), bytes);
-    }
+    // Materialize the real published extension tree from the verified tarball
+    // instead of a fixed snippet, so relative imports (mcp-engram.mjs,
+    // context7-config.mjs, ...) resolve exactly as inside the artifact.
+    extractObservedExtensions(tarball, piExtensions);
     const stub = path.join(piPackage, "node_modules", "strip-json-comments");
     fs.mkdirSync(stub, { recursive: true });
     fs.writeFileSync(path.join(stub, "package.json"), '{"type":"module","exports":"./index.js"}\n');
@@ -1074,6 +1167,7 @@ t52Registry("[T52-RED] tarball observado Pi con contrato productor completo (unb
     const contract = readTarJson(tarball, "package/contract/jorgex-pi.v1.json") as {
       package?: { name?: unknown; version?: unknown; source?: unknown };
       capabilities?: unknown;
+      mcpNative?: unknown;
     };
     // Versión real desde metadata observada, nunca fixture .29 ni .31 hardcodeado.
     expect(contract.package).toEqual({
@@ -1081,20 +1175,24 @@ t52Registry("[T52-RED] tarball observado Pi con contrato productor completo (unb
       version: observedLocal.version,
       source: canonicalObservedSource(observedLocal.version),
     });
-    const tarballCapabilities = contract.capabilities as string[];
+    const { capabilities: tarballCapabilities } = expectObservedRootContractPolicy(tarball, contract);
     expect(tarballCapabilities).toContain("engram-official-bridge-v1");
     expect(tarballCapabilities).not.toContain("mcp-adapter-v1");
-    // .31 mantiene el mismo contrato de compatibilidad Stack que .29.
-    expect(tarballCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
+    // El productor observado conserva el contrato legacy .29 completo; la única
+    // variante aceptada por la política Stack añade mcp-native-v1 al final.
+    const observedLegacyCapabilities = tarballCapabilities.filter(
+      (capability) => capability !== OBSERVED_NATIVE_CAPABILITY,
+    );
+    expect(observedLegacyCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
 
     // Fixture histórico .29 intacto; no se finge .31/hashes en fixtures.
     const fixtureCapabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
     expect(fixtureCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
-    expect(fixtureCapabilities).toEqual(tarballCapabilities);
+    expect(fixtureCapabilities).toEqual(observedLegacyCapabilities);
 
     const { PI_RUNTIME_REGISTRY } = await import("../src/lib/pi-runtime.js");
     const productionCapabilities = [...PI_RUNTIME_REGISTRY.pi.candidate.contract.capabilities];
     expect(productionCapabilities).toEqual([...T52_EXPECTED_PI_0_8_29_CAPABILITIES]);
-    expect(productionCapabilities).toEqual(tarballCapabilities);
+    expect(productionCapabilities).toEqual(observedLegacyCapabilities);
   }, 60_000);
 });
