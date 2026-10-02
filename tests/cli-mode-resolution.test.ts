@@ -1100,3 +1100,104 @@ describe("CLI no inspecciona Playwright para destinos OpenCode-only", () => {
     }
   });
 });
+
+describe("CLI cablea --browser-control-service al install", () => {
+  /** install y sync comparten bloque; update tiene su propio call site de sync previo. */
+  it.each(["install", "sync"] as const)(
+    "%s reenvía el opt-in de servicio al runInstall de OpenCode",
+    async (command) => {
+      const tmp = makeTempDir(path.join(os.tmpdir(), `jx-browser-control-service-${command}-`));
+      const homeDir = path.join(tmp, "home");
+      writeOpenCodeModelMap(homeDir);
+
+      const exitCode = await runCli(
+        [command, "--agents", "opencode", "--mode", "human", "--yes", "--browser-control-service"],
+        homeDir,
+      );
+
+      // El flag debe llegar como opt-in explícito: el CLI no puede fallar en
+      // silencio ni dejar de invocar el API que materializa el servicio.
+      expect(exitCode).toBe(0);
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        runtimes: ["opencode"],
+        browserControlService: true,
+      }));
+    },
+  );
+
+  it("update reenvía el opt-in de servicio en el sync previo a la actualización", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-update-"));
+    const homeDir = path.join(tmp, "home");
+
+    const exitCode = await runCli(
+      ["update", "--agents", "opencode", "--mode", "human", "--yes", "--browser-control-service"],
+      homeDir,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      browserControlService: true,
+    }));
+    expect(mocks.runInteractiveUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("install --target-dir reenvía el opt-in sin invocar el manager real", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-target-"));
+    const homeDir = path.join(tmp, "home");
+    const targetDir = path.join(tmp, "target");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli(
+      ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes", "--browser-control-service"],
+      homeDir,
+      false,
+      { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
+    );
+
+    // `--target-dir` no desactiva el flag: el API decide omitir el manager en
+    // el sandbox; el CLI solo debe reenviar el opt-in explícito.
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      targetDir,
+      browserControlService: true,
+    }));
+  });
+
+  it("install --dry-run reenvía el opt-in sin escribir la unidad", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-dry-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli(
+      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--dry-run", "--browser-control-service"],
+      homeDir,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      dryRun: true,
+      browserControlService: true,
+    }));
+  });
+
+  it("rechaza el opt-in cuando ningún destino incluye OpenCode antes de runInstall", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-codex-only-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "codex", "--mode", "human", "--yes", "--browser-control-service"],
+        homeDir,
+      );
+
+      // El servicio solo existe para OpenCode: un destino ajeno debe fallar
+      // cerrado, sin llegar a runInstall ni simular una escritura.
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(collectedMessages([error]).some((message) => /browser.?control/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});

@@ -694,6 +694,43 @@ Opciones:
 Ver PRD.md para el diseño completo.`);
 }
 
+/**
+ * Valida el opt-in Linux del servicio Browser Control. Se invoca antes del
+ * switch (comando, plataforma y ruta de solo lectura) y de nuevo tras resolver
+ * runtimes (destino OpenCode), siempre antes de cualquier mutación o runInstall.
+ */
+function validateBrowserControlServiceOptIn(
+  command: Command,
+  flags: Flags,
+  runtimes?: readonly SelectableRuntimeId[],
+): boolean {
+  if (!flags.browserControlService) return true;
+
+  if (command !== "install" && command !== "sync" && command !== "update") {
+    console.error("--browser-control-service solo se admite en install/sync/update (Linux, opt-in al servicio).");
+    return false;
+  }
+  if (command === "update" && (flags.check || flags.dryRun)) {
+    console.error(
+      "--browser-control-service no aplica a update --check/--dry-run: esa ruta es de solo lectura " +
+        "y no ejecuta el install que materializa el servicio.",
+    );
+    return false;
+  }
+  if (process.platform !== "linux" && !flags.dryRun && flags.targetDir === undefined) {
+    console.error(
+      "--browser-control-service requiere Linux (unidad systemd de usuario). " +
+        "En otras plataformas Browser Control usa su autostart nativo: ejecuta sin el flag.",
+    );
+    return false;
+  }
+  if (runtimes !== undefined && !runtimes.includes("opencode")) {
+    console.error("--browser-control-service solo aplica cuando OpenCode está entre los runtimes destino.");
+    return false;
+  }
+  return true;
+}
+
 async function main(): Promise<void> {
   const parsed = parseCliArgs(process.argv.slice(2));
 
@@ -752,18 +789,7 @@ async function main(): Promise<void> {
     }
   }
 
-  if (flags.browserControlService) {
-    if (command !== "install" && command !== "sync" && command !== "update") {
-      console.error("--browser-control-service solo se admite en install/sync/update (Linux, opt-in al servicio).");
-      process.exitCode = 1;
-      return;
-    }
-    // Tracer T13: el flag ya se parsea, pero el servicio no está cableado todavía.
-    // Falla cerrado en vez de ignorar el opt-in o invocar un manager inexistente.
-    console.error(
-      "Servicio Browser Control aún no preparado: --browser-control-service no está cableado " +
-        "y no hay manager invocado. Ejecuta install/sync/update sin ese flag.",
-    );
+  if (!validateBrowserControlServiceOptIn(command, flags)) {
     process.exitCode = 1;
     return;
   }
@@ -849,6 +875,12 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      // Gate tras resolver runtimes y antes de cualquier mutación: el opt-in
+      // Linux solo tiene sentido si OpenCode es uno de los destinos.
+      if (!validateBrowserControlServiceOptIn(command, flags, runtimes)) {
+        process.exitCode = 1;
+        return;
+      }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       let exitCode = 0;
       let completed = false;
@@ -909,6 +941,7 @@ async function main(): Promise<void> {
             devtoolsMcpSelection,
             engramBin,
             upgradePermissions: flags.upgradePermissions,
+            browserControlService: flags.browserControlService,
             ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
             ...(playwrightToolPlan.actions.length === 0 ? {} : { onPlaywrightCapability: capturePlaywrightCapability }),
             showSummary: false,
@@ -1075,6 +1108,12 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      // Gate tras resolver runtimes y antes de cualquier mutación: el opt-in
+      // Linux solo tiene sentido si OpenCode es uno de los destinos.
+      if (!validateBrowserControlServiceOptIn(command, flags, runtimes)) {
+        process.exitCode = 1;
+        return;
+      }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       try {
         // Mismo invariante que install/sync: rejectar OpenCode no-v2 antes de
@@ -1126,6 +1165,7 @@ async function main(): Promise<void> {
           dryRun: flags.dryRun,
           yes: true,
           mode,
+          browserControlService: flags.browserControlService,
           ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
         });
         if (code !== 0) {
@@ -1153,6 +1193,7 @@ async function main(): Promise<void> {
             dryRun: false,
             yes: true,
             mode,
+            browserControlService: flags.browserControlService,
             playwrightCapability: updateCapability,
           });
           process.exitCode = Math.max(process.exitCode ?? 0, code);
@@ -1182,6 +1223,7 @@ async function main(): Promise<void> {
             dryRun: false,
             yes: false,
             mode,
+            browserControlService: flags.browserControlService,
             ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
           });
         } else {
