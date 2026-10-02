@@ -15,6 +15,7 @@ import {
   removeTemporaryRoots,
   resolveVerificationDiskBase,
 } from "./helpers/pnpm-tooling.js";
+import type { StageVerifiedBrowserTreeResult } from "../src/lib/browser-stage.js";
 
 /**
  * T12/T13 vertical — integración raíz de Browser Control (Spec 12/13).
@@ -52,11 +53,53 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const BC_PACKAGE = "@opencode-ai/browser-control";
-const BC_VERSION = "9.9.30";
 const BC_METADATA_URL = `https://registry.npmjs.org/${BC_PACKAGE}`;
-const BC_TARBALL_URL = `https://registry.npmjs.org/${BC_PACKAGE}/-/${BC_PACKAGE.slice(BC_PACKAGE.lastIndexOf("/") + 1)}-${BC_VERSION}.tgz`;
-const BC_ROOT_BYTES = Buffer.from("official-browser-control-root-9.9.30\n");
-const BC_ROOT_INTEGRITY = `sha512-${createHash("sha512").update(BC_ROOT_BYTES).digest("base64")}`;
+
+/**
+ * A published Browser Control release fixture: exact root tarball bytes plus the
+ * official skill payload, with the SRI computed from those bytes. The same
+ * fixture supports the acquisition/retention cases (release A) and the managed
+ * update case (release B): a version bump is data, not a new fixture framework.
+ */
+interface BrowserControlReleaseFixture {
+  readonly version: string;
+  readonly rootBytes: Buffer;
+  readonly skillBytes: Buffer;
+  readonly integrity: string;
+  readonly tarballUrl: string;
+}
+
+function makeRelease(version: string): BrowserControlReleaseFixture {
+  const rootBytes = Buffer.from(`official-browser-control-root-${version}\n`);
+  const skillBytes = Buffer.from(
+    [
+      "---",
+      "name: browser-control",
+      `description: synthetic fixture payload ${version}, not the published skill`,
+      "---",
+      "",
+      `# Browser Control (fixture ${version})`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return {
+    version,
+    rootBytes,
+    skillBytes,
+    integrity: `sha512-${createHash("sha512").update(rootBytes).digest("base64")}`,
+    tarballUrl: `https://registry.npmjs.org/${BC_PACKAGE}/-/${BC_PACKAGE.slice(BC_PACKAGE.lastIndexOf("/") + 1)}-${version}.tgz`,
+  };
+}
+
+const RELEASE_A = makeRelease("9.9.30");
+const RELEASE_B = makeRelease("9.9.31");
+
+// Aliases for the acquisition/retention cases (release A).
+const BC_VERSION = RELEASE_A.version;
+const BC_TARBALL_URL = RELEASE_A.tarballUrl;
+const BC_ROOT_BYTES = RELEASE_A.rootBytes;
+const BC_ROOT_INTEGRITY = RELEASE_A.integrity;
 
 const BROWSER_CONTROL_SERVER = "browser-control";
 const BC_CANDIDATE_DIRNAME = ".browser-control-candidate";
@@ -65,18 +108,7 @@ const BC_CANDIDATE_DIRNAME = ".browser-control-candidate";
  * Payload sintético de la skill oficial: bytes de fixture, NO una prueba de la
  * skill publicada. La proyección real debe ser byte-identical a lo retenido.
  */
-const BC_SKILL_BYTES = Buffer.from(
-  [
-    "---",
-    "name: browser-control",
-    "description: synthetic fixture payload, not the published skill",
-    "---",
-    "",
-    "# Browser Control (fixture)",
-    "",
-  ].join("\n"),
-  "utf8",
-);
+const BC_SKILL_BYTES = RELEASE_A.skillBytes;
 
 const prompts = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -117,8 +149,12 @@ type Witness = {
   entryPath: string;
 };
 
-function writeWitnessTree(root: string, options: { includeSkill?: boolean } = {}): Witness {
-  const stageDir = path.join(root, "witness-stage");
+function writeWitnessTree(
+  root: string,
+  release: BrowserControlReleaseFixture = RELEASE_A,
+  options: { includeSkill?: boolean } = {},
+): Witness {
+  const stageDir = path.join(root, `witness-stage-${release.version}`);
   const nodeModulesPath = path.join(stageDir, "node_modules");
   const treePath = path.join(nodeModulesPath, "@opencode-ai", "browser-control");
   const entryPath = path.join(treePath, "dist", "cli.js");
@@ -128,7 +164,7 @@ function writeWitnessTree(root: string, options: { includeSkill?: boolean } = {}
     `${JSON.stringify(
       {
         name: BC_PACKAGE,
-        version: BC_VERSION,
+        version: release.version,
         bin: { [BROWSER_CONTROL_SERVER]: "dist/cli.js" },
         engines: { node: ">=22.19.0" },
       },
@@ -136,34 +172,52 @@ function writeWitnessTree(root: string, options: { includeSkill?: boolean } = {}
       2,
     )}\n`,
   );
-  fs.writeFileSync(entryPath, BC_ROOT_BYTES);
+  fs.writeFileSync(entryPath, release.rootBytes);
   if (options.includeSkill !== false) {
     // Skill oficial dentro del paquete verificado (package.json: files). Se
     // escribe antes del digest para que el árbol real la incluya.
     const skillPath = path.join(treePath, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
     fs.mkdirSync(path.dirname(skillPath), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(skillPath, BC_SKILL_BYTES);
+    fs.writeFileSync(skillPath, release.skillBytes);
   }
   return { stageDir, nodeModulesPath, treePath, entryPath };
 }
 
-/** Generic provider fixture: only the Browser Control metadata and its root tarball. */
-function registryFetch(seen: string[]): typeof fetch {
-  const packument = {
-    name: BC_PACKAGE,
-    "dist-tags": { latest: BC_VERSION },
-    versions: {
-      [BC_VERSION]: {
-        name: BC_PACKAGE,
-        version: BC_VERSION,
-        dist: { tarball: BC_TARBALL_URL, integrity: BC_ROOT_INTEGRITY },
-      },
-    },
+/** Staged witness for a release, with its real tree digest. */
+function stagedWitness(
+  witness: Witness,
+  release: BrowserControlReleaseFixture,
+  digest: (nodeModulesPath: string, stageDir: string) => string,
+): StageVerifiedBrowserTreeResult {
+  return {
+    treePath: witness.treePath,
+    nodeModulesPath: witness.nodeModulesPath,
+    treeSha256: digest(witness.nodeModulesPath, witness.stageDir),
+    closure: [{ name: BC_PACKAGE, version: release.version, integrity: release.integrity }],
   };
+}
+
+/** Generic provider fixture: only the Browser Control metadata and its root tarball. */
+function registryFetch(
+  seen: string[],
+  current: () => BrowserControlReleaseFixture = () => RELEASE_A,
+): typeof fetch {
   const stub = async (input: RequestInfo | URL): Promise<Response> => {
+    const release = current();
     const url = String(input);
     seen.push(url);
     if (url === BC_METADATA_URL) {
+      const packument = {
+        name: BC_PACKAGE,
+        "dist-tags": { latest: release.version },
+        versions: {
+          [release.version]: {
+            name: BC_PACKAGE,
+            version: release.version,
+            dist: { tarball: release.tarballUrl, integrity: release.integrity },
+          },
+        },
+      };
       const response = new Response(JSON.stringify(packument), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -171,10 +225,10 @@ function registryFetch(seen: string[]): typeof fetch {
       Object.defineProperty(response, "url", { value: url });
       return response;
     }
-    if (url === BC_TARBALL_URL) {
+    if (url === release.tarballUrl) {
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(BC_ROOT_BYTES.slice());
+          controller.enqueue(release.rootBytes.slice());
           controller.close();
         },
       });
@@ -685,7 +739,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
         // First root is NONE (no prior active) and the verified witness omits
         // `skills/browser-control/SKILL.md`: the bytes are SRI-verified but do
         // not form a functional package, so promoting it cannot be ready.
-        const witness = writeWitnessTree(owned.root, { includeSkill: false });
+        const witness = writeWitnessTree(owned.root, RELEASE_A, { includeSkill: false });
 
         const actualStage = await import("../src/lib/browser-stage.js");
         const witnessStaged = {
@@ -771,6 +825,201 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
           "the retained candidate must still lack the skill by fixture construction",
         ).toBe(false);
       });
+    } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  it("advances a verified active A to B on a legitimate update, preserving user config and the prior root", async () => {
+    const ownedRoots: string[] = [];
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-update-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+    let currentRelease = RELEASE_A;
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-update-",
+        register: (root) => ownedRoots.push(root),
+      });
+      // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
+      const closedPort = await reserveClosedRelayPort();
+
+      await withIsolatedEnv(
+        { ...process.env, ...owned.env, BROWSER_CONTROL_PORT: String(closedPort) },
+        async () => {
+          const witnessA = writeWitnessTree(owned.root, RELEASE_A);
+          const witnessB = writeWitnessTree(owned.root, RELEASE_B);
+          const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+            output: "opencode v2.0.20",
+          });
+          const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
+          const configPath = path.join(configDir, "opencode.json");
+          const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+          const actualStage = await import("../src/lib/browser-stage.js");
+          const stagedByVersion = new Map<string, StageVerifiedBrowserTreeResult>([
+            [RELEASE_A.version, stagedWitness(witnessA, RELEASE_A, actualStage.browserTreeSha256)],
+            [RELEASE_B.version, stagedWitness(witnessB, RELEASE_B, actualStage.browserTreeSha256)],
+          ]);
+          vi.doMock("../src/lib/browser-stage.js", async () => {
+            const actual =
+              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                "../src/lib/browser-stage.js",
+              );
+            return {
+              ...actual,
+              stageVerifiedBrowserTree: async (options: { release: { version: string } }) => {
+                const staged = stagedByVersion.get(options.release.version);
+                if (staged === undefined) {
+                  throw new Error(`browser-control-runtime: unexpected stage version ${options.release.version}`);
+                }
+                return staged;
+              },
+            };
+          });
+          // The stub serves whichever release is current, so the same test can
+          // install A and then publish B without re-mocking the module graph.
+          vi.stubGlobal("fetch", registryFetch(fetched, () => currentRelease));
+
+          const install = await import("../src/install.js");
+          const { dataDir } = await import("../src/lib/paths.js");
+          const { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation } =
+            await import("../src/lib/browser-managed.js");
+          const { listBackups } = await import("../src/lib/backup.js");
+
+          const opencode = install.ADAPTERS.opencode!;
+          const originalDetect = opencode.detect;
+          opencode.detect = () => ({
+            id: "opencode",
+            name: "OpenCode",
+            installed: true,
+            binPath: opencodeBin,
+            configDir,
+          });
+
+          const runInstall = () =>
+            install.runInstall({
+              runtimes: ["opencode"],
+              command: "install",
+              dryRun: false,
+              yes: true,
+              mode: { mode: "human", subagentConcurrency: "serial" },
+              engramBin: null,
+            });
+
+          try {
+            // 1) First install publishes verified active A end to end.
+            await runInstall();
+            const activeA = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(activeA, "the first install must publish verified active A").not.toBeNull();
+            if (activeA === null) return;
+            expect(activeA.version).toBe(RELEASE_A.version);
+            const rootA = activeA.rootPath;
+            expect(fs.existsSync(rootA)).toBe(true);
+
+            const configA = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+            };
+            const plannerA = planManagedBrowserInvocation(dataDir(), BC_PACKAGE, ["mcp"]);
+            expect(configA.mcp?.servers?.[BROWSER_CONTROL_SERVER]?.command).toEqual([
+              plannerA.command,
+              ...plannerA.args,
+            ]);
+            expect(fs.readFileSync(projectedSkill)).toEqual(RELEASE_A.skillBytes);
+
+            // The user owns part of this config: an unknown field on the managed
+            // entry, an unrelated server and a top-level key must survive.
+            const userConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+              [key: string]: unknown;
+            };
+            userConfig.mcp!.servers![BROWSER_CONTROL_SERVER]!["x-user-note"] = "keep-me";
+            userConfig.mcp!.servers!["user-custom"] = { type: "local", command: ["/usr/bin/true"] };
+            userConfig["user-top-level"] = { keep: true };
+            fs.writeFileSync(configPath, `${JSON.stringify(userConfig, null, 2)}\n`);
+
+            // 2) A newer verified latest B is published while the relay is absent.
+            vi.clearAllMocks();
+            currentRelease = RELEASE_B;
+            let updateError: unknown;
+            try {
+              await runInstall();
+            } catch (error) {
+              updateError = error;
+            }
+            const updateFailure = updateError === undefined ? "" : ` (update threw: ${String(updateError)})`;
+
+            // 3) The update re-resolves latest B and verifies its tarball SRI.
+            expect(fetched.slice(2), "the update must re-resolve latest B and verify its tarball SRI").toEqual([
+              BC_METADATA_URL,
+              RELEASE_B.tarballUrl,
+            ]);
+
+            // 4) The active receipt advances to B in the operational namespace.
+            const activeB = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+            expect(activeB, `the update must advance the active release to B${updateFailure}`).not.toBeNull();
+            if (activeB === null) return;
+            expect(activeB.version).toBe(RELEASE_B.version);
+            expect(activeB.integrity).toBe(RELEASE_B.integrity);
+            expect(activeB.rootPath).not.toBe(rootA);
+            expect(
+              path.resolve(activeB.rootPath).startsWith(
+                path.resolve(dataDir(), ".browser-managed", BROWSER_CONTROL_SERVER),
+              ),
+            ).toBe(true);
+
+            // 5) The caller MCP is re-projected to B's verified active guard.
+            const plannerB = planManagedBrowserInvocation(dataDir(), BC_PACKAGE, ["mcp"]);
+            const configB = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+              mcp?: { servers?: Record<string, Record<string, unknown>> };
+              [key: string]: unknown;
+            };
+            expect(
+              configB.mcp?.servers?.[BROWSER_CONTROL_SERVER]?.command,
+              `the managed MCP must be re-projected to B's active guard${updateFailure}`,
+            ).toEqual([plannerB.command, ...plannerB.args]);
+
+            // 6) The official skill advances byte-identical to B.
+            expect(
+              fs.readFileSync(projectedSkill),
+              `the projected skill must advance to B${updateFailure}`,
+            ).toEqual(RELEASE_B.skillBytes);
+
+            // 7) User config survives the managed update.
+            expect(configB.mcp?.servers?.[BROWSER_CONTROL_SERVER]?.["x-user-note"]).toBe("keep-me");
+            expect(configB.mcp?.servers?.["user-custom"]).toEqual({ type: "local", command: ["/usr/bin/true"] });
+            expect(configB["user-top-level"]).toEqual({ keep: true });
+
+            // 8) The prior active root is retained for rollback, not deleted.
+            expect(fs.existsSync(rootA), "the prior active root must be retained after the update").toBe(true);
+
+            // 9) The replaced config is backed up before it is overwritten.
+            const backedUp = listBackups().some((info) =>
+              info.files.some((file) => path.resolve(file.original) === path.resolve(configPath)),
+            );
+            expect(
+              backedUp,
+              `the update must back up the replaced config before writing${updateFailure}`,
+            ).toBe(true);
+
+            // The transition must complete, not fail closed on its own prior
+            // managed entry. This is not the aggregate exit code: the independent
+            // Engram prerequisite can make the run nonzero without touching
+            // Browser Control.
+            expect(updateError, `the legitimate update must not fail closed${updateFailure}`).toBeUndefined();
+          } finally {
+            opencode.detect = originalDetect;
+          }
+        },
+      );
     } finally {
       cleanupOwnedResourcesOrThrow();
       releaseRoots();

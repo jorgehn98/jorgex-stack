@@ -977,9 +977,25 @@ export const opencodeAdapter: Adapter = {
             mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });
           }
         } else if (!isCompatibleBrowserControlServer(existingBrowserControl, browserControl)) {
-          throw new Error(
-            "OpenCode: 'browser-control' es un MCP manual incompatible con el launcher Browser Control verificado (type/command/disabled/enabled/codemode); se conserva sin shadow ni sobrescritura. Revisa, retira o corrige esa entrada antes de reintentar sync.",
-          );
+          // Update owned A→B: un entry que el ledger marca owned y cuya forma
+          // local/flags coincide EXACTAMENTE con la invocación del active previo
+          // A se sustituye SOLO en el vector gestionado (command) por B. Los
+          // campos ajenos del usuario (p.ej. `x-user-note`) se conservan. Un
+          // comando/flags modificados no se toman por canon: se falla cerrado.
+          const previous = ctx.browserControlPreviousInvocation;
+          const entry = objectValue(existingBrowserControl);
+          if (
+            ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) === true
+            && previous !== undefined
+            && entry !== null
+            && isCompatibleBrowserControlServer(existingBrowserControl, previous)
+          ) {
+            entry["command"] = [browserControl.command, ...browserControl.args];
+          } else {
+            throw new Error(
+              "OpenCode: 'browser-control' es un MCP manual incompatible con el launcher Browser Control verificado (type/command/disabled/enabled/codemode); se conserva sin shadow ni sobrescritura. Revisa, retira o corrige esa entrada antes de reintentar sync.",
+            );
+          }
         }
       }
 

@@ -103,6 +103,19 @@ export interface InstallContext {
    * `~/.agents/skills`. Su ausencia no proyecta skill ni declara la capacidad.
    */
   browserControlSkillSource?: string;
+  /**
+   * Invocación completa del launcher `active` PREVIO (A) cuando el lifecycle
+   * sustituyó A por B. Permite autenticar un comando gestionado existente como
+   * el vector exacto de A antes de reemplazarlo por B; nunca autoriza un PATH ni
+   * una entrada manual ajena.
+   */
+  browserControlPreviousInvocation?: { command: string; args: readonly string[] };
+  /**
+   * SKILL.md retenido en la release `active` previa (A) antes de sustituirla por
+   * B: fingerprint de bytes para autenticar el target owned. Un target que no
+   * coincide ni con B ni con A se conserva y bloquea.
+   */
+  browserControlPreviousSkillSource?: string;
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
   playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */

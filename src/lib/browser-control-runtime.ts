@@ -194,6 +194,18 @@ export function browserControlSkillPath(receipt: ManagedBrowserReceipt): string 
 }
 
 /**
+ * Snapshot de proyección del active previo A cuando esta llamada promovió B:
+ * invocación completa del launcher A y fuente de skill retenida. Nunca un
+ * receipt ni un stage crudo; permite al caller autenticar su proyección anterior
+ * (comando/flags gestionados y bytes de skill) antes de sustituirla.
+ */
+export interface BrowserControlPreviousProjection {
+  readonly version: string;
+  readonly invocation: ManagedBrowserInvocationPlan;
+  readonly skillSource: string;
+}
+
+/**
  * Resultado discriminado del controlador Browser Control. El caller nunca
  * recibe receipts/stages crudos: `ready` describe únicamente la proyección del
  * active operativo ya autenticado, `pending` retiene un candidato verificado sin
@@ -206,6 +218,11 @@ export interface BrowserControlReady {
   readonly invocation: ManagedBrowserInvocationPlan;
   /** Ruta absoluta del SKILL.md retenido en la release activa, byte-identical. */
   readonly skillSource: string;
+  /**
+   * Solo presente cuando esta llamada sustituyó un active A por B. Ausente en
+   * una instalación fresca y en la reutilización idempotente (A ya es B).
+   */
+  readonly previous?: BrowserControlPreviousProjection;
   /**
    * Recuperación acotada: solo si esta llamada promovió una release nueva,
    * restaura el active previo (o lo retira) cuando la proyección del caller
@@ -331,6 +348,7 @@ function browserControlReadyFromReceipt(
   stateDir: string,
   receipt: ManagedBrowserReceipt,
   rollback?: () => Promise<void>,
+  previous?: BrowserControlPreviousProjection,
 ): BrowserControlReady {
   const skillSource = assertBrowserControlSkill(receipt);
   return {
@@ -338,6 +356,7 @@ function browserControlReadyFromReceipt(
     version: receipt.version,
     invocation: planManagedBrowserInvocation(stateDir, BROWSER_CONTROL_PACKAGE, ["mcp"]),
     skillSource,
+    ...(previous === undefined ? {} : { previous }),
     ...(rollback === undefined ? {} : { rollback }),
   };
 }
@@ -416,6 +435,29 @@ export async function prepareBrowserControlRuntime(
     return { kind: "unavailable", reason: runtimeReason(error) };
   }
 
+  // Captura autenticada del active A ANTES de publicar B: la invocación completa
+  // del launcher A y la fuente de skill retenida. El caller la usa para
+  // autenticar la proyección previa (comando/flags y bytes de skill) antes de
+  // sustituirla; si no se puede reconstruir, no se publica una release nueva.
+  let previousProjection: BrowserControlPreviousProjection | undefined;
+  if (previousActive !== null) {
+    try {
+      previousProjection = {
+        version: previousActive.version,
+        invocation: planManagedBrowserInvocation(options.stateDir, BROWSER_CONTROL_PACKAGE, ["mcp"]),
+        // Valida la skill del active A (existencia, regularidad, confinamiento,
+        // UTF-8) antes de publicar B: una proyección previa no autenticable no
+        // autoriza la sustitución.
+        skillSource: assertBrowserControlSkill(previousActive),
+      };
+    } catch (error) {
+      return {
+        kind: "unavailable",
+        reason: `no se pudo autenticar la proyección previa del active (${runtimeReason(error)}); no se publica una release nueva`,
+      };
+    }
+  }
+
   let promoted: ManagedBrowserReceipt;
   try {
     promoted = await promoteVerifiedBrowserControlCandidate(options.stateDir, candidate, previousActive);
@@ -440,7 +482,7 @@ export async function prepareBrowserControlRuntime(
   // existente; si el rollback también falla, el resultado lo hace observable sin
   // fabricar ausencia: conserva el error primario y la recuperación pendiente.
   try {
-    return browserControlReadyFromReceipt(options.stateDir, promoted, rollback);
+    return browserControlReadyFromReceipt(options.stateDir, promoted, rollback, previousProjection);
   } catch (error) {
     const primary = runtimeReason(error);
     try {

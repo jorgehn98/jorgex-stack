@@ -266,7 +266,11 @@ function enabledMcpServers(
 function ownedMcpServers(runtime: RuntimeId, configDir: string, useBrowserPreferences = true): ReadonlySet<string> {
   if (!useBrowserPreferences) return new Set();
   const file = devtoolsMcpPreferenceFile();
-  const marked = [DEVTOOLS_MCP_SERVER, "context7"].filter((server) => loadDevtoolsMcpOwnership(file, runtime, server));
+  // El ledger genérico por servidor también registra la marca Browser Control que
+  // el propio pipeline creó; leerla es lo único que autoriza reconocer esa
+  // entrada como owned (nunca la igualdad de comando).
+  const marked = [DEVTOOLS_MCP_SERVER, "context7", BROWSER_CONTROL_SERVER]
+    .filter((server) => loadDevtoolsMcpOwnership(file, runtime, server));
   if (marked.length === 0) return new Set();
   const recordedDir = readManifest().runtimes[runtime]?.configDir;
   if (typeof recordedDir !== "string" || !samePath(recordedDir, configDir)) {
@@ -685,21 +689,36 @@ function browserControlSkillAuth(
   const source = ctx.browserControlSkillSource;
   if (source === undefined) return null;
   const target = path.resolve(browserControlSkillTarget(configDir));
-  let bytes: Buffer;
+  let currentBytes: Buffer;
   try {
-    bytes = fs.readFileSync(source);
+    currentBytes = fs.readFileSync(source);
   } catch {
     // Fuente ilegible: sin bytes actuales autenticables; el plan fallará cerrado.
     return null;
   }
+  // Fingerprint previo A: en un update A→B el target owned conserva los bytes de
+  // A. Se autentica como el canon anterior (row) mientras B es el actual; un
+  // target que no coincide ni con B ni con A queda "unknown" y se preserva.
+  const previousSource = ctx.browserControlPreviousSkillSource;
+  let rowSource = source;
+  let rowBytes = currentBytes;
+  if (previousSource !== undefined && previousSource !== source) {
+    try {
+      rowBytes = fs.readFileSync(previousSource);
+      rowSource = previousSource;
+    } catch {
+      rowSource = source;
+      rowBytes = currentBytes;
+    }
+  }
   const row: StaticResourceRow = {
-    source,
+    source: rowSource,
     target,
-    size: bytes.length,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: rowBytes.length,
+    sha256: createHash("sha256").update(rowBytes).digest("hex"),
   };
   const owned = new Set(ownedPaths.map((file) => path.resolve(file))).has(target);
-  return authenticateStaticResource(target, row, bytes, owned, path.resolve(configDir));
+  return authenticateStaticResource(target, row, currentBytes, owned, path.resolve(configDir));
 }
 
 function assertOpenCodeStaticResourcesUsable(auths: readonly StaticResourceAuth[]): void {
@@ -1174,6 +1193,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         ? {
             browserControlInvocation: browserControlRuntime.invocation,
             browserControlSkillSource: browserControlRuntime.skillSource,
+            ...(browserControlRuntime.previous === undefined
+              ? {}
+              : {
+                  browserControlPreviousInvocation: browserControlRuntime.previous.invocation,
+                  browserControlPreviousSkillSource: browserControlRuntime.previous.skillSource,
+                }),
           }
         : {}),
       playwrightCliEnabled: projectPlaywrightPrompt
@@ -1198,8 +1223,23 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
     };
 
-    let plan = buildPlan(adapter, ctx);
-    let diff = diffPlan(plan);
+    let plan: FileAction[];
+    let diff: PlannedChange[];
+    try {
+      plan = buildPlan(adapter, ctx);
+      diff = diffPlan(plan);
+    } catch (error) {
+      // Sin una promoción Browser Control pendiente de proyección, el fallo de
+      // plan conserva su propagación original. Con ella, un conflicto ANTES de
+      // cualquier escritura (p.ej. un MCP browser-control gestionado modificado)
+      // restaura el active A para no dejar active B / config A inconsistentes.
+      if (browserControlRollback === undefined) throw error;
+      p.log.error(error instanceof Error ? error.message : String(error));
+      exitCode = 1;
+      reportStatus(adapter.name, "failed");
+      await rollbackBrowserControlProjection();
+      continue;
+    }
     let creates = diff.filter((d) => d.status === "create");
     let updates = diff.filter((d) => d.status === "update");
     let changes = diff.filter((change) => change.status !== "unchanged");
@@ -1362,8 +1402,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
       // La confirmación puede quedar abierta un buen rato: re-planificar para
       // no pisar lo que el runtime escribiera entremedias (p.ej. ~/.claude.json).
-      plan = buildPlan(adapter, { ...ctx, warnings: [] });
-      diff = diffPlan(plan);
+      try {
+        plan = buildPlan(adapter, { ...ctx, warnings: [] });
+        diff = diffPlan(plan);
+      } catch (error) {
+        if (browserControlRollback === undefined) throw error;
+        p.log.error(error instanceof Error ? error.message : String(error));
+        exitCode = 1;
+        reportStatus(adapter.name, "failed");
+        await rollbackBrowserControlProjection();
+        continue;
+      }
       creates = diff.filter((d) => d.status === "create");
       updates = diff.filter((d) => d.status === "update");
       changes = diff.filter((change) => change.status !== "unchanged");
@@ -1381,6 +1430,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         p.log.error(error instanceof Error ? error.message : String(error));
         exitCode = 1;
         reportStatus(adapter.name, "failed");
+        await rollbackBrowserControlProjection();
         continue;
       }
     }
