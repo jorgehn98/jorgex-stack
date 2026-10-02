@@ -2650,7 +2650,7 @@ describe("Pi managed install post-projection initialization", () => {
     }));
 
     expect(trace).toEqual(["package:install", "projection:install", "package:sync"]);
-    expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy", remedy: expect.stringContaining("sync --agents pi") });
+    expect(result).toEqual({ kind: "blocked", reason: "runner-unhealthy", remedy: expect.stringContaining("install --agents pi") });
   });
 
   it("requires preserving --target-dir when initialization sync is blocked under targetDir", async () => {
@@ -2722,7 +2722,7 @@ describe("Pi managed install post-projection initialization", () => {
       }) as { kind: string; remedy?: string };
       expect(normal).toMatchObject({
         kind: "blocked",
-        remedy: expect.stringContaining("sync --agents pi"),
+        remedy: expect.stringContaining("install --agents pi"),
       });
       expect(normal.remedy).not.toContain("--target-dir");
 
