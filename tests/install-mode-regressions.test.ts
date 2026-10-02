@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, RuntimeId } from "../src/adapters/types.js";
 import { loadCanonicalAgents } from "../src/lib/canonical.js";
+import { resolvePnpmBin } from "../src/lib/external-tools.js";
 import { DEFAULT_MODEL_MAP, resolveAgentModel } from "../src/lib/model-map.js";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
 
 /** Binario v2 real reutilizable: el gate ejecuta el binario detectado. */
@@ -27,6 +29,34 @@ vi.mock("@clack/prompts", async (importOriginal) => {
   return { ...actual, log: promptLog };
 });
 
+/**
+ * Frontera Browser Control (Spec T13): estas regresiones prueban modos/plan/
+ * ownership OpenCode, no el publicador de Browser Control. El coordinador real
+ * adquiriría el paquete publicado y sondearía el relay; aquí se sustituye SOLO
+ * esa frontera por un `ready` sintético, conservando reales install/adapter/
+ * backups/manifest/ownership/Engram. El doble NO certifica bytes oficiales.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
+});
+
 const OPEN_CODE_MODELS = {
   strong: { model: "provider/strong" },
   standard: { model: "provider/standard" },
@@ -46,6 +76,8 @@ const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent"
 afterEach(() => {
   vi.restoreAllMocks();
   for (const fn of Object.values(promptLog)) fn.mockClear();
+  // `vi.restoreAllMocks()` no limpia el doble de frontera (no es spyOn).
+  browserControlReady.prepare.mockClear();
 });
 
 function preferenceFile(homeDir: string): string {
@@ -595,6 +627,12 @@ async function withIsolatedOpenCodeEnv<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const { homeDir, configDir, binDir, tmpDir } = opts;
+  // pnpm real resuelto ANTES de aislar PATH: el bloque Browser Control del
+  // install real exige pnpm (nunca auto-install) y el doble de frontera lo
+  // recibe sin ejecutarlo. El shim vive junto al binario fake para que
+  // `lookPath("pnpm")` lo encuentre sin exponer el PATH personal ni el opencode
+  // real. Si no hay pnpm preparado, no se fabrica uno.
+  const realPnpm = resolvePnpmBin();
   const isolated: Record<string, string> = {
     HOME: homeDir,
     USERPROFILE: homeDir,
@@ -613,6 +651,14 @@ async function withIsolatedOpenCodeEnv<T>(
 
   for (const dir of new Set([...Object.values(isolated), homeDir, configDir, binDir])) {
     fs.mkdirSync(dir, { recursive: true });
+  }
+  if (realPnpm !== null) {
+    if (process.platform === "win32") {
+      fs.writeFileSync(path.join(binDir, "pnpm.cmd"), `@echo off\r\n"${realPnpm}" %*\r\n`);
+    } else {
+      const shim = path.join(binDir, "pnpm");
+      fs.writeFileSync(shim, `#!/bin/sh\nexec '${realPnpm.replaceAll("'", `'\\''`)}' "$@"\n`, { mode: 0o755 });
+    }
   }
   for (const [key, value] of Object.entries(isolated)) process.env[key] = value;
   for (const key of cleared) delete process.env[key];
@@ -857,6 +903,11 @@ describe.skipIf(process.platform === "win32")("OpenCode --target-dir evidence re
         const code = await runInstall({ ...opencodeInstallOptions(), targetDir, opencodeTargetMajor: 2 });
 
         expect(code).toBe(0);
+        // Camino offline: el coordinador Browser Control (red/relay) no se llama.
+        expect(
+          browserControlReady.prepare,
+          "--target-dir no debe llamar al coordinador Browser Control",
+        ).not.toHaveBeenCalled();
         expect(fs.existsSync(path.join(targetDir, "AGENTS.md"))).toBe(true);
         expect(recordedProbeArgs(probeMarker)).toBe("");
       });

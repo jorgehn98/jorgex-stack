@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
 import {
   STATIC_RESOURCES,
@@ -11,6 +12,34 @@ import {
   staticResourceBlockReason,
 } from "../src/lib/opencode-static-resources.js";
 import fixture from "./fixtures/opencode-v1-hooks.raw.json" with { type: "json" };
+
+/**
+ * Frontera Browser Control (Spec T13): estas suites prueban ownership/bytes de
+ * recursos OpenCode, no el publicador de Browser Control. El coordinador real
+ * adquiriría el paquete publicado y sondearía el relay; aquí se sustituye SOLO
+ * esa frontera por un `ready` sintético, conservando reales install/adapter/
+ * backups/manifest/ownership/Engram. El doble NO certifica bytes oficiales.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
+});
 
 /**
  * T07 delta (byte-proof de propiedad): RED del seam autoritativo
@@ -124,6 +153,8 @@ async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise
     USERPROFILE: process.env.USERPROFILE,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
     XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
     TMPDIR: process.env.TMPDIR,
     TEMP: process.env.TEMP,
     TMP: process.env.TMP,
@@ -142,10 +173,15 @@ async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise
   process.env.USERPROFILE = home;
   process.env.XDG_CONFIG_HOME = path.join(home, ".config");
   process.env.XDG_DATA_HOME = path.join(home, ".local", "share");
+  process.env.XDG_CACHE_HOME = path.join(home, ".cache");
+  process.env.XDG_STATE_HOME = path.join(home, ".local", "state");
   process.env.TMPDIR = tmpDir;
   process.env.TEMP = tmpDir;
   process.env.TMP = tmpDir;
   delete process.env.OPENCODE_CONFIG_DIR;
+  for (const dir of [process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_CACHE_HOME, process.env.XDG_STATE_HOME]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
   vi.resetModules();
 
   try {
