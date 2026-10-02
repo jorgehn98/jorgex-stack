@@ -73,7 +73,7 @@ function canonicalObservedSource(version: string): string {
   return `npm:jorgex-pi@${version}`;
 }
 
-// Declared traceability (Stack repository + full lowercase-hex commit), not Git attestation.
+// Declared traceability (parity schema 2 + Stack repository + full lowercase-hex commit), not Git attestation.
 function requireObservedSourceTraceability(parity: unknown): void {
   expect(parity).toMatchObject({
     schemaVersion: 2,
@@ -489,8 +489,6 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
     // plus the recognized native capability with its canonical binding and the
     // validated producer native contract. Writes below still equal Stack policy.
     expectObservedRootContractPolicy(tarball, contract);
-    // testedVersions is declared producer host-version evidence, not an
-    // admission list, so a valid non-empty list is admitted verbatim.
     requireObservedTestedVersions(contract.pi?.testedVersions);
     expect(runner).toMatchObject({
       schemaVersion: PI_RUNTIME_CANDIDATE.contract.runner.schemaVersion,
@@ -499,9 +497,7 @@ registryArtifact("observed npm artifact for the published jorgex-pi candidate", 
       stdout: { maxBytes: PI_RUNTIME_CANDIDATE.contract.runner.maxStdoutBytes },
     });
     expect(assets.managedExternalWrites).toEqual(PI_RUNTIME_CANDIDATE.contract.managedExternalWrites);
-    // Producer provenance: declared traceability (schema 2 + Stack canon
-    // repository + 40-char lowercase-hex commit), not Git attestation. The
-    // commit advances with each release, so the frozen .29 fixture only anchors
+    // The commit advances with each release, so the frozen .29 fixture only anchors
     // the exact equality when the observed version is the frozen one; the live
     // lane validates the declared shape instead.
     requireObservedSourceTraceability(parity);
