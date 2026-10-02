@@ -62,6 +62,8 @@ export interface Flags {
   devtools: boolean;
   noDevtools: boolean;
   upgradePermissions: boolean;
+  /** Opt-in Linux explícito al servicio Browser Control (install/sync/update). */
+  browserControlService: boolean;
   /** Opt-in explícito a la variante temporal #1567 solo en install/update con Pi. */
   engramTypeboxCompat?: boolean;
   receipt?: string;
@@ -142,6 +144,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     devtools: false,
     noDevtools: false,
     upgradePermissions: false,
+    browserControlService: false,
     receipt: undefined,
     positional: [],
     unknownFlags: [],
@@ -219,6 +222,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     else if (arg === "--devtools") flags.devtools = true;
     else if (arg === "--no-devtools") flags.noDevtools = true;
     else if (arg === "--upgrade-permissions") flags.upgradePermissions = true;
+    else if (arg === "--browser-control-service") flags.browserControlService = true;
     else if (arg === "--engram-typebox-compat") flags.engramTypeboxCompat = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
@@ -676,6 +680,8 @@ Opciones:
   --devtools            (install/sync) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install/sync) desactiva Chrome DevTools MCP (incompatible con --devtools)
   --upgrade-permissions (install/sync) re-aplica permisos gestionados sobre config existente (opt-in)
+  --browser-control-service (install/sync/update, Linux) opt-in al servicio de usuario
+                        Browser Control; no promete autostart operativo completo todavía
   --engram-typebox-compat (install/update con Pi) opt-in explícito a la variante temporal #1567;
                         sin el flag no se adquiere ni persiste ninguna preferencia
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
@@ -744,6 +750,22 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+  }
+
+  if (flags.browserControlService) {
+    if (command !== "install" && command !== "sync" && command !== "update") {
+      console.error("--browser-control-service solo se admite en install/sync/update (Linux, opt-in al servicio).");
+      process.exitCode = 1;
+      return;
+    }
+    // Tracer T13: el flag ya se parsea, pero el servicio no está cableado todavía.
+    // Falla cerrado en vez de ignorar el opt-in o invocar un manager inexistente.
+    console.error(
+      "Servicio Browser Control aún no preparado: --browser-control-service no está cableado " +
+        "y no hay manager invocado. Ejecuta install/sync/update sin ese flag.",
+    );
+    process.exitCode = 1;
+    return;
   }
 
   switch (command) {
