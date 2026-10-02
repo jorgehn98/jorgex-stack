@@ -12,7 +12,8 @@ import {
   type BrowserControlUnavailable,
 } from "./lib/browser-control-runtime.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
-import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
+import { readManifest, removeRuntimeManifest, writeRuntimeManifest } from "./lib/manifest.js";
+import { resolveBrowserControlServiceUnitPath } from "./lib/browser-control-service.js";
 import {
   authenticateStaticResource,
   projectedBytesByTarget,
@@ -278,6 +279,12 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     // Lo instalado = plan actual ∪ manifest (cubre archivos que versiones
     // anteriores instalaron y el plan actual ya no genera).
     const prevOwned = usingRealConfig ? (readManifest().runtimes[id]?.owned ?? []) : [];
+    // Unidad de servicio Browser Control: mientras el lifecycle de servicio no
+    // esté implementado, un uninstall no borra a ciegas la unidad owned (dejaría
+    // al manager/relay colgando sin claim). Se conserva el archivo y su claim.
+    const serviceUnitPath = usingRealConfig && id === "opencode" ? resolveBrowserControlServiceUnitPath() : null;
+    const ownedServiceUnit = serviceUnitPath !== null
+      && prevOwned.some((file) => path.resolve(file) === path.resolve(serviceUnitPath));
     // En instalación real los targets pueden vivir fuera del configDir
     // (~/.agents/skills): borrado y poda se anclan a HOME. Nada fuera de esa
     // frontera se borra, aunque el manifest (estado local editable) lo liste.
@@ -322,6 +329,10 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
 
     const deleteTargets = planTargets.filter((t) => {
       if (skippedStaticTargets.has(t) || retained.has(t) || !isContainedIn(t, pruneRoot)) return false;
+      // La unidad de servicio owned se conserva hasta que exista el lifecycle
+      // verificado (stop/disable autenticados); borrarla a ciegas dejaría al
+      // manager apuntando a bytes ausentes.
+      if (ownedServiceUnit && serviceUnitPath !== null && path.resolve(t) === path.resolve(serviceUnitPath)) return false;
       if (path.basename(t) !== "engram.ts") return true;
       // Tri-estado del plugin oficial: official y unknown se preservan;
       // legacy-or-foreign y absent solo se retiran con --remove-engram.
@@ -375,7 +386,24 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
         savePrimaryModelOwnership(primaryModelOwnershipFile(), id, configDir, field, false);
       }
     }
-    if (usingRealConfig) removeRuntimeManifest(id);
+    if (usingRealConfig) {
+      if (ownedServiceUnit && serviceUnitPath !== null) {
+        // Preservar la autoridad del mismo row: la unidad owned y su binding
+        // sobreviven al uninstall hasta el lifecycle de servicio verificado.
+        const row = readManifest().runtimes[id];
+        writeRuntimeManifest(id, {
+          configDir,
+          owned: [path.resolve(serviceUnitPath)],
+          ...(row?.serviceUnit === undefined ? {} : { serviceUnit: row.serviceUnit }),
+          updatedAt: new Date().toISOString(),
+        });
+        p.log.warn(
+          `${adapter.name}: la unidad de servicio Browser Control ${serviceUnitPath} se conserva (claim/binding intactos) hasta el lifecycle de servicio verificado; no se detiene ni deshabilita el manager.`,
+        );
+      } else {
+        removeRuntimeManifest(id);
+      }
+    }
     p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 

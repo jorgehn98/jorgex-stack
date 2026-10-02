@@ -13,6 +13,22 @@ import { isContainedIn, readTextIfExists, writeText } from "./fsx.js";
  * no van aquí: se gestionan por unmerge de secciones.
  */
 
+/**
+ * Binding de la unidad de usuario Browser Control (T13). Evidencia de la release
+ * retenida que autoriza los bytes de la unidad; `owned` sigue siendo la única
+ * autoridad de propiedad, este digest no la reclama por sí solo. `releaseDirectory`
+ * es siempre el basename `release-*` del namespace operativo, nunca una ruta
+ * arbitraria ni el candidato.
+ */
+export interface ManagedBrowserControlServiceBinding {
+  schemaVersion: 1;
+  releaseDirectory: string;
+  receiptSha256: string;
+  nodePath: string;
+  port: number;
+  unitSha256: string;
+}
+
 export interface RuntimeManifest {
   configDir: string;
   /** Rutas absolutas resueltas de los archivos enteramente nuestros. */
@@ -24,6 +40,8 @@ export interface RuntimeManifest {
    * pendientes.
    */
   pendingOrphans?: string[];
+  /** Binding de la unidad de servicio gestionada, si existe (solo OpenCode/Linux). */
+  serviceUnit?: ManagedBrowserControlServiceBinding;
   updatedAt: string;
 }
 

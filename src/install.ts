@@ -56,6 +56,11 @@ import {
 } from "./lib/external-tools.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
 import { prepareBrowserControlRuntime, type BrowserControlRuntimeResult } from "./lib/browser-control-runtime.js";
+import {
+  ensureBrowserControlServiceUnit,
+  resolveBrowserControlServiceConfigBase,
+  resolveBrowserControlServiceUnitPath,
+} from "./lib/browser-control-service.js";
 import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation, rollbackManagedBrowserActivation } from "./lib/browser-managed.js";
 import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
 import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./lib/browser-command.js";
@@ -119,6 +124,15 @@ export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   devtoolsMcpObservedVersion?: ObservedVersion;
   /** Opt-in para re-aplicar el bloque de permisos gestionados sobre config existente (reemplazo entero con backup; sin flag solo se avisa). */
   upgradePermissions?: boolean;
+  /**
+   * Opt-in Linux explícito al servicio de usuario Browser Control
+   * (`jorgex-stack-browser-control.service`). Solo install/sync/update reales en
+   * Linux: `--target-dir`/dry-run nunca lo tocan. El artifact actual materializa
+   * únicamente la unidad fija desde el active verificado; no invoca manager ni
+   * emite `BROWSER_CONTROL_AUTOSTART=false` (supervisor/endpoint = siguiente
+   * vertical).
+   */
+  browserControlService?: boolean;
   /** Binario Engram resuelto por el coordinador; undefined conserva detección local. */
   engramBin?: string | null;
   /** Omite intro/outro cuando el CLI coordina varios runtimes en una sola salida. */
@@ -462,7 +476,14 @@ export function collectAllCurrentTargets(
       for (const action of buildPlan(adapter, ctx)) targets.add(path.resolve(action.target));
       // Target fijo Browser Control: se reclama aunque el plan actual no lo
       // genere (pending) para no borrar como huérfana la skill del active previo.
-      if (adapter.id === "opencode") targets.add(path.resolve(browserControlSkillTarget(detection.configDir)));
+      if (adapter.id === "opencode") {
+        targets.add(path.resolve(browserControlSkillTarget(detection.configDir)));
+        // La unidad de servicio fija es un target externo del mismo row: se
+        // reclama siempre para que un opt-in ausente/pending nunca la convierta
+        // en huérfana ni pierda su claim.
+        const serviceUnit = resolveBrowserControlServiceUnitPath();
+        if (serviceUnit !== null) targets.add(path.resolve(serviceUnit));
+      }
     } catch (error) {
       complete = false;
       warnings.push(
@@ -568,7 +589,57 @@ function recognizedOpenCodeOwnedTargets(ctx: InstallContext): Set<string> {
   // canónico actual no la genere (pending) o no cargue el estado managed: un
   // manifest coherente que la liste no debe bloquear ni quedar sin corroborar.
   recognized.add(path.resolve(browserControlSkillTarget(ctx.configDir)));
+  // La unidad de servicio fija (externa al configDir, derivada del XDG config)
+  // es un recurso reconocido del mismo row: un manifest coherente que la liste
+  // no debe bloquear ni quedar sin corroborar.
+  const serviceUnit = resolveBrowserControlServiceUnitPath();
+  if (serviceUnit !== null) recognized.add(path.resolve(serviceUnit));
   return recognized;
+}
+
+/**
+ * Valida la evidencia `serviceUnit` cuando existe: campos exactos, schema 1 y
+ * co-presencia con la unidad owned fija. No concede ownership: un binding
+ * malformado o huérfano bloquea antes de reutilizar la autoridad.
+ */
+function assertManagedBrowserControlServiceBinding(
+  value: unknown,
+  ownedPaths: readonly string[],
+  inRoots: (file: string) => boolean,
+  unitTarget: string | null,
+): void {
+  if (value === undefined) return;
+  const fail = (detail: string): never => {
+    throw new Error(
+      `OpenCode: la evidencia 'serviceUnit' del manifest es incoherente (${detail}); se conserva el manifest y no se toca la unidad ni ningún archivo. Revisa o restaura el manifest antes de reintentar install/sync.`,
+    );
+  };
+  if (!isPlainRecord(value)) fail("no es un objeto");
+  const binding = value as Record<string, unknown>;
+  const expected = ["nodePath", "port", "receiptSha256", "releaseDirectory", "schemaVersion", "unitSha256"];
+  const keys = Object.keys(binding).sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    fail("campos inesperados o ausentes");
+  }
+  if (binding["schemaVersion"] !== 1) fail("schemaVersion distinto de 1");
+  const releaseDirectory = binding["releaseDirectory"];
+  if (
+    typeof releaseDirectory !== "string"
+    || !releaseDirectory.startsWith("release-")
+    || releaseDirectory.includes("/")
+    || releaseDirectory.includes("\\")
+  ) {
+    fail("releaseDirectory inválido");
+  }
+  if (typeof binding["receiptSha256"] !== "string" || !/^[0-9a-f]{64}$/.test(binding["receiptSha256"])) fail("receiptSha256 inválido");
+  if (typeof binding["unitSha256"] !== "string" || !/^[0-9a-f]{64}$/.test(binding["unitSha256"])) fail("unitSha256 inválido");
+  const nodePath = binding["nodePath"];
+  if (typeof nodePath !== "string" || !path.isAbsolute(nodePath)) fail("nodePath inválido");
+  const port = binding["port"];
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65_535) fail("port inválido");
+  if (unitTarget === null || !ownedPaths.some((file) => path.resolve(file) === unitTarget) || !inRoots(unitTarget)) {
+    fail("falta la unidad owned fija correspondiente");
+  }
 }
 
 /**
@@ -613,7 +684,13 @@ export function assertOpenCodeManifestCoherence(configDir: string): void {
 
   const { skillsDir } = opencodeAdapter.paths(configDir);
   const roots = [path.resolve(configDir), path.resolve(skillsDir)];
-  const inRoots = (file: string): boolean => roots.some((root) => isContainedIn(file, root));
+  // Excepción explícita y por igualdad exacta: la única unidad de servicio fija
+  // derivada del XDG config efectivo. No se abre contención amplia por systemd/XDG.
+  const serviceUnit = resolveBrowserControlServiceUnitPath();
+  const serviceUnitTarget = serviceUnit === null ? null : path.resolve(serviceUnit);
+  const inRoots = (file: string): boolean =>
+    roots.some((root) => isContainedIn(file, root))
+    || (serviceUnitTarget !== null && path.resolve(file) === serviceUnitTarget);
   const outside = (owned as string[]).find((file) => !inRoots(file));
   if (outside !== undefined) {
     throw new Error(
@@ -636,6 +713,8 @@ export function assertOpenCodeManifestCoherence(configDir: string): void {
       );
     }
   }
+
+  assertManagedBrowserControlServiceBinding(entry.serviceUnit, owned as string[], inRoots, serviceUnitTarget);
 
   const ctx = makeContext(opencodeAdapter, configDir, DEFAULT_INSTALL_MODE_PREFERENCE, false, undefined, false);
   if (ctx === null) {
@@ -1072,6 +1151,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   let browserControlPending = false;
   let browserControlRuntime: BrowserControlRuntimeResult | undefined;
   let browserControlRollback: (() => Promise<void>) | undefined;
+  // El artifact de servicio solo se materializa si la proyección OpenCode quedó
+  // aplicada en disco (idempotente o recién escrita); el setup oficial v1/v2
+  // pendiente no la invalida.
+  let opencodeProjectionApplied = false;
+  let opencodeConfigDir: string | undefined;
   if (useManifest && !opts.dryRun && opts.runtimes.includes("opencode")) {
     try {
       const pnpmBin = resolvePnpmBin();
@@ -1128,6 +1212,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
 
     const detection = adapter.detect();
     const configDir = opts.targetDir ?? detection.configDir;
+    if (id === "opencode") opencodeConfigDir = configDir;
     if (!detection.installed && opts.targetDir === undefined) {
       p.log.warn(`${adapter.name} no detectado en esta máquina — omitido.`);
       reportStatus(adapter.name, "skipped");
@@ -1305,6 +1390,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       if (id === "opencode") {
         const bcSkill = path.resolve(browserControlSkillTarget(configDir));
         if (previousOwned.includes(bcSkill) && !liveOwned.includes(bcSkill)) liveOwned.push(bcSkill);
+        // La unidad de servicio fija owned se conserva igual: un opt-in
+        // ausente/pending nunca la convierte en huérfana ni pierde su claim.
+        const serviceUnit = resolveBrowserControlServiceUnitPath();
+        if (serviceUnit !== null) {
+          const unitTarget = path.resolve(serviceUnit);
+          if (previousOwned.includes(unitTarget) && !liveOwned.includes(unitTarget)) liveOwned.push(unitTarget);
+        }
       }
       const officialFailed = official?.ran === true && !official.ok;
       let owned: string[];
@@ -1359,10 +1451,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         owned = [...new Set(owned)];
         pendingOrphans = [...keepPending];
       }
-      writeRuntimeManifest(id, { configDir, owned, pendingOrphans, updatedAt: new Date().toISOString() });
+      writeRuntimeManifest(id, {
+        configDir,
+        owned,
+        pendingOrphans,
+        ...(prevManifest?.serviceUnit === undefined ? {} : { serviceUnit: prevManifest.serviceUnit }),
+        updatedAt: new Date().toISOString(),
+      });
     };
 
     if (changes.length === 0 && orphans.length === 0) {
+      if (id === "opencode") opencodeProjectionApplied = true;
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
       // El setup oficial solo corre en install real; skips intencionales
@@ -1467,6 +1566,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       // retirarlo dejaría un MCP colgando. La pasada ya falla y un sync posterior
       // repara; el rollback solo aplica antes de cualquier escritura.
     } else {
+      if (id === "opencode") opencodeProjectionApplied = true;
       if (useManifest) persistConfigurationOwnershipChanges(id, configDir, plan);
       persistDevtoolsSelection();
       // El setup oficial corre tras los archivos Stack (backup post-Stack; el
@@ -1525,6 +1625,62 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // el install no se declara completo ni con éxito mientras falte la capacidad
   // obligatoria. El estado del runtime ya se reportó como fallido en el bucle.
   if (browserControlPending) exitCode = 1;
+
+  // T13 artifact: opt-in Linux explícito. Materializa SOLO la unidad fija desde
+  // el active verificado. No invoca manager (daemon-reload/enable/start), no
+  // sondea HTTP y no emite `BROWSER_CONTROL_AUTOSTART=false`: sin la prueba de
+  // supervisor/endpoint el servicio queda pendiente/no operativo. Un opt-in
+  // ausente o un runtime pendiente nunca toca la unidad.
+  if (
+    opts.browserControlService === true
+    && process.platform === "linux"
+    && useManifest
+    && !opts.dryRun
+    && browserControlRuntime?.kind === "ready"
+  ) {
+    if (opencodeProjectionApplied && opencodeConfigDir !== undefined) {
+      const configDir = opencodeConfigDir;
+      const serviceConfigBase = resolveBrowserControlServiceConfigBase();
+      const unitPath = resolveBrowserControlServiceUnitPath();
+      if (serviceConfigBase === null || unitPath === null) {
+        p.log.error(
+          "Browser Control: el XDG config efectivo no es una ruta absoluta válida; no se crea la unidad ni se toca el perfil personal.",
+        );
+        exitCode = 1;
+      } else if (!samePath(configDir, path.join(serviceConfigBase, "opencode"))) {
+        p.log.error(
+          `Browser Control: el perfil de la unidad (${serviceConfigBase}) no coincide con el configDir de OpenCode (${configDir}); no se crea la unidad.`,
+        );
+        exitCode = 1;
+      } else {
+        const row = readManifest().runtimes.opencode;
+        const result = ensureBrowserControlServiceUnit({
+          stateDir: dataDir(),
+          unitPath,
+          prevOwned: row?.owned ?? [],
+          ...(row?.serviceUnit === undefined ? {} : { prevBinding: row.serviceUnit }),
+        });
+        if (result.kind === "created" || result.kind === "unchanged") {
+          if (row !== undefined) {
+            writeRuntimeManifest("opencode", {
+              ...row,
+              owned: [...new Set([...row.owned, path.resolve(unitPath)])],
+              serviceUnit: result.binding,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          p.log.warn(
+            `Browser Control: unidad de servicio ${result.kind === "created" ? "creada" : "ya presente"} en ${result.unitPath} (release ${result.binding.releaseDirectory}). Servicio pendiente/no operativo: no se ha habilitado, arrancado ni recargado, y no se declara autostart externo hasta verificar supervisor y endpoint.`,
+          );
+        } else if (result.kind === "preserved") {
+          p.log.warn(`Browser Control: se conserva la unidad existente en ${result.unitPath} (${result.reason})`);
+        } else if (result.kind === "error") {
+          p.log.error(`Browser Control: ${result.reason}`);
+          exitCode = 1;
+        }
+      }
+    }
+  }
 
   if (toolPlan?.actions.length) {
     if (opts.dryRun) {
