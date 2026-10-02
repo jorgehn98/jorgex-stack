@@ -779,6 +779,9 @@ describe("target inventory regressions", () => {
         opencode.detect = originalOpencodeDetect;
         codex.detect = originalCodexDetect;
         claudeCode.detect = originalClaudeDetect;
+        // Own tmp only: never sweep sibling `jx-agent-browser-manifest-*` roots
+        // left by other runs.
+        fs.rmSync(tmp, { recursive: true, force: true });
       }
     });
   });
