@@ -118,6 +118,35 @@ vi.mock("@clack/prompts", async (importOriginal) => {
   };
 });
 
+/**
+ * Process-boundary guard. `runUninstall` has no DI runner (unlike install's
+ * `systemctlRunner`), so the only seam that can prove "no manager was invoked"
+ * is the real spawn surface. The spies delegate to the real functions so the
+ * existing install fixtures keep working; the uninstall case poisons them and
+ * asserts they were never called with a manager/process.
+ */
+const childProcessSpies = vi.hoisted(() => ({
+  spawn: vi.fn(),
+  spawnSync: vi.fn(),
+  execFile: vi.fn(),
+  execFileSync: vi.fn(),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  childProcessSpies.spawn.mockImplementation(actual.spawn);
+  childProcessSpies.spawnSync.mockImplementation(actual.spawnSync);
+  childProcessSpies.execFile.mockImplementation(actual.execFile);
+  childProcessSpies.execFileSync.mockImplementation(actual.execFileSync);
+  return {
+    ...actual,
+    spawn: childProcessSpies.spawn,
+    spawnSync: childProcessSpies.spawnSync,
+    execFile: childProcessSpies.execFile,
+    execFileSync: childProcessSpies.execFileSync,
+  };
+});
+
 afterEach(() => {
   cleanupOwnedResourcesOrThrow();
   vi.doUnmock("../src/lib/browser-control-runtime.js");
@@ -517,6 +546,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
 interface ManagedServiceFixture {
   readonly stateDir: string;
   readonly unitPath: string;
+  readonly configDir: string;
   readonly binding: ManagedBrowserControlServiceBinding;
   readonly unitBytes: Buffer;
   readonly inode: number;
@@ -579,6 +609,7 @@ async function withCreatedManagedServiceUnit<T>(
       value: await run({
         stateDir,
         unitPath,
+        configDir: path.join(owned.env.XDG_CONFIG_HOME!, "opencode"),
         binding: created.binding,
         unitBytes: fs.readFileSync(unitPath),
         inode: fs.statSync(unitPath).ino,
@@ -1026,6 +1057,146 @@ describe.skipIf(process.platform !== "linux")(
             ).toBe(openedInode);
             expect(result.kind, "external byte drift detected at readback must fail closed").toBe("error");
             expect(result, "no ownership claim may be emitted for the drifted file").not.toHaveProperty("binding");
+          },
+        );
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12] Browser Control service uninstall keeps the owned unit and reports the pending service without a false success",
+  () => {
+    /**
+     * Honest-status case for the artifact vertical. The owned unit exists with a
+     * coherent ownership manifest (the explicit `ensure` claim plus its
+     * `serviceUnit` binding). The authenticated supervisor stop/disable belongs
+     * to the verified service lifecycle, so a real `runUninstall` cannot complete
+     * the removal: it must keep the unit, its claim and its binding, and must
+     * report the pending service with a non-zero exit instead of the global
+     * success outro.
+     *
+     * The cached active is read by the REAL offline inspector
+     * (`inspectCachedBrowserControlRuntime`, no module mock). `fetch` is poisoned
+     * to prove no acquisition, the process boundary is poisoned to prove no
+     * manager is invoked, and the ambient relay port is made invalid to prove
+     * uninstall does not depend on it. Root state is observed from the real
+     * manifest and filesystem, never from a mocked helper.
+     */
+    it("keeps the unit, claim and binding and returns a non-zero pending status", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-uninstall-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      try {
+        await withCreatedManagedServiceUnit(
+          {
+            prefix: ".jorgex-browser-control-service-uninstall-",
+            registerOwnedRoot: (root) => ownedRoots.push(root),
+            base: verificationBase(),
+          },
+          async (fixture) => {
+            const { writeRuntimeManifest, readManifest } = await import("../src/lib/manifest.js");
+            // Coherent owned authority: the fixed unit is the only owned target
+            // and its binding is the one `ensure` authenticated against the
+            // retained active.
+            writeRuntimeManifest("opencode", {
+              configDir: fixture.configDir,
+              owned: [fixture.unitPath],
+              serviceUnit: fixture.binding,
+              updatedAt: new Date().toISOString(),
+            });
+
+            // Ambient relay port defense: uninstall must never parse or use it.
+            process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+            // No acquisition: any registry/network attempt fails the run.
+            const fetchPoison = vi.fn(() => {
+              throw new Error("uninstall must not acquire Browser Control over the network");
+            });
+            vi.stubGlobal("fetch", fetchPoison);
+
+            // No manager: no DI runner exists, so any spawn is a real regression.
+            const managerSpies = [
+              childProcessSpies.spawn,
+              childProcessSpies.spawnSync,
+              childProcessSpies.execFile,
+              childProcessSpies.execFileSync,
+            ];
+            const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
+            const poisonManager = (): never => {
+              throw new Error("uninstall must not invoke a process manager");
+            };
+            for (const spy of managerSpies) spy.mockImplementation(poisonManager);
+
+            const install = await import("../src/install.js");
+            const adapter = install.ADAPTERS.opencode!;
+            const originalDetect = adapter.detect;
+            adapter.detect = () => ({
+              id: "opencode",
+              name: "OpenCode",
+              installed: true,
+              binPath: null,
+              configDir: fixture.configDir,
+            });
+
+            let exitCode: number;
+            try {
+              const uninstall = await import("../src/uninstall.js");
+              exitCode = await uninstall.runUninstall({
+                runtimes: ["opencode"],
+                dryRun: false,
+                yes: true,
+                removeEngram: false,
+                removePlaywright: false,
+              });
+            } finally {
+              adapter.detect = originalDetect;
+              managerSpies.forEach((spy, index) => {
+                const previous = previousImplementations[index];
+                if (previous === undefined) spy.mockReset();
+                else spy.mockImplementation(previous);
+              });
+            }
+
+            const manifestRow = readManifest().runtimes.opencode;
+            const ownedAfter = (manifestRow?.owned ?? []).map((file) => path.resolve(file));
+            const diagnostics = [...prompts.log.warn.mock.calls, ...prompts.log.error.mock.calls]
+              .map((call) => String(call[0] ?? ""));
+            const outroMessages = prompts.outro.mock.calls.map((call) => String(call[0] ?? ""));
+
+            // The pending service is a real, not-yet-completed removal: the exit
+            // code and the final outro must not claim a clean full success...
+            expect.soft(
+              exitCode,
+              "a pending Browser Control service removal must not return the clean-success exit 0",
+            ).not.toBe(0);
+            expect.soft(
+              outroMessages.some((message) => /^Hecho\./.test(message)),
+              `the global success outro must not be printed while the service is pending (got ${JSON.stringify(outroMessages)})`,
+            ).toBe(false);
+            expect.soft(
+              diagnostics.some((message) =>
+                message.includes(SERVICE_UNIT_FILENAME) && /conserva|pendiente/i.test(message),
+              ),
+              `an actionable pending-service diagnostic must name the preserved unit (got ${JSON.stringify(diagnostics)})`,
+            ).toBe(true);
+
+            // ...while the owned artifact, its claim and its binding stay intact.
+            expect.soft(fs.existsSync(fixture.unitPath), "the owned unit file must survive").toBe(true);
+            expect.soft(fs.readFileSync(fixture.unitPath), "the unit bytes must be untouched").toEqual(fixture.unitBytes);
+            expect.soft(fs.statSync(fixture.unitPath).ino, "the unit inode must be untouched").toBe(fixture.inode);
+            expect.soft(ownedAfter, "the manifest must keep the unit claim").toContain(path.resolve(fixture.unitPath));
+            expect.soft(manifestRow?.serviceUnit, "the serviceUnit binding must survive verbatim").toEqual(fixture.binding);
+
+            // No acquisition and no manager boundary were touched.
+            expect.soft(fetchPoison, "uninstall must not perform network acquisition").not.toHaveBeenCalled();
+            for (const spy of managerSpies) {
+              expect.soft(spy, "uninstall must not spawn a manager process").not.toHaveBeenCalled();
+            }
           },
         );
       } finally {

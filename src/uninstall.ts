@@ -398,13 +398,18 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
           updatedAt: new Date().toISOString(),
         });
         p.log.warn(
-          `${adapter.name}: la unidad de servicio Browser Control ${serviceUnitPath} se conserva (claim/binding intactos) hasta el lifecycle de servicio verificado; no se detiene ni deshabilita el manager.`,
+          `${adapter.name}: retirada pendiente: la unidad de servicio Browser Control ${serviceUnitPath} se conserva (claim/binding intactos) hasta que exista el lifecycle de servicio verificado (stop/disable autenticados). No se fuerza la muerte del proceso ni se descarta la autoridad; completa ese lifecycle de forma coordinada y reintenta el uninstall.`,
         );
+        // La retirada no está completa: sin el lifecycle de servicio verificado
+        // la unidad owned sigue viva. El código de salida no puede anunciar el
+        // éxito global del uninstall (outro existente) ni reclamar el stack
+        // retirado por runtime.
+        exitCode = 1;
       } else {
         removeRuntimeManifest(id);
       }
     }
-    p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
+    if (!ownedServiceUnit) p.log.success(`${adapter.name}: stack retirado (lo tuyo queda intacto).`);
   }
 
   // --target-dir no modifica la preferencia real; un global ajeno nunca es propio.
