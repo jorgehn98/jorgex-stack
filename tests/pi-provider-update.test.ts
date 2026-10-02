@@ -4,6 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inventoryTreeSha256 } from "../src/lib/pi-staged-lock.js";
+import { resolveProviderManifestRecipe } from "../src/lib/pi-provider-artifact.js";
+import {
+  buildPiProviderReceipt,
+  piProviderReceiptPath,
+  serializePiProviderReceipt,
+  type PiProviderReceiptEntry,
+} from "../src/lib/pi-provider-receipt.js";
 import type { NpmPackageRelease } from "../src/lib/npm-provider.js";
 
 /**
@@ -49,6 +56,8 @@ type UpdateInput = {
   agentDir: string;
   piExecutable: string;
   engramBin: string;
+  /** Opt-in explícito a la variante temporal #1567 (ausente conserva la ruta previa). */
+  engramTypeboxCompat?: boolean;
 };
 
 type UpdateModule = {
@@ -513,5 +522,216 @@ describe("[T65-RED] deliberate Pi provider update", () => {
     expect(fs.readdirSync(stageDir).some((name) => name.startsWith(".provider-activation-"))).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(sandbox.agentDir, "npm", "node_modules", "pi-mcp-adapter", "package.json"), "utf8")).version).toBe("3.2.1");
     expect(fs.readFileSync(sandbox.foreignFile, "utf8")).toBe("foreign provider bytes\n");
+  });
+});
+
+/**
+ * T03/T06: the deliberate updater must read the separate provider receipt
+ * BEFORE any network resolution or root mutation. Malformed/drift/native
+ * receipts fail closed; a valid receipt is passed to activation as the exact
+ * bytes snapshot; a derived receipt keeps the #1567 recipe without an explicit
+ * flag. The heavy derived-artifact/retirement crypto stays in its core fixtures.
+ */
+
+const UPSTREAM_COMMIT = "5455dc245044589445e7d7a83fdff8c84dfb9689";
+
+function providerReceiptEntry(sandbox: ProviderSandbox, name: ProviderName): PiProviderReceiptEntry {
+  const activeRoot = path.join(sandbox.agentDir, "npm", "node_modules", name);
+  const manifestBytes = fs.readFileSync(path.join(activeRoot, "package.json"));
+  const version = oldProviderVersions[name].version;
+  return {
+    name,
+    version,
+    source: canonicalProviderSource(name, version),
+    packageRoot: `npm/node_modules/${name}`,
+    integrity: `sha512-${Buffer.alloc(64, 9).toString("base64")}`,
+    treeSha256: inventoryTreeSha256(activeRoot),
+    manifestSha256: sha256(manifestBytes),
+    bins: { [name]: "cli.js" },
+  };
+}
+
+function writeProviderReceipt(sandbox: ProviderSandbox, text: string): string {
+  const target = piProviderReceiptPath(sandbox.homeDir);
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, text, { mode: 0o600 });
+  return target;
+}
+
+function legacyRegistryReceipt(sandbox: ProviderSandbox): string {
+  return serializePiProviderReceipt(buildPiProviderReceipt({
+    agentDir: sandbox.agentDir,
+    mcpTransport: "legacy",
+    providers: PROVIDERS.map((name) => providerReceiptEntry(sandbox, name)),
+  }));
+}
+
+function legacyDerivedReceipt(sandbox: ProviderSandbox): string {
+  const name = "gentle-engram";
+  const version = oldProviderVersions[name].version;
+  const originalManifest = Buffer.from(`${JSON.stringify({
+    name,
+    version,
+    type: "module",
+    bin: { [name]: "cli.js" },
+    dependencies: { typebox: "^1.1.38" },
+  }, null, 2)}\n`);
+  const recipe = resolveProviderManifestRecipe(originalManifest, name, version);
+  if (recipe.origin !== "derived") throw new Error("fixture must produce a derived manifest");
+  const activeRoot = path.join(sandbox.agentDir, "npm", "node_modules", name);
+  fs.writeFileSync(path.join(activeRoot, "package.json"), recipe.manifest, { mode: 0o600 });
+
+  const originalBytes = Buffer.from("official gentle-engram fixture bytes\n");
+  const originalSha512 = createHash("sha512").update(originalBytes).digest("hex");
+  const originalIntegrity = `sha512-${Buffer.from(originalSha512, "hex").toString("base64")}`;
+  const derivedBytes = Buffer.from("derived gentle-engram fixture bytes\n");
+  const derivedSha512 = createHash("sha512").update(derivedBytes).digest("hex");
+  const manifestSha256 = sha256(recipe.manifest);
+  const gentle: PiProviderReceiptEntry = {
+    name,
+    version,
+    source: `npm:${name}@${version}`,
+    packageRoot: `npm/node_modules/${name}`,
+    integrity: originalIntegrity,
+    treeSha256: inventoryTreeSha256(activeRoot),
+    manifestSha256,
+    bins: { [name]: "cli.js" },
+    provenance: {
+      origin: "derived",
+      packageName: name,
+      version,
+      upstreamPr: 1567,
+      upstreamCommit: UPSTREAM_COMMIT,
+      original: {
+        integrity: originalIntegrity,
+        sha256: sha256(originalBytes),
+        sha512: originalSha512,
+        bytes: originalBytes.byteLength,
+        manifestSha256: sha256(originalManifest),
+        manifestBase64: originalManifest.toString("base64"),
+      },
+      derived: {
+        bytes: derivedBytes.byteLength,
+        sha256: sha256(derivedBytes),
+        sha512: derivedSha512,
+        integrity: `sha512-${Buffer.from(derivedSha512, "hex").toString("base64")}`,
+        manifestSha256,
+      },
+    },
+  };
+  return serializePiProviderReceipt(buildPiProviderReceipt({
+    agentDir: sandbox.agentDir,
+    mcpTransport: "legacy",
+    providers: [gentle, providerReceiptEntry(sandbox, "pi-mcp-adapter")],
+  }));
+}
+
+describe("[T03/T06] updater verifica el recibo separado antes de red y conserva la receta", () => {
+  it("bloquea un recibo malformado antes de resolver, stage o activar", async () => {
+    const sandbox = createSandbox();
+    const before = snapshotPrivateState(sandbox);
+    writeProviderReceipt(sandbox, "{not json\n");
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages(sandbox)).rejects.toThrow(/malformed|provider receipt/i);
+    expect(mocks.resolveLatestNpmPackageRelease).not.toHaveBeenCalled();
+    expect(mocks.stagePiProviderPackages).not.toHaveBeenCalled();
+    expect(mocks.activatePiProviderPackages).not.toHaveBeenCalled();
+    expect(snapshotPrivateState(sandbox)).toEqual(before);
+    expect(fs.readFileSync(sandbox.foreignFile, "utf8")).toBe("foreign provider bytes\n");
+  });
+
+  it("bloquea un recibo drifted antes de red", async () => {
+    const sandbox = createSandbox();
+    writeProviderReceipt(sandbox, legacyRegistryReceipt(sandbox));
+    const activeManifest = path.join(sandbox.agentDir, "npm", "node_modules", "gentle-engram", "package.json");
+    const drifted = JSON.parse(fs.readFileSync(activeManifest, "utf8")) as { version: string };
+    drifted.version = "9.9.9";
+    fs.writeFileSync(activeManifest, `${JSON.stringify(drifted)}\n`);
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages(sandbox)).rejects.toThrow(/drift|identity|manifest/i);
+    expect(mocks.resolveLatestNpmPackageRelease).not.toHaveBeenCalled();
+    expect(mocks.stagePiProviderPackages).not.toHaveBeenCalled();
+    expect(mocks.activatePiProviderPackages).not.toHaveBeenCalled();
+  });
+
+  it("rechaza un recibo nativo (legacy-only) antes de red", async () => {
+    const sandbox = createSandbox();
+    writeProviderReceipt(sandbox, serializePiProviderReceipt(buildPiProviderReceipt({
+      agentDir: sandbox.agentDir,
+      mcpTransport: "native",
+      providers: [providerReceiptEntry(sandbox, "gentle-engram")],
+    })));
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages(sandbox)).rejects.toThrow(/native transport/i);
+    expect(mocks.resolveLatestNpmPackageRelease).not.toHaveBeenCalled();
+    expect(mocks.stagePiProviderPackages).not.toHaveBeenCalled();
+    expect(mocks.activatePiProviderPackages).not.toHaveBeenCalled();
+  });
+
+  it("sin recibo y sin opt-in mantiene la ruta previa sin snapshot", async () => {
+    const sandbox = createSandbox();
+    configureMocks(sandbox);
+    let snapshot: unknown = "sentinel";
+    mocks.activatePiProviderPackages.mockImplementation(async (input: { providerReceiptSnapshot?: unknown }) => {
+      snapshot = input.providerReceiptSnapshot;
+      return { ok: true, changed: true, backupDir: path.join(sandbox.homeDir, "backup") };
+    });
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages(sandbox)).resolves.toMatchObject({ kind: "updated" });
+    expect(snapshot).toBeUndefined();
+    expect(mocks.stagePiProviderPackages).toHaveBeenCalledWith(expect.objectContaining({ engramTypeboxCompat: false }));
+  });
+
+  it("sin recibo y con opt-in publica el primero con snapshot null", async () => {
+    const sandbox = createSandbox();
+    configureMocks(sandbox);
+    let snapshot: unknown = "sentinel";
+    mocks.activatePiProviderPackages.mockImplementation(async (input: { providerReceiptSnapshot?: unknown }) => {
+      snapshot = input.providerReceiptSnapshot;
+      return { ok: true, changed: true, backupDir: path.join(sandbox.homeDir, "backup") };
+    });
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages({ ...sandbox, engramTypeboxCompat: true })).resolves.toMatchObject({ kind: "updated" });
+    expect(snapshot).toBeNull();
+    expect(mocks.stagePiProviderPackages).toHaveBeenCalledWith(expect.objectContaining({ engramTypeboxCompat: true }));
+  });
+
+  it("con recibo existente pasa sus bytes exactos a la activación", async () => {
+    const sandbox = createSandbox();
+    const text = legacyRegistryReceipt(sandbox);
+    writeProviderReceipt(sandbox, text);
+    configureMocks(sandbox);
+    const actual = await vi.importActual<typeof import("../src/lib/pi-provider-activation.js")>("../src/lib/pi-provider-activation.js");
+    let snapshot: unknown = "sentinel";
+    mocks.activatePiProviderPackages.mockImplementation(async (input: { providerReceiptSnapshot?: unknown }) => {
+      snapshot = input.providerReceiptSnapshot;
+      return actual.activatePiProviderPackages(input as never);
+    });
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages(sandbox)).resolves.toMatchObject({ kind: "updated" });
+    expect(snapshot).toBe(text);
+  });
+
+  it("un recibo derived mantiene la receta #1567 aunque el flag esté ausente", async () => {
+    const sandbox = createSandbox();
+    const text = legacyDerivedReceipt(sandbox);
+    writeProviderReceipt(sandbox, text);
+    configureMocks(sandbox);
+    let snapshot: unknown = "sentinel";
+    mocks.activatePiProviderPackages.mockImplementation(async (input: { providerReceiptSnapshot?: unknown }) => {
+      snapshot = input.providerReceiptSnapshot;
+      return { ok: true, changed: true, backupDir: path.join(sandbox.homeDir, "backup") };
+    });
+    const update = await loadUpdater();
+
+    await expect(update.updatePiProviderPackages(sandbox)).resolves.toMatchObject({ kind: "updated" });
+    expect(mocks.stagePiProviderPackages).toHaveBeenCalledWith(expect.objectContaining({ engramTypeboxCompat: true }));
+    expect(snapshot).toBe(text);
   });
 });

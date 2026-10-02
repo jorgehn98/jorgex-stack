@@ -89,6 +89,7 @@ type PiCandidate = {
   contract: {
     schemaVersion: number;
     capabilities: readonly string[];
+    mcpNative?: { schemaVersion: number; contractPath: string };
     runner: {
       bin: string;
       commands: readonly string[];
@@ -139,6 +140,32 @@ const STAGED_DEP_NAMES = [
   "@narumitw/pi-goal",
   "strip-json-comments",
 ] as const;
+
+// Published native MCP contract: literal expected copy of the independent
+// published protocol, never derived from production code.
+const NATIVE_CAPABILITY = "mcp-native-v1";
+
+const NATIVE_BINDING = { schemaVersion: 1, contractPath: "contract/native-mcp.v1.json" };
+
+const NATIVE_CONTRACT = {
+  schemaVersion: 1,
+  capability: NATIVE_CAPABILITY,
+  transport: "native",
+  configurationPath: "PI_CODING_AGENT_DIR/mcp.json",
+  packageReceiptPath: "HOME/.jorgex-stack/pi-receipt.json",
+  projectionReceiptPath: "HOME/.jorgex-stack/pi-projection-receipt.json",
+  authorityField: "mcpNative",
+  servers: ["engram", "context7", "chrome-devtools"],
+  definitions: {
+    entrypoint: "extensions/mcp-engram.mjs",
+    digestExport: "digestNativeMcpDefinition",
+    devtoolsExport: "resolveNativeDevtoolsDefinition",
+  },
+  ownership: {
+    entrypoint: "extensions/native-mcp.mjs",
+    export: "inspectNativeMcpOwnership",
+  },
+};
 
 const sandboxes: string[] = [];
 
@@ -261,6 +288,59 @@ function stagedPkgDir(stageDir: string): string {
   return path.join(stageDir, "npm", "node_modules", "jorgex-pi");
 }
 
+function writeNativeProducer(stageDir: string): void {
+  const pkgDir = stagedPkgDir(stageDir);
+  const rootPath = path.join(pkgDir, "contract", "jorgex-pi.v1.json");
+  const root = JSON.parse(fs.readFileSync(rootPath, "utf8")) as {
+    capabilities: string[];
+    mcpNative?: unknown;
+  };
+  root.capabilities = [...root.capabilities, NATIVE_CAPABILITY];
+  root.mcpNative = { ...NATIVE_BINDING };
+  writeJson(rootPath, root);
+  writeJson(path.join(pkgDir, "contract", "native-mcp.v1.json"), NATIVE_CONTRACT);
+
+  const extensions = path.join(pkgDir, "extensions");
+  fs.mkdirSync(extensions, { recursive: true });
+  // Top-level throw sentinels: the candidate gate validates declarations and
+  // file presence only, so importing either entrypoint must fail the run.
+  fs.writeFileSync(
+    path.join(extensions, "mcp-engram.mjs"),
+    'throw new Error("native MCP entrypoint must not be executed by the candidate gate");\n' +
+      "export function digestNativeMcpDefinition() {\n  return null;\n}\n" +
+      "export function resolveNativeDevtoolsDefinition() {\n  return null;\n}\n",
+  );
+  fs.writeFileSync(
+    path.join(extensions, "native-mcp.mjs"),
+    'throw new Error("native MCP ownership entrypoint must not be executed by the candidate gate");\n' +
+      "export async function inspectNativeMcpOwnership() {\n  return null;\n}\n",
+  );
+}
+
+function nativeContractFile(stageDir: string): string {
+  return path.join(stagedPkgDir(stageDir), "contract", "native-mcp.v1.json");
+}
+
+function nativeExtensionsDir(stageDir: string): string {
+  return path.join(stagedPkgDir(stageDir), "extensions");
+}
+
+async function expectCandidateRejection(fixture: StagedFixture, expected: RegExp): Promise<void> {
+  const { buildStagedPiCandidate } = await loadCandidate();
+  await expect(
+    Promise.resolve().then(() =>
+      buildStagedPiCandidate({
+        stageDir: fixture.stageDir,
+        release: fixture.release,
+        artifact: fixture.artifact,
+        commit: fixture.commit,
+        hostVersion: fixture.hostVersion,
+        evidence: fixture.evidence,
+      }),
+    ),
+  ).rejects.toThrow(expected);
+}
+
 describe("[T05/T06-RED] staged Pi runtime candidate before activation", () => {
   it("builds a dynamic candidate from the staged install, distinct from the frozen pin", async () => {
     const { buildStagedPiCandidate } = await loadCandidate();
@@ -308,6 +388,29 @@ describe("[T05/T06-RED] staged Pi runtime candidate before activation", () => {
     const encoded = JSON.stringify(candidate);
     expect(encoded).not.toContain("0.8.29");
     expect(encoded).not.toContain(PI_RUNTIME_CANDIDATE.provenance.commit);
+  });
+
+  it("accepts the published native MCP contract binding on the staged candidate", async () => {
+    const { buildStagedPiCandidate } = await loadCandidate();
+    const fixture = buildStagedFixture();
+    writeNativeProducer(fixture.stageDir);
+
+    const candidate = await buildStagedPiCandidate({
+      stageDir: fixture.stageDir,
+      release: fixture.release,
+      artifact: fixture.artifact,
+      commit: fixture.commit,
+      hostVersion: fixture.hostVersion,
+      evidence: fixture.evidence,
+    });
+
+    expect([...candidate.contract.capabilities]).toEqual([
+      ...PI_RUNTIME_CANDIDATE.contract.capabilities,
+      NATIVE_CAPABILITY,
+    ]);
+    expect(candidate.contract).toMatchObject({ mcpNative: NATIVE_BINDING });
+    // Entrypoints carry throw sentinels: accepting the candidate proves the
+    // gate validates declarations and presence without importing the modules.
   });
 
   it("rejects an extra foreign managedExternalWrite before activation", async () => {
@@ -360,5 +463,227 @@ describe("[T05/T06-RED] staged Pi runtime candidate before activation", () => {
         }),
       ),
     ).rejects.toThrow(/pi-candidate:/);
+  });
+});
+
+describe("[T74] native MCP producer declaration and boundary negatives", () => {
+  type NativeRow = { name: string; mutate: (stageDir: string) => void; expected: RegExp };
+
+  const bindingDrift = /pi-candidate: staged root contract mcpNative binding drifts from Stack native policy/;
+  const capabilityDrift = /pi-candidate: staged capabilities drift from Stack policy/;
+  const nativeContractDrift = /pi-candidate: staged native MCP contract drifts from Stack native policy/;
+
+  function mutateNativeRoot(stageDir: string, mutate: (root: Record<string, unknown>) => void): void {
+    const file = path.join(stagedPkgDir(stageDir), "contract", "jorgex-pi.v1.json");
+    const root = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    mutate(root);
+    writeJson(file, root);
+  }
+
+  function mutateNativeContract(stageDir: string, mutate: (contract: Record<string, unknown>) => void): void {
+    const file = nativeContractFile(stageDir);
+    const contract = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    mutate(contract);
+    writeJson(file, contract);
+  }
+
+  function withNativeFixture(mutate: (stageDir: string) => void): StagedFixture {
+    const fixture = buildStagedFixture();
+    writeNativeProducer(fixture.stageDir);
+    mutate(fixture.stageDir);
+    return fixture;
+  }
+
+  it.each<NativeRow>([
+    {
+      name: "rejects the native capability when the root mcpNative binding is absent",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          delete root.mcpNative;
+        }),
+      expected: bindingDrift,
+    },
+    {
+      name: "rejects a root mcpNative binding with a wrong schema version",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          root.mcpNative = { schemaVersion: 2, contractPath: NATIVE_BINDING.contractPath };
+        }),
+      expected: bindingDrift,
+    },
+    {
+      name: "rejects a root mcpNative binding pointing at a foreign contract path",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          root.mcpNative = { schemaVersion: 1, contractPath: "contract/foreign.v1.json" };
+        }),
+      expected: bindingDrift,
+    },
+    {
+      name: "rejects a root mcpNative binding carrying an unknown field",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          root.mcpNative = { ...NATIVE_BINDING, extra: true };
+        }),
+      expected: bindingDrift,
+    },
+    {
+      name: "rejects a root mcpNative binding without the native capability",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          root.capabilities = [...PI_RUNTIME_CANDIDATE.contract.capabilities];
+        }),
+      expected: /pi-candidate: staged root contract declares mcpNative without the mcp-native-v1 capability/,
+    },
+  ])("$name", async ({ mutate, expected }) => {
+    await expectCandidateRejection(withNativeFixture(mutate), expected);
+  });
+
+  it.each<NativeRow>([
+    {
+      name: "rejects an unknown extra capability inserted before the terminal native capability",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          const caps = root.capabilities as string[];
+          root.capabilities = [...caps.slice(0, -1), "mcp-unknown-v9", NATIVE_CAPABILITY];
+        }),
+      expected: capabilityDrift,
+    },
+    {
+      name: "rejects a reordered legacy capability prefix with the native capability terminal",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          const caps = root.capabilities as string[];
+          root.capabilities = [...caps.slice(0, -1)].reverse().concat(NATIVE_CAPABILITY);
+        }),
+      expected: capabilityDrift,
+    },
+    {
+      name: "rejects a duplicated legacy capability",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          const caps = root.capabilities as string[];
+          root.capabilities = [caps[0], ...caps];
+        }),
+      expected: capabilityDrift,
+    },
+    {
+      name: "rejects the native capability placed before the legacy list",
+      mutate: (stageDir) =>
+        mutateNativeRoot(stageDir, (root) => {
+          const caps = root.capabilities as string[];
+          root.capabilities = [NATIVE_CAPABILITY, ...caps.slice(0, -1)];
+        }),
+      expected: capabilityDrift,
+    },
+  ])("$name", async ({ mutate, expected }) => {
+    await expectCandidateRejection(withNativeFixture(mutate), expected);
+  });
+
+  it.each<NativeRow>([
+    {
+      name: "rejects a missing native MCP contract file",
+      mutate: (stageDir) => fs.rmSync(nativeContractFile(stageDir)),
+      expected: /pi-candidate: missing staged native MCP contract/,
+    },
+    {
+      name: "rejects a malformed native MCP contract JSON",
+      mutate: (stageDir) => fs.writeFileSync(nativeContractFile(stageDir), "{ not json"),
+      expected: /pi-candidate: malformed staged native MCP contract/,
+    },
+    {
+      name: "rejects a native MCP contract that alters the execution entrypoint",
+      mutate: (stageDir) =>
+        mutateNativeContract(stageDir, (contract) => {
+          (contract.definitions as Record<string, unknown>).entrypoint = "extensions/foreign.mjs";
+        }),
+      expected: nativeContractDrift,
+    },
+    {
+      name: "rejects a native MCP contract that alters the definition export",
+      mutate: (stageDir) =>
+        mutateNativeContract(stageDir, (contract) => {
+          (contract.definitions as Record<string, unknown>).digestExport = "foreignDigest";
+        }),
+      expected: nativeContractDrift,
+    },
+    {
+      name: "rejects a native MCP contract that alters the authority path",
+      mutate: (stageDir) =>
+        mutateNativeContract(stageDir, (contract) => {
+          contract.projectionReceiptPath = "HOME/.jorgex-stack/foreign.json";
+        }),
+      expected: nativeContractDrift,
+    },
+    {
+      name: "rejects a native MCP contract carrying an unknown field",
+      mutate: (stageDir) =>
+        mutateNativeContract(stageDir, (contract) => {
+          contract.extra = true;
+        }),
+      expected: nativeContractDrift,
+    },
+  ])("$name", async ({ mutate, expected }) => {
+    await expectCandidateRejection(withNativeFixture(mutate), expected);
+  });
+
+  it.each<NativeRow>([
+    {
+      name: "rejects a symlinked contract directory",
+      mutate: (stageDir) => {
+        const dir = path.join(stagedPkgDir(stageDir), "contract");
+        const real = path.join(path.dirname(stagedPkgDir(stageDir)), "real-contract");
+        fs.renameSync(dir, real);
+        fs.symlinkSync(real, dir, "dir");
+      },
+      expected: /pi-candidate: staged contract directory must be a real directory/,
+    },
+    {
+      name: "rejects a symlinked extensions directory",
+      mutate: (stageDir) => {
+        const dir = nativeExtensionsDir(stageDir);
+        const real = path.join(stagedPkgDir(stageDir), "real-extensions");
+        fs.renameSync(dir, real);
+        fs.symlinkSync(real, dir, "dir");
+      },
+      expected: /pi-candidate: staged extensions directory must be a real directory/,
+    },
+    {
+      name: "rejects a missing extensions directory",
+      mutate: (stageDir) => fs.rmSync(nativeExtensionsDir(stageDir), { recursive: true }),
+      expected: /pi-candidate: staged extensions directory must be a real directory/,
+    },
+    {
+      name: "rejects a missing native MCP entrypoint file",
+      mutate: (stageDir) => fs.rmSync(path.join(nativeExtensionsDir(stageDir), "mcp-engram.mjs")),
+      expected: /pi-candidate: staged native MCP entrypoint must be a regular file/,
+    },
+    {
+      name: "rejects a missing native MCP ownership entrypoint file",
+      mutate: (stageDir) => fs.rmSync(path.join(nativeExtensionsDir(stageDir), "native-mcp.mjs")),
+      expected: /pi-candidate: staged native MCP entrypoint must be a regular file/,
+    },
+    {
+      name: "rejects a symlinked native MCP entrypoint",
+      mutate: (stageDir) => {
+        const entry = path.join(nativeExtensionsDir(stageDir), "mcp-engram.mjs");
+        const target = path.join(nativeExtensionsDir(stageDir), "real-engram.mjs");
+        fs.writeFileSync(target, "export {};\n");
+        fs.rmSync(entry);
+        fs.symlinkSync(target, entry, "file");
+      },
+      expected: /pi-candidate: staged native MCP entrypoint must be a regular file/,
+    },
+    {
+      name: "rejects a directory where the native MCP entrypoint is expected",
+      mutate: (stageDir) => {
+        const entry = path.join(nativeExtensionsDir(stageDir), "mcp-engram.mjs");
+        fs.rmSync(entry);
+        fs.mkdirSync(entry);
+      },
+      expected: /pi-candidate: staged native MCP entrypoint must be a regular file/,
+    },
+  ])("$name", async ({ mutate, expected }) => {
+    await expectCandidateRejection(withNativeFixture(mutate), expected);
   });
 });
