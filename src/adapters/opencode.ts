@@ -114,6 +114,21 @@ function isCompatibleBrowserControlServer(
     && command.every((part) => typeof part === "string")
     && isDeepStrictEqual(command, [invocation.command, ...invocation.args]);
 }
+
+/**
+ * El objeto gestionado de Browser Control solo es el canónico EXACTO si su forma
+ * completa es `{ type: 'local', command: [command, ...args] }`: sin campos
+ * extra del usuario ni command/flags modificados. El uninstall retira el objeto
+ * entero solo en ese caso; cualquier desviación se conserva íntegra y únicamente
+ * libera la autoridad de ownership. La comparación usa la invocación ya
+ * verificada, nunca una receta sobre `--eval` ni igualdad parcial de command.
+ */
+function isExactCanonicalBrowserControlServer(
+  value: unknown,
+  invocation: { command: string; args: readonly string[] },
+): boolean {
+  return isDeepStrictEqual(value, { type: "local", command: [invocation.command, ...invocation.args] });
+}
 const PRIMARY_MODEL = "openai/gpt-6.1-sol";
 const PRIMARY_MODEL_ID = "gpt-6.1-sol";
 const PRIMARY_LIMITS = { context: 872000, input: 744000, output: 128000 } as const;
@@ -1220,6 +1235,29 @@ export const opencodeAdapter: Adapter = {
             if (ctx.ownedMcpServers?.has(name) === true) {
               if (isOwnedDevtoolsServer(name, server, currentServer(name), ctx)) removeServer(name);
               mcpOwnership.push({ server: name, owned: false });
+            }
+          }
+          // Browser Control gestionado (Spec T13): no vive en el canon
+          // compartido, así que se trata aparte y solo en uninstall
+          // (`preserveEngram` lo fija runUninstall; install/sync usan
+          // planUnmerge únicamente para inventariar targets). El adapter no
+          // recompone la invocación: usa la que el uninstall autenticó offline
+          // desde el receipt `active`. Un objeto canónico EXACTO se retira; un
+          // objeto personalizado/modificado se conserva completo y solo libera
+          // la autoridad. Sin invocación (receipt ausente/drift) se falla
+          // cerrado: se conservan entrada y claim, sin fallback global.
+          if (ctx.preserveEngram !== undefined && ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) === true) {
+            const entry = nativeServers?.[BROWSER_CONTROL_SERVER];
+            const invocation = ctx.browserControlInvocation;
+            if (entry !== undefined && invocation !== undefined) {
+              if (isExactCanonicalBrowserControlServer(entry, invocation)) {
+                removeServer(BROWSER_CONTROL_SERVER);
+              } else {
+                ctx.warnings.push(
+                  "OpenCode: el MCP 'browser-control' está personalizado/modificado respecto al launcher verificado; se conserva completo y solo se libera el ownership.",
+                );
+              }
+              mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: false });
             }
           }
           if (nativeServers !== null && Object.keys(nativeServers).length === 0) delete mcpBlock["servers"];

@@ -1422,4 +1422,231 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       }
     },
   );
+
+  /**
+   * T12 vertical de desinstalación (spec 12/13): una instalación real de
+   * OpenCode v2 con Browser Control gestionado (MCP + skill owned) se desinstala
+   * con la API pública `runUninstall`. El uninstall debe retirar SOLO lo
+   * gestionado y ceder su autoridad, conservando la configuración ajena y los
+   * datos de navegador.
+   *
+   * - (a) Entrada gestionada intacta (exactamente `type` + `command`): se
+   *   elimina y el ledger libera el claim; la skill owned se retira con backup.
+   * - (b) El usuario añade un campo desconocido: el objeto personalizado
+   *   completo se conserva (sin perder extras) y solo se libera la autoridad de
+   *   ownership; nunca se borra un servidor ajeno ni los datos del navegador.
+   *
+   * El fetch queda envenenado tras el install para probar que el uninstall es
+   * offline: no resuelve `latest` ni sondea el relay (puerto centinela inválido,
+   * sin servidor global). Crypto, browser-managed y el ledger corren reales.
+   */
+  const uninstallCases = [
+    { label: "entrada gestionada intacta", personalized: false },
+    { label: "entrada personalizada con campo desconocido", personalized: true },
+  ];
+
+  it.each(uninstallCases)(
+    "retira el MCP y la skill gestionados de Browser Control al desinstalar y conserva lo ajeno ($label)",
+    async ({ personalized }) => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-uninstall-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const fetched: string[] = [];
+
+      try {
+        const base = resolveVerificationDiskBase({
+          repoRoot: REPO_ROOT,
+          env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+        });
+        const owned = createOwnedVerificationHome({
+          base,
+          prefix: ".jorgex-browser-control-uninstall-",
+          register: (root) => ownedRoots.push(root),
+        });
+        // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989.
+        const closedPort = await reserveClosedRelayPort();
+        // Layout realista: el configDir de OpenCode vive dentro de HOME. El
+        // uninstall ancla el borrado whole-file a HOME, así que un XDG_CONFIG_HOME
+        // hermano de HOME dejaría la skill fuera de la frontera y no probaría
+        // el contrato de retirada.
+        const isolatedXdgConfig = path.join(owned.env.HOME!, ".config");
+
+        await withIsolatedEnv(
+          {
+            ...process.env,
+            ...owned.env,
+            XDG_CONFIG_HOME: isolatedXdgConfig,
+            BROWSER_CONTROL_PORT: String(closedPort),
+          },
+          async () => {
+            const witness = writeWitnessTree(owned.root);
+            const opencodeBin = writeOpenCodeBinary(path.join(owned.root, "bin"), {
+              output: "opencode v2.0.20",
+            });
+            const configDir = path.join(isolatedXdgConfig, "opencode");
+            const configPath = path.join(configDir, "opencode.json");
+            const projectedSkill = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+
+            const actualStage = await import("../src/lib/browser-stage.js");
+            const witnessStaged = {
+              treePath: witness.treePath,
+              nodeModulesPath: witness.nodeModulesPath,
+              treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
+              closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
+            };
+            vi.doMock("../src/lib/browser-stage.js", async () => {
+              const actual =
+                await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                  "../src/lib/browser-stage.js",
+                );
+              return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
+            });
+            vi.stubGlobal("fetch", registryFetch(fetched));
+
+            const install = await import("../src/install.js");
+            const uninstall = await import("../src/uninstall.js");
+            const { dataDir } = await import("../src/lib/paths.js");
+            const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+            const { devtoolsMcpPreferenceFile, loadDevtoolsMcpOwnership } = await import(
+              "../src/lib/tool-preferences.js"
+            );
+            const { readManifest } = await import("../src/lib/manifest.js");
+            const { listBackups } = await import("../src/lib/backup.js");
+
+            const opencode = install.ADAPTERS.opencode!;
+            const originalDetect = opencode.detect;
+            const detection = (): RuntimeDetection => ({
+              id: "opencode",
+              name: "OpenCode",
+              installed: true,
+              binPath: opencodeBin,
+              configDir,
+            });
+            opencode.detect = detection;
+
+            try {
+              // 1) Instalación real: promueve el active y proyecta MCP + skill.
+              await install.runInstall({
+                runtimes: ["opencode"],
+                command: "install",
+                dryRun: false,
+                yes: true,
+                mode: { mode: "human", subagentConcurrency: "serial" },
+                engramBin: null,
+              });
+
+              const active = loadVerifiedManagedBrowserReceipt(dataDir(), BC_PACKAGE);
+              expect(active, "el install debe publicar el active gestionado").not.toBeNull();
+              if (active === null) return;
+
+              const installedConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+                mcp?: { servers?: Record<string, Record<string, unknown>> };
+                [key: string]: unknown;
+              };
+              const managedEntry = installedConfig.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+              expect(managedEntry, "el MCP gestionado debe existir").toBeDefined();
+              // Independiente del algoritmo: el entry gestionado sin tocar tiene
+              // exactamente los dos campos canónicos.
+              expect(Object.keys(managedEntry ?? {}).sort()).toEqual(["command", "type"]);
+              expect(
+                loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), "opencode", BROWSER_CONTROL_SERVER),
+                "el install debe reclamar la autoridad del MCP",
+              ).toBe(true);
+              expect(fs.readFileSync(projectedSkill)).toEqual(BC_SKILL_BYTES);
+              expect(
+                (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file)),
+                "el manifest debe declarar owned la skill proyectada",
+              ).toContain(path.resolve(projectedSkill));
+
+              // Config ajena del usuario + Engram por defecto (nunca se retira).
+              installedConfig.mcp!.servers!["user-custom"] = { type: "local", command: ["/usr/bin/true"] };
+              installedConfig.mcp!.servers!["engram"] = { type: "local", command: ["/usr/bin/engram", "mcp"] };
+              installedConfig["user-top-level"] = { keep: true };
+              if (personalized) {
+                installedConfig.mcp!.servers![BROWSER_CONTROL_SERVER]!["x-user-note"] = "keep-me";
+              }
+              fs.writeFileSync(configPath, `${JSON.stringify(installedConfig, null, 2)}\n`);
+
+              // 2) Offline forzado: cualquier fetch durante el uninstall es un
+              //    fallo; el puerto centinela inválido no puede contactar relay.
+              const uninstallFetch = vi.fn(async (input: RequestInfo | URL) => {
+                throw new Error(`unexpectedNetwork: el uninstall no debe tocar la red (${String(input)})`);
+              });
+              vi.stubGlobal("fetch", uninstallFetch);
+              process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+              const exit = await uninstall.runUninstall({
+                runtimes: ["opencode"],
+                dryRun: false,
+                yes: true,
+                removeEngram: false,
+                removePlaywright: false,
+              });
+
+              expect(
+                uninstallFetch,
+                "el uninstall debe ser offline: sin resolución de latest ni sondeo",
+              ).not.toHaveBeenCalled();
+              expect(exit, `el uninstall debe completar sin errores: ${loggedLines().join(" | ")}`).toBe(0);
+
+              const afterConfig = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+                mcp?: { servers?: Record<string, Record<string, unknown>> };
+                [key: string]: unknown;
+              };
+
+              // La skill owned se retira con backup previo.
+              expect(fs.existsSync(projectedSkill), "la skill gestionada debe retirarse").toBe(false);
+              expect(
+                listBackups().some((info) =>
+                  info.files.some((file) => path.resolve(file.original) === path.resolve(projectedSkill)),
+                ),
+                "la skill retirada debe quedar respaldada",
+              ).toBe(true);
+
+              // Config ajena y Engram por defecto intactos.
+              expect(afterConfig.mcp?.servers?.["user-custom"]).toEqual({
+                type: "local",
+                command: ["/usr/bin/true"],
+              });
+              expect(afterConfig.mcp?.servers?.["engram"]).toEqual({
+                type: "local",
+                command: ["/usr/bin/engram", "mcp"],
+              });
+              expect(afterConfig["user-top-level"]).toEqual({ keep: true });
+
+              // Política: el árbol gestionado y el candidato son datos de
+              // navegador; el uninstall no los borra.
+              expect(fs.existsSync(active.rootPath), "el árbol gestionado no debe borrarse").toBe(true);
+              expect(
+                fs.existsSync(path.join(dataDir(), BC_CANDIDATE_DIRNAME)),
+                "el candidato retenido no debe borrarse",
+              ).toBe(true);
+
+              // El MCP gestionado: caso intacto se retira; caso personalizado
+              // sobrevive completo. En ambos, la autoridad de ownership se libera.
+              const entryAfter = afterConfig.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+              if (personalized) {
+                expect(entryAfter, "el objeto personalizado debe conservarse completo").toEqual({
+                  ...managedEntry,
+                  "x-user-note": "keep-me",
+                });
+              } else {
+                expect(entryAfter, "el entry gestionado intacto debe retirarse").toBeUndefined();
+              }
+              expect(
+                loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), "opencode", BROWSER_CONTROL_SERVER),
+                "la autoridad de ownership debe liberarse",
+              ).toBe(false);
+            } finally {
+              opencode.detect = originalDetect;
+            }
+          },
+        );
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    },
+  );
 });

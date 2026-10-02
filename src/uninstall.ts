@@ -5,6 +5,8 @@ import type { FileAction, OpenCodeTargetEvidenceOption, RuntimeId } from "./adap
 import { ADAPTERS, assertOpenCodeManifestCoherence, buildContentPlan, makeContext } from "./install.js";
 import { DEVTOOLS_MCP_SERVER, loadCanonicalHooks, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "./lib/canonical.js";
 import { createBackup } from "./lib/backup.js";
+import { planManagedBrowserInvocation } from "./lib/browser-managed.js";
+import { BROWSER_CONTROL_PACKAGE } from "./lib/browser-control-runtime.js";
 import { isContainedIn, pruneEmptyDirs, writeText } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest } from "./lib/manifest.js";
 import {
@@ -15,7 +17,7 @@ import {
   type StaticResourceRow,
 } from "./lib/opencode-static-resources.js";
 import { inspectOpencodePluginFile } from "./adapters/opencode.js";
-import { HOME, stackRoot } from "./lib/paths.js";
+import { HOME, dataDir, stackRoot } from "./lib/paths.js";
 import { readRealPiProjectionOwned } from "./lib/pi-projection-lifecycle.js";
 import { assertSystemPromptFile } from "./lib/system-prompt-sections.js";
 import {
@@ -39,6 +41,9 @@ export interface UninstallOptions extends OpenCodeTargetEvidenceOption {
   /** Desactiva el opt-in gestionado; nunca retira paquetes globales ajenos. */
   removePlaywright: boolean;
 }
+
+/** MCP gestionado de Browser Control en OpenCode v2 (mismo nombre que el adapter). */
+const BROWSER_CONTROL_SERVER = "browser-control";
 
 export function resolvePlaywrightUninstallPlan(input: { disableManaged: boolean }): {
   disablePreference: boolean;
@@ -185,6 +190,21 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     }
     if (!ctx) continue;
     ctx.preserveEngram = !removeEngram;
+
+    // Browser Control gestionado: la invocación del launcher `active` se
+    // resuelve offline desde el receipt cacheado (sin prepareRuntime, red ni
+    // sondeo). El adapter solo retira el objeto canónico EXACTO con esa
+    // invocación; sin ella falla cerrado. Un receipt ausente/drift se
+    // diagnostica aquí y se conserva la entrada y su ownership sin borrar.
+    if (id === "opencode" && ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) === true) {
+      try {
+        ctx.browserControlInvocation = planManagedBrowserInvocation(dataDir(), BROWSER_CONTROL_PACKAGE, ["mcp"]);
+      } catch (error) {
+        p.log.warn(
+          `OpenCode: no se pudo autenticar el MCP gestionado 'browser-control' (${error instanceof Error ? error.message : String(error)}); se conserva la entrada y su ownership sin borrar nada. Revisa el receipt gestionado antes de reintentar.`,
+        );
+      }
+    }
 
     let unmerge: FileAction[];
     try {
