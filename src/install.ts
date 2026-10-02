@@ -53,6 +53,7 @@ import {
   type PlaywrightToolActionResult,
 } from "./lib/external-tools.js";
 import { activateVerifiedBrowserArtifact, prepareVerifiedBrowserRelease } from "./lib/browser-provider.js";
+import { probeBrowserControlRelay, retainVerifiedBrowserControlCandidate } from "./lib/browser-control-runtime.js";
 import { loadVerifiedManagedBrowserReceipt, planManagedBrowserInvocation, rollbackManagedBrowserActivation } from "./lib/browser-managed.js";
 import type { ManagedBrowserReceipt } from "./lib/browser-managed.js";
 import { runVerifiedManagedPlaywright, verifyManagedPlaywrightBrowser } from "./lib/browser-command.js";
@@ -983,6 +984,44 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     runtimeStatuses.push({ name, status });
     opts.onRuntimeStatus?.(name, status);
   };
+
+  // Browser Control (Spec T13, primer vertical): toda operación real de
+  // OpenCode (install/sync/update) adquiere el candidato verificado desde el
+  // registro (metadata latest + SRI del tarball raíz) y lo retiene en el
+  // namespace fijo `.browser-control-candidate`, con independencia del estado del
+  // relay. El resultado es pendiente honesto y nunca éxito: con el relay presente
+  // o incierto no se promueve ni se reinicia; con el relay ausente la promoción
+  // verificada pertenece a un vertical posterior. Nunca se proyecta MCP/skill
+  // apuntando al candidato. dry-run y --target-dir no tocan la red del proveedor
+  // ni el relay.
+  let browserControlPending = false;
+  if (useManifest && !opts.dryRun && opts.runtimes.includes("opencode")) {
+    const relayStatus = await probeBrowserControlRelay();
+    try {
+      const pnpmBin = resolvePnpmBin();
+      if (pnpmBin === null) throw new Error("pnpm no disponible para verificar el árbol gestionado");
+      const candidate = await retainVerifiedBrowserControlCandidate({
+        stateDir: dataDir(),
+        pnpmBin,
+        fetchImpl: globalThis.fetch,
+      });
+      browserControlPending = true;
+      const relayDetail = relayStatus === "present"
+        ? "el relay de Browser Control está presente y no se puede acreditar que esté inactivo; coordina manualmente con quien lo opera antes de reintentar"
+        : relayStatus === "unknown"
+          ? "no se pudo determinar si el relay de Browser Control está presente; compruébalo y coordina antes de reintentar"
+          : "la promoción verificada del relay ausente todavía no está habilitada";
+      p.log.error(
+        `Browser Control: candidato verificado ${candidate.release.version} retenido en ${candidate.candidateDir}, pero ${relayDetail}. No se proyecta MCP/skill ni se declara la capacidad todavía.`,
+      );
+    } catch (error) {
+      browserControlPending = true;
+      p.log.error(
+        `Browser Control: no se pudo verificar el candidato del proveedor (${error instanceof Error ? error.message : String(error)}). No se proyecta MCP/skill ni se declara la capacidad; revisa tu conexión y la metadata oficial antes de reintentar.`,
+      );
+    }
+  }
+
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     if (!adapter) {
@@ -1213,7 +1252,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       p.log.success(`${adapter.name}: ya al día (idempotente).`);
       successfulRuns++;
       successfulContexts.push({ adapter, ctx });
-      reportStatus(adapter.name, "ok");
+      reportStatus(adapter.name, browserControlPending && id === "opencode" ? "failed" : "ok");
       continue;
     }
 
@@ -1321,11 +1360,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           p.log.success(`${adapter.name}: ${changes.length} archivos aplicados y verificados (idempotente).`);
           successfulRuns++;
           successfulContexts.push({ adapter, ctx });
-          reportStatus(adapter.name, "ok");
+          reportStatus(adapter.name, browserControlPending && id === "opencode" ? "failed" : "ok");
         }
       }
     }
   }
+
+  // El pendiente de Browser Control es un fallo honesto del resultado por capa:
+  // el install no se declara completo ni con éxito mientras falte la capacidad
+  // obligatoria. El estado del runtime ya se reportó como fallido en el bucle.
+  if (browserControlPending) exitCode = 1;
 
   if (toolPlan?.actions.length) {
     if (opts.dryRun) {
