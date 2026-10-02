@@ -118,13 +118,31 @@ para rellenar el hueco.
   [tests.md](../../stack/skills/tdd/tests.md) resume ejemplos y anti-patrones.
 - **Tester** puede decidir, escribir/fijar o verificar en el proyecto consumidor;
   debe informar comando, setup, scope, resultado y límites de la evidencia.
+  Organiza suites por comportamiento o contrato, no por tarea, entrega o fase
+  RED/GREEN; antes de crear otra suite o setup reutiliza los helpers y
+  fixtures existentes dentro del assignment, comparte solo la preparación
+  genuinamente común y conserva separadas las fronteras y el aislamiento de
+  estado. Un seam autoritativo no significa un único caso: mantiene casos
+  significativos positivos, negativos, de plataforma y de SDK real.
 - **Test-analyzer** es *read-only*: evalúa el comportamiento cambiado por el diff
   y la evidencia relevante, incluidos tests existentes fuera del diff y la
   infraestructura de tests relacionada cuando haga falta. No escribe ni ejecuta
   tests, no convierte el análisis en una auditoría de suites o CI no relacionados
-  y solo delega gaps accionables.
+  y solo delega gaps accionables. Antes de apoyar Ready, dentro de su scope
+  también revisa setup, helpers y fixtures repetidos o suites fragmentadas por
+  entrega y los presenta como calidad estructural, no como falta de cobertura,
+  justificando la reducción de mantenimiento con protección y aislamiento
+  equivalentes y sin inventar un gap ni colapsar fronteras distintas.
 - **Orchestrator** coordina bloques coherentes y reutiliza evidencia válida; no
   repite la rúbrica ni ejecuta la suite completa por defecto.
+- **Work-audit** aplica el [testing value check](../../stack/skills/work-audit/SKILL.md)
+  en PRE/POST sobre cada cambio de comportamiento: un test añadido o fortalecido
+  exige la regresión concreta que la cobertura existente no detecta; una
+  actualización mecánica del test, `reuse` o `no new test` exige suficiencia
+  de la protección o verificación existente, sin regresión nueva fabricada; RED
+  estructural permitido solo si la estructura es el contrato (triggers,
+  permisos, secretos, registro de suites), no congelar recetas de comando
+  incidentales.
 
 Distingue tres clases de evidencia:
 

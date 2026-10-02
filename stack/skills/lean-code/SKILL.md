@@ -62,7 +62,7 @@ Prefer the narrowest change that solves the real need.
 
 ### Diagnostic tooling
 
-Reuse the project's runner, fixtures, helpers and existing diagnostic commands before building a harness. New probes, replay scripts and diagnostic harnesses are temporary by default, with explicit resource ownership and automatic teardown arranged before execution. Keep tooling only for a concrete recurring need: identify its consumer, why the existing harness cannot cover it, and who maintains it in the current task or PR. A successful one-off investigation alone does not justify a permanent command, framework or dependency. Preserve the authoritative regression test and compact reproduction evidence, not the disposable environment.
+Reuse the project's runner, fixtures, helpers and existing diagnostic commands before building a harness. New probes, replay scripts and diagnostic harnesses are temporary by default, with explicit resource ownership and automatic teardown arranged before execution. Keep tooling only for a concrete recurring need within the approved scope: identify its consumer, why the existing harness cannot cover it, and who maintains it in the current task or PR. Seek approval if retaining it expands the scope. A successful one-off investigation alone does not justify a permanent command, framework or dependency. Preserve the authoritative regression test and compact reproduction evidence, not the disposable environment; do not remove meaningful permission, concurrency or deletion protection just to shrink the diff.
 
 ### Review / simplification
 

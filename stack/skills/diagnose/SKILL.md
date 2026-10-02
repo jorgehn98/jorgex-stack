@@ -23,7 +23,7 @@ Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give
 
 ### Ways to construct one — try them in roughly this order
 
-Inspect the project's existing runner, fixtures, helpers and diagnostic commands first. Reuse the closest suitable harness; the options below are not an instruction to build a second testing stack. Apply `lean-code`'s diagnostic tooling policy before adding or retaining tooling.
+Inspect the project's existing runner, fixtures, helpers and diagnostic commands first. Reuse the closest suitable harness; the options below are not an instruction to build a second testing stack. Apply [Lean Code's diagnostic tooling policy](../lean-code/SKILL.md#diagnostic-tooling) before adding or retaining tooling.
 
 1. **Failing test** at whatever seam reaches the bug — unit, integration, e2e.
 2. **Curl / HTTP script** against a running dev server.
