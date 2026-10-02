@@ -1,18 +1,303 @@
 # Automatización de navegador
 
-Stack ofrece integraciones independientes y **opt-in**. Playwright CLI sirve para interacción y QA en los runtimes donde sigue habilitado; Chrome DevTools MCP queda reservado para diagnósticos de Chrome. No instala `agent-browser` ni un browser MCP permanente. La regla «pnpm siempre» se aplica a la adquisición; un paquete global del usuario no es propiedad de Stack ni sustituye su árbol gestionado.
+Stack ofrece integraciones independientes y **opt-in**. Playwright CLI sirve para interacción y QA en los runtimes donde sigue habilitado; Chrome DevTools MCP queda reservado para diagnósticos de Chrome. La integración gestionada de Browser Control (CLI, skill oficial y MCP en Code Mode) es obligatoria en OpenCode v2 y exclusiva de ese runtime: Stack no instala `agent-browser`, no proyecta un browser MCP permanente distinto del Browser Control oficial de OpenCode v2, y no extiende esa integración a Claude Code, Codex ni Pi (que conservan su política previa). La regla «pnpm siempre» se aplica a la adquisición; un paquete global del usuario no es propiedad de Stack ni sustituye su árbol gestionado.
 
-> **Estado de OpenCode v2 (PR01).** La integración gestionada de Browser
-> Control para OpenCode v2 se entregará en el siguiente checkpoint y será
-> obligatoria (CLI, skill y MCP). Este checkpoint todavía acepta
-> `--playwright-runtimes=opencode`. Solo el servicio relay Linux será
-> opt-in; la política de otros runtimes no cambia. La política condicional
-> de Playwright CLI y DevTools MCP para Claude Code, Codex y Pi no cambia
-> por esta decisión; un opt-in previo sigue funcionando y un opt-in nuevo
-> bajo `--playwright`/`--devtools` no se aplica automáticamente a
-> OpenCode. El flag CLI `--playwright-runtimes=opencode` sigue siendo
-> aceptado por el adapter y los tests en PR01; la transición a Browser
-> Control no altera `--playwright-runtimes` ni la app en este PR.
+> **OpenCode v2 usa Browser Control obligatorio (PR02).** OpenCode v2 ya no
+> acepta `--playwright-runtimes=opencode`: el adaptador lo rechaza con
+> diagnóstico accionable porque su única vía de navegador es Browser
+> Control (CLI, skill oficial y MCP). Las invocaciones se hacen siempre
+> con `jorgex-stack browser control <args>` (guard verificado y relauncher),
+> nunca con un binario `browser-control` global ni con un MCP manual no
+> autenticado. El servicio Linux (systemd de usuario) es opt-in vía
+> `--browser-control-service` y solo aplica cuando OpenCode está entre
+> los runtimes destino; en otras plataformas Browser Control usa su
+> autostart nativo. La política condicional de Playwright CLI y DevTools
+> MCP para Claude Code, Codex y Pi no cambia por esta decisión.
+
+## Browser Control (OpenCode v2)
+
+OpenCode v2 usa Browser Control como única vía de navegador gestionado: la
+integración proyecta la skill oficial, su MCP en Code Mode y el prefijo
+CLI gestionado `jorgex-stack browser control <args>`. El guard reverifica
+launcher y árbol del paquete retenido antes de cada invocación; un
+binario global o un MCP manual no se adoptan como fallback.
+
+### Versión observada, sin pin futuro
+
+Stack no fija una versión objetivo. La adquisición vive solo en rutas
+reales de `install`/`sync`/`update`: `--check`, `--dry-run` y
+`--target-dir` no resuelven ni descargan paquetes ni tocan el HOME real
+(siguen siendo de solo lectura o de proyección aislada). En una ruta real
+con `--agents opencode` el flujo resuelve cada vez el
+`dist-tags.latest` del paquete `@opencode-ai/browser-control`, descarga
+el tarball, verifica su SRI sha512 contra la metadata viva del registry
+y lo prepara en un stage pnpm aislado fuera del agente activo
+(`retainVerifiedBrowserControlCandidate`). La promoción a la release
+operativa solo ocurre cuando el SRI, el árbol y el bin declarado
+coinciden con el receipt (`activateVerifiedBrowserArtifact`). Ningún
+flag de CLI selecciona una versión futura; la decisión la toma el
+stage, no el caller.
+
+### Candidato vs. active: gate honesto
+
+El controlador devuelve tres formas (`BrowserControlRuntimeResult`):
+
+- `ready`: el active retenido coincide con la versión e integridad del
+  candidato (mismo release) o se acaba de promover un candidato
+  verificado. Solo este caso se proyecta como invocación operativa.
+- `pending`: el candidato fue verificado pero no se puede promover porque
+  está activo o es incierto el estado del relay. El active previo sigue
+  utilizable (`activeVersion`) —no se sustituye por el candidato— y se
+  conserva su autoridad.
+- `unavailable`: el namespace activo está corrupto, el candidato no se
+  pudo verificar o el rollback posterior a la publicación del candidato
+  también falló. No se afirma capacidad: no hay invocación operativa y no
+  se repara desde aquí.
+
+El gate de presencia del relay (`probeBrowserControlRelay`,
+`http://127.0.0.1:<puerto>/version` con agente propio, deadline 2 s,
+tope 64 KiB) solo aplaza una activación nueva. No invalida un active ya
+autenticado que coincide con el latest verificado: si el active previo
+tiene la misma versión e integridad, su proyección se devuelve sin
+tocar pointer, launcher ni relay, aunque haya relay presente. Stack no
+fuerza la muerte del relay activo ni lo reinicia para "limpiar".
+
+### Lo que el guard **no** certifica
+
+El guard de Node autentica el comando gestionado, el launcher y el árbol
+del paquete retenido; **no** certifica que la extensión de Chrome del
+usuario esté conectada, ni que haya un navegador autenticado, ni que una
+pestaña esté abierta. Esos elementos conservan su diagnóstico
+independiente y un fallo suyo no se reporta como problema de Browser
+Control. Una invocación gestionada puede devolver un relay ausente o
+incierto sin que el guard lo declare roto: el caller decide con su
+propia evidencia.
+
+### `doctor` offline
+
+`doctor --agents opencode` separa active y candidato con lecturas
+cacheadas (`inspectCachedBrowserControlRuntime`,
+`inspectCachedBrowserControlCandidate`) — sin adquirir el proveedor, sin
+sondear el relay, sin invocar al manager, sin reparar. Un active
+verificado se anuncia como `success`; un candidato retenido que coincide
+en versión e integridad con el active se anuncia como informativo (no
+hay release distinta que activar); un candidato retenido **distinto** se
+anuncia como pendiente de activación (no sustituye al active ni se
+presenta como release utilizable). Un candidato retenido inválido o un
+active ausente/inválido sí cuentan como problema, pero nunca se
+presenta el candidato como active cuando no lo es: doctor no infiere
+"pending" falso por coincidencia.
+
+### Servicio Linux (opt-in explícito)
+
+La unidad `jorgex-stack-browser-control.service` solo se materializa con
+el opt-in explícito:
+
+```bash
+pnpm dlx jorgex-stack install --agents opencode --browser-control-service
+```
+
+`--browser-control-service` exige `install`/`sync`/`update` con
+`--agents opencode`. La validación de CLI acepta el flag en
+`install --dry-run`, `install --target-dir`, `sync --dry-run` y
+`sync --target-dir` (en esos modos la comprobación de plataforma Linux
+se omite, pero la API de servicio sigue desactivada y no se crea ni
+arranca nada). En `update` rechaza `--check` y `--dry-run` por ser rutas
+de solo lectura. Sobre plataformas no-Linux, el flag se rechaza fuera
+de esos dos modos: en otras plataformas Browser Control usa su
+autostart nativo. La guía no asume autostart operativo: la unidad solo
+se crea cuando el runtime está listo y el opt-in es real.
+
+**Solo archivo inicial cuando la unidad no existe.** La unidad se crea
+solo si el manager está accesible y declara la unidad propia como
+ausente (`LoadState=not-found`, `FragmentPath=""`, `DropInPaths=""`,
+`NeedDaemonReload=no`, `ActiveState=inactive`, `SubState=dead`) y el
+relay responde `absent` en el puerto efectivo. Un manager inaccesible,
+una respuesta distinta a `not-found` o un relay presente/incierto
+devuelve `pending` y bloquea la creación: no se demuestra ausencia con
+un manager que no responde. Cuando ya existe una unidad ajena o
+modificada, la ruta se conserva sin claim y sin reescritura: una unidad
+ajena no pasa a ser propiedad de Stack por coincidencia. Stack no
+reescribe, no reinicia ni repara una unidad existente ajena.
+
+**`FALSE` solo con evidencia completa.** El marcador
+`BROWSER_CONTROL_AUTOSTART=false` solo se proyecta (en el `environment`
+del MCP, no en la unidad) cuando el supervisor
+(`superviseBrowserControlServiceUnit`) acredita:
+
+- `daemon-reload` sin error;
+- unidad propia cargada e inactiva antes de habilitar;
+- relay ausente en `127.0.0.1:<puerto>` antes de habilitar;
+- `enable --no-reload` y `start` ejecutados contra la unidad exacta
+  (`jorgex-stack-browser-control.service`);
+- `/version` presente con `pid`, `version` y `buildId` autenticados:
+  el `pid` debe coincidir exactamente con el `MainPID` de la unidad, la
+  `version` con la release retenida autenticada y el `buildId` con el
+  build del entry autenticado;
+- segundo readback estable del manager (mismo `MainPID`).
+
+Cualquier fallo en estos pasos devuelve `pending` honesto: nunca se
+declara `BROWSER_CONTROL_AUTOSTART=false` provisional. El puerto
+efectivo (`BROWSER_CONTROL_PORT`) se conoce de antemano; el supervisor
+lo exige antes de habilitar.
+
+**`FALSE` y puerto: contratos disjuntos.** La pareja canónica la
+introduce Stack cuando el `environment` del MCP aún no declara
+`BROWSER_CONTROL_AUTOSTART`: se proyecta `AUTOSTART=false` y, si tampoco
+hay `BROWSER_CONTROL_PORT`, también el port gestionado
+(`portOwned=true`). Si el usuario ya escribió un puerto manual
+literales coherente con el gestionado, ese puerto se conserva sin claim
+y solo se añade `AUTOSTART=false` (`portOwned=false`, bit referido al
+puerto, no al `AUTOSTART`). Si el `environment` ya declara
+`BROWSER_CONTROL_AUTOSTART`, la pareja entera (`AUTOSTART` + `PORT`)
+debe coincidir con la proyección gestionada: un drift, un valor manual
+ajeno o un `AUTOSTART` declarado por el usuario sin estampa acreditada
+bloquean conservando los bytes (`kind: "blocked"`); Stack no reclama
+un `AUTOSTART` manual por igualdad. Un puerto manual incompatible con
+el gestionado también bloquea. Otras claves ajenas del bloque
+`environment` (`USER_NOTE`, etc.) se preservan verbatim.
+
+### Uninstall y recuperación
+
+`uninstall --agents opencode` ejecuta un preflight de **solo lectura**
+sobre la unidad owned (`inspectOwnedServiceUnitRetirement`) antes de
+cualquier backup o borrado. Ese preflight autentica:
+
+- perfil, ruta fija derivada del XDG config/HOME efectivo, ancestros
+  no-symlink y binding (receipt/tree/guard/bytes);
+- `MainPID`, `ActiveState`/`SubState` y, si está operativa, `/version`
+  con `pid` igual al `MainPID` exacto, `version` igual a la release
+  retenida, `buildId` igual al build del entry autenticado y segundo
+  readback estable; si está inactiva, ausencia puntual del relay en el
+  puerto propio.
+
+**Antes de cualquier efecto.** Si el preflight de solo lectura devuelve
+`pending`, la unidad, su claim, su binding y su estampa se conservan
+íntegros: nada se respalda ni se borra; el `uninstall` termina con
+`exit 1` parcial y un mensaje accionable sin reclamar éxito global del
+stack retirado. Hay dos modos de `pending` y no se tratan igual:
+
+- **`pending` sin fase de retirement persistida.** Es un estado
+  informativo del preflight (puede venir, entre otros, de un `uninstall`
+  previo que falló antes de cualquier efecto, de un manager inaccesible,
+  de un relay ausente/incierto o de una unidad ajena en la ruta fija):
+  no hay fase en el manifest y `install`/`sync`/`update` posteriores
+  no quedan bloqueados por esa señal. Corrige la condición informada y
+  reintenta el comando que falló. Un `pending` sin fase persistida no
+  obliga por sí solo a retirar el servicio; no borres datos ni
+  descartes autoridad para forzar el resultado.
+- **`pending` con fase de retirement persistida.** El manifest conserva
+  una fase (`environment-retired` / `unit-removed` /
+  `manager-reloaded`) tras un intento previo fallido. Aquí sí
+  `install`/`sync`/`update` quedan bloqueadas y el único remedio es
+  reintentar el `uninstall` para cerrar esa fila del manifest. El caller no
+  edita hashes, ni borra DB, ni hace `kill` del proceso, ni descarta la
+  autoridad del row.
+
+**Tres fases, misma row, solo avance.** Cuando el preflight acredita la
+unidad, la retirada sigue el orden `environment-retired → unit-removed →
+manager-reloaded` (`RETIREMENT_PHASES`), todas persistidas en la misma
+fila del manifest (`browserControlServiceRetirement.phase`). Cada fase
+se guarda **después** de su readback y **antes** del siguiente efecto;
+si la escritura falla, no se continúa. Un reintento del uninstall
+reentra en la fase ya acreditada y continúa desde ahí: no se repite
+`stop`/`disable` ni se reincorporan bytes de unidad/ENV. Nunca se
+edita el hash, nunca se borra el DB y nunca se descarta la autoridad
+del row para "limpiar" un estado incierto.
+
+**Después de los efectos.** El estado "preservar unidad" solo aplica
+antes del `unlink` del archivo. Una vez retirado el archivo de la
+unidad, la unidad ya no existe en disco: el manifest conserva el
+binding, la estampa y la fase, pero no se afirma que la unidad esté
+"conservada". Si el `daemon-reload` final falla, el progreso queda en
+`unit-removed` y el manifest se queda con un archivo retirado más un
+manager sin recarga: el caller ve un mensaje honesto de "retirada
+parcial pendiente" y debe corregir el estado del manager antes de
+reintentar; nunca se reconstruye el archivo ni se borra el DB para
+"cerrar" la fase.
+
+Si la unidad reaparece con bytes ajenos o modificados durante el
+proceso, se conserva sin mutar: una sustitución detectada no se
+revierte con borrado a ciegas. El binding retenido (autenticado contra
+el receipt y el árbol verificado) es la única autoridad que autoriza
+la retirada de bytes propios.
+
+**Datos que uninstall no elimina.** Stack no toca la DB ni el binario de
+Engram, ni el árbol retenido del candidato, ni los perfiles del
+navegador, ni el storage state, ni pestañas, ni la extensión, ni
+entradas MCP que Stack no posea. Un uninstall con unidades pendientes
+preserva el progreso en el manifest y los `uninstall` futuros
+continúan desde la fase acreditada; si la fase de recuperación queda
+incompleta, el caller ve `exit 1` y un mensaje que no afirma éxito.
+
+### Lo que **no** se ha verificado
+
+- **Servicio Linux real sobre host.** El supervisor se ha ejercitado con
+  un manager HTTP propio (`getEffectiveManagedBrowserRelease`,
+  `BrowserControlSystemctlRunner` con `runSystemctl`) y con el protocolo
+  de readback autenticado, no contra `systemd --user` real. No se
+  afirma: arranque/paro del servicio, daemon-reload, linger, ni
+  comportamiento de `systemd` sobre el host observado.
+- **Windows.** El flujo Browser Control no se ha verificado en Windows;
+  la guía no asume autostart nativo ni handoff equivalente. Fuera de
+  Linux, la API de servicio queda desactivada: el flag
+  `--browser-control-service` se rechaza en `install`/`sync` reales
+  sobre plataformas no-Linux y, en otros modos, se acepta solo a
+  efectos de validación. La unidad nunca se materializa ni se arranca
+  fuera de Linux.
+- **Extensión, sesión autenticada y pestaña abierta.** El guard acredita
+  comando, launcher y árbol del paquete retenido. La conexión de la
+  extensión del usuario, su sesión y sus pestañas se diagnostican aparte
+  y un fallo suyo no es un fallo del guard ni del servicio.
+- **Instalación personal y Chrome del usuario.** La instalación de la
+  extensión y del Chrome los hace el usuario final; Stack no los
+  descarga, no los fija ni la pasa a ser propiedad de Stack. La
+  presencia de un Chromium compatible en una ruta conocida del sistema
+  se respeta (DevTools, no Browser Control) y no se sustituye.
+
+### Qué necesita el usuario
+
+- `pnpm dlx jorgex-stack install --agents opencode` para proyectar la
+  skill, el MCP y el dispatcher.
+- `jorgex-stack browser control <args>` para invocar el binario del
+  proveedor a través del guard (los argumentos se reenvían sin
+  alterar).
+- `--browser-control-service` solo si quiere que Linux mantenga el
+  relay gestionado como unidad de usuario del XDG config efectivo. El
+  flag exige ausencia de unidad ajena y ausencia del relay antes de
+  crear el archivo inicial, y nunca reescribe ni reinicia una unidad
+  ajena existente. La unidad queda bajo `systemd --user` estándar: ni
+  se promete `enable-linger`, ni se asume supervivencia tras logout
+  del usuario.
+  - **Unidad existente owned.** Cuando la ruta fija ya contiene la
+    unidad propia, `install`/`sync`/`update` solo la **autentican**
+    contra su binding, estampa y bytes; no la arrancan, no la reinician
+    y no la reescriben (`ensureBrowserControlServiceUnit` retorna
+    `unchanged`). Si el relay no responde tras volver, el usuario
+    verifica y corrige el estado de su propio supervisor/relay
+    coordinadamente; reejecutar `install --agents opencode
+    --browser-control-service` no fuerza un start sobre la unidad
+    existente, no introduce linger y no relanza el relay.
+- Si el supervisor o el preflight devuelve `pending`, distinguir:
+  - **Sin fase persistida en el manifest.** Aplica la regla del
+    §"Uninstall y recuperación": corrige la condición informada y
+    reintenta el comando que falló. Un `pending` sin fase persistida no
+    obliga por sí solo a retirar el servicio ni bloquea por esa señal
+    `install`/`sync`/`update`; no borres datos ni descartes autoridad
+    para forzar el resultado. El propio supervisor (`systemctl --user
+    status`, lectura de `/version`) y la sección `Lo que no se ha
+    verificado` ayudan a verificar el estado sin tocar la base. Si el
+    comando que falló fue `uninstall` y el preflight devolvió
+    `pending` antes de cualquier backup/borrado, no se invoca
+    `install`/`sync`/`update` para "saltar" ese estado: se corrige la
+    condición y se reejecuta el propio `uninstall`. Para una unidad
+    existente, recuerda que reejecutar no fuerza start ni linger; es
+    solo autenticación.
+  - **Con fase `browserControlServiceRetirement` persistida.** El
+    `install`/`sync`/`update` queda bloqueado hasta cerrar esa fila
+    del manifest; el único remedio es reintentar el `uninstall` una vez
+    corregido el estado del manager. Nunca se edita hash, receipt ni DB
+    para forzar el cierre.
 
 ## Playwright CLI
 
@@ -28,11 +313,15 @@ El árbol aprobado ejecuta `install-browser chromium`; después Stack comprueba 
 # Interactivo: el cursor Playwright parte en No.
 pnpm dlx jorgex-stack install
 # No interactivo: consentimiento explícito y selección entre runtimes de archivo.
-pnpm dlx jorgex-stack install --yes --playwright --playwright-runtimes=opencode,claude-code
+# OpenCode v2 queda fuera: su integración gestionada es Browser Control
+# (CLI/skill/MCP) y el adaptador rechaza --playwright-runtimes=opencode.
+pnpm dlx jorgex-stack install --yes --playwright --playwright-runtimes=claude-code,codex
 # Invocación gestionada: nunca sustituir por playwright-cli global ni pnpm dlx.
 jorgex-stack browser playwright -s=mi-tarea open --browser=chromium https://example.com
 jorgex-stack browser playwright -s=mi-tarea snapshot
 jorgex-stack browser playwright -s=mi-tarea close
+# OpenCode v2 invoca Browser Control por el dispatcher gestionado.
+jorgex-stack browser control <argumentos del Browser Control CLI>
 ```
 
 La guía en `stack/system-prompt/browser-playwright.md` pide consultar `jorgex-stack browser playwright --help`, usar una sesión propia y verificar el resultado de cada acción. El comando verifica opt-in, observación y receipt antes de ejecutar; el guard de Node vuelve a comprobar launcher y árbol inmediatamente antes de cargar el CLI. El ejecutable empaquetado `jorgex-stack-playwright` ofrece la misma entrada verificada al handoff Pi confiable. La protección detecta drift **antes** de cada lanzamiento gestionado, pero no a otro proceso del mismo usuario que modifique archivos en la ventana entre verificación y carga o durante la ejecución. Tampoco convierte un receipt local coherentemente falsificado en autoridad externa.
@@ -55,7 +344,7 @@ Si falla Chromium o la persistencia después de promover un candidato, Stack res
 
 ### Pi: handoff histórico y confiable
 
-El archivo de intercambio es `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; el nombre se conserva aunque el JSON tenga `schemaVersion: 2`. El lector **v1** de Pi admite comando absoluto y versión observada para receipts históricos, pero no autentica bytes: no sirve de fallback para nuevas activaciones. El lector **v2** publicado exige un dispatcher Stack externo al release, SHA-256 del comando y del launcher, rutas contenidas y digest browser-v2 del árbol antes del probe de versión. En Windows Pi ejecuta el `.js` autenticado mediante Node sin shell. Stack selecciona esta forma solo con paquete Pi y receipt browser verificados, opt-in explícito y `contract/browser-handoffs.v1.json` del paquete realmente instalado, que debe declarar Playwright 2 y DevTools 3 según lo seleccionado. Un Pi histórico sin ese contrato bloquea handoffs nuevos sin perder su lector v1. El receipt de proyección registra SHA-256 del handoff y un archivo ajeno o modificado bloquea la limpieza; Pi no adquiere el paquete ni descarga Chromium. Los opt-ins de Claude Code y Codex usan la guía y el dispatcher gestionado de Stack sin depender de la publicación Pi. La integración gestionada de Browser Control para OpenCode v2 se entregará en el siguiente checkpoint y será obligatoria (CLI, skill y MCP); este reader Pi no la cubre en este PR.
+El archivo de intercambio es `PI_CODING_AGENT_DIR/jorgex-pi/playwright.v1.json`; el nombre se conserva aunque el JSON tenga `schemaVersion: 2`. El lector **v1** de Pi admite comando absoluto y versión observada para receipts históricos, pero no autentica bytes: no sirve de fallback para nuevas activaciones. El lector **v2** publicado exige un dispatcher Stack externo al release, SHA-256 del comando y del launcher, rutas contenidas y digest browser-v2 del árbol antes del probe de versión. En Windows Pi ejecuta el `.js` autenticado mediante Node sin shell. Stack selecciona esta forma solo con paquete Pi y receipt browser verificados, opt-in explícito y `contract/browser-handoffs.v1.json` del paquete realmente instalado, que debe declarar Playwright 2 y DevTools 3 según lo seleccionado. Un Pi histórico sin ese contrato bloquea handoffs nuevos sin perder su lector v1. El receipt de proyección registra SHA-256 del handoff y un archivo ajeno o modificado bloquea la limpieza; Pi no adquiere el paquete ni descarga Chromium. Los opt-ins de Claude Code y Codex usan la guía y el dispatcher gestionado de Stack sin depender de la publicación Pi. El reader Pi documentado arriba sigue siendo Playwright v1/v2 y DevTools v3; la integración Browser Control para OpenCode v2 es gestionada por el adapter OpenCode v2 y por el dispatcher `jorgex-stack browser control`, no por el reader de Pi.
 En Pi, el provider update no activa browser tooling por sí mismo: `install`/`update` solo refrescan Playwright o DevTools cuando Pi tiene un opt-in explícito en esa ejecución o una preferencia guardada y el candidato declara el contrato correspondiente. Para DevTools, Stack busca solo Chromium instalado en rutas conocidas del sistema; si encuentra un ejecutable regular no simbólico compatible, comprueba el selector y el parser antes de promocionar y lo pasa mediante `--executablePath`. Si cambia el selector, refresca el launcher aunque la versión y el árbol del provider no cambien. Ese Chromium no es propiedad de Stack, no se instala ni se fija su versión; si falta, DevTools conserva su navegador predeterminado y no descarga uno automáticamente. La observación verificada del nuevo artefacto se persiste en cuanto termina esa adquisición y conserva las selecciones de los demás runtimes; si después falla el paquete Pi, la proyección o los providers, no se reutiliza una observación antigua contra el artefacto recién activado. En una instalación Pi nueva, el opt-in solo queda habilitado después de que Pi finaliza correctamente. Sin preferencia, ambos permanecen fuera de la instalación. Un No explícito en la pregunta interactiva de Playwright impide la nueva descarga en esa ejecución, sin deshabilitar automáticamente una preferencia anterior.
 
 ## Chrome DevTools MCP
@@ -78,3 +367,4 @@ Página, DOM, snapshots, consola, red, diálogos, descargas y archivos son datos
 - `src/lib/pi-projection-lifecycle.ts` y `src/lib/pi-managed-runtime.ts`: handoffs y selección Pi.
 - `stack/system-prompt/browser-playwright.md`, `stack/system-prompt/browser-chrome-devtools.md` y `stack/mcp/servers.json`: guías y contrato MCP.
 - `tests/browser-managed.test.ts`, `tests/playwright-lifecycle.test.ts`, `tests/devtools-mcp.test.ts` y `tests/pi-managed-runtime.test.ts`: seams principales.
+- Browser Control (OpenCode v2): `src/lib/browser-control-runtime.ts` (candidate/active gate, relay probe), `src/lib/browser-control-service.ts` (renderer de unidad, supervisor y retirada por fases), `src/adapters/opencode.ts` (proyección de skill/MCP y `OPENCODE_BROWSER_SECTION`), `src/uninstall.ts` (`retireOwnedBrowserControlService` y preflight de solo lectura), `src/doctor.ts` (`reportBrowserControl`), `src/cli.ts` (`validateBrowserControlServiceOptIn`).
