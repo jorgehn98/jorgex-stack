@@ -35,6 +35,7 @@ type WorkflowStep = {
 type WorkflowJob = {
   name?: string;
   if?: string;
+  raw: string;
   steps: WorkflowStep[];
 };
 
@@ -59,7 +60,7 @@ function readWorkflowShape(workflow: string): { jobs: WorkflowJob[] } {
 
     const end = lines.findIndex((line, candidate) => candidate > index && (/^  [A-Za-z0-9_-]+:\s*$/.test(line) || /^[^\s].*:\s*$/.test(line)));
     const block = lines.slice(index, end < 0 ? lines.length : end);
-    const job: WorkflowJob = { steps: [] };
+    const job: WorkflowJob = { raw: block.join("\n"), steps: [] };
     for (const line of block) {
       const nameMatch = /^    name:\s*(.+)$/.exec(line);
       const ifMatch = /^    if:\s*(.+)$/.exec(line);
@@ -134,33 +135,6 @@ function extractWithBlock(step: WorkflowStep): string[] {
       break;
     }
     block.push(line.slice(withIndent + 2).trimEnd());
-  }
-  return block;
-}
-
-function extractEnvBlock(step: WorkflowStep): string[] {
-  const lines = step.raw.split("\n");
-  const envIndex = lines.findIndex((line) => /^\s*env:\s*$/.test(line));
-  if (envIndex < 0) {
-    return [];
-  }
-
-  const envLine = lines[envIndex] ?? "";
-  const envIndent = envLine.search(/\S/);
-  if (envIndent < 0) {
-    throw new Error(`No se pudo determinar la indentación de env en ${step.name ?? "sin nombre"}.`);
-  }
-
-  const block: string[] = [];
-  for (const line of lines.slice(envIndex + 1)) {
-    if (line.trim() === "") {
-      continue;
-    }
-    const indent = line.search(/\S/);
-    if (indent <= envIndent) {
-      break;
-    }
-    block.push(line.slice(envIndent + 2).trimEnd());
   }
   return block;
 }
@@ -340,8 +314,6 @@ const OBSERVED_TARBALL_ENV = "JORGEX_PI_TARBALL: ${{ runner.temp }}/jorgex-pi.tg
 const OBSERVED_CANDIDATE_ENV = "JORGEX_PI_CANDIDATE: ${{ runner.temp }}/pi-observed.json";
 const OBSERVED_RUN = 'node dist/pi-ci-artifact.js "$JORGEX_PI_TARBALL" "$JORGEX_PI_CANDIDATE"';
 const CONTRACT_RUN = "pnpm exec vitest run tests/pi-cross-repo-contract.test.ts";
-const CI_TOKEN_ENV = "GH_TOKEN: ${{ github.token }}";
-const SMOKE_STEP_NAME = "Verify real Pi link layout and failure detection";
 
 describe("JorgeX Pi artifact pull-request gate", () => {
   it("resuelve el latest publicado observado con el resolver producto y ordena build antes de adquirir", () => {
@@ -441,7 +413,7 @@ describe("JorgeX Pi artifact pull-request gate", () => {
   it("routes the real job conservatively across pull-request and manual events", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
-    expect(jobs).toHaveLength(3);
+    expect(jobs).toHaveLength(4);
 
     const [job] = jobs;
     expect(job).toBeDefined();
@@ -501,48 +473,122 @@ describe("JorgeX Pi artifact pull-request gate", () => {
       if (step.uses !== undefined) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
     }
     const livePi = jobs[2];
+    expect(livePi?.name).toBe("Pi runtime (${{ matrix.os }})");
     expect(livePi?.if).toBeUndefined();
     expect(workflow).toContain("os: [ubuntu-latest, windows-latest]");
     expect(livePi?.steps.some((step) => step.raw.includes("dist/pi-ci-artifact.js"))).toBe(true);
     expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-linked-smoke-live.test.ts"))).toBe(true);
+    expect(livePi?.steps.some((step) => step.run?.includes("tests/pi-native-phase.test.ts"))).toBe(false);
+    const nativePi = jobs[3];
+    expect(nativePi?.name).toBe("Pi native runtime (${{ matrix.os }})");
+    expect(nativePi?.if).toBeUndefined();
+    expect(nativePi?.steps.some((step) => step.raw.includes("dist/pi-ci-artifact.js"))).toBe(true);
+    expect(nativePi?.steps.some((step) => step.run?.includes("tests/pi-native-phase.test.ts"))).toBe(true);
     expect(workflow).toContain("PI_TEST_HOST:");
     expect(workflow).toContain("PI_TEST_CANDIDATE:");
   });
 
-  it("entrega el token efímero solo al paso smoke real y conserva permisos de lectura", () => {
+  it("separates the linked and native live runtime into independent, equally-scoped jobs", () => {
     const workflow = readWorkflow();
     const { jobs } = readWorkflowShape(workflow);
-    const runtimeJob = jobs.find((job) => job.name === "Pi runtime (${{ matrix.os }})");
-
-    expect(runtimeJob, "Falta el job pi-runtime que ejecuta el smoke real.").toBeDefined();
-    if (runtimeJob === undefined) {
-      throw new Error("Falta el job pi-runtime que ejecuta el smoke real.");
+    const linked = jobs.find((job) => job.name === "Pi runtime (${{ matrix.os }})");
+    const native = jobs.find((job) => job.name === "Pi native runtime (${{ matrix.os }})");
+    expect(linked, "El runtime enlazado conserva su nombre de check estable.").toBeDefined();
+    expect(native, "El runtime nativo corre en su propio job.").toBeDefined();
+    if (linked === undefined || native === undefined) {
+      throw new Error("Faltan los jobs de runtime Pi.");
     }
 
-    const smokeStep = runtimeJob.steps.find((step) => step.name?.trim() === SMOKE_STEP_NAME);
-    expect(smokeStep, `Falta el paso smoke real "${SMOKE_STEP_NAME}".`).toBeDefined();
-    if (smokeStep === undefined) {
-      throw new Error(`Falta el paso smoke real "${SMOKE_STEP_NAME}".`);
+    // Neither split job is draft-routed, and both keep the two-OS matrix and
+    // the same 20-minute budget; the split only narrows the test scope.
+    expect(linked.if).toBeUndefined();
+    expect(native.if).toBeUndefined();
+    expect(workflow.match(/os: \[ubuntu-latest, windows-latest\]/g) ?? []).toHaveLength(2);
+    expect(workflow.match(/runs-on: \$\{\{ matrix\.os \}\}/g) ?? []).toHaveLength(2);
+    expect(workflow.match(/timeout-minutes: 20/g) ?? []).toHaveLength(2);
+
+    const liveFiles = (job: WorkflowJob, sentinel: string): string[] => {
+      const step = (job.steps ?? []).find((candidate) => candidate.run?.includes(sentinel));
+      expect(step, `Falta el paso del smoke vivo ${sentinel}.`).toBeDefined();
+      return (step?.run ?? "").match(/tests\/[A-Za-z0-9._-]+\.test\.ts/g) ?? [];
+    };
+    const linkedFiles = liveFiles(linked, "tests/pi-provider-update.test.ts");
+    const nativeFiles = liveFiles(native, "tests/pi-native-phase.test.ts");
+
+    // The union of both jobs is exactly the previous live suite: every file
+    // still runs once, none is dropped and none is duplicated.
+    expect(nativeFiles).toEqual(["tests/pi-native-phase.test.ts"]);
+    expect(linkedFiles).not.toContain("tests/pi-native-phase.test.ts");
+    expect([...linkedFiles, ...nativeFiles].sort()).toEqual([
+      "tests/pi-linked-smoke-live.test.ts",
+      "tests/pi-mcp-setup-integration.test.ts",
+      "tests/pi-native-phase.test.ts",
+      "tests/pi-provider-activation.test.ts",
+      "tests/pi-provider-stage.test.ts",
+      "tests/pi-provider-update.test.ts",
+      "tests/pi-stage-smoke.test.ts",
+      "tests/pi-staged-lock.test.ts",
+    ]);
+
+    // Both jobs acquire the same verified artifact with the same runner; the
+    // split must not change that acquisition.
+    for (const job of [linked, native]) {
+      const acquire = (job.steps ?? []).find((step) => step.raw.includes("dist/pi-ci-artifact.js"));
+      expect(acquire, "Cada job adquiere el artefacto verificado.").toBeDefined();
+      expect(acquire?.raw).toContain('node dist/pi-ci-artifact.js "${{ env.JORGEX_PI_LIVE_ARTIFACT }}" "${{ env.PI_TEST_CANDIDATE }}"');
+    }
+  });
+
+  it("limita GH_TOKEN a los dos pasos de verificación viva con contents: read", () => {
+    const workflow = readWorkflow();
+    const { jobs } = readWorkflowShape(workflow);
+
+    const liveSteps = [
+      {
+        jobName: "Pi runtime (${{ matrix.os }})",
+        stepName: "Verify real Pi link layout and failure detection",
+      },
+      {
+        jobName: "Pi native runtime (${{ matrix.os }})",
+        stepName: "Verify authenticated native lifecycle and cleanup",
+      },
+    ];
+
+    // La autenticación debe reutilizar la identidad efímera del workflow:
+    // expresión exacta de github.token, sin PAT ni secreto adicional.
+    const ghTokenExpression = /^[ \t]+GH_TOKEN:[ \t]*\$\{\{[ \t]*github\.token[ \t]*\}\}[ \t]*$/m;
+
+    for (const { jobName, stepName } of liveSteps) {
+      const job = jobs.find((candidate) => candidate.name === jobName);
+      expect(job, `Falta el job ${jobName}.`).toBeDefined();
+      if (job === undefined) throw new Error(`Falta el job ${jobName}.`);
+
+      // El job conserva contents: read; el token no eleva permisos.
+      expect(job.raw, `El job ${jobName} debe declarar contents: read.`).toContain(
+        "permissions:\n      contents: read",
+      );
+
+      const step = job.steps.find((candidate) => candidate.name === stepName);
+      expect(step, `Falta el paso vivo ${stepName}.`).toBeDefined();
+      if (step === undefined) throw new Error(`Falta el paso vivo ${stepName}.`);
+      expect(step.raw, `El paso ${stepName} debe exponer GH_TOKEN en su env de paso.`).toMatch(
+        ghTokenExpression,
+      );
     }
 
-    expect(extractEnvBlock(smokeStep), "El token CI debe declararse en el env del paso smoke.").toContain(CI_TOKEN_ENV);
+    // El token aparece exactamente una vez por paso de verificación viva: ni
+    // en el env del job (scope amplio) ni en adquisición/instalador.
+    expect(workflow.match(/\bGH_TOKEN\b/g) ?? []).toHaveLength(liveSteps.length);
 
-    // Exactamente una aparición en todo el workflow: no es global, no es de job
-    // y no se propaga a ningún otro paso (los procesos de extensiones no lo heredan).
-    expect(workflow.split(CI_TOKEN_ENV)).toHaveLength(2);
-    for (const job of jobs) {
-      for (const step of job.steps) {
-        if (step === smokeStep) {
-          continue;
-        }
-        expect(
-          step.raw,
-          `El token CI no debe aparecer en el paso ${step.name ?? step.run ?? "sin nombre"}.`,
-        ).not.toContain("GH_TOKEN");
-      }
+    for (const { jobName } of liveSteps) {
+      const job = jobs.find((candidate) => candidate.name === jobName);
+      const acquire = (job?.steps ?? []).find((step) => step.raw.includes("dist/pi-ci-artifact.js"));
+      const installer = (job?.steps ?? []).find((step) => step.raw.includes("pnpm --dir"));
+      expect(acquire, `Falta la adquisición del artefacto en ${jobName}.`).toBeDefined();
+      expect(installer, `Falta el instalador del host aislado en ${jobName}.`).toBeDefined();
+      expect(acquire?.raw, "La adquisición no debe recibir GH_TOKEN.").not.toContain("GH_TOKEN");
+      expect(installer?.raw, "El instalador no debe recibir GH_TOKEN.").not.toContain("GH_TOKEN");
     }
-
-    expect(workflow).not.toMatch(/(?:contents|id-token):\s*write/);
   });
 
   it("declares explicit routing, serialization, identity, and read-only contracts", () => {

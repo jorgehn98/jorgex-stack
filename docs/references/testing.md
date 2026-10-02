@@ -118,13 +118,31 @@ para rellenar el hueco.
   [tests.md](../../stack/skills/tdd/tests.md) resume ejemplos y anti-patrones.
 - **Tester** puede decidir, escribir/fijar o verificar en el proyecto consumidor;
   debe informar comando, setup, scope, resultado y límites de la evidencia.
+  Organiza suites por comportamiento o contrato, no por tarea, entrega o fase
+  RED/GREEN; antes de crear otra suite o setup reutiliza los helpers y
+  fixtures existentes dentro del assignment, comparte solo la preparación
+  genuinamente común y conserva separadas las fronteras y el aislamiento de
+  estado. Un seam autoritativo no significa un único caso: mantiene casos
+  significativos positivos, negativos, de plataforma y de SDK real.
 - **Test-analyzer** es *read-only*: evalúa el comportamiento cambiado por el diff
   y la evidencia relevante, incluidos tests existentes fuera del diff y la
   infraestructura de tests relacionada cuando haga falta. No escribe ni ejecuta
   tests, no convierte el análisis en una auditoría de suites o CI no relacionados
-  y solo delega gaps accionables.
+  y solo delega gaps accionables. Antes de apoyar Ready, dentro de su scope
+  también revisa setup, helpers y fixtures repetidos o suites fragmentadas por
+  entrega y los presenta como calidad estructural, no como falta de cobertura,
+  justificando la reducción de mantenimiento con protección y aislamiento
+  equivalentes y sin inventar un gap ni colapsar fronteras distintas.
 - **Orchestrator** coordina bloques coherentes y reutiliza evidencia válida; no
   repite la rúbrica ni ejecuta la suite completa por defecto.
+- **Work-audit** aplica el [testing value check](../../stack/skills/work-audit/SKILL.md)
+  en PRE/POST sobre cada cambio de comportamiento: un test añadido o fortalecido
+  exige la regresión concreta que la cobertura existente no detecta; una
+  actualización mecánica del test, `reuse` o `no new test` exige suficiencia
+  de la protección o verificación existente, sin regresión nueva fabricada; RED
+  estructural permitido solo si la estructura es el contrato (triggers,
+  permisos, secretos, registro de suites), no congelar recetas de comando
+  incidentales.
 
 Distingue tres clases de evidencia:
 
@@ -143,6 +161,23 @@ Los outputs, timings, modelos, fixtures y resultados de una evaluación concreta
 son evidencia de esa ejecución, no defaults ni requisitos de esta política. La
 documentación de `install`/`sync` describe la entrega y el aislamiento; no muta el
 HOME, configuración, Engram o servicios del lector.
+
+### Tooling diagnóstico y comentarios
+
+La disciplina operativa — reutilización del harness existente, tooling temporal
+por defecto, retención ante necesidad recurrente (consumidor, gap del harness,
+owner) y evidencia compacta y reproducible — vive en el canon:
+[lean-code → Diagnostic tooling](../../stack/skills/lean-code/SKILL.md#diagnostic-tooling)
+y [diagnose → Phase 6](../../stack/skills/diagnose/SKILL.md#phase-6--cleanup--post-mortem).
+
+Los comentarios siguen la pauta única
+[Code comments](../../stack/system-prompt/AGENTS.md#code-comments) del system
+prompt: añadir solo cuando aporten información que el código no hace obvia y
+preservar contractuales, legales, directivas y docstrings usados como
+metadatos de runtime. El pase de revisión es opcional: xreview inspecciona los
+hunks y lanza [`comment-fixer`](../../stack/agents/comment-fixer.md) solo
+cuando hace falta un pase de accuracy, usefulness o context crítico; un no-change
+del fixer es un resultado válido.
 
 ### CI solo cuando sea el alcance
 
@@ -203,6 +238,11 @@ pnpm test tests/quality-verifier-package.test.ts -t "T37 package contract"
 - Si un wrapper aísla rutas mediante variables de entorno, cada variable debe omitirse o contener una ruta temporal no vacía. En particular, una cadena vacía en `PI_CODING_AGENT_DIR` se interpreta como una ruta literal y no activa el fallback al directorio Pi por defecto.
 - Las carpetas temporales de verificación para casos no-Git o para comprobar el stripping de TypeScript deben quedar fuera del checkout (incluido `.git`) y fuera de `node_modules`; colocarlas dentro de esas rutas cambia el resultado de las guardas y del descubrimiento.
 - El inventario estático (`--static-parse`) sirve para comprobar el alcance de archivos. No equivale al número de casos que puede registrar la ejecución: los tests dinámicos o condicionales pueden aparecer solo al ejecutar.
+- Resuelve `packageManager` con entrypoint absoluto (`JORGEX_PNPM_ENTRYPOINT` o `npm_execpath`) y `--version` real antes de `HOME`/`PATH`. Invocaciones externas de `pnpm` van como `node` con el entrypoint, `pnpm_config_pm_on_fail=error` y `pnpm_config_verify_deps_before_run=error` en el entorno, nunca con `pnpm` antiguo ni vía Corepack. Documenta repositorio, worktree, SHA, comando, versión y alcance.
+- Las guardas fail-closed de pnpm 11 son necesarias (verificadas en el bundle 11.1.1); sin ellas pnpm 11 recrea `node_modules`. `npm_config_manage_package_manager_versions` (9/10) no gobierna el cambio en pnpm 11.
+- Limita preflight y corrida con `runBoundedProcess` y timeout dedicado. El runner rechaza hosts sin cancelación verificable antes de `spawn` (`worker_threads` sin señales; SIGTERM en Windows no devuelve a JS), registra grupos con listeners SIGINT/SIGTERM prepended que preservan los del framework o re-elevan al proceso, y asserta cancelación antes del spawn real. La limpieza primero detiene los grupos: si uno queda sin verificar, callbacks no se ejecutan y se reintentan en `exit`. SIGKILL es irrecuperable.
+- `HOME`/stages fuera de workspace, worktrees y `node_modules`; aísla `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`. Exige `statfs` real: rechaza tmpfs/ramfs y `type === 0`, falla cerrado si la sonda falla. `JORGEX_VERIFICATION_DISK_ROOT` es la salida absoluta y no desbloquea Windows. `pnpm-workspace.yaml` declara `packages: [.]` root-only; en bundle 11.1.1 verificado omitirla mantuvo el lock intacto pero descubrió 2 proyectos contra cache workspaceState de 1; declararla alinea cache/lock root-only. Las guardas actúan aparte.
+- Identifica cada árbol propio por el `pid` del líder y limpia por ese `pid` en POSIX, nunca por nombre. El caller registra `registerOwnedResourceCleanup(label, () => removeTemporaryRoots(rootsArray))` antes del HOME; el registro queda armado mientras un grupo siga sin verificar y se desregistra tras confirmar todos los roots. Borra sólo rutas propias. Globales verificados con Node 24 y forks estándar de Vitest; no PASS sin `node_modules` o sin permiso.
 
 ### Comportamiento y causa corregida
 
@@ -334,12 +374,17 @@ del build completo.
 
 La prueba del artefacto observado comprueba `schemaVersion: 2` del
 documento `parity.v2.json`, `source.repository` esperado de Stack y
-`source.commit` de 40 caracteres hexadecimales minúsculos.
-`pi.testedVersions` debe ser una lista no vacía de strings no vacíos, no
-una lista histórica de elegibilidad. Estas comprobaciones CI de metadata
-declarada no demuestran paridad byte-exact contra Git ni attestation npm
-y no modifican los guards productivos. Un verde local tampoco acredita
-los jobs paralelos `browser-windows` y `pi-runtime` del mismo workflow.
+`source.commit` de 40 caracteres hexadecimales minúsculos (forma de
+SHA de repositorio, no attestation de Git ni paridad completa).
+`pi.testedVersions` debe ser una lista no vacía de strings no vacíos,
+evidencia de versión host del productor registrada verbatim, no una
+lista histórica de elegibilidad ni una garantía de rango de versiones.
+Estas comprobaciones CI de metadata declarada no demuestran paridad
+byte-exact contra Git ni attestation npm y no modifican los guards
+productivos. Un verde local tampoco acredita los jobs paralelos
+`browser-windows`, `pi-runtime` (transporte legacy, matriz
+`ubuntu-latest`/`windows-latest`) ni `pi-native-runtime` (transporte
+nativo, misma matriz) del mismo workflow.
 
 El job tiene `timeout-minutes: 10`, `concurrency` por número de pull request o
 por ref manual y `cancel-in-progress: true`. Así se cancelan validaciones

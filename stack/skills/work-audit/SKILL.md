@@ -33,7 +33,7 @@ Check:
 3. Every SC is verifiable and has task coverage in the plan table.
 4. Every formal task resolves and verifies its declared `Spec` reference, task identity and access before execution. An identity mismatch, missing source or absent access is a blocking `gaps` verdict; never reconstruct a missing spec from the PRD.
 5. Every task references known SCs and has one agent, one bounded scope, affected files, dependencies and a wave consistent with those dependencies.
-6. Each behavior-changing task has a complete testing decision: risk, existing protection, new behavior, chosen seam and action.
+6. Each behavior-changing task has a complete testing decision: risk, existing protection, new behavior, chosen seam and action. Apply the testing value check below to the proposed protection.
 7. PR scopes, bases and ordering are compatible with the task dependencies.
 8. PRD, plan and task specs do not contradict each other or duplicate status/evidence into a second home.
 
@@ -53,13 +53,23 @@ Check:
 3. Every in-scope SC has concrete evidence in its canonical checkpoint: command/setup, scope, result and relevant limits.
 4. The implementation diff and observed behavior stay within the approved PRD, plan and task scopes.
    - POST cannot legitimize scope changes retroactively. For intentional material contract changes, send scope drift to SPEC through change-first. Defects or bugfixes restoring the approved contract return to EXECUTE.
-5. Tests, typecheck/build, manual checks and external gates are not over-claimed; missing or incomplete execution remains explicit.
+5. Tests, typecheck/build, manual checks and external gates are not over-claimed; missing or incomplete execution remains explicit. Apply the testing value check below to the implemented protection and actual evidence.
 6. No accepted requirement, edge case, testing decision, documentation change or cross-repo contract assigned to the current checkpoint is left without implementation or evidence. Future checkpoints remain out of scope.
 
 POST verdicts:
 
 - `converged` — the available evidence satisfies the approved contract. This does not replace tests, human review, configured Quality Gates or manual validation when applicable.
 - `gaps` — return actionable findings to the orchestrator and route each to its owning phase; never send every gap unconditionally to EXECUTE. Rerun POST after the fix.
+
+## Testing value check — PRE and POST
+
+For each added or strengthened test, ask: "What concrete regression does this test detect that existing coverage does not?" PRE checks the proposed answer; POST checks that the actual assertions and evidence support it. Another layer must protect a distinct contract, not repeat the same behavior.
+
+For a mechanical test update, `reuse` or `no new test`, check the identified existing protection or other verification and why it is sufficient. Do not demand a new test, extra coverage or a manufactured RED when the risk is already covered.
+
+A RED for behavioral protection must fail because the asserted behavior is wrong or missing, not merely because a source string is absent. Structural assertions are valid when structure is itself the contract, such as triggers, permissions, secret handling or suite registration; distinguish that guarantee from runtime behavior and avoid freezing an incidental command recipe, internal ordering or full implementation.
+
+Keep this check within the checkpoint's changed behavior and relevant coverage; do not turn it into a suite-wide audit.
 
 ## Read-only boundary
 

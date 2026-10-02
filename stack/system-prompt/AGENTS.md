@@ -26,6 +26,10 @@ Ask questions when something isn't clear instead of assuming it's correct.
 - Do not add dependencies without explicit user approval.
 - Run lint and typecheck after significant changes when available.
 
+### Code comments
+
+Add comments only when they carry information the code does not make clear: a non-obvious reason, invariant, constraint or operational hazard. Do not narrate obvious code, mirror existing comment density, or add comments just because a function or test is new. Preserve contractual documentation, legal notices, directives, and critical security, concurrency or deletion context; docstrings used as runtime metadata are part of the contract, not disposable prose. Follow local language and format, without line-count or density quotas. Leaving already-clear code uncommented is valid.
+
 ---
 
 ## Default Architecture
@@ -84,8 +88,10 @@ Every piece of information about a piece of work has exactly ONE home — never 
 - Prefer targeted verification: specific test > partial suite > full suite.
 - Use the real test commands and test stack of the project.
 - For testing tasks, inspect the complete contract and the actual runner, command, scope, and environment; use existing tooling and neither auto-install nor impose Node, Vitest, pnpm, or another runner.
-- Before creating temporary files, directories, or processes for tests or local verification, arrange automatic teardown using the project's runner hooks, try/finally, or a shell trap. Clean up on success, failure, and cancellation; stop only processes started by that verification before removing their files. Delete only explicitly owned temporary paths, never shared temporary roots or unrelated resources. Keep temporary resource ownership identifiable so cleanup can be safely resumed after an abrupt termination, after confirming those resources are no longer in use.
-- Verify cleanup before reporting completion. If cleanup cannot finish safely, report the remaining paths and why. Preserve only necessary diagnostic evidence, not entire disposable environments. Check the backing filesystem and available capacity before creating large verification environments; do not assume temporary directories are disk-backed. When temporary storage is RAM-backed, place large verification environments on disk and still clean them up afterward. Scope environment overrides to that execution and preserve the test's intended behavior.
+- When verification depends on a specific toolchain version, resolve and check the exact prepared tool against the project's requirement before isolating the environment (`HOME`, `PATH`, stage directories). An absent or different tool stops with a clear error before build, pack or tests, with no implicit download, installation or version switch; disabling an automatic switch is not authorization to run an older version.
+- Bound the duration of verification and of its setup or pre-test commands, not only the test run, and stop the owned process tree when the limit expires.
+- Before creating temporary files, directories, or processes for tests or local verification, arrange automatic teardown using the project's runner hooks, try/finally, or a shell trap. Clean up on success, failure, and cancellation; stop only processes started by that verification before removing their files, targeting their own process trees by PID or process group (or the platform equivalent), never by process name. Delete only explicitly owned temporary paths, never shared temporary roots or unrelated resources. Keep temporary resource ownership identifiable so cleanup can be safely resumed after an abrupt termination, after confirming those resources are no longer in use.
+- Verify cleanup before reporting completion. If cleanup cannot finish safely, report the remaining paths and why. Preserve only necessary diagnostic evidence, not entire disposable environments. Check the backing filesystem and available capacity before creating large verification environments; do not assume temporary directories are disk-backed, and keep temporary `HOME` and stage directories outside every workspace, worktree and `node_modules` tree. When temporary storage is RAM-backed, place large verification environments on disk and still clean them up afterward. Scope environment overrides to that execution and preserve the test's intended behavior.
 - For CI tasks, act only when the scope requires it: measure comparable samples, use explicit refs, and when scope is uncertain run the relevant lane or fail closed; never cancel a mutable publication.
 
 ---

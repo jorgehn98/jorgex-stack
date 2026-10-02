@@ -67,7 +67,7 @@ Edita el campo global del runtime después de instalarlo:
 - OpenCode: `model` o los límites del modelo en `opencode.json`.
 - Pi: los defaults en `settings.json` o el override en `models.json`.
 
-`sync` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
+`install` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
 
 ## Subagentes
 
@@ -100,7 +100,7 @@ OpenCode no cambian.
 
 ### OpenCode
 
-Los subagentes siguen siendo provider-agnostic. La primera instalación interactiva ejecuta `opencode models` y exige elegir por tier o por agente. `install --yes`, `sync` y procesos sin TTY fallan si todavía no existe esa selección; nunca inventan modelos de subagente. `code-reviewer` hereda la selección de `standard`, salvo un override personal.
+Los subagentes siguen siendo provider-agnostic. La primera instalación interactiva ejecuta `opencode models` y exige elegir por tier o por agente. `install --yes`, `--target-dir` y procesos sin TTY fallan si todavía no existe esa selección; nunca inventan modelos de subagente. `code-reviewer` hereda la selección de `standard`, salvo un override personal.
 
 ### Claude Code
 
@@ -118,7 +118,7 @@ El picker permite elegir voluntariamente **por tier** o **por subagente**, uno a
 uno. La segunda opción guarda solo las diferencias como overrides por nombre
 de agente; así se puede asignar, por ejemplo, Astra/max únicamente a roles
 concretos. No cambia el modelo primary ni convierte una elección existente en
-un override gestionado por Stack; `sync` tampoco sobrescribe elecciones
+un override gestionado por Stack; `install` tampoco sobrescribe elecciones
 guardadas.
 ## Recuperar un model-map inválido
 

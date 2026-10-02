@@ -256,8 +256,6 @@ describe("CLI Pi package-runtime dispatch", () => {
   it.each([
     ["install", "--devtools", true],
     ["install", "--no-devtools", false],
-    ["sync", "--devtools", true],
-    ["sync", "--no-devtools", false],
   ] as const)("passes %s %s to the managed Pi coordinator", async (operation, flag, enabled) => {
     const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-devtools-flag-"));
 
@@ -374,7 +372,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "doctor" }));
   });
 
-  it.each(["install", "sync"] as const)("persiste el modo explícito tras un %s Pi-only correcto", async (operation) => {
+  it.each(["install"] as const)("persiste el modo explícito tras un %s Pi-only correcto", async (operation) => {
     const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-mode-persist-${operation}-`));
     const preference = path.join(home, ".jorgex-stack", "install-mode.json");
 
@@ -406,7 +404,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     });
 
     expect(await runCli([
-      "sync",
+      "install",
       "--agents",
       "pi",
       "--mode",
@@ -732,7 +730,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "install" }));
   });
 
-  it("preserves an existing Pi Playwright v1 choice when sync projection fails", async () => {
+  it("preserves an existing Pi Playwright v1 choice when install projection fails", async () => {
     const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-playwright-projection-failure-"));
     const preference = writePlaywrightPreference(home, {
       version: 2,
@@ -745,9 +743,9 @@ describe("CLI Pi package-runtime dispatch", () => {
       remedy: "Reintenta la proyección.",
     });
 
-    expect(await runCli(["sync", "--agents", "pi", "--yes"], home)).toBe(1);
+    expect(await runCli(["install", "--agents", "pi", "--yes"], home)).toBe(1);
     expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "sync",
+      operation: "install",
     }));
     expect(fs.readFileSync(preference, "utf8")).toBe(before);
   });
@@ -766,7 +764,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     expect(fs.readFileSync(path.join(home, ".jorgex-stack", "playwright-cli.json"), "utf8")).toBe("{not-json\n");
   });
 
-  it.each(["install", "sync", "update", "uninstall"] as const)(
+  it.each(["install", "update", "uninstall"] as const)(
     "blocks Pi-only real %s before the managed lifecycle when browser preferences are corrupt",
     async (command) => {
       const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-corrupt-preference-${command}-`));
@@ -840,7 +838,7 @@ describe("CLI Pi package-runtime dispatch", () => {
     });
 
     try {
-      const exitCode = await runCli(["sync", "--agents", "pi", "--yes"], home);
+      const exitCode = await runCli(["install", "--agents", "pi", "--yes"], home);
 
       expect(exitCode).toBe(1);
       expect(error).toHaveBeenCalledWith(`Pi: projection-receipt-unreadable: ${receipt}. ${remedy}`);
@@ -852,16 +850,16 @@ describe("CLI Pi package-runtime dispatch", () => {
   it("no ofrece upgrade sin capability: --upgrade-permissions en paquete incapaz sigue seed-only", async () => {
     const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-upgrade-gated-"));
 
-    const exitCode = await runCli(["sync", "--agents", "pi", "--yes", "--upgrade-permissions"], home);
+    const exitCode = await runCli(["install", "--agents", "pi", "--yes", "--upgrade-permissions"], home);
 
     expect(exitCode).toBe(0);
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "install" }));
     const forwarded = mocks.runManagedPiSystem.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(forwarded).not.toHaveProperty("upgradePermissions");
     expect(mocks.prompts.log.info).toHaveBeenCalledWith(expect.stringMatching(/permissions-upgrade-v1|seed-only/));
   });
 
-  it.each(["install", "sync"] as const)(
+  it.each(["install"] as const)(
     "propaga --upgrade-permissions al runner ante paquete capaz en %s",
     async (operation) => {
       const home = makeTempDir(path.join(os.tmpdir(), `jx-pi-cli-upgrade-capable-${operation}-`));
@@ -951,27 +949,6 @@ describe("[T41-RED] dispatch Pi con setup oficial antes del package install", ()
     expect(cliSource).toMatch(/shouldRunOfficialSetup|targetDir.*undefined|dryRun/);
   });
 
-  it("sync Pi-only nunca ejecuta setup pi ni descarga paquetes globales", async () => {
-    const home = makeTempDir(path.join(os.tmpdir(), "jx-t41-pi-cli-sync-"));
-    const setup = (await import("../src/lib/official-engram-setup.js")) as any;
-    const beforeCalls = mocks.runManagedPiSystem.mock.calls.length;
-
-    const exitCode = await runCli(["sync", "--agents", "pi", "--yes"], home);
-
-    expect(exitCode).toBe(0);
-    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: "sync" }));
-    // El gate del coordinador debe excluir sync aunque el lifecycle corra.
-    expect(setup.shouldRunOfficialSetup({ command: "sync", dryRun: false, targetDir: undefined })).toBe(false);
-    // Pi declara targets explícitos (sin ellos no hay prueba de no-mutación).
-    const targets = setup.collectOfficialSetupBackupTargets(
-      "pi",
-      path.join(home, ".pi", "agent"),
-      home,
-    ) as string[];
-    expect(Array.isArray(targets) && targets.length > 0).toBe(true);
-    void beforeCalls;
-  });
-
   it("dry-run y --target-dir Pi-only nunca ejecutan setup pi ni tocan paquetes globales", async () => {
     const setup = (await import("../src/lib/official-engram-setup.js")) as any;
     expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: true, targetDir: undefined })).toBe(false);
@@ -998,5 +975,119 @@ describe("[T41-RED] dispatch Pi con setup oficial antes del package install", ()
     expect(await runCli(["install", "--agents", "pi", "--target-dir", targetDir, "--mode", "human", "--yes"], targetHome)).toBe(0);
     // En target-dir el coordinador nunca corre setup global (gate cerrado).
     expect(setup.shouldRunOfficialSetup({ command: "install", dryRun: false, targetDir })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T03/T06: `--engram-typebox-compat` es un opt-in deliberado y acotado.
+// Contrato: solo se admite en install/update reales con Pi; cualquier otro
+// comando, --check/--dry-run/--target-dir o destino sin Pi se rechaza antes de
+// efectos. Cuando se admite se propaga a la coordinación Pi (y de ahí al
+// updater de providers); sin el flag la propiedad no existe.
+// ---------------------------------------------------------------------------
+
+describe("[T03/T06] --engram-typebox-compat: admisión estricta y propagación", () => {
+  it("propaga el flag a la coordinación Pi en install y update reales", async () => {
+    const installHome = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-install-"));
+    expect(await runCli(["install", "--agents", "pi", "--mode", "human", "--yes", "--engram-typebox-compat"], installHome)).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "install",
+      engramTypeboxCompat: true,
+    }));
+
+    const updateHome = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-update-"));
+    mocks.runManagedPiSystem.mockClear();
+    expect(await runCli(["update", "--agents", "pi", "--yes", "--engram-typebox-compat"], updateHome)).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "update",
+      engramTypeboxCompat: true,
+    }));
+  });
+
+  it("sin el flag no añade la propiedad a la coordinación Pi", async () => {
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-absent-"));
+
+    expect(await runCli(["install", "--agents", "pi", "--mode", "human", "--yes"], home)).toBe(0);
+    const forwarded = mocks.runManagedPiSystem.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+    expect(forwarded).toBeDefined();
+    expect(forwarded).not.toHaveProperty("engramTypeboxCompat");
+  });
+
+  const rejectedCases: Array<[string, string[]]> = [
+    ["doctor", ["doctor", "--agents", "pi", "--engram-typebox-compat"]],
+    ["install dry-run", ["install", "--agents", "pi", "--mode", "human", "--yes", "--dry-run", "--engram-typebox-compat"]],
+    ["update --check", ["update", "--agents", "pi", "--check", "--engram-typebox-compat"]],
+    ["install target-dir", ["install", "--agents", "pi", "--target-dir", "TARGET", "--mode", "human", "--yes", "--engram-typebox-compat"]],
+    ["destino sin Pi", ["install", "--agents", "codex", "--mode", "human", "--yes", "--engram-typebox-compat"]],
+  ];
+
+  it.each(rejectedCases)("rechaza %s antes de cualquier efecto", async (_label, argv) => {
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-pi-cli-typebox-reject-"));
+    const args = argv.map((value) => (value === "TARGET" ? path.join(home, "target") : value));
+
+    expect(await runCli([...args], home)).toBe(1);
+    expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+    expect(mocks.runInstall).not.toHaveBeenCalled();
+    expect(mocks.runUpdateCheck).not.toHaveBeenCalled();
+    expect(mocks.runDoctor).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T78-RED: retirada del sync público. `sync` (y sus `--help`/`--version`) es un
+// comando desconocido que falla con código distinto de cero ANTES de resolver
+// runtimes, escribir en disco, descargar o proyectar. Los controles install y
+// update siguen despachando; el contrato interno `runInstall`/`runManagedPiSystem`
+// conserva `operation: "sync"` (no es alias público).
+// ---------------------------------------------------------------------------
+
+describe("[T78-RED] retirada del sync público sin alias ni efectos", () => {
+  it.each([
+    ["plain", ["sync"]],
+    ["--help", ["sync", "--help"]],
+    ["--version", ["sync", "--version"]],
+  ] as const)("sync %s falla sin tocar runInstall/lifecycle ni el target aislado", async (_label, syncArgs) => {
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-t78-sync-retired-"));
+    const targetDir = path.join(home, "foreign-target");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli([
+        ...syncArgs,
+        "--agents", "codex",
+        "--target-dir", targetDir,
+        "--playwright", "--yes",
+      ], home);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(mocks.runManagedPiSystem).not.toHaveBeenCalled();
+      expect(mocks.installMissingEngram).not.toHaveBeenCalled();
+      expect(fs.existsSync(targetDir)).toBe(false);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("la ayuda pública no anuncia el comando retirado", async () => {
+    const home = makeTempDir(path.join(os.tmpdir(), "jx-t78-help-retired-"));
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      await runCli(["--help"], home);
+      const help = log.mock.calls.map(([line]) => String(line)).join("\n");
+      expect(help).not.toMatch(/\bsync\b/i);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(["install", "update"] as const)("control: %s sigue despachando tras la retirada", async (command) => {
+    const home = makeTempDir(path.join(os.tmpdir(), `jx-t78-control-${command}-`));
+
+    const exitCode = await runCli([command, "--agents", "pi", "--mode", "human", "--yes"], home);
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runManagedPiSystem).toHaveBeenCalledWith(expect.objectContaining({ operation: command }));
   });
 });
