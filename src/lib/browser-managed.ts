@@ -191,7 +191,8 @@ function ensureDirectory(directory: string, label: string): string {
 }
 
 function packageDirectoryName(packageName: ManagedBrowserPackageName): string {
-  return packageName === "@playwright/cli" ? "playwright-cli" : "chrome-devtools-mcp";
+  if (packageName === "@playwright/cli") return "playwright-cli";
+  return packageName === "chrome-devtools-mcp" ? "chrome-devtools-mcp" : "browser-control";
 }
 
 function validateRelease(value: unknown): ManagedBrowserRelease {
@@ -254,7 +255,11 @@ function validateStagedInput(input: ActivateManagedBrowserTreeInput): {
   browserExecutablePath: string | undefined;
 } {
   if (!isRecord(input)) fail("input must be an object");
-  if (input.packageName !== "@playwright/cli" && input.packageName !== "chrome-devtools-mcp") {
+  if (
+    input.packageName !== "@playwright/cli" &&
+    input.packageName !== "chrome-devtools-mcp" &&
+    input.packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const packageName = input.packageName;
@@ -374,7 +379,11 @@ export function resolveStagedBrowserEntry(
   staged: StageVerifiedBrowserTreeResult,
   packageName: ManagedBrowserPackageName,
 ): string {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const root = absolutePath(staged.treePath, "staged.treePath");
@@ -388,7 +397,12 @@ export function resolveStagedBrowserEntry(
     fail("staged package manifest is invalid JSON");
   }
   if (!isRecord(manifest) || manifest.name !== packageName) fail("staged package identity differs");
-  const binName = packageName === "@playwright/cli" ? "playwright-cli" : "chrome-devtools-mcp";
+  const binName =
+    packageName === "@playwright/cli"
+      ? "playwright-cli"
+      : packageName === "chrome-devtools-mcp"
+        ? "chrome-devtools-mcp"
+        : "browser-control";
   const bin = typeof manifest.bin === "string"
     ? manifest.bin
     : isRecord(manifest.bin) ? manifest.bin[binName] : undefined;
@@ -570,7 +584,11 @@ export function loadVerifiedManagedBrowserReceipt(
   stateDir: string,
   packageName: ManagedBrowserPackageName,
 ): ManagedBrowserReceipt | null {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const statePath = absolutePath(stateDir, "stateDir");
@@ -857,7 +875,11 @@ export function planManagedBrowserInvocation(
   packageName: ManagedBrowserPackageName,
   runtimeArgs: readonly string[],
 ): ManagedBrowserInvocationPlan {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   if (!Array.isArray(runtimeArgs)) fail("runtimeArgs must be an array");
@@ -1191,7 +1213,11 @@ export async function rollbackManagedBrowserActivation(
   activated: ManagedBrowserReceipt,
   previous: ManagedBrowserReceipt | null,
 ): Promise<void> {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const realStateDir = assertRealDirectory(stateDir, "stateDir");
