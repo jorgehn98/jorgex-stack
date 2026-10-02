@@ -545,11 +545,13 @@ export function inspectCachedBrowserControlRuntime(
  * Lectura offline mínima del namespace candidato, separada del active: usa el
  * mismo verificador estricto del receipt sobre el directorio candidato fijo,
  * sin adquirir, sondear, activar, reparar ni caer de vuelta al active. Solo
- * expone la versión retenida o la ausencia/el motivo de invalidez; nunca el
- * receipt crudo ni sus sha. Una ausencia es un estado legítimo, no un fallback.
+ * expone la versión retenida y si su identidad coincide con el active
+ * (paquete/versión/SRI del receipt real, derivado aquí dentro), o la
+ * ausencia/el motivo de invalidez; nunca el receipt crudo ni sus sha. Una
+ * ausencia es un estado legítimo, no un fallback.
  */
 export type BrowserControlCachedCandidate =
-  | { readonly kind: "retained"; readonly version: string }
+  | { readonly kind: "retained"; readonly version: string; readonly identityMatchesActive: boolean }
   | { readonly kind: "absent" }
   | { readonly kind: "invalid"; readonly reason: string };
 
@@ -561,5 +563,29 @@ export function inspectCachedBrowserControlCandidate(stateDir: string): BrowserC
   } catch (error) {
     return { kind: "invalid", reason: runtimeReason(error) };
   }
-  return receipt === null ? { kind: "absent" } : { kind: "retained", version: receipt.version };
+  if (receipt === null) return { kind: "absent" };
+  return {
+    kind: "retained",
+    version: receipt.version,
+    identityMatchesActive: candidateCoincidesWithActive(stateDir, receipt),
+  };
+}
+
+/**
+ * Identidad estricta del candidato frente al active real: mismo paquete
+ * verificado (mismo verificador estricto del receipt) y coincidencia de versión
+ * Y SRI raíz. No basta la versión. Un active ausente o inválido no permite
+ * probar la coincidencia, así que se informa `false` (no una supuesta
+ * coincidencia): el candidato conserva su diagnóstico honesto de pendiente.
+ */
+function candidateCoincidesWithActive(stateDir: string, candidate: ManagedBrowserReceipt): boolean {
+  let active: ManagedBrowserReceipt | null;
+  try {
+    active = loadVerifiedManagedBrowserReceipt(stateDir, BROWSER_CONTROL_PACKAGE);
+  } catch {
+    return false;
+  }
+  return (
+    active !== null && active.version === candidate.version && active.integrity === candidate.integrity
+  );
 }

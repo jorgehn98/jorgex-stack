@@ -21,6 +21,9 @@ import type { StageVerifiedBrowserTreeResult } from "../src/lib/browser-stage.js
  * with the real activation pipeline on a private HOME, the doctor is expected to
  * report both versions and never present the candidate as the active/usable
  * release, without acquiring the provider, probing the relay or mutating state.
+ * A retained candidate coincident with the active (same version AND same
+ * whole-root SRI) is not a release awaiting promotion, so it must not inherit the
+ * pending-activation remedy either.
  *
  * Boundary doubles are deliberately narrow: only `probeBrowserControlRelay` is
  * spied (the cached inspector under test stays real) and `fetch` is poisoned.
@@ -96,6 +99,9 @@ function makeRelease(version: string): ReleaseFixture {
 
 const ACTIVE_RELEASE = makeRelease(ACTIVE_VERSION);
 const CANDIDATE_RELEASE = makeRelease(CANDIDATE_VERSION);
+// The post-promotion state: the retained candidate is the very release already
+// active, coincident in version AND whole-root SRI.
+const COINCIDENT_RELEASE = makeRelease(ACTIVE_VERSION);
 
 interface Witness {
   readonly stageDir: string;
@@ -179,113 +185,235 @@ afterEach(() => {
   network.calls.length = 0;
 });
 
+/** Identity of a managed receipt that is observable without exposing raw shas. */
+interface ReceiptFingerprint {
+  readonly present: boolean;
+  readonly version: string | null;
+  readonly integrity: string | null;
+}
+
+interface OfflineDoctorRun {
+  readonly lines: string[];
+  readonly text: string;
+  readonly activeBefore: ReceiptFingerprint;
+  readonly activeAfter: ReceiptFingerprint;
+  readonly candidateBefore: ReceiptFingerprint;
+  readonly candidateAfter: ReceiptFingerprint;
+}
+
+function receiptFingerprint(
+  receipt: { readonly version: string; readonly integrity: string } | null,
+): ReceiptFingerprint {
+  return receipt === null
+    ? { present: false, version: null, integrity: null }
+    : { present: true, version: receipt.version, integrity: receipt.integrity };
+}
+
+/**
+ * Boots a private HOME, seeds the given verified receipts through the real
+ * activation pipeline, poisons fetch, runs the offline doctor and returns the
+ * captured output plus the receipt fingerprints before and after the run. Probe
+ * and network counters stay at module scope; each test asserts them once the
+ * helper resolves, so a failure below can only be missing doctor behavior.
+ */
+async function runOfflineDoctor(options: {
+  readonly activeRelease: ReleaseFixture;
+  readonly candidateRelease: ReleaseFixture;
+  readonly prefix: string;
+}): Promise<OfflineDoctorRun> {
+  const ownedRoots: string[] = [];
+  const releaseRoots = registerOwnedResourceCleanup("browser-control-doctor-roots", () =>
+    removeTemporaryRoots(ownedRoots),
+  );
+  const savedEnv = new Map<string, string | undefined>();
+  try {
+    const base = resolveVerificationDiskBase({
+      repoRoot: REPO_ROOT,
+      env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+    });
+    const owned = createOwnedVerificationHome({
+      base,
+      // Neutral prefix: the fixture path must never spell "browser control",
+      // so the section assertion only ever matches the doctor's own output.
+      prefix: options.prefix,
+      register: (root) => ownedRoots.push(root),
+    });
+
+    const binDir = path.join(owned.root, "bin");
+    writeOpenCodeBinary(binDir, { output: "opencode v2.0.20" });
+    const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+
+    for (const key of ISOLATED_KEYS) savedEnv.set(key, process.env[key]);
+    for (const [key, value] of Object.entries(owned.env)) process.env[key] = value;
+    process.env.PATH = binDir;
+    process.env.OPENCODE_CONFIG_DIR = configDir;
+    // Ambient port is deliberately invalid: even a stray probe cannot reach a
+    // real relay or fall back to 19989.
+    process.env.BROWSER_CONTROL_PORT = "not-a-port";
+    delete process.env.ENGRAM_BIN;
+
+    vi.resetModules();
+    const { dataDir } = await import("../src/lib/paths.js");
+    const { browserControlCandidateDir } = await import("../src/lib/browser-control-runtime.js");
+    const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+
+    const stateDir = dataDir();
+    const candidateDir = browserControlCandidateDir(stateDir);
+    await seedVerifiedReceipt(stateDir, options.activeRelease, owned.root);
+    await seedVerifiedReceipt(candidateDir, options.candidateRelease, owned.root);
+
+    const activeBefore = receiptFingerprint(loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE));
+    const candidateBefore = receiptFingerprint(
+      loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE),
+    );
+
+    // Poisoned network: any provider acquisition fails closed and is counted.
+    vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+      network.calls.push(String(input));
+      throw new Error(`browser-control-doctor: unexpected network call ${String(input)}`);
+    });
+
+    const doctor = await import("../src/doctor.js");
+    await doctor.runDoctor({ runtimes: ["opencode"] });
+
+    const lines = loggedLines();
+    return {
+      lines,
+      text: lines.join("\n"),
+      activeBefore,
+      activeAfter: receiptFingerprint(loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE)),
+      candidateBefore,
+      candidateAfter: receiptFingerprint(
+        loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE),
+      ),
+    };
+  } finally {
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    cleanupOwnedResourcesOrThrow();
+    releaseRoots();
+  }
+}
+
 describe("doctor: Browser Control active/candidate separation (T13)", () => {
   it("reports active A and retained candidate B distinctly without network, relay probe or mutation", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-doctor-roots", () =>
-      removeTemporaryRoots(ownedRoots),
+    const run = await runOfflineDoctor({
+      activeRelease: ACTIVE_RELEASE,
+      candidateRelease: CANDIDATE_RELEASE,
+      prefix: ".jorgex-doctor-t13-",
+    });
+
+    // Setup guard: both real verified receipts exist before the doctor runs,
+    // so a failure below can only be missing doctor behavior, never a bad
+    // fixture. The active namespace must hold A, not the candidate B.
+    expect(run.activeBefore).toEqual({
+      present: true,
+      version: ACTIVE_VERSION,
+      integrity: ACTIVE_RELEASE.integrity,
+    });
+    expect(run.candidateBefore).toEqual({
+      present: true,
+      version: CANDIDATE_VERSION,
+      integrity: CANDIDATE_RELEASE.integrity,
+    });
+
+    // Offline contract: no acquisition and no relay probe.
+    expect(network.calls, "the doctor must not fetch the provider").toEqual([]);
+    expect(probe.calls, "the doctor must not probe the relay").toBe(0);
+
+    // Section and both versions must be observable.
+    expect(run.text, `doctor output must include a Browser Control section:\n${run.text}`).toMatch(
+      /browser.?control/i,
     );
-    const savedEnv = new Map<string, string | undefined>();
-    try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        // Neutral prefix: the fixture path must never spell "browser control",
-        // so the section assertion only ever matches the doctor's own output.
-        prefix: ".jorgex-doctor-t13-",
-        register: (root) => ownedRoots.push(root),
-      });
+    expect(run.text, "the active version must be reported").toContain(ACTIVE_VERSION);
+    expect(run.text, "the retained candidate version must be reported").toContain(CANDIDATE_VERSION);
 
-      const binDir = path.join(owned.root, "bin");
-      writeOpenCodeBinary(binDir, { output: "opencode v2.0.20" });
-      const configDir = path.join(owned.env.XDG_CONFIG_HOME!, "opencode");
-      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    // Role separation: A is the active, B is candidate/pending. A bug that
+    // advertises B as the usable release cannot satisfy both finds.
+    const bcLines = run.lines.filter((line) => /browser.?control/i.test(line));
+    const activeLine = bcLines.find(
+      (line) => line.includes(ACTIVE_VERSION) && /activ/i.test(line),
+    );
+    const candidateLine = bcLines.find(
+      (line) => line.includes(CANDIDATE_VERSION) && /candidat|pendient/i.test(line),
+    );
+    expect(
+      activeLine,
+      `the active ${ACTIVE_VERSION} must be reported as active:\n${bcLines.join("\n")}`,
+    ).toBeDefined();
+    expect(
+      candidateLine,
+      `the retained ${CANDIDATE_VERSION} must be reported as candidate/pending:\n${bcLines.join("\n")}`,
+    ).toBeDefined();
 
-      for (const key of ISOLATED_KEYS) savedEnv.set(key, process.env[key]);
-      for (const [key, value] of Object.entries(owned.env)) process.env[key] = value;
-      process.env.PATH = binDir;
-      process.env.OPENCODE_CONFIG_DIR = configDir;
-      // Ambient port is deliberately invalid: even a stray probe cannot reach a
-      // real relay or fall back to 19989.
-      process.env.BROWSER_CONTROL_PORT = "not-a-port";
-      delete process.env.ENGRAM_BIN;
+    // Read-only: neither namespace is mutated by the diagnostic.
+    expect(run.activeAfter).toEqual(run.activeBefore);
+    expect(run.candidateAfter).toEqual(run.candidateBefore);
+  });
 
-      vi.resetModules();
-      const { dataDir } = await import("../src/lib/paths.js");
-      const { browserControlCandidateDir } = await import("../src/lib/browser-control-runtime.js");
-      const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+  it("does not report a retained candidate coincident with the active as pending activation", async () => {
+    const run = await runOfflineDoctor({
+      activeRelease: COINCIDENT_RELEASE,
+      candidateRelease: COINCIDENT_RELEASE,
+      prefix: ".jorgex-doctor-t13-coincident-",
+    });
 
-      const stateDir = dataDir();
-      const candidateDir = browserControlCandidateDir(stateDir);
-      await seedVerifiedReceipt(stateDir, ACTIVE_RELEASE, owned.root);
-      await seedVerifiedReceipt(candidateDir, CANDIDATE_RELEASE, owned.root);
+    // Setup guard: the retained candidate is identity-coincident with the
+    // active, not merely the same version: both the version and the whole-root
+    // SRI derived from the real fixture bytes must match.
+    expect(run.activeBefore).toEqual({
+      present: true,
+      version: ACTIVE_VERSION,
+      integrity: COINCIDENT_RELEASE.integrity,
+    });
+    expect(run.candidateBefore.present).toBe(true);
+    expect(run.candidateBefore.version).toBe(run.activeBefore.version);
+    expect(run.candidateBefore.integrity).toBe(run.activeBefore.integrity);
 
-      // Setup guard: both real verified receipts exist before the doctor runs,
-      // so a failure below can only be missing doctor behavior, never a bad
-      // fixture. The active namespace must hold A, not the candidate B.
-      expect(loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE)?.version).toBe(ACTIVE_VERSION);
-      expect(loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE)?.version).toBe(
-        CANDIDATE_VERSION,
-      );
+    // Offline contract: no acquisition and no relay probe.
+    expect(network.calls, "the doctor must not fetch the provider").toEqual([]);
+    expect(probe.calls, "the doctor must not probe the relay").toBe(0);
 
-      // Poisoned network: any provider acquisition fails closed and is counted.
-      vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
-        network.calls.push(String(input));
-        throw new Error(`browser-control-doctor: unexpected network call ${String(input)}`);
-      });
+    // The section, the active role and the candidate role must all survive: a
+    // fix that hides the coincident candidate would lose its identity.
+    expect(run.text, `doctor output must include a Browser Control section:\n${run.text}`).toMatch(
+      /browser.?control/i,
+    );
+    const bcLines = run.lines.filter((line) => /browser.?control/i.test(line));
+    const activeLine = bcLines.find(
+      (line) =>
+        line.includes(ACTIVE_VERSION) && /\bactive\b/i.test(line) && !/candidat/i.test(line),
+    );
+    const candidateLine = bcLines.find(
+      (line) => line.includes(ACTIVE_VERSION) && /candidat/i.test(line),
+    );
+    expect(
+      activeLine,
+      `the active ${ACTIVE_VERSION} must be reported as active:\n${bcLines.join("\n")}`,
+    ).toBeDefined();
+    expect(
+      candidateLine,
+      `the coincident retained ${ACTIVE_VERSION} must still be reported as candidate:\n${bcLines.join("\n")}`,
+    ).toBeDefined();
 
-      const doctor = await import("../src/doctor.js");
-      await doctor.runDoctor({ runtimes: ["opencode"] });
+    // A candidate coincident with the active is not awaiting activation and
+    // must not carry the retained-candidate remedy (stop the relay / promote).
+    expect(
+      run.text,
+      `a candidate coincident with the active must not be reported as pending activation:\n${run.text}`,
+    ).not.toMatch(/pendiente de activaci[oó]n/i);
+    expect(
+      candidateLine ?? "",
+      `a candidate coincident with the active must not instruct to stop the relay or promote:\n${bcLines.join("\n")}`,
+    ).not.toMatch(/coordina la parada|parada del relay|debe promoverse/i);
 
-      const lines = loggedLines();
-      const text = lines.join("\n");
-
-      // Offline contract: no acquisition and no relay probe.
-      expect(network.calls, "the doctor must not fetch the provider").toEqual([]);
-      expect(probe.calls, "the doctor must not probe the relay").toBe(0);
-
-      // Section and both versions must be observable.
-      expect(text, `doctor output must include a Browser Control section:\n${text}`).toMatch(
-        /browser.?control/i,
-      );
-      expect(text, "the active version must be reported").toContain(ACTIVE_VERSION);
-      expect(text, "the retained candidate version must be reported").toContain(CANDIDATE_VERSION);
-
-      // Role separation: A is the active, B is candidate/pending. A bug that
-      // advertises B as the usable release cannot satisfy both finds.
-      const bcLines = lines.filter((line) => /browser.?control/i.test(line));
-      const activeLine = bcLines.find(
-        (line) => line.includes(ACTIVE_VERSION) && /activ/i.test(line),
-      );
-      const candidateLine = bcLines.find(
-        (line) => line.includes(CANDIDATE_VERSION) && /candidat|pendient/i.test(line),
-      );
-      expect(
-        activeLine,
-        `the active ${ACTIVE_VERSION} must be reported as active:\n${bcLines.join("\n")}`,
-      ).toBeDefined();
-      expect(
-        candidateLine,
-        `the retained ${CANDIDATE_VERSION} must be reported as candidate/pending:\n${bcLines.join("\n")}`,
-      ).toBeDefined();
-
-      // Read-only: neither namespace is mutated by the diagnostic.
-      expect(loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE)?.version).toBe(ACTIVE_VERSION);
-      expect(loadVerifiedManagedBrowserReceipt(candidateDir, BC_PACKAGE)?.version).toBe(
-        CANDIDATE_VERSION,
-      );
-    } finally {
-      for (const [key, value] of savedEnv) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-      vi.unstubAllGlobals();
-      vi.resetModules();
-      cleanupOwnedResourcesOrThrow();
-      releaseRoots();
-    }
+    // Read-only: neither namespace is mutated by the diagnostic.
+    expect(run.activeAfter).toEqual(run.activeBefore);
+    expect(run.candidateAfter).toEqual(run.candidateBefore);
   });
 });

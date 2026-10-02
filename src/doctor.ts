@@ -158,9 +158,15 @@ function reportBrowserControl(stateDir: string): number {
   }
   const candidate = inspectCachedBrowserControlCandidate(stateDir);
   if (candidate.kind === "retained") {
-    p.log.info(
-      `Browser Control: candidato ${candidate.version} retenido y verificado, pendiente de activación; no sustituye ni se presenta como la release activa. Coordina la parada del relay si debe promoverse.`,
-    );
+    if (candidate.identityMatchesActive) {
+      p.log.info(
+        `Browser Control: candidato ${candidate.version} retenido coincide en versión e integridad con el active verificado; no hay una release distinta que activar.`,
+      );
+    } else {
+      p.log.info(
+        `Browser Control: candidato ${candidate.version} retenido y verificado, pendiente de activación; no sustituye ni se presenta como la release activa. Coordina la parada del relay si debe promoverse.`,
+      );
+    }
   } else if (candidate.kind === "invalid") {
     p.log.error(
       `Browser Control: el candidato retenido no es válido (${candidate.reason}); no se usa como fallback ni se repara.`,
