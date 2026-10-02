@@ -703,6 +703,148 @@ describe("Playwright prompt install ordering", () => {
     });
   });
 
+  it("rechaza una selección aprobada sin destino elegible cuando los runtimes de fichero son solo OpenCode", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configRoot = path.join(homeDir, "configs");
+    const configDir = path.join(configRoot, "opencode");
+    const promptFile = path.join(configDir, "AGENTS.md");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    // Mismo control API aprobado (`install`, `--yes`, selección explícita) pero
+    // sin `runtimeSelection`: con runtimes de fichero solo OpenCode no queda
+    // ningún destino elegible, así que se mantiene el rechazo de la rama retirada.
+    const initial = { version: 2, enabled: { opencode: false, pi: true } };
+    writeRuntimeModelMap(homeDir, ["opencode"]);
+    fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+    fs.writeFileSync(preferenceFile, JSON.stringify(initial) + "\n");
+    const initialBytes = fs.readFileSync(preferenceFile, "utf8");
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const acquisitionActions: string[] = [];
+      const persistEnabled = vi.fn();
+      stubPlaywrightProviderFetch([]);
+      try {
+        const code = await install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+          },
+          playwrightToolDeps: {
+            run: async (action) => {
+              acquisitionActions.push(action);
+              return true;
+            },
+            persistEnabled,
+          },
+        });
+
+        // La rama retirada sigue rechazando antes de adquirir o escribir.
+        const diagnostics = prompts.log.error.mock.calls.flat().join("\n");
+        expect(code).toBe(1);
+        expect(diagnostics).toMatch(/no hay otro runtime elegible/i);
+        expect(acquisitionActions).toEqual([]);
+        expect(persistEnabled).not.toHaveBeenCalled();
+        expect(fs.readFileSync(preferenceFile, "utf8")).toBe(initialBytes);
+        expect(fs.existsSync(promptFile)).toBe(false);
+      } finally {
+        restoreDetect();
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
+  it("admite el control mixto OpenCode+Pi y adquiere Playwright global para Pi sin habilitar OpenCode", async () => {
+    const root = tempDir();
+    const homeDir = path.join(root, "home");
+    const configRoot = path.join(homeDir, "configs");
+    const configDir = path.join(configRoot, "opencode");
+    const promptFile = path.join(configDir, "AGENTS.md");
+    const preferenceFile = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    // Control mixto real de `--agents opencode,pi --playwright-runtimes pi`: el
+    // pipeline recibe solo los runtimes de fichero (`opencode`) y una selección
+    // explícita cuyo único destino elegible es Pi (fuera de `runtimes`). La
+    // entrada legacy de OpenCode ya existe desactivada y no debe reclamarse.
+    const initial = {
+      version: 2,
+      enabled: { opencode: false, pi: true },
+      observed: { ...PLAYWRIGHT_OBSERVED },
+    };
+    writeRuntimeModelMap(homeDir, ["opencode"]);
+    fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+    fs.writeFileSync(preferenceFile, JSON.stringify(initial) + "\n");
+    const initialBytes = fs.readFileSync(preferenceFile, "utf8");
+
+    await withTempHome(homeDir, async () => {
+      const install = await import("../src/install.js");
+      const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+      const acquisitionActions: string[] = [];
+      const persistEnabled = vi.fn();
+      stubPlaywrightProviderFetch([]);
+      try {
+        await install.runInstall({
+          runtimes: ["opencode"],
+          dryRun: false,
+          yes: true,
+          mode: { mode: "human", subagentConcurrency: "serial" },
+          playwrightToolConsent: {
+            command: "install",
+            interactive: false,
+            yes: true,
+            targetDir: false,
+            explicitToolSelection: true,
+            confirmed: false,
+            runtimeSelection: { pi: true },
+          },
+          playwrightToolDeps: {
+            run: async (action) => {
+              acquisitionActions.push(action);
+              return true;
+            },
+            // Espeja la selección de fichero que persiste el pipeline real para
+            // esta selección: el único destino es Pi, que vive fuera de `runtimes`.
+            // El spy es la frontera observada; la persistencia real se conserva.
+            persistEnabled: (enabled, observed) => {
+              persistEnabled(enabled, observed);
+              savePlaywrightCliPreference(preferenceFile, enabled, {}, observed);
+            },
+          },
+        });
+
+        // Señal autoritativa del RED: la frontera de adquisición debe alcanzarse
+        // para el destino Pi. El guard no puede rechazar la selección por que los
+        // runtimes de fichero sean solo OpenCode (retirado) cuando hay otro
+        // destino elegible seleccionado.
+        expect(acquisitionActions).toEqual(["install", "install-browser"]);
+        expect(persistEnabled).toHaveBeenCalledTimes(1);
+        expect(persistEnabled).toHaveBeenCalledWith(true, {
+          version: PLAYWRIGHT_OBSERVED.version,
+          integrity: PLAYWRIGHT_OBSERVED.integrity,
+        });
+
+        // La adquisición global de Pi no enciende ni reclama la preferencia
+        // legacy de OpenCode; se conserva tal cual.
+        const persisted = JSON.parse(fs.readFileSync(preferenceFile, "utf8"));
+        expect(persisted.enabled).toEqual({ opencode: false, pi: true });
+        expect(fs.readFileSync(preferenceFile, "utf8")).toBe(initialBytes);
+        expect(fs.existsSync(promptFile)).toBe(true);
+        expect(managedSection(fs.readFileSync(promptFile, "utf8"), "playwright")).toBeNull();
+      } finally {
+        restoreDetect();
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
   it("keeps the runtime selection without advertising unverified Playwright when setup fails", async () => {
     const root = tempDir();
     const homeDir = path.join(root, "home");

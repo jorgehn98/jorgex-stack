@@ -737,7 +737,8 @@ export function assertOpenCodeV2Preflight(
 function playwrightSelectionError(opts: InstallOptions): string | null {
   const consent = opts.playwrightToolConsent;
   if (consent === undefined) return null;
-  if (consent.runtimeSelection?.opencode === true) {
+  const selection = consent.runtimeSelection;
+  if (selection?.opencode === true) {
     return "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio. Retira la selección Playwright de OpenCode.";
   }
   const targetDir = opts.targetDir !== undefined || consent.targetDir;
@@ -745,7 +746,13 @@ function playwrightSelectionError(opts: InstallOptions): string | null {
     && (consent.interactive
       ? (consent.yes ? consent.explicitToolSelection : consent.confirmed)
       : consent.yes && consent.explicitToolSelection);
-  if (approved && opts.runtimes.length > 0 && opts.runtimes.every((id) => id === "opencode")) {
+  // Control mixto: con solo runtimes de fichero OpenCode la adquisición global
+  // sigue siendo válida si la selección explícita apunta a otro destino elegible
+  // (p.ej. Pi, que se persiste por su propio handoff fuera de `runtimes`). Sin
+  // otro destino seleccionado, la rama retirada se mantiene rechazada.
+  const otherSelected = selection !== undefined
+    && Object.entries(selection).some(([runtime, selected]) => runtime !== "opencode" && selected === true);
+  if (approved && !otherSelected && opts.runtimes.length > 0 && opts.runtimes.every((id) => id === "opencode")) {
     return "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio; no hay otro runtime elegible para la selección Playwright.";
   }
   return null;
@@ -1356,8 +1363,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         },
         persistEnabled: (enabled: boolean, observed?: ObservedVersion) => {
           const selected = opts.playwrightToolConsent?.runtimeSelection;
+          // La adquisición global nunca reclama OpenCode (selector retirado) ni
+          // consume la elección pendiente de Pi, que se persiste por su propio
+          // handoff: el registro de fichero solo conserva el resto de runtimes.
           const fileSelection = selected === undefined ? undefined
-            : Object.fromEntries(Object.entries(selected).filter(([runtime]) => runtime !== "pi"));
+            : Object.fromEntries(Object.entries(selected).filter(([runtime]) => runtime !== "pi" && runtime !== "opencode"));
           savePlaywrightCliPreference(playwrightCliPreferenceFile(), enabled, fileSelection, observed);
         },
         verify: (selected?: PlaywrightCliCandidate) => {
