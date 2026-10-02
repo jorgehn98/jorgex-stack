@@ -929,3 +929,109 @@ describe.skipIf(process.platform !== "linux")(
     });
   },
 );
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12] Browser Control service creation preserves same-inode byte drift detected at readback",
+  () => {
+    /**
+     * Drift-at-readback case, distinct from the substitution case above: the
+     * owned unit is opened with `wx`, the fd write completes normally (no EIO),
+     * but before the producer readback an external writer mutates the SAME
+     * inode through the path (`r+` + truncate, no new inode) with foreign bytes.
+     * The path still names the fd's inode, so an inode-only cleanup would delete
+     * it; the cleanup must ALSO require the bytes to equal the expected write and
+     * therefore preserve the drifted artifact without claiming ownership. This
+     * proves observable-change detection for the same UID: it does not promise a
+     * portable CAS against deliberate same-UID manipulation.
+     */
+    it("fails closed and keeps the drifted bytes and inode when a same-inode external write lands before readback", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-readback-drift-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      try {
+        await withCreatedManagedServiceUnit(
+          {
+            prefix: ".jorgex-browser-control-service-readback-drift-",
+            registerOwnedRoot: (root) => ownedRoots.push(root),
+            base: verificationBase(),
+          },
+          (fixture) => {
+            // Fresh, absent unit: drop the owned file the fixture created so the
+            // next `ensure` takes the creation path with no prior claim/binding.
+            fs.rmSync(fixture.unitPath);
+
+            const foreignBytes = Buffer.from(
+              [
+                "[Unit]",
+                "Description=external same-inode drift before readback",
+                "",
+                "[Service]",
+                "ExecStart=/usr/bin/foreign-browser-control serve",
+                "",
+              ].join("\n"),
+              "utf8",
+            );
+            const originalWriteFileSync = fs.writeFileSync;
+            const writeSpy = vi.spyOn(fs, "writeFileSync");
+            let openedInode: number | undefined;
+            let drifted = false;
+            writeSpy.mockImplementation(((file: unknown, content: unknown, options: unknown) => {
+              // Only the owned fd write belongs to the boundary; any path write
+              // is delegated untouched.
+              if (typeof file !== "number") {
+                return originalWriteFileSync(file as string, content as string, options as never);
+              }
+              // The canonical bytes land on the still-open fd/inode first.
+              originalWriteFileSync(file, content as never, options as never);
+              if (!drifted) {
+                openedInode = fs.fstatSync(file).ino;
+                // Known drift point: rewrite the SAME inode through the path
+                // (`r+` + truncate keeps dev/ino) instead of replacing it.
+                originalWriteFileSync(fixture.unitPath, foreignBytes, { flag: "r+" } as never);
+                fs.truncateSync(fixture.unitPath, foreignBytes.length);
+                drifted = true;
+              }
+              return undefined;
+            }) as typeof fs.writeFileSync);
+
+            let result: BrowserControlServiceResult | undefined;
+            try {
+              result = fixture.ensure({
+                stateDir: fixture.stateDir,
+                unitPath: fixture.unitPath,
+                prevOwned: [],
+              });
+            } finally {
+              // Restore the global spy before the owned root teardown.
+              writeSpy.mockRestore();
+            }
+
+            if (result === undefined) throw new Error("fixture: ensure did not return a result");
+            if (!drifted || openedInode === undefined) {
+              throw new Error("fixture: the opened-fd write was never intercepted");
+            }
+
+            expect(
+              fs.existsSync(fixture.unitPath),
+              "the drifted same-inode artifact must be preserved, not deleted by inode match",
+            ).toBe(true);
+            expect(
+              fs.readFileSync(fixture.unitPath),
+              "the external drift bytes must survive verbatim",
+            ).toEqual(foreignBytes);
+            expect(
+              fs.statSync(fixture.unitPath).ino,
+              "the preserved artifact must still be the inode the fd created (no substitution)",
+            ).toBe(openedInode);
+            expect(result.kind, "external byte drift detected at readback must fail closed").toBe("error");
+            expect(result, "no ownership claim may be emitted for the drifted file").not.toHaveProperty("binding");
+          },
+        );
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
