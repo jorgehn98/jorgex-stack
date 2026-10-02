@@ -340,6 +340,57 @@ export function retireBrowserControlEnvironment(
   return { kind: "retired", file, content: writeBrowserControlEnvironment(source, next) };
 }
 
+export type BrowserControlEnvironmentRetirementInspection =
+  | { readonly kind: "retired" }
+  | { readonly kind: "blocked"; readonly reason: string };
+
+/**
+ * Readback de SOLO LECTURA de la retirada del entorno gestionado para recuperar
+ * una retirada a medias: `retired` si la entrada `browser-control` ya no existe,
+ * si no declara `environment` o si ya no conserva los campos propios; `blocked`
+ * si reaparece una entrada ajena/incompatible o un campo propio (nunca se adopta
+ * ni se muta). El puerto manual preservado (sin claim) no bloquea.
+ */
+export function inspectBrowserControlEnvironmentRetirement(
+  input: BrowserControlEnvironmentRetireInput,
+): BrowserControlEnvironmentRetirementInspection {
+  const selection = selectOpenCodeServerFile(input.configDir);
+  if ("conflict" in selection) {
+    return { kind: "blocked", reason: "coexisten 'opencode.json' y 'opencode.jsonc'; el archivo efectivo es ambiguo" };
+  }
+  const file = selection.selection.file;
+  const source = readTextIfExists(file);
+  if (source === null || source.trim() === "") return { kind: "retired" };
+  const parsed = parseJsoncObject(source);
+  if (parsed.value === null) {
+    return { kind: "blocked", reason: "la configuración OpenCode no es JSONC válido" };
+  }
+  const servers = objectValue(objectValue(parsed.value["mcp"])?.["servers"]);
+  const entry = objectValue(servers?.[BROWSER_CONTROL_SERVER]);
+  if (entry === null) return { kind: "retired" };
+  if (!isCompatibleBrowserControlServer(entry, input.invocation)) {
+    return {
+      kind: "blocked",
+      reason: "reapareció un MCP 'browser-control' que no coincide con el launcher gestionado verificado; se conserva sin adoptar ni mutar",
+    };
+  }
+  const existing = entry["environment"];
+  if (existing === undefined) return { kind: "retired" };
+  const current = objectValue(existing);
+  if (current === null) {
+    return { kind: "blocked", reason: "el 'environment' del MCP 'browser-control' no es un objeto; se conserva sin mutar" };
+  }
+  const hasAutostart = Object.prototype.hasOwnProperty.call(current, BROWSER_CONTROL_AUTOSTART_FIELD);
+  const hasPort = Object.prototype.hasOwnProperty.call(current, BROWSER_CONTROL_PORT_FIELD);
+  if (hasAutostart || (input.portOwned && hasPort)) {
+    return {
+      kind: "blocked",
+      reason: "reaparecieron campos de entorno gestionados antes de cerrar la retirada; se conserva sin adoptar ni mutar",
+    };
+  }
+  return { kind: "retired" };
+}
+
 function writeBrowserControlEnvironment(source: string, environment: Record<string, unknown>): string {
   return editConfigContent(source, (root) => {
     const mcp = objectValue(root["mcp"]);

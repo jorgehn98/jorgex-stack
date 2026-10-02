@@ -658,6 +658,45 @@ function assertManagedBrowserControlServiceBinding(
 }
 
 /**
+ * Valida el progreso de retirada de servicio Browser Control (T13) cuando existe:
+ * forma estricta (`schemaVersion`/`phase` exactos, fase conocida) y co-presencia
+ * con el binding, la estampa de autostart, el perfil y la unidad owned fija. Una
+ * row legacy sin fase queda intacta; un progreso huérfano o malformado bloquea
+ * antes de reutilizar cualquier autoridad.
+ */
+function assertManagedBrowserControlServiceRetirement(
+  value: unknown,
+  entry: Record<string, unknown>,
+  ownedPaths: readonly string[],
+  inRoots: (file: string) => boolean,
+  unitTarget: string | null,
+): void {
+  if (value === undefined) return;
+  const fail = (detail: string): never => {
+    throw new Error(
+      `OpenCode: el progreso 'browserControlServiceRetirement' del manifest es incoherente (${detail}); se conserva el manifest y no se toca la unidad ni ningún archivo. Revisa o restaura el manifest antes de reintentar install/sync.`,
+    );
+  };
+  if (!isPlainRecord(value)) fail("no es un objeto");
+  const retirement = value as Record<string, unknown>;
+  const expected = ["phase", "schemaVersion"];
+  const keys = Object.keys(retirement).sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    fail("campos inesperados o ausentes");
+  }
+  if (retirement["schemaVersion"] !== 1) fail("schemaVersion distinto de 1");
+  const phase = retirement["phase"];
+  if (phase !== "environment-retired" && phase !== "unit-removed" && phase !== "manager-reloaded") {
+    fail("phase desconocida");
+  }
+  if (entry.serviceUnit === undefined) fail("falta la evidencia serviceUnit correspondiente");
+  if (entry.browserControlAutostart === undefined) fail("falta la estampa browserControlAutostart correspondiente");
+  if (unitTarget === null || !ownedPaths.some((file) => path.resolve(file) === unitTarget) || !inRoots(unitTarget)) {
+    fail("falta la unidad owned fija correspondiente");
+  }
+}
+
+/**
  * Un manifest OpenCode existente debe ser legible y coherente antes de
  * cualquier limpieza o write. Frontera source-only: los `owned` deben vivir en
  * las raíces reales del adapter (configDir y skillsDir; HOME completo NO es una
@@ -730,6 +769,13 @@ export function assertOpenCodeManifestCoherence(configDir: string): void {
   }
 
   assertManagedBrowserControlServiceBinding(entry.serviceUnit, owned as string[], inRoots, serviceUnitTarget);
+  assertManagedBrowserControlServiceRetirement(
+    entry.browserControlServiceRetirement,
+    entry,
+    owned as string[],
+    inRoots,
+    serviceUnitTarget,
+  );
 
   const ctx = makeContext(opencodeAdapter, configDir, DEFAULT_INSTALL_MODE_PREFERENCE, false, undefined, false);
   if (ctx === null) {
@@ -1247,7 +1293,20 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // Decisión del preflight A→B (solo OpenCode/Linux): se calcula una vez antes
   // de escribir y el bloque de servicio posterior solo la aplica.
   let browserControlRetire: BrowserControlRetirement = { kind: "none" };
-  if (useManifest && !opts.dryRun && opts.runtimes.includes("opencode")) {
+  // Gate de recuperación: una retirada de servicio Browser Control a medias no se
+  // ignora ni se repara aquí. install/update diagnostican el recovery ANTES de
+  // adquirir/promover el active y de cualquier proyección, y no siembran ni
+  // arrancan un servicio nuevo; el runtime opencode se salta en el bucle.
+  const opencodeRetirementPending = useManifest && !opts.dryRun && opts.runtimes.includes("opencode")
+    ? readManifest().runtimes.opencode?.browserControlServiceRetirement
+    : undefined;
+  if (opencodeRetirementPending !== undefined) {
+    p.log.error(
+      `OpenCode: hay una retirada de servicio Browser Control pendiente (fase '${opencodeRetirementPending.phase}'); no se proyecta ni se crea/arranca un servicio nuevo. Completa 'uninstall' para cerrar la limpieza antes de reintentar install/sync.`,
+    );
+    exitCode = 1;
+  }
+  if (opencodeRetirementPending === undefined && useManifest && !opts.dryRun && opts.runtimes.includes("opencode")) {
     try {
       const pnpmBin = resolvePnpmBin();
       if (pnpmBin === null) throw new Error("pnpm no disponible para verificar el árbol gestionado");
@@ -1304,6 +1363,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     const detection = adapter.detect();
     const configDir = opts.targetDir ?? detection.configDir;
     if (id === "opencode") opencodeConfigDir = configDir;
+    // Gate de recuperación: una retirada de servicio Browser Control a medias no
+    // se ignora ni se repara aquí; el runtime se salta sin proyectar ni sembrar
+    // un servicio nuevo (el diagnóstico se emitió antes de adquirir el active).
+    if (id === "opencode" && opencodeRetirementPending !== undefined) {
+      reportStatus(adapter.name, "failed");
+      continue;
+    }
     if (!detection.installed && opts.targetDir === undefined) {
       p.log.warn(`${adapter.name} no detectado en esta máquina — omitido.`);
       reportStatus(adapter.name, "skipped");
@@ -1550,6 +1616,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         ...(prevManifest?.browserControlAutostart === undefined
           ? {}
           : { browserControlAutostart: prevManifest.browserControlAutostart }),
+        ...(prevManifest?.browserControlServiceRetirement === undefined
+          ? {}
+          : { browserControlServiceRetirement: prevManifest.browserControlServiceRetirement }),
         updatedAt: new Date().toISOString(),
       });
     };

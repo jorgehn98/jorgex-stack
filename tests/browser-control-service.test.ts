@@ -16,6 +16,7 @@ import {
   resolveVerificationDiskBase,
 } from "./helpers/pnpm-tooling.js";
 import type { InstallOptions } from "../src/install.js";
+import type { UninstallOptions } from "../src/uninstall.js";
 import type {
   BrowserControlServiceResult,
   EnsureBrowserControlServiceInput,
@@ -86,6 +87,15 @@ const BC_SKILL_BYTES = Buffer.from(
   ["---", "name: browser-control", "description: service fixture, not the published skill", "---", "", "# fixture", ""].join("\n"),
   "utf8",
 );
+/**
+ * External user edit of the projected owned `SKILL.md`: a regular, contained
+ * UTF-8 file whose digest differs from the retained active, so the static
+ * preflight must classify it `unknown` and block before any destructive effect.
+ */
+const USER_SKILL_BYTES = Buffer.from(
+  ["---", "name: browser-control", "description: user-edited projected skill", "---", "", "# user edit", ""].join("\n"),
+  "utf8",
+);
 const BC_INTEGRITY = `sha512-${createHash("sha512").update(BC_ROOT_BYTES).digest("base64")}`;
 const BC_TARBALL_URL = `https://registry.npmjs.org/${BC_PACKAGE}/-/${BROWSER_CONTROL_SERVER}-${BC_VERSION}.tgz`;
 
@@ -111,6 +121,11 @@ export interface BrowserControlSystemctlRunner {
 /** `InstallOptions` intersection with the service opt-in and its effect seam. */
 export type BrowserControlServiceInstallOptions = InstallOptions & {
   browserControlService?: boolean;
+  systemctlRunner?: BrowserControlSystemctlRunner;
+};
+
+/** `UninstallOptions` intersection with the manager effect seam (declared until the source exposes it). */
+export type BrowserControlServiceUninstallOptions = UninstallOptions & {
   systemctlRunner?: BrowserControlSystemctlRunner;
 };
 
@@ -312,6 +327,23 @@ function createRecordingRunner(): ManagerRunner {
   return { calls, run };
 }
 
+/**
+ * Unreachable manager fixture for the pending/unknown controls: every query is
+ * recorded and answered with a bounded, non-zero "cannot consult" reply. It
+ * represents ONLY the external manager edge (no controller ready, no receipts)
+ * and lets a case prove the removal issued read-only queries and never a
+ * mutating verb, without invoking a real `systemctl`, DBus or a personal
+ * service.
+ */
+function createUnreachableManagerFixture(): ManagerRunner {
+  const calls: string[][] = [];
+  const run: BrowserControlSystemctlRunner = async (args) => {
+    calls.push([...args]);
+    return { status: 1, stdout: "" };
+  };
+  return { calls, run };
+}
+
 /** Manager verbs that mutate state; a read-only `show` is never one of them. */
 const SERVICE_MUTATING_VERBS = new Set([
   "daemon-reload",
@@ -331,10 +363,25 @@ function serviceVerb(argv: readonly string[]): string | undefined {
   return argv.find((token) => token !== "systemctl" && !token.startsWith("-"));
 }
 
+/**
+ * Manager-reported state at the moment of a `show`. A full-service-uninstall
+ * case uses these readbacks to prove the pre-stop unit was operational and the
+ * readback after `stop` credited it inactive/dead/PID0 with the OWN relay down
+ * before `disable`, without snapshotting every interleaved read.
+ */
+interface SupervisorReadback {
+  readonly active: boolean;
+  readonly subState: string;
+  readonly mainPid: number;
+  readonly relayUp: boolean;
+}
+
 interface SupervisorManagerFixture extends ManagerRunner {
   /** Ordered external-boundary log: manager calls and the served `/version`. */
   readonly events: string[];
   readonly versionRequests: string[];
+  /** State reported by each `show`, in call order (one entry per `show`). */
+  readonly readbacks: SupervisorReadback[];
   readonly close: () => Promise<void>;
   /**
    * Stops ONLY this fixture's own `/version` server and makes the fake manager
@@ -374,8 +421,10 @@ function createSupervisorManagerFixture(input: {
   const calls: string[][] = [];
   const events: string[] = [];
   const versionRequests: string[] = [];
+  const readbacks: SupervisorReadback[] = [];
   let reloaded = false;
   let started = false;
+  let enabled = false;
   let server: Server | undefined;
 
   const showOutput = (): string => {
@@ -385,6 +434,7 @@ function createSupervisorManagerFixture(input: {
       `FragmentPath=${reloaded ? input.unitPath : ""}`,
       "DropInPaths=",
       "NeedDaemonReload=no",
+      `UnitFileState=${enabled ? "enabled" : "disabled"}`,
       `ActiveState=${started ? "active" : "inactive"}`,
       `SubState=${started ? "running" : "dead"}`,
       // MainPID is part of the manager identity: 0 is the documented
@@ -429,16 +479,32 @@ function createSupervisorManagerFixture(input: {
     events.push(`call:${verb ?? "unknown"}`);
     switch (verb) {
       case "show":
+        readbacks.push({
+          active: started,
+          subState: started ? "running" : "dead",
+          mainPid: started ? process.pid : 0,
+          relayUp: server !== undefined,
+        });
         return { status: 0, stdout: showOutput() };
       case "daemon-reload":
         reloaded = true;
         return { status: 0, stdout: "" };
       case "enable":
+        enabled = true;
         return { status: 0, stdout: "" };
       case "start":
         started = true;
         await startVersionServer();
         await input.onStart?.();
+        return { status: 0, stdout: "" };
+      case "stop":
+        // The OWN `/version` server is the unit's relay: stopping the unit
+        // closes it, and the fake manager now reports inactive/dead/PID0.
+        started = false;
+        await stopServer();
+        return { status: 0, stdout: "" };
+      case "disable":
+        enabled = false;
         return { status: 0, stdout: "" };
       default:
         return { status: 1, stdout: "" };
@@ -459,6 +525,7 @@ function createSupervisorManagerFixture(input: {
     calls,
     events,
     versionRequests,
+    readbacks,
     run,
     close: stopServer,
     deactivate: async () => {
@@ -699,21 +766,26 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
       exitCode = await install.runInstall(options);
     } finally {
       opencode.detect = originalDetect;
+    }
+
+    // The case may now act on the verified root (same private HOME) while this
+    // test's OWN listener is still up, so a full-service-uninstall preflight can
+    // observe the operational relay before `stop` closes it. Observables below
+    // are read afterwards, so they witness the later state.
+    try {
+      if (input.onVerified !== undefined) {
+        await input.onVerified({
+          configDir,
+          unitPath,
+          opencodeBin,
+          runtime,
+          ...(supervisor === undefined ? {} : { manager: supervisor }),
+        });
+      }
+    } finally {
       // Close this test's own listener (and its connections) before any owned
       // root is removed by the caller's cleanup.
       await supervisor?.close();
-    }
-
-    // The case may now act on the verified root (same private HOME). Observables
-    // below are read afterwards, so they witness the later state.
-    if (input.onVerified !== undefined) {
-      await input.onVerified({
-        configDir,
-        unitPath,
-        opencodeBin,
-        runtime,
-        ...(supervisor === undefined ? {} : { manager: supervisor }),
-      });
     }
 
     const unitBytes = fs.existsSync(unitPath) ? fs.readFileSync(unitPath) : null;
@@ -2394,7 +2466,10 @@ describe.skipIf(process.platform !== "linux")(
             });
             vi.stubGlobal("fetch", fetchPoison);
 
-            // No manager: no DI runner exists, so any spawn is a real regression.
+            // The explicit runner is the ONLY manager boundary and represents an
+            // UNREACHABLE manager: the removal may only read it (show) and must
+            // never issue a mutating verb, while no real process is spawned.
+            const manager = createUnreachableManagerFixture();
             const managerSpies = [
               childProcessSpies.spawn,
               childProcessSpies.spawnSync,
@@ -2403,7 +2478,7 @@ describe.skipIf(process.platform !== "linux")(
             ];
             const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
             const poisonManager = (): never => {
-              throw new Error("uninstall must not invoke a process manager");
+              throw new Error("uninstall must not invoke a real process manager");
             };
             for (const spy of managerSpies) spy.mockImplementation(poisonManager);
 
@@ -2421,13 +2496,15 @@ describe.skipIf(process.platform !== "linux")(
             let exitCode: number;
             try {
               const uninstall = await import("../src/uninstall.js");
-              exitCode = await uninstall.runUninstall({
+              const options: BrowserControlServiceUninstallOptions = {
                 runtimes: ["opencode"],
                 dryRun: false,
                 yes: true,
                 removeEngram: false,
                 removePlaywright: false,
-              });
+                systemctlRunner: manager.run,
+              };
+              exitCode = await uninstall.runUninstall(options);
             } finally {
               adapter.detect = originalDetect;
               managerSpies.forEach((spy, index) => {
@@ -2467,10 +2544,22 @@ describe.skipIf(process.platform !== "linux")(
             expect.soft(ownedAfter, "the manifest must keep the unit claim").toContain(path.resolve(fixture.unitPath));
             expect.soft(manifestRow?.serviceUnit, "the serviceUnit binding must survive verbatim").toEqual(fixture.binding);
 
-            // No acquisition and no manager boundary were touched.
+            // The unreachable manager is only ever read: no mutating verb and no
+            // real process boundary were touched.
+            const managerVerbs = manager.calls.map((argv) => serviceVerb(argv));
+            for (const forbidden of SERVICE_MUTATING_VERBS) {
+              expect.soft(
+                managerVerbs,
+                `an unreachable manager must not trigger ${forbidden}`,
+              ).not.toContain(forbidden);
+            }
+            expect.soft(
+              manager.calls.every((argv) => serviceVerb(argv) === "show"),
+              `the removal may only read the unreachable manager (got ${JSON.stringify(manager.calls)})`,
+            ).toBe(true);
             expect.soft(fetchPoison, "uninstall must not perform network acquisition").not.toHaveBeenCalled();
             for (const spy of managerSpies) {
-              expect.soft(spy, "uninstall must not spawn a manager process").not.toHaveBeenCalled();
+              expect.soft(spy, "uninstall must not spawn a real manager process").not.toHaveBeenCalled();
             }
           },
         );
@@ -2494,15 +2583,18 @@ interface PendingUninstallAuthority {
   readonly fetchCallDelta: number;
   readonly managerCallBaseline: number;
   readonly managerCallDelta: number;
+  /** Queries issued by the removal through the explicit UNREACHABLE manager runner. */
+  readonly managerCalls: readonly string[][];
   readonly diagnostics: readonly string[];
 }
 
 /**
  * Real `runUninstall` against the service a real `runInstall` just verified, in
- * the same private HOME. `fetch` and the process boundary are poisoned so the
- * pending removal must prove no acquisition and no manager mutation, mirroring
- * the direct uninstall case. The code under test is the existing uninstall
- * manifest-write branch, never a forged manager/controller reply.
+ * the same private HOME. `fetch` and the real process boundary are poisoned and
+ * the explicit manager runner is an UNREACHABLE one, so the pending removal must
+ * prove no acquisition, no real spawn and read-only manager queries. The code
+ * under test is the existing uninstall branch, never a forged
+ * manager/controller reply.
  */
 async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<PendingUninstallAuthority> {
   const { readManifest } = await import("../src/lib/manifest.js");
@@ -2518,10 +2610,13 @@ async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<
   });
   vi.stubGlobal("fetch", fetchPoison);
 
+  // Explicit UNREACHABLE manager: the removal may only query it read-only.
+  const manager = createUnreachableManagerFixture();
+
   const managerSpies = [...childProcessDelegates];
   const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
   const poisonManager = (): never => {
-    throw new Error("uninstall must not invoke a process manager");
+    throw new Error("uninstall must not invoke a real process manager");
   };
   for (const spy of managerSpies) spy.mockImplementation(poisonManager);
 
@@ -2549,13 +2644,15 @@ async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<
     // DELTA over all four process delegates.
     fetchCallBaseline = fetchPoison.mock.calls.length;
     managerCallBaseline = processDelegateCallTotal();
-    uninstallExitCode = await uninstall.runUninstall({
+    const options: BrowserControlServiceUninstallOptions = {
       runtimes: ["opencode"],
       dryRun: false,
       yes: true,
       removeEngram: false,
       removePlaywright: false,
-    });
+      systemctlRunner: manager.run,
+    };
+    uninstallExitCode = await uninstall.runUninstall(options);
     fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
     managerCallDelta = processDelegateCallTotal() - managerCallBaseline;
   } finally {
@@ -2577,8 +2674,405 @@ async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<
     fetchCallDelta,
     managerCallBaseline,
     managerCallDelta,
+    managerCalls: manager.calls,
     diagnostics: [...prompts.log.warn.mock.calls, ...prompts.log.error.mock.calls]
       .map((call) => String(call[0] ?? "")),
+  };
+}
+
+interface FullServiceUninstallEvidence {
+  readonly uninstallExitCode: number;
+  /** Granular autostart authority copied verbatim from the manifest before uninstall. */
+  readonly stampBefore: BrowserControlAutostartStamp | undefined;
+  readonly serviceUnitBefore: ManagedBrowserControlServiceBinding | undefined;
+  readonly unitBytesBefore: Buffer;
+  readonly unitInodeBefore: number;
+  readonly unitPathResolved: string;
+  /** Owned unit file state after the removal (null when the file is gone). */
+  readonly unitBytesAfter: Buffer | null;
+  readonly unitInodeAfter: number | null;
+  /** Projected owned skill target and its bytes/inode before and after removal. */
+  readonly skillPath: string;
+  readonly skillBytesBefore: Buffer;
+  readonly skillInodeBefore: number;
+  readonly skillBytesAfter: Buffer | null;
+  readonly skillInodeAfter: number | null;
+  /** Manifest authority after the removal. */
+  readonly manifestOwnedAfter: readonly string[];
+  readonly manifestAutostartAfter: BrowserControlAutostartStamp | undefined;
+  readonly manifestServiceUnitAfter: ManagedBrowserControlServiceBinding | undefined;
+  /** Managed MCP projection after the removal. */
+  readonly mcpCommandAfter: readonly string[] | undefined;
+  readonly mcpEnvironmentAfter: Record<string, unknown> | undefined;
+  /** Retained active package tree/SRI before and after the removal. */
+  readonly activeTreeShaBefore: string;
+  readonly activeTreeShaAfter: string | null;
+  /** Manager calls issued ONLY by the uninstall (fake runner baseline sliced). */
+  readonly uninstallManagerCalls: readonly string[][];
+  /** Ordered external-boundary log of the uninstall only. */
+  readonly uninstallEvents: readonly string[];
+  /** Requests that reached the OWN `/version` server during the uninstall. */
+  readonly uninstallVersionRequests: readonly string[];
+  /** State reported by each uninstall `show`, aligned with `uninstallManagerCalls`. */
+  readonly uninstallReadbacks: readonly SupervisorReadback[];
+  /** Poison-call baselines/deltas immediately before and after the removal. */
+  readonly fetchCallDelta: number;
+  readonly processDelegateDelta: number;
+  readonly fakeRunnerCallDelta: number;
+  readonly unitBackedUp: boolean;
+  readonly userCustomSurvived: boolean;
+  readonly engramPreserved: boolean;
+  readonly activeRootPathBefore: string;
+  readonly activeReceiptShaBefore: string;
+  readonly activeRootPathAfter: string | null;
+  readonly activeReceiptShaAfter: string | null;
+  readonly diagnostics: readonly string[];
+  readonly outroMessages: readonly string[];
+}
+
+/**
+ * Minimal typed hook of the full-removal helper: an external writer (the user)
+ * may mutate projected state in the same private HOME after the verified install
+ * and before the removal, modelling drift the removal must authenticate before
+ * any destructive effect.
+ */
+interface FullUninstallHooks {
+  readonly beforeRemoval?: (ctx: VerifiedServiceContext) => void;
+  /**
+   * Wraps the removal's injected manager seam. A case may fault the FIRST
+   * `daemon-reload` issued after the unit file was already removed, modelling a
+   * partial removal whose final reload failed, and then let a retry observe the
+   * recoverable state. It only wraps the removal; the install phase is untouched.
+   */
+  readonly wrapRunner?: (runner: BrowserControlSystemctlRunner) => BrowserControlSystemctlRunner;
+}
+
+/**
+ * Real `runUninstall` against the canonical Stack-owned service a real
+ * `runInstall` just verified, in the same private HOME, with the explicit
+ * manager seam (`systemctlRunner`) so the removal can stop/disable the OWN unit
+ * without a real manager. `fetch` and the process boundary are poisoned so the
+ * removal must prove no acquisition and no real spawn, mirroring the pending
+ * case; the fake runner represents only the external manager edge.
+ */
+async function runFullUninstallInPlace(
+  ctx: VerifiedServiceContext,
+  hooks?: FullUninstallHooks,
+): Promise<FullServiceUninstallEvidence> {
+  const manager = ctx.manager;
+  if (manager === undefined) {
+    throw new Error("fixture: the full service uninstall requires the supervisor manager");
+  }
+  const { readManifest } = await import("../src/lib/manifest.js");
+  const rowBefore = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
+  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
+  const unitInodeBefore = fs.statSync(ctx.unitPath).ino;
+  const unitPathResolved = path.resolve(ctx.unitPath);
+
+  const skillPath = path.join(ctx.configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+  const skillBytesBefore = fs.readFileSync(skillPath);
+  const skillInodeBefore = fs.statSync(skillPath).ino;
+
+  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
+  const { loadVerifiedRetainedBrowserRelease } = await import("../src/lib/browser-managed.js");
+  const activeBefore = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  if (activeBefore === null) throw new Error("fixture: the first install must retain an active release");
+
+  // External write at the FS boundary: an unrelated top-level user key must
+  // survive the canonical removal (never whole-file ownership).
+  const configPath = path.join(ctx.configDir, "opencode.json");
+  const configBefore = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  configBefore["x-user-note"] = "preserve-me";
+  fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
+
+  // Case-specific external write: the user may mutate projected owned state
+  // (e.g. edit the projected SKILL.md) before the removal authenticates it.
+  hooks?.beforeRemoval?.(ctx);
+
+  // No acquisition: any registry/network attempt fails the run.
+  const fetchPoison = vi.fn(() => {
+    throw new Error("uninstall must not acquire Browser Control over the network");
+  });
+  vi.stubGlobal("fetch", fetchPoison);
+
+  // No real manager: the injected runner is the ONLY manager boundary.
+  const managerSpies = [...childProcessDelegates];
+  const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
+  const poisonManager = (): never => {
+    throw new Error("uninstall must not spawn a real process manager");
+  };
+  for (const spy of managerSpies) spy.mockImplementation(poisonManager);
+
+  const install = await import("../src/install.js");
+  const adapter = install.ADAPTERS.opencode!;
+  const originalDetect = adapter.detect;
+  adapter.detect = () => ({
+    id: "opencode",
+    name: "OpenCode",
+    installed: true,
+    binPath: null,
+    configDir: ctx.configDir,
+  });
+
+  let uninstallExitCode: number;
+  let fetchCallDelta = 0;
+  let processDelegateDelta = 0;
+  let fakeRunnerCallDelta = 0;
+  const callsBefore = manager.calls.length;
+  const eventsBefore = manager.events.length;
+  const versionRequestsBefore = manager.versionRequests.length;
+  const readbacksBefore = manager.readbacks.length;
+  const warnBefore = prompts.log.warn.mock.calls.length;
+  const errorBefore = prompts.log.error.mock.calls.length;
+  const runner = hooks?.wrapRunner?.(manager.run) ?? manager.run;
+  try {
+    const uninstall = await import("../src/uninstall.js");
+    // Snapshot immediately before the removal: the preceding install phase runs
+    // real delegates (the OpenCode v2 `--version` gate), so the contract is the
+    // DELTA over all four process delegates.
+    const fetchCallBaseline = fetchPoison.mock.calls.length;
+    const processDelegateBaseline = processDelegateCallTotal();
+    const fakeRunnerCallBaseline = manager.calls.length;
+    const options: BrowserControlServiceUninstallOptions = {
+      runtimes: ["opencode"],
+      dryRun: false,
+      yes: true,
+      removeEngram: false,
+      removePlaywright: false,
+      systemctlRunner: runner,
+    };
+    uninstallExitCode = await uninstall.runUninstall(options);
+    fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
+    processDelegateDelta = processDelegateCallTotal() - processDelegateBaseline;
+    fakeRunnerCallDelta = manager.calls.length - fakeRunnerCallBaseline;
+  } finally {
+    adapter.detect = originalDetect;
+    managerSpies.forEach((spy, index) => {
+      const previous = previousImplementations[index];
+      if (previous === undefined) spy.mockReset();
+      else spy.mockImplementation(previous);
+    });
+  }
+
+  const { listBackups } = await import("../src/lib/backup.js");
+  const unitBackedUp = listBackups().some((backup) =>
+    backup.files.some((entry) => path.resolve(entry.original) === unitPathResolved),
+  );
+  const configAfter = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  const rowAfter = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
+  const projectedAfter = (configAfter as {
+    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
+  }).mcp?.servers?.[BROWSER_CONTROL_SERVER];
+  const unitBytesAfter = fs.existsSync(ctx.unitPath) ? fs.readFileSync(ctx.unitPath) : null;
+  const unitInodeAfter = fs.existsSync(ctx.unitPath) ? fs.statSync(ctx.unitPath).ino : null;
+  const skillBytesAfter = fs.existsSync(skillPath) ? fs.readFileSync(skillPath) : null;
+  const skillInodeAfter = fs.existsSync(skillPath) ? fs.statSync(skillPath).ino : null;
+
+  return {
+    uninstallExitCode,
+    stampBefore: rowBefore?.browserControlAutostart,
+    serviceUnitBefore: rowBefore?.serviceUnit,
+    unitBytesBefore,
+    unitInodeBefore,
+    unitPathResolved,
+    unitBytesAfter,
+    unitInodeAfter,
+    skillPath,
+    skillBytesBefore,
+    skillInodeBefore,
+    skillBytesAfter,
+    skillInodeAfter,
+    manifestOwnedAfter: rowAfter?.owned ?? [],
+    manifestAutostartAfter: rowAfter?.browserControlAutostart,
+    manifestServiceUnitAfter: rowAfter?.serviceUnit,
+    mcpCommandAfter: projectedAfter?.command,
+    mcpEnvironmentAfter: projectedAfter?.environment,
+    activeTreeShaBefore: activeBefore.receipt.treeSha256,
+    activeTreeShaAfter: activeAfter?.receipt.treeSha256 ?? null,
+    uninstallManagerCalls: manager.calls.slice(callsBefore),
+    uninstallEvents: manager.events.slice(eventsBefore),
+    uninstallVersionRequests: manager.versionRequests.slice(versionRequestsBefore),
+    uninstallReadbacks: manager.readbacks.slice(readbacksBefore),
+    fetchCallDelta,
+    processDelegateDelta,
+    fakeRunnerCallDelta,
+    unitBackedUp,
+    userCustomSurvived: configAfter["x-user-note"] === "preserve-me",
+    engramPreserved: prompts.log.info.mock.calls
+      .map((call) => String(call[0] ?? ""))
+      .some((message) => /Engram se conserva/.test(message)),
+    activeRootPathBefore: activeBefore.receipt.rootPath,
+    activeReceiptShaBefore: activeBefore.receiptSha256,
+    activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
+    activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
+    diagnostics: [
+      ...prompts.log.warn.mock.calls.slice(warnBefore),
+      ...prompts.log.error.mock.calls.slice(errorBefore),
+    ].map((call) => String(call[0] ?? "")),
+    outroMessages: prompts.outro.mock.calls.map((call) => String(call[0] ?? "")),
+  };
+}
+
+/**
+ * Minimal evidence of a SECOND real `runUninstall` in the same private HOME
+ * after a partial removal. The unit and skill files may already be absent, so
+ * this helper never reads them before the run: their absence is the recoverable
+ * state under test, never a fixture error.
+ */
+interface ServiceRetirementRetryEvidence {
+  readonly uninstallExitCode: number;
+  /** Whether the owned unit file still existed immediately before the retry. */
+  readonly unitExistsBefore: boolean;
+  readonly manifestOwnedAfter: readonly string[];
+  readonly manifestAutostartAfter: BrowserControlAutostartStamp | undefined;
+  readonly manifestServiceUnitAfter: ManagedBrowserControlServiceBinding | undefined;
+  readonly mcpCommandAfter: readonly string[] | undefined;
+  readonly mcpEnvironmentAfter: Record<string, unknown> | undefined;
+  /** Manager verbs issued ONLY by the retry. */
+  readonly managerVerbs: readonly (string | undefined)[];
+  readonly fetchCallDelta: number;
+  readonly processDelegateDelta: number;
+  readonly userCustomSurvived: boolean;
+  readonly activeRootPathBefore: string;
+  readonly activeRootPathAfter: string | null;
+  readonly activeReceiptShaBefore: string;
+  readonly activeReceiptShaAfter: string | null;
+  readonly diagnostics: readonly string[];
+  readonly outroMessages: readonly string[];
+}
+
+/**
+ * Real `runUninstall` retry after a partial removal, in the same private HOME.
+ * `fetch` and the process boundary are poisoned exactly as in the full-removal
+ * helper, so the retry must close through the injected manager seam without
+ * acquisition or a real spawn. The manager is left inactive/dead/MainPID=0 with
+ * the OWN relay absent by the first run.
+ */
+async function runServiceRetirementRetryInPlace(
+  ctx: VerifiedServiceContext,
+): Promise<ServiceRetirementRetryEvidence> {
+  const manager = ctx.manager;
+  if (manager === undefined) {
+    throw new Error("fixture: the retirement retry requires the supervisor manager");
+  }
+  const { readManifest } = await import("../src/lib/manifest.js");
+  const unitExistsBefore = fs.existsSync(ctx.unitPath);
+
+  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
+  const { loadVerifiedRetainedBrowserRelease } = await import("../src/lib/browser-managed.js");
+  const activeBefore = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  if (activeBefore === null) throw new Error("fixture: the retained active must survive the partial removal");
+
+  // External write at the FS boundary: the unrelated user key must survive the
+  // retry as it did the first removal attempt.
+  const configPath = path.join(ctx.configDir, "opencode.json");
+  const configBefore = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  configBefore["x-user-note"] = "preserve-me";
+  fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
+
+  const fetchPoison = vi.fn(() => {
+    throw new Error("uninstall must not acquire Browser Control over the network");
+  });
+  vi.stubGlobal("fetch", fetchPoison);
+
+  const managerSpies = [...childProcessDelegates];
+  const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
+  const poisonManager = (): never => {
+    throw new Error("uninstall must not spawn a real process manager");
+  };
+  for (const spy of managerSpies) spy.mockImplementation(poisonManager);
+
+  const install = await import("../src/install.js");
+  const adapter = install.ADAPTERS.opencode!;
+  const originalDetect = adapter.detect;
+  adapter.detect = () => ({
+    id: "opencode",
+    name: "OpenCode",
+    installed: true,
+    binPath: null,
+    configDir: ctx.configDir,
+  });
+
+  const callsBefore = manager.calls.length;
+  const warnBefore = prompts.log.warn.mock.calls.length;
+  const errorBefore = prompts.log.error.mock.calls.length;
+  let uninstallExitCode: number;
+  let fetchCallDelta = 0;
+  let processDelegateDelta = 0;
+  try {
+    const uninstall = await import("../src/uninstall.js");
+    const fetchCallBaseline = fetchPoison.mock.calls.length;
+    const processDelegateBaseline = processDelegateCallTotal();
+    uninstallExitCode = await uninstall.runUninstall({
+      runtimes: ["opencode"],
+      dryRun: false,
+      yes: true,
+      removeEngram: false,
+      removePlaywright: false,
+      systemctlRunner: manager.run,
+    });
+    fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
+    processDelegateDelta = processDelegateCallTotal() - processDelegateBaseline;
+  } finally {
+    adapter.detect = originalDetect;
+    managerSpies.forEach((spy, index) => {
+      const previous = previousImplementations[index];
+      if (previous === undefined) spy.mockReset();
+      else spy.mockImplementation(previous);
+    });
+  }
+
+  const configAfter = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  const rowAfter = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
+  const projectedAfter = (configAfter as {
+    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
+  }).mcp?.servers?.[BROWSER_CONTROL_SERVER];
+
+  return {
+    uninstallExitCode,
+    unitExistsBefore,
+    manifestOwnedAfter: rowAfter?.owned ?? [],
+    manifestAutostartAfter: rowAfter?.browserControlAutostart,
+    manifestServiceUnitAfter: rowAfter?.serviceUnit,
+    mcpCommandAfter: projectedAfter?.command,
+    mcpEnvironmentAfter: projectedAfter?.environment,
+    managerVerbs: manager.calls.slice(callsBefore).map((argv) => serviceVerb(argv)),
+    fetchCallDelta,
+    processDelegateDelta,
+    userCustomSurvived: configAfter["x-user-note"] === "preserve-me",
+    activeRootPathBefore: activeBefore.receipt.rootPath,
+    activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
+    activeReceiptShaBefore: activeBefore.receiptSha256,
+    activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
+    diagnostics: [
+      ...prompts.log.warn.mock.calls.slice(warnBefore),
+      ...prompts.log.error.mock.calls.slice(errorBefore),
+    ].map((call) => String(call[0] ?? "")),
+    outroMessages: prompts.outro.mock.calls.map((call) => String(call[0] ?? "")),
+  };
+}
+
+/**
+ * Faults ONLY the first `daemon-reload` seen by a removal runner and delegates
+ * every other verb to the real fake manager. The first removal therefore fails
+ * its final reload AFTER the unit file was removed and the environment retired,
+ * leaving a recoverable partial state; the retry (which does not wrap the
+ * runner) sees a successful reload.
+ */
+function failFirstDaemonReload(): {
+  readonly wrap: (runner: BrowserControlSystemctlRunner) => BrowserControlSystemctlRunner;
+} {
+  let faulted = false;
+  return {
+    wrap: (runner) => async (args) => {
+      if (!faulted && serviceVerb(args) === "daemon-reload") {
+        faulted = true;
+        return { status: 1, stdout: "" };
+      }
+      return runner(args);
+    },
   };
 }
 
@@ -2691,8 +3185,467 @@ describe.skipIf(process.platform !== "linux")(
         ).toBe(0);
         expect(
           shown.managerCallDelta,
-          "the uninstall must not spawn a manager process",
+          "the uninstall must not spawn a real manager process",
         ).toBe(0);
+
+        // The explicit runner represents an UNREACHABLE manager: the pending
+        // removal may only read it (show) and must never issue a mutating verb.
+        const pendingManagerVerbs = shown.managerCalls.map((argv) => serviceVerb(argv));
+        for (const forbidden of SERVICE_MUTATING_VERBS) {
+          expect(
+            pendingManagerVerbs,
+            `an unreachable manager must not trigger ${forbidden}`,
+          ).not.toContain(forbidden);
+        }
+        expect(
+          shown.managerCalls.every((argv) => serviceVerb(argv) === "show"),
+          `the pending removal may only read the unreachable manager (got ${JSON.stringify(shown.managerCalls)})`,
+        ).toBe(true);
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12-RED] Browser Control full service uninstall retires the canonical Stack-owned service",
+  () => {
+    /**
+     * Full-removal case on the REAL install→uninstall lifecycle. A real
+     * `runInstall` with the explicit Linux opt-in creates and supervises the
+     * owned unit, pins the canonical `BROWSER_CONTROL_AUTOSTART=false` + literal
+     * port on the managed MCP and records the granular `browserControlAutostart`
+     * stamp. The callback then runs the real `runUninstall` in the same private
+     * HOME through the explicit manager seam, so the removal can prove the OWN
+     * unit operational BEFORE `stop`, stop/disable it exactly (no restart/force/
+     * global/linger), remove the canonical unit file with backup, retire the
+     * canonical FALSE/port and the manifest claims, and only then `daemon-reload`
+     * and report the global success.
+     *
+     * RED today: `runUninstall` has no manager lifecycle, so it preserves the
+     * unit, its claim/binding/stamp and returns exit 1 without issuing any
+     * stop/disable/daemon-reload or removing the file.
+     */
+    it("stops, disables and removes the canonical owned unit with backup and retires its claims", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-full-uninstall-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let evidence: FullServiceUninstallEvidence | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-full-uninstall-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            evidence = await runFullUninstallInPlace(ctx);
+          },
+        });
+        if (evidence === undefined) throw new Error("fixture: the in-place full uninstall callback did not run");
+        const shown = evidence;
+
+        // Scenario integrity: the supervised install produced the canonical
+        // owned unit, its binding and the granular authority this removal retires.
+        expect(shown.stampBefore, "the supervised install must have recorded the granular authority").toBeDefined();
+        expect(shown.stampBefore?.portOwned, "the canonical port belongs to Stack").toBe(true);
+        expect(shown.serviceUnitBefore, "the supervised install must have recorded its unit binding").toBeDefined();
+        expect(shown.serviceUnitBefore?.port, "the binding must witness the managed port").toBe(port);
+        expect(shown.unitBytesBefore.length, "the canonical unit must exist before the removal").toBeGreaterThan(0);
+
+        // 1) The canonical service lifecycle runs only through the injected
+        //    manager seam: no real process was spawned and no network acquired.
+        expect(shown.processDelegateDelta, "the removal must not spawn a real manager").toBe(0);
+        expect(shown.fetchCallDelta, "the removal must not acquire over the network").toBe(0);
+        expect(shown.fakeRunnerCallDelta, "the removal must use the injected manager seam").toBeGreaterThan(0);
+
+        // 2) Preflight proved the OWN unit operational BEFORE `stop`: the
+        //    manager read it active/running with its MainPID, the authenticated
+        //    `/version` answered on the OWN port, and the readback was stable.
+        const verbs = shown.uninstallManagerCalls.map((argv) => serviceVerb(argv));
+        const stopIndex = verbs.indexOf("stop");
+        const disableIndex = verbs.indexOf("disable");
+        const reloadIndex = verbs.indexOf("daemon-reload");
+        expect(stopIndex, "the removal must stop the OWN unit").toBeGreaterThanOrEqual(0);
+        expect(disableIndex, "the removal must disable the OWN unit").toBeGreaterThan(stopIndex);
+        expect(reloadIndex, "the removal must daemon-reload after removing the unit").toBeGreaterThan(disableIndex);
+
+        const showsBeforeStop = verbs
+          .map((verb, index) => (verb === "show" && index < stopIndex ? index : -1))
+          .filter((index) => index >= 0);
+        expect(showsBeforeStop.length, "the preflight must read the OWN unit before stop").toBeGreaterThanOrEqual(2);
+        for (const index of showsBeforeStop) {
+          const ordinal = verbs.filter((verb, at) => verb === "show" && at < index).length;
+          const readback = shown.uninstallReadbacks[ordinal]!;
+          expect(readback.active, "the unit must be operational before stop").toBe(true);
+          expect(readback.subState).toBe("running");
+          expect(readback.mainPid, "the operational readback must witness the MainPID").toBe(process.pid);
+          expect(readback.relayUp, "the OWN relay must be up before stop").toBe(true);
+        }
+        expect(
+          shown.uninstallEvents.indexOf("version:GET /version"),
+          "the authenticated /version must be probed before stop",
+        ).toBeGreaterThanOrEqual(0);
+        expect(shown.uninstallEvents.indexOf("version:GET /version")).toBeLessThan(stopIndex);
+        expect(shown.uninstallVersionRequests.length).toBeGreaterThanOrEqual(1);
+
+        // 3) After `stop` the OWN relay is gone and the readback credits the
+        //    unit inactive/dead/PID0 BEFORE `disable`.
+        const showsAfterStop = verbs
+          .map((verb, index) => (verb === "show" && index > stopIndex && index < disableIndex ? index : -1))
+          .filter((index) => index >= 0);
+        expect(showsAfterStop.length, "the removal must read the unit back after stop").toBeGreaterThanOrEqual(1);
+        const postStopIndex = showsAfterStop[showsAfterStop.length - 1]!;
+        const postStopOrdinal = verbs.filter((verb, at) => verb === "show" && at < postStopIndex).length;
+        const postStopReadback = shown.uninstallReadbacks[postStopOrdinal]!;
+        expect(postStopReadback.active, "the stopped unit must be inactive").toBe(false);
+        expect(postStopReadback.subState).toBe("dead");
+        expect(postStopReadback.mainPid).toBe(0);
+        expect(postStopReadback.relayUp, "the OWN relay must be down before disable").toBe(false);
+
+        // 4) Exact mutating sequence on the OWN unit only.
+        const mutating = verbs.filter((verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb));
+        expect(mutating, "the only manager mutations must be stop, disable and the final daemon-reload").toEqual([
+          "stop",
+          "disable",
+          "daemon-reload",
+        ]);
+        const disableArgs = shown.uninstallManagerCalls.find((argv) => serviceVerb(argv) === "disable") ?? [];
+        expect(disableArgs, "disable must suppress the implicit daemon reload").toContain("--no-reload");
+        const flattened = shown.uninstallManagerCalls.flat();
+        for (const forbidden of ["restart", "reload", "mask", "unmask", "linger", "--force", "--global", "--system", "--now"]) {
+          expect(flattened, `the removal must never issue ${forbidden}`).not.toContain(forbidden);
+        }
+        expect(flattened, "the removal must operate in the user scope").toContain("--user");
+        for (const argv of shown.uninstallManagerCalls) {
+          const verb = serviceVerb(argv);
+          if (verb === "stop" || verb === "disable") {
+            expect(argv, `the ${verb} verb must name the exact OWN unit`).toContain(SERVICE_UNIT_FILENAME);
+            expect(argv.some((token) => token.includes("*"))).toBe(false);
+          }
+        }
+
+        // 5) The canonical unit file is removed with a backup; its manifest
+        //    claims are gone after the readback.
+        expect(observables.unitBytes, "the canonical unit file must be removed").toBeNull();
+        expect(fs.existsSync(shown.unitPathResolved), "the unit path must be free after removal").toBe(false);
+        expect(shown.unitBackedUp, "the removed unit must have been backed up first").toBe(true);
+        expect(
+          observables.manifestOwned.map((file) => path.resolve(file)),
+          "the owned claim must be retired",
+        ).not.toContain(shown.unitPathResolved);
+        expect(observables.manifestServiceUnit, "the serviceUnit binding must be retired").toBeUndefined();
+        expect(observables.manifestAutostart, "the granular authority must be retired").toBeUndefined();
+
+        // 6) The Stack-introduced canonical FALSE/port are retired (or the whole
+        //    canonical MCP entry is removed), never left stale.
+        const mcpEntryRemoved = observables.mcpCommand === undefined && observables.mcpEnvironment === undefined;
+        const envRetired = observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART === undefined
+          && observables.mcpEnvironment?.BROWSER_CONTROL_PORT === undefined;
+        expect(mcpEntryRemoved || envRetired, "the canonical managed environment must be retired").toBe(true);
+
+        // 7) Only the managed service is removed: user config, Engram and the
+        //    retained browser runtime survive.
+        expect(shown.userCustomSurvived, "an unrelated user config key must survive").toBe(true);
+        expect(shown.engramPreserved, "Engram must be preserved without --remove-engram").toBe(true);
+        expect(shown.activeRootPathAfter, "the retained active root must survive").toBe(shown.activeRootPathBefore);
+        expect(shown.activeReceiptShaAfter, "the retained active must still authenticate").toBe(
+          shown.activeReceiptShaBefore,
+        );
+
+        // 8) The complete removal reports success; no pending diagnostic remains.
+        expect(shown.uninstallExitCode, "a completed canonical removal must exit 0").toBe(0);
+        expect(
+          shown.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the complete removal must print the global success outro",
+        ).toBe(true);
+        expect(
+          shown.diagnostics.some((message) => message.includes(SERVICE_UNIT_FILENAME)),
+          "no pending-service diagnostic must remain after a complete removal",
+        ).toBe(false);
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+
+    /**
+     * Fail-closed ordering case on the REAL install→uninstall lifecycle. A real
+     * `runInstall` with the explicit Linux opt-in creates and supervises the
+     * owned unit and projects the canonical owned `SKILL.md`. Before the removal
+     * the user edits ONLY that projected skill with different bytes, so the
+     * static preflight cannot authenticate it. The removal must abort before ANY
+     * destructive effect: no mutating manager verb, the owned unit, its
+     * claim/binding/stamp, the canonical MCP environment and the user-modified
+     * skill all survive, and the retained active package/SRI is intact.
+     *
+     * RED today: `retireOwnedBrowserControlService` runs before the static
+     * resource/skill preflight, so the service is already stopped, disabled and
+     * its unit file removed (and the canonical environment retired) by the time
+     * the skill block aborts. The first RED is the mutating manager verbs and the
+     * missing unit file while the skill is blocked.
+     */
+    it("aborts before any destructive effect when the projected owned skill is user-modified", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-skill-blocked-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let evidence: FullServiceUninstallEvidence | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-skill-blocked-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            evidence = await runFullUninstallInPlace(ctx, {
+              beforeRemoval: (verified) => {
+                fs.writeFileSync(
+                  path.join(verified.configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md"),
+                  USER_SKILL_BYTES,
+                );
+              },
+            });
+          },
+        });
+        if (evidence === undefined) throw new Error("fixture: the in-place blocked uninstall callback did not run");
+        const shown = evidence;
+
+        // Scenario integrity: the supervised install produced the canonical
+        // owned unit and the canonical owned skill this case then drifts.
+        expect(shown.stampBefore, "the supervised install must record the granular authority").toBeDefined();
+        expect(shown.serviceUnitBefore, "the supervised install must record its unit binding").toBeDefined();
+        expect(shown.serviceUnitBefore?.port, "the binding must witness the managed port").toBe(port);
+        expect(shown.unitBytesBefore.length, "the canonical unit must exist before the removal").toBeGreaterThan(0);
+        expect(shown.skillBytesBefore, "the install must project the canonical skill").toEqual(BC_SKILL_BYTES);
+        expect(
+          shown.skillBytesBefore.equals(USER_SKILL_BYTES),
+          "the user edit must differ from the canonical skill",
+        ).toBe(false);
+
+        // The blocked removal is honest: non-zero exit and no global success.
+        expect.soft(shown.uninstallExitCode, "a blocked removal must exit 1").toBe(1);
+        expect.soft(
+          shown.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the global success outro must not be printed while the skill block aborts",
+        ).toBe(false);
+
+        // No destructive effect reached the manager: only a read-only `show` is
+        // acceptable, and never a mutating verb.
+        const verbs = shown.uninstallManagerCalls.map((argv) => serviceVerb(argv));
+        for (const forbidden of SERVICE_MUTATING_VERBS) {
+          expect.soft(verbs, `the skill preflight must abort before ${forbidden}`).not.toContain(forbidden);
+        }
+        expect.soft(
+          verbs.every((verb) => verb === "show"),
+          `the blocked removal may only read the manager (got ${JSON.stringify(shown.uninstallManagerCalls)})`,
+        ).toBe(true);
+
+        // The owned unit file survives byte-identical and by inode, and was not
+        // backed up for removal.
+        expect.soft(shown.unitBytesAfter, "the owned unit must survive the blocked removal").not.toBeNull();
+        expect.soft(shown.unitBytesAfter, "the unit bytes must be untouched").toEqual(shown.unitBytesBefore);
+        expect.soft(shown.unitInodeAfter, "the unit inode must be untouched").toBe(shown.unitInodeBefore);
+        expect.soft(shown.unitBackedUp, "the blocked removal must not have removed the unit").toBe(false);
+
+        // The user-modified skill survives verbatim with its inode.
+        expect.soft(shown.skillBytesAfter, "the user-modified skill must survive").not.toBeNull();
+        expect.soft(shown.skillBytesAfter, "the user skill bytes must be preserved verbatim").toEqual(USER_SKILL_BYTES);
+        expect.soft(shown.skillInodeAfter, "the skill inode must be untouched").toBe(shown.skillInodeBefore);
+
+        // The manifest claim, binding and granular stamp survive verbatim.
+        expect.soft(
+          shown.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the manifest must keep the unit claim",
+        ).toContain(shown.unitPathResolved);
+        expect.soft(
+          shown.manifestServiceUnitAfter,
+          "the serviceUnit binding must survive verbatim",
+        ).toEqual(shown.serviceUnitBefore);
+        expect.soft(
+          shown.manifestAutostartAfter,
+          "the granular authority must survive verbatim",
+        ).toEqual(shown.stampBefore);
+
+        // The canonical managed MCP environment is intact.
+        expect.soft(
+          shown.mcpEnvironmentAfter?.BROWSER_CONTROL_AUTOSTART,
+          "the canonical FALSE must be retained",
+        ).toBe("false");
+        expect.soft(
+          shown.mcpEnvironmentAfter?.BROWSER_CONTROL_PORT,
+          "the literal managed port must be retained",
+        ).toBe(String(port));
+        expect.soft(
+          shown.mcpCommandAfter,
+          "the managed launcher must be retained",
+        ).toEqual(observables.expectedMcpCommand);
+
+        // The retained active package tree/SRI is intact.
+        expect.soft(shown.activeTreeShaAfter, "the retained active tree must authenticate").toBe(shown.activeTreeShaBefore);
+        expect.soft(shown.activeRootPathAfter, "the retained active root must survive").toBe(shown.activeRootPathBefore);
+        expect.soft(
+          shown.activeReceiptShaAfter,
+          "the retained active receipt must authenticate",
+        ).toBe(shown.activeReceiptShaBefore);
+
+        // No acquisition and no real manager process.
+        expect.soft(shown.fetchCallDelta, "the blocked removal must not acquire over the network").toBe(0);
+        expect.soft(shown.processDelegateDelta, "the blocked removal must not spawn a real manager").toBe(0);
+
+        // The abort diagnostic names the skill target.
+        expect.soft(
+          shown.diagnostics.some((message) => message.includes("SKILL.md")),
+          `the skill block diagnostic must name the preserved skill (got ${JSON.stringify(shown.diagnostics)})`,
+        ).toBe(true);
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+
+    /**
+     * Partial-removal recovery on the REAL install→uninstall lifecycle. A real
+     * `runInstall` with the explicit Linux opt-in creates and supervises the
+     * owned unit. The first real `runUninstall` then stops/disables the OWN unit,
+     * retires the canonical environment and removes the unit file with backup,
+     * but its FINAL `daemon-reload` fails (injected fault, first reload only), so
+     * the removal is left pending with the file already gone and the
+     * claims/binding/authority still recorded — a consistent, recoverable state.
+     *
+     * A retry in the same private HOME must observe the manager
+     * inactive/dead/MainPID=0 with the OWN relay absent, finish WITHOUT
+     * re-stopping or restarting, complete the final reload and release the
+     * claims/serviceUnit/autostart, exiting 0 while user config and the retained
+     * active stay intact.
+     *
+     * RED today: the retry rejects the absent unit file as `drift` (the
+     * preflight demands the file), so it preserves the claims again and exits 1;
+     * the removal never closes.
+     */
+    it("recovers a partial removal whose final daemon-reload failed and closes on retry", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-partial-reload-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let firstRun: FullServiceUninstallEvidence | undefined;
+      let retry: ServiceRetirementRetryEvidence | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-partial-reload-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            const fault = failFirstDaemonReload();
+            firstRun = await runFullUninstallInPlace(ctx, { wrapRunner: fault.wrap });
+            retry = await runServiceRetirementRetryInPlace(ctx);
+          },
+        });
+        if (firstRun === undefined || retry === undefined) {
+          throw new Error("fixture: the in-place partial-removal callbacks did not run");
+        }
+        const partial = firstRun;
+        const closed = retry;
+
+        // --- First run: the removal advanced past stop/disable/removal and only
+        //     the final reload failed. The file is gone but the claims and the
+        //     authority survive, so the state is consistent and recoverable.
+        expect(partial.stampBefore, "the supervised install must record the granular authority").toBeDefined();
+        expect(partial.serviceUnitBefore, "the supervised install must record its unit binding").toBeDefined();
+        expect(partial.serviceUnitBefore?.port, "the binding must witness the managed port").toBe(port);
+        expect(partial.unitBytesBefore.length, "the canonical unit must exist before the removal").toBeGreaterThan(0);
+
+        expect(partial.uninstallExitCode, "a partial removal must exit non-zero").not.toBe(0);
+        expect(partial.unitBytesAfter, "the partial removal must have removed the unit file").toBeNull();
+        expect(partial.unitBackedUp, "the removed unit must have been backed up").toBe(true);
+
+        // The claims, binding and granular authority survive the partial state.
+        expect(
+          partial.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the partial removal must keep the unit claim recoverable",
+        ).toContain(partial.unitPathResolved);
+        expect(
+          partial.manifestServiceUnitAfter,
+          "the partial removal must keep the binding recoverable",
+        ).toEqual(partial.serviceUnitBefore);
+        expect(
+          partial.manifestAutostartAfter,
+          "the partial removal must keep the authority recoverable",
+        ).toEqual(partial.stampBefore);
+
+        // The canonical environment is already retired (entry gone or fields gone).
+        const partialEntryRemoved = partial.mcpCommandAfter === undefined && partial.mcpEnvironmentAfter === undefined;
+        const partialEnvRetired = partial.mcpEnvironmentAfter?.BROWSER_CONTROL_AUTOSTART === undefined
+          && partial.mcpEnvironmentAfter?.BROWSER_CONTROL_PORT === undefined;
+        expect(partialEntryRemoved || partialEnvRetired, "the canonical environment must already be retired").toBe(true);
+
+        // No acquisition, no real manager, and no global success while pending.
+        expect(partial.fetchCallDelta, "the removal must not acquire over the network").toBe(0);
+        expect(partial.processDelegateDelta, "the removal must not spawn a real manager").toBe(0);
+        expect(
+          partial.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the partial removal must not print the global success outro",
+        ).toBe(false);
+        expect(
+          partial.diagnostics.some((message) =>
+            message.includes(SERVICE_UNIT_FILENAME) && /conserva|pendiente|retirada/i.test(message),
+          ),
+          `the partial removal must diagnose the pending service (got ${JSON.stringify(partial.diagnostics)})`,
+        ).toBe(true);
+
+        // --- Retry: the unit file is already gone and the manager is
+        //     inactive/dead/PID0 with the OWN relay absent. The retry must close
+        //     the removal without re-stopping or restarting the service.
+        expect(closed.unitExistsBefore, "the unit file must already be gone before the retry").toBe(false);
+
+        // PRIMARY RED today: the retry rejects the absent file as drift and
+        // preserves the claims again, so it never exits 0.
+        expect.soft(closed.uninstallExitCode, "the retry must close the removal with exit 0").toBe(0);
+        expect.soft(
+          closed.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the retry must retire the owned unit claim",
+        ).not.toContain(path.resolve(observables.unitPath));
+        expect.soft(closed.manifestServiceUnitAfter, "the retry must retire the serviceUnit binding").toBeUndefined();
+        expect.soft(closed.manifestAutostartAfter, "the retry must retire the granular authority").toBeUndefined();
+
+        // The retry must never re-stop or restart the already-inactive unit.
+        const retryMutating = closed.managerVerbs.filter(
+          (verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb),
+        );
+        expect.soft(retryMutating, "the retry must not re-stop the inactive unit").not.toContain("stop");
+        expect.soft(retryMutating, "the retry must not restart the inactive unit").not.toContain("restart");
+
+        // User config and the retained active stay intact.
+        expect.soft(closed.userCustomSurvived, "an unrelated user config key must survive the retry").toBe(true);
+        expect.soft(
+          closed.activeRootPathAfter,
+          "the retained active root must survive the retry",
+        ).toBe(closed.activeRootPathBefore);
+        expect.soft(
+          closed.activeReceiptShaAfter,
+          "the retained active must still authenticate after the retry",
+        ).toBe(closed.activeReceiptShaBefore);
+
+        // The retry completes honestly: global success and no pending diagnostic.
+        expect.soft(
+          closed.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the closed removal must print the global success outro",
+        ).toBe(true);
+        expect.soft(
+          closed.diagnostics.some((message) => message.includes(SERVICE_UNIT_FILENAME)),
+          `no pending-service diagnostic must remain after the retry (got ${JSON.stringify(closed.diagnostics)})`,
+        ).toBe(false);
+        expect.soft(closed.fetchCallDelta, "the retry must not acquire over the network").toBe(0);
+        expect.soft(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
         releaseRoots();

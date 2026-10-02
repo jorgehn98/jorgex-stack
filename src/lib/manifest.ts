@@ -40,6 +40,25 @@ export interface BrowserControlAutostartStamp {
   portOwned: boolean;
 }
 
+/**
+ * Fase de recuperación de una retirada de servicio Browser Control a medias
+ * (T13). `environment-retired` acredita el entorno ENV ya retirado con la unidad
+ * aún presente; `unit-removed` acredita el archivo de unidad ya retirado y solo
+ * el `daemon-reload` final pendiente; `manager-reloaded` acredita la limpieza
+ * del manager y permite terminar el unmerge/manifest ordinario sin repetir
+ * mutaciones. No es un ledger: vive en la misma row y solo autoriza junto al
+ * binding/estampa autenticados.
+ */
+export type BrowserControlServiceRetirementPhase =
+  | "environment-retired"
+  | "unit-removed"
+  | "manager-reloaded";
+
+export interface BrowserControlServiceRetirement {
+  schemaVersion: 1;
+  phase: BrowserControlServiceRetirementPhase;
+}
+
 export interface RuntimeManifest {
   configDir: string;
   /** Rutas absolutas resueltas de los archivos enteramente nuestros. */
@@ -55,6 +74,13 @@ export interface RuntimeManifest {
   serviceUnit?: ManagedBrowserControlServiceBinding;
   /** Estampa de autostart del MCP cuando un servicio externo quedó verificado. */
   browserControlAutostart?: BrowserControlAutostartStamp;
+  /**
+   * Progreso de recuperación de una retirada de servicio Browser Control a
+   * medias. Cada fase se persiste tras el readback que la acredita y antes del
+   * siguiente efecto; el binding/estampa se conservan como evidencia histórica
+   * hasta cerrar la limpieza. Ausente = sin retirada pendiente.
+   */
+  browserControlServiceRetirement?: BrowserControlServiceRetirement;
   updatedAt: string;
 }
 

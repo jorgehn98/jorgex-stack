@@ -15,7 +15,9 @@ import {
   type ManagedBrowserInvocationPlan,
   type VerifiedRetainedBrowserRelease,
 } from "./browser-managed.js";
+import { createBackup } from "./backup.js";
 import type { ManagedBrowserControlServiceBinding } from "./manifest.js";
+import { samePath } from "./paths.js";
 
 /**
  * T13 (vertical artifact): renderer/creación de la unidad de usuario Linux del
@@ -242,19 +244,16 @@ function inspectAncestors(unitPath: string): string | null {
 const HASH = /^[0-9a-f]{64}$/;
 
 /**
- * Autentica la evidencia `serviceUnit` de una unidad owned contra la release
- * retenida que la autorizó. No basta el digest del archivo: `receiptSha256`,
- * `releaseDirectory`, `nodePath` y `port` son un testigo físico ligado al active
- * retenido. Se reutiliza el loader/guard de `browser-managed`, nunca se parsea
+ * Reproduce la unidad canónica que autoriza el binding (release retenida +
+ * `serve` + puerto) sin tocar el archivo: es la evidencia común a la retirada
+ * con archivo presente y a la recuperación con archivo ya ausente. No se parsea
  * `ExecStart` ni se acepta el digest del manifest editable como prueba plena.
- * Devuelve `null` si autentica; en caso contrario, el motivo del bloqueo.
  */
-function authenticateOwnedServiceUnit(
+function renderAuthenticatedOwnedServiceUnit(
   stateDir: string,
   binding: ManagedBrowserControlServiceBinding,
-  actualBytes: Buffer,
-): string | null {
-  if (binding.schemaVersion !== 1) return "la evidencia serviceUnit no es schemaVersion 1";
+): { readonly ok: true; readonly bytes: Buffer } | { readonly ok: false; readonly reason: string } {
+  if (binding.schemaVersion !== 1) return { ok: false, reason: "la evidencia serviceUnit no es schemaVersion 1" };
   if (
     typeof binding.releaseDirectory !== "string" ||
     binding.releaseDirectory !== path.basename(binding.releaseDirectory) ||
@@ -262,15 +261,20 @@ function authenticateOwnedServiceUnit(
     binding.releaseDirectory.includes("/") ||
     binding.releaseDirectory.includes("\\")
   ) {
-    return "releaseDirectory no es un basename release-* retenido";
+    return { ok: false, reason: "releaseDirectory no es un basename release-* retenido" };
   }
-  if (typeof binding.receiptSha256 !== "string" || !HASH.test(binding.receiptSha256)) return "receiptSha256 inválido";
-  if (typeof binding.unitSha256 !== "string" || !HASH.test(binding.unitSha256)) return "unitSha256 inválido";
-  if (!Number.isInteger(binding.port) || binding.port < 1 || binding.port > 65_535) return "port inválido";
+  if (typeof binding.receiptSha256 !== "string" || !HASH.test(binding.receiptSha256)) {
+    return { ok: false, reason: "receiptSha256 inválido" };
+  }
+  if (typeof binding.unitSha256 !== "string" || !HASH.test(binding.unitSha256)) {
+    return { ok: false, reason: "unitSha256 inválido" };
+  }
+  if (!Number.isInteger(binding.port) || binding.port < 1 || binding.port > 65_535) {
+    return { ok: false, reason: "port inválido" };
+  }
   if (binding.nodePath !== process.execPath) {
-    return `nodePath no coincide con el Node efectivo autorizado (${process.execPath})`;
+    return { ok: false, reason: `nodePath no coincide con el Node efectivo autorizado (${process.execPath})` };
   }
-  if (binding.unitSha256 !== sha256(actualBytes)) return "la unidad owned no coincide con unitSha256";
 
   let release;
   try {
@@ -279,23 +283,63 @@ function authenticateOwnedServiceUnit(
       receiptSha256: binding.receiptSha256,
     });
   } catch (error) {
-    return `no se pudo autenticar la release retenida del binding (${error instanceof Error ? error.message : String(error)})`;
+    return { ok: false, reason: `no se pudo autenticar la release retenida del binding (${error instanceof Error ? error.message : String(error)})` };
   }
   if (release.releaseDirectory !== binding.releaseDirectory) {
-    return "la release retenida autenticada no es la registrada en el binding";
+    return { ok: false, reason: "la release retenida autenticada no es la registrada en el binding" };
   }
 
   let invocation: ManagedBrowserInvocationPlan;
   try {
     invocation = planManagedBrowserInvocationForRetainedRelease(release, ["serve"]);
   } catch (error) {
-    return `no se pudo reconstruir la invocación \`serve\` autenticada del binding (${error instanceof Error ? error.message : String(error)})`;
+    return { ok: false, reason: `no se pudo reconstruir la invocación \`serve\` autenticada del binding (${error instanceof Error ? error.message : String(error)})` };
   }
   const rendered = Buffer.from(renderBrowserControlServiceUnit(invocation, binding.port), "utf8");
-  if (!rendered.equals(actualBytes) || sha256(rendered) !== binding.unitSha256) {
+  if (sha256(rendered) !== binding.unitSha256) {
+    return { ok: false, reason: "el guard autenticado de la release retenida no coincide con unitSha256" };
+  }
+  return { ok: true, bytes: rendered };
+}
+
+/** Autentica el binding sin el archivo (retirada con unidad ya ausente). */
+export function authenticateOwnedServiceUnitBinding(
+  stateDir: string,
+  binding: ManagedBrowserControlServiceBinding,
+): string | null {
+  const rendered = renderAuthenticatedOwnedServiceUnit(stateDir, binding);
+  return rendered.ok ? null : rendered.reason;
+}
+
+/**
+ * Autentica la evidencia `serviceUnit` de una unidad owned contra la release
+ * retenida que la autorizó y contra los bytes reales del archivo. Devuelve
+ * `null` si autentica; en caso contrario, el motivo del bloqueo.
+ */
+export function authenticateOwnedServiceUnitBytes(
+  stateDir: string,
+  binding: ManagedBrowserControlServiceBinding,
+  actualBytes: Buffer,
+): string | null {
+  const rendered = renderAuthenticatedOwnedServiceUnit(stateDir, binding);
+  if (!rendered.ok) return rendered.reason;
+  if (!rendered.bytes.equals(actualBytes)) {
     return "los bytes de la unidad owned no reproducen el guard autenticado de la release retenida";
   }
   return null;
+}
+
+/** Estado físico de la ruta fija: regular legible, ausente o insegura. */
+export type OwnedServiceUnitFile =
+  | { readonly kind: "absent" }
+  | { readonly kind: "regular"; readonly bytes: Buffer }
+  | { readonly kind: "unsafe"; readonly reason: string };
+
+export function inspectOwnedServiceUnitFile(unitPath: string): OwnedServiceUnitFile {
+  const existing = inspectExistingUnit(path.resolve(unitPath));
+  if (existing.kind === "regular") return { kind: "regular", bytes: existing.bytes };
+  if (existing.kind === "absent") return { kind: "absent" };
+  return { kind: "unsafe", reason: existing.reason };
 }
 
 /**
@@ -347,7 +391,7 @@ export function ensureBrowserControlServiceUnit(
         reason: `${unitPath}: ${ancestorError} Se conserva la unidad y su claim sin reescribir.`,
       };
     }
-    const authError = authenticateOwnedServiceUnit(input.stateDir, binding, existing.bytes);
+    const authError = authenticateOwnedServiceUnitBytes(input.stateDir, binding, existing.bytes);
     if (authError !== null) {
       return {
         kind: "error",
@@ -827,6 +871,62 @@ export async function probeInactiveOwnedServiceUnit(
   return { kind: "inactive" };
 }
 
+export type BrowserControlServiceStoppedState =
+  | { readonly kind: "inactive" }
+  | { readonly kind: "absent" }
+  | { readonly kind: "pending"; readonly reason: string };
+
+/**
+ * Readback de SOLO LECTURA para recuperar una retirada a medias: acepta la
+ * unidad propia cargada e inactiva/PID0 (`inactive`) o su ausencia coherente en
+ * el manager (`absent`, p. ej. tras el `daemon-reload` final), en ambos casos con
+ * el relay ausente en el puerto propio. Una identidad/estado incoherente es
+ * `pending`; nunca muta.
+ */
+export async function inspectStoppedOwnedServiceUnit(
+  runner: BrowserControlSystemctlRunner,
+  unitPath: string,
+  port: number,
+): Promise<BrowserControlServiceStoppedState> {
+  const resolved = path.resolve(unitPath);
+  const outcome = await runSystemctl(runner, systemctlShowArgs(true));
+  if (!outcome.ok) return { kind: "pending", reason: `no se pudo consultar el manager (${outcome.reason})` };
+  if (outcome.status !== 0) return { kind: "pending", reason: `systemctl show devolvió estado ${outcome.status}` };
+  const parsed = parseShowProperties(outcome.stdout, [...SHOW_PROPERTIES, "MainPID"]);
+  if (!parsed.ok) return { kind: "pending", reason: parsed.reason };
+  const props = parsed.props;
+  if (props["Id"] !== BROWSER_CONTROL_SERVICE_UNIT_FILENAME) {
+    return { kind: "pending", reason: `la unidad consultada no declara la identidad propia (Id=${props["Id"]})` };
+  }
+  const absent = props["LoadState"] === "not-found"
+    && props["FragmentPath"] === ""
+    && props["DropInPaths"] === ""
+    && props["NeedDaemonReload"] === "no"
+    && props["ActiveState"] === "inactive"
+    && props["SubState"] === "dead"
+    && props["MainPID"] === "0";
+  if (!absent) {
+    const common = ownUnitLoadedError(props, resolved);
+    if (common !== null) return { kind: "pending", reason: common };
+    if (props["ActiveState"] !== "inactive" || props["SubState"] !== "dead" || props["MainPID"] !== "0") {
+      return {
+        kind: "pending",
+        reason: `la unidad no está inactiva/PID0 (ActiveState=${props["ActiveState"]}, SubState=${props["SubState"]}, MainPID=${props["MainPID"]})`,
+      };
+    }
+  }
+  const relay = await readBrowserControlRelayVersion(port);
+  if (relay.status !== "absent") {
+    return {
+      kind: "pending",
+      reason: relay.status === "present"
+        ? "el relay responde en el puerto propio; no se cierra la retirada"
+        : `no se pudo comprobar la ausencia del relay en el puerto propio (${relay.reason})`,
+    };
+  }
+  return { kind: absent ? "absent" : "inactive" };
+}
+
 /** Entry acotado y UTF-8 estricto; una sola asignación exacta de build id. */
 const BUILD_ID_ASSIGNMENT = /^var browserControlBuildId = "([^"]+)";$/;
 const MAX_BUILD_ENTRY_BYTES = 16 * 1024 * 1024;
@@ -994,6 +1094,233 @@ export async function superviseBrowserControlServiceUnit(
   }
 
   return { kind: "ready", port, version: expectedVersion, buildId };
+}
+
+// ---------------------------------------------------------------------------
+// Retirada real de la unidad propia (Spec T13): preflight de solo lectura,
+// stop/disable exactos y retirada del archivo con backup/readback. Reutiliza el
+// transporte/parser/autenticador existentes; nunca reinicia, fuerza, recarga ni
+// toca una unidad ajena.
+// ---------------------------------------------------------------------------
+
+export interface BrowserControlServiceRetirementInput {
+  readonly stateDir: string;
+  readonly configDir: string;
+  readonly unitPath: string;
+  readonly binding: ManagedBrowserControlServiceBinding;
+  readonly runner: BrowserControlSystemctlRunner;
+}
+
+export type BrowserControlServiceRetirementState =
+  | { readonly kind: "operational"; readonly port: number; readonly mainPid: number }
+  | { readonly kind: "inactive"; readonly port: number }
+  | { readonly kind: "pending"; readonly reason: string };
+
+/**
+ * Preflight de SOLO LECTURA de la retirada: autentica perfil, ruta fija,
+ * ancestros, binding (receipt/tree/guard/bytes) y consulta el manager. Una
+ * unidad operativa exige `/version` coherente con la release autenticada (pid ==
+ * MainPID, version/build) y un segundo readback estable; una inactiva exige
+ * MainPID=0 y ausencia puntual del relay en el puerto propio. Nunca muta.
+ */
+export async function inspectOwnedServiceUnitRetirement(
+  input: BrowserControlServiceRetirementInput,
+): Promise<BrowserControlServiceRetirementState> {
+  const unitPath = path.resolve(input.unitPath);
+  const derived = resolveBrowserControlServiceUnitPath();
+  if (derived === null || path.resolve(derived) !== unitPath) {
+    return { kind: "pending", reason: "la unidad no está en la ruta fija derivada del XDG config/HOME efectivo" };
+  }
+  const base = resolveBrowserControlServiceConfigBase();
+  if (base === null || !samePath(input.configDir, path.join(base, "opencode"))) {
+    return { kind: "pending", reason: "el perfil de la unidad no coincide con el configDir de OpenCode" };
+  }
+  const existing = inspectExistingUnit(unitPath);
+  if (existing.kind !== "regular") {
+    return {
+      kind: "pending",
+      reason: existing.kind === "absent" ? "la unidad owned no existe (drift)" : existing.reason,
+    };
+  }
+  const ancestorError = inspectAncestors(unitPath);
+  if (ancestorError !== null) return { kind: "pending", reason: ancestorError };
+  const authError = authenticateOwnedServiceUnitBytes(input.stateDir, input.binding, existing.bytes);
+  if (authError !== null) return { kind: "pending", reason: authError };
+
+  const outcome = await runSystemctl(input.runner, systemctlShowArgs(true));
+  if (!outcome.ok) return { kind: "pending", reason: `no se pudo consultar el manager (${outcome.reason})` };
+  if (outcome.status !== 0) return { kind: "pending", reason: `systemctl show devolvió estado ${outcome.status}` };
+  const parsed = parseShowProperties(outcome.stdout, [...SHOW_PROPERTIES, "MainPID"]);
+  if (!parsed.ok) return { kind: "pending", reason: parsed.reason };
+  const common = ownUnitLoadedError(parsed.props, unitPath);
+  if (common !== null) return { kind: "pending", reason: common };
+  const props = parsed.props;
+
+  if (props["ActiveState"] !== "active" || props["SubState"] !== "running") {
+    if (props["ActiveState"] !== "inactive" || props["SubState"] !== "dead" || props["MainPID"] !== "0") {
+      return {
+        kind: "pending",
+        reason: `la unidad no está operativa ni inactiva de forma concluyente (ActiveState=${props["ActiveState"]}, SubState=${props["SubState"]}, MainPID=${props["MainPID"]})`,
+      };
+    }
+    const relay = await readBrowserControlRelayVersion(input.binding.port);
+    if (relay.status !== "absent") {
+      return {
+        kind: "pending",
+        reason: relay.status === "present"
+          ? "el relay responde en el puerto propio aunque la unidad figure inactiva"
+          : `no se pudo comprobar la ausencia del relay (${relay.reason})`,
+      };
+    }
+    return { kind: "inactive", port: input.binding.port };
+  }
+
+  const mainPidRaw = props["MainPID"] ?? "";
+  if (!/^\d+$/.test(mainPidRaw)) return { kind: "pending", reason: "MainPID no es decimal" };
+  const mainPid = Number(mainPidRaw);
+  if (!Number.isInteger(mainPid) || mainPid < 1 || mainPid > 0xffff_ffff) {
+    return { kind: "pending", reason: "MainPID fuera del rango uint32 positivo" };
+  }
+
+  let release: VerifiedRetainedBrowserRelease;
+  try {
+    release = loadVerifiedRetainedBrowserReleaseByBinding(input.stateDir, BROWSER_CONTROL_PACKAGE, {
+      releaseDirectory: input.binding.releaseDirectory,
+      receiptSha256: input.binding.receiptSha256,
+    });
+  } catch (error) {
+    return {
+      kind: "pending",
+      reason: `no se pudo autenticar la release retenida de la unidad (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  const buildId = extractBrowserControlBuildId(release.receipt.entryPath);
+  if (buildId === null) {
+    return { kind: "pending", reason: "no se pudo extraer un browserControlBuildId único y válido del entry autenticado" };
+  }
+  const version = await readBrowserControlRelayVersion(input.binding.port);
+  if (version.status !== "present") {
+    return {
+      kind: "pending",
+      reason: version.status === "absent"
+        ? "el endpoint /version no responde en el puerto de la unidad operativa"
+        : `no se pudo verificar /version (${version.reason})`,
+    };
+  }
+  const reportedPid = version.payload.pid;
+  const reportedVersion = version.payload.version;
+  const reportedBuild = version.payload.buildId;
+  if (typeof reportedPid !== "number" || !Number.isInteger(reportedPid) || reportedPid < 1 || reportedPid > 0xffff_ffff) {
+    return { kind: "pending", reason: "/version no declara un pid uint32 positivo" };
+  }
+  if (reportedPid !== mainPid) return { kind: "pending", reason: "el pid de /version no coincide con el MainPID de la unidad" };
+  if (reportedVersion !== release.receipt.version) {
+    return { kind: "pending", reason: "la version de /version no coincide con la release autenticada de la unidad" };
+  }
+  if (reportedBuild !== buildId) return { kind: "pending", reason: "el buildId de /version no coincide con el entry autenticado" };
+
+  const stable = await inspectOperationalUnit(input.runner, unitPath);
+  if (!stable.ok) return { kind: "pending", reason: `segundo readback operativo incierto: ${stable.reason}` };
+  if (stable.readback.mainPid !== mainPid) {
+    return { kind: "pending", reason: "el MainPID cambió entre readbacks; el servicio no es estable" };
+  }
+  return { kind: "operational", port: input.binding.port, mainPid };
+}
+
+export interface BrowserControlServiceMutationResult {
+  readonly kind: "ok" | "pending";
+  readonly reason?: string;
+}
+
+/** `stop` de la unidad EXACTA propia y readback inactivo/PID0 con relay ausente. */
+export async function stopOwnedServiceUnit(input: {
+  readonly runner: BrowserControlSystemctlRunner;
+  readonly unitPath: string;
+  readonly port: number;
+}): Promise<BrowserControlServiceMutationResult> {
+  const stop = await runSystemctl(input.runner, [
+    "--user",
+    "--no-pager",
+    "stop",
+    BROWSER_CONTROL_SERVICE_UNIT_FILENAME,
+  ]);
+  if (!stop.ok || stop.status !== 0) {
+    return { kind: "pending", reason: `stop falló (${stop.reason ?? `estado ${stop.status}`})` };
+  }
+  const probe = await probeInactiveOwnedServiceUnit({
+    runner: input.runner,
+    unitPath: path.resolve(input.unitPath),
+    port: input.port,
+  });
+  if (probe.kind !== "inactive") {
+    return { kind: "pending", reason: `readback tras stop incierto: ${probe.reason}` };
+  }
+  return { kind: "ok" };
+}
+
+/** `--no-reload disable` de la unidad EXACTA propia (sin recarga implícita). */
+export async function disableOwnedServiceUnit(
+  runner: BrowserControlSystemctlRunner,
+): Promise<BrowserControlServiceMutationResult> {
+  const disable = await runSystemctl(runner, [
+    "--user",
+    "--no-pager",
+    "--no-reload",
+    "disable",
+    BROWSER_CONTROL_SERVICE_UNIT_FILENAME,
+  ]);
+  if (!disable.ok || disable.status !== 0) {
+    return { kind: "pending", reason: `disable falló (${disable.reason ?? `estado ${disable.status}`})` };
+  }
+  return { kind: "ok" };
+}
+
+/** `daemon-reload` final: recarga definiciones tras retirar el archivo, no reinicia procesos. */
+export async function reloadOwnedServiceUnitManager(
+  runner: BrowserControlSystemctlRunner,
+): Promise<BrowserControlServiceMutationResult> {
+  const reload = await runSystemctl(runner, ["--user", "--no-pager", "daemon-reload"]);
+  if (!reload.ok || reload.status !== 0) {
+    return { kind: "pending", reason: `daemon-reload falló (${reload.reason ?? `estado ${reload.status}`})` };
+  }
+  return { kind: "ok" };
+}
+
+/**
+ * Retira el archivo de unidad propio con backup previo y readback. Reautentica
+ * ancestros, bytes y binding, y revalida la identidad física (dev/ino) justo
+ * antes del unlink: una sustitución/deriva se conserva, nunca se borra a ciegas.
+ */
+export function removeOwnedServiceUnitFile(input: {
+  readonly stateDir: string;
+  readonly unitPath: string;
+  readonly binding: ManagedBrowserControlServiceBinding;
+}): { readonly kind: "removed" | "pending"; readonly reason?: string } {
+  const unitPath = path.resolve(input.unitPath);
+  const ancestorError = inspectAncestors(unitPath);
+  if (ancestorError !== null) return { kind: "pending", reason: ancestorError };
+  const existing = inspectExistingUnit(unitPath);
+  if (existing.kind === "absent") return { kind: "removed" };
+  if (existing.kind === "unsafe") return { kind: "pending", reason: existing.reason };
+  const authError = authenticateOwnedServiceUnitBytes(input.stateDir, input.binding, existing.bytes);
+  if (authError !== null) return { kind: "pending", reason: authError };
+  createBackup([unitPath], "uninstall-browser-control-service");
+  const recheck = inspectExistingUnit(unitPath);
+  if (
+    recheck.kind !== "regular"
+    || recheck.dev !== existing.dev
+    || recheck.ino !== existing.ino
+    || !recheck.bytes.equals(existing.bytes)
+  ) {
+    return { kind: "pending", reason: "la unidad cambió entre la autenticación y la retirada; se conserva sin borrar" };
+  }
+  try {
+    fs.rmSync(unitPath, { force: true });
+  } catch (error) {
+    return { kind: "pending", reason: `no se pudo retirar la unidad propia (${error instanceof Error ? error.message : String(error)})` };
+  }
+  if (fs.existsSync(unitPath)) return { kind: "pending", reason: "la unidad sigue presente tras la retirada" };
+  return { kind: "removed" };
 }
 
 /** Proyección canónica de entorno del servicio verificado: solo los dos campos propios. */
