@@ -19,12 +19,15 @@ import type { InstallOptions } from "../src/install.js";
 import type { UninstallOptions } from "../src/uninstall.js";
 import type {
   BrowserControlServiceResult,
+  BrowserControlSystemctlRunner,
   EnsureBrowserControlServiceInput,
 } from "../src/lib/browser-control-service.js";
 import type { BrowserControlReady } from "../src/lib/browser-control-runtime.js";
 import type {
+  BrowserControlAutostartStamp,
   BrowserControlServiceRetirement,
   ManagedBrowserControlServiceBinding,
+  RuntimeManifest,
 } from "../src/lib/manifest.js";
 
 /**
@@ -112,44 +115,9 @@ const BC_ROOT_BYTES_B = Buffer.from("browser-control-service-root-bytes-B\n");
 const BC_INTEGRITY_B = `sha512-${createHash("sha512").update(BC_ROOT_BYTES_B).digest("base64")}`;
 const BC_TARBALL_URL_B = `https://registry.npmjs.org/${BC_PACKAGE}/-/${BROWSER_CONTROL_SERVER}-${BC_VERSION_B}.tgz`;
 
-/**
- * Narrow DI seam of the manager process boundary: argv in, bounded
- * `{status, stdout}` out. It represents only the external `systemctl` edge — it
- * never returns a controller `ready` or simulated receipts.
- */
-export interface BrowserControlSystemctlRunner {
-  (args: readonly string[]): Promise<{ status: number; stdout: string }>;
-}
-
-/** `InstallOptions` intersection with the service opt-in and its effect seam. */
-export type BrowserControlServiceInstallOptions = InstallOptions & {
-  browserControlService?: boolean;
-  systemctlRunner?: BrowserControlSystemctlRunner;
-};
-
-/** `UninstallOptions` intersection with the manager effect seam (declared until the source exposes it). */
-export type BrowserControlServiceUninstallOptions = UninstallOptions & {
-  systemctlRunner?: BrowserControlSystemctlRunner;
-};
-
-/**
- * Granular autostart authority of the verified external service in the manifest
- * row (Spec T13). Declared locally until the source field exists, so the RED
- * does not import a not-yet-existing API; it is layered on the public manifest
- * shape, never cast into an unrelated type.
- */
-export interface BrowserControlAutostartStamp {
-  readonly schemaVersion: number;
-  readonly projectionSha256: string;
-  readonly portOwned: boolean;
-}
-
-interface AutostartManifestRow {
-  readonly owned?: readonly string[];
-  readonly serviceUnit?: ManagedBrowserControlServiceBinding;
-  readonly browserControlAutostart?: BrowserControlAutostartStamp;
-  readonly browserControlServiceRetirement?: BrowserControlServiceRetirement;
-}
+// Service option/runner/manifest types come from production exports
+// (`InstallOptions`/`UninstallOptions` already carry the service opt-in and the
+// manager seam); no local provisional declarations are layered here.
 
 const prompts = vi.hoisted(() => ({
   intro: vi.fn(),
@@ -798,7 +766,7 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
 
     let exitCode: number;
     try {
-      const options: BrowserControlServiceInstallOptions = {
+      const options: InstallOptions = {
         runtimes: ["opencode"],
         command: "install",
         dryRun: false,
@@ -842,7 +810,7 @@ async function runServiceInstall(input: RunServiceInput): Promise<ServiceObserva
       ? (JSON.parse(fs.readFileSync(configPath, "utf8")) as ProjectedConfig)
       : {};
     const projected = config.mcp?.servers?.[BROWSER_CONTROL_SERVER];
-    const manifestRow = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+    const manifestRow = readManifest().runtimes.opencode as RuntimeManifest | undefined;
     observables = {
       exitCode,
       unitPath,
@@ -949,7 +917,7 @@ async function advanceInactiveServiceAToB(
     throw new Error("fixture: the service rotation requires the supervisor manager");
   }
   const { readManifest, writeRuntimeManifest } = await import("../src/lib/manifest.js");
-  const rowBefore = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const rowBefore = readManifest().runtimes.opencode as RuntimeManifest | undefined;
   const unitBytesBefore = fs.readFileSync(ctx.unitPath);
 
   const configPath = path.join(ctx.configDir, "opencode.json");
@@ -1203,7 +1171,7 @@ async function runServiceOptinStage(ctx: VerifiedServiceContext): Promise<Existi
   } finally {
     opencode.detect = originalDetect;
   }
-  const rowAfter = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const rowAfter = readManifest().runtimes.opencode as RuntimeManifest | undefined;
   const projectionAfter = readServiceProjection(ctx.configDir);
   return {
     exitCode,
@@ -1233,7 +1201,7 @@ async function retryExistingOwnedUnitAfterEnvFault(
     throw new Error("fixture: the existing-unit retry requires the supervisor manager");
   }
   const { readManifest } = await import("../src/lib/manifest.js");
-  const rowBefore = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const rowBefore = readManifest().runtimes.opencode as RuntimeManifest | undefined;
   const unitBytesBefore = fs.readFileSync(ctx.unitPath);
   const projectionBefore = readServiceProjection(ctx.configDir);
 
@@ -1244,7 +1212,7 @@ async function retryExistingOwnedUnitAfterEnvFault(
   // Stage 2: the user recovered the OWN supervisor outside Stack.
   await manager.activate();
   const fixed = await runServiceOptinStage(ctx);
-  const rowAfter = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const rowAfter = readManifest().runtimes.opencode as RuntimeManifest | undefined;
   return {
     unitBytesBefore,
     ownedBefore: rowBefore?.owned ?? [],
@@ -1285,11 +1253,11 @@ async function runExistingUnitOptinAfterExternalReactivation(
   ctx: VerifiedServiceContext,
 ): Promise<OldUnitReactivationEvidence> {
   const { readManifest } = await import("../src/lib/manifest.js");
-  const rowBefore = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const rowBefore = readManifest().runtimes.opencode as RuntimeManifest | undefined;
   const unitBytesBefore = fs.readFileSync(ctx.unitPath);
   const projectionBefore = readServiceProjection(ctx.configDir);
   const stage = await runServiceOptinStage(ctx);
-  const rowAfter = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const rowAfter = readManifest().runtimes.opencode as RuntimeManifest | undefined;
 
   const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
   const { loadVerifiedRetainedBrowserRelease, loadVerifiedRetainedBrowserReleaseByBinding } = await import(
@@ -2799,7 +2767,7 @@ describe.skipIf(process.platform !== "linux")(
             let exitCode: number;
             try {
               const uninstall = await import("../src/uninstall.js");
-              const options: BrowserControlServiceUninstallOptions = {
+              const options: UninstallOptions = {
                 runtimes: ["opencode"],
                 dryRun: false,
                 yes: true,
@@ -2934,32 +2902,130 @@ interface PendingUninstallAuthority {
  * under test is the existing uninstall branch, never a forged
  * manager/controller reply.
  */
-async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<PendingUninstallAuthority> {
+/**
+ * Readbacks of one real `runUninstall` against the service a real `runInstall`
+ * just verified, in the same private HOME. `fetch` and the process boundary are
+ * poisoned and the manager is reached only through the injected runner, so every
+ * removal proves no acquisition and no real spawn. The pending, full and
+ * partial-retry cases share this single path; only the mode deltas differ.
+ */
+interface UninstallReadbacks {
+  readonly exitCode: number;
+  readonly fetchCallBaseline: number;
+  readonly fetchCallDelta: number;
+  readonly processDelegateBaseline: number;
+  readonly processDelegateDelta: number;
+  readonly fakeRunnerCallBaseline: number;
+  readonly fakeRunnerCallDelta: number;
+  readonly managerCalls: readonly string[][];
+  readonly managerEvents: readonly string[];
+  readonly managerVersionRequests: readonly string[];
+  readonly managerReadbacks: readonly SupervisorReadback[];
+  readonly rowBefore: RuntimeManifest | undefined;
+  readonly rowAfter: RuntimeManifest | undefined;
+  readonly configBefore: Record<string, unknown>;
+  readonly configAfter: Record<string, unknown>;
+  readonly unitExistsBefore: boolean;
+  readonly unitPathResolved: string;
+  readonly unitBytesBefore: Buffer | null;
+  readonly unitInodeBefore: number | null;
+  readonly unitBytesAfter: Buffer | null;
+  readonly unitInodeAfter: number | null;
+  readonly skillPath: string;
+  readonly skillBytesBefore: Buffer | null;
+  readonly skillInodeBefore: number | null;
+  readonly skillBytesAfter: Buffer | null;
+  readonly skillInodeAfter: number | null;
+  readonly activeRootPathBefore: string;
+  readonly activeReceiptShaBefore: string;
+  readonly activeTreeShaBefore: string;
+  readonly activeRootPathAfter: string | null;
+  readonly activeReceiptShaAfter: string | null;
+  readonly activeTreeShaAfter: string | null;
+  readonly ledgerFile: string;
+  readonly mcpOwnershipBefore: boolean;
+  readonly mcpOwnershipAfter: boolean;
+  readonly unitBackedUp: boolean;
+  readonly engramPreserved: boolean;
+  readonly diagnostics: readonly string[];
+  readonly outroMessages: readonly string[];
+}
+
+/** Managed MCP projection of the own OpenCode config (command + environment). */
+function projectedBrowserControlEntry(
+  config: Record<string, unknown>,
+): { readonly command?: readonly string[]; readonly environment?: Record<string, unknown> } | undefined {
+  const mcp = config.mcp as
+    | { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> }
+    | undefined;
+  return mcp?.servers?.[BROWSER_CONTROL_SERVER];
+}
+
+async function runUninstallInPlace(
+  ctx: VerifiedServiceContext,
+  input: {
+    readonly mode: "pending" | "full" | "retry";
+    readonly runner?: BrowserControlSystemctlRunner;
+    readonly beforeRemoval?: (ctx: VerifiedServiceContext) => void;
+  },
+): Promise<UninstallReadbacks> {
+  const supervisor = ctx.manager;
+  if (input.mode !== "pending" && supervisor === undefined) {
+    throw new Error(`fixture: the ${input.mode} service uninstall requires the supervisor manager`);
+  }
+  // The pending removal always uses its own UNREACHABLE manager, even when the
+  // install phase left a supervisor fixture in the context: the removal must
+  // prove read-only queries, never reuse the install's fake manager.
+  const callLog: ManagerRunner =
+    input.mode === "pending" ? createUnreachableManagerFixture() : supervisor!;
+  const supervisorSlices = input.mode === "pending" ? undefined : supervisor;
+  const runner = input.runner ?? callLog.run;
+
   const { readManifest } = await import("../src/lib/manifest.js");
-  const { loadDevtoolsMcpOwnership, devtoolsMcpPreferenceFile } = await import("../src/lib/tool-preferences.js");
-  const rowBefore = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
-  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
-  const unitInodeBefore = fs.statSync(ctx.unitPath).ino;
-  const manifestOwnedBefore = rowBefore?.owned ?? [];
-  const inventoryBefore = snapshotOwnedFileIdentities(manifestOwnedBefore);
+  const { loadDevtoolsMcpOwnership, devtoolsMcpPreferenceFile } = await import(
+    "../src/lib/tool-preferences.js"
+  );
+  const { loadVerifiedRetainedBrowserRelease } = await import("../src/lib/browser-managed.js");
+  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
+  const rowBefore = readManifest().runtimes["opencode"];
+  const unitPathResolved = path.resolve(ctx.unitPath);
+  const unitExistsBefore = fs.existsSync(ctx.unitPath);
+  if (input.mode !== "retry" && !unitExistsBefore) {
+    throw new Error("fixture: the owned unit must exist before the removal");
+  }
+  const unitBytesBefore = unitExistsBefore ? fs.readFileSync(ctx.unitPath) : null;
+  const unitInodeBefore = unitExistsBefore ? fs.statSync(ctx.unitPath).ino : null;
+  const skillPath = path.join(ctx.configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+  const skillBytesBefore = fs.existsSync(skillPath) ? fs.readFileSync(skillPath) : null;
+  const skillInodeBefore = fs.existsSync(skillPath) ? fs.statSync(skillPath).ino : null;
+  const activeBefore = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  if (input.mode !== "pending" && activeBefore === null) {
+    throw new Error("fixture: the retained active must survive before the removal");
+  }
+  const configPath = path.join(ctx.configDir, "opencode.json");
+  const configBefore = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  if (input.mode !== "pending") {
+    configBefore["x-user-note"] = "preserve-me";
+    fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
+  }
+  input.beforeRemoval?.(ctx);
   const ledgerFile = devtoolsMcpPreferenceFile();
   const mcpOwnershipBefore = loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER);
 
-  // Ambient relay port defense: uninstall must never parse or use it.
-  process.env.BROWSER_CONTROL_PORT = "not-a-port";
+  if (input.mode === "pending") {
+    // Ambient relay port defense: uninstall must never parse or use it.
+    process.env.BROWSER_CONTROL_PORT = "not-a-port";
+  }
 
   const fetchPoison = vi.fn(() => {
     throw new Error("uninstall must not acquire Browser Control over the network");
   });
   vi.stubGlobal("fetch", fetchPoison);
 
-  // Explicit UNREACHABLE manager: the removal may only query it read-only.
-  const manager = createUnreachableManagerFixture();
-
   const managerSpies = [...childProcessDelegates];
   const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
   const poisonManager = (): never => {
-    throw new Error("uninstall must not invoke a real process manager");
+    throw new Error("uninstall must not spawn a real process manager");
   };
   for (const spy of managerSpies) spy.mockImplementation(poisonManager);
 
@@ -2974,30 +3040,40 @@ async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<
     configDir: ctx.configDir,
   });
 
-  let uninstallExitCode: number;
+  const warnBefore = prompts.log.warn.mock.calls.length;
+  const errorBefore = prompts.log.error.mock.calls.length;
+  const callsBefore = callLog.calls.length;
+  const eventsBefore = supervisorSlices?.events.length ?? 0;
+  const versionRequestsBefore = supervisorSlices?.versionRequests.length ?? 0;
+  const readbacksBefore = supervisorSlices?.readbacks.length ?? 0;
+
+  let exitCode: number;
   let fetchCallBaseline = 0;
   let fetchCallDelta = 0;
-  let managerCallBaseline = 0;
-  let managerCallDelta = 0;
+  let processDelegateBaseline = 0;
+  let processDelegateDelta = 0;
+  let fakeRunnerCallBaseline = 0;
+  let fakeRunnerCallDelta = 0;
   try {
     const uninstall = await import("../src/uninstall.js");
     // Snapshot immediately before the removal: the preceding install phase runs
-    // real delegates (the OpenCode v2 `--version` gate), so the absolute count
-    // would misattribute those calls to the uninstall. The contract is the
+    // real delegates (the OpenCode v2 `--version` gate), so the contract is the
     // DELTA over all four process delegates.
     fetchCallBaseline = fetchPoison.mock.calls.length;
-    managerCallBaseline = processDelegateCallTotal();
-    const options: BrowserControlServiceUninstallOptions = {
+    processDelegateBaseline = processDelegateCallTotal();
+    fakeRunnerCallBaseline = callLog.calls.length;
+    const options: UninstallOptions = {
       runtimes: ["opencode"],
       dryRun: false,
       yes: true,
       removeEngram: false,
       removePlaywright: false,
-      systemctlRunner: manager.run,
+      systemctlRunner: runner,
     };
-    uninstallExitCode = await uninstall.runUninstall(options);
+    exitCode = await uninstall.runUninstall(options);
     fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
-    managerCallDelta = processDelegateCallTotal() - managerCallBaseline;
+    processDelegateDelta = processDelegateCallTotal() - processDelegateBaseline;
+    fakeRunnerCallDelta = callLog.calls.length - fakeRunnerCallBaseline;
   } finally {
     adapter.detect = originalDetect;
     managerSpies.forEach((spy, index) => {
@@ -3007,43 +3083,96 @@ async function runPendingUninstallInPlace(ctx: VerifiedServiceContext): Promise<
     });
   }
 
-  const rowAfter = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
-  const manifestOwnedAfter = rowAfter?.owned ?? [];
-  const inventoryAfter = snapshotOwnedFileIdentities(manifestOwnedBefore);
-  const mcpOwnershipAfter = loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER);
-  const configPath = path.join(ctx.configDir, "opencode.json");
-  type ProjectedConfig = {
-    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
-  };
-  const configAfter: ProjectedConfig = fs.existsSync(configPath)
-    ? (JSON.parse(fs.readFileSync(configPath, "utf8")) as ProjectedConfig)
-    : {};
-  const projectedAfter = configAfter.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+  const { listBackups } = await import("../src/lib/backup.js");
+  const configAfter = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  const rowAfter = readManifest().runtimes["opencode"];
+  const unitBytesAfter = fs.existsSync(ctx.unitPath) ? fs.readFileSync(ctx.unitPath) : null;
+  const unitInodeAfter = fs.existsSync(ctx.unitPath) ? fs.statSync(ctx.unitPath).ino : null;
+  const skillBytesAfter = fs.existsSync(skillPath) ? fs.readFileSync(skillPath) : null;
+  const skillInodeAfter = fs.existsSync(skillPath) ? fs.statSync(skillPath).ino : null;
+  const warn = prompts.log.warn.mock.calls.map((call) => String(call[0] ?? ""));
+  const error = prompts.log.error.mock.calls.map((call) => String(call[0] ?? ""));
+  const diagnostics = input.mode === "pending"
+    ? [...warn, ...error]
+    : [...warn.slice(warnBefore), ...error.slice(errorBefore)];
 
   return {
-    uninstallExitCode,
-    stampBefore: rowBefore?.browserControlAutostart,
-    serviceUnitBefore: rowBefore?.serviceUnit,
-    unitBytesBefore,
-    unitInodeBefore,
-    manifestOwnedBefore,
-    inventoryBefore,
-    manifestOwnedAfter,
-    inventoryAfter,
-    manifestAutostartAfter: rowAfter?.browserControlAutostart,
-    manifestServiceUnitAfter: rowAfter?.serviceUnit,
-    mcpOwnershipBefore,
-    mcpOwnershipAfter,
-    mcpCommandAfter: projectedAfter?.command,
-    mcpEnvironmentAfter: projectedAfter?.environment,
+    exitCode,
     fetchCallBaseline,
     fetchCallDelta,
-    managerCallBaseline,
-    managerCallDelta,
-    managerCalls: manager.calls,
-    diagnostics: [...prompts.log.warn.mock.calls, ...prompts.log.error.mock.calls]
-      .map((call) => String(call[0] ?? "")),
+    processDelegateBaseline,
+    processDelegateDelta,
+    fakeRunnerCallBaseline,
+    fakeRunnerCallDelta,
+    managerCalls: callLog.calls.slice(callsBefore),
+    managerEvents: supervisorSlices?.events.slice(eventsBefore) ?? [],
+    managerVersionRequests: supervisorSlices?.versionRequests.slice(versionRequestsBefore) ?? [],
+    managerReadbacks: supervisorSlices?.readbacks.slice(readbacksBefore) ?? [],
+    rowBefore,
+    rowAfter,
+    configBefore,
+    configAfter,
+    unitExistsBefore,
+    unitPathResolved,
+    unitBytesBefore,
+    unitInodeBefore,
+    unitBytesAfter,
+    unitInodeAfter,
+    skillPath,
+    skillBytesBefore,
+    skillInodeBefore,
+    skillBytesAfter,
+    skillInodeAfter,
+    activeRootPathBefore: activeBefore?.receipt.rootPath ?? "",
+    activeReceiptShaBefore: activeBefore?.receiptSha256 ?? "",
+    activeTreeShaBefore: activeBefore?.receipt.treeSha256 ?? "",
+    activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
+    activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
+    activeTreeShaAfter: activeAfter?.receipt.treeSha256 ?? null,
+    ledgerFile,
+    mcpOwnershipBefore,
+    mcpOwnershipAfter: loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER),
+    unitBackedUp: listBackups().some((backup) =>
+      backup.files.some((entry) => path.resolve(entry.original) === unitPathResolved),
+    ),
+    engramPreserved: prompts.log.info.mock.calls
+      .map((call) => String(call[0] ?? ""))
+      .some((message) => /Engram se conserva/.test(message)),
+    diagnostics,
     outroMessages: prompts.outro.mock.calls.map((call) => String(call[0] ?? "")),
+  };
+}
+
+async function runPendingUninstallInPlace(
+  ctx: VerifiedServiceContext,
+): Promise<PendingUninstallAuthority> {
+  const r = await runUninstallInPlace(ctx, { mode: "pending" });
+  const manifestOwnedBefore = r.rowBefore?.owned ?? [];
+  const projected = projectedBrowserControlEntry(r.configAfter);
+  return {
+    uninstallExitCode: r.exitCode,
+    stampBefore: r.rowBefore?.browserControlAutostart,
+    serviceUnitBefore: r.rowBefore?.serviceUnit,
+    unitBytesBefore: r.unitBytesBefore!,
+    unitInodeBefore: r.unitInodeBefore!,
+    manifestOwnedBefore,
+    inventoryBefore: snapshotOwnedFileIdentities(manifestOwnedBefore),
+    manifestOwnedAfter: r.rowAfter?.owned ?? [],
+    inventoryAfter: snapshotOwnedFileIdentities(manifestOwnedBefore),
+    manifestAutostartAfter: r.rowAfter?.browserControlAutostart,
+    manifestServiceUnitAfter: r.rowAfter?.serviceUnit,
+    mcpOwnershipBefore: r.mcpOwnershipBefore,
+    mcpOwnershipAfter: r.mcpOwnershipAfter,
+    mcpCommandAfter: projected?.command,
+    mcpEnvironmentAfter: projected?.environment,
+    fetchCallBaseline: r.fetchCallBaseline,
+    fetchCallDelta: r.fetchCallDelta,
+    managerCallBaseline: r.processDelegateBaseline,
+    managerCallDelta: r.processDelegateDelta,
+    managerCalls: r.managerCalls,
+    diagnostics: r.diagnostics,
+    outroMessages: r.outroMessages,
   };
 }
 
@@ -3130,154 +3259,46 @@ async function runFullUninstallInPlace(
   if (manager === undefined) {
     throw new Error("fixture: the full service uninstall requires the supervisor manager");
   }
-  const { readManifest } = await import("../src/lib/manifest.js");
-  const rowBefore = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
-  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
-  const unitInodeBefore = fs.statSync(ctx.unitPath).ino;
-  const unitPathResolved = path.resolve(ctx.unitPath);
-
-  const skillPath = path.join(ctx.configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
-  const skillBytesBefore = fs.readFileSync(skillPath);
-  const skillInodeBefore = fs.statSync(skillPath).ino;
-
-  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
-  const { loadVerifiedRetainedBrowserRelease } = await import("../src/lib/browser-managed.js");
-  const activeBefore = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
-  if (activeBefore === null) throw new Error("fixture: the first install must retain an active release");
-
-  // External write at the FS boundary: an unrelated top-level user key must
-  // survive the canonical removal (never whole-file ownership).
-  const configPath = path.join(ctx.configDir, "opencode.json");
-  const configBefore = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  configBefore["x-user-note"] = "preserve-me";
-  fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
-
-  // Case-specific external write: the user may mutate projected owned state
-  // (e.g. edit the projected SKILL.md) before the removal authenticates it.
-  hooks?.beforeRemoval?.(ctx);
-
-  // No acquisition: any registry/network attempt fails the run.
-  const fetchPoison = vi.fn(() => {
-    throw new Error("uninstall must not acquire Browser Control over the network");
-  });
-  vi.stubGlobal("fetch", fetchPoison);
-
-  // No real manager: the injected runner is the ONLY manager boundary.
-  const managerSpies = [...childProcessDelegates];
-  const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
-  const poisonManager = (): never => {
-    throw new Error("uninstall must not spawn a real process manager");
-  };
-  for (const spy of managerSpies) spy.mockImplementation(poisonManager);
-
-  const install = await import("../src/install.js");
-  const adapter = install.ADAPTERS.opencode!;
-  const originalDetect = adapter.detect;
-  adapter.detect = () => ({
-    id: "opencode",
-    name: "OpenCode",
-    installed: true,
-    binPath: null,
-    configDir: ctx.configDir,
-  });
-
-  let uninstallExitCode: number;
-  let fetchCallDelta = 0;
-  let processDelegateDelta = 0;
-  let fakeRunnerCallDelta = 0;
-  const callsBefore = manager.calls.length;
-  const eventsBefore = manager.events.length;
-  const versionRequestsBefore = manager.versionRequests.length;
-  const readbacksBefore = manager.readbacks.length;
-  const warnBefore = prompts.log.warn.mock.calls.length;
-  const errorBefore = prompts.log.error.mock.calls.length;
   const runner = hooks?.wrapRunner?.(manager.run) ?? manager.run;
-  try {
-    const uninstall = await import("../src/uninstall.js");
-    // Snapshot immediately before the removal: the preceding install phase runs
-    // real delegates (the OpenCode v2 `--version` gate), so the contract is the
-    // DELTA over all four process delegates.
-    const fetchCallBaseline = fetchPoison.mock.calls.length;
-    const processDelegateBaseline = processDelegateCallTotal();
-    const fakeRunnerCallBaseline = manager.calls.length;
-    const options: BrowserControlServiceUninstallOptions = {
-      runtimes: ["opencode"],
-      dryRun: false,
-      yes: true,
-      removeEngram: false,
-      removePlaywright: false,
-      systemctlRunner: runner,
-    };
-    uninstallExitCode = await uninstall.runUninstall(options);
-    fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
-    processDelegateDelta = processDelegateCallTotal() - processDelegateBaseline;
-    fakeRunnerCallDelta = manager.calls.length - fakeRunnerCallBaseline;
-  } finally {
-    adapter.detect = originalDetect;
-    managerSpies.forEach((spy, index) => {
-      const previous = previousImplementations[index];
-      if (previous === undefined) spy.mockReset();
-      else spy.mockImplementation(previous);
-    });
-  }
-
-  const { listBackups } = await import("../src/lib/backup.js");
-  const unitBackedUp = listBackups().some((backup) =>
-    backup.files.some((entry) => path.resolve(entry.original) === unitPathResolved),
-  );
-  const configAfter = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
-  const rowAfter = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
-  const projectedAfter = (configAfter as {
-    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
-  }).mcp?.servers?.[BROWSER_CONTROL_SERVER];
-  const unitBytesAfter = fs.existsSync(ctx.unitPath) ? fs.readFileSync(ctx.unitPath) : null;
-  const unitInodeAfter = fs.existsSync(ctx.unitPath) ? fs.statSync(ctx.unitPath).ino : null;
-  const skillBytesAfter = fs.existsSync(skillPath) ? fs.readFileSync(skillPath) : null;
-  const skillInodeAfter = fs.existsSync(skillPath) ? fs.statSync(skillPath).ino : null;
-
+  const r = await runUninstallInPlace(ctx, { mode: "full", runner, beforeRemoval: hooks?.beforeRemoval });
+  const projected = projectedBrowserControlEntry(r.configAfter);
   return {
-    uninstallExitCode,
-    stampBefore: rowBefore?.browserControlAutostart,
-    serviceUnitBefore: rowBefore?.serviceUnit,
-    unitBytesBefore,
-    unitInodeBefore,
-    unitPathResolved,
-    unitBytesAfter,
-    unitInodeAfter,
-    skillPath,
-    skillBytesBefore,
-    skillInodeBefore,
-    skillBytesAfter,
-    skillInodeAfter,
-    manifestOwnedAfter: rowAfter?.owned ?? [],
-    manifestAutostartAfter: rowAfter?.browserControlAutostart,
-    manifestServiceUnitAfter: rowAfter?.serviceUnit,
-    mcpCommandAfter: projectedAfter?.command,
-    mcpEnvironmentAfter: projectedAfter?.environment,
-    activeTreeShaBefore: activeBefore.receipt.treeSha256,
-    activeTreeShaAfter: activeAfter?.receipt.treeSha256 ?? null,
-    uninstallManagerCalls: manager.calls.slice(callsBefore),
-    uninstallEvents: manager.events.slice(eventsBefore),
-    uninstallVersionRequests: manager.versionRequests.slice(versionRequestsBefore),
-    uninstallReadbacks: manager.readbacks.slice(readbacksBefore),
-    fetchCallDelta,
-    processDelegateDelta,
-    fakeRunnerCallDelta,
-    unitBackedUp,
-    userCustomSurvived: configAfter["x-user-note"] === "preserve-me",
-    engramPreserved: prompts.log.info.mock.calls
-      .map((call) => String(call[0] ?? ""))
-      .some((message) => /Engram se conserva/.test(message)),
-    activeRootPathBefore: activeBefore.receipt.rootPath,
-    activeReceiptShaBefore: activeBefore.receiptSha256,
-    activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
-    activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
-    diagnostics: [
-      ...prompts.log.warn.mock.calls.slice(warnBefore),
-      ...prompts.log.error.mock.calls.slice(errorBefore),
-    ].map((call) => String(call[0] ?? "")),
-    outroMessages: prompts.outro.mock.calls.map((call) => String(call[0] ?? "")),
+    uninstallExitCode: r.exitCode,
+    stampBefore: r.rowBefore?.browserControlAutostart,
+    serviceUnitBefore: r.rowBefore?.serviceUnit,
+    unitBytesBefore: r.unitBytesBefore!,
+    unitInodeBefore: r.unitInodeBefore!,
+    unitPathResolved: r.unitPathResolved,
+    unitBytesAfter: r.unitBytesAfter,
+    unitInodeAfter: r.unitInodeAfter,
+    skillPath: r.skillPath,
+    skillBytesBefore: r.skillBytesBefore!,
+    skillInodeBefore: r.skillInodeBefore!,
+    skillBytesAfter: r.skillBytesAfter,
+    skillInodeAfter: r.skillInodeAfter,
+    manifestOwnedAfter: r.rowAfter?.owned ?? [],
+    manifestAutostartAfter: r.rowAfter?.browserControlAutostart,
+    manifestServiceUnitAfter: r.rowAfter?.serviceUnit,
+    mcpCommandAfter: projected?.command,
+    mcpEnvironmentAfter: projected?.environment,
+    activeTreeShaBefore: r.activeTreeShaBefore,
+    activeTreeShaAfter: r.activeTreeShaAfter,
+    uninstallManagerCalls: r.managerCalls,
+    uninstallEvents: r.managerEvents,
+    uninstallVersionRequests: r.managerVersionRequests,
+    uninstallReadbacks: r.managerReadbacks,
+    fetchCallDelta: r.fetchCallDelta,
+    processDelegateDelta: r.processDelegateDelta,
+    fakeRunnerCallDelta: r.fakeRunnerCallDelta,
+    unitBackedUp: r.unitBackedUp,
+    userCustomSurvived: r.configAfter["x-user-note"] === "preserve-me",
+    engramPreserved: r.engramPreserved,
+    activeRootPathBefore: r.activeRootPathBefore,
+    activeReceiptShaBefore: r.activeReceiptShaBefore,
+    activeRootPathAfter: r.activeRootPathAfter,
+    activeReceiptShaAfter: r.activeReceiptShaAfter,
+    diagnostics: r.diagnostics,
+    outroMessages: r.outroMessages,
   };
 }
 
@@ -3319,105 +3340,26 @@ interface ServiceRetirementRetryEvidence {
 async function runServiceRetirementRetryInPlace(
   ctx: VerifiedServiceContext,
 ): Promise<ServiceRetirementRetryEvidence> {
-  const manager = ctx.manager;
-  if (manager === undefined) {
-    throw new Error("fixture: the retirement retry requires the supervisor manager");
-  }
-  const { readManifest } = await import("../src/lib/manifest.js");
-  const unitExistsBefore = fs.existsSync(ctx.unitPath);
-
-  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
-  const { loadVerifiedRetainedBrowserRelease } = await import("../src/lib/browser-managed.js");
-  const activeBefore = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
-  if (activeBefore === null) throw new Error("fixture: the retained active must survive the partial removal");
-
-  // External write at the FS boundary: the unrelated user key must survive the
-  // retry as it did the first removal attempt.
-  const configPath = path.join(ctx.configDir, "opencode.json");
-  const configBefore = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  configBefore["x-user-note"] = "preserve-me";
-  fs.writeFileSync(configPath, `${JSON.stringify(configBefore, null, 2)}\n`);
-
-  const fetchPoison = vi.fn(() => {
-    throw new Error("uninstall must not acquire Browser Control over the network");
-  });
-  vi.stubGlobal("fetch", fetchPoison);
-
-  const managerSpies = [...childProcessDelegates];
-  const previousImplementations = managerSpies.map((spy) => spy.getMockImplementation());
-  const poisonManager = (): never => {
-    throw new Error("uninstall must not spawn a real process manager");
-  };
-  for (const spy of managerSpies) spy.mockImplementation(poisonManager);
-
-  const install = await import("../src/install.js");
-  const adapter = install.ADAPTERS.opencode!;
-  const originalDetect = adapter.detect;
-  adapter.detect = () => ({
-    id: "opencode",
-    name: "OpenCode",
-    installed: true,
-    binPath: null,
-    configDir: ctx.configDir,
-  });
-
-  const callsBefore = manager.calls.length;
-  const warnBefore = prompts.log.warn.mock.calls.length;
-  const errorBefore = prompts.log.error.mock.calls.length;
-  let uninstallExitCode: number;
-  let fetchCallDelta = 0;
-  let processDelegateDelta = 0;
-  try {
-    const uninstall = await import("../src/uninstall.js");
-    const fetchCallBaseline = fetchPoison.mock.calls.length;
-    const processDelegateBaseline = processDelegateCallTotal();
-    uninstallExitCode = await uninstall.runUninstall({
-      runtimes: ["opencode"],
-      dryRun: false,
-      yes: true,
-      removeEngram: false,
-      removePlaywright: false,
-      systemctlRunner: manager.run,
-    });
-    fetchCallDelta = fetchPoison.mock.calls.length - fetchCallBaseline;
-    processDelegateDelta = processDelegateCallTotal() - processDelegateBaseline;
-  } finally {
-    adapter.detect = originalDetect;
-    managerSpies.forEach((spy, index) => {
-      const previous = previousImplementations[index];
-      if (previous === undefined) spy.mockReset();
-      else spy.mockImplementation(previous);
-    });
-  }
-
-  const configAfter = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
-  const rowAfter = readManifest().runtimes["opencode"] as AutostartManifestRow | undefined;
-  const projectedAfter = (configAfter as {
-    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
-  }).mcp?.servers?.[BROWSER_CONTROL_SERVER];
-
+  const r = await runUninstallInPlace(ctx, { mode: "retry" });
+  const projected = projectedBrowserControlEntry(r.configAfter);
   return {
-    uninstallExitCode,
-    unitExistsBefore,
-    manifestOwnedAfter: rowAfter?.owned ?? [],
-    manifestAutostartAfter: rowAfter?.browserControlAutostart,
-    manifestServiceUnitAfter: rowAfter?.serviceUnit,
-    mcpCommandAfter: projectedAfter?.command,
-    mcpEnvironmentAfter: projectedAfter?.environment,
-    managerVerbs: manager.calls.slice(callsBefore).map((argv) => serviceVerb(argv)),
-    fetchCallDelta,
-    processDelegateDelta,
-    userCustomSurvived: configAfter["x-user-note"] === "preserve-me",
-    activeRootPathBefore: activeBefore.receipt.rootPath,
-    activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
-    activeReceiptShaBefore: activeBefore.receiptSha256,
-    activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
-    diagnostics: [
-      ...prompts.log.warn.mock.calls.slice(warnBefore),
-      ...prompts.log.error.mock.calls.slice(errorBefore),
-    ].map((call) => String(call[0] ?? "")),
-    outroMessages: prompts.outro.mock.calls.map((call) => String(call[0] ?? "")),
+    uninstallExitCode: r.exitCode,
+    unitExistsBefore: r.unitExistsBefore,
+    manifestOwnedAfter: r.rowAfter?.owned ?? [],
+    manifestAutostartAfter: r.rowAfter?.browserControlAutostart,
+    manifestServiceUnitAfter: r.rowAfter?.serviceUnit,
+    mcpCommandAfter: projected?.command,
+    mcpEnvironmentAfter: projected?.environment,
+    managerVerbs: r.managerCalls.map((argv) => serviceVerb(argv)),
+    fetchCallDelta: r.fetchCallDelta,
+    processDelegateDelta: r.processDelegateDelta,
+    userCustomSurvived: r.configAfter["x-user-note"] === "preserve-me",
+    activeRootPathBefore: r.activeRootPathBefore,
+    activeRootPathAfter: r.activeRootPathAfter,
+    activeReceiptShaBefore: r.activeReceiptShaBefore,
+    activeReceiptShaAfter: r.activeReceiptShaAfter,
+    diagnostics: r.diagnostics,
+    outroMessages: r.outroMessages,
   };
 }
 
@@ -4059,7 +4001,7 @@ describe.skipIf(process.platform !== "linux")(
             // remains with the unit file already absent.
             const fault = failFirstDaemonReload();
             firstRun = await runFullUninstallInPlace(ctx, { wrapRunner: fault.wrap });
-            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as RuntimeManifest | undefined)
               ?.browserControlServiceRetirement;
 
             // Bounded FS fault: ONLY a manifest persist whose content marks the
@@ -4220,7 +4162,7 @@ describe.skipIf(process.platform !== "linux")(
               rmSpy.mockRestore();
             }
             if (!faulted) throw new Error("fixture: the own unit-file removal was never faulted");
-            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as RuntimeManifest | undefined)
               ?.browserControlServiceRetirement;
             retry = await runServiceRetirementRetryInPlace(ctx);
           },
@@ -4371,7 +4313,7 @@ describe.skipIf(process.platform !== "linux")(
           onVerified: async (ctx) => {
             const { readManifest } = await import("../src/lib/manifest.js");
             const { staticResourceTargets } = await import("../src/lib/opencode-static-resources.js");
-            ownedBeforeRemoval = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)?.owned ?? [];
+            ownedBeforeRemoval = (readManifest().runtimes.opencode as RuntimeManifest | undefined)?.owned ?? [];
             // The four frozen static plugins/scripts plus the native Browser
             // Control skill are exclusive to OpenCode and never shared with
             // another runtime; only these are asserted as really removed.
@@ -4409,7 +4351,7 @@ describe.skipIf(process.platform !== "linux")(
               copySpy.mockRestore();
             }
             if (!faulted) throw new Error("fixture: the ordinary cleanup backup was never faulted");
-            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as RuntimeManifest | undefined)
               ?.browserControlServiceRetirement;
             retry = await runServiceRetirementRetryInPlace(ctx);
             exclusiveLeftovers = exclusiveOwnedPaths.filter((entry) => fs.existsSync(entry));
@@ -4771,7 +4713,7 @@ describe.skipIf(process.platform !== "linux")(
             }
             if (!faulted) throw new Error("fixture: the unit-removed manifest persist was never faulted");
             unitRestoredBytes = fs.existsSync(ctx.unitPath) ? fs.readFileSync(ctx.unitPath) : null;
-            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as RuntimeManifest | undefined)
               ?.browserControlServiceRetirement;
             retry = await runServiceRetirementRetryInPlace(ctx);
           },

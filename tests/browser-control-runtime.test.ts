@@ -199,6 +199,27 @@ function stagedWitness(
   };
 }
 
+/**
+ * Installs the narrow `stageVerifiedBrowserTree` double over the real module
+ * graph: the actual module is imported and only the stage boundary is replaced.
+ * The double is the same for every case; only the staged result (or the async
+ * side effect) differs.
+ */
+function mockStagedBrowserTree(
+  stage: (
+    options: { readonly release: { readonly version: string } },
+  ) => StageVerifiedBrowserTreeResult | Promise<StageVerifiedBrowserTreeResult>,
+): void {
+  vi.doMock("../src/lib/browser-stage.js", async () => {
+    const actual =
+      await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+        "../src/lib/browser-stage.js",
+      );
+    return { ...actual, stageVerifiedBrowserTree: stage };
+  });
+}
+
+
 /** Generic provider fixture: only the Browser Control metadata and its root tarball. */
 function registryFetch(
   seen: string[],
@@ -430,13 +451,7 @@ async function runBrowserSkillConfirmWindow(foreignBytes: Buffer): Promise<LateA
           treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
           closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
         };
-        vi.doMock("../src/lib/browser-stage.js", async () => {
-          const actual =
-            await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-              "../src/lib/browser-stage.js",
-            );
-          return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-        });
+        mockStagedBrowserTree(async () => witnessStaged);
         vi.stubGlobal("fetch", registryFetch(fetched));
 
         const install = await import("../src/install.js");
@@ -552,13 +567,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
             closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
           };
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
-              );
-            return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-          });
+          mockStagedBrowserTree(async () => witnessStaged);
           vi.stubGlobal("fetch", registryFetch(fetched));
 
           const install = await import("../src/install.js");
@@ -680,13 +689,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
             closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
           };
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
-              );
-            return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-          });
+          mockStagedBrowserTree(async () => witnessStaged);
           vi.stubGlobal("fetch", registryFetch(fetched));
 
           const install = await import("../src/install.js");
@@ -907,18 +910,9 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
             closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
           };
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
-              );
-            return {
-              ...actual,
-              stageVerifiedBrowserTree: async () => {
-                stageCalls += 1;
-                return witnessStaged;
-              },
-            };
+          mockStagedBrowserTree(async () => {
+            stageCalls += 1;
+            return witnessStaged;
           });
           vi.stubGlobal("fetch", registryFetch(fetched));
 
@@ -1096,13 +1090,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
           treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
           closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
         };
-        vi.doMock("../src/lib/browser-stage.js", async () => {
-          const actual =
-            await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-              "../src/lib/browser-stage.js",
-            );
-          return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-        });
+        mockStagedBrowserTree(async () => witnessStaged);
         // The injected fetch is the only allowed network source; a global fetch
         // would mean an unintended real acquisition.
         vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
@@ -1232,29 +1220,20 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             [RELEASE_A.version, stagedWitness(witnessA, RELEASE_A, actualStage.browserTreeSha256)],
             [RELEASE_B.version, stagedWitness(witnessB, RELEASE_B, actualStage.browserTreeSha256)],
           ]);
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
+          mockStagedBrowserTree(async (options: { release: { version: string } }) => {
+            const staged = stagedByVersion.get(options.release.version);
+            if (staged === undefined) {
+              throw new Error(
+                `browser-control-runtime: unexpected stage version ${options.release.version}`,
               );
-            return {
-              ...actual,
-              stageVerifiedBrowserTree: async (options: { release: { version: string } }) => {
-                const staged = stagedByVersion.get(options.release.version);
-                if (staged === undefined) {
-                  throw new Error(
-                    `browser-control-runtime: unexpected stage version ${options.release.version}`,
-                  );
-                }
-                if (options.release.version === RELEASE_B.version && relay === undefined) {
-                  // El relay ordinario aparece en la frontera asíncrona del
-                  // stage, en el MISMO puerto efectivo ya resuelto.
-                  const started = await startRelayVersionServer(relayRequests, effectivePort);
-                  relay = started.server;
-                }
-                return staged;
-              },
-            };
+            }
+            if (options.release.version === RELEASE_B.version && relay === undefined) {
+              // El relay ordinario aparece en la frontera asíncrona del
+              // stage, en el MISMO puerto efectivo ya resuelto.
+              const started = await startRelayVersionServer(relayRequests, effectivePort);
+              relay = started.server;
+            }
+            return staged;
           });
           vi.stubGlobal("fetch", registryFetch(fetched, () => currentRelease));
 
@@ -1380,21 +1359,12 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             [RELEASE_A.version, stagedWitness(witnessA, RELEASE_A, actualStage.browserTreeSha256)],
             [RELEASE_B.version, stagedWitness(witnessB, RELEASE_B, actualStage.browserTreeSha256)],
           ]);
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
-              );
-            return {
-              ...actual,
-              stageVerifiedBrowserTree: async (options: { release: { version: string } }) => {
-                const staged = stagedByVersion.get(options.release.version);
-                if (staged === undefined) {
-                  throw new Error(`browser-control-runtime: unexpected stage version ${options.release.version}`);
-                }
-                return staged;
-              },
-            };
+          mockStagedBrowserTree(async (options: { release: { version: string } }) => {
+            const staged = stagedByVersion.get(options.release.version);
+            if (staged === undefined) {
+              throw new Error(`browser-control-runtime: unexpected stage version ${options.release.version}`);
+            }
+            return staged;
           });
           // The stub serves whichever release is current, so the same test can
           // install A and then publish B without re-mocking the module graph.
@@ -1595,23 +1565,14 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             [RELEASE_A.version, stagedWitness(witnessA, RELEASE_A, actualStage.browserTreeSha256)],
             [RELEASE_B.version, stagedWitness(witnessB, RELEASE_B, actualStage.browserTreeSha256)],
           ]);
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
+          mockStagedBrowserTree(async (options: { release: { version: string } }) => {
+            const staged = stagedByVersion.get(options.release.version);
+            if (staged === undefined) {
+              throw new Error(
+                `browser-control-runtime: unexpected stage version ${options.release.version}`,
               );
-            return {
-              ...actual,
-              stageVerifiedBrowserTree: async (options: { release: { version: string } }) => {
-                const staged = stagedByVersion.get(options.release.version);
-                if (staged === undefined) {
-                  throw new Error(
-                    `browser-control-runtime: unexpected stage version ${options.release.version}`,
-                  );
-                }
-                return staged;
-              },
-            };
+            }
+            return staged;
           });
           vi.stubGlobal("fetch", registryFetch(fetched, () => currentRelease));
 
@@ -1891,13 +1852,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
               treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
               closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
             };
-            vi.doMock("../src/lib/browser-stage.js", async () => {
-              const actual =
-                await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                  "../src/lib/browser-stage.js",
-                );
-              return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-            });
+            mockStagedBrowserTree(async () => witnessStaged);
             vi.stubGlobal("fetch", registryFetch(fetched));
 
             const install = await import("../src/install.js");
@@ -2102,13 +2057,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
             closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
           };
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
-              );
-            return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-          });
+          mockStagedBrowserTree(async () => witnessStaged);
           vi.stubGlobal("fetch", registryFetch(fetched));
 
           const install = await import("../src/install.js");
@@ -2275,13 +2224,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
             treeSha256: actualStage.browserTreeSha256(witness.nodeModulesPath, witness.stageDir),
             closure: [{ name: BC_PACKAGE, version: BC_VERSION, integrity: BC_ROOT_INTEGRITY }],
           };
-          vi.doMock("../src/lib/browser-stage.js", async () => {
-            const actual =
-              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
-                "../src/lib/browser-stage.js",
-              );
-            return { ...actual, stageVerifiedBrowserTree: async () => witnessStaged };
-          });
+          mockStagedBrowserTree(async () => witnessStaged);
           vi.stubGlobal("fetch", registryFetch(fetched));
 
           const install = await import("../src/install.js");
