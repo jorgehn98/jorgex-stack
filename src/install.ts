@@ -35,6 +35,7 @@ import {
   readManifest,
   readManifestStrict,
   writeRuntimeManifest,
+  type BrowserControlAutostartStamp,
   type RuntimeManifest,
 } from "./lib/manifest.js";
 import {
@@ -74,10 +75,12 @@ import {
   type BrowserControlRuntimeResult,
 } from "./lib/browser-control-runtime.js";
 import {
+  authenticateOwnedServiceUnitInvocation,
   browserControlAutostartEnvironment,
   browserControlAutostartProjectionSha256,
   createSystemctlRunner,
   ensureBrowserControlServiceUnit,
+  inspectOwnedServiceUnitRetirement,
   preflightBrowserControlServiceUnit,
   probeInactiveOwnedServiceUnit,
   resolveBrowserControlServiceConfigBase,
@@ -1325,6 +1328,95 @@ async function resolveBrowserControlRetirement(input: {
   return { kind: "retire", port: binding.port, portOwned: priorStamp.portOwned };
 }
 
+/**
+ * Continuación compartida una vez acreditado un servicio operativo (unidad
+ * recién creada o unidad existente verificada en SOLO LECTURA): reconcilia el
+ * entorno de autostart propio y publica la autoridad granular solo cuando esta
+ * ejecución introdujo el entorno ausente o reutiliza una estampa previa
+ * acreditada. No recompone el comando, no adopta un entorno por igualdad, no
+ * reescribe la unidad ni invoca el manager. Devuelve 0 si el entorno quedó
+ * estable y acreditado; 1 si queda pendiente y no debe declararse autostart.
+ */
+function reconcileVerifiedBrowserControlEnvironment(input: {
+  readonly configDir: string;
+  readonly invocation: { command: string; args: readonly string[] };
+  readonly port: number;
+  readonly releaseDirectory: string;
+  readonly unitPath: string;
+  readonly prior: BrowserControlAutostartStamp | undefined;
+}): number {
+  const environment = browserControlAutostartEnvironment(input.port);
+  const projectionSha256 = browserControlAutostartProjectionSha256(input.invocation, input.port);
+  const reconciled = reconcileBrowserControlEnvironment({
+    configDir: input.configDir,
+    invocation: input.invocation,
+    environment,
+  });
+  const priorAccredited = input.prior !== undefined
+    && input.prior.schemaVersion === 1
+    && input.prior.projectionSha256 === projectionSha256;
+  let stampReady = reconciled;
+  let introduced = false;
+  // El bit de ownership del puerto se captura de la PRIMERA reconciliación
+  // `written` (lo que Stack introduce ahora), no del readback posterior: un
+  // readback `unchanged` sobre una pareja ya existente no debe recapturar un
+  // claim manual por igualdad.
+  let introducedPortOwned = false;
+  if (reconciled.kind === "written") {
+    introducedPortOwned = reconciled.portOwned;
+    const backup = createBackup([reconciled.file], "install-browser-control-service");
+    if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+    try {
+      writeText(reconciled.file, reconciled.content);
+      // Secuencia distinta de un `unchanged` inicial: aquí se sabe que esta
+      // ejecución escribió el campo y el readback debe ser un no-op, no una
+      // adopción por igualdad.
+      stampReady = reconcileBrowserControlEnvironment({
+        configDir: input.configDir,
+        invocation: input.invocation,
+        environment,
+      });
+      introduced = stampReady.kind === "unchanged";
+    } catch (error) {
+      stampReady = { kind: "blocked", reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  if (stampReady.kind !== "unchanged") {
+    const detail = "reason" in stampReady ? stampReady.reason : "estado inesperado";
+    p.log.error(
+      `Browser Control: el readback del entorno gestionado no quedó estable (${detail}); no se estampa el autostart.`,
+    );
+    return 1;
+  }
+  if (!introduced && !priorAccredited) {
+    // `environment` canónico ya presente (p. ej. escritura manual del usuario)
+    // sin que Stack lo haya creado ni exista estampa previa acreditada: se
+    // conserva con conflicto accionable, sin adoptarlo por igualdad.
+    p.log.error(
+      `Browser Control: el MCP gestionado ya contenía un entorno (AUTOSTART=false / puerto ${input.port}) que no ha introducido Stack y no tiene una estampa previa acreditada; se conserva sin adoptar ni sobrescribir. Ajuste manual requerido.`,
+    );
+    return 1;
+  }
+  if (!priorAccredited) {
+    const currentRow = readManifest().runtimes.opencode;
+    if (currentRow !== undefined) {
+      writeRuntimeManifest("opencode", {
+        ...currentRow,
+        browserControlAutostart: {
+          schemaVersion: 1,
+          projectionSha256,
+          portOwned: introducedPortOwned,
+        },
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+  p.log.success(
+    `Browser Control: servicio de usuario verificado en ${input.unitPath} (release ${input.releaseDirectory}, puerto ${input.port}); autostart externo gestionado activo.`,
+  );
+  return 0;
+}
+
 export async function runInstall(opts: InstallOptions): Promise<number> {
   const showSummary = opts.showSummary !== false;
   if (showSummary) p.intro(`jorgex-stack ${opts.dryRun ? "install (dry-run)" : "install"}`);
@@ -1568,6 +1660,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   let browserControlPending = false;
   let browserControlRuntime: BrowserControlRuntimeResult | undefined;
   let browserControlRollback: (() => Promise<void>) | undefined;
+  // Puerto efectivo ya resuelto y validado desde el MCP preservado (o binding
+  // autenticado): el preflight/creación del servicio reutilizan ESTA misma
+  // fuente en vez de volver a leer `BROWSER_CONTROL_PORT` del proceso.
+  let browserControlServicePort: number | undefined;
   // El artifact de servicio solo se materializa si la proyección OpenCode quedó
   // aplicada en disco (idempotente o recién escrita); el setup oficial v1/v2
   // pendiente no la invalida.
@@ -1610,6 +1706,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         };
       } else {
         const preservedPort = preserved.kind === "resolved" ? preserved.port : undefined;
+        // El puerto efectivo del MCP preservado es la fuente autoritativa del
+        // servicio: se conserva para el preflight y la creación de la unidad.
+        browserControlServicePort = preservedPort;
         if (preservedPort !== undefined && bindingPort !== undefined && preservedPort !== bindingPort) {
           browserControlRuntime = {
             kind: "unavailable",
@@ -2243,9 +2342,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             `hay una estampa de autostart previa pero la unidad ${unitPath} no está presente (drift); ` +
             "se conserva la autoridad y no se crea ni arranca sin el opt-in explícito.";
         } else if (!occupied) {
-          const relayPort = resolveBrowserControlRelayPort();
+          const relayPort = browserControlServicePort ?? resolveBrowserControlRelayPort();
           if (relayPort === null) {
-            preflightPending = "BROWSER_CONTROL_PORT no es un entero válido (1-65535); no se crea ni arranca el servicio.";
+            preflightPending = "el puerto efectivo del servicio no es un entero válido (1-65535); no se crea ni arranca el servicio.";
           } else {
             const preflight = await preflightBrowserControlServiceUnit({ runner, port: relayPort });
             if (preflight.kind === "pending") preflightPending = preflight.reason;
@@ -2260,6 +2359,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             unitPath,
             prevOwned: row?.owned ?? [],
             ...(row?.serviceUnit === undefined ? {} : { prevBinding: row.serviceUnit }),
+            ...(browserControlServicePort === undefined ? {} : { port: browserControlServicePort }),
           });
           if (result.kind === "created" || result.kind === "unchanged") {
             if (row !== undefined) {
@@ -2339,6 +2439,56 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
                     }
                   }
                 }
+              } else {
+                // Sin rotación A→B: una unidad existente solo se verifica en SOLO
+                // LECTURA (manager/HTTP/release/build estables) y, cuando el
+                // servicio queda acreditado operativo, se completa únicamente el
+                // entorno de autostart propio aún pendiente. Un estado
+                // ausente/inactivo/incierto mantiene el servicio pendiente con
+                // salida no cero, sin mutar el manager ni reescribir la unidad.
+                const verified = await inspectOwnedServiceUnitRetirement({
+                  stateDir: dataDir(),
+                  configDir,
+                  unitPath,
+                  binding: result.binding,
+                  runner,
+                });
+                if (verified.kind === "operational") {
+                  // Coherencia de fuente: el binding histórico A debe reproducir
+                  // EXACTAMENTE la invocación MCP efectiva actual (comando/args
+                  // completos del guard retenido), no solo versión o digest. Una
+                  // unidad A reactivada que sirve una release distinta del
+                  // active/MCP B no puede acreditar el servicio externo para B.
+                  const invocationError = authenticateOwnedServiceUnitInvocation(
+                    dataDir(),
+                    result.binding,
+                    invocation,
+                  );
+                  if (invocationError !== null) {
+                    p.log.error(
+                      `Browser Control: ${invocationError}; la unidad ${result.unitPath} se conserva y el servicio queda pendiente sin completar el entorno de autostart.`,
+                    );
+                    exitCode = 1;
+                  } else {
+                    const code = reconcileVerifiedBrowserControlEnvironment({
+                      configDir,
+                      invocation,
+                      port: verified.port,
+                      releaseDirectory: result.binding.releaseDirectory,
+                      unitPath: result.unitPath,
+                      prior: row?.browserControlAutostart,
+                    });
+                    if (code !== 0) exitCode = 1;
+                  }
+                } else {
+                  const detail = verified.kind === "inactive"
+                    ? "la unidad existente está inactiva y el relay ausente"
+                    : verified.reason;
+                  p.log.error(
+                    `Browser Control: la unidad existente ${result.unitPath} no acredita un servicio operativo (${detail}); el servicio queda pendiente sin completar el entorno de autostart.`,
+                  );
+                  exitCode = 1;
+                }
               }
             } else {
               const supervised = await superviseBrowserControlServiceUnit({
@@ -2353,73 +2503,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
                 );
                 exitCode = 1;
               } else {
-                const environment = browserControlAutostartEnvironment(supervised.port);
-                const projectionSha256 = browserControlAutostartProjectionSha256(invocation, supervised.port);
-                // Origen de la autoridad: `written` en la PRIMERA fase significa
-                // que Stack introduce ahora el `environment` ausente. Un
-                // `unchanged` inicial es un entorno preexistente que Stack no ha
-                // creado, y solo una estampa previa acreditada puede reutilizarse.
-                const reconciled = reconcileBrowserControlEnvironment({ configDir, invocation, environment });
-                const prior = row?.browserControlAutostart;
-                const priorAccredited = prior !== undefined
-                  && prior.schemaVersion === 1
-                  && prior.projectionSha256 === projectionSha256;
-                let stampReady = reconciled;
-                let introduced = false;
-                // El bit de ownership del puerto se captura de la PRIMERA
-                // reconciliación `written` (lo que Stack introduce ahora), no del
-                // readback posterior: un readback `unchanged` sobre una pareja ya
-                // existente no debe recapturar un claim manual por igualdad.
-                let introducedPortOwned = false;
-                if (reconciled.kind === "written") {
-                  introducedPortOwned = reconciled.portOwned;
-                  const backup = createBackup([reconciled.file], "install-browser-control-service");
-                  if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
-                  try {
-                    writeText(reconciled.file, reconciled.content);
-                    // Secuencia distinta de un `unchanged` inicial: aquí se sabe
-                    // que esta ejecución escribió el campo y el readback debe ser
-                    // un no-op, no una adopción por igualdad.
-                    stampReady = reconcileBrowserControlEnvironment({ configDir, invocation, environment });
-                    introduced = stampReady.kind === "unchanged";
-                  } catch (error) {
-                    stampReady = { kind: "blocked", reason: error instanceof Error ? error.message : String(error) };
-                  }
-                }
-                if (stampReady.kind !== "unchanged") {
-                  const detail = "reason" in stampReady ? stampReady.reason : "estado inesperado";
-                  p.log.error(
-                    `Browser Control: el readback del entorno gestionado no quedó estable (${detail}); no se estampa el autostart.`,
-                  );
-                  exitCode = 1;
-                } else if (!introduced && !priorAccredited) {
-                  // `environment` canónico ya presente (p. ej. escritura manual
-                  // del usuario) sin que Stack lo haya creado ni exista estampa
-                  // previa acreditada: se conserva con conflicto accionable, sin
-                  // adoptarlo por igualdad ni tocar la unidad ya arrancada.
-                  p.log.error(
-                    `Browser Control: el MCP gestionado ya contenía un entorno (AUTOSTART=false / puerto ${supervised.port}) que no ha introducido Stack y no tiene una estampa previa acreditada; se conserva sin adoptar ni sobrescribir. Ajuste manual requerido.`,
-                  );
-                  exitCode = 1;
-                } else {
-                  if (!priorAccredited) {
-                    const currentRow = readManifest().runtimes.opencode;
-                    if (currentRow !== undefined) {
-                      writeRuntimeManifest("opencode", {
-                        ...currentRow,
-                        browserControlAutostart: {
-                          schemaVersion: 1,
-                          projectionSha256,
-                          portOwned: introducedPortOwned,
-                        },
-                        updatedAt: new Date().toISOString(),
-                      });
-                    }
-                  }
-                  p.log.success(
-                    `Browser Control: servicio de usuario verificado en ${result.unitPath} (release ${result.binding.releaseDirectory}, puerto ${supervised.port}); autostart externo gestionado activo.`,
-                  );
-                }
+                const code = reconcileVerifiedBrowserControlEnvironment({
+                  configDir,
+                  invocation,
+                  port: supervised.port,
+                  releaseDirectory: result.binding.releaseDirectory,
+                  unitPath: result.unitPath,
+                  prior: row?.browserControlAutostart,
+                });
+                if (code !== 0) exitCode = 1;
               }
             }
           } else if (result.kind === "preserved") {

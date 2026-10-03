@@ -394,6 +394,14 @@ interface SupervisorManagerFixture extends ManagerRunner {
    * absent before it promotes B.
    */
   readonly deactivate: () => Promise<void>;
+  /**
+   * Recovers the OWN unit through the external boundary ONLY: the fake manager
+   * reports it active/running/MainPID=this process and the OWN `/version` server
+   * listens again. It models the user fixing their supervisor outside Stack, so
+   * a retry can authenticate the recovered service without Stack issuing
+   * start/reload.
+   */
+  readonly activate: () => Promise<void>;
 }
 
 /**
@@ -544,6 +552,11 @@ function createSupervisorManagerFixture(input: {
       // Own-server control: the unit is now inactive and the relay is absent.
       started = false;
       await stopServer();
+    },
+    activate: async () => {
+      // External control only: the recovered unit is active and its relay is up.
+      started = true;
+      await startVersionServer();
     },
   };
 }
@@ -1096,6 +1109,264 @@ async function advanceInactiveServiceAToB(
     activeRootPathAfter: activeAfter?.receipt.rootPath ?? null,
     activeReceiptShaAfter: activeAfter?.receiptSha256 ?? null,
     stampDuringSecondRun,
+  };
+}
+
+/**
+ * Evidence of one retry stage of the public install→retry of an OWNED unit whose
+ * first explicit opt-in left no autostart environment. Every observable is
+ * service-specific: the manager verbs and `/version` requests issued ONLY by the
+ * stage, the projected environment/command, the recorded authority and the
+ * prompt markers.
+ */
+interface ExistingUnitRetryStage {
+  readonly exitCode: number;
+  readonly verbs: readonly (string | undefined)[];
+  readonly versionRequests: readonly string[];
+  readonly command: readonly string[] | undefined;
+  readonly environment: Record<string, unknown> | undefined;
+  readonly autostart: BrowserControlAutostartStamp | undefined;
+  readonly serviceUnit: ManagedBrowserControlServiceBinding | undefined;
+  readonly successMessages: readonly string[];
+}
+
+interface ExistingUnitRetryEvidence {
+  /** First-pass state: the unit was created and claimed, but not stamped. */
+  readonly unitBytesBefore: Buffer;
+  readonly ownedBefore: readonly string[];
+  readonly bindingBefore: ManagedBrowserControlServiceBinding | undefined;
+  readonly stampBefore: BrowserControlAutostartStamp | undefined;
+  readonly commandBefore: readonly string[] | undefined;
+  readonly environmentBefore: Record<string, unknown> | undefined;
+  /** Retry while the supervisor is still down (no evidence). */
+  readonly incomplete: ExistingUnitRetryStage;
+  /** Retry after the user recovered the OWN supervisor outside Stack. */
+  readonly fixed: ExistingUnitRetryStage;
+  readonly unitBytesAfter: Buffer;
+  readonly bindingAfter: ManagedBrowserControlServiceBinding | undefined;
+}
+
+/** Managed MCP projection of the own OpenCode config: command + environment. */
+function readServiceProjection(configDir: string): {
+  readonly command: readonly string[] | undefined;
+  readonly environment: Record<string, unknown> | undefined;
+} {
+  const configPath = path.join(configDir, "opencode.json");
+  type ProjectedConfig = {
+    mcp?: { servers?: Record<string, { command?: string[]; environment?: Record<string, unknown> }> };
+  };
+  const config: ProjectedConfig = fs.existsSync(configPath)
+    ? (JSON.parse(fs.readFileSync(configPath, "utf8")) as ProjectedConfig)
+    : {};
+  const entry = config.mcp?.servers?.[BROWSER_CONTROL_SERVER];
+  return { command: entry?.command, environment: entry?.environment };
+}
+
+/**
+ * One real explicit service opt-in (`--browser-control-service`) against the
+ * current owned unit in the same private HOME. Returns ONLY service-specific
+ * observables of this stage: the manager verbs and `/version` requests it
+ * issued, the projected command/environment, the recorded authority and the
+ * success marker. The aggregate exit code is deliberately not the oracle.
+ */
+async function runServiceOptinStage(ctx: VerifiedServiceContext): Promise<ExistingUnitRetryStage> {
+  const manager = ctx.manager;
+  if (manager === undefined) {
+    throw new Error("fixture: the service opt-in stage requires the supervisor manager");
+  }
+  const { readManifest } = await import("../src/lib/manifest.js");
+  const install = await import("../src/install.js");
+  const opencode = install.ADAPTERS.opencode!;
+  const originalDetect = opencode.detect;
+  opencode.detect = () => ({
+    id: "opencode",
+    name: "OpenCode",
+    installed: true,
+    binPath: ctx.opencodeBin,
+    configDir: ctx.configDir,
+  });
+  const callsBefore = manager.calls.length;
+  const versionBefore = manager.versionRequests.length;
+  const successBefore = prompts.log.success.mock.calls.length;
+  let exitCode: number;
+  try {
+    exitCode = await install.runInstall({
+      runtimes: ["opencode"],
+      command: "install",
+      dryRun: false,
+      yes: true,
+      mode: { mode: "human", subagentConcurrency: "serial" },
+      engramBin: null,
+      browserControlService: true,
+      systemctlRunner: manager.run,
+    });
+  } finally {
+    opencode.detect = originalDetect;
+  }
+  const rowAfter = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const projectionAfter = readServiceProjection(ctx.configDir);
+  return {
+    exitCode,
+    verbs: manager.calls.slice(callsBefore).map((argv) => serviceVerb(argv)),
+    versionRequests: manager.versionRequests.slice(versionBefore),
+    command: projectionAfter.command,
+    environment: projectionAfter.environment,
+    autostart: rowAfter?.browserControlAutostart,
+    serviceUnit: rowAfter?.serviceUnit,
+    successMessages: prompts.log.success.mock.calls.slice(successBefore).map((call) => String(call[0] ?? "")),
+  };
+}
+
+/**
+ * Real public `runInstall` retry of an OWNED, authenticated unit whose first
+ * explicit opt-in left no autostart environment. The OWN manager is controlled
+ * ONLY from outside Stack: it is first left down (the supervisor not fixed yet)
+ * and then recovered, so the same helper distinguishes the honest-pending stage
+ * from the completed stage. No new promotion, no active rotation, no real
+ * manager/DBus/relay: the supervisor fixture is the only external edge.
+ */
+async function retryExistingOwnedUnitAfterEnvFault(
+  ctx: VerifiedServiceContext,
+): Promise<ExistingUnitRetryEvidence> {
+  const manager = ctx.manager;
+  if (manager === undefined) {
+    throw new Error("fixture: the existing-unit retry requires the supervisor manager");
+  }
+  const { readManifest } = await import("../src/lib/manifest.js");
+  const rowBefore = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
+  const projectionBefore = readServiceProjection(ctx.configDir);
+
+  // Stage 1: the supervisor is still down. The retry must stay pending and
+  // must not complete the environment, auto-start or report a clean success.
+  await manager.deactivate();
+  const incomplete = await runServiceOptinStage(ctx);
+  // Stage 2: the user recovered the OWN supervisor outside Stack.
+  await manager.activate();
+  const fixed = await runServiceOptinStage(ctx);
+  const rowAfter = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  return {
+    unitBytesBefore,
+    ownedBefore: rowBefore?.owned ?? [],
+    bindingBefore: rowBefore?.serviceUnit,
+    stampBefore: rowBefore?.browserControlAutostart,
+    commandBefore: projectionBefore.command,
+    environmentBefore: projectionBefore.environment,
+    incomplete,
+    fixed,
+    unitBytesAfter: fs.readFileSync(ctx.unitPath),
+    bindingAfter: rowAfter?.serviceUnit,
+  };
+}
+
+/** Evidence of the opt-in after the OLD unit A is reactivated while active is B. */
+interface OldUnitReactivationEvidence {
+  readonly unitBytesBefore: Buffer;
+  readonly bindingBefore: ManagedBrowserControlServiceBinding | undefined;
+  readonly commandBefore: readonly string[] | undefined;
+  readonly environmentBefore: Record<string, unknown> | undefined;
+  readonly stage: ExistingUnitRetryStage;
+  readonly unitBytesAfter: Buffer;
+  readonly bindingAfter: ManagedBrowserControlServiceBinding | undefined;
+  readonly commandAfter: readonly string[] | undefined;
+  /** Authenticated effective active after the stage (must still be B). */
+  readonly activeVersion: string | undefined;
+  /** The unit A binding still authenticates against its own retained release. */
+  readonly unitReleaseAuthenticates: boolean;
+}
+
+/**
+ * One real explicit service opt-in after the user has reactivated the OLD unit
+ * A from outside Stack while the effective active/MCP is already B. Captures the
+ * unit A binding/release and the effective active B so the case can prove both
+ * stay authentic while the service must remain pending.
+ */
+async function runExistingUnitOptinAfterExternalReactivation(
+  ctx: VerifiedServiceContext,
+): Promise<OldUnitReactivationEvidence> {
+  const { readManifest } = await import("../src/lib/manifest.js");
+  const rowBefore = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+  const unitBytesBefore = fs.readFileSync(ctx.unitPath);
+  const projectionBefore = readServiceProjection(ctx.configDir);
+  const stage = await runServiceOptinStage(ctx);
+  const rowAfter = readManifest().runtimes.opencode as AutostartManifestRow | undefined;
+
+  const stateDir = path.join(process.env.HOME!, ".jorgex-stack");
+  const { loadVerifiedRetainedBrowserRelease, loadVerifiedRetainedBrowserReleaseByBinding } = await import(
+    "../src/lib/browser-managed.js"
+  );
+  const active = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
+  let unitReleaseAuthenticates = false;
+  const binding = rowBefore?.serviceUnit;
+  if (binding !== undefined) {
+    try {
+      const unitRelease = loadVerifiedRetainedBrowserReleaseByBinding(stateDir, BC_PACKAGE, {
+        releaseDirectory: binding.releaseDirectory,
+        receiptSha256: binding.receiptSha256,
+      });
+      unitReleaseAuthenticates = unitRelease.releaseDirectory === binding.releaseDirectory;
+    } catch {
+      unitReleaseAuthenticates = false;
+    }
+  }
+
+  return {
+    unitBytesBefore,
+    bindingBefore: binding,
+    commandBefore: projectionBefore.command,
+    environmentBefore: projectionBefore.environment,
+    stage,
+    unitBytesAfter: fs.readFileSync(ctx.unitPath),
+    bindingAfter: rowAfter?.serviceUnit,
+    commandAfter: readServiceProjection(ctx.configDir).command,
+    activeVersion: active?.receipt.version,
+    unitReleaseAuthenticates,
+  };
+}
+
+/** Evidence of an initial opt-in that must honor a preserved manual MCP port. */
+interface PreservedMcpPortEvidence {
+  readonly unitExistsBefore: boolean;
+  readonly commandBefore: readonly string[] | undefined;
+  readonly environmentBefore: Record<string, unknown> | undefined;
+  readonly stage: ExistingUnitRetryStage;
+  readonly preservedPort: number;
+  readonly shellPort: number;
+}
+
+/**
+ * First service opt-in of an install whose managed MCP already declares a manual
+ * literal port A, while the shell `BROWSER_CONTROL_PORT` names a different OWN
+ * closed port B. The manual MCP entry must win: the unit binding, the projected
+ * environment and the manager/HTTP proof must all use A. The shell override is
+ * scoped to the stage and restored afterwards.
+ */
+async function runInitialOptinHonoringPreservedMcpPort(
+  ctx: VerifiedServiceContext,
+  preservedPort: number,
+  shellPort: number,
+): Promise<PreservedMcpPortEvidence> {
+  const unitExistsBefore = fs.existsSync(ctx.unitPath);
+  // External user write: the managed MCP already declares the literal port A
+  // before the first service opt-in.
+  writeManualBrowserControlEnvironment(ctx.configDir, { BROWSER_CONTROL_PORT: String(preservedPort) });
+  const projectionBefore = readServiceProjection(ctx.configDir);
+  const savedShellPort = process.env.BROWSER_CONTROL_PORT;
+  process.env.BROWSER_CONTROL_PORT = String(shellPort);
+  let stage: ExistingUnitRetryStage;
+  try {
+    stage = await runServiceOptinStage(ctx);
+  } finally {
+    if (savedShellPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+    else process.env.BROWSER_CONTROL_PORT = savedShellPort;
+  }
+  return {
+    unitExistsBefore,
+    commandBefore: projectionBefore.command,
+    environmentBefore: projectionBefore.environment,
+    stage,
+    preservedPort,
+    shellPort,
   };
 }
 
@@ -4683,6 +4954,410 @@ describe.skipIf(process.platform !== "linux")(
           shown.mcpEnvironmentAfter?.USER_NOTE,
           "the user edit made during the stop wait must survive the retirement",
         ).toBe("changed-by-user");
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12-RED] Browser Control existing owned unit retry completes only the pending environment after read-only proof",
+  () => {
+    /**
+     * Silent-failure finding #2 (Spec T13, cierre causal de review, línea 46):
+     * an OWNED, authenticated unit exists but the first explicit opt-in left the
+     * service incomplete — the unit and its binding were recorded, yet no
+     * autostart environment was projected and no granular authority was stamped.
+     * A subsequent `--browser-control-service` run must NOT fake a clean success
+     * (`ensure` unchanged) without a read-only manager + `/version` proof, and
+     * once the user has recovered the OWN supervisor outside Stack it may
+     * complete ONLY the missing owned environment + stamp, without
+     * autoStart/enable/reload/restart/rewrite.
+     *
+     * Bounded FS fault (preferred fixture): the FIRST write that introduces the
+     * canonical `BROWSER_CONTROL_AUTOSTART` into the own OpenCode config faults
+     * once with `EIO` AFTER the full fake-manager/OWN-HTTP proof, so the first
+     * pass legitimately leaves the unit owned/bound and the manager operational
+     * with no environment and no stamp. The spy is restored before the retries
+     * and every other write runs real.
+     *
+     * RED today: the `ensure`-unchanged branch only warns and exits 0, so the
+     * incomplete retry prints the global `Hecho.` with zero manager/HTTP proof,
+     * and the fixed retry never projects the canonical FALSE/port nor records the
+     * authority. The service-specific markers, ENV/stamp, read-only `show` and
+     * `/version` counter and manager verbs are the oracle — never the aggregate
+     * exit code.
+     */
+    it("stays pending without evidence and completes only the missing environment after the supervisor is recovered", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup(
+        "browser-control-service-existing-unit-retry-roots",
+        () => removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let evidence: ExistingUnitRetryEvidence | undefined;
+      const originalWriteFileSync = fs.writeFileSync;
+      const writeSpy = vi.spyOn(fs, "writeFileSync");
+      let faulted = false;
+      writeSpy.mockImplementation(((file: unknown, content: unknown, options: unknown) => {
+        if (
+          !faulted
+          && typeof file === "string"
+          && typeof content === "string"
+          && content.includes("BROWSER_CONTROL_AUTOSTART")
+          && path.basename(path.dirname(file)) === "opencode"
+        ) {
+          faulted = true;
+          const error = new Error(
+            "EIO: simulated fault writing the owned autostart environment",
+          ) as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        }
+        return originalWriteFileSync(file as string, content as string, options as never);
+      }) as typeof fs.writeFileSync);
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-existing-unit-retry-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            // The single bounded fault is over; the retries run every write real.
+            writeSpy.mockRestore();
+            evidence = await retryExistingOwnedUnitAfterEnvFault(ctx);
+          },
+        });
+        if (evidence === undefined) {
+          throw new Error("fixture: the existing-unit retry callback did not run");
+        }
+        if (!faulted) {
+          throw new Error("fixture: the owned autostart environment write was never faulted");
+        }
+        const shown = evidence;
+
+        // Scenario integrity: the first pass created and claimed the unit and
+        // recorded its binding, but the faulted environment write left NO
+        // autostart authority and NO canonical environment.
+        expect(
+          shown.unitBytesBefore.length,
+          "the first pass must have created the owned unit",
+        ).toBeGreaterThan(0);
+        expect(
+          shown.ownedBefore.map((file) => path.resolve(file)),
+          "the first pass must have claimed the owned unit",
+        ).toContain(path.resolve(observables.unitPath));
+        expect(shown.bindingBefore, "the first pass must have recorded the unit binding").toBeDefined();
+        expect(shown.stampBefore, "the faulted pass must not have stamped autostart authority").toBeUndefined();
+        expect(
+          shown.environmentBefore?.BROWSER_CONTROL_AUTOSTART,
+          "the faulted pass must not have projected the canonical environment",
+        ).toBeUndefined();
+        expect(
+          shown.environmentBefore?.BROWSER_CONTROL_PORT,
+          "the faulted pass must not have projected the managed port",
+        ).toBeUndefined();
+
+        // --- Incomplete stage: the supervisor is still down. The retry must not
+        // fake a service success, must not complete the environment and must not
+        // auto-start/reload/rewrite the unchanged unit. The aggregate exit code
+        // is not the oracle (an unrelated mandatory-runtime failure makes it
+        // non-zero regardless); the service-specific marker/ENV/stamp/verbs are.
+        expect(
+          shown.incomplete.successMessages.some((message) => /autostart/i.test(message)),
+          `the managed-autostart success marker must not be emitted while the service is not proven (got ${JSON.stringify(shown.incomplete.successMessages)})`,
+        ).toBe(false);
+        expect(
+          shown.incomplete.environment?.BROWSER_CONTROL_AUTOSTART,
+          "an unproven service must not complete the canonical environment",
+        ).toBeUndefined();
+        expect(
+          shown.incomplete.environment?.BROWSER_CONTROL_PORT,
+          "an unproven service must not complete the managed port",
+        ).toBeUndefined();
+        expect(
+          shown.incomplete.autostart,
+          "an unproven service must not stamp the autostart authority",
+        ).toBeUndefined();
+        for (const forbidden of ["daemon-reload", "enable", "start", "restart", "reload", "stop", "disable", "mask", "linger"]) {
+          expect(
+            shown.incomplete.verbs,
+            `the pending retry must not issue ${forbidden} on an unchanged unit`,
+          ).not.toContain(forbidden);
+        }
+
+        // --- Fixed stage: the user recovered the OWN supervisor outside Stack.
+        // The retry must complete ONLY the missing owned environment + stamp
+        // after a full read-only manager/HTTP proof, with no autoStart/enable/
+        // reload/restart/rewrite.
+        expect(
+          shown.fixed.verbs,
+          `the fixed retry must verify the manager read-only (got ${JSON.stringify(shown.fixed.verbs)})`,
+        ).toContain("show");
+        expect(
+          shown.fixed.versionRequests.length,
+          "the fixed retry must prove the owned /version endpoint",
+        ).toBeGreaterThanOrEqual(1);
+        for (const forbidden of ["daemon-reload", "enable", "start", "restart", "reload", "stop", "disable", "mask", "linger"]) {
+          expect(
+            shown.fixed.verbs,
+            `the fixed retry must not issue ${forbidden} on an already-verified unit`,
+          ).not.toContain(forbidden);
+        }
+        expect(
+          shown.fixed.verbs.every((verb) => verb === "show"),
+          `the fixed retry may only read the manager (got ${JSON.stringify(shown.fixed.verbs)})`,
+        ).toBe(true);
+        expect(
+          shown.fixed.environment?.BROWSER_CONTROL_AUTOSTART,
+          "the fixed retry must complete the canonical FALSE",
+        ).toBe("false");
+        expect(
+          shown.fixed.environment?.BROWSER_CONTROL_PORT,
+          "the fixed retry must complete the literal managed port",
+        ).toBe(String(port));
+        const stamp = shown.fixed.autostart;
+        expect(stamp, "the fixed retry must record the granular autostart authority").toBeDefined();
+        expect(Object.keys(stamp!).sort(), "only the introduced stamp fields are present").toEqual([
+          "portOwned",
+          "projectionSha256",
+          "schemaVersion",
+        ]);
+        expect(stamp!.schemaVersion).toBe(1);
+        expect(stamp!.portOwned).toBe(true);
+        expect(stamp!.projectionSha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(
+          shown.fixed.successMessages.some((message) => /autostart/i.test(message)),
+          `the fixed retry must emit the managed-autostart success marker (got ${JSON.stringify(shown.fixed.successMessages)})`,
+        ).toBe(true);
+
+        // No rewrite: the owned unit bytes and its binding are preserved verbatim.
+        expect(shown.unitBytesAfter, "the retry must not rewrite the owned unit").toEqual(shown.unitBytesBefore);
+        expect(shown.bindingAfter, "the retry must not replace the unit binding").toEqual(shown.bindingBefore);
+
+        // The final observables witness the completed environment and authority.
+        expect(observables.mcpEnvironment?.BROWSER_CONTROL_AUTOSTART).toBe("false");
+        expect(observables.mcpEnvironment?.BROWSER_CONTROL_PORT).toBe(String(port));
+        expect(
+          observables.manifestAutostart,
+          "the final manifest must keep the autostart authority",
+        ).toBeDefined();
+      } finally {
+        writeSpy.mockRestore();
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12-RED] Browser Control cannot claim the external service for a promoted active by proving the old unit",
+  () => {
+    /**
+     * Proof-source coherence #1 (Spec T13, cierre causal de review, líneas 41,
+     * 46 y 55): a legitimate A→B rotation retires the Stack-owned environment and
+     * stamp but retains unit A and its binding, and the effective active/MCP is
+     * B. The user then reactivates the OLD unit A from outside Stack. A new
+     * explicit `--browser-control-service` opt-in must stay pending: it may not
+     * announce the external service as ready for the effective active B by
+     * proving the reactivated unit A, because the unit release (A) and the
+     * effective invocation (B) are not the same version/build/port. It must not
+     * project the canonical FALSE/port, must not record the autostart authority,
+     * must not rewrite unit A and must not issue any mutating manager verb.
+     *
+     * The removed environment/stamp is the REAL rotation output (never an
+     * artificial deletion), the guard B command is compared before/after and the
+     * unit A binding must survive verbatim while both retained releases keep
+     * authenticating.
+     *
+     * RED today: the existing-unit read-only branch authenticates the operational
+     * unit A and then reconciles the environment using the effective active B
+     * invocation, so it introduces the canonical FALSE for B and records the
+     * authority.
+     */
+    it("stays pending without environment or stamp when the reactivated old unit A is not the effective active B", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-old-unit-reactivation-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let rotation: ServiceRotationEvidence | undefined;
+      let evidence: OldUnitReactivationEvidence | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-old-unit-reactivation-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            rotation = await advanceInactiveServiceAToB(ctx);
+            // External operation ONLY: the user brings the OLD unit A back up
+            // while the effective active/MCP is already B.
+            await ctx.manager!.activate();
+            evidence = await runExistingUnitOptinAfterExternalReactivation(ctx);
+          },
+        });
+        if (rotation === undefined || evidence === undefined) {
+          throw new Error("fixture: the rotation/reactivation callbacks did not run");
+        }
+        const rotated = rotation;
+        const shown = evidence;
+
+        // Scenario integrity: the legitimate A→B rotation recorded A's authority
+        // before rotating, retired the own environment/stamp, retained unit A
+        // binding and advanced the effective MCP to B.
+        expect(rotated.stampBefore, "the supervised A must have recorded its authority").toBeDefined();
+        expect(rotated.bindingBefore, "the rotation must retain unit A binding").toBeDefined();
+        expect(shown.bindingBefore, "unit A binding must survive the rotation").toEqual(rotated.bindingBefore);
+        expect(shown.commandBefore, "the effective MCP must be B after the rotation").toEqual(rotated.expectedCommandB);
+        expect(
+          shown.environmentBefore?.BROWSER_CONTROL_AUTOSTART,
+          "the rotation must have retired the own FALSE",
+        ).toBeUndefined();
+        expect(shown.unitReleaseAuthenticates, "unit A retained release must still authenticate").toBe(true);
+        expect(shown.activeVersion, "the effective active must still be B").toBe(BC_VERSION_B);
+
+        // PRIMARY: the reactivated unit A is operational but is NOT the effective
+        // active B, so Stack must not claim the external service for B.
+        expect(
+          shown.stage.environment?.BROWSER_CONTROL_AUTOSTART,
+          `Stack must not introduce the canonical FALSE for an unproven active (got ${JSON.stringify(shown.stage.environment)})`,
+        ).toBeUndefined();
+        expect(
+          shown.stage.environment?.BROWSER_CONTROL_PORT,
+          "Stack must not project a port for an unproven active",
+        ).toBeUndefined();
+        expect(
+          shown.stage.autostart,
+          "Stack must not stamp autostart authority by proving unit A for active B",
+        ).toBeUndefined();
+        expect(
+          shown.stage.successMessages.some((message) => /autostart/i.test(message)),
+          `the managed-autostart success marker must not be emitted (got ${JSON.stringify(shown.stage.successMessages)})`,
+        ).toBe(false);
+
+        // Read-only: no reload/start/restart/enable/stop/disable on unit A.
+        for (const forbidden of ["daemon-reload", "enable", "start", "restart", "reload", "stop", "disable", "mask", "linger"]) {
+          expect(
+            shown.stage.verbs,
+            `the reactivation opt-in must not issue ${forbidden} on unit A`,
+          ).not.toContain(forbidden);
+        }
+        expect(
+          shown.stage.verbs.every((verb) => verb === "show"),
+          `the reactivation opt-in may only read the manager (got ${JSON.stringify(shown.stage.verbs)})`,
+        ).toBe(true);
+
+        // Guard B and unit A are not rewritten.
+        expect(shown.commandAfter, "the effective B command must survive").toEqual(shown.commandBefore);
+        expect(shown.unitBytesAfter, "unit A bytes must survive").toEqual(shown.unitBytesBefore);
+        expect(shown.bindingAfter, "unit A binding must survive verbatim").toEqual(shown.bindingBefore);
+        expect(
+          observables.mcpCommand,
+          "the effective MCP must remain B after the reactivation opt-in",
+        ).toEqual(rotated.expectedCommandB);
+        expect(
+          observables.manifestAutostart,
+          "no autostart authority may be recorded for the reactivated old unit",
+        ).toBeUndefined();
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+  },
+);
+
+describe.skipIf(process.platform !== "linux")(
+  "[T12-RED] Browser Control initial opt-in honors the preserved manual MCP port over the shell",
+  () => {
+    /**
+     * Proof-source coherence #2 (Spec T13, cierre causal de review, líneas 47 y
+     * 55): the managed MCP already declares a manual literal port A while the
+     * shell `BROWSER_CONTROL_PORT` names a different OWN closed port B. The
+     * initial explicit `--browser-control-service` opt-in must honor the
+     * effective preserved MCP port A for the unit binding, the manager/HTTP
+     * proof and the projected environment before any manager mutation; it must
+     * not bind or probe the shell port B. The manual port is preserved without a
+     * claim (`portOwned:false`).
+     *
+     * RED today: the service block's preflight/ensure still derive the port from
+     * the shell (`resolveBrowserControlRelayPort`), so the unit binding records B
+     * and the supervisor probes B (absent) instead of proving A.
+     */
+    it("binds the unit and proves the service on the preserved MCP port instead of the shell port", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-preserved-port-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const preservedPort = await reserveOwnedLoopbackPort();
+      const shellPort = await reserveOwnedLoopbackPort();
+      let evidence: PreservedMcpPortEvidence | undefined;
+      try {
+        const observables = await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-preserved-port-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          // The first install only projects the managed MCP; the unit is created
+          // by the explicit opt-in stage below.
+          browserControlService: false,
+          supervisor: { port: preservedPort },
+          onVerified: async (ctx) => {
+            evidence = await runInitialOptinHonoringPreservedMcpPort(ctx, preservedPort, shellPort);
+          },
+        });
+        if (evidence === undefined) throw new Error("fixture: the preserved-port callback did not run");
+        const shown = evidence;
+
+        // Scenario integrity: no unit before the opt-in and the manual MCP entry
+        // declares the preserved port A, distinct from the shell port B.
+        expect(shown.unitExistsBefore, "no unit may exist before the opt-in").toBe(false);
+        expect(shown.environmentBefore?.BROWSER_CONTROL_PORT, "the manual MCP must declare port A").toBe(
+          String(preservedPort),
+        );
+        expect(shown.shellPort, "the shell port must differ from the preserved port").not.toBe(shown.preservedPort);
+
+        // PRIMARY: the unit binding must use the preserved MCP port A, not B.
+        expect(observables.unitBytes, "the opt-in must create the owned unit").not.toBeNull();
+        expect(
+          observables.manifestServiceUnit?.port,
+          `the unit binding must honor the preserved MCP port (got ${observables.manifestServiceUnit?.port})`,
+        ).toBe(preservedPort);
+        expect(observables.manifestServiceUnit?.port, "the binding must not use the shell port").not.toBe(shellPort);
+
+        // The service is proven on A: the own /version responds and the canonical
+        // environment is projected with the manual port preserved.
+        expect(
+          shown.stage.versionRequests.length,
+          "the own /version on the preserved port must be proven",
+        ).toBeGreaterThanOrEqual(1);
+        expect(
+          shown.stage.environment?.BROWSER_CONTROL_PORT,
+          "the projected environment must keep the preserved port",
+        ).toBe(String(preservedPort));
+        expect(
+          shown.stage.environment?.BROWSER_CONTROL_AUTOSTART,
+          "the verified service must introduce the canonical FALSE",
+        ).toBe("false");
+        const stamp = shown.stage.autostart;
+        expect(stamp, "the verified service must record the autostart authority").toBeDefined();
+        expect(stamp!.portOwned, "the manual preserved port must not be claimed by Stack").toBe(false);
+        expect(
+          shown.stage.successMessages.some((message) => /autostart/i.test(message)),
+          `the managed-autostart success marker must be emitted after the proof (got ${JSON.stringify(shown.stage.successMessages)})`,
+        ).toBe(true);
+
+        // Initial activation on the preserved port: start is allowed, but no
+        // restart/reload/stop/disable on the created unit.
+        for (const verb of ["restart", "reload", "stop", "disable", "mask", "linger"]) {
+          expect(shown.stage.verbs, `the initial opt-in must not issue ${verb}`).not.toContain(verb);
+        }
+        expect(shown.stage.verbs, "the initial opt-in must start the created unit").toContain("start");
       } finally {
         cleanupOwnedResourcesOrThrow();
         releaseRoots();

@@ -124,6 +124,12 @@ export interface EnsureBrowserControlServiceInput {
   /** Owned paths of the same manifest row: the ONLY authority for the unit claim. */
   readonly prevOwned: readonly string[];
   readonly prevBinding?: ManagedBrowserControlServiceBinding;
+  /**
+   * Puerto efectivo ya resuelto y validado por el caller (MCP preservado o
+   * binding autenticado). Manda sobre `BROWSER_CONTROL_PORT` del proceso; ausente
+   * se conserva el contrato anterior para los callers sin fuente resuelta.
+   */
+  readonly port?: number;
 }
 
 function sha256(bytes: Buffer): string {
@@ -312,6 +318,42 @@ export function authenticateOwnedServiceUnitBinding(
 }
 
 /**
+ * Autentica que el guard MCP de la release retenida del binding (unidad
+ * histórica A) coincide con la invocación MCP efectiva actual (active B). La
+ * comparación es el comando/args COMPLETO derivado de la release autenticada del
+ * binding, nunca solo la versión ni un digest: una unidad A que sirve una
+ * release distinta de la del active/MCP no puede acreditar el servicio externo
+ * para B. Devuelve `null` si coincide; el motivo del bloqueo en caso contrario.
+ */
+export function authenticateOwnedServiceUnitInvocation(
+  stateDir: string,
+  binding: ManagedBrowserControlServiceBinding,
+  invocation: { readonly command: string; readonly args: readonly string[] },
+): string | null {
+  let release: VerifiedRetainedBrowserRelease;
+  try {
+    release = loadVerifiedRetainedBrowserReleaseByBinding(stateDir, BROWSER_CONTROL_PACKAGE, {
+      releaseDirectory: binding.releaseDirectory,
+      receiptSha256: binding.receiptSha256,
+    });
+  } catch (error) {
+    return `no se pudo autenticar la release retenida del binding (${error instanceof Error ? error.message : String(error)})`;
+  }
+  let expected: ManagedBrowserInvocationPlan;
+  try {
+    expected = planManagedBrowserInvocationForRetainedRelease(release, ["mcp"]);
+  } catch (error) {
+    return `no se pudo reconstruir la invocación MCP autenticada del binding (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const wanted = [expected.command, ...expected.args];
+  const actual = [invocation.command, ...invocation.args];
+  if (wanted.length !== actual.length || wanted.some((value, index) => value !== actual[index])) {
+    return "la invocación MCP de la unidad histórica no coincide con la del active/MCP efectivo";
+  }
+  return null;
+}
+
+/**
  * Autentica la evidencia `serviceUnit` de una unidad owned contra la release
  * retenida que la autorizó y contra los bytes reales del archivo. Devuelve
  * `null` si autentica; en caso contrario, el motivo del bloqueo.
@@ -340,6 +382,17 @@ export function inspectOwnedServiceUnitFile(unitPath: string): OwnedServiceUnitF
   if (existing.kind === "regular") return { kind: "regular", bytes: existing.bytes };
   if (existing.kind === "absent") return { kind: "absent" };
   return { kind: "unsafe", reason: existing.reason };
+}
+
+/**
+ * Puerto efectivo de la unidad: el override ya validado por el caller (MCP
+ * preservado o binding autenticado) manda; sin él se conserva el contrato
+ * anterior (`BROWSER_CONTROL_PORT` del proceso). Un override fuera de rango no
+ * se reinterpreta ni se escanea: procedencia incierta.
+ */
+function resolveServicePort(override: number | undefined): number | null {
+  if (override === undefined) return resolveBrowserControlRelayPort();
+  return Number.isInteger(override) && override >= 1 && override <= 65_535 ? override : null;
 }
 
 /**
@@ -418,11 +471,11 @@ export function ensureBrowserControlServiceUnit(
       reason: `no se pudo reconstruir la invocación \`serve\` autenticada (${error instanceof Error ? error.message : String(error)}).`,
     };
   }
-  const port = resolveBrowserControlRelayPort();
+  const port = resolveServicePort(input.port);
   if (port === null) {
     return {
       kind: "error",
-      reason: "BROWSER_CONTROL_PORT no es un entero válido (1–65535); procedencia incierta y no se crea la unidad.",
+      reason: "el puerto efectivo del servicio no es un entero válido (1–65535); procedencia incierta y no se crea la unidad.",
     };
   }
   let release;
