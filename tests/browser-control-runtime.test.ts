@@ -17,6 +17,7 @@ import {
 } from "./helpers/pnpm-tooling.js";
 import type { StageVerifiedBrowserTreeResult } from "../src/lib/browser-stage.js";
 import type { RuntimeDetection } from "../src/lib/detect.js";
+import type { BrowserControlRuntimeResult } from "../src/lib/browser-control-runtime.js";
 
 /**
  * T12/T13 vertical — integración raíz de Browser Control (Spec 12/13).
@@ -245,7 +246,10 @@ function registryFetch(
   return stub as unknown as typeof fetch;
 }
 
-async function startRelayVersionServer(requests: string[]): Promise<{ server: Server; port: number }> {
+async function startRelayVersionServer(
+  requests: string[],
+  port = 0,
+): Promise<{ server: Server; port: number }> {
   const server = createServer((request, response) => {
     requests.push(`${request.method ?? ""} ${request.url ?? ""}`);
     if (request.method === "GET" && request.url === "/version") {
@@ -259,7 +263,9 @@ async function startRelayVersionServer(requests: string[]): Promise<{ server: Se
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
+    // `port = 0` conserva el puerto efímero; un puerto explícito permite ocupar
+    // un endpoint propio ya reservado (relay que aparece tarde).
+    server.listen(port, "127.0.0.1", () => resolve());
   });
   const address = server.address() as AddressInfo;
   return { server, port: address.port };
@@ -1168,6 +1174,169 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
         ).toBe(false);
       });
     } finally {
+      cleanupOwnedResourcesOrThrow();
+      releaseRoots();
+    }
+  });
+
+  /**
+   * T12/T13 controller RED (spec 12/13): revalidación tras esperas asíncronas.
+   * Con active A real ya publicado y latest B verificado distinto, el sondeo del
+   * puerto efectivo observa ausencia ANTES del stage; durante el stage asíncrono
+   * de B un relay ordinario propio aparece en ESE MISMO puerto. La decisión de
+   * publicación debe re-sondear el endpoint efectivo DESPUÉS del stage y quedar
+   * pendiente (A+B, candidato B retenido, active A intacto). Hoy `prepare`
+   * captura el sondeo antes de `await retain` y reutiliza el resultado cacheado
+   * para promover, así que B se publica sobre un relay ya presente.
+   *
+   * Seam: `prepareBrowserControlRuntime` real (FS/SRI/managed) con
+   * `relayPort` efectivo explícito y sonda HTTP acotada real; el único doble es
+   * `stageVerifiedBrowserTree` (testigo en disco), que además enciende el relay
+   * propio en la frontera asíncrona.
+   */
+  it("re-sondea el puerto efectivo tras el stage y no promueve si el relay aparece durante la espera", async () => {
+    const ownedRoots: string[] = [];
+    // Cleanup de raíces/servidor armado ANTES del primer root o listener.
+    const releaseRoots = registerOwnedResourceCleanup("browser-control-late-relay-roots", () =>
+      removeTemporaryRoots(ownedRoots),
+    );
+    const fetched: string[] = [];
+    const relayRequests: string[] = [];
+    let relay: Server | undefined;
+    let currentRelease = RELEASE_A;
+
+    try {
+      const base = resolveVerificationDiskBase({
+        repoRoot: REPO_ROOT,
+        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+      });
+      const owned = createOwnedVerificationHome({
+        base,
+        prefix: ".jorgex-browser-control-late-relay-",
+        register: (root) => ownedRoots.push(root),
+      });
+      // Puerto efectivo propio: libre antes del stage, ocupado por el relay que
+      // aparece durante el stage de B. Nunca 19989.
+      const effectivePort = await reserveClosedRelayPort();
+
+      await withIsolatedEnv(
+        { ...process.env, ...owned.env, BROWSER_CONTROL_PORT: String(effectivePort) },
+        async () => {
+          const stateDir = path.join(owned.root, "state");
+          fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+          const witnessA = writeWitnessTree(owned.root, RELEASE_A);
+          const witnessB = writeWitnessTree(owned.root, RELEASE_B);
+
+          const actualStage = await import("../src/lib/browser-stage.js");
+          const stagedByVersion = new Map<string, StageVerifiedBrowserTreeResult>([
+            [RELEASE_A.version, stagedWitness(witnessA, RELEASE_A, actualStage.browserTreeSha256)],
+            [RELEASE_B.version, stagedWitness(witnessB, RELEASE_B, actualStage.browserTreeSha256)],
+          ]);
+          vi.doMock("../src/lib/browser-stage.js", async () => {
+            const actual =
+              await vi.importActual<typeof import("../src/lib/browser-stage.js")>(
+                "../src/lib/browser-stage.js",
+              );
+            return {
+              ...actual,
+              stageVerifiedBrowserTree: async (options: { release: { version: string } }) => {
+                const staged = stagedByVersion.get(options.release.version);
+                if (staged === undefined) {
+                  throw new Error(
+                    `browser-control-runtime: unexpected stage version ${options.release.version}`,
+                  );
+                }
+                if (options.release.version === RELEASE_B.version && relay === undefined) {
+                  // El relay ordinario aparece en la frontera asíncrona del
+                  // stage, en el MISMO puerto efectivo ya resuelto.
+                  const started = await startRelayVersionServer(relayRequests, effectivePort);
+                  relay = started.server;
+                }
+                return staged;
+              },
+            };
+          });
+          vi.stubGlobal("fetch", registryFetch(fetched, () => currentRelease));
+
+          const { prepareBrowserControlRuntime, browserControlCandidateDir } = await import(
+            "../src/lib/browser-control-runtime.js"
+          );
+          const { loadVerifiedManagedBrowserReceipt } = await import("../src/lib/browser-managed.js");
+
+          const summarize = (result: BrowserControlRuntimeResult): string =>
+            result.kind === "ready"
+              ? `ready:${result.version}`
+              : result.kind === "pending"
+                ? `pending:${result.candidateVersion}`
+                : `unavailable:${result.reason}`;
+
+          // 1) Primer prepare real: ausencia en el puerto efectivo => promueve A.
+          const readyA = await prepareBrowserControlRuntime({
+            stateDir,
+            pnpmBin: path.join(owned.root, "bin", "pnpm"),
+            fetchImpl: registryFetch(fetched, () => currentRelease),
+            stageParent: owned.env.TMPDIR,
+            relayPort: effectivePort,
+          });
+          expect(readyA.kind, `el primer prepare debe promover A: ${summarize(readyA)}`).toBe("ready");
+          const activeA = loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE);
+          expect(activeA, "el primer prepare debe publicar el active A").not.toBeNull();
+          if (activeA === null) return;
+          expect(activeA.version).toBe(RELEASE_A.version);
+          const activePointer = path.join(
+            stateDir,
+            ".browser-managed",
+            BROWSER_CONTROL_SERVER,
+            "active.v1.json",
+          );
+          const pointerBytesA = fs.readFileSync(activePointer);
+          // Control: el relay no existía durante el primer prepare.
+          expect(
+            relayRequests,
+            "el primer prepare no debe alcanzar un relay inexistente",
+          ).toEqual([]);
+
+          // 2) Segundo prepare con latest B: ausencia ANTES del stage, relay
+          //    presente DURANTE el stage asíncrono.
+          currentRelease = RELEASE_B;
+          const second = await prepareBrowserControlRuntime({
+            stateDir,
+            pnpmBin: path.join(owned.root, "bin", "pnpm"),
+            fetchImpl: registryFetch(fetched, () => currentRelease),
+            stageParent: owned.env.TMPDIR,
+            relayPort: effectivePort,
+          });
+
+          // Contrato: pending con A+B, sin promover.
+          expect(
+            second.kind,
+            `el segundo prepare debe quedar pending (no promover B sobre un relay ya presente): ${summarize(second)}`,
+          ).toBe("pending");
+          if (second.kind !== "pending") return;
+          expect(second.candidateVersion).toBe(RELEASE_B.version);
+          expect(second.activeVersion).toBe(RELEASE_A.version);
+          expect(
+            relayRequests,
+            "el re-sondeo posterior al stage debe alcanzar el relay que apareció en el puerto efectivo",
+          ).toContain("GET /version");
+
+          // Active A intacto (pointer bytes) y candidato B retenido.
+          const activeAfter = loadVerifiedManagedBrowserReceipt(stateDir, BC_PACKAGE);
+          expect(activeAfter?.version, "el active A no debe ser sustituido por B").toBe(RELEASE_A.version);
+          expect(fs.readFileSync(activePointer), "el pointer del active A no debe reescribirse").toEqual(
+            pointerBytesA,
+          );
+          const candidate = loadVerifiedManagedBrowserReceipt(
+            browserControlCandidateDir(stateDir),
+            BC_PACKAGE,
+          );
+          expect(candidate, "el candidato B debe quedar retenido").not.toBeNull();
+          expect(candidate?.version).toBe(RELEASE_B.version);
+        },
+      );
+    } finally {
+      // Cerrar el listener propio ANTES de retirar las raíces.
+      await closeRelayServer(relay);
       cleanupOwnedResourcesOrThrow();
       releaseRoots();
     }

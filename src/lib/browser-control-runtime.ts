@@ -424,7 +424,8 @@ function browserControlReadyFromReceipt(
  * - Relay presente/incierto sin active coincidente: nunca promueve ni reinicia;
  *   conserva el candidato y reporta pending (con el active previo si existe).
  * - Ausencia comprobada: promueve el candidato validado al namespace real y
- *   devuelve la proyección del active.
+ *   devuelve la proyección del active, solo si el re-sondeo inmediatamente
+ *   anterior a publicar sigue observando ausencia en el mismo endpoint.
  * - Corrupción/orfandad en cualquiera de los dos namespaces falla cerrado.
  */
 export async function prepareBrowserControlRuntime(
@@ -523,6 +524,22 @@ export async function prepareBrowserControlRuntime(
         reason: `no se pudo autenticar la proyección previa del active (${runtimeReason(error)}); no se publica una release nueva`,
       };
     }
+  }
+
+  // Re-sondeo del MISMO endpoint efectivo inmediatamente antes de publicar: la
+  // observación inicial se tomó antes de la adquisición/retención/autenticación
+  // asíncronas. Un relay que aparezca en ese intervalo debe aplazar la
+  // promoción (pending honesto con A+B), no ser sustituido por B. Se reutiliza
+  // la sonda ya capturada (mismo puerto/transporte), sin re-resolver entorno,
+  // URL ni proxy.
+  const lateRelay = await probe();
+  if (lateRelay !== "absent") {
+    return {
+      kind: "pending",
+      candidateVersion,
+      reason: relayPendingReason(lateRelay),
+      ...(previousActive === null ? {} : { activeVersion: previousActive.version }),
+    };
   }
 
   let promoted: ManagedBrowserReceipt;
