@@ -388,6 +388,29 @@ async function withIsolatedEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>)
 }
 
 /**
+ * Creates the private verification home for one runtime case and registers
+ * its root with the shared owned-resource owner. The owner stops owned
+ * process groups/listeners first and then removes the root, so cases never
+ * arm their own release; registration happens before any resource IO.
+ */
+function createOwnedRuntimeHome(prefix: string) {
+  const ownedRoots: string[] = [];
+  registerOwnedResourceCleanup(`browser-control-runtime-${prefix}`, () =>
+    removeTemporaryRoots(ownedRoots),
+  );
+  const base = resolveVerificationDiskBase({
+    repoRoot: REPO_ROOT,
+    env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
+  });
+  return createOwnedVerificationHome({
+    base,
+    prefix,
+    register: (root) => ownedRoots.push(root),
+  });
+}
+
+
+/**
  * Observables of the late-authentication window: a foreign writer creates the
  * official Browser Control skill target inside the real apply-changes
  * confirmation, after the pre-prompt plan/authentication and before the
@@ -412,22 +435,10 @@ interface LateAuthObservables {
  * authentication may decide whether that file is claimed or replaced.
  */
 async function runBrowserSkillConfirmWindow(foreignBytes: Buffer): Promise<LateAuthObservables> {
-  const ownedRoots: string[] = [];
-  const releaseRoots = registerOwnedResourceCleanup("browser-control-late-auth-roots", () =>
-    removeTemporaryRoots(ownedRoots),
-  );
   const fetched: string[] = [];
   let originalTty: PropertyDescriptor | undefined;
   try {
-    const base = resolveVerificationDiskBase({
-      repoRoot: REPO_ROOT,
-      env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-    });
-    const owned = createOwnedVerificationHome({
-      base,
-      prefix: ".jorgex-browser-control-late-auth-",
-      register: (root) => ownedRoots.push(root),
-    });
+    const owned = createOwnedRuntimeHome(".jorgex-browser-control-late-auth-");
     // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
     const closedPort = await reserveClosedRelayPort();
     originalTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -522,31 +533,18 @@ async function runBrowserSkillConfirmWindow(foreignBytes: Buffer): Promise<LateA
     if (originalTty === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
     else Object.defineProperty(process.stdout, "isTTY", originalTty);
     cleanupOwnedResourcesOrThrow();
-    releaseRoots();
   }
 }
 
 describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime integration", () => {
   it("retains a verified Browser Control candidate without activating it while the relay is present", async () => {
-    const ownedRoots: string[] = [];
     // Owned-resource owner armed before the first root or server exists.
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-runtime-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     let relay: Server | undefined;
     const fetched: string[] = [];
     const relayRequests: string[] = [];
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-runtime-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-runtime-");
       const startedRelay = await startRelayVersionServer(relayRequests);
       relay = startedRelay.server;
 
@@ -649,27 +647,14 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
     } finally {
       await closeRelayServer(relay);
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
   it("promotes the verified candidate to the real state and projects MCP+skill when the relay is absent", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-absent-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-absent-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-absent-");
       // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
       const closedPort = await reserveClosedRelayPort();
 
@@ -865,30 +850,17 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       );
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
   it("reuses the verified active without promotion when the relay is present and latest already matches", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-relay-present-reuse-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
     const relayRequests: string[] = [];
     let relay: Server | undefined;
     let stageCalls = 0;
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-relay-present-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-relay-present-");
       // First install: genuine absence on our own reserved-and-closed port.
       const closedPort = await reserveClosedRelayPort();
 
@@ -1052,27 +1024,14 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
     } finally {
       await closeRelayServer(relay);
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
   it("rolls back a promoted release that lacks the official skill and keeps the verified candidate", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-missing-skill-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-missing-skill-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-missing-skill-");
 
       await withIsolatedEnv({ ...process.env, ...owned.env }, async () => {
         const stateDir = path.join(owned.root, "state");
@@ -1163,7 +1122,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       });
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1183,26 +1141,14 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
    * propio en la frontera asíncrona.
    */
   it("re-sondea el puerto efectivo tras el stage y no promueve si el relay aparece durante la espera", async () => {
-    const ownedRoots: string[] = [];
     // Cleanup de raíces/servidor armado ANTES del primer root o listener.
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-late-relay-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
     const relayRequests: string[] = [];
     let relay: Server | undefined;
     let currentRelease = RELEASE_A;
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-late-relay-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-late-relay-");
       // Puerto efectivo propio: libre antes del stage, ocupado por el relay que
       // aparece durante el stage de B. Nunca 19989.
       const effectivePort = await reserveClosedRelayPort();
@@ -1317,28 +1263,15 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       // Cerrar el listener propio ANTES de retirar las raíces.
       await closeRelayServer(relay);
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
   it("advances a verified active A to B on a legitimate update, preserving user config and the prior root", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-update-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
     let currentRelease = RELEASE_A;
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-update-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-update-");
       // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
       const closedPort = await reserveClosedRelayPort();
 
@@ -1503,7 +1436,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       );
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1525,26 +1457,14 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
    *   con su rol, sin depender de doctor ni de snapshots de prosa.
    */
   it("sondea el puerto efectivo del MCP preservado y diagnostica active A + candidato B sin promover", async () => {
-    const ownedRoots: string[] = [];
     // Cleanup de raíces/servidor armado ANTES del primer root o listener.
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-effective-port-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
     const relayRequests: string[] = [];
     let relay: Server | undefined;
     let currentRelease = RELEASE_A;
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-effective-port-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-effective-port-");
       // Shell: puerto propio reservado-y-cerrado (ECONNREFUSED genuino), nunca 19989.
       const shellPort = await reserveClosedRelayPort();
 
@@ -1721,7 +1641,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
     } finally {
       await closeRelayServer(relay);
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1805,22 +1724,10 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
   it.each(uninstallCases)(
     "retira el MCP y la skill gestionados de Browser Control al desinstalar y conserva lo ajeno ($label)",
     async ({ personalized }) => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-uninstall-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const fetched: string[] = [];
 
       try {
-        const base = resolveVerificationDiskBase({
-          repoRoot: REPO_ROOT,
-          env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-        });
-        const owned = createOwnedVerificationHome({
-          base,
-          prefix: ".jorgex-browser-control-uninstall-",
-          register: (root) => ownedRoots.push(root),
-        });
+        const owned = createOwnedRuntimeHome(".jorgex-browser-control-uninstall-");
         // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989.
         const closedPort = await reserveClosedRelayPort();
         // Layout realista: el configDir de OpenCode vive dentro de HOME. El
@@ -1996,7 +1903,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
         );
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     },
   );
@@ -2015,22 +1921,10 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
    * install y el puerto centinela es inválido: el uninstall sigue siendo offline.
    */
   it("preserva una skill Browser Control owned modificada y bloquea el uninstall en vez de borrarla", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-uninstall-modified-skill-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-uninstall-modified-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-uninstall-modified-");
       // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989.
       const closedPort = await reserveClosedRelayPort();
       const isolatedXdgConfig = path.join(owned.env.HOME!, ".config");
@@ -2160,7 +2054,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       );
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -2178,22 +2071,10 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
    * (fetch envenenado y puerto centinela inválido tras el install).
    */
   it("bloquea el uninstall y conserva la proyección cuando el active gestionado está ausente aunque el candidato siga retenido", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-uninstall-missing-cache-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const fetched: string[] = [];
 
     try {
-      const base = resolveVerificationDiskBase({
-        repoRoot: REPO_ROOT,
-        env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
-      });
-      const owned = createOwnedVerificationHome({
-        base,
-        prefix: ".jorgex-browser-control-uninstall-missing-cache-",
-        register: (root) => ownedRoots.push(root),
-      });
+      const owned = createOwnedRuntimeHome(".jorgex-browser-control-uninstall-missing-cache-");
       // Own reserved-and-closed port: genuine ECONNREFUSED, never 19989/59999.
       const closedPort = await reserveClosedRelayPort();
       const isolatedXdgConfig = path.join(owned.env.HOME!, ".config");
@@ -2407,7 +2288,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control runtime
       );
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 });

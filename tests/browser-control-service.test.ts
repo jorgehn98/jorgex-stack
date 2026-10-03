@@ -588,7 +588,6 @@ interface ServiceObservables {
 
 interface RunServiceInput {
   readonly prefix: string;
-  readonly registerOwnedRoot: (root: string) => void;
   readonly base: string;
   readonly browserControlService?: boolean;
   readonly foreignUnitBytes?: Buffer;
@@ -648,17 +647,64 @@ interface VerifiedServiceContext {
 }
 
 /**
+ * Creates the private verification home for one real case and registers its
+ * root with the shared owned-resource owner. The owner stops owned process
+ * groups/listeners first and then removes the root, so cases never arm their
+ * own release; registration happens before any resource IO.
+ */
+function createOwnedServiceHome(input: { readonly base: string; readonly prefix: string }) {
+  const ownedRoots: string[] = [];
+  registerOwnedResourceCleanup(`browser-control-service-${input.prefix}`, () =>
+    removeTemporaryRoots(ownedRoots),
+  );
+  return createOwnedVerificationHome({
+    base: input.base,
+    prefix: input.prefix,
+    register: (root) => ownedRoots.push(root),
+  });
+}
+
+/**
+ * One real public `runInstall` for the explicit service opt-in against the
+ * verified context: installs the detect double, runs the public install with the
+ * injected manager seam and restores detection. The initial opt-in, the retry
+ * stage and the A→B rotation share this exact call.
+ */
+async function runServiceOptinCall(ctx: VerifiedServiceContext): Promise<number> {
+  const install = await import("../src/install.js");
+  const opencode = install.ADAPTERS.opencode!;
+  const originalDetect = opencode.detect;
+  opencode.detect = () => ({
+    id: "opencode",
+    name: "OpenCode",
+    installed: true,
+    binPath: ctx.opencodeBin,
+    configDir: ctx.configDir,
+  });
+  try {
+    return await install.runInstall({
+      runtimes: ["opencode"],
+      command: "install",
+      dryRun: false,
+      yes: true,
+      mode: { mode: "human", subagentConcurrency: "serial" },
+      engramBin: null,
+      browserControlService: true,
+      systemctlRunner: ctx.manager!.run,
+    });
+  } finally {
+    opencode.detect = originalDetect;
+  }
+}
+
+/**
  * Runs a real `runInstall` with a real managed active Browser Control projection
  * and returns the observable service artifacts. The coordinator boundary is the
  * only substitute; adapter detection, manifest, config projection and the FS all
  * run real.
  */
 async function runServiceInstall(input: RunServiceInput): Promise<ServiceObservables> {
-  const owned = createOwnedVerificationHome({
-    base: input.base,
-    prefix: input.prefix,
-    register: input.registerOwnedRoot,
-  });
+  const owned = createOwnedServiceHome({ base: input.base, prefix: input.prefix });
   let observables: ServiceObservables | undefined;
 
   if (input.configInsideHome === true) {
@@ -1030,33 +1076,8 @@ async function advanceInactiveServiceAToB(
   ctx.runtime.current = readyB;
   const expectedCommandB = [readyB.invocation.command, ...readyB.invocation.args];
 
-  const install = await import("../src/install.js");
-  const opencode = install.ADAPTERS.opencode!;
-  const originalDetect = opencode.detect;
-  opencode.detect = () => ({
-    id: "opencode",
-    name: "OpenCode",
-    installed: true,
-    binPath: ctx.opencodeBin,
-    configDir: ctx.configDir,
-  });
-
   const callsBefore = manager.calls.length;
-  let secondInstallExitCode: number;
-  try {
-    secondInstallExitCode = await install.runInstall({
-      runtimes: ["opencode"],
-      command: "install",
-      dryRun: false,
-      yes: true,
-      mode: { mode: "human", subagentConcurrency: "serial" },
-      engramBin: null,
-      browserControlService: true,
-      systemctlRunner: manager.run,
-    });
-  } finally {
-    opencode.detect = originalDetect;
-  }
+  const secondInstallExitCode = await runServiceOptinCall(ctx);
 
   const configBytesAfter = fs.readFileSync(configPath);
   const activeAfter = loadVerifiedRetainedBrowserRelease(stateDir, BC_PACKAGE);
@@ -1143,34 +1164,10 @@ async function runServiceOptinStage(ctx: VerifiedServiceContext): Promise<Existi
     throw new Error("fixture: the service opt-in stage requires the supervisor manager");
   }
   const { readManifest } = await import("../src/lib/manifest.js");
-  const install = await import("../src/install.js");
-  const opencode = install.ADAPTERS.opencode!;
-  const originalDetect = opencode.detect;
-  opencode.detect = () => ({
-    id: "opencode",
-    name: "OpenCode",
-    installed: true,
-    binPath: ctx.opencodeBin,
-    configDir: ctx.configDir,
-  });
   const callsBefore = manager.calls.length;
   const versionBefore = manager.versionRequests.length;
   const successBefore = prompts.log.success.mock.calls.length;
-  let exitCode: number;
-  try {
-    exitCode = await install.runInstall({
-      runtimes: ["opencode"],
-      command: "install",
-      dryRun: false,
-      yes: true,
-      mode: { mode: "human", subagentConcurrency: "serial" },
-      engramBin: null,
-      browserControlService: true,
-      systemctlRunner: manager.run,
-    });
-  } finally {
-    opencode.detect = originalDetect;
-  }
+  const exitCode = await runServiceOptinCall(ctx);
   const rowAfter = readManifest().runtimes.opencode as RuntimeManifest | undefined;
   const projectionAfter = readServiceProjection(ctx.configDir);
   return {
@@ -1340,15 +1337,10 @@ async function runInitialOptinHonoringPreservedMcpPort(
 
 describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux user service", () => {
   it("creates the fixed owned unit and supervises it with the authenticated `serve` invocation when the opt-in is explicit", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         supervisor: { port },
@@ -1450,7 +1442,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       expect(stamp!.projectionSha256).toMatch(/^[0-9a-f]{64}$/);
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1473,16 +1464,11 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * branch keeps the stale FALSE/port and the stamp while the command advances.
    */
   it("retires the Stack-owned autostart environment and preserves unit/binding A when an inactive service A is advanced to B", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     let rotation: ServiceRotationEvidence | undefined;
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-rotation-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         supervisor: { port },
@@ -1571,7 +1557,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       ).toBe(true);
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1593,17 +1578,12 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * for an already-implemented branch.
    */
   it("retires only the introduced FALSE and preserves the manual port and extras when an inactive service A is advanced to B", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-manual-port-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     const manualEnvironment = { BROWSER_CONTROL_PORT: String(port), USER_NOTE: "preserve-me" } as const;
     let rotation: ServiceRotationEvidence | undefined;
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-rotation-manual-port-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         supervisor: { port },
@@ -1698,7 +1678,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       ).toBe(true);
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1718,17 +1697,12 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * FALSE while active B is never rolled back to A.
    */
   it("fails closed and keeps the A projection when the recorded autostart authority does not authenticate before an A→B rotation", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-tamper-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     const tamperedProjectionSha256 = "ab".repeat(32);
     let rotation: ServiceRotationEvidence | undefined;
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-rotation-tamper-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         supervisor: { port },
@@ -1824,7 +1798,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       }
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1841,15 +1814,10 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * its claim/binding and the manual environment all survive.
    */
   it("preserves a manual canonical MCP environment with conflict instead of adopting it by equality", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-manual-env-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-manual-env-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         supervisor: { port },
@@ -1908,7 +1876,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       });
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -1926,16 +1893,11 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * missing `false`, the missing stamp and the missing marker.
    */
   it("merges the introduced FALSE into a manual MCP environment without claiming the manual port or dropping user extras", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-manual-merge-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     const manualEnvironment = { BROWSER_CONTROL_PORT: String(port), USER_NOTE: "preserve-me" } as const;
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-manual-merge-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         supervisor: { port },
@@ -1994,7 +1956,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       ).toBe(createHash("sha256").update(observables.unitBytes!).digest("hex"));
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
@@ -2011,15 +1972,10 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * owned claim and its binding must survive.
    */
   it("keeps the service pending without claiming autostart when the /version pid is not the unit MainPID", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-pid-mismatch-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const port = await reserveOwnedLoopbackPort();
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-pid-mismatch-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         // The served /version reports a pid that is NOT the manager MainPID
@@ -2086,19 +2042,13 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       expect(observables.manifestServiceUnit, "the serviceUnit binding must remain").toBeDefined();
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
   it("does not create a unit, invoke a manager or set autostart when the opt-in is absent", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-default-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-default-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
       });
 
@@ -2117,15 +2067,10 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       ).not.toContain(path.resolve(observables.unitPath));
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 
   it("preserves a foreign existing unit at the fixed path without adopting or overwriting it", async () => {
-    const ownedRoots: string[] = [];
-    const releaseRoots = registerOwnedResourceCleanup("browser-control-service-foreign-roots", () =>
-      removeTemporaryRoots(ownedRoots),
-    );
     const foreignBytes = Buffer.from(
       [
         "[Unit]",
@@ -2140,7 +2085,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
     try {
       const observables = await runServiceInstall({
         prefix: ".jorgex-browser-control-service-foreign-",
-        registerOwnedRoot: (root) => ownedRoots.push(root),
         base: verificationBase(),
         browserControlService: true,
         foreignUnitBytes: foreignBytes,
@@ -2156,7 +2100,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       expect(adopted, "a foreign unit must not be enabled or started").toEqual([]);
     } finally {
       cleanupOwnedResourcesOrThrow();
-      releaseRoots();
     }
   });
 });
@@ -2182,16 +2125,11 @@ interface ManagedServiceFixture {
 async function withCreatedManagedServiceUnit<T>(
   input: {
     readonly prefix: string;
-    readonly registerOwnedRoot: (root: string) => void;
-    readonly base: string;
+      readonly base: string;
   },
   run: (fixture: ManagedServiceFixture) => T | Promise<T>,
 ): Promise<T> {
-  const owned = createOwnedVerificationHome({
-    base: input.base,
-    prefix: input.prefix,
-    register: input.registerOwnedRoot,
-  });
+  const owned = createOwnedServiceHome({ base: input.base, prefix: input.prefix });
   // Presence of the holder is the execution flag: a generic `void` callback
   // legitimately returns `undefined`, so the value alone cannot prove the run.
   let outcome: { readonly value: T } | undefined;
@@ -2269,16 +2207,11 @@ describe.skipIf(process.platform !== "linux")(
     ])(
       "fails closed when the recorded $label does not match the authenticated active",
       async (variant) => {
-        const ownedRoots: string[] = [];
-        const releaseRoots = registerOwnedResourceCleanup("browser-control-service-binding-roots", () =>
-          removeTemporaryRoots(ownedRoots),
-        );
         try {
           await withCreatedManagedServiceUnit(
             {
               prefix: ".jorgex-browser-control-service-binding-",
-              registerOwnedRoot: (root) => ownedRoots.push(root),
-              base: verificationBase(),
+                  base: verificationBase(),
             },
             (fixture) => {
               // Fixture invariant: the on-disk bytes still match the recorded
@@ -2309,7 +2242,6 @@ describe.skipIf(process.platform !== "linux")(
           );
         } finally {
           cleanupOwnedResourcesOrThrow();
-          releaseRoots();
         }
       },
     );
@@ -2329,16 +2261,11 @@ describe.skipIf(process.platform !== "linux")(
      * validator (not a fake receipt) is what accepts A.
      */
     it("keeps the historical binding A unchanged after a distinct active B is promoted", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-rotation-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       try {
         await withCreatedManagedServiceUnit(
           {
             prefix: ".jorgex-browser-control-service-rotation-",
-            registerOwnedRoot: (root) => ownedRoots.push(root),
-            base: verificationBase(),
+              base: verificationBase(),
           },
           async (fixture) => {
             const { browserTreeSha256 } = await import("../src/lib/browser-stage.js");
@@ -2407,7 +2334,6 @@ describe.skipIf(process.platform !== "linux")(
         );
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -2420,16 +2346,11 @@ describe.skipIf(process.platform !== "linux")(
      * rewrite, no replacement of the alias, no new file).
      */
     it("rejects an owned unit whose parent was replaced by an own symlink alias", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-ancestor-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       try {
         await withCreatedManagedServiceUnit(
           {
             prefix: ".jorgex-browser-control-service-ancestor-",
-            registerOwnedRoot: (root) => ownedRoots.push(root),
-            base: verificationBase(),
+              base: verificationBase(),
           },
           (fixture) => {
             // Digest-only logic would accept: the bytes still match the digest.
@@ -2475,7 +2396,6 @@ describe.skipIf(process.platform !== "linux")(
         );
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -2496,16 +2416,11 @@ describe.skipIf(process.platform !== "linux")(
      * `rmSync(unitPath)` blind, so this is RED on the first assertion.
      */
     it("fails closed and keeps the foreign file when the opened fd write faults after an external swap", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-writefault-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       try {
         await withCreatedManagedServiceUnit(
           {
             prefix: ".jorgex-browser-control-service-writefault-",
-            registerOwnedRoot: (root) => ownedRoots.push(root),
-            base: verificationBase(),
+              base: verificationBase(),
           },
           (fixture) => {
             // Fresh, absent unit: drop the owned file the fixture created so the
@@ -2573,7 +2488,6 @@ describe.skipIf(process.platform !== "linux")(
         );
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -2594,16 +2508,11 @@ describe.skipIf(process.platform !== "linux")(
      * portable CAS against deliberate same-UID manipulation.
      */
     it("fails closed and keeps the drifted bytes and inode when a same-inode external write lands before readback", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-readback-drift-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       try {
         await withCreatedManagedServiceUnit(
           {
             prefix: ".jorgex-browser-control-service-readback-drift-",
-            registerOwnedRoot: (root) => ownedRoots.push(root),
-            base: verificationBase(),
+              base: verificationBase(),
           },
           (fixture) => {
             // Fresh, absent unit: drop the owned file the fixture created so the
@@ -2679,7 +2588,6 @@ describe.skipIf(process.platform !== "linux")(
         );
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -2705,16 +2613,11 @@ describe.skipIf(process.platform !== "linux")(
      * manifest and filesystem, never from a mocked helper.
      */
     it("keeps the unit, claim and binding and returns a non-zero pending status", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-uninstall-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       try {
         await withCreatedManagedServiceUnit(
           {
             prefix: ".jorgex-browser-control-service-uninstall-",
-            registerOwnedRoot: (root) => ownedRoots.push(root),
-            base: verificationBase(),
+              base: verificationBase(),
           },
           async (fixture) => {
             const { writeRuntimeManifest, readManifest } = await import("../src/lib/manifest.js");
@@ -2836,7 +2739,6 @@ describe.skipIf(process.platform !== "linux")(
         );
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -3407,10 +3309,6 @@ describe.skipIf(process.platform !== "linux")(
      * and environment are scenario integrity.
      */
     it("keeps the granular autostart authority verbatim across a pending uninstall", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-pending-authority-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: PendingUninstallAuthority | undefined;
       try {
@@ -3419,7 +3317,6 @@ describe.skipIf(process.platform !== "linux")(
         // observables below witness the pending-removal state.
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-pending-authority-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -3512,7 +3409,6 @@ describe.skipIf(process.platform !== "linux")(
         ).toBe(true);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -3538,16 +3434,11 @@ describe.skipIf(process.platform !== "linux")(
      * stop/disable/daemon-reload or removing the file.
      */
     it("stops, disables and removes the canonical owned unit with backup and retires its claims", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-full-uninstall-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: FullServiceUninstallEvidence | undefined;
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-full-uninstall-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -3678,7 +3569,6 @@ describe.skipIf(process.platform !== "linux")(
         ).toBe(false);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -3699,16 +3589,11 @@ describe.skipIf(process.platform !== "linux")(
      * missing unit file while the skill is blocked.
      */
     it("aborts before any destructive effect when the projected owned skill is user-modified", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-skill-blocked-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: FullServiceUninstallEvidence | undefined;
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-skill-blocked-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -3815,7 +3700,6 @@ describe.skipIf(process.platform !== "linux")(
         ).toBe(true);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -3839,17 +3723,12 @@ describe.skipIf(process.platform !== "linux")(
      * the removal never closes.
      */
     it("recovers a partial removal whose final daemon-reload failed and closes on retry", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-partial-reload-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let firstRun: FullServiceUninstallEvidence | undefined;
       let retry: ServiceRetirementRetryEvidence | undefined;
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-partial-reload-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -3957,7 +3836,6 @@ describe.skipIf(process.platform !== "linux")(
         expect.soft(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -3975,10 +3853,6 @@ describe.skipIf(process.platform !== "linux")(
      * absent and the resources/claims are closed.
      */
     it("does not repeat remove/persist when the entry phase is already unit-removed, so no restoration resurrects the unit", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-unit-removed-only-reload-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let firstRun: FullServiceUninstallEvidence | undefined;
       let retry: ServiceRetirementRetryEvidence | undefined;
@@ -3990,7 +3864,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         await runServiceInstall({
           prefix: ".jorgex-browser-control-service-unit-removed-only-reload-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4102,7 +3975,6 @@ describe.skipIf(process.platform !== "linux")(
         ).toBe(true);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4124,10 +3996,6 @@ describe.skipIf(process.platform !== "linux")(
      * seam; the existing partial-reload case covers `unit-removed`.
      */
     it("resumes a retirement whose own unit-file removal failed after the environment phase was persisted", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-env-retired-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let firstRun: FullServiceUninstallEvidence | undefined;
       let retry: ServiceRetirementRetryEvidence | undefined;
@@ -4135,7 +4003,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-env-retired-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4264,7 +4131,6 @@ describe.skipIf(process.platform !== "linux")(
         expect.soft(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4286,10 +4152,6 @@ describe.skipIf(process.platform !== "linux")(
      * run exits 0. This is the distinct `manager-reloaded` recovery seam.
      */
     it("resumes ordinary cleanup after the manager-reloaded checkpoint without repeating any manager mutation", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-manager-reloaded-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let firstRun: FullServiceUninstallEvidence | undefined;
       let retry: ServiceRetirementRetryEvidence | undefined;
@@ -4303,7 +4165,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-manager-reloaded-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4467,7 +4328,6 @@ describe.skipIf(process.platform !== "linux")(
         expect.soft(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -4484,18 +4344,12 @@ describe.skipIf(process.platform !== "linux")(
      * user extra untouched and retain active B.
      */
     it("finishes a unit-only retirement after an A→B rotation retired the environment stamp, preserving the manual port", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-unit-authority-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let rotation: ServiceRotationEvidence | undefined;
       let evidence: FullServiceUninstallEvidence | undefined;
       try {
         await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-unit-authority-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4551,7 +4405,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(mutating, "an inactive unit must not be restarted").not.toContain("restart");
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4563,11 +4416,6 @@ describe.skipIf(process.platform !== "linux")(
      * resource.
      */
     it("preserves the full owned inventory and MCP ledger across a pending removal and retires every canonical resource on retry", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-pending-inventory-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let pending: PendingUninstallAuthority | undefined;
       let retry: ServiceRetirementRetryEvidence | undefined;
@@ -4575,7 +4423,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-pending-inventory-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4660,7 +4507,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(retry.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4672,11 +4518,6 @@ describe.skipIf(process.platform !== "linux")(
      * foreign resources are preserved.
      */
     it("restores the own unit bytes when persisting unit-removed faults after the unlink, then closes safely on retry", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-unit-removed-fault-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let firstRun: FullServiceUninstallEvidence | undefined;
       let retry: ServiceRetirementRetryEvidence | undefined;
@@ -4685,7 +4526,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-unit-removed-fault-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4765,7 +4605,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(closed.processDelegateDelta, "the retry must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4777,11 +4616,6 @@ describe.skipIf(process.platform !== "linux")(
      * would delete the manual port and stop/disable/remove the unit.
      */
     it("fails closed on a malformed non-boolean portOwned stamp and preserves the manual port, unit and claims", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-malformed-stamp-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: FullServiceUninstallEvidence | undefined;
       let ledgerAfter = false;
@@ -4789,7 +4623,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-malformed-stamp-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4855,7 +4688,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(shown.processDelegateDelta, "the blocked removal must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4867,17 +4699,11 @@ describe.skipIf(process.platform !== "linux")(
      * unverifiable service.
      */
     it("keeps the full authority pending with zero mutating verbs when the owned unit file vanished without a retirement phase", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-vanished-unit-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: FullServiceUninstallEvidence | undefined;
       try {
         await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-vanished-unit-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4921,7 +4747,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(shown.processDelegateDelta, "the pending removal must not spawn a real manager").toBe(0);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4934,11 +4759,6 @@ describe.skipIf(process.platform !== "linux")(
      * projected and the foreign replacement is preserved verbatim.
      */
     it("fails closed when the own unit file is replaced during the install daemon-reload wait", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-reload-drift-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       const foreignUnitBytes = Buffer.from(
         ["[Unit]", "Description=foreign user unit", "[Service]", "ExecStart=/bin/false", ""].join("\n"),
@@ -4948,7 +4768,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-reload-drift-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -4974,7 +4793,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(shown.unitBytes, "the foreign replacement must be preserved").toEqual(foreignUnitBytes);
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
 
@@ -4987,17 +4805,11 @@ describe.skipIf(process.platform !== "linux")(
      * survive.
      */
     it("preserves a user environment edit that lands during the uninstall stop wait instead of writing a stale snapshot", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-cluster-stop-drift-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: FullServiceUninstallEvidence | undefined;
       try {
         await runServiceInstall({
           prefix: ".jorgex-browser-control-service-cluster-stop-drift-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -5043,7 +4855,6 @@ describe.skipIf(process.platform !== "linux")(
         ).toBe("changed-by-user");
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -5078,11 +4889,6 @@ describe.skipIf(process.platform !== "linux")(
      * exit code.
      */
     it("stays pending without evidence and completes only the missing environment after the supervisor is recovered", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup(
-        "browser-control-service-existing-unit-retry-roots",
-        () => removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let evidence: ExistingUnitRetryEvidence | undefined;
       const originalWriteFileSync = fs.writeFileSync;
@@ -5108,7 +4914,6 @@ describe.skipIf(process.platform !== "linux")(
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-existing-unit-retry-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -5235,7 +5040,6 @@ describe.skipIf(process.platform !== "linux")(
       } finally {
         writeSpy.mockRestore();
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -5267,17 +5071,12 @@ describe.skipIf(process.platform !== "linux")(
      * authority.
      */
     it("stays pending without environment or stamp when the reactivated old unit A is not the effective active B", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-old-unit-reactivation-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const port = await reserveOwnedLoopbackPort();
       let rotation: ServiceRotationEvidence | undefined;
       let evidence: OldUnitReactivationEvidence | undefined;
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-old-unit-reactivation-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           browserControlService: true,
           supervisor: { port },
@@ -5354,7 +5153,6 @@ describe.skipIf(process.platform !== "linux")(
         ).toBeUndefined();
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
@@ -5378,17 +5176,12 @@ describe.skipIf(process.platform !== "linux")(
      * and the supervisor probes B (absent) instead of proving A.
      */
     it("binds the unit and proves the service on the preserved MCP port instead of the shell port", async () => {
-      const ownedRoots: string[] = [];
-      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-preserved-port-roots", () =>
-        removeTemporaryRoots(ownedRoots),
-      );
       const preservedPort = await reserveOwnedLoopbackPort();
       const shellPort = await reserveOwnedLoopbackPort();
       let evidence: PreservedMcpPortEvidence | undefined;
       try {
         const observables = await runServiceInstall({
           prefix: ".jorgex-browser-control-service-preserved-port-",
-          registerOwnedRoot: (root) => ownedRoots.push(root),
           base: verificationBase(),
           // The first install only projects the managed MCP; the unit is created
           // by the explicit opt-in stage below.
@@ -5447,7 +5240,6 @@ describe.skipIf(process.platform !== "linux")(
         expect(shown.stage.verbs, "the initial opt-in must start the created unit").toContain("start");
       } finally {
         cleanupOwnedResourcesOrThrow();
-        releaseRoots();
       }
     });
   },
