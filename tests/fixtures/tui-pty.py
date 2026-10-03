@@ -27,8 +27,6 @@ import termios
 import time
 import fcntl
 
-ANSI_CSI = None
-
 
 def parse_argv(argv):
     opts = {"cols": 120, "rows": 40, "timeout": 20.0, "cwd": None}
@@ -160,6 +158,26 @@ def sgr_click(x, y, button=0):
     return f"\x1b[<{button};{x};{y}M\x1b[<{button};{x};{y}m".encode("utf-8")
 
 
+def read_pty_once(fd, raw, timeout=0.2):
+    """Extiende raw con una lectura del PTY.
+
+    Devuelve "data" si llegaron bytes, "idle" si no había nada listo y "closed"
+    si el PTY terminó o falló. Los tres bucles de la sesión comparten esta única
+    lectura para no duplicar select/read/EOF/OSError.
+    """
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready:
+        return "idle"
+    try:
+        data = os.read(fd, 65536)
+    except OSError:
+        return "closed"
+    if not data:
+        return "closed"
+    raw.extend(data)
+    return "data"
+
+
 def main():
     opts, command = parse_argv(sys.argv[1:])
     out = opts["out"]
@@ -224,16 +242,8 @@ def main():
                             opts["cols"],
                         ):
                             break
-                        ready, _, _ = select.select([fd], [], [], 0.2)
-                        if not ready:
-                            continue
-                        try:
-                            data = os.read(fd, 65536)
-                        except OSError:
+                        if read_pty_once(fd, raw) == "closed":
                             break
-                        if not data:
-                            break
-                        raw += data
                 snapshot("before:" + (entry["label"] or str(len(marks))), len(raw))
                 marks.append(
                     {
@@ -272,29 +282,13 @@ def main():
                     pass
             if not pending:
                 break
-            ready, _, _ = select.select([fd], [], [], 0.2)
-            if not ready:
-                continue
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
+            if read_pty_once(fd, raw) == "closed":
                 break
-            if not data:
-                break
-            raw += data
         # Let the last scheduled action settle before the final snapshot.
         settle = time.time() + 1.5
         while time.time() < settle:
-            ready, _, _ = select.select([fd], [], [], 0.2)
-            if not ready:
-                continue
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
+            if read_pty_once(fd, raw) == "closed":
                 break
-            if not data:
-                break
-            raw += data
     finally:
         with open(out, "wb") as handle:
             handle.write(bytes(raw))

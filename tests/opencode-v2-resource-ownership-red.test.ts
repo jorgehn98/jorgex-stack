@@ -251,6 +251,47 @@ describe("[T07-delta] install/uninstall no pisan ni borran un owned modificado",
       expect(backupFiles(h.home), "no debe respaldarse ni borrarse un recurso ambiguo").toEqual([]);
     });
   });
+
+  it("install y uninstall bloquean un WAV owned modificado y preservan bytes, propiedad y sin backups", async () => {
+    await withIsolatedOpenCode(async (h) => {
+      await h.realInstall();
+      const wavTarget = path.join(h.configDir, "sounds", "done.wav");
+      expect(ownedPaths(h), "el manifest coherente debe reclamar el WAV actual").toContain(path.resolve(wavTarget));
+
+      const mutated = Buffer.from("custom own mutation\n");
+      fs.writeFileSync(wavTarget, mutated);
+      const serverConfigBefore = fs.readFileSync(path.join(h.configDir, "opencode.json"));
+
+      const { outcome, rejection, output } = await installWithOutput(h);
+      expect(
+        outcome,
+        `install debe bloquear el WAV owned modificado (rejection=${String(rejection)})`,
+      ).toBe(1);
+      expect(output, "el diagnóstico debe nombrar el WAV").toMatch(/sounds[\\/]done\.wav/);
+      expect(
+        fs.readFileSync(wavTarget).equals(mutated),
+        "los bytes modificados se conservan byte a byte (el digest no autoriza pisarlos)",
+      ).toBe(true);
+      expect(ownedPaths(h), "el ledger de propiedad debe conservarse").toContain(path.resolve(wavTarget));
+      expect(backupFiles(h.home), "se bloquea antes de crear backups").toEqual([]);
+      expect(
+        fs.readFileSync(path.join(h.configDir, "opencode.json")).equals(serverConfigBefore),
+        "no debe escribirse otro archivo gestionado antes del bloqueo",
+      ).toBe(true);
+
+      const exit = await h.uninstall.runUninstall({
+        runtimes: ["opencode"],
+        dryRun: false,
+        yes: true,
+        removeEngram: false,
+        removePlaywright: false,
+      });
+      expect(exit, "uninstall debe bloquear el WAV owned modificado, no borrarlo").toBe(1);
+      expect(fs.readFileSync(wavTarget).equals(mutated), "los bytes modificados se conservan byte a byte").toBe(true);
+      expect(ownedPaths(h), "la propiedad debe conservarse").toContain(path.resolve(wavTarget));
+      expect(backupFiles(h.home), "no debe respaldarse ni borrarse un recurso ambiguo").toEqual([]);
+    });
+  });
 });
 
 describe("[T07-delta] unowned no se reclama ni se pisa (digest igual / legacy)", () => {
@@ -369,6 +410,55 @@ describe("[T07-delta] tipo físico ambiguo se bloquea preservando el fixture ext
       });
     },
   );
+});
+
+/**
+ * Followup T07 (fuente canónica): si el asset canónico del paquete no se puede
+ * leer, el preflight debe fallar cerrado ANTES de escribir, respaldar o tocar el
+ * config root. La guardia vive en `planAdditionalResources`; se inyecta el error
+ * SOLO sobre la ruta exacta del asset público, sin tocar el paquete real.
+ */
+describe("[T07-delta] fuente canónica ilegible falla cerrado antes de escribir", () => {
+  it("install real falla cerrado si el asset canónico no se puede leer, sin escribir ni respaldar", async () => {
+    await withIsolatedOpenCode(async (h) => {
+      const { stackRoot } = await import("../src/lib/paths.js");
+      const canonAsset = path.join(stackRoot(), "assets", "opencode", "sounds", "done.wav");
+      const originalRead = fs.readFileSync.bind(fs);
+      const readSpy = vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
+        if (String(file) === canonAsset) {
+          const error = new Error("EACCES: permission denied, open canon asset") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        }
+        return originalRead(file, ...(rest as []));
+      }) as never);
+
+      let outcome: number | "rejected" = "rejected";
+      let rejection: unknown;
+      let output = "";
+      try {
+        ({ outcome, rejection, output } = await installWithOutput(h));
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(
+        outcome,
+        `install debe fallar cerrado antes de escribir (rejection=${String(rejection)})`,
+      ).toBe(1);
+      expect(output, "el diagnóstico debe nombrar el asset público").toMatch(/sounds[\\/]done\.wav/);
+      expect(ownedPaths(h), "el manifest debe quedar vacío").toEqual([]);
+      expect(backupFiles(h.home), "no debe crear backups").toEqual([]);
+      expect(
+        fs.existsSync(path.join(h.configDir, "opencode.json")),
+        "no debe escribirse la config del servidor",
+      ).toBe(false);
+      expect(
+        fs.existsSync(path.join(h.configDir, "sounds", "done.wav")),
+        "no debe proyectarse el asset",
+      ).toBe(false);
+    });
+  });
 });
 
 describe("[T07-delta] control independiente: owned v1 exacto sí migra con backup", () => {

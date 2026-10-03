@@ -482,9 +482,18 @@ describe("cli.json compacto (B3)", () => {
     });
   });
 
-  const cliPreservationCases: Array<[string, { session: { verbosity: string }; theme?: { name: string } }]> = [
+  interface CliPreservedShape {
+    session: { verbosity: string; tps?: boolean };
+    theme?: { name: string };
+    attention?: { notifications?: boolean; volume?: number | null };
+  }
+  const cliPreservationCases: Array<[string, CliPreservedShape]> = [
     ["igual low", { session: { verbosity: "low" } }],
     ["custom high", { session: { verbosity: "high" }, theme: { name: "user-theme" } }],
+    [
+      "falsy/null leaves",
+      { session: { verbosity: "high", tps: false }, attention: { notifications: false, volume: null }, theme: { name: "user-theme" } },
+    ],
   ];
   it.each(cliPreservationCases)("cli.json existente %s: valores previos se preservan y no se reclaman", async (_label, existing) => {
     await withIsolatedHome(async ({ configDir }) => {
@@ -498,20 +507,32 @@ describe("cli.json compacto (B3)", () => {
       if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
 
       const content = JSON.parse(cliAction.content) as {
-        session?: { verbosity?: string };
+        session?: { verbosity?: string; tps?: boolean };
         theme?: { name?: string };
+        attention?: { notifications?: boolean; volume?: number | null };
       };
-      expect(content.session?.verbosity, "el valor previo se preserva").toBe(existing.session.verbosity);
-      if (existing.theme !== undefined) {
-        expect(content.theme?.name, "el valor previo se preserva").toBe(existing.theme.name);
-      }
-
       const owned = new Set(
         (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
       );
-      expect(owned.has(JSON.stringify(["cli.json", "session", "verbosity"])), "un valor previo no se reclama").toBe(false);
+      const notClaimed = (...segments: string[]): void => {
+        expect(owned.has(JSON.stringify(["cli.json", ...segments])), `un valor previo no se reclama (${segments.join(".")})`).toBe(false);
+      };
+
+      expect(content.session?.verbosity, "el valor previo se preserva").toBe(existing.session.verbosity);
+      notClaimed("session", "verbosity");
+      if (existing.session.tps !== undefined) {
+        expect(content.session?.tps, "un booleano previo se preserva sin seed").toBe(existing.session.tps);
+        notClaimed("session", "tps");
+      }
       if (existing.theme !== undefined) {
-        expect(owned.has(JSON.stringify(["cli.json", "theme", "name"])), "un valor previo no se reclama").toBe(false);
+        expect(content.theme?.name, "el valor previo se preserva").toBe(existing.theme.name);
+        notClaimed("theme", "name");
+      }
+      if (existing.attention !== undefined) {
+        expect(content.attention?.notifications, "un booleano previo se preserva").toBe(existing.attention.notifications);
+        expect(content.attention?.volume, "un null manual se preserva").toBe(existing.attention.volume);
+        notClaimed("attention", "notifications");
+        notClaimed("attention", "volume");
       }
     });
   });
@@ -546,6 +567,7 @@ describe("cli.json compacto (B3)", () => {
       const installed = JSON.parse(fs.readFileSync(cliFile, "utf8")) as Record<string, any>;
       expect(installed.session.verbosity).toBe("low");
 
+      // Dato manual sobre la hoja canónica: debe sobrevivir al uninstall.
       installed.theme = { name: "user-theme" };
       fs.writeFileSync(cliFile, JSON.stringify(installed, null, 2) + "\n");
 
@@ -554,6 +576,13 @@ describe("cli.json compacto (B3)", () => {
       const afterUninstall = JSON.parse(fs.readFileSync(cliFile, "utf8")) as Record<string, any>;
       expect(afterUninstall.session?.verbosity).toBeUndefined();
       expect(afterUninstall.theme).toEqual({ name: "user-theme" });
+
+      // Raíz completa esperada (literal, sin importar constantes de implementación):
+      // solo queda el dato manual; las hojas canónicas owned desaparecen y todos
+      // los contenedores propios vacíos se podan, incluido `plugins` (owned-empty
+      // sin comentario ajeno). La semántica de entradas manuales/owned del plugin
+      // ya está cubierta por las pruebas dedicadas de `cli.plugins`.
+      expect(afterUninstall).toEqual({ theme: { name: "user-theme" } });
     });
   });
 

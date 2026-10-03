@@ -12,6 +12,8 @@ import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import {
+  cleanupOwnedResourcesOrThrow,
+  registerOwnedProcessGroup,
   registerOwnedResourceCleanup,
   runBoundedProcess,
   stopOwnProcessTree,
@@ -191,14 +193,55 @@ async function stopGroupAndConfirm(pid: number, label: string): Promise<string |
   }
 }
 
-/** El grupo del TUI (pty.fork lo hace líder de sesión) queda registrado por el fixture. */
-async function stopTuiGroupAndConfirm(out: string): Promise<string | undefined> {
-  const pidFile = `${out}.tui.pid`;
-  // El fixture retira el registro solo tras reapear al TUI; ausente = no hay TUI vivo.
-  if (!fs.existsSync(pidFile)) return undefined;
-  const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
-  if (!Number.isInteger(pid) || pid <= 0) return `${pidFile}: pid inválido`;
+/**
+ * Cierra un arranque fallido del servidor propio. Devuelve `true` solo cuando el
+ * stop quedó confirmado (el llamador libera el registro del owner); si no,
+ * registra la causa en el estado del caso antes de que el arranque falle, de modo
+ * que el guard de raíz existente preserve la raíz. `stopGroup` es el seam
+ * determinista que consume este control.
+ */
+async function settleFailedStart(
+  pid: number,
+  unconfirmed: string[],
+  stopGroup: (pid: number, label: string) => Promise<string | undefined> = stopGroupAndConfirm,
+): Promise<boolean> {
+  const stopFailure = await stopGroup(pid, "servidor propio");
+  if (stopFailure === undefined) return true;
+  unconfirmed.push(stopFailure);
+  return false;
+}
+
+/** Confirma el grupo del TUI capturado por el llamador (pty.fork lo hace líder de sesión). */
+async function stopTuiGroupAndConfirm(pid: number | undefined): Promise<string | undefined> {
+  if (pid === undefined) return undefined; // el fixture no registró grupo: no hay TUI vivo
   return stopGroupAndConfirm(pid, "TUI pty");
+}
+
+/** Espera acotada al registro `<out>.tui.pid`; el fixture lo retira tras reapear el TUI. */
+async function waitForTuiPid(out: string, timeoutMs: number): Promise<number | undefined> {
+  const pidFile = `${out}.tui.pid`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (fs.existsSync(pidFile)) {
+      const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    }
+    if (Date.now() > deadline) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/**
+ * Solo el stop propio identificado (AbortError del controller propio) y los
+ * códigos de desconexión conocidos del cliente son esperados; un TypeError u
+ * otro fallo del handler queda observable aunque la conexión esté destruida.
+ * `ERR_STREAM_WRITE_AFTER_END` no es una causa de desconexión.
+ */
+function isExpectedStubStop(error: unknown, controller: AbortController): boolean {
+  const name = (error as { name?: string } | undefined)?.name;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (controller.signal.aborted && (name === "AbortError" || code === "ABORT_ERR")) return true;
+  return code === "ECONNRESET" || code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
 }
 
 describe("state.mjs: matemática pura del panel (Spec T18)", () => {
@@ -227,6 +270,15 @@ describe("state.mjs: matemática pura del panel (Spec T18)", () => {
 
   it("tokens finitos y no negativos, con buckets k/m", () => {
     const cache = { read: 0, write: 0 };
+    // Suma de buckets que desborda a Infinity: se omite, no se rotula "∞".
+    expect(
+      state.formatTokens({
+        input: Number.MAX_VALUE,
+        output: Number.MAX_VALUE,
+        reasoning: 0,
+        cache,
+      }),
+    ).toBeUndefined();
     expect(state.formatTokens(undefined)).toBeUndefined();
     expect(state.formatTokens({ input: 1, output: 2, reasoning: 3, cache })).toBe("6 tok");
     expect(state.formatTokens({ input: 1500, output: 0, reasoning: 0, cache })).toBe("1.5k tok");
@@ -241,24 +293,55 @@ describe("state.mjs: matemática pura del panel (Spec T18)", () => {
     expect(state.formatModel({ providerID: "p", id: "m" })).toBe("p/m");
     expect(state.formatModel({ providerID: "p", id: "m", variant: "high" })).toBe("p/m#high");
   });
+
+  it("no atribuye un TypeError del handler a la desconexión solo por estado destruido", () => {
+    const controller = new AbortController();
+    expect(isExpectedStubStop(new TypeError("body json null"), controller)).toBe(false);
+    // ERR_STREAM_WRITE_AFTER_END no es causa de desconexión: queda observable.
+    expect(isExpectedStubStop({ code: "ERR_STREAM_WRITE_AFTER_END" }, controller)).toBe(false);
+    // Control: una desconexión real del cliente sí es esperada.
+    expect(isExpectedStubStop({ code: "ECONNRESET" }, controller)).toBe(true);
+  });
+});
+
+describe("cierre de arranque fallido del servidor propio", () => {
+  it("un stop no confirmado se registra en el estado del caso y activa el guard de raíz", async () => {
+    const unconfirmed: string[] = [];
+    const stopFailure = "servidor propio pid 4242: sigue vivo tras SIGKILL";
+
+    // Control determinista: el stop inyectado no se confirma, así que el arranque
+    // fallido debe registrar la causa en el mismo estado que lee el guard de raíz.
+    const confirmed = await settleFailedStart(4242, unconfirmed, async () => stopFailure);
+
+    expect(confirmed).toBe(false);
+    expect(unconfirmed).toEqual([stopFailure]);
+    // Guard de raíz existente (withTuiCase): preserva cuando el estado no está vacío.
+    expect(unconfirmed.length).toBeGreaterThan(0);
+
+    // Un stop confirmado no registra causa ni pide preservar la raíz.
+    expect(await settleFailedStart(4242, unconfirmed, async () => undefined)).toBe(true);
+    expect(unconfirmed).toEqual([stopFailure]);
+  });
 });
 
 interface Stub {
   port: number;
   close: () => Promise<void>;
+  /** Primer fallo inesperado del handler; el llamador lo observa tras fn/cierre. */
+  failure: () => unknown;
 }
 
 interface Server {
   url: string;
   password: string;
   child: ChildProcess;
+  /** Libera el grupo del servidor del owner tras un stop confirmado. */
+  release: () => void;
 }
 
 interface TuiCase {
   root: string;
-  configDir: string;
   server: Server;
-  stub: Stub;
   parentID: string;
   childID: string;
   /** Fallos de limpieza propios que impiden borrar la raíz sin confirmación. */
@@ -295,6 +378,19 @@ describe.skipIf(hostBinary === undefined)(
     let copy = "";
     let observedVersion = "";
     let unregisterRoot: (() => void) | undefined;
+    // Raíces de casos ACTIVAS (añadidas justo tras mkdtemp, antes de cualquier
+    // efecto): el callback de raíz de suite no borra el ancestro mientras existan.
+    const activeCaseRoots = new Set<string>();
+
+    /** Único límite de limpieza de la raíz de suite; corre tras confirmar grupos. */
+    function cleanupRunRoot(): string | undefined {
+      if (runRoot === "" || !fs.existsSync(runRoot)) return undefined;
+      if (activeCaseRoots.size > 0) {
+        return `raíz de suite conservada; casos activos/sin confirmar: ${[...activeCaseRoots].join(", ")}`;
+      }
+      fs.rmSync(runRoot, { recursive: true, force: true });
+      return fs.existsSync(runRoot) ? `raíz de suite no eliminada: ${runRoot}` : undefined;
+    }
 
     beforeAll(async () => {
       expect(hostBinary, "JORGEX_OPENCODE_V2_BIN").toBeDefined();
@@ -316,7 +412,8 @@ describe.skipIf(hostBinary === undefined)(
       assertOwnRootOutsideProfiles(runRoot);
       // Limpieza propia registrada antes de escribir el marcador o copiar el host.
       unregisterRoot = registerOwnedResourceCleanup("tui-run-root", () => {
-        if (runRoot !== "" && fs.existsSync(runRoot)) fs.rmSync(runRoot, { recursive: true, force: true });
+        const failure = cleanupRunRoot();
+        if (failure !== undefined) throw new Error(failure);
       });
       for (const dir of ["home", "config", "data", "cache", "state", "runtime", "tmp", "cwd"]) {
         fs.mkdirSync(path.join(runRoot, dir), { recursive: true });
@@ -334,8 +431,10 @@ describe.skipIf(hostBinary === undefined)(
     }, CASE_TIMEOUT_MS);
 
     afterAll(() => {
-      if (runRoot !== "" && fs.existsSync(runRoot)) fs.rmSync(runRoot, { recursive: true, force: true });
-      expect(runRoot === "" || fs.existsSync(runRoot), "raíz privada eliminada").toBe(false);
+      // El owner compartido detiene y verifica los grupos propios ANTES de correr
+      // el callback de raíz; no se borra el ancestro por una vía directa. Si algo
+      // no se confirma, el callback queda armado para el reporte de salida.
+      cleanupOwnedResourcesOrThrow();
       unregisterRoot?.();
     });
 
@@ -411,6 +510,7 @@ describe.skipIf(hostBinary === undefined)(
 
     function startStub(delayMs: number): Promise<Stub> {
       const controller = new AbortController();
+      let handlerFailure: unknown;
       const delay = (ms: number): Promise<void> =>
         new Promise((resolve) => {
           if (controller.signal.aborted) {
@@ -466,9 +566,14 @@ describe.skipIf(hostBinary === undefined)(
             })}\n\n`,
           );
           response.end("data: [DONE]\n\n");
-        } catch {
-          // close() aborta y destruye conexiones a mitad del handler.
-          if (!response.headersSent) response.destroy();
+        } catch (error) {
+          // Solo la cancelación propia y desconexiones conocidas se ignoran; el
+          // resto queda observable. La respuesta fallida se destruye siempre que
+          // no esté ya cerrada, para no dejar el socket abierto.
+          if (!isExpectedStubStop(error, controller)) {
+            handlerFailure ??= error;
+          }
+          if (!response.writableEnded && !response.destroyed) response.destroy();
         }
       });
       return new Promise((resolve, reject) => {
@@ -479,6 +584,7 @@ describe.skipIf(hostBinary === undefined)(
           const port = (server.address() as { port: number }).port;
           resolve({
             port,
+            failure: () => handlerFailure,
             close: async () => {
               controller.abort();
               server.closeAllConnections?.();
@@ -499,7 +605,7 @@ describe.skipIf(hostBinary === undefined)(
       });
     }
 
-    async function startServer(root: string): Promise<Server> {
+    async function startServer(root: string, unconfirmed: string[]): Promise<Server> {
       const invocation = sandboxInvocation(runRoot, path.join(root, "cwd"), [
         copy,
         "serve",
@@ -516,6 +622,9 @@ describe.skipIf(hostBinary === undefined)(
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
       });
+      // El servidor no pasa por runBoundedProcess: registrarlo en el mismo owner
+      // para que un stop lo detenga y verifique antes de los callbacks de raíz.
+      const release = child.pid === undefined ? () => {} : registerOwnedProcessGroup(child.pid);
       let out = "";
       child.stdout?.on("data", (chunk) => (out += chunk));
       child.stderr?.on("data", (chunk) => (out += chunk));
@@ -526,12 +635,23 @@ describe.skipIf(hostBinary === undefined)(
           "arranque del servidor propio",
         );
       } catch (error) {
-        if (child.pid !== undefined) stopOwnProcessTree(child.pid);
+        if (child.pid !== undefined) {
+          if (await settleFailedStart(child.pid, unconfirmed)) {
+            release();
+          } else {
+            // Stop no verificado: se conserva el registro del owner y se registra la
+            // causa en el estado del caso antes de fallar, para que la limpieza
+            // preserve la raíz. El diagnóstico usa solo el label propio, sin stdout.
+            throw new Error(
+              `${describeError(error)}; el servidor propio no confirmó su stop: ${unconfirmed[unconfirmed.length - 1]}`,
+            );
+          }
+        }
         throw error;
       }
       const url = /server listening on (http:\/\/\S+)/.exec(out)![1]!;
       const password = /server password (\S+)/.exec(out)![1]!;
-      return { url, password, child };
+      return { url, password, child, release };
     }
 
     function auth(server: Server): Record<string, string> {
@@ -585,10 +705,33 @@ describe.skipIf(hostBinary === undefined)(
           await response.body?.cancel();
         })
         .catch((error) => {
-          // Solo la cancelación propia se ignora; otro fallo queda observable.
-          if (!controller.signal.aborted) failure = error;
+          // Solo el abort propio identificado se ignora; HTTP/TypeError/body-cancel
+          // tras running quedan observables aunque el controller esté abortado.
+          const ownAbort =
+            controller.signal.aborted &&
+            (error as { name?: string } | undefined)?.name === "AbortError";
+          if (!ownAbort) failure = error;
         });
       return { settled, abort: () => controller.abort(), failure: () => failure };
+    }
+
+    /**
+     * Cancela un prompt propio y confirma su asentamiento acotado. No traga
+     * fallos: devuelve el fallo observado (o undefined) y registra el timeout
+     * como limpieza no confirmada. Compartido por el prompt principal y el segundo.
+     */
+    async function settleOwnedPrompt(
+      prompt: PromptRun,
+      label: string,
+      unconfirmed: string[],
+    ): Promise<unknown> {
+      prompt.abort();
+      const settledInTime = await Promise.race([
+        prompt.settled.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3_000)),
+      ]);
+      if (!settledInTime) unconfirmed.push(`${label}: no confirmó su cancelación en 3s`);
+      return prompt.failure();
     }
 
     async function withTuiCase(
@@ -599,11 +742,15 @@ describe.skipIf(hostBinary === undefined)(
       // La raíz se crea primero y todo recurso posterior queda bajo limpieza propia
       // en orden fijo: prompt → grupo servidor → listener stub → ficheros.
       const root = fs.mkdtempSync(path.join(runRoot, `${label}-`));
+      // Activa antes de cualquier efecto (projection/stub/spawn): un SIGTERM a
+      // mitad de caso ya impide que el callback de raíz borre el ancestro.
+      activeCaseRoots.add(root);
       const unconfirmed: string[] = [];
       let stub: Stub | undefined;
       let server: Server | undefined;
       let prompt: PromptRun | undefined;
       let failure: unknown;
+      let reportedPromptFailure: unknown;
       try {
         for (const dir of ["home", "config", "data", "cache", "state", "runtime", "tmp", "cwd"]) {
           fs.mkdirSync(path.join(root, dir), { recursive: true });
@@ -612,32 +759,61 @@ describe.skipIf(hostBinary === undefined)(
         projectFixture(configDir);
         stub = await startStub(stubDelayMs);
         configureFixture(configDir, stub.port);
-        server = await startServer(root);
+        server = await startServer(root, unconfirmed);
         const parent = (await api(server, "POST", "/api/session", { title: "T18 parent root" })).data;
-        const child = (await api(server, "POST", "/api/session", { parentID: parent.id, title: "T18 child zzz" })).data;
+        // El hijo lleva el modelo propio del fixture para que la fila exponga
+        // contexto real de `context.data.session.get` (modelo/tokens), no solo estado.
+        const child = (
+          await api(server, "POST", "/api/session", {
+            parentID: parent.id,
+            title: "T18 child zzz",
+            model: { providerID: "fixture", id: "fixture" },
+          })
+        ).data;
         if (!isSessionID(parent?.id) || !isSessionID(child?.id)) {
           throw new Error("la API no devolvió IDs de sesión válidos");
         }
         prompt = firePrompt(server, child.id);
         await waitForRunning(server, child.id, prompt);
-        await fn({ root, configDir, server, stub, parentID: parent.id, childID: child.id, unconfirmed });
+        await fn({ root, server, parentID: parent.id, childID: child.id, unconfirmed });
+        // Un fallo del foreground tras running no puede quedar silenciado.
+        reportedPromptFailure = prompt.failure();
+        if (reportedPromptFailure !== undefined) {
+          throw new Error(`la ejecución foreground falló durante las interacciones: ${describeError(reportedPromptFailure)}`);
+        }
+        const stubFailure = stub.failure();
+        if (stubFailure !== undefined) {
+          throw new Error(`el stub falló durante las interacciones: ${describeError(stubFailure)}`);
+        }
       } catch (error) {
         failure = error;
       }
       if (prompt !== undefined) {
-        prompt.abort();
-        // La cancelación propia resuelve rápido; no bloquear la limpieza si no lo hace.
-        await Promise.race([prompt.settled, new Promise<void>((resolve) => setTimeout(resolve, 3_000))]);
+        // Mismo helper de asentamiento que el segundo prompt: aborta, confirma
+        // acotado y expone cualquier fallo (incluso tras el abort propio).
+        const settledFailure = await settleOwnedPrompt(prompt, "prompt foreground", unconfirmed);
+        if (settledFailure !== undefined && settledFailure !== reportedPromptFailure) {
+          const settledError = new Error(
+            `la ejecución foreground falló tras running: ${describeError(settledFailure)}`,
+          );
+          failure = failure === undefined ? settledError : new Error(`${describeError(failure)}; ${describeError(settledError)}`);
+        }
       }
       if (server !== undefined && server.child.pid !== undefined) {
         const serverFailure = await stopGroupAndConfirm(server.child.pid, "servidor propio");
-        if (serverFailure !== undefined) unconfirmed.push(serverFailure);
+        if (serverFailure === undefined) server.release();
+        else unconfirmed.push(serverFailure);
       }
       if (stub !== undefined) {
         try {
           await stub.close();
         } catch (error) {
           unconfirmed.push(`stub HTTP: ${describeError(error)}`);
+        }
+        const lateStubFailure = stub.failure();
+        if (lateStubFailure !== undefined) {
+          const lateError = new Error(`el stub falló tarde: ${describeError(lateStubFailure)}`);
+          failure = failure === undefined ? lateError : new Error(`${describeError(failure)}; ${describeError(lateError)}`);
         }
       }
       if (unconfirmed.length === 0) {
@@ -647,7 +823,11 @@ describe.skipIf(hostBinary === undefined)(
           unconfirmed.push(`raíz: ${describeError(error)}`);
         }
         if (fs.existsSync(root)) unconfirmed.push(`raíz no eliminada: ${root}`);
+      }
+      if (unconfirmed.length === 0) {
+        activeCaseRoots.delete(root);
       } else {
+        // La raíz de suite que contiene este caso también debe sobrevivir.
         unconfirmed.push(`raíz conservada para recuperación: ${root}`);
       }
       const cleanupMessage =
@@ -717,10 +897,21 @@ describe.skipIf(hostBinary === undefined)(
       );
       let stderr = "";
       child.stderr?.on("data", (chunk) => (stderr += chunk));
-      const done = new Promise<number | null>((resolve, reject) => {
+      // El fixture y su bwrap no pasan por runBoundedProcess: registrarlos en el
+      // mismo owner para que un stop los detenga antes de los callbacks de raíz.
+      const releasePython = child.pid === undefined ? () => {} : registerOwnedProcessGroup(child.pid);
+      let spawnError: unknown;
+      const done = new Promise<number | null>((resolve) => {
         child.once("close", (code) => resolve(code));
-        child.once("error", reject);
+        child.once("error", (error) => {
+          spawnError = error;
+          resolve(null);
+        });
       });
+      // El pid del grupo del TUI (bwrap, líder de sesión) se registra en cuanto
+      // el fixture lo publica; sin él no hay TUI que detener.
+      const tuiPid = await waitForTuiPid(out, 3_000);
+      const releaseTui = tuiPid === undefined ? undefined : registerOwnedProcessGroup(tuiPid);
       // Red de seguridad si el fixture se cuelga por debajo de su propio timeout.
       const hardTimer = setTimeout(() => {
         if (child.pid !== undefined) stopOwnProcessTree(child.pid);
@@ -729,7 +920,13 @@ describe.skipIf(hostBinary === undefined)(
       let screens: Record<string, string> | undefined;
       try {
         const code = await done;
-        if (code !== 0) throw new Error(`PTY salió con ${String(code)}; stderr: ${redact(stderr).slice(-400)}`);
+        if (code !== 0) {
+          throw new Error(
+            spawnError !== undefined
+              ? `PTY no arrancó: ${redact(describeError(spawnError))}`
+              : `PTY salió con ${String(code)}; stderr: ${redact(stderr).slice(-400)}`,
+          );
+        }
         screens = JSON.parse(fs.readFileSync(`${out}.screens.json`, "utf8")) as Record<string, string>;
       } catch (error) {
         failure = error;
@@ -737,10 +934,12 @@ describe.skipIf(hostBinary === undefined)(
         clearTimeout(hardTimer);
         if (child.pid !== undefined) {
           const pythonFailure = await stopGroupAndConfirm(child.pid, "PTY python");
-          if (pythonFailure !== undefined) testCase.unconfirmed.push(pythonFailure);
+          if (pythonFailure === undefined) releasePython();
+          else testCase.unconfirmed.push(pythonFailure);
         }
-        const tuiFailure = await stopTuiGroupAndConfirm(out);
-        if (tuiFailure !== undefined) testCase.unconfirmed.push(tuiFailure);
+        const tuiFailure = await stopTuiGroupAndConfirm(tuiPid);
+        if (tuiFailure === undefined) releaseTui?.();
+        else testCase.unconfirmed.push(tuiFailure);
       }
       if (failure !== undefined) throw failure;
       return screens!;
@@ -748,28 +947,54 @@ describe.skipIf(hostBinary === undefined)(
 
     it("monta la app, registra el comando keymap, abre sidebar, navega al hijo, pliega al cambiar de sesión y no-op con click derecho", async () => {
       await withTuiCase("interactions", 60_000, async (testCase) => {
-        const screens = await runTui(
-          testCase,
-          [
-            { at: 4.0, waitFor: "ctrl+p commands", send: "\u0010", label: "palette-open", timeout: 25 },
-            { at: 4.5, waitFor: "Search", send: "subagent", label: "palette-search", timeout: 25 },
-            { at: 5.0, waitFor: "Toggle subagent panel", send: "", label: "palette", timeout: 30 },
-            { at: 5.5, send: "\u001b", label: "palette-close" },
-            { at: 6.0, waitFor: "ctrl+p commands", send: "\u0018", label: "leader", timeout: 25 },
-            { at: 6.5, send: "b", label: "sidebar" },
-            { at: 7.0, waitFor: "Subagents", click: { text: "Subagents", button: 0 }, label: "expand", timeout: 25 },
-            { at: 7.5, waitFor: "T18 child zzz", click: { text: "T18 child zzz", button: 0 }, label: "navigate-child", timeout: 25 },
-            { at: 8.0, waitFor: "Subagent: T18 child zzz", send: "\u001b", label: "return", timeout: 25 },
-            { at: 8.5, waitFor: "ctrl+p commands", send: "\u0018", label: "leader2", timeout: 25 },
-            { at: 9.0, send: "b", label: "sidebar2" },
-            { at: 9.5, waitFor: "Subagents", send: "", label: "fold", timeout: 25 },
-            { at: 10.0, waitFor: "Subagents", click: { text: "Subagents", button: 0 }, label: "expand2", timeout: 25 },
-            { at: 10.5, waitFor: "▼ Subagents", click: { text: "Subagents", button: 2 }, label: "rightclick", timeout: 25 },
-            { at: 11.0, send: "", label: "after-rightclick" },
-          ],
-          path.join(testCase.root, "interactions.raw"),
-          45,
-        );
+        // Segundo hijo cuya ejecución arranca DESPUÉS del boot del TUI: el evento
+        // observado `session.execution.started` fija el inicio y la fila rotula duración.
+        const second = (
+          await api(testCase.server, "POST", "/api/session", {
+            parentID: testCase.parentID,
+            title: "T18 second run",
+            model: { providerID: "fixture", id: "fixture" },
+          })
+        ).data;
+        let secondPrompt: PromptRun | undefined;
+        const inject = setTimeout(() => {
+          secondPrompt = firePrompt(testCase.server, second.id);
+        }, 8_500);
+        let screens: Record<string, string> = {};
+        try {
+          screens = await runTui(
+            testCase,
+            [
+              { at: 4.0, waitFor: "ctrl+p commands", send: "\u0010", label: "palette-open", timeout: 25 },
+              { at: 4.5, waitFor: "Search", send: "subagent", label: "palette-search", timeout: 25 },
+              { at: 5.0, waitFor: "Toggle subagent panel", send: "", label: "palette", timeout: 30 },
+              { at: 5.5, send: "\u001b", label: "palette-close" },
+              { at: 6.0, waitFor: "ctrl+p commands", send: "\u0018", label: "leader", timeout: 25 },
+              { at: 6.5, send: "b", label: "sidebar" },
+              { at: 7.0, waitFor: "Subagents", click: { text: "Subagents", button: 0 }, label: "expand", timeout: 25 },
+              { at: 7.5, waitFor: "T18 child zzz", click: { text: "T18 child zzz", button: 0 }, label: "navigate-child", timeout: 25 },
+              { at: 8.0, waitFor: "Subagent: T18 child zzz", send: "\u001b", label: "return", timeout: 25 },
+              { at: 8.5, waitFor: "ctrl+p commands", send: "\u0018", label: "leader2", timeout: 25 },
+              { at: 9.0, send: "b", label: "sidebar2" },
+              { at: 9.5, waitFor: "Subagents", send: "", label: "fold", timeout: 25 },
+              { at: 10.0, waitFor: "Subagents", click: { text: "Subagents", button: 0 }, label: "expand2", timeout: 25 },
+              { at: 10.5, waitFor: "▼ Subagents", click: { text: "Subagents", button: 2 }, label: "rightclick", timeout: 25 },
+              { at: 11.0, send: "", label: "after-rightclick" },
+            ],
+            path.join(testCase.root, "interactions.raw"),
+            45,
+          );
+        } finally {
+          clearTimeout(inject);
+          if (secondPrompt !== undefined) {
+            // Mismo helper compartido: confirma el asentamiento acotado y no traga
+            // un fallo tardío, incluso si runTui lanzó.
+            const secondFailure = await settleOwnedPrompt(secondPrompt, "segundo prompt", testCase.unconfirmed);
+            if (secondFailure !== undefined) {
+              testCase.unconfirmed.push(`segundo prompt falló: ${describeError(secondFailure)}`);
+            }
+          }
+        }
 
         // Comando keymap registrado: el palette real lo lista.
         expect(screens["before:palette"]).toContain("Toggle subagent panel");
@@ -780,6 +1005,13 @@ describe.skipIf(hostBinary === undefined)(
         // Click izquierdo real sobre el header: despliega y muestra la fila activa.
         expect(screens["before:navigate-child"]).toContain("▼ Subagents");
         expect(screens["before:navigate-child"]).toContain("T18 child zzz");
+        // Datos reales de context.data.session.get: modelo propio del fixture y
+        // tokens acumulados visibles en la fila activa.
+        expect(screens["before:navigate-child"]).toContain("fixture/fixture");
+        expect(screens["before:navigate-child"]).toContain("0 tok");
+        // Duración omitida: el inicio observado es anterior al boot del TUI, así que
+        // no hay start conocido y no se rotula tiempo.
+        expect(screens["before:navigate-child"]).not.toMatch(/\d{2}:\d{2} · 0 tok/);
         // Click en la fila: navegó al contexto de la sesión hija.
         expect(screens["before:return"]).toContain("Subagent: T18 child zzz");
         expect(screens["before:return"]).toContain("Running");
@@ -788,6 +1020,9 @@ describe.skipIf(hostBinary === undefined)(
         // Click derecho: no-op (no pliega un panel desplegado).
         expect(screens["before:rightclick"]).toContain("▼ Subagents");
         expect(screens["before:after-rightclick"]).toContain("▼ Subagents");
+        // Inicio observado con el TUI adjunto: la fila del segundo hijo sí rotula
+        // duración, junto a sus tokens reales.
+        expect(screens["before:rightclick"]).toMatch(/T18 second run\n\s*\d{2}:\d{2} · 0 tok/);
       });
     }, CASE_TIMEOUT_MS);
 
@@ -812,6 +1047,34 @@ describe.skipIf(hostBinary === undefined)(
         expect(screens["before:done"]).toContain("0 running");
         expect(screens["before:done"]).toContain("✓ 1 done");
         expect(screens["before:done"]).not.toMatch(/•\s*T18 child zzz/);
+      });
+    }, CASE_TIMEOUT_MS);
+
+    it("muestra la fila bloqueada y el contador needs input con un formulario pendiente real", async () => {
+      await withTuiCase("form-blocked", 60_000, async (testCase) => {
+        // Formulario pendiente real sobre la sesión hija (schema público Form.CreatePayload).
+        const created = await api(testCase.server, "POST", `/api/session/${testCase.childID}/form`, {
+          title: "T18 live form",
+          fields: [{ key: "note", type: "string", title: "Note" }],
+        });
+        expect(created?.data?.id, "id de formulario creado").toMatch(/^frm_/);
+        const screens = await runTui(
+          testCase,
+          [
+            { at: 4.0, waitFor: "ctrl+p commands", send: "\u0018", label: "leader", timeout: 25 },
+            { at: 4.5, send: "b", label: "sidebar" },
+            { at: 5.0, waitFor: "Subagents", click: { text: "Subagents", button: 0 }, label: "expand", timeout: 25 },
+            { at: 5.5, waitFor: "Needs input", send: "", label: "blocked", timeout: 30 },
+          ],
+          path.join(testCase.root, "form-blocked.raw"),
+          35,
+        );
+
+        // El estado bloqueado precede a running: contador y fila reales del terminal.
+        expect(screens["before:blocked"]).toContain("1 needs input");
+        expect(screens["before:blocked"]).toContain("Needs input");
+        expect(screens["before:blocked"]).toContain("T18 child zzz");
+        expect(screens["before:blocked"]).toContain("0 tok");
       });
     }, CASE_TIMEOUT_MS);
   },
