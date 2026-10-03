@@ -43,6 +43,19 @@ export function isOfficialSetupRuntime(runtime: string): runtime is OfficialSetu
   return (OFFICIAL_SETUP_RUNTIMES as readonly string[]).includes(runtime);
 }
 
+/**
+ * Contrato cerrado previo a PR04: el runtime OpenCode gestionado por Stack es
+ * major 2 y `engram setup opencode` es la integración v1, incompatible con v2.
+ * Mientras no exista una release estable oficial de Engram con soporte v2
+ * verificado, el coordinador nunca invoca el setup v1 y el doctor no lo
+ * presenta como integración completa: ambos devuelven el prerrequisito externo
+ * visible (fail-closed, sin fork ni snapshot local). Ningún perfil
+ * interactivo/no interactivo, marcador de versión, receipt ni la presencia de
+ * ficheros v1 habilita el setup. Una única fuente para coordinator y doctor.
+ */
+export const OPENCODE_OFFICIAL_SETUP_V2_REASON =
+  "OpenCode v2: integración oficial Engram pendiente de validación y adopción desde una release estable compatible (prerrequisito upstream). No se ejecuta el setup v1 ni se acredita Memory Protocol completo.";
+
 /** Argv fijo del setup oficial; sin aliases (`claude` no existe). */
 export function resolveOfficialSetupArgv(runtime: string): string[] {
   switch (runtime) {
@@ -1018,8 +1031,10 @@ export function isClaudeEngramVersionSupported(version: string): boolean {
  * Claude. Los saltos intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
  * En install real, runtime desconocido, verificador ausente o binario no
  * absoluto devuelven fallo explícito (`ran:true, ok:false`), nunca skip
- * silencioso. Codex/OpenCode/Pi son gestionados por el proveedor: nunca bloqueados por
- * versión. El binario existente jamás se modifica.
+ * silencioso. Codex/Pi son gestionados por el proveedor: nunca bloqueados por
+ * versión. OpenCode v2 queda bloqueado por el contrato cerrado de Engram v1
+ * (`OPENCODE_OFFICIAL_SETUP_V2_REASON`), no por versión. El binario existente
+ * jamás se modifica.
  */
 export async function runOfficialSetupIfNeeded(
   runtime: string,
@@ -1044,6 +1059,24 @@ export async function runOfficialSetupIfNeeded(
   if (!isOfficialSetupRuntime(runtime)) {
     const detail = `runOfficialSetupIfNeeded: runtime desconocido en install real: ${runtime}.`;
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
+  }
+  // Contrato cerrado (previo a PR04): el runtime OpenCode v2 no admite la
+  // integración v1 del proveedor. El guard bloquea antes de targets/backup/
+  // spawn y devuelve el prerrequisito externo visible (ran:true, ok:false),
+  // sin invocar `engram setup opencode` ni tocar ficheros/estado del proveedor.
+  // No lo saltan perfiles no interactivos/autenticados, marcadores de versión,
+  // receipts ni la presencia de ficheros v1.
+  if (runtime === "opencode") {
+    const detail = OPENCODE_OFFICIAL_SETUP_V2_REASON;
+    return {
+      ran: true,
+      ok: false,
+      ownershipTransferred: false,
+      stderr: detail,
+      reason: detail,
+      recovery: "none",
+      backupId: null,
+    };
   }
   if (typeof opts.engramBin !== "string" || !path.isAbsolute(opts.engramBin)) {
     const detail = `runOfficialSetupIfNeeded: engramBin absoluto requerido en install real (runtime ${runtime}).`;

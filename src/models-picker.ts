@@ -167,10 +167,9 @@ export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[
   const file = ensureModelMapFile();
   const map = loadModelMap();
   if (opts.yes || !process.stdout.isTTY) {
-    if (opts.runtimes.includes("opencode") && !map.opencode) {
-      console.error("OpenCode requiere selección interactiva desde los proveedores conectados; ejecuta 'models --agents opencode' sin --yes.");
-      return 1;
-    }
+    // v2: el roster OpenCode vive en DEFAULT_MODEL_MAP, así que un install
+    // fresh (incluido --yes/sin TTY) no exige selección previa ni consulta
+    // catálogo, detección ni credenciales.
     console.log(`Model-map en ${file}. Edítalo o ejecuta 'models' sin --yes para el picker.`);
     return 0;
   }

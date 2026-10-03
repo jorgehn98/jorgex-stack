@@ -47,6 +47,48 @@ export function readManifest(file = manifestFile()): StackManifest {
   }
 }
 
+/**
+ * Lectura estricta del manifest para decidir ownership antes de limpiar:
+ * distingue ausente (ENOENT) de ilegible (otros errores) y de contenido no
+ * interpretable. Un manifest editable no acredita propiedad por sí solo, pero
+ * tampoco se puede asumir ausente cuando existe y no se puede leer/parsear:
+ * el caller falla cerrado en vez de regenerar sobre estado desconocido.
+ */
+export type ManifestRead =
+  | { status: "absent" }
+  | { status: "ok"; manifest: StackManifest }
+  | { status: "invalid"; reason: string };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function readManifestStrict(file = manifestFile()): ManifestRead {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "UNKNOWN";
+    if (code === "ENOENT") return { status: "absent" };
+    return { status: "invalid", reason: `${file}: ilegible (${code})` };
+  }
+  if (raw.trim() === "") return { status: "invalid", reason: `${file}: vacío` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return { status: "invalid", reason: `${file}: JSON no válido` };
+  }
+  const root = isPlainObject(parsed) ? parsed : null;
+  if (root === null) return { status: "invalid", reason: `${file}: no es un objeto JSON` };
+  const runtimes = root["runtimes"];
+  if (runtimes === undefined) return { status: "ok", manifest: { runtimes: {} } };
+  if (!isPlainObject(runtimes)) return { status: "invalid", reason: `${file}: 'runtimes' no es un objeto` };
+  return { status: "ok", manifest: { runtimes: runtimes as StackManifest["runtimes"] } };
+}
+
 export function writeRuntimeManifest(id: RuntimeId, entry: RuntimeManifest, file = manifestFile()): void {
   const manifest = readManifest(file);
   manifest.runtimes[id] = entry;

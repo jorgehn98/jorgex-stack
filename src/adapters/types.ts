@@ -18,6 +18,16 @@ export type InstallMode = "human" | "programmatic";
 
 export type SubagentConcurrency = "serial" | "parallel";
 
+/**
+ * Evidencia de major OpenCode EXCLUSIVAMENTE para el sandbox --target-dir (en
+ * tests, `JORGEX_OPENCODE_TARGET_MAJOR=2`); allí es obligatoria. Fuera de
+ * target se ignora: una instalación real siempre prueba el binario detectado y
+ * esta evidencia no acredita capacidad ni sirve de bypass.
+ */
+export interface OpenCodeTargetEvidenceOption {
+  opencodeTargetMajor?: number;
+}
+
 export type InstallModePreference =
   | { mode: "human"; subagentConcurrency: "serial" }
   | { mode: "programmatic"; subagentConcurrency: SubagentConcurrency };
@@ -52,6 +62,12 @@ export interface InstallContext {
   stackDir: string;
   /** Dir de config del runtime destino (puede venir de --target-dir en pruebas). */
   configDir: string;
+  /**
+   * Señal explícita de sandbox: con --target-dir, TODO lookup de estado usa una
+   * raíz sintética confinada al target y jamás consulta XDG_STATE_HOME/HOME
+   * personal. No se infiere comparando configDir con la raíz global.
+   */
+  targetDir?: string;
   /** Modo de instalación resuelto para este run. */
   mode?: InstallMode;
   /** Concurrencia de subagentes resuelta para este run. */

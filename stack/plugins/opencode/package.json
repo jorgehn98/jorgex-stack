@@ -3,8 +3,5 @@
   "version": "1.0.0",
   "description": "OpenCode plugins del stack: hooks (puente de scripts por evento/tool) y worktree (gestión de git worktrees). Engram lo provee `engram setup opencode` (plugin oficial).",
   "type": "module",
-  "main": "hooks.ts",
-  "dependencies": {
-    "@opencode-ai/plugin": "1.3.2"
-  }
+  "main": "hooks.ts"
 }

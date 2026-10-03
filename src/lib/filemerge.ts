@@ -4,6 +4,106 @@
  * resultado; el contenido del usuario fuera de lo gestionado se preserva.
  */
 
+import { isDeepStrictEqual } from "node:util";
+import { applyEdits, modify, parse, printParseErrorCode, type ParseError } from "jsonc-parser";
+
+type JsoncPath = (string | number)[];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export interface JsoncParseResult {
+  value: Record<string, unknown> | null;
+  error: string | null;
+}
+
+/**
+ * Parsea JSONC (comentarios y comas finales permitidos). Falla cerrado ante
+ * cualquier error de sintaxis: nunca se opera sobre un árbol parcialmente
+ * parseado. Solo acepta un objeto en la raíz.
+ */
+export function parseJsoncObject(text: string): JsoncParseResult {
+  const errors: ParseError[] = [];
+  const value = parse(text, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length > 0) {
+    const first = errors[0]!;
+    return { value: null, error: `${printParseErrorCode(first.error)}@${first.offset}` };
+  }
+  if (!isPlainObject(value)) return { value: null, error: "la raíz no es un objeto JSON" };
+  return { value, error: null };
+}
+
+/** Diferencias mínimas original→target: set en hojas añadidas/cambiadas, remove en las ausentes. */
+function collectJsoncEdits(
+  original: unknown,
+  target: unknown,
+  path: JsoncPath,
+  ops: { path: JsoncPath; value: unknown }[],
+): void {
+  if (isPlainObject(original) && isPlainObject(target)) {
+    for (const key of Object.keys(target)) {
+      if (!(key in original)) ops.push({ path: [...path, key], value: target[key] });
+      else collectJsoncEdits(original[key], target[key], [...path, key], ops);
+    }
+    for (const key of Object.keys(original)) {
+      if (!(key in target)) ops.push({ path: [...path, key], value: undefined });
+    }
+    return;
+  }
+  if (!isDeepStrictEqual(original, target)) ops.push({ path, value: target });
+}
+
+/**
+ * Edita un JSONC preservando comentarios, orden y formato ajeno: aplica solo
+ * las rutas realmente cambiadas con modify/applyEdits. `mutate` recibe una
+ * copia del root parseado; el texto original se edita de forma quirúrgica.
+ * Falla cerrado si el archivo no es JSONC válido.
+ */
+export function editJsonc(existing: string, mutate: (root: Record<string, unknown>) => void): string {
+  const parsed = parseJsoncObject(existing);
+  if (parsed.value === null) {
+    throw new Error(`JSONC inválido: ${parsed.error ?? "no se pudo parsear"}`);
+  }
+  const target = structuredClone(parsed.value);
+  mutate(target);
+  const expected = pruneUndefined(target) as Record<string, unknown>;
+  const ops: { path: JsoncPath; value: unknown }[] = [];
+  collectJsoncEdits(parsed.value, expected, [], ops);
+  let text = existing;
+  try {
+    for (const op of ops) {
+      const edits = modify(text, op.path, op.value, { formattingOptions: { insertSpaces: true, tabSize: 2 } });
+      text = applyEdits(text, edits);
+    }
+  } catch (error) {
+    throw new Error(`JSONC: no se pudo aplicar una edición en una ruta ambigua o duplicada; corrige el archivo antes de reintentar (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  // Postcondición: el texto editado debe re-parsear exactamente al objeto
+  // objetivo. Una clave duplicada en la ruta mutada haría que `modify` editara
+  // un miembro distinto del efectivo; se bloquea sin write/claim en vez de
+  // aceptar una edición parcial o normalizar datos ajenos en silencio.
+  const verified = parseJsoncObject(text);
+  if (verified.value === null || !isDeepStrictEqual(verified.value, expected)) {
+    throw new Error("JSONC: la edición no se pudo acreditar de forma exacta (clave duplicada en una ruta mutada); corrige el archivo antes de reintentar.");
+  }
+  return text;
+}
+
+/** Elimina claves con valor undefined: no representables en JSON, cuentan como ausencia. */
+function pruneUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(pruneUndefined);
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (entry === undefined) continue;
+      out[key] = pruneUndefined(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
 function markers(name: string): { open: string; close: string } {
   return { open: `<!-- jorgex:${name} -->`, close: `<!-- /jorgex:${name} -->` };
 }

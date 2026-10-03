@@ -1,4 +1,5 @@
-import type { Plugin } from "@opencode-ai/plugin";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 interface HookConfig {
   [event: string]: unknown;
@@ -12,11 +13,17 @@ interface ScriptResult {
   scriptPath: string;
 }
 
-type EventName =
-  | "session.created"
-  | "server.connected"
-  | "tool.execute.before"
-  | "tool.execute.after";
+const CONFIG_EVENTS = {
+  before: "tool.execute.before",
+  after: "tool.execute.after",
+} as const;
+
+type ConfigEvent = (typeof CONFIG_EVENTS)[keyof typeof CONFIG_EVENTS];
+
+// El host v2 llama `shell` a la herramienta que en v1 se llamaba `bash`. El
+// hooks.json del puente conserva las claves históricas, así que la traducción
+// vive solo aquí.
+const SHELL_TOOLS = new Set(["shell", "bash"]);
 
 const isAbsolutePath = (value: string) =>
   /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/");
@@ -32,6 +39,9 @@ const getGlobalConfigDir = (): string => {
   const explicit = process.env.OPENCODE_CONFIG_DIR;
   if (explicit) return explicit.replace(/[\\/]+$/, "");
 
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg) return `${xdg.replace(/[\\/]+$/, "")}/opencode`;
+
   const home =
     process.env.HOME ||
     process.env.USERPROFILE ||
@@ -43,8 +53,80 @@ const getGlobalConfigDir = (): string => {
   return `${home.replace(/[\\/]+$/, "")}/.config/opencode`;
 };
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+const valueType = (value: unknown) => {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  return typeof value;
+};
+
+const configToolName = (tool: unknown): string => {
+  const value = String(tool ?? "").toLowerCase();
+  return SHELL_TOOLS.has(value) ? "bash" : value;
+};
+
+const commandText = (command: unknown): string => {
+  if (Array.isArray(command)) return command.map(String).join(" ");
+  return typeof command === "string" ? command : "";
+};
+
+// El cwd del plugin/servidor es compartido y no representa la sesión. El
+// directorio de trabajo sale del evento: `session.location.directory` más el
+// `input.workdir` relativo (o absoluto).
+const resolveSessionDirectory = async (
+  ctx: any,
+  sessionID: unknown,
+): Promise<string | undefined> => {
+  if (!ctx?.session || typeof ctx.session.get !== "function") return undefined;
+  if (typeof sessionID !== "string" || !sessionID) return undefined;
+  try {
+    const session = await ctx.session.get({ sessionID });
+    const directory = session?.location?.directory;
+    return typeof directory === "string" && directory ? directory : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const resolveEventDirectory = async (
+  ctx: any,
+  event: any,
+): Promise<string | undefined> => {
+  const base = await resolveSessionDirectory(ctx, event?.sessionID);
+  const workdir = event?.input?.workdir;
+  if (typeof workdir === "string" && workdir) {
+    if (isAbsolutePath(workdir)) return workdir;
+    return base ? path.resolve(base, workdir) : undefined;
+  }
+  return base;
+};
+
+const buildScriptEnv = (scriptPath: string) => {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] =>
+      typeof entry[1] === "string",
+    ),
+  );
+
+  // Ensure Git coreutils (cat, grep, head, dirname, etc.) are in PATH for .sh
+  // scripts. Windows-only: rutas de Git-for-Windows y ";" es el separador de
+  // PATH de Windows (en POSIX es ":" y esto corrompería el PATH).
+  if (scriptPath.endsWith(".sh") && process.platform === "win32") {
+    const gitUsrBin = "C:/Program Files/Git/usr/bin";
+    const gitBin = "C:/Program Files/Git/bin";
+    const currentPath = process.env.PATH || "";
+    env.PATH = `${gitUsrBin};${gitBin};${currentPath}`;
+  }
+
+  return env;
+};
+
 const runScript = async (
-  client: any,
   directory: string,
   script: string,
   payload?: unknown,
@@ -71,7 +153,6 @@ const runScript = async (
 
   // Resolve bash path: Bun's spawned process may not inherit Git Bash in PATH on Windows
   const resolveBash = (): string => {
-    const fs = require("fs");
     const candidates = [
       "C:/Program Files/Git/usr/bin/bash.exe",
       "C:/Program Files/Git/bin/bash.exe",
@@ -81,7 +162,7 @@ const runScript = async (
     ].filter(Boolean) as string[];
     for (const candidate of candidates) {
       try {
-        if (fs.existsSync(candidate)) return candidate;
+        if (existsSync(candidate)) return candidate;
       } catch {
         /* skip */
       }
@@ -109,21 +190,17 @@ const runScript = async (
   }
 
   if (!command) {
-    await client.app.log({
-      body: {
-        service: "hooks",
-        level: "warn",
-        message: "Unsupported hook script extension",
-        extra: { script, scriptPath },
-      },
-    });
-    return { exitCode: 0, stdout: "", stderr: "", script, scriptPath };
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `Unsupported hook script extension: ${scriptPath}`,
+      script,
+      scriptPath,
+    };
   }
 
   try {
-    const activeWorktreePath = getPayloadWorktreePath(payload);
-    const spawnEnv = buildScriptEnv(scriptPath, activeWorktreePath);
-
+    const spawnEnv = buildScriptEnv(scriptPath);
     const proc = (globalThis as any).Bun.spawn(command, {
       stdin: stdinSource,
       stdout: "pipe",
@@ -138,37 +215,8 @@ const runScript = async (
       proc.exited,
     ]);
 
-    if (exitCode !== 0) {
-      await client.app.log({
-        body: {
-          service: "hooks",
-          level: "error",
-          message: "Hook script execution failed",
-          extra: {
-            script,
-            scriptPath,
-            exitCode,
-            stderr: stderr.trim(),
-            stdout: stdout.trim(),
-          },
-        },
-      });
-    }
-
     return { exitCode, stdout, stderr, script, scriptPath };
   } catch (error) {
-    await client.app.log({
-      body: {
-        service: "hooks",
-        level: "error",
-        message: "Hook script execution failed",
-        extra: {
-          script,
-          scriptPath,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      },
-    });
     return {
       exitCode: 1,
       stdout: "",
@@ -194,190 +242,249 @@ const extractScriptMessage = (text: string) => {
   }
 };
 
-const appendToolOutput = (output: any, messages: string[]) => {
-  if (messages.length === 0) return;
-  const section = messages.join("\n\n");
-  // Built-in tools (bash, edit, read, write) use output.output (string)
-  // MCP tools (github_*, supabase_*) use output.content (array of content blocks)
-  if ("output" in output && typeof output.output === "string") {
-    output.output = output.output ? `${output.output}\n\n${section}` : section;
-  } else if ("content" in output && Array.isArray(output.content)) {
-    // MCP content blocks: [{type: "text", text: "..."}]
-    output.content.push({ type: "text", text: `\n\n${section}` });
-  } else if ("content" in output && typeof output.content === "string") {
-    output.content = output.content
-      ? `${output.content}\n\n${section}`
-      : section;
-  } else {
-    // Fallback: set output as string
-    output.output = section;
+// A failed script with no output would be a silent no-op. The diagnostic keeps
+// it actionable without inventing a logger the v2 host does not expose.
+const scriptDiagnostics = (result: ScriptResult): string[] => {
+  const messages: string[] = [];
+  const stdoutMessage = extractScriptMessage(result.stdout);
+  const stderrMessage = extractScriptMessage(result.stderr);
+  if (stdoutMessage) messages.push(stdoutMessage);
+  if (stderrMessage) messages.push(stderrMessage);
+  // Un exit no cero nunca es silencioso: la identidad y el código van siempre,
+  // incluso cuando stdout/stderr traen salida parcial.
+  if (result.exitCode !== 0) {
+    messages.push(
+      `Hook script failed: ${result.scriptPath} (exit code ${result.exitCode}).`,
+    );
   }
+  return messages;
+};
+
+// v2 entrega `result.content` como array readonly. Se reemplaza el objeto
+// entero (nunca se muta el original) conservando output/metadata y anexando el
+// aviso como bloque de texto.
+const appendToResult = (event: any, messages: string[]) => {
+  const result = event?.result;
+  if (!result || typeof result !== "object" || messages.length === 0) return;
+  const section = messages.join("\n\n");
+  const current = result.content;
+  const base = Array.isArray(current)
+    ? current
+    : typeof current === "string" && current
+      ? [{ type: "text", text: current }]
+      : [];
+  event.result = {
+    ...result,
+    content: [...base, { type: "text", text: `\n\n${section}` }],
+  };
 };
 
 const buildHookPayload = (
   directory: string,
-  event: EventName,
-  input?: any,
-  activeWorktreePath?: string,
+  event: ConfigEvent,
+  tool: unknown,
+  input: unknown,
 ) => {
-  const args = input?.args || {};
-  const worktreePath = args.activeWorktreePath || args.worktreePath || activeWorktreePath;
+  const args: Record<string, unknown> = {};
+  if (isPlainObject(input)) {
+    if ("command" in input) args.command = input.command;
+    if ("workdir" in input) args.workdir = input.workdir;
+  }
+  return { event, directory, tool: configToolName(tool), args };
+};
 
-  return {
-    event,
-    directory,
-    activeWorktreePath: worktreePath,
-    worktreePath,
-    tool: input?.tool,
-    args: worktreePath
-      ? {
-          ...args,
-          activeWorktreePath: worktreePath,
-          worktreePath,
+type HookFileResult =
+  | { status: "missing" }
+  | { status: "loaded"; config: HookConfig }
+  | { status: "invalid"; reason: string };
+
+const isMissingFileError = (error: unknown) => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  // Ausencia solo con código ENOENT. El mensaje del sistema puede contener
+  // "not found" en la propia ruta (p. ej. un EACCES sobre `.../not found/`),
+  // así que el texto no es prueba de ausencia: sin código fiable se
+  // diagnostica, nunca se silencia.
+  return code === "ENOENT";
+};
+
+const errorCode = (error: unknown): string => {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return typeof code === "string" && code ? code : "error";
+};
+
+// Un hooks.json ausente (ENOENT) es legítimo y no se diagnostica. Un fichero
+// existente pero corrupto o ilegible (EACCES/EIO/EISDIR) sí: se distingue el
+// fallo de lectura del de parseo y no se vuelca ni su contenido ni el mensaje
+// crudo del sistema.
+const readHookFile = async (configPath: string): Promise<HookFileResult> => {
+  let content: string;
+  try {
+    content = await (globalThis as any).Bun.file(configPath).text();
+  } catch (error) {
+    if (isMissingFileError(error)) return { status: "missing" };
+    return { status: "invalid", reason: `could not be read (${errorCode(error)})` };
+  }
+
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!isPlainObject(parsed)) {
+      return { status: "invalid", reason: "must be a JSON object" };
+    }
+    return { status: "loaded", config: parsed };
+  } catch {
+    return { status: "invalid", reason: "could not be parsed as JSON" };
+  }
+};
+
+// Merge two hook configs. Scripts from both are concatenated per event/tool/trigger.
+// Global scripts are resolved against the global config dir; project scripts against the project.
+const mergeHookConfigs = (base: HookConfig, incoming: HookConfig): HookConfig => {
+  const result: HookConfig = { ...base };
+
+  for (const [event, eventValue] of Object.entries(incoming)) {
+    if (!isPlainObject(eventValue)) {
+      if (result[event] === undefined) result[event] = eventValue;
+      continue;
+    }
+
+    const baseEvent = isPlainObject(result[event])
+      ? { ...(result[event] as Record<string, unknown>) }
+      : {};
+
+    for (const [tool, toolValue] of Object.entries(eventValue)) {
+      const baseTool = baseEvent[tool];
+
+      if (isStringArray(toolValue)) {
+        baseEvent[tool] = isStringArray(baseTool)
+          ? [...baseTool, ...toolValue]
+          : [...toolValue];
+        continue;
+      }
+
+      if (isPlainObject(toolValue)) {
+        const mergedTriggers: Record<string, unknown> = isPlainObject(baseTool)
+          ? { ...(baseTool as Record<string, unknown>) }
+          : {};
+        for (const [trigger, scripts] of Object.entries(toolValue)) {
+          const existing = mergedTriggers[trigger];
+          if (isStringArray(scripts)) {
+            mergedTriggers[trigger] = isStringArray(existing)
+              ? [...existing, ...scripts]
+              : [...scripts];
+          } else if (mergedTriggers[trigger] === undefined) {
+            mergedTriggers[trigger] = scripts;
+          }
         }
-      : args,
+        baseEvent[tool] = mergedTriggers;
+        continue;
+      }
+
+      if (baseEvent[tool] === undefined) baseEvent[tool] = toolValue;
+    }
+
+    result[event] = baseEvent;
+  }
+
+  return result;
+};
+
+// Tag every script path with the base directory it must be resolved against.
+// Global scripts use the global config dir; project scripts use the project dir.
+const tagScriptsWithBase = (config: HookConfig, baseDir: string): HookConfig => {
+  const tagList = (scripts: string[]) => scripts.map((s) => `${baseDir}\u0000${s}`);
+
+  const result: HookConfig = {};
+  for (const [event, eventValue] of Object.entries(config)) {
+    if (!isPlainObject(eventValue)) {
+      result[event] = eventValue;
+      continue;
+    }
+    const newEvent: Record<string, unknown> = {};
+    for (const [tool, toolValue] of Object.entries(eventValue)) {
+      if (isStringArray(toolValue)) {
+        newEvent[tool] = tagList(toolValue);
+      } else if (isPlainObject(toolValue)) {
+        const newTriggers: Record<string, unknown> = {};
+        for (const [trigger, scripts] of Object.entries(toolValue)) {
+          newTriggers[trigger] = isStringArray(scripts)
+            ? tagList(scripts)
+            : scripts;
+        }
+        newEvent[tool] = newTriggers;
+      } else {
+        newEvent[tool] = toolValue;
+      }
+    }
+    result[event] = newEvent;
+  }
+  return result;
+};
+
+const loadConfig = async (
+  directory: string,
+  globalConfigDir: string,
+): Promise<{ config: HookConfig; diagnostics: string[] }> => {
+  const diagnostics: string[] = [];
+
+  // Project-level hooks: prefer the runtime directory, fall back to the plugin directory.
+  let projectConfig: HookConfig = {};
+  let projectBase = directory;
+
+  const projectResult = await readHookFile(`${directory}/.opencode/hooks.json`);
+  if (projectResult.status === "loaded") {
+    projectConfig = projectResult.config;
+    projectBase = directory;
+  } else if (projectResult.status === "invalid") {
+    diagnostics.push(`Project hooks config ignored: ${projectResult.reason}.`);
+  }
+  projectConfig = tagScriptsWithBase(projectConfig, projectBase);
+
+  // Global user-level hooks (~/.config/opencode/hooks.json).
+  let globalConfig: HookConfig = {};
+  if (globalConfigDir) {
+    const globalResult = await readHookFile(`${globalConfigDir}/hooks.json`);
+    if (globalResult.status === "loaded") {
+      globalConfig = tagScriptsWithBase(globalResult.config, globalConfigDir);
+    } else if (globalResult.status === "invalid") {
+      diagnostics.push(`Global hooks config ignored: ${globalResult.reason}.`);
+    }
+  }
+
+  // Global first, then project (the project can add more scripts on top).
+  return {
+    config: mergeHookConfigs(globalConfig, projectConfig),
+    diagnostics,
   };
 };
 
-const getRuntimeContext = async (
-  client: any,
-  fallbackDirectory: string,
-  fallbackWorktreePath?: string,
-) => {
-  try {
-    const pathInfo = await client.path.get();
-    const runtimeWorktreePath =
-      typeof pathInfo?.worktree === "string" && pathInfo.worktree
-        ? pathInfo.worktree
-        : fallbackWorktreePath;
-    const runtimeDirectory =
-      runtimeWorktreePath ||
-      (typeof pathInfo?.directory === "string" && pathInfo.directory
-        ? pathInfo.directory
-        : fallbackDirectory);
-
-    return {
-      directory: runtimeDirectory,
-      activeWorktreePath: runtimeWorktreePath,
-    };
-  } catch {
-    return {
-      directory: fallbackDirectory,
-      activeWorktreePath: fallbackWorktreePath,
-    };
-  }
-};
-
-const getPayloadWorktreePath = (payload: unknown) => {
-  if (!isPlainObject(payload)) return undefined;
-
-  const topLevel = payload.activeWorktreePath || payload.worktreePath;
-  if (typeof topLevel === "string" && topLevel) return topLevel;
-
-  const args = payload.args;
-  if (!isPlainObject(args)) return undefined;
-
-  const argPath = args.activeWorktreePath || args.worktreePath;
-  return typeof argPath === "string" && argPath ? argPath : undefined;
-};
-
-const buildScriptEnv = (scriptPath: string, activeWorktreePath?: string) => {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] =>
-      typeof entry[1] === "string",
-    ),
-  );
-
-  if (activeWorktreePath) {
-    env.OPENCODE_WORKTREE_PATH = activeWorktreePath;
-  } else {
-    delete env.OPENCODE_WORKTREE_PATH;
-  }
-
-  // Ensure Git coreutils (cat, grep, head, dirname, etc.) are in PATH for .sh
-  // scripts. Windows-only: rutas de Git-for-Windows y ";" es el separador de
-  // PATH de Windows (en POSIX es ":" y esto corrompería el PATH).
-  if (scriptPath.endsWith(".sh") && process.platform === "win32") {
-    const gitUsrBin = "C:/Program Files/Git/usr/bin";
-    const gitBin = "C:/Program Files/Git/bin";
-    const currentPath = process.env.PATH || "";
-    env.PATH = `${gitUsrBin};${gitBin};${currentPath}`;
-  }
-
-  return env;
-};
-
-const normalizeWorktreePath = (worktree: unknown) => {
-  if (typeof worktree === "string" && worktree) return worktree;
-
-  if (!isPlainObject(worktree)) return undefined;
-
-  const candidate = worktree.path || worktree.root || worktree.directory;
-  return typeof candidate === "string" && candidate ? candidate : undefined;
-};
-
-const valueType = (value: unknown) => {
-  if (Array.isArray(value)) return "array";
-  if (value === null) return "null";
-  return typeof value;
-};
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const isStringArray = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every((item) => typeof item === "string");
-
-const logInvalidHookConfig = async (
-  client: any,
-  details: {
-    event: EventName;
-    tool?: string;
-    trigger?: string;
-    value: unknown;
-    reason: string;
-  },
-) => {
-  await client.app.log({
-    body: {
-      service: "hooks",
-      level: "warn",
-      message: "Invalid hook config ignored",
-      extra: {
-        event: details.event,
-        tool: details.tool,
-        trigger: details.trigger,
-        reason: details.reason,
-        valueType: valueType(details.value),
-      },
-    },
-  });
-};
-
-const getEventConfig = async (
-  client: any,
+const getEventConfig = (
   config: HookConfig,
-  event: EventName,
-): Promise<Record<string, unknown>> => {
+  event: ConfigEvent,
+  warnings: string[],
+): Record<string, unknown> => {
   const eventConfig = config[event];
   if (eventConfig === undefined) return {};
   if (isPlainObject(eventConfig)) return eventConfig;
 
-  await logInvalidHookConfig(client, {
-    event,
-    value: eventConfig,
-    reason: "event config must be an object",
-  });
+  warnings.push(
+    `Invalid hook config ignored: ${event} must be an object (got ${valueType(eventConfig)}).`,
+  );
   return {};
 };
 
-const getToolScripts = async (
-  client: any,
+const getToolScripts = (
   config: HookConfig,
-  event: EventName,
+  event: ConfigEvent,
   tool: string,
-): Promise<string[]> => {
-  const eventConfig = await getEventConfig(client, config, event);
+  warnings: string[],
+): string[] => {
+  const eventConfig = getEventConfig(config, event, warnings);
   const value = eventConfig[tool];
   if (value === undefined) return [];
 
@@ -387,47 +494,37 @@ const getToolScripts = async (
     return [];
   }
 
-  await logInvalidHookConfig(client, {
-    event,
-    tool,
-    value,
-    reason: "tool entry must be an array of script paths",
-  });
+  warnings.push(
+    `Invalid hook config ignored: ${event}.${tool} must be an array of script paths (got ${valueType(value)}).`,
+  );
   return [];
 };
 
-const getBashTriggerScripts = async (
-  client: any,
+const getBashTriggerScripts = (
   config: HookConfig,
-  event: EventName,
+  event: ConfigEvent,
   command: string,
-): Promise<string[]> => {
-  const eventConfig = await getEventConfig(client, config, event);
+  warnings: string[],
+): string[] => {
+  const eventConfig = getEventConfig(config, event, warnings);
   const value = eventConfig["bash"];
   if (value === undefined || isStringArray(value)) return [];
 
   const normalizedCommand = (command || "").toLowerCase();
 
   if (!isPlainObject(value)) {
-    await logInvalidHookConfig(client, {
-      event,
-      tool: "bash",
-      value,
-      reason: "bash entry must be an array or trigger map",
-    });
+    warnings.push(
+      `Invalid hook config ignored: ${event}.bash must be an array or trigger map (got ${valueType(value)}).`,
+    );
     return [];
   }
 
   const scripts: string[] = [];
   for (const [trigger, triggerScripts] of Object.entries(value)) {
     if (!isStringArray(triggerScripts)) {
-      await logInvalidHookConfig(client, {
-        event,
-        tool: "bash",
-        trigger,
-        value: triggerScripts,
-        reason: "bash trigger entry must be an array of script paths",
-      });
+      warnings.push(
+        `Invalid hook config ignored: ${event}.bash.${trigger} must be an array of script paths (got ${valueType(triggerScripts)}).`,
+      );
       continue;
     }
 
@@ -440,327 +537,120 @@ const getBashTriggerScripts = async (
   return scripts;
 };
 
-const runScriptsAndCollectMessages = async (
-  client: any,
+const runScriptsForMessages = async (
   directory: string,
   scripts: string[],
   payload: unknown,
 ): Promise<string[]> => {
   const messages: string[] = [];
   for (const script of scripts) {
-    const result = await runScript(client, directory, script, payload);
-    const stdoutMessage = extractScriptMessage(result.stdout);
-    const stderrMessage = extractScriptMessage(result.stderr);
-    if (stdoutMessage) messages.push(stdoutMessage);
-    if (stderrMessage) messages.push(stderrMessage);
+    const result = await runScript(directory, script, payload);
+    messages.push(...scriptDiagnostics(result));
   }
   return messages;
 };
 
-const runScripts = async (
-  client: any,
+const runScriptsForFailures = async (
   directory: string,
   scripts: string[],
   payload: unknown,
-) => {
+): Promise<string[]> => {
+  const failures: string[] = [];
   for (const script of scripts) {
-    await runScript(client, directory, script, payload);
+    const result = await runScript(directory, script, payload);
+    if (result.exitCode !== 0) failures.push(...scriptDiagnostics(result));
   }
+  return failures;
 };
 
-export const HooksPlugin: Plugin = async ({ client, directory, worktree }) => {
-  const initialWorktreePath = normalizeWorktreePath(worktree);
+const resolveScripts = (
+  config: HookConfig,
+  event: ConfigEvent,
+  tool: string,
+  command: string,
+  warnings: string[],
+): string[] => [
+  ...getToolScripts(config, event, tool, warnings),
+  ...(tool === "bash" ? getBashTriggerScripts(config, event, command, warnings) : []),
+  ...getToolScripts(config, event, "*", warnings),
+];
 
-  const globalConfigDir = getGlobalConfigDir();
+export default {
+  id: "stack-hooks",
 
-  const readHookFile = async (configPath: string): Promise<HookConfig | null> => {
-    try {
-      const content = await (globalThis as any).Bun.file(configPath).text();
-      return JSON.parse(content);
-    } catch (error) {
-      // Los errores de fs exponen code, no name: sin esto, cada proyecto sin
-      // hooks.json loguearía un warning espurio.
-      const code = (error as { code?: string })?.code;
-      if (error instanceof Error && error.name !== "ENOENT" && code !== "ENOENT") {
-        await client.app.log({
-          body: {
-            service: "hooks",
-            level: "warn",
-            message: "Failed to load hooks config",
-            extra: { configPath, error: error.message },
-          },
-        });
-      }
-      return null;
-    }
-  };
+  async setup(ctx: any) {
+    const globalConfigDir = getGlobalConfigDir();
+    // Un hook `before` que falla no puede bloquear la herramienta, pero tampoco
+    // desaparecer: se guarda por llamada y se diagnostica en el `after`.
+    const pendingFailures = new Map<string, string[]>();
 
-  // Merge two hook configs. Scripts from both are concatenated per event/tool/trigger.
-  // Global scripts are resolved against the global config dir; project scripts against the project.
-  const mergeHookConfigs = (
-    base: HookConfig,
-    incoming: HookConfig,
-  ): HookConfig => {
-    const result: HookConfig = { ...base };
-
-    for (const [event, eventValue] of Object.entries(incoming)) {
-      if (!isPlainObject(eventValue)) {
-        if (result[event] === undefined) result[event] = eventValue;
-        continue;
-      }
-
-      const baseEvent = isPlainObject(result[event])
-        ? { ...(result[event] as Record<string, unknown>) }
-        : {};
-
-      for (const [tool, toolValue] of Object.entries(eventValue)) {
-        const baseTool = baseEvent[tool];
-
-        if (isStringArray(toolValue)) {
-          baseEvent[tool] = isStringArray(baseTool)
-            ? [...baseTool, ...toolValue]
-            : [...toolValue];
-          continue;
-        }
-
-        if (isPlainObject(toolValue)) {
-          const mergedTriggers: Record<string, unknown> = isPlainObject(baseTool)
-            ? { ...(baseTool as Record<string, unknown>) }
-            : {};
-          for (const [trigger, scripts] of Object.entries(toolValue)) {
-            const existing = mergedTriggers[trigger];
-            if (isStringArray(scripts)) {
-              mergedTriggers[trigger] = isStringArray(existing)
-                ? [...existing, ...scripts]
-                : [...scripts];
-            } else if (mergedTriggers[trigger] === undefined) {
-              mergedTriggers[trigger] = scripts;
-            }
-          }
-          baseEvent[tool] = mergedTriggers;
-          continue;
-        }
-
-        if (baseEvent[tool] === undefined) baseEvent[tool] = toolValue;
-      }
-
-      result[event] = baseEvent;
-    }
-
-    return result;
-  };
-
-  // Tag every script path with the base directory it must be resolved against.
-  // Global scripts use the global config dir; project scripts use the project dir.
-  const tagScriptsWithBase = (config: HookConfig, baseDir: string): HookConfig => {
-    const tagList = (scripts: string[]) =>
-      scripts.map((s) => `${baseDir}\u0000${s}`);
-
-    const result: HookConfig = {};
-    for (const [event, eventValue] of Object.entries(config)) {
-      if (!isPlainObject(eventValue)) {
-        result[event] = eventValue;
-        continue;
-      }
-      const newEvent: Record<string, unknown> = {};
-      for (const [tool, toolValue] of Object.entries(eventValue)) {
-        if (isStringArray(toolValue)) {
-          newEvent[tool] = tagList(toolValue);
-        } else if (isPlainObject(toolValue)) {
-          const newTriggers: Record<string, unknown> = {};
-          for (const [trigger, scripts] of Object.entries(toolValue)) {
-            newTriggers[trigger] = isStringArray(scripts)
-              ? tagList(scripts)
-              : scripts;
-          }
-          newEvent[tool] = newTriggers;
-        } else {
-          newEvent[tool] = toolValue;
-        }
-      }
-      result[event] = newEvent;
-    }
-    return result;
-  };
-
-  const loadConfig = async (configDirectory = directory): Promise<HookConfig> => {
-    // Project-level hooks: prefer the runtime directory, fall back to the plugin directory.
-    let projectConfig: HookConfig = {};
-    let projectBase = configDirectory;
-
-    const runtimeConfig = await readHookFile(
-      `${configDirectory}/.opencode/hooks.json`,
-    );
-    if (runtimeConfig) {
-      projectConfig = runtimeConfig;
-      projectBase = configDirectory;
-    } else if (configDirectory !== directory) {
-      const fallbackConfig = await readHookFile(
-        `${directory}/.opencode/hooks.json`,
-      );
-      if (fallbackConfig) {
-        projectConfig = fallbackConfig;
-        projectBase = directory;
-      }
-    }
-    projectConfig = tagScriptsWithBase(projectConfig, projectBase);
-
-    // Global user-level hooks (~/.config/opencode/hooks.json).
-    let globalConfig: HookConfig = {};
-    if (globalConfigDir) {
-      const raw = await readHookFile(`${globalConfigDir}/hooks.json`);
-      if (raw) globalConfig = tagScriptsWithBase(raw, globalConfigDir);
-    }
-
-    // Global first, then project (the project can add more scripts on top).
-    return mergeHookConfigs(globalConfig, projectConfig);
-  };
-
-  return {
-    "session.created": async () => {
-      const config = await loadConfig();
-      const scripts = await getToolScripts(
-        client,
-        config,
-        "session.created",
-        "*",
-      );
-      await runScripts(client, directory, scripts, {
-        event: "session.created",
-        directory,
-        activeWorktreePath: initialWorktreePath,
-        worktreePath: initialWorktreePath,
-      });
-    },
-
-    "server.connected": async () => {
-      const config = await loadConfig();
-      const scripts = await getToolScripts(
-        client,
-        config,
-        "server.connected",
-        "*",
-      );
-      const fallbackScripts =
-        scripts.length === 0
-          ? await getToolScripts(client, config, "session.created", "*")
-          : [];
-      await runScripts(client, directory, scripts, {
-        event: "server.connected",
-        directory,
-        activeWorktreePath: initialWorktreePath,
-        worktreePath: initialWorktreePath,
-      });
-      await runScripts(client, directory, fallbackScripts, {
-        event: "server.connected",
-        directory,
-        activeWorktreePath: initialWorktreePath,
-        worktreePath: initialWorktreePath,
-      });
-    },
-
-    "tool.execute.after": async (input: any, output: any) => {
-      const runtime = await getRuntimeContext(client, directory, initialWorktreePath);
-      const config = await loadConfig(runtime.directory);
-      const tool = (input.tool || "").toLowerCase();
-      const args = input.args || {};
-      const command = args.command || "";
-      const payload = buildHookPayload(
-        runtime.directory,
-        "tool.execute.after",
-        input,
-        runtime.activeWorktreePath,
-      );
-      const messages: string[] = [];
-
-      const toolScripts = await getToolScripts(
-        client,
-        config,
-        "tool.execute.after",
-        tool,
-      );
-      messages.push(
-        ...(await runScriptsAndCollectMessages(
-          client,
-          runtime.directory,
-          toolScripts,
-          payload,
-        )),
-      );
-
-      if (tool === "bash") {
-        const bashTriggerScripts = await getBashTriggerScripts(
-          client,
+    const handleBefore = async (event: any) => {
+      try {
+        const directory = await resolveEventDirectory(ctx, event);
+        if (!directory) return;
+        const { config, diagnostics } = await loadConfig(directory, globalConfigDir);
+        const warnings: string[] = [...diagnostics];
+        const tool = configToolName(event?.tool);
+        const payload = buildHookPayload(
+          directory,
+          CONFIG_EVENTS.before,
+          event?.tool,
+          event?.input,
+        );
+        const scripts = resolveScripts(
           config,
-          "tool.execute.after",
-          command,
+          CONFIG_EVENTS.before,
+          tool,
+          commandText(event?.input?.command),
+          warnings,
         );
-        messages.push(
-          ...(await runScriptsAndCollectMessages(
-            client,
-            runtime.directory,
-            bashTriggerScripts,
-            payload,
-          )),
-        );
+        const failures = await runScriptsForFailures(directory, scripts, payload);
+        if (warnings.length > 0) failures.push(...warnings);
+        const id = typeof event?.id === "string" ? event.id : "";
+        if (id && failures.length > 0) pendingFailures.set(id, failures);
+      } catch {
+        // fail-open: un guardarraíl nunca bloquea la herramienta que vigila.
       }
+    };
 
-      const wildcardScripts = await getToolScripts(
-        client,
-        config,
-        "tool.execute.after",
-        "*",
-      );
-      messages.push(
-        ...(await runScriptsAndCollectMessages(
-          client,
-          runtime.directory,
-          wildcardScripts,
-          payload,
-        )),
-      );
+    const handleAfter = async (event: any) => {
+      try {
+        const id = typeof event?.id === "string" ? event.id : "";
+        const pending = id ? pendingFailures.get(id) : undefined;
+        if (id) pendingFailures.delete(id);
 
-      appendToolOutput(output, messages);
-    },
+        const directory = await resolveEventDirectory(ctx, event);
+        if (!directory) {
+          if (pending) appendToResult(event, pending);
+          return;
+        }
 
-    "tool.execute.before": async (input: any) => {
-      const runtime = await getRuntimeContext(client, directory, initialWorktreePath);
-      const config = await loadConfig(runtime.directory);
-      const tool = (input.tool || "").toLowerCase();
-      const args = input.args || {};
-      const command = args.command || "";
-      const payload = buildHookPayload(
-        runtime.directory,
-        "tool.execute.before",
-        input,
-        runtime.activeWorktreePath,
-      );
-
-      const toolScripts = await getToolScripts(
-        client,
-        config,
-        "tool.execute.before",
-        tool,
-      );
-      await runScripts(client, runtime.directory, toolScripts, payload);
-
-      if (tool === "bash") {
-        const bashTriggerScripts = await getBashTriggerScripts(
-          client,
+        const { config, diagnostics } = await loadConfig(directory, globalConfigDir);
+        const warnings: string[] = [...diagnostics];
+        const tool = configToolName(event?.tool);
+        const payload = buildHookPayload(
+          directory,
+          CONFIG_EVENTS.after,
+          event?.tool,
+          event?.input,
+        );
+        const scripts = resolveScripts(
           config,
-          "tool.execute.before",
-          command,
+          CONFIG_EVENTS.after,
+          tool,
+          commandText(event?.input?.command),
+          warnings,
         );
-        await runScripts(client, runtime.directory, bashTriggerScripts, payload);
-      }
+        const messages = await runScriptsForMessages(directory, scripts, payload);
 
-      const wildcardScripts = await getToolScripts(
-        client,
-        config,
-        "tool.execute.before",
-        "*",
-      );
-      await runScripts(client, runtime.directory, wildcardScripts, payload);
-    },
-  };
+        appendToResult(event, [...(pending ?? []), ...warnings, ...messages]);
+      } catch {
+        // fail-open: sin log en v2, el propio resultado de la herramienta es el
+        // único canal; un fallo aquí no puede romper ni bloquear el shell.
+      }
+    };
+
+    await ctx.tool.hook("execute.before", handleBefore);
+    await ctx.tool.hook("execute.after", handleAfter);
+  },
 };

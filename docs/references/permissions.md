@@ -1,13 +1,17 @@
 # Permisos por defecto del stack
 
 Esta referencia describe los defaults que `pnpm dlx jorgex-stack install` (o
-`sync` ya no es un comando público; `install` siembra en una configuración fresca o vacía. La política común es
-semántica: el trabajo ordinario se permite, las operaciones legítimas pero
-sensible o irreversibles piden aprobación, y los secretos y la destrucción
-evidente se deniegan. En OpenCode fresco no hay regla global `"*"`: lo que
-no tiene regla específica cae al default nativo (`allow`), así que el
-trabajo ordinario —incluido cualquier MCP, conocido o futuro— funciona sin
-prompts. En Claude Code y Codex, lo no listado sigue pidiendo aprobación.
+`pnpm cli install` desde un clon de desarrollo) siembra en una configuración
+fresca o vacía. `sync` ya no es un comando público; `install` reconcilia el
+canon internamente. La política común es semántica: el trabajo ordinario se
+permite, las operaciones legítimas pero sensible o irreversibles piden
+aprobación, y los secretos y la destrucción evidente se deniegan. En OpenCode
+v2 fresco el array nativo no tiene regla global ni `ask` para git/shell
+ordinarios; lo que el array no declara se queda al default del host v2 (no se
+afirma que ese default sea universal `allow` para todas las herramientas: el
+runtime del host decide qué hace con cada `action` no listada, y el array
+puede convivir con reglas destructivas del propio host). En Claude Code y
+Codex, lo no listado sigue pidiendo aprobación.
 
 La regla fresh-only sigue siendo el default: una configuración existente
 se conserva completa y el stack no reimpone ni migra sus permisos solo. La
@@ -27,7 +31,7 @@ queda en silencio.
 
 | Runtime      | Archivo de usuario               | Clave gestionada                                        |
 | ------------ | -------------------------------- | ------------------------------------------------------- |
-| OpenCode     | `~/.config/opencode/opencode.json` | `permission`                                            |
+| OpenCode v2  | `~/.config/opencode/opencode.json` o `opencode.jsonc` (raíz efectiva: `OPENCODE_CONFIG_DIR` si está definido, si no `$XDG_CONFIG_HOME/opencode` o HOME) | `permissions` (server) y `session.verbosity` en `cli.json` |
 | Claude Code  | `~/.claude/settings.json`        | `permissions`                                           |
 | Codex CLI    | `~/.codex/config.toml`           | `approval_policy` + `default_permissions` + perfil      |
 
@@ -60,10 +64,10 @@ opt-in explícito del §5.
 instalación fresca, además de escribirlo deja constancia en
 `ctx.warnings` (visible al final de `install`). Los mensajes son:
 
-- OpenCode → `OpenCode: fresh config allows ordinary reads, edits, web access
-  and Bash; sensitive operations ask, while protected paths and obvious
-  destruction are denied. Native matching is not a universal filesystem
-  sandbox.`
+- OpenCode v2 → `OpenCode v2: fresh permissions allow ordinary reads, edits
+  and external_directory; bash inherits the host default and protected
+  paths (secrets, sensitive keys) are denied on read/edit. Native
+  matching is not a universal filesystem sandbox.`
 - Claude Code → `Claude Code: fresh config enables read-anywhere via
   Read/Grep/Glob allow rules; shell, writes and web egress remain
   approval-gated, but broad local reads can expose secrets not covered
@@ -77,7 +81,7 @@ config existente cuyo bloque difiera del default canónico, el adapter en
 cambio emite un aviso stale (uno por runtime, solo-si-difiere, sin
 volcar el contenido del bloque):
 
-- OpenCode → `OpenCode: permission block differs from the stack
+- OpenCode v2 → `OpenCode: permissions block differs from the stack
   default and was left untouched; re-run with --upgrade-permissions to
   replace it (a backup is created first), or edit it by hand.`
 - Claude Code → `Claude Code: permissions block differs from the stack
@@ -89,7 +93,7 @@ volcar el contenido del bloque):
 
 Una config existente ya al día no emite ningún aviso de permisos. Con
 `--upgrade-permissions`, el bloque que difiera se reemplaza entero por
-el canon (OpenCode: clave `permission`; Claude Code: clave
+el canon (OpenCode v2: clave `permissions`; Claude Code: clave
 `permissions` vía el hooks-path, nunca vía main-config; Codex: claves
 root `approval_policy` + `default_permissions` y secciones del perfil,
 dejando intactos `sandbox_mode`, `model`, MCP y secciones ajenas),
@@ -101,118 +105,89 @@ mismo aviso stale sin volcar el bloque y con el remedio exacto:
 
 ---
 
-## 2. OpenCode — `permission`
+## 2. OpenCode v2 — `permissions`
 
-Bloque completo escrito bajo la clave `permission` **solo en config fresca
-o vacía**, tal cual vive en `stack/config/defaults.json`. Es un overlay
-mínimo estilo gentle-ai: permite el trabajo ordinario sin prompts, pide solo
-lo sensible mínimo y deniega la destrucción evidente y los secretos. El JSON
-incluye variantes con y sin argumentos (`git rebase` / `git rebase *`) y
-variantes de ruta (`*/format`) para la destrucción:
+Bloque canónico escrito bajo la clave `permissions` **solo en config fresca
+o vacía** del server config (`opencode.json` o, si solo existe ese archivo,
+`opencode.jsonc`); si ambos coexisten el archivo efectivo es ambiguo y se
+falla cerrado. El server config vive en la raíz efectiva del host:
+`OPENCODE_CONFIG_DIR` si está definido, si no `$XDG_CONFIG_HOME/opencode` o
+el default de HOME según la fuente oficial v2. El JSON reconoce JSONC
+(comentarios y comas finales) y se edita con upsert quirúrgico: comentarios
+y claves ajenas se conservan. El archivo compacto `cli.json` vive junto al
+server config y siembra `session.verbosity: "low"` solo si falta, como
+ajuste de presentación del TUI, no de modelo.
+
+El overlay v2 es un array ordenado de tuplas `action/resource/effect`. Sin
+regla global ni asks para git/shell ordinarios; `external_directory` se
+permite, los denies de secretos se aplican solo a `read`/`edit` y
+`*.env.example` se re-permite al final para ganar la última coincidencia.
+El canon compartido en `stack/config/defaults.json` conserva el bloque
+`opencode.permission` legacy de v1, que el adapter OpenCode v2 usa solo
+para reconocer configs v1 exactas (migración owned) y como referencia
+del bloque `permissions` que ya no se reescribe por defecto. OpenCode v2
+proyecta su array nativo desde el adapter (`src/adapters/opencode.ts`),
+no desde `defaults.json`. Ejemplo canónico:
 
 ```jsonc
 {
-  "edit": {
-    "*": "allow",
-    "*.env": "deny",
-    "*.env.*": "deny",
-    "*.env.example": "allow",
-    "*/.ssh/*": "deny",
-    "*/.aws/credentials": "deny",
-    "*/.npmrc": "deny",
-    "*/.git-credentials": "deny",
-    "*/id_rsa": "deny",
-    "*/id_ed25519": "deny",
-    "*.pem": "deny",
-    "*.key": "deny"
-  },
-  "read": {
-    "*": "allow",
-    "*.env": "deny",
-    "*.env.*": "deny",
-    "*.env.example": "allow",
-    "*/.ssh/*": "deny",
-    "*/.aws/credentials": "deny",
-    "*/.npmrc": "deny",
-    "*/.git-credentials": "deny",
-    "*/id_rsa": "deny",
-    "*/id_ed25519": "deny",
-    "*.pem": "deny",
-    "*.key": "deny"
-  },
-  "external_directory": { "*": "allow" },
-  "glob": "allow",
-  "grep": "allow",
-  "lsp": "allow",
-  "webfetch": "allow",
-  "websearch": "allow",
-  "task": "allow",
-  "skill": "allow",
-  "todowrite": "allow",
-  "question": "allow",
-  "bash": {
-    "*": "allow",
-    "git rebase": "ask",
-    "git rebase *": "ask",
-    "git reset --hard": "ask",
-    "git reset --hard *": "ask",
-    "ssh": "ask",
-    "ssh *": "ask",
-    "scp": "ask",
-    "scp *": "ask",
-    "sftp": "ask",
-    "sftp *": "ask",
-    "rsync": "ask",
-    "rsync *": "ask",
-    "format": "deny",
-    "format *": "deny",
-    "*/format": "deny",
-    "*/format *": "deny",
-    "mkfs": "deny",
-    "mkfs *": "deny",
-    "*/mkfs": "deny",
-    "*/mkfs *": "deny",
-    "dd": "deny",
-    "dd *": "deny",
-    "*/dd": "deny",
-    "*/dd *": "deny",
-    "shred": "deny",
-    "shred *": "deny",
-    "*/shred": "deny",
-    "*/shred *": "deny",
-    "mkfs.*": "deny",
-    "*/mkfs.*": "deny"
-  }
+  "permissions": [
+    { "action": "external_directory", "resource": "*", "effect": "allow" },
+    { "action": "read", "resource": "*.env", "effect": "deny" },
+    { "action": "read", "resource": "*.env.*", "effect": "deny" },
+    { "action": "read", "resource": "*.ssh/*", "effect": "deny" },
+    { "action": "read", "resource": "*.aws/credentials", "effect": "deny" },
+    { "action": "read", "resource": "*.npmrc", "effect": "deny" },
+    { "action": "read", "resource": "*.git-credentials", "effect": "deny" },
+    { "action": "read", "resource": "*id_rsa*", "effect": "deny" },
+    { "action": "read", "resource": "*id_ed25519*", "effect": "deny" },
+    { "action": "read", "resource": "*.pem", "effect": "deny" },
+    { "action": "read", "resource": "*.key", "effect": "deny" },
+    { "action": "read", "resource": "*.env.example", "effect": "allow" },
+    { "action": "edit", "resource": "*.env", "effect": "deny" },
+    { "action": "edit", "resource": "*.env.*", "effect": "deny" },
+    { "action": "edit", "resource": "*.ssh/*", "effect": "deny" },
+    { "action": "edit", "resource": "*.aws/credentials", "effect": "deny" },
+    { "action": "edit", "resource": "*.npmrc", "effect": "deny" },
+    { "action": "edit", "resource": "*.git-credentials", "effect": "deny" },
+    { "action": "edit", "resource": "*id_rsa*", "effect": "deny" },
+    { "action": "edit", "resource": "*id_ed25519*", "effect": "deny" },
+    { "action": "edit", "resource": "*.pem", "effect": "deny" },
+    { "action": "edit", "resource": "*.key", "effect": "deny" },
+    { "action": "edit", "resource": "*.env.example", "effect": "allow" }
+  ]
 }
 ```
 
 - **Sin regla global `"*"`**: no hay fallback a `ask`. Las herramientas o
-  formas sin regla específica —incluido cualquier MCP, conocido o futuro—
-  caen al default nativo (`allow`). Las claves muertas `list` y `todoread`
-  se eliminaron del canon: no existen como herramientas OpenCode.
-- **Trabajo ordinario**: `read`, `edit`, `glob`, `grep`, `lsp`,
-  `external_directory`, `webfetch`, `websearch`, `task`, `skill`,
-  `todowrite`, `question` y `bash *` reciben `allow`. `git commit` y
-  `git push` (incluido `--force`) también quedan en `allow`: no piden
-  aprobación en fresco.
-- **`read` y `edit` como objetos**: `* = allow` quita el prompt para cualquier ruta;
-  `*.env` y `*.env.*` niegan secretos locales; `*.env.example` se permite
-  como fixture. El resto de denies (`*/.ssh/*`, `*/.aws/credentials`,
-  `*/.npmrc`, `*/.git-credentials`, `*/id_rsa`, `*/id_ed25519`,
-  `*.pem`, `*.key`) son una capa best-effort sobre los nombres de secretos
-  más comunes — ver §6.
-- **Los denies de secretos viven SOLO en `read` y `edit`**: `bash` no tiene
-  denies de secretos. Un `cat .env` por shell queda en `allow` por diseño;
-  la red es read/edit, no un sandbox del filesystem — ver §6.
+  formas sin regla específica se quedan al default del host v2 (no se
+  afirma que ese default sea universal `allow` para todas las
+  herramientas). El array nativo v2 no importa asks de otros runtimes
+  ni reescribe reglas que ya estén declaradas; los patrones
+  `secret-pattern` y los `ask` que el propio host aplique fuera del
+  array se mantienen intactos y siguen decidiendo el comportamiento
+  real del matching nativo.
+- **Trabajo ordinario**: `read`, `edit`, `external_directory` y todas las
+  herramientas sin entrada explícita quedan en `allow`. `git commit` y
+  `git push` (incluido `--force`) también quedan permitidos por ausencia
+  de deny: no hay gate humano para el git cotidiano en el canon v2.
+- **`read` y `edit` con deny de secretos**: el array deniega `*.env`,
+  `*.env.*`, `*.ssh/*`, `*.aws/credentials`, `*.npmrc`,
+  `*.git-credentials`, `*id_rsa*`, `*id_ed25519*`, `*.pem` y `*.key`
+  (capa best-effort sobre los nombres comunes — ver §6).
+  `*.env.example` se re-permite al final del array para ganar la última
+  coincidencia y servir como fixture.
+- **Los denies de secretos viven SOLO en `read` y `edit`**: el array v2
+  no añade denies sobre bash ni sobre filesystem completos. Un `cat .env`
+  por shell queda en `allow` por diseño; la red es read/edit, no un
+  sandbox del filesystem — ver §6.
 - **`external_directory: * = allow`**: las lecturas y búsquedas fuera del
-  cwd se permiten; la escritura sigue las reglas de `edit` y Bash.
-- **`bash: { "*": "allow", ... }`**: Bash ordinario se permite, incluidos
-  intérpretes (`node`, `python`, …), `pnpm exec/dlx` y el git cotidiano.
-  Solo piden aprobación `git rebase` y `git reset --hard` (con y sin
-  argumentos) y la familia `ssh`/`scp`/`sftp`/`rsync`. `format`, `mkfs`,
-  `dd` y `shred` (con variantes de ruta y `mkfs.*`) quedan en `deny`.
-- **Sin regla para `doom_loop`**: queda el `ask` nativo, que frena bucles
-  sin ser trabajo normal.
+  cwd se permiten; la escritura sigue las reglas de `edit` y el matching
+  nativo de la herramienta.
+- **Sin reglas para herramientas anti-bucle**: el array v2 no declara
+  control sobre `doom_loop` ni equivalentes; el comportamiento ante
+  bucles no lo define Stack y queda al arbitrio del runtime del host
+  (no se arrastran claims v1 que el código fuente no acredita).
 
 **MCP: sin allowlist, todo cae al nativo.** En la configuración fresca no hay
 claves `engram_*`, `context7_*` ni de ningún otro servidor: cualquier
@@ -228,14 +203,40 @@ default nativo. La política no es un sandbox universal del sistema de
    archivos. Quien quiera endurecerla puede editarla a mano; sin
    `--upgrade-permissions` el stack no sobrescribirá esa decisión.
 
-**El adapter no migra solo.** El default anterior era la matriz restrictiva
-(`"*": "ask"` global, `ask` para intérpretes, `pnpm exec/dlx`, `git push`
-y decenas de formas git, denies de secretos y rutas de sistema en `bash`,
-allowlist histórica `engram_*`/`context7_*`). Si tu `opencode.json` ya trae una
-`permission` (custom o exactamente igual a ese default anterior), el
-adapter la deja intacta por defecto y emite el aviso stale
-(solo-si-difiere, sin volcar el bloque). Para subir al nuevo default,
-edita a mano o usa `install --upgrade-permissions` (ver §5).
+**Reconocimiento de capabilities.** El informe local de capabilities
+(namespace `jorgex.quality.capabilities`, ver
+[quality-receipt.md](quality-receipt.md)) trata los permisos v2 canónicos
+como `tool-approval: unavailable`, con una razón que reconoce la política
+aprobada (sin gate humano por diseño) y no un estado `manual`. El adapter
+devuelve `manual` solo cuando reconoce declaraciones explícitas de
+aprobación pendientes. Configuraciones ajenas, modificadas o ilegibles
+conservan una razón distinta y conservadora.
+
+**El adapter no migra solo.** El default anterior era la matriz v1 con
+clave `permission` (`"*": "ask"` global, `ask` para intérpretes,
+`pnpm exec/dlx`, decenas de formas git, denies de secretos y rutas de
+sistema en `bash`, allowlist histórica `engram_*`/`context7_*`). Si tu
+`opencode.json` o `opencode.jsonc` ya trae un `permission` o `permissions`
+(custom o coincidente con el legacy exacto), el adapter la deja intacta
+por defecto y emite el aviso stale (solo-si-difiere, sin volcar el
+bloque). Para subir al nuevo default, edita a mano o usa `sync
+--upgrade-permissions` (ver §5). Una migración automática desde el canon
+v1 solo aplica cuando la propiedad exacta coincide y el canon actual v2
+puede acreditar el reemplazo sin pisar configuración ajena; cualquier
+estado ambiguo de campos se preserva con backup y se bloquea con
+remedio.
+
+Para los recursos estáticos gestionados (plugins/scripts), la regla de
+identidad física reemplaza el camino conservador previo. La tabla única
+de owned/unowned × current/legacy/unknown × install/update/uninstall,
+las garantías del generador y las limitaciones explícitas viven en
+[opencode-static-resources.md](opencode-static-resources.md); aquí no
+se duplican. La fila "current" se deriva de los bytes que la proyección
+va a escribir (helper `projectedBytesByTarget(actions)`), no del JSON
+canónico congelado; el JSON acredita el canon legacy v1 publicado. El
+índice se regenera solo con `python3 scripts/regenerate-opencode-static-resources.py`
+desde un clon git (herramienta de mantenimiento, nunca parte de
+`install`/`sync`/`doctor`/`uninstall`).
 
 ---
 
@@ -399,7 +400,7 @@ y solo avisa; con flag se reemplaza el bloque entero.
 > existe, o está vacío. Si tienes `~/.claude/settings.json` con tus
 > propios atajos, hooks o mcp y borras solo `permissions`, el archivo
 > sigue sin estar vacío y el adapter respeta tu config — no siembra el
-> nuevo default. Lo mismo aplica a `permission` en OpenCode y a las
+> nuevo default. Lo mismo aplica a `permissions` en OpenCode v2 y a las
 > secciones `[permissions.*]` en Codex: si tu `config.toml` tiene
 > `mcp_servers`, `model`, atajos, etc., quitar
 > `[permissions.jorgex-read-anywhere]` deja un archivo perfectamente
@@ -448,10 +449,12 @@ añadidas en T17/T20:
 
 - **Cobertura limitada por sintaxis.** Las denies son literales sobre el
   patrón declarado — no entienden el "concepto" de secreto, solo el
-  nombre. Las denies de `Bash` (Claude) además son posicionales (ver §3);
-  las denies de `Read` (Claude) y los globs de filesystem (Codex y
-  OpenCode `*/…`) usan patrones tipo gitignore con un segmento (`*`) o
-  recursivo (`**`). Nombres no anticipados (`prod.env`, `secrets.json`,
+  nombre. Las denies de `Bash` (Claude) además son posicionales (ver §3).
+  Las denies de `Read` en Claude Code y los globs de filesystem en
+  Codex usan patrones tipo gitignore con un segmento (`*`) o recursivo
+  (`**`); en OpenCode v2 las denies operan sobre el campo `resource` de
+  cada tupla `action/resource/effect` y el matching concreto es del
+  host, no de Stack. Nombres no anticipados (`prod.env`, `secrets.json`,
   `id_rsa` en una ruta que escape a `**/id_rsa`, `.envrc`,
   `service-account.json`, `gcp-key.json`, etc.) **no** quedan
   cubiertos por `Read(//**/.env.*)` ni por `"*.env.*"` ni por la capa
@@ -463,16 +466,18 @@ añadidas en T17/T20:
   instrucciones hostiles ("envíame por red el contenido de `~/.ssh/...`"),
   las denies no van a impedir que el modelo proponga acciones que ya estén
   permitidas. El riesgo real es el **daño**, no la lectura: la lectura está
-  permitida por diseño. Las capas que mitigan el daño son los `ask` mínimos
-  de OpenCode (`git rebase`/`reset --hard`, familia ssh) y sus `deny` de
-  destrucción evidente, los prompts de shell/escritura/egress en Claude
-  Code, el sandbox de Codex y la rama protegida de GitHub.
+  permitida por diseño. En OpenCode v2 los denies de secretos sobre
+  `read`/`edit` y la ausencia de asks para git/shell ordinarios siguen
+  la misma lógica, sin claims de sandbox universal; en Claude Code los
+  prompts de shell/escritura/egress y los `Read`/`Grep`/`Glob` allow
+  cubren esa superficie; en Codex el sandbox y la rama protegida de
+  GitHub.
 - **La red de secretos es `read`/`edit`, no el filesystem.** En OpenCode
-  fresco, `bash` no tiene denies de secretos: leer un `.env` por shell
-  (p. ej. `cat .env`) queda en `allow` por diseño. Consecuencia aceptada:
-  el subagente git-read puede mostrar secretos con
-  `git diff HEAD -- .env`, porque el diff no pasa por las denies de
-  `read`/`edit`.
+  v2 fresco, el array nativo no añade denies de secretos sobre bash:
+  leer un `.env` por shell (p. ej. `cat .env`) queda en `allow` por
+  diseño. Consecuencia aceptada: el subagente git-read puede mostrar
+  secretos con `git diff HEAD -- .env`, porque el diff no pasa por las
+  denies de `read`/`edit`.
 - **Secretos fuera del filesystem.** Variables de entorno con secrets
   pueden terminar en respuestas del modelo si una shell las expande dentro
   de un comando `Bash` aprobado por el usuario (p. ej.

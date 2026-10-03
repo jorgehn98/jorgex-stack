@@ -818,6 +818,53 @@ describe("[doctor] distingue bin/setup/exposure sin prometer OpenCode2", () => {
 });
 
 // ---------------------------------------------------------------------------
+// T07-RED: OpenCode v2 no ejecuta el setup v1 de Engram ni lo presenta como
+// integración completa antes del release upstream (SC-07/T08). El coordinador
+// debe fallar cerrado con el prerrequisito externo, sin invocar
+// `engram setup opencode`. Fixture: ejecutable fake determinista con marcador
+// junto al binario; nunca un binario/DB/~/.engram reales.
+// ---------------------------------------------------------------------------
+
+describe("[T07-RED] OpenCode v2 no ejecuta el setup v1 de Engram", () => {
+  it("no invoca `engram setup opencode` y reporta el prerrequisito externo", async () => {
+    const home = tempHome("jx-t07-opencode-nov1-");
+    const configDir = path.join(home, ".config", "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    // Fake Engram: si el coordinador lo invoca con `setup opencode`, escribe un
+    // marcador junto al binario. Determinista y sin efectos fuera del temp.
+    const bin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, [
+      "#!/bin/sh",
+      `printf '%s\\n' "$@" > "${bin}.called"`,
+      "exit 0",
+      "",
+    ].join("\n"), { mode: 0o755 });
+    fs.chmodSync(bin, 0o755);
+    // El verificador opencode debe estar registrado, como en el runtime real.
+    await import("../src/adapters/opencode.js");
+
+    const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+    const result = await mod.runOfficialSetupIfNeeded("opencode", {
+      command: "install",
+      dryRun: false,
+      targetDir: undefined,
+      engramBin: bin,
+      configDir,
+      homeDir: home,
+    });
+
+    // El setup v1 incompatible nunca se ejecuta (el marcador no existe).
+    expect(fs.existsSync(`${bin}.called`), "el setup v1 de Engram no debe ejecutarse").toBe(false);
+    // No es un skip silencioso ni un éxito: veredicto visible de prerrequisito.
+    expect(result.ran, "no debe ser un skip silencioso (falso éxito)").toBe(true);
+    expect(result.ok, "no se presenta como integración completa").toBe(false);
+    expect(String(result.reason ?? result.stderr ?? ""))
+      .toMatch(/release|upstream|prerrequisit|pendiente|no disponible|unsupported/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // T41-RED: coordinador oficial `engram setup pi` (install-only gestionado).
 // Contrato: install real resuelve/instala el binario Engram primero, respalda
 // cada path que `engram setup pi` puede mutar, ejecuta el oficial

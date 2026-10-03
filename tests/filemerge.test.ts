@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  editJsonc,
   hasTomlRootKey,
+  parseJsoncObject,
   readTomlSection,
   removeTomlSection,
   stripLeadingHtmlComments,
@@ -333,5 +335,66 @@ Body text.
 
   it("falla claramente si falta un campo requerido", () => {
     expect(() => parseCanonicalAgent("---\nname: x\n---\nbody", "x.md")).toThrow(/falta/);
+  });
+});
+
+/**
+ * Postcondición de Spec T04 para la edición JSONC: antes de devolver texto
+ * editado hay que acreditar que vuelve a parsear y que es equivalente al objeto
+ * objetivo de la mutación. Un JSONC tolerante resuelve claves duplicadas con el
+ * ÚLTIMO miembro mientras `modify` edita el PRIMERO, así que un duplicado en la
+ * ruta mutada produciría un cambio silenciosamente inefectivo.
+ */
+describe("editJsonc: postcondición de equivalencia", () => {
+  const mutateSession = (root: Record<string, unknown>): void => {
+    (root["session"] as Record<string, unknown>)["verbosity"] = "high";
+  };
+
+  it("preserva comentarios y claves ajenas y devuelve un JSONC válido equivalente al target", () => {
+    const existing = [
+      "// nota del usuario",
+      "{",
+      '  "session": { "verbosity": "low" },',
+      '  "foreign": { "kept": true }',
+      "}",
+      "",
+    ].join("\n");
+
+    const out = editJsonc(existing, (root) => {
+      mutateSession(root);
+      root["update"] = "auto";
+    });
+
+    expect(out).toContain("// nota del usuario");
+    expect(out).toContain('"kept": true');
+    const reparsed = parseJsoncObject(out);
+    expect(reparsed.error).toBeNull();
+    expect(reparsed.value).toEqual({ session: { verbosity: "high" }, foreign: { kept: true }, update: "auto" });
+    // Idempotente: re-aplicar la misma mutación no cambia bytes.
+    expect(editJsonc(out, (root) => {
+      mutateSession(root);
+      root["update"] = "auto";
+    })).toBe(out);
+  });
+
+  it("un duplicado ajeno que la mutación no toca se preserva sin bloquear la edición", () => {
+    const existing = ["{", '  "session": { "verbosity": "low" },', '  "theme": "a",', '  "theme": "b"', "}", ""].join("\n");
+
+    const out = editJsonc(existing, mutateSession);
+
+    expect(out.split('"theme"').length - 1).toBe(2);
+    expect(parseJsoncObject(out).value).toEqual({ session: { verbosity: "high" }, theme: "b" });
+  });
+
+  it("un duplicado en la ruta mutada bloquea antes del write en vez de editar el miembro equivocado", () => {
+    const existing = ["{", '  "model": "a",', '  "model": "b"', "}", ""].join("\n");
+    // `parse` resuelve el último miembro ("b"); `modify` editaría el primero, así
+    // que un resultado "correcto" dejaría el valor efectivo en "b" sin aplicar la
+    // mutación a "c".
+    expect(parseJsoncObject(existing).value).toEqual({ model: "b" });
+
+    expect(() => editJsonc(existing, (root) => {
+      root["model"] = "c";
+    })).toThrow(/duplicad|ambig|acredit|corrige|bloque/i);
   });
 });

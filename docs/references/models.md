@@ -2,10 +2,10 @@
 
 JorgeX Stack separa dos políticas:
 
-- El **agente principal** de Codex, OpenCode y Pi usa `gpt-5.6-sol` mediante la autenticación de la suscripción.
+- El **agente principal** de Codex y Pi usa `gpt-5.6-sol` mediante la autenticación de la suscripción. OpenCode v2 usa `openai/gpt-6.1-sol` como default nativo (ver §OpenCode v2 abajo); los wrappers primary siguen sin fijar modelo ni effort y heredan el default global de su runtime.
 - Los **subagentes** conservan su selección independiente por tier o por agente en `~/.jorgex-stack/model-map.json`.
 
-`jorgex-stack models` solo cambia la segunda política. Los wrappers primary siguen sin fijar modelo ni esfuerzo: heredan el default global del runtime.
+`jorgex-stack models` solo cambia la segunda política. Los wrappers primary siguen sin fijar modelo ni esfuerzo: heredan el default global del runtime. La sustitución por runtime no cambia el resto de los defaults.
 
 ## Defaults del agente principal
 
@@ -22,17 +22,29 @@ Son 872K tokens de ventana configurada para entrada; con el umbral nativo de com
 
 La cifra no equivale al contexto de la API. Este flujo usa la autenticación de Codex/ChatGPT y reserva por separado la salida máxima del modelo.
 
-### OpenCode
+### OpenCode v2
 
-En `~/.config/opencode/opencode.json`, Stack solicita al proveedor OAuth de OpenAI:
+OpenCode v2 siembra `opencode.json`/`opencode.jsonc` (raíz efectiva:
+`OPENCODE_CONFIG_DIR` si está definido, si no `$XDG_CONFIG_HOME/opencode`
+o el default de HOME) con un agente principal nativo en
+`openai/gpt-6.1-sol`. La compactación, los títulos y los resúmenes usan
+modelos declarados aparte; eso no garantiza por sí solo cuotas distintas
+ni límites por agente — el host decide el enrutamiento real:
 
-```json
+```jsonc
 {
-  "model": "openai/gpt-5.6-sol",
-  "provider": {
+  "model": "openai/gpt-6.1-sol",
+  "providers": {
     "openai": {
       "models": {
-        "gpt-5.6-sol": {
+        "gpt-6.1-sol": {
+          "limit": {
+            "context": 872000,
+            "input": 744000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra": {
           "limit": {
             "context": 872000,
             "input": 744000,
@@ -40,12 +52,68 @@ En `~/.config/opencode/opencode.json`, Stack solicita al proveedor OAuth de Open
           }
         }
       }
+    },
+    "opencode-go": {
+      "models": {
+        "deepseek-v4.1-flash": {
+          "limit": { "context": 400000, "output": 128000 }
+        },
+        "muse-spark-1.3-contributor": {
+          "limit": { "context": 400000, "output": 128000 }
+        }
+      }
     }
-  }
+  },
+  "agents": {
+    "plan": { "disabled": true },
+    "title": { "model": "openai/gpt-6-luna#none" },
+    "summary": { "model": "minimax/MiniMax-M3#thinking" }
+  },
+  "compaction": {
+    "auto": true,
+    "keep": { "tokens": 20000 }
+  },
+  "update": "auto",
+  "formatter": true,
+  "lsp": false,
+  "worktree": { "directory": "worktrees" }
 }
 ```
 
-Estos límites son metadatos locales solicitados. No demuestran por sí solos que el backend OAuth acepte toda la ventana; hay que confirmarlo con una prueba real de contexto largo. No se anuncia aquí el límite de 1,05M de la API.
+- **`openai/gpt-6.1-sol`** es el default del agente principal; el wrapper
+  primary sigue sin fijar modelo ni effort, y `agents.plan.disabled: true`
+  apaga el modo plan para que el flujo por defecto no dependa de Shift+Tab.
+  El wrapper primary no fija modelo global: el agente principal hereda
+  el default del host cuando no se declara un override en su frontmatter.
+- **`agents.title.model` y `agents.summary.model`** se siembran solo si
+  faltan (y `agents.title` solo si no existe `small_model` ni el alias
+  legacy `agent.title`): `openai/gpt-6-luna#none` para los títulos y
+  `minimax/MiniMax-M3#thinking` para los resúmenes. La compactación solo
+  activa `auto: true` y `keep.tokens: 20000`; no hay clave nativa
+  `compaction.model` (la compactación sigue el modelo de la sesión por
+  defecto del host). Título y resumen se mantienen como agentes separados
+  para separar responsabilidades, no como promesa de cuota por agente.
+- **Límites explícitos por modelo**: `gpt-6.1-sol` y `gpt-6-astra`
+  declaran `context: 872000 / input: 744000 / output: 128000`; los modelos
+  de OpenCode-managed (`deepseek-v4.1-flash`,
+  `muse-spark-1.3-contributor`) usan `context: 400000 / output: 128000`.
+  Estos límites son metadatos locales solicitados al backend; no son una
+  promesa de ventana universal y pueden depender de la cuenta OAuth del
+  usuario. Stack no anuncia la ventana de 1,05 M de la API.
+- **`update: "auto"`** describe la preferencia del binario OpenCode; no
+  autoriza a Stack a actualizar el binario del usuario ni a saltarse la
+  verificación de install/update. Si `update` ya existe (manual), se
+  respeta; el alias legacy `autoupdate` también.
+- **`formatter: true`, `lsp: false`, `worktree.directory: "worktrees"`**
+  reflejan el canon v2 nativo: Stack respeta el formatter del host,
+  desactiva el LSP gestionado y ancla `worktree.directory` a la cadena
+  relativa `"worktrees"` desde el checkout canónico del host (no es un
+  cwd arbitrario ni una ruta de sesión: el host la resuelve al iniciar
+  el worktree). Si el usuario ya tenía un valor manual se respeta.
+- **Permisos y `agents`:** el wrapper primary no añade `name` ni `tier`;
+  la identificación del agente vive en el nombre de archivo Markdown
+  bajo `.config/opencode/agents/`. Los modelos/variants se serializan como
+  escalares YAML seguros para no inyectar campos en el frontmatter.
 
 ### Pi
 
@@ -64,7 +132,10 @@ La proyección compartida de Stack no cambia esta propiedad: solo instala los re
 Edita el campo global del runtime después de instalarlo:
 
 - Codex: `model` o `model_context_window` en `config.toml`.
-- OpenCode: `model` o los límites del modelo en `opencode.json`.
+- OpenCode v2: `model`, `agents.title.model`, `agents.summary.model`,
+  `compaction.keep.tokens` o los límites del modelo en `opencode.json` /
+  `opencode.jsonc`. La sustitución por agente (`agents.<id>.model`) tiene
+  precedencia sobre el default global.
 - Pi: los defaults en `settings.json` o el override en `models.json`.
 
 `install` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
@@ -98,9 +169,31 @@ variant existente que no esté listado se conserva solo si se mantiene el mismo
 modelo; al cambiar de modelo no se arrastra. La lista y los variants de
 OpenCode no cambian.
 
-### OpenCode
+### OpenCode v2
 
-Los subagentes siguen siendo provider-agnostic. La primera instalación interactiva ejecuta `opencode models` y exige elegir por tier o por agente. `install --yes`, `--target-dir` y procesos sin TTY fallan si todavía no existe esa selección; nunca inventan modelos de subagente. `code-reviewer` hereda la selección de `standard`, salvo un override personal.
+Los subagentes v2 se siembran con un `model#variant` único por agente,
+serializado como escalar YAML seguro. El roster canónico vive en
+`src/lib/model-map.ts` (`DEFAULT_MODEL_MAP.opencode`) e incluye los tres
+tiers (`strong`, `standard`, `cheap`) más overrides nominales por nombre
+de agente. Una selección guardada del usuario se conserva, los cambios de
+tier no pisan los overrides por agente y un agente sin override resuelve
+el tier canónico actual. Los modelos listados en el roster son los
+aprobados para el canon v2 (Sol 6.1, Luna 6, DeepSeek 4.1 Flash, Muse
+Spark 1.3 Contributor y MiniMax-M3); los detalles exactos se leen del
+model-map y pueden ampliarse por agente sin cambiar el canon de los
+demás runtimes.
+
+`install --yes`, `sync` y procesos sin TTY también usan los defaults del
+roster en una config fresca, sin exigir selección previa ni invocar el
+catálogo de modelos. La primera instalación interactiva sigue permitiendo
+elegir por tier o por agente cuando se ejecuta explícitamente; las
+elecciones explícitas guardadas tienen precedencia sobre los defaults
+del roster. `code-reviewer` hereda `standard` salvo override personal.
+
+La lista de variants para OpenCode v2 sigue siendo exclusiva del runtime;
+Codex conserva su propio `max`/`medium` por modelo y la regla
+"variant no listado no se arrastra al cambiar de modelo" no se aplica
+cruzando runtimes.
 
 ### Claude Code
 
