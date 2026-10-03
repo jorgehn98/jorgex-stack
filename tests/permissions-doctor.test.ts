@@ -36,7 +36,7 @@ type DoctorModule = {
 };
 
 const STALE_FRAGMENTS = ["differs from the stack default", "--upgrade-permissions", "discards your own permission changes"];
-const REMEDY_COMMAND = "jorgex-stack sync --upgrade-permissions --dry-run";
+const REMEDY_COMMAND = "jorgex-stack install --upgrade-permissions --dry-run";
 
 function output(): string {
   return [
@@ -302,7 +302,7 @@ describe("doctor: Pi solo-diagnóstico (T03)", () => {
       expect(exitCode).toBe(1);
       expect(text).toContain("Pi: permission policy present without package ownership");
       expect(text).toContain("Stack never rewrites Pi state");
-      expect(text).toContain("sync --agents pi");
+      expect(text).toContain("install --agents pi");
       expect(text).not.toContain("--upgrade-permissions");
       expect(text).not.toContain(canary);
       expect(fs.readFileSync(configFile, "utf8")).toBe(before);

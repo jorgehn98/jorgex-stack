@@ -658,7 +658,7 @@ function planCliConfig(ctx: InstallContext): FileAction | null {
   if (existing === null || existing.trim() === "") {
     if (hasPendingCliMigration(ctx)) {
       ctx.warnings.push(
-        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite sync para sembrar session.verbosity: low.",
+        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite install para sembrar session.verbosity: low.",
       );
       return null;
     }
@@ -675,7 +675,7 @@ function planCliConfig(ctx: InstallContext): FileAction | null {
   // deja remedio, sin reclamar ownership ni reserializar un escalar/array ajeno.
   if (session !== undefined && objectValue(session) === null) {
     ctx.warnings.push(
-      "OpenCode: 'cli.json' tiene un 'session' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite sync para sembrar session.verbosity: low.",
+      "OpenCode: 'cli.json' tiene un 'session' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite install para sembrar session.verbosity: low.",
     );
     return null;
   }
@@ -740,7 +740,7 @@ function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value
 function ensureObject(parent: Record<string, unknown>, key: string, fieldPath: string): Record<string, unknown> {
   if (parent[key] === undefined) parent[key] = {};
   const value = objectValue(parent[key]);
-  if (value === null) throw new Error(`OpenCode: '${fieldPath}' debe ser un objeto; corrígelo antes de reintentar sync.`);
+  if (value === null) throw new Error(`OpenCode: '${fieldPath}' debe ser un objeto; corrígelo antes de reintentar install.`);
   return value;
 }
 
@@ -1029,7 +1029,7 @@ export const opencodeAdapter: Adapter = {
     const selection = selectOpenCodeServerFile(ctx.configDir);
     if ("conflict" in selection) {
       throw new Error(
-        `OpenCode: coexisten '${path.basename(selection.conflict[0]!)}' y '${path.basename(selection.conflict[1]!)}'; el archivo efectivo del host es ambiguo, así que se conservan ambos sin fusionar ni ignorar ninguno. Deja solo opencode.jsonc (o opencode.json) antes de reintentar sync.`,
+        `OpenCode: coexisten '${path.basename(selection.conflict[0]!)}' y '${path.basename(selection.conflict[1]!)}'; el archivo efectivo del host es ambiguo, así que se conservan ambos sin fusionar ni ignorar ninguno. Deja solo opencode.jsonc (o opencode.json) antes de reintentar install.`,
       );
     }
     const { file, basename: base } = selection.selection;
@@ -1043,7 +1043,7 @@ export const opencodeAdapter: Adapter = {
     const mutate = (root: Record<string, unknown>): void => {
       const rawMcp = root["mcp"];
       if (rawMcp !== undefined && objectValue(rawMcp) === null) {
-        throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar sync.");
+        throw new Error("OpenCode: la clave 'mcp' debe ser un objeto; corrígela antes de reintentar install.");
       }
       const existingMcp = rawMcp as Record<string, unknown> | undefined;
       const nativeServers = objectValue(existingMcp?.["servers"]);
@@ -1078,7 +1078,7 @@ export const opencodeAdapter: Adapter = {
       const pureLegacyOpenai = legacyOpenai !== null && isDeepStrictEqual(legacyOpenai, LEGACY_OPENAI_SUBTREE);
       const migratingLegacy = base === CONFIG_FILENAME && legacySol !== null && legacyProviderOwned && pureLegacyOpenai;
       if (legacySol !== null && legacyProviderOwned && !pureLegacyOpenai) {
-        throw new Error("OpenCode: 'provider.openai' está marcado como owned v1 pero su contenido no es el canon v1 exacto (api/settings, otros modelos o campos extra); escribir los defaults nativos lo ocultaría y no se acredita como puro. Revisa, restaura o retira esa entrada antes de reintentar sync.");
+        throw new Error("OpenCode: 'provider.openai' está marcado como owned v1 pero su contenido no es el canon v1 exacto (api/settings, otros modelos o campos extra); escribir los defaults nativos lo ocultaría y no se acredita como puro. Revisa, restaura o retira esa entrada antes de reintentar install.");
       }
 
       if (root["model"] === undefined) {
@@ -1087,7 +1087,7 @@ export const opencodeAdapter: Adapter = {
           primaryModelOwnership.push({ field: modelField(base), owned: true });
         }
       } else if (typeof root["model"] !== "string" || root["model"].trim() === "") {
-        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar sync.");
+        throw new Error("OpenCode: 'model' debe ser un identificador provider/model no vacío; corrígelo antes de reintentar install.");
       }
       if (migratingLegacy && legacyProvider !== null) {
         // El `model` owned exactamente 5.6 se reescribe al target 6.1 y se reclama
@@ -1114,7 +1114,7 @@ export const opencodeAdapter: Adapter = {
       // una entrada v1 owned ya migrada arriba no se bloquea: ya era nuestra.
       for (const { provider } of PROVIDER_MODEL_LIMITS) {
         if (legacyProvider?.[provider] !== undefined && nativeProviders?.[provider] === undefined) {
-          throw new Error(`OpenCode: 'provider.${provider}' legacy sin 'providers.${provider}' nativo; añadir los defaults v2 ocultaría su endpoint/settings/credenciales. Migra esa entrada a 'providers' o retírala antes de reintentar sync.`);
+          throw new Error(`OpenCode: 'provider.${provider}' legacy sin 'providers.${provider}' nativo; añadir los defaults v2 ocultaría su endpoint/settings/credenciales. Migra esa entrada a 'providers' o retírala antes de reintentar install.`);
         }
       }
 
@@ -1188,7 +1188,7 @@ export const opencodeAdapter: Adapter = {
         || legacyAgent?.["title"] !== undefined;
       const title = objectValue(agents["title"]);
       if (agents["title"] !== undefined && title === null) {
-        throw new Error("OpenCode: 'agents.title' debe ser un objeto; corrígelo antes de reintentar sync.");
+        throw new Error("OpenCode: 'agents.title' debe ser un objeto; corrígelo antes de reintentar install.");
       }
       if (!legacyTitle && title?.["model"] === undefined) {
         const titleBlock = title ?? {};
@@ -1217,7 +1217,7 @@ export const opencodeAdapter: Adapter = {
       }
       const keep = objectValue(compaction["keep"]);
       if (compaction["keep"] !== undefined && keep === null) {
-        throw new Error("OpenCode: 'compaction.keep' debe ser un objeto; corrígelo antes de reintentar sync.");
+        throw new Error("OpenCode: 'compaction.keep' debe ser un objeto; corrígelo antes de reintentar install.");
       }
       // `preserve_recent_tokens` (V1) ya decide el presupuesto retenido.
       if (compaction["preserve_recent_tokens"] === undefined && keep?.["tokens"] === undefined) {
@@ -1293,7 +1293,7 @@ export const opencodeAdapter: Adapter = {
         if (server.transport === "stdio") {
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
-              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
+              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta install.",
             );
             continue;
           }

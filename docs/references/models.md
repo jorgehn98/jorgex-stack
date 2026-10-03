@@ -138,7 +138,7 @@ Edita el campo global del runtime después de instalarlo:
   precedencia sobre el default global.
 - Pi: los defaults en `settings.json` o el override en `models.json`.
 
-`sync` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
+`install` solo rellena campos ausentes y conserva sustituciones del usuario. Stack registra en `~/.jorgex-stack/primary-model.json` qué campos creó en Codex/OpenCode; `uninstall` solo retira esos campos si todavía coinciden con el valor canónico. Un valor canónico preexistente no se reclama ni se borra. El cleanup de Pi usa su propio recibo de ownership.
 
 ## Subagentes
 
@@ -211,7 +211,7 @@ El picker permite elegir voluntariamente **por tier** o **por subagente**, uno a
 uno. La segunda opción guarda solo las diferencias como overrides por nombre
 de agente; así se puede asignar, por ejemplo, Astra/max únicamente a roles
 concretos. No cambia el modelo primary ni convierte una elección existente en
-un override gestionado por Stack; `sync` tampoco sobrescribe elecciones
+un override gestionado por Stack; `install` tampoco sobrescribe elecciones
 guardadas.
 ## Recuperar un model-map inválido
 

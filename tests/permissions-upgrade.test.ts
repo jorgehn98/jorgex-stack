@@ -491,7 +491,7 @@ describe("permissions-upgrade: backup precede al reseed y restore lo revierte", 
   });
 });
 
-describe("permissions-upgrade: CLI flag end-to-end (sync --target-dir)", () => {
+describe("permissions-upgrade: CLI flag end-to-end (install --target-dir)", () => {
   const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
   const CLI_PATH = path.join(ROOT, "src", "cli.ts");
 
@@ -541,7 +541,7 @@ describe("permissions-upgrade: CLI flag end-to-end (sync --target-dir)", () => {
     }
   });
 
-  it("sync --upgrade-permissions reescribe el stale (propagación del flag)", async () => {
+  it("install --upgrade-permissions reescribe el stale (propagación del flag)", async () => {
     const root = mkTmp("jx-perm-cli-flag-");
     const homeDir = path.join(root, "home");
     const targetDir = path.join(root, "target");
@@ -555,7 +555,7 @@ describe("permissions-upgrade: CLI flag end-to-end (sync --target-dir)", () => {
     fs.writeFileSync(target, JSON.stringify({ permission: OPENCODE_CUSTOM_PERMISSION }));
 
     const exitCode = await runCli(
-      ["sync", "--agents", "opencode", "--target-dir", targetDir, "--yes", "--upgrade-permissions"],
+      ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes", "--upgrade-permissions"],
       homeDir,
       { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
     );
@@ -565,7 +565,7 @@ describe("permissions-upgrade: CLI flag end-to-end (sync --target-dir)", () => {
     expect(reseeded.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
   });
 
-  it("sync sin flag preserva el stale (off por defecto end-to-end)", async () => {
+  it("install sin flag preserva el stale (off por defecto end-to-end)", async () => {
     const root = mkTmp("jx-perm-cli-off-");
     const homeDir = path.join(root, "home");
     const targetDir = path.join(root, "target");
@@ -579,7 +579,7 @@ describe("permissions-upgrade: CLI flag end-to-end (sync --target-dir)", () => {
     fs.writeFileSync(target, JSON.stringify({ permission: OPENCODE_CUSTOM_PERMISSION }));
 
     const exitCode = await runCli(
-      ["sync", "--agents", "opencode", "--target-dir", targetDir, "--yes"],
+      ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"],
       homeDir,
       { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
     );

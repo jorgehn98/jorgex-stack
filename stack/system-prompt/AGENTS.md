@@ -26,6 +26,10 @@ Ask questions when something isn't clear instead of assuming it's correct.
 - Do not add dependencies without explicit user approval.
 - Run lint and typecheck after significant changes when available.
 
+### Code comments
+
+Add comments only when they carry information the code does not make clear: a non-obvious reason, invariant, constraint or operational hazard. Do not narrate obvious code, mirror existing comment density, or add comments just because a function or test is new. Preserve contractual documentation, legal notices, directives, and critical security, concurrency or deletion context; docstrings used as runtime metadata are part of the contract, not disposable prose. Follow local language and format, without line-count or density quotas. Leaving already-clear code uncommented is valid.
+
 ---
 
 ## Default Architecture

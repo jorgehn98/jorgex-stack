@@ -407,7 +407,7 @@ describe("CLI follow-up sync mode resolution", () => {
     }
   });
 
-  it("update con cambios aplicados y sin modo guardado deja el sync pendiente", async () => {
+  it("update con cambios aplicados y sin modo guardado deja la aplicación pendiente", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-pending-sync-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -423,7 +423,7 @@ describe("CLI follow-up sync mode resolution", () => {
       expect(exitCode).toBe(0);
       expect(
         collectedMessages([error, log, mocks.prompts.log.warn, mocks.prompts.log.info]).some((message) =>
-          /pendiente.*sync|sync.*pendiente|pending sync/i.test(message),
+          /aplicaci[oó]n.*pendiente|pendiente.*aplicaci[oó]n|pending application/i.test(message),
         ),
       ).toBe(true);
     } finally {
@@ -432,7 +432,7 @@ describe("CLI follow-up sync mode resolution", () => {
     }
   });
 
-  it("update binario-only no anuncia un sync pendiente", async () => {
+  it("update binario-only no anuncia una aplicación pendiente", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-update-binary-only-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -448,7 +448,7 @@ describe("CLI follow-up sync mode resolution", () => {
       expect(mocks.runInteractiveUpdate).toHaveBeenCalledTimes(1);
       expect(
         collectedMessages([error, log, mocks.prompts.log.warn, mocks.prompts.log.info]).some((message) =>
-          /pendiente.*sync|sync.*pendiente|pending sync/i.test(message),
+          /aplicaci[oó]n.*pendiente|pendiente.*aplicaci[oó]n|pending application/i.test(message),
         ),
       ).toBe(false);
     } finally {
@@ -469,7 +469,7 @@ describe("CLI follow-up sync mode resolution", () => {
     }));
   });
 
-  it("models opcionalmente salta el sync cuando falta una preferencia guardada y conserva el exit code de éxito", async () => {
+  it("models opcionalmente salta la aplicación cuando falta una preferencia guardada y conserva el exit code de éxito", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-models-missing-mode-"));
     const homeDir = path.join(tmp, "home");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -483,7 +483,7 @@ describe("CLI follow-up sync mode resolution", () => {
       expect(exitCode).toBe(0);
       expect(
         collectedMessages([error, log, mocks.prompts.log.warn, mocks.prompts.log.info]).some((message) =>
-          /se omite el sync|sync omitid|skip/i.test(message),
+          /requiere un modo|aplicaci[oó]n a los runtimes|skip/i.test(message),
         ),
       ).toBe(true);
     } finally {
@@ -965,10 +965,10 @@ describe("CLI effective browser capability", () => {
   });
 
   it.each([
-    { args: ["sync", "--agents", "opencode,pi", "--mode", "human", "--yes"], managedProbes: 1, legacyProbes: 0, pi: true },
+    { args: ["install", "--agents", "opencode,pi", "--mode", "human", "--yes"], managedProbes: 1, legacyProbes: 0, pi: true },
     { args: ["doctor", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
     { args: ["update", "--agents", "pi", "--dry-run"], managedProbes: 0, legacyProbes: 0, pi: false },
-    { args: ["sync", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], managedProbes: 0, legacyProbes: 0, pi: false },
+    { args: ["install", "--agents", "opencode", "--mode", "human", "--yes", "--target-dir"], managedProbes: 0, legacyProbes: 0, pi: false },
   ])("uses managed Playwright probes for file runtimes and Pi in $args", async ({ args, managedProbes, legacyProbes, pi }) => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-browser-capability-"));
     const homeDir = path.join(tmp, "home");
@@ -1015,10 +1015,10 @@ describe("CLI no inspecciona Playwright para destinos OpenCode-only", () => {
     return file;
   }
 
-  it.each(["install", "sync"])(
-    "%s con OpenCode-only y preferencia legacy no inspecciona la capacidad ni muta la preferencia",
-    async (command) => {
-      const tmp = makeTempDir(path.join(os.tmpdir(), `jx-cli-opencode-no-inspect-${command}-`));
+  it(
+    "install con OpenCode-only y preferencia legacy no inspecciona la capacidad ni muta la preferencia",
+    async () => {
+      const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-opencode-no-inspect-install-"));
       const homeDir = path.join(tmp, "home");
       const preferenceFile = writeRawPlaywrightPreference(homeDir, OPENCODE_ONLY_PREFERENCE);
       writeOpenCodeModelMap(homeDir);
@@ -1027,7 +1027,7 @@ describe("CLI no inspecciona Playwright para destinos OpenCode-only", () => {
 
       try {
         const exitCode = await runCli(
-          [command, "--agents", "opencode", "--mode", "human", "--yes"],
+          ["install", "--agents", "opencode", "--mode", "human", "--yes"],
           homeDir,
           false,
           { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
@@ -1102,16 +1102,16 @@ describe("CLI no inspecciona Playwright para destinos OpenCode-only", () => {
 });
 
 describe("CLI cablea --browser-control-service al install", () => {
-  /** install y sync comparten bloque; update tiene su propio call site de sync previo. */
-  it.each(["install", "sync"] as const)(
-    "%s reenvía el opt-in de servicio al runInstall de OpenCode",
-    async (command) => {
-      const tmp = makeTempDir(path.join(os.tmpdir(), `jx-browser-control-service-${command}-`));
+  /** install y update comparten bloque; update reconcilia internamente con su propio call site. */
+  it(
+    "install reenvía el opt-in de servicio al runInstall de OpenCode",
+    async () => {
+      const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-install-"));
       const homeDir = path.join(tmp, "home");
       writeOpenCodeModelMap(homeDir);
 
       const exitCode = await runCli(
-        [command, "--agents", "opencode", "--mode", "human", "--yes", "--browser-control-service"],
+        ["install", "--agents", "opencode", "--mode", "human", "--yes", "--browser-control-service"],
         homeDir,
       );
 

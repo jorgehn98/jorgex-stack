@@ -6,6 +6,7 @@ import zlib from "node:zlib";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+import { backupContains, backupFiles, seedFakeEngram, snapshotEnv } from "./helpers/opencode-isolation.js";
 import {
   STATIC_RESOURCES,
   authenticateStaticResource,
@@ -87,22 +88,6 @@ function sha256(bytes: Buffer): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-function backupFiles(home: string): string[] {
-  const root = path.join(home, ".jorgex-stack", "backups");
-  if (!fs.existsSync(root)) return [];
-  const out: string[] = [];
-  for (const entry of fs.readdirSync(root)) {
-    const filesDir = path.join(root, entry, "files");
-    if (!fs.existsSync(filesDir)) continue;
-    for (const name of fs.readdirSync(filesDir)) out.push(path.join(filesDir, name));
-  }
-  return out;
-}
-
-function backupContains(home: string, bytes: Buffer): boolean {
-  return backupFiles(home).some((file) => fs.readFileSync(file).equals(bytes));
-}
-
 interface Harness {
   root: string;
   home: string;
@@ -117,25 +102,6 @@ interface Harness {
   realInstall: () => Promise<number>;
 }
 
-/** Fake Engram: registra cualquier invocación; nunca debe ejecutarse en el guard. */
-function seedFakeEngram(home: string): { bin: string; invokedMarker: string } {
-  const bin = path.join(home, ".local", "bin", "engram");
-  fs.mkdirSync(path.dirname(bin), { recursive: true });
-  const invokedMarker = `${bin}.invoked`;
-  const quoted = `'${invokedMarker.replaceAll("'", `'\\''`)}'`;
-  fs.writeFileSync(
-    bin,
-    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${quoted}`, "exit 0", ""].join("\n"),
-    { mode: 0o755 },
-  );
-  try {
-    fs.chmodSync(bin, 0o755);
-  } catch {
-    // Windows: exec bit no aplica.
-  }
-  return { bin, invokedMarker };
-}
-
 async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-t07-delta-"));
   tempRoots.push(root);
@@ -148,26 +114,20 @@ async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise
   fs.mkdirSync(tmpDir, { recursive: true });
   const { bin: engramBin, invokedMarker: engramInvoked } = seedFakeEngram(home);
 
-  const saved = {
-    HOME: process.env.HOME,
-    USERPROFILE: process.env.USERPROFILE,
-    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-    TMPDIR: process.env.TMPDIR,
-    TEMP: process.env.TEMP,
-    TMP: process.env.TMP,
-    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
-    CODEX_HOME: process.env.CODEX_HOME,
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  };
-  const restore = (): void => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  };
+  const restore = snapshotEnv([
+    "HOME",
+    "USERPROFILE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "OPENCODE_CONFIG_DIR",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+  ]);
 
   process.env.HOME = home;
   process.env.USERPROFILE = home;

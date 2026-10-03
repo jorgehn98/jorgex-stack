@@ -364,41 +364,6 @@ describe("OpenCode v2 plugins: carga y contrato de eventos", () => {
     },
   );
 
-  it("control GREEN: el arnés observa un plugin v2 con la forma nativa", async () => {
-    const host = createV2Host(tmp);
-    const synthetic: PluginShape = {
-      id: "control-v2",
-      setup: (ctx: unknown) => {
-        (ctx as V2Host["ctx"] & { tool: { hook: (n: string, h: HookHandler) => void } }).tool.hook(
-          "execute.after",
-          (event: Record<string, unknown>) => {
-            const value = event.result as { content?: unknown[] } | undefined;
-            event.result = {
-              ...(value as object),
-              content: [...(value?.content ?? []), { type: "text", text: "CONTROL" }],
-            };
-          },
-        );
-      },
-    };
-
-    const plugin = pluginOf({ default: synthetic });
-    expect(plugin).toBeDefined();
-    await plugin!.setup(host.ctx);
-
-    const handler = host.registered.get("execute.after")!;
-    const event = completedEvent({
-      id: "call-control",
-      sessionID: host.sessionID,
-      command: "echo hi",
-      workdir: ".",
-    });
-    const returned = await handler(event);
-
-    expect(returned).toBeUndefined();
-    expect(contentText(event.result)).toContain("CONTROL");
-  });
-
   it("plugins v2: sin console, sin SDK v1, sin enterworktree/server.connected ni app.log", () => {
     const files = ["hooks.ts", "worktree.ts"].map((name) =>
       path.join(stackRoot(), "plugins", "opencode", name),

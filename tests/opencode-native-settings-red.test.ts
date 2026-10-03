@@ -14,6 +14,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { FileAction, InstallContext } from "../src/adapters/types.js";
 import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
+import { snapshotEnv } from "./helpers/opencode-isolation.js";
 
 /** Binario v2 fixture: el gate ejecuta el binario detectado, nunca un mock. */
 const OPENCODE_V2_BIN = opencodeV2Binary();
@@ -123,13 +124,15 @@ async function withIsolatedHome<T>(run: (input: IsolatedHome) => Promise<T>): Pr
   fs.mkdirSync(xdgConfigDir, { recursive: true });
   fs.mkdirSync(xdgDataDir, { recursive: true });
   fs.mkdirSync(xdgCacheDir, { recursive: true });
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
-  const originalState = process.env.XDG_STATE_HOME;
-  const originalXdgConfig = process.env.XDG_CONFIG_HOME;
-  const originalXdgData = process.env.XDG_DATA_HOME;
-  const originalXdgCache = process.env.XDG_CACHE_HOME;
-  const originalOpenCodeDir = process.env.OPENCODE_CONFIG_DIR;
+  const restore = snapshotEnv([
+    "HOME",
+    "USERPROFILE",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "OPENCODE_CONFIG_DIR",
+  ]);
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
   process.env.XDG_STATE_HOME = stateDir;
@@ -141,20 +144,7 @@ async function withIsolatedHome<T>(run: (input: IsolatedHome) => Promise<T>): Pr
     vi.resetModules();
     return await run({ homeDir, configDir, stateDir, xdgConfigDir });
   } finally {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
-    if (originalState === undefined) delete process.env.XDG_STATE_HOME;
-    else process.env.XDG_STATE_HOME = originalState;
-    if (originalXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = originalXdgConfig;
-    if (originalXdgData === undefined) delete process.env.XDG_DATA_HOME;
-    else process.env.XDG_DATA_HOME = originalXdgData;
-    if (originalXdgCache === undefined) delete process.env.XDG_CACHE_HOME;
-    else process.env.XDG_CACHE_HOME = originalXdgCache;
-    if (originalOpenCodeDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
-    else process.env.OPENCODE_CONFIG_DIR = originalOpenCodeDir;
+    restore();
     vi.resetModules();
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -25,7 +25,7 @@ binario global o un MCP manual no se adoptan como fallback.
 ### Versión observada, sin pin futuro
 
 Stack no fija una versión objetivo. La adquisición vive solo en rutas
-reales de `install`/`sync`/`update`: `--check`, `--dry-run` y
+reales de `install`/`update`: `--check`, `--dry-run` y
 `--target-dir` no resuelven ni descargan paquetes ni tocan el HOME real
 (siguen siendo de solo lectura o de proyección aislada). En una ruta real
 con `--agents opencode` el flujo resuelve cada vez el
@@ -97,10 +97,10 @@ el opt-in explícito:
 pnpm dlx jorgex-stack install --agents opencode --browser-control-service
 ```
 
-`--browser-control-service` exige `install`/`sync`/`update` con
+`--browser-control-service` exige `install`/`update` con
 `--agents opencode`. La validación de CLI acepta el flag en
-`install --dry-run`, `install --target-dir`, `sync --dry-run` y
-`sync --target-dir` (en esos modos la comprobación de plataforma Linux
+`install --dry-run` e `install --target-dir`
+(en esos modos la comprobación de plataforma Linux
 se omite, pero la API de servicio sigue desactivada y no se crea ni
 arranca nada). En `update` rechaza `--check` y `--dry-run` por ser rutas
 de solo lectura. Sobre plataformas no-Linux, el flag se rechaza fuera
@@ -233,7 +233,7 @@ stack retirado. Hay dos modos de `pending` y no se tratan igual:
   informativo del preflight (puede venir, entre otros, de un `uninstall`
   previo que falló antes de cualquier efecto, de un manager inaccesible,
   de un relay ausente/incierto o de una unidad ajena en la ruta fija):
-  no hay fase en el manifest y `install`/`sync`/`update` posteriores
+  no hay fase en el manifest y los `install`/`update` posteriores
   no quedan bloqueados por esa señal. Corrige la condición informada y
   reintenta el comando que falló. Un `pending` sin fase persistida no
   obliga por sí solo a retirar el servicio; no borres datos ni
@@ -241,7 +241,7 @@ stack retirado. Hay dos modos de `pending` y no se tratan igual:
 - **`pending` con fase de retirement persistida.** El manifest conserva
   una fase (`environment-retired` / `unit-removed` /
   `manager-reloaded`) tras un intento previo fallido. Aquí sí
-  `install`/`sync`/`update` quedan bloqueadas y el único remedio es
+  `install`/`update` quedan bloqueadas y el único remedio es
   reintentar el `uninstall` para cerrar esa fila del manifest. El caller no
   edita hashes, ni borra DB, ni hace `kill` del proceso, ni descarta la
   autoridad del row.
@@ -324,7 +324,7 @@ del active A contra el receipt autenticado de A y conserva la
 configuración A intacta (porque ningún byte de B se ha escrito). El
 candidato verificado B **se retiene** en su namespace candidato
 (`.browser-control-candidate/`); no se pierde ni se reescribe; un
-futuro `install`/`sync` puede reutilizarlo si la verificación de B
+futuro `install` puede reutilizarlo si la verificación de B
 sigue válida. Un leaf inseguro, un mismatch de identidad o un ledger
 no verificable bloquean el avance; el caller ve un diagnóstico
 accionable sin que se declare éxito. La sección `Lo que no se ha
@@ -346,7 +346,7 @@ pieza no puede revertirse, `recoverProjection` falla y Stack
 diagnóstico primario y la recuperación pendiente.
 
 El modelo de estados preserva **los hechos observados**, no promete
-autocuración: no se afirma que el siguiente `install`/`sync`
+autocuración: no se afirma que el siguiente `install`
 resuelva el conflicto sin intervención. El caller debe revisar el
 diagnóstico, resolver el conflicto de evidencia (por ejemplo: un
 archivo escrito por un escritor externo, una unidad reaparecida con
@@ -375,7 +375,7 @@ incompleta, el caller ve `exit 1` y un mensaje que no afirma éxito.
 - **Windows.** El flujo Browser Control no se ha verificado en Windows;
   la guía no asume autostart nativo ni handoff equivalente. Fuera de
   Linux, la API de servicio queda desactivada: el flag
-  `--browser-control-service` se rechaza en `install`/`sync` reales
+  `--browser-control-service` se rechaza en `install`/`update` reales
   sobre plataformas no-Linux y, en otros modos, se acepta solo a
   efectos de validación. La unidad nunca se materializa ni se arranca
   fuera de Linux.
@@ -404,7 +404,7 @@ incompleta, el caller ve `exit 1` y un mensaje que no afirma éxito.
   se promete `enable-linger`, ni se asume supervivencia tras logout
   del usuario.
   - **Unidad existente owned.** Cuando la ruta fija ya contiene la
-    unidad propia, `install`/`sync`/`update` solo la **autentican**
+    unidad propia, `install`/`update` solo la **autentican**
     contra su binding, estampa y bytes; no la arrancan, no la reinician
     y no la reescriben (`ensureBrowserControlServiceUnit` retorna
     `unchanged`). Si el relay no responde tras volver, el usuario
@@ -417,18 +417,18 @@ incompleta, el caller ve `exit 1` y un mensaje que no afirma éxito.
     §"Uninstall y recuperación": corrige la condición informada y
     reintenta el comando que falló. Un `pending` sin fase persistida no
     obliga por sí solo a retirar el servicio ni bloquea por esa señal
-    `install`/`sync`/`update`; no borres datos ni descartes autoridad
+    `install`/`update`; no borres datos ni descartes autoridad
     para forzar el resultado. El propio supervisor (`systemctl --user
     status`, lectura de `/version`) y la sección `Lo que no se ha
     verificado` ayudan a verificar el estado sin tocar la base. Si el
     comando que falló fue `uninstall` y el preflight devolvió
     `pending` antes de cualquier backup/borrado, no se invoca
-    `install`/`sync`/`update` para "saltar" ese estado: se corrige la
+    `install`/`update` para "saltar" ese estado: se corrige la
     condición y se reejecuta el propio `uninstall`. Para una unidad
     existente, recuerda que reejecutar no fuerza start ni linger; es
     solo autenticación.
   - **Con fase `browserControlServiceRetirement` persistida.** El
-    `install`/`sync`/`update` queda bloqueado hasta cerrar esa fila
+    `install`/`update` queda bloqueado hasta cerrar esa fila
     del manifest; el único remedio es reintentar el `uninstall` una vez
     corregido el estado del manager. Nunca se edita hash, receipt ni DB
     para forzar el cierre.
@@ -465,7 +465,7 @@ La guía en `stack/system-prompt/browser-playwright.md` pide consultar `jorgex-s
 | Operación | Contrato |
 |---|---|
 | `install --playwright` | Adquisición deliberada, stage verificado, promoción y smoke de CLI/Chromium antes del opt-in. |
-| `sync` | Revalida offline el receipt/árbol y reconcilia la guía. No resuelve versiones ni descarga paquetes o navegadores. |
+| `install` / `update` | Con opt-in explícito o preferencia persistida pueden adquirir un release verificado y descargar paquetes o navegadores. Sin ninguno de ellos conservan el receipt y la guía sin nueva descarga. |
 | `doctor` | Comprueba offline observación, receipt/árbol, `--version`, caché y arranque local. Reporta fallo sin reparar ni abrir sitios externos. |
 | `update --check` | Compara estado local; no adquiere una nueva versión. |
 | `update` interactivo | Con consentimiento y segunda confirmación, resuelve y promociona un candidato nuevo verificado; no toca el CLI global. |
@@ -483,11 +483,11 @@ En Pi, el provider update no activa browser tooling por sí mismo: `install`/`up
 
 ## Chrome DevTools MCP
 
-DevTools es avanzado, default-off y seleccionable por runtime (`install --devtools`, `sync --no-devtools`). Stack resuelve un release estable de `chrome-devtools-mcp`, valida tarball y dependencias de su stage, promociona un launcher/árbol privado y proyecta una invocación Node local con **exactamente** `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics`. El guard de Node verifica receipt, launcher y árbol antes de cargar el paquete; `pnpm dlx chrome-devtools-mcp@...` no forma parte de activaciones nuevas. En Pi compatible publicado el handoff `devtools.v1.json` de schema v3 es byte-bound; v1/v2 permanecen solo para receipts anteriores. El bridge Pi es proxy lazy (`directTools: false`) y requiere recargar Pi tras cambiar el handoff. La presencia del handoff no equivale a una conexión MCP activa: la sesión de Pi debe recargarse y el provider debe completar su registro bajo demanda. Cuando el candidato Pi declara transporte nativo (`mcp-native-v1`), el handoff DevTools v3 lo materializa la fase nativa y la definición que aparece en `mcp.json` se resuelve desde `resolveNativeDevtoolsDefinition` del artefacto Pi verificado; los cuatro flags siguen siendo los únicos admitidos y Stack no duplica el cuerpo del handoff. El ciclo de proyección existente posee la estampa `receipt.devtools.sha256` del handoff activo: una versión nueva de browser/árbol/launcher sólo se aplica si los bytes del handoff activo coinciden exactamente con esa estampa previa; un handoff ajeno o modificado bloquea con conflicto y no se reescribe. La retirada explícita (`sync --no-devtools`) borra el handoff y la entrada gestionada cuando coincide con su `cleanupSha256`, o conserva la entrada personalizada como UNOWNED sin reclamar de vuelta por SHA protegido idéntico.
+DevTools es avanzado, default-off y seleccionable por runtime durante `install` (`--devtools` para activarlo, `--no-devtools` para desactivarlo). Stack resuelve un release estable de `chrome-devtools-mcp`, valida tarball y dependencias de su stage, promociona un launcher/árbol privado y proyecta una invocación Node local con **exactamente** `--isolated --redact-network-headers --no-performance-crux --no-usage-statistics`. El guard de Node verifica receipt, launcher y árbol antes de cargar el paquete; `pnpm dlx chrome-devtools-mcp@...` no forma parte de activaciones nuevas. En Pi compatible publicado el handoff `devtools.v1.json` de schema v3 es byte-bound; v1/v2 permanecen solo para receipts anteriores. El bridge Pi es proxy lazy (`directTools: false`) y requiere recargar Pi tras cambiar el handoff. La presencia del handoff no equivale a una conexión MCP activa: la sesión de Pi debe recargarse y el provider debe completar su registro bajo demanda. Cuando el candidato Pi declara transporte nativo (`mcp-native-v1`), el handoff DevTools v3 lo materializa la fase nativa y la definición que aparece en `mcp.json` se resuelve desde `resolveNativeDevtoolsDefinition` del artefacto Pi verificado; los cuatro flags siguen siendo los únicos admitidos y Stack no duplica el cuerpo del handoff. El ciclo de proyección existente posee la estampa `receipt.devtools.sha256` del handoff activo: una versión nueva de browser/árbol/launcher sólo se aplica si los bytes del handoff activo coinciden exactamente con esa estampa previa; un handoff ajeno o modificado bloquea con conflicto y no se reescribe. La retirada explícita (`install --no-devtools`) borra el handoff y la entrada gestionada cuando coincide con su `cleanupSha256`, o conserva la entrada personalizada como UNOWNED sin reclamar de vuelta por SHA protegido idéntico.
 
 `--isolated` usa un perfil temporal; no conecta automáticamente con el Chrome personal. En Pi, cuando existe un Chromium compatible en una ruta conocida, el handoff confiable le pasa esa ruta física; la detección no usa `PATH`, estado del navegador ni enlaces simbólicos. Si no existe, se mantiene el navegador predeterminado de DevTools. La redacción cubre **cabeceras**, no cuerpos de request/response: no inspecciones sesiones autenticadas ni datos sensibles sin necesidad y autorización. Los otros dos flags deshabilitan CrUX y estadísticas de uso. Stack no instala ni versiona ese Chromium del sistema. Configuraciones manuales ajenas se conservan; una entrada gestionada se retira solo si coincide con su ownership y existe backup. Context7, Playwright y DevTools tienen secciones independientes.
 
-Una entrada histórica exacta `pnpm dlx chrome-devtools-mcp@1.6.0` marcada como propiedad de Stack puede migrarse durante `install --devtools` al guard local verificado; la versión histórica solo identifica esos bytes previos, no selecciona la próxima release. Si el servidor existente es ajeno o fue modificado, el opt-in falla con un conflicto visible y conserva la configuración: no se reclama ownership ni se informa éxito mientras siga apuntando a `pnpm dlx`. Para recuperarlo, revisa la sección y su backup antes de retirarla explícitamente y repetir `install --devtools`; `sync` no descarga ni adopta paquetes.
+Una entrada histórica exacta `pnpm dlx chrome-devtools-mcp@1.6.0` marcada como propiedad de Stack puede migrarse durante `install --devtools` al guard local verificado; la versión histórica solo identifica esos bytes previos, no selecciona la próxima release. Si el servidor existente es ajeno o fue modificado, el opt-in falla con un conflicto visible y conserva la configuración: no se reclama ownership ni se informa éxito mientras siga apuntando a `pnpm dlx`. Para recuperarlo, revisa la sección y su backup antes de retirarla explícitamente y repetir `install --devtools`.
 La marca de propiedad también exige que el directorio de configuración coincida con el registrado en el manifest de ese runtime. Cambiar `CODEX_HOME`, `CLAUDE_CONFIG_DIR` u `OPENCODE_CONFIG_DIR` no transfiere ownership a otro perfil: si existe una marca del perfil anterior, la operación se bloquea y conserva ambos perfiles hasta resolver ese estado explícitamente.
 
 ## Seguridad y aislamiento

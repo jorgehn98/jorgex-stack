@@ -118,13 +118,31 @@ para rellenar el hueco.
   [tests.md](../../stack/skills/tdd/tests.md) resume ejemplos y anti-patrones.
 - **Tester** puede decidir, escribir/fijar o verificar en el proyecto consumidor;
   debe informar comando, setup, scope, resultado y límites de la evidencia.
+  Organiza suites por comportamiento o contrato, no por tarea, entrega o fase
+  RED/GREEN; antes de crear otra suite o setup reutiliza los helpers y
+  fixtures existentes dentro del assignment, comparte solo la preparación
+  genuinamente común y conserva separadas las fronteras y el aislamiento de
+  estado. Un seam autoritativo no significa un único caso: mantiene casos
+  significativos positivos, negativos, de plataforma y de SDK real.
 - **Test-analyzer** es *read-only*: evalúa el comportamiento cambiado por el diff
   y la evidencia relevante, incluidos tests existentes fuera del diff y la
   infraestructura de tests relacionada cuando haga falta. No escribe ni ejecuta
   tests, no convierte el análisis en una auditoría de suites o CI no relacionados
-  y solo delega gaps accionables.
+  y solo delega gaps accionables. Antes de apoyar Ready, dentro de su scope
+  también revisa setup, helpers y fixtures repetidos o suites fragmentadas por
+  entrega y los presenta como calidad estructural, no como falta de cobertura,
+  justificando la reducción de mantenimiento con protección y aislamiento
+  equivalentes y sin inventar un gap ni colapsar fronteras distintas.
 - **Orchestrator** coordina bloques coherentes y reutiliza evidencia válida; no
   repite la rúbrica ni ejecuta la suite completa por defecto.
+- **Work-audit** aplica el [testing value check](../../stack/skills/work-audit/SKILL.md)
+  en PRE/POST sobre cada cambio de comportamiento: un test añadido o fortalecido
+  exige la regresión concreta que la cobertura existente no detecta; una
+  actualización mecánica del test, `reuse` o `no new test` exige suficiencia
+  de la protección o verificación existente, sin regresión nueva fabricada; RED
+  estructural permitido solo si la estructura es el contrato (triggers,
+  permisos, secretos, registro de suites), no congelar recetas de comando
+  incidentales.
 
 Distingue tres clases de evidencia:
 
@@ -143,6 +161,23 @@ Los outputs, timings, modelos, fixtures y resultados de una evaluación concreta
 son evidencia de esa ejecución, no defaults ni requisitos de esta política. La
 documentación de `install`/`sync` describe la entrega y el aislamiento; no muta el
 HOME, configuración, Engram o servicios del lector.
+
+### Tooling diagnóstico y comentarios
+
+La disciplina operativa — reutilización del harness existente, tooling temporal
+por defecto, retención ante necesidad recurrente (consumidor, gap del harness,
+owner) y evidencia compacta y reproducible — vive en el canon:
+[lean-code → Diagnostic tooling](../../stack/skills/lean-code/SKILL.md#diagnostic-tooling)
+y [diagnose → Phase 6](../../stack/skills/diagnose/SKILL.md#phase-6--cleanup--post-mortem).
+
+Los comentarios siguen la pauta única
+[Code comments](../../stack/system-prompt/AGENTS.md#code-comments) del system
+prompt: añadir solo cuando aporten información que el código no hace obvia y
+preservar contractuales, legales, directivas y docstrings usados como
+metadatos de runtime. El pase de revisión es opcional: xreview inspecciona los
+hunks y lanza [`comment-fixer`](../../stack/agents/comment-fixer.md) solo
+cuando hace falta un pase de accuracy, usefulness o context crítico; un no-change
+del fixer es un resultado válido.
 
 ### CI solo cuando sea el alcance
 
@@ -321,9 +356,14 @@ visible según el evento:
 - **Quality gate**: una pull request cuyo payload no marca `draft: true`,
   incluida la transición `ready_for_review`, y cualquier ejecución de
   `workflow_dispatch`.
-  Además de la lane común, descarga el tarball exacto fijado por el workflow y
-  ejecuta `tests/pi-cross-repo-contract.test.ts`, la suite completa
-  (`pnpm test`) y el build (`pnpm build`).
+  Además de la lane común, resuelve dinámicamente el `dist-tags.latest`
+  publicado de `jorgex-pi` mediante `dist/pi-ci-artifact.js` y verifica
+  el tarball contra la SRI del registro. Congela versión, URL y SRI
+  junto con el tamaño y hashes calculados localmente; `JORGEX_PI_TARBALL`
+  identifica el archivo y `JORGEX_PI_CANDIDATE` el JSON de esa
+  observación. Ejecuta `tests/pi-cross-repo-contract.test.ts` contra ese
+  candidato, además de la suite completa (`pnpm test`) y el build
+  (`pnpm build`).
 
 Los pasos caros usan la misma expresión de GitHub Actions que decide el nombre
 del job: `workflow_dispatch` siempre es full; una pull request es full cuando
@@ -331,6 +371,20 @@ la acción es `ready_for_review` o `draft != true`. En borrador, que un paso
 guardado figure como `skipped` o que **Draft checks** termine en verde solo
 prueba la comprobación barata; no es un pase del contrato Pi, de la suite ni
 del build completo.
+
+La prueba del artefacto observado comprueba `schemaVersion: 2` del
+documento `parity.v2.json`, `source.repository` esperado de Stack y
+`source.commit` de 40 caracteres hexadecimales minúsculos (forma de
+SHA de repositorio, no attestation de Git ni paridad completa).
+`pi.testedVersions` debe ser una lista no vacía de strings no vacíos,
+evidencia de versión host del productor registrada verbatim, no una
+lista histórica de elegibilidad ni una garantía de rango de versiones.
+Estas comprobaciones CI de metadata declarada no demuestran paridad
+byte-exact contra Git ni attestation npm y no modifican los guards
+productivos. Un verde local tampoco acredita los jobs paralelos
+`browser-windows`, `pi-runtime` (transporte legacy, matriz
+`ubuntu-latest`/`windows-latest`) ni `pi-native-runtime` (transporte
+nativo, misma matriz) del mismo workflow.
 
 El job tiene `timeout-minutes: 10`, `concurrency` por número de pull request o
 por ref manual y `cancel-in-progress: true`. Así se cancelan validaciones

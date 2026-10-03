@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+import { seedFakeEngram, snapshotEnv } from "./helpers/opencode-isolation.js";
 
 /**
  * T08: contrato público del install real de OpenCode v2 (seam del caller, no
@@ -96,50 +97,17 @@ function tempDir(prefix: string): string {
   return root;
 }
 
-function shQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
+  const restore = snapshotEnv(["HOME", "USERPROFILE"]);
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
   try {
     vi.resetModules();
     return await run();
   } finally {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
+    restore();
     vi.resetModules();
   }
-}
-
-/** Fake Engram: registra cualquier invocación y, si es `setup`, el marcador. */
-function seedFakeEngram(home: string): { bin: string; invokedMarker: string; setupMarker: string } {
-  const bin = path.join(home, ".local", "bin", "engram");
-  fs.mkdirSync(path.dirname(bin), { recursive: true });
-  const invokedMarker = `${bin}.invoked`;
-  const setupMarker = `${bin}.setup`;
-  fs.writeFileSync(
-    bin,
-    [
-      "#!/bin/sh",
-      `printf '%s\\n' "$*" >> ${shQuote(invokedMarker)}`,
-      `if [ "$1" = "setup" ]; then printf 'setup\\n' >> ${shQuote(setupMarker)}; fi`,
-      "exit 0",
-      "",
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  try {
-    fs.chmodSync(bin, 0o755);
-  } catch {
-    // Windows: exec bit no aplica; el flujo de argv directo sigue igual.
-  }
-  return { bin, invokedMarker, setupMarker };
 }
 
 function allLogs(): string {

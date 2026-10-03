@@ -9,6 +9,8 @@ import { resolvePnpmBin } from "../src/lib/external-tools.js";
 import { DEFAULT_MODEL_MAP, resolveAgentModel } from "../src/lib/model-map.js";
 import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
+import { snapshotEnv } from "./helpers/opencode-isolation.js";
+import { removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
 
 /** Binario v2 real reutilizable: el gate ejecuta el binario detectado. */
 const OPENCODE_V2_BIN = opencodeV2Binary();
@@ -73,11 +75,25 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalAgents = loadCanonicalAgents(path.join(ROOT, "stack", "agents"));
 const sampleSubagent = canonicalAgents.find((agent) => agent.mode === "subagent")!;
 
+/**
+ * Roots temporales propios de este fichero: se registran al crearlos y el
+ * `afterEach` los elimina (solo esos), también cuando un caso falla. No se
+ * recorren prefijos ajenos ni `/var/tmp`.
+ */
+const ownedTempRoots: string[] = [];
+
+function createTempRoot(prefix: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  ownedTempRoots.push(root);
+  return root;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (const fn of Object.values(promptLog)) fn.mockClear();
   // `vi.restoreAllMocks()` no limpia el doble de frontera (no es spyOn).
   browserControlReady.prepare.mockClear();
+  removeTemporaryRoots(ownedTempRoots);
 });
 
 function preferenceFile(homeDir: string): string {
@@ -155,7 +171,7 @@ async function importInstallModule(homeDir: string): Promise<typeof import("../s
 
 describe("install-mode regressions", () => {
   it("runInstall siembra el roster v2 de OpenCode sin mapa de usuario ni catálogo", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-default-opencode-models-"));
+    const tmp = createTempRoot("jx-install-default-opencode-models-");
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
     const { runInstall } = await importInstallModule(homeDir);
@@ -203,7 +219,7 @@ describe("install-mode regressions", () => {
   });
 
   it("ignora la preferencia guardada cuando --target-dir debería forzar artefactos human", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-target-dir-"));
+    const tmp = createTempRoot("jx-install-target-dir-");
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
 
@@ -224,7 +240,7 @@ describe("install-mode regressions", () => {
   });
 
   it("lee un model-map real existente en --target-dir sin crear archivos nuevos del data-dir", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-target-dir-model-map-"));
+    const tmp = createTempRoot("jx-install-target-dir-model-map-");
     const homeDir = path.join(tmp, "home");
     const targetDir = path.join(tmp, "target");
     const dataDir = path.join(homeDir, ".jorgex-stack");
@@ -259,7 +275,7 @@ describe("install-mode regressions", () => {
   });
 
   it("no escribe la preferencia antes de saber que la instalación ha terminado bien", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-save-timing-"));
+    const tmp = createTempRoot("jx-install-save-timing-");
     const homeDir = path.join(tmp, "home");
 
     writePreference(homeDir, { mode: "human", subagentConcurrency: "serial" });
@@ -281,7 +297,7 @@ describe("install-mode regressions", () => {
   });
 
   it("persiste programmatic aunque el runtime ya esté al día y no haya cambios", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-mode-noop-"));
+    const tmp = createTempRoot("jx-install-mode-noop-");
     const homeDir = path.join(tmp, "home");
     const opencodeConfigDir = path.join(tmp, "opencode");
     writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
@@ -333,7 +349,7 @@ describe("install-mode regressions", () => {
   });
 
   it("no persiste el modo resuelto si un runtime posterior falla", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-partial-save-"));
+    const tmp = createTempRoot("jx-install-partial-save-");
     const homeDir = path.join(tmp, "home");
     const opencodeConfigDir = path.join(tmp, "opencode");
     const codexConfigDir = path.join(tmp, "codex");
@@ -398,7 +414,7 @@ describe("install-mode regressions", () => {
   });
 
   it("rechaza una preferencia interna human/parallel inválida antes de persistirla", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-invalid-mode-"));
+    const tmp = createTempRoot("jx-install-invalid-mode-");
     const homeDir = path.join(tmp, "home");
 
     const { runInstall } = await importInstallModule(homeDir);
@@ -414,7 +430,7 @@ describe("install-mode regressions", () => {
   });
 
   it("avisa cuando no puede construir el plan y desactiva la limpieza de huérfanos", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-install-orphan-warning-"));
+    const tmp = createTempRoot("jx-install-orphan-warning-");
     const homeDir = path.join(tmp, "home");
     const brokenOpenCodeDir = path.join(tmp, "opencode");
     writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
@@ -647,7 +663,7 @@ async function withIsolatedOpenCodeEnv<T>(
   };
   const cleared = ["ENGRAM_BIN", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"] as const;
   const managedKeys = [...Object.keys(isolated), ...cleared];
-  const originals = new Map<string, string | undefined>(managedKeys.map((key) => [key, process.env[key]]));
+  const restore = snapshotEnv(managedKeys);
 
   for (const dir of new Set([...Object.values(isolated), homeDir, configDir, binDir])) {
     fs.mkdirSync(dir, { recursive: true });
@@ -667,10 +683,7 @@ async function withIsolatedOpenCodeEnv<T>(
     vi.resetModules();
     return await run();
   } finally {
-    for (const [key, value] of originals) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    restore();
     vi.resetModules();
   }
 }
@@ -1264,7 +1277,6 @@ describe("OpenCode manifest ownership regressions", () => {
 describe.skipIf(process.platform === "win32")("OpenCode CLI preflight before first write", () => {
   it.each([
     ["install", ["install", "--agents", "opencode", "--yes"]],
-    ["sync", ["sync", "--agents", "opencode", "--yes", "--mode", "human"]],
   ] as const)(
     "%s con binario v1 rechaza sin escribir writing-style, modelo, modo ni setup",
     async (command, args) => {
@@ -1331,17 +1343,22 @@ describe.skipIf(process.platform === "win32")("OpenCode CLI preflight before fir
       fs.mkdirSync(configDir, { recursive: true });
       writeOpenCodeBinary(binDir, { output: "1.2.3", markerFile: probeMarker });
       writeModelMap(homeDir, { opencode: OPEN_CODE_MODELS });
+      // `install` resuelve Engram antes de runInstall; un binario existente evita
+      // ese camino para que el rechazo observable sea el de OpenCode.
+      const engramBin = path.join(binDir, "engram");
+      fs.writeFileSync(engramBin, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      fs.chmodSync(engramBin, 0o755);
 
       // Sin --target-dir, el canal de evidencia de target no aplica: el binario
       // v1 detectado debe probarse y rechazar antes de escribir.
       const code = await runCli(
-        ["sync", "--agents", "opencode", "--yes", "--mode", "human"],
+        ["install", "--agents", "opencode", "--yes", "--mode", "human"],
         homeDir,
         {
           OPENCODE_CONFIG_DIR: configDir,
           PATH: binDir,
           JORGEX_OPENCODE_TARGET_MAJOR: "2",
-          ENGRAM_BIN: undefined,
+          ENGRAM_BIN: engramBin,
           CODEX_HOME: undefined,
           CLAUDE_CONFIG_DIR: undefined,
           PI_CODING_AGENT_DIR: undefined,

@@ -635,7 +635,7 @@ export const codexAdapter: Adapter = {
       if (server.transport === "stdio") {
         if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
           ctx.warnings.push(
-            "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta sync.",
+            "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta install.",
           );
           continue;
         }
