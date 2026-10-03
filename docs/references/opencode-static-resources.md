@@ -99,6 +99,103 @@ proceder. La tabla siguiente es la única fuente de verdad:
   operación falla cerrado; no se reconstruye un binario desde otra
   fuente.
 
+## Recursos current-only del cliente v2 (panel y audio)
+
+El cliente v2 añade cuatro recursos **current-only** (los dos WAV y los
+dos archivos del panel TUI) que se proyectan mediante el hook adicional
+`planAdditionalResources` del adapter —**distinto** de `planPlugins`,
+`planMainConfig` y `planHooks` del server config—, por lo que viven
+fuera del árbol de plugins del servidor y **no** se auto-cargan como
+plugin ni relajan el filtro de árbol de los componentes.
+
+Su autenticación física reusa el helper existente
+(`authenticateStaticResource` en `src/lib/opencode-static-resources.ts`)
+con fila histórica `null` para estos assets; al carecer de fila legacy
+nunca devuelve `legacy` y dimensiona la lectura acotada contra los
+bytes actuales que la proyección va a escribir. **No** se añade fila v1
+ficticia al índice legacy (`src/lib/opencode-static-resources.json`) y
+`package.json` no se proyecta como recurso estático. El contrato del
+generador estático (`scripts/regenerate-opencode-static-resources.py`)
+queda intacto: sigue emitiendo solo los cuatro recursos históricos y
+rechaza duplicados.
+
+| Origen (`stack/...`) | Destino (`<configDir>/...`) |
+| --- | --- |
+| `stack/assets/opencode/sounds/done.wav` | `sounds/done.wav` |
+| `stack/assets/opencode/sounds/silent.wav` | `sounds/silent.wav` |
+| `stack/assets/opencode/tui/subagents/tui.tsx` | `tui/subagents/tui.tsx` |
+| `stack/assets/opencode/tui/subagents/state.mjs` | `tui/subagents/state.mjs` |
+
+**Auth (qué autentica y cuándo bloquea).** El helper abre el **target**
+en disco con `O_NOFOLLOW` + `fstat`, confina su `realpath` dentro del
+configDir y compara sus bytes contra los bytes actuales del plan
+(`currentBytes`); **no** autentica la identidad física del propio canon
+fuente, solo acredita que el archivo en disco coincide con lo que la
+proyección va a escribir. Distinga tres casos:
+
+- **Canon fuente ausente/ilegible** (`sourcePath` no se puede leer o
+  `currentBytes === null`): verdict `unreadable`, se falla cerrado
+  **antes** de cualquier backup, escritura o mutación — **nunca** se
+  omite en silencio ni se asume ausencia del target.
+- **Target ausente en install fresh** (raíz y ancestro resolubles
+  dentro del configDir físico): verdict `absent`, se crea y se
+  reclama. Es la única vía de proyección legítima, no un fallo.
+- **Target con bytes distintos del canon actual** (incluye copia
+  manual ajena o modificada): verdict `unknown`, se preserva el
+  archivo byte-a-byte, **sin backup y sin reemplazo**. Una copia
+  manual idéntica al canon actual devuelve `current` y se considera
+  no-op sin claim; una entrada ajena bloquea antes de cualquier
+  mutación. Para `legacy` (fila histórica) solo procede con backup si
+  el recurso es owned; unowned se conserva sin claim.
+
+**Límite current-only.** Si el canon cambia en una versión futura
+**sin** una versión previa autenticable, los bytes anteriores
+distintos del nuevo canon bloquearán el preflight en lugar de
+sobrescribirse a ciegas. No hay store paralelo ni ledger nuevo; el
+mismo `authenticateStaticResource` decide con la fila nullable y la
+lectura acotada. El índice histórico de cuatro recursos y sus reglas
+de backup/uninstall quedan vigentes — este límite no introduce
+remedios nuevos ni historial artificial al índice generado.
+
+## Audio (defaults ausentes, no reemplazo)
+
+- **`done.wav`** es el **único** sonido audible del cliente. El evento
+  nativo `done` también se dispara en `interrupted` y **no** marca
+  final de roadmap; los cinco eventos restantes (`subagent_done`,
+  `question`, `permission`, `error`, `default`) apuntan todos a un
+  único `silent.wav` propio PCM16 mono con muestras cero no vacías.
+  Este silencioso evita el fallback builtin cuando el override nativo
+  falta o es ilegible; **no** evita el builtin si el propio
+  `silent.wav` falla al cargar o reproducirse (en ese caso el host
+  puede recurrir al builtin).
+- Plugins con audio directo (p. ej. Herdr u otros) **no** quedan
+  cubiertos por estos overrides y siguen sonando lo suyo. Stack no los
+  modifica ni sus notificaciones visuales, ni cambia `attention.volume`
+  (canónico `0.1`) ni `attention.notifications`/`attention.sound`.
+- El contrato cubre defaults ausentes y **no** borra un override
+  manual del usuario ni un `silent.wav` adicional que este haya
+  declarado; no se afirma reproducción audible verificada, ni que el
+  motor de audio del host esté apagado, ni que se ejecute una audición
+  universal como prerrequisito.
+
+## Panel TUI
+
+`tui.tsx` y `state.mjs` son el panel propio (id `jorgex.subagents`).
+Se registran como entrada local `./tui/subagents` en `cli.json.plugins`
+mediante `editJsoncArray` (inserción indexada, remoción indexada o
+prune del contenedor vacío), preservando comentarios JSONC,
+objetos-opción y disable directives ajenos en `cli.json.plugins`. Una
+entrada manual preexistente igual (string o `{ "package":
+"./tui/subagents", …opciones }`) no se duplica ni se reclama; una
+disable directive (`-./tui/subagents`, `-jorgex.subagents` o `-*`) que
+alcance el panel se preserva y no se neutraliza añadiendo un override
+posterior. El autoload de plugins del server config queda intacto.
+La guía pública de UX (plegado, `/subagents`, contadores, filas
+activas, navegación, cleanup) vive en el
+[README](../../README.md#opencode-v2-un-solo-runtime-soportado), que
+es la única fuente de UI; aquí solo se documenta el registro y su
+auth.
+
 ## Mantenimiento del índice (herramienta de mantenimiento, no runtime)
 
 La regeneración del índice frozen vive en

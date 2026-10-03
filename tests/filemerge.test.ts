@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   editJsonc,
+  editJsoncArray,
   hasTomlRootKey,
   parseJsoncObject,
   readTomlSection,
@@ -396,5 +397,64 @@ describe("editJsonc: postcondición de equivalencia", () => {
     expect(() => editJsonc(existing, (root) => {
       root["model"] = "c";
     })).toThrow(/duplicad|ambig|acredit|corrige|bloque/i);
+  });
+});
+
+/**
+ * Regresión de `editJsoncArray` (removal): al retirar el entry owned movido a
+ * primera/posición intermedia, el recorte no debe tragarse la trivia ajena
+ * (comentarios de línea/bloque) adyacente. El contrato de Spec 18/19 exige
+ * preservar los comentarios del array, no solo cuando el owned está al final.
+ * No se fija receta de indentación: solo el array reparsado y la presencia byte
+ * de cada comentario ajeno.
+ */
+describe("editJsoncArray: la remoción preserva los comentarios ajenos", () => {
+  const OWNED = "./tui/subagents";
+
+  it.each([
+    {
+      label: "primera posición",
+      input: [
+        "{",
+        "  // leading line comment",
+        '  "plugins": [',
+        `    "${OWNED}",`,
+        "    /* block comment after owned */",
+        '    "./herdr-opencode"',
+        "  ]",
+        "}",
+        "",
+      ].join("\n"),
+      index: 0,
+      expected: ["./herdr-opencode"],
+      comments: ["// leading line comment", "/* block comment after owned */"],
+    },
+    {
+      label: "posición intermedia",
+      input: [
+        "{",
+        '  "plugins": [',
+        '    "./herdr-opencode",',
+        "    // comment between previous and owned",
+        `    "${OWNED}",`,
+        "    // comment after owned",
+        '    "-acme.reviewer"',
+        "  ]",
+        "}",
+        "",
+      ].join("\n"),
+      index: 1,
+      expected: ["./herdr-opencode", "-acme.reviewer"],
+      comments: ["// comment between previous and owned", "// comment after owned"],
+    },
+  ])("retira el entry owned en $label sin perder comentarios ajenos", ({ input, index, expected, comments }) => {
+    const out = editJsoncArray(input, { kind: "remove", path: ["plugins"], index });
+
+    const reparsed = parseJsoncObject(out);
+    expect(reparsed.error, `JSONC inválido tras la remoción: ${reparsed.error}`).toBeNull();
+    expect((reparsed.value as Record<string, unknown>)["plugins"]).toEqual(expected);
+    for (const comment of comments) {
+      expect(out, `falta el comentario ajeno ${comment}`).toContain(comment);
+    }
   });
 });

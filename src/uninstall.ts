@@ -552,24 +552,32 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     // Recursos estáticos OpenCode: unowned → se omiten sin leer/borrar/reclamar;
     // owned → solo se retiran con bytes actuales o legacy v1 acreditados. Un
     // owned modificado/desconocido/enlace bloquea ANTES de backup o borrado.
+    // Los assets adicionales current-only (WAV y panel TUI propios, fila `null`) siguen la
+    // misma regla: unowned se preserva, owned exige bytes actuales acreditados.
     const staticResources = id === "opencode" ? staticResourceTargets(configDir) : new Map<string, StaticResourceRow>();
+    const additionalStaticResources = id === "opencode" ? (adapter.planAdditionalResources?.(ctx) ?? []) : [];
     const skippedStaticTargets = new Set<string>();
     let staticBlock: string | null = null;
-    if (staticResources.size > 0) {
+    if (staticResources.size > 0 || additionalStaticResources.length > 0) {
       const projected = projectedBytesByTarget(buildContentPlan(adapter, ctx));
       const ownedSet = new Set(prevOwned.map((t) => path.resolve(t)));
-      for (const [target, row] of staticResources) {
-        if (!ownedSet.has(target)) {
-          skippedStaticTargets.add(target);
-          continue;
+      // Misma política para las dos particiones (filas del índice y assets
+      // adicionales con fila `null`): unowned se omite sin leer; owned exige
+      // bytes actuales acreditados. Se mantienen DOS pasadas para que la razón
+      // adicional (si la hay) sustituya a la estática, como hoy.
+      const authenticateOwned = (entries: Iterable<readonly [string, StaticResourceRow | null]>): string | null => {
+        for (const [target, row] of entries) {
+          if (!ownedSet.has(target)) {
+            skippedStaticTargets.add(target);
+            continue;
+          }
+          const reason = staticResourceBlockReason(authenticateStaticResource(target, row, projected.get(target) ?? null, true, configDir));
+          if (reason !== null) return reason;
         }
-        const auth = authenticateStaticResource(target, row, projected.get(target) ?? null, true, configDir);
-        const reason = staticResourceBlockReason(auth);
-        if (reason !== null) {
-          staticBlock = reason;
-          break;
-        }
-      }
+        return null;
+      };
+      staticBlock = authenticateOwned(staticResources) ?? staticBlock;
+      staticBlock = authenticateOwned(additionalStaticResources.map((action) => [path.resolve(action.target), null] as const)) ?? staticBlock;
     }
     // Skill Browser Control: mismo preflight estático ANTES de cualquier backup
     // o borrado, sobre la lectura offline cacheada. Solo se autentica cuando está

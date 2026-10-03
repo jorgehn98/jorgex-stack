@@ -53,7 +53,8 @@ export type StaticResourceVerdict =
 
 export interface StaticResourceAuth {
   readonly target: string;
-  readonly row: StaticResourceRow;
+  /** Fila legacy congelada; `null` en recursos current-only (assets propios). */
+  readonly row: StaticResourceRow | null;
   readonly owned: boolean;
   readonly verdict: StaticResourceVerdict;
 }
@@ -85,7 +86,7 @@ function matches(bytes: Buffer, size: number, sha256: string): boolean {
 
 interface StaticResourceBase {
   readonly target: string;
-  readonly row: StaticResourceRow;
+  readonly row: StaticResourceRow | null;
   readonly owned: boolean;
 }
 
@@ -159,19 +160,26 @@ function resolveAbsentVerdict(base: StaticResourceBase, target: string, root: st
 
 /**
  * Clasifica un recurso estático contra sus bytes actuales proyectados y el
- * canon legacy congelado. No sigue enlaces: abre con O_NOFOLLOW cuando el SO lo
- * soporta, valida el descriptor (`fstat`) y solo lee hasta el tamaño candidato
- * acreditado +1, verificando estabilidad después. No usa `readFileSync(path)`
- * sobre un `lstat` que puede quedar obsoleto.
+ * canon legacy congelado (si existe). Un recurso current-only (`row === null`,
+ * p.ej. un asset propio sin versión previa) nunca puede clasificarse como
+ * legacy: exige la prueba de los bytes actuales, y sin `currentBytes` (fuente
+ * canónica ausente/ilegible) bloquea incluso si el target no existe — nunca
+ * asume ausencia. No sigue enlaces: abre con O_NOFOLLOW cuando el SO lo soporta,
+ * valida el descriptor (`fstat`) y solo lee hasta el tamaño candidato acreditado
+ * +1, verificando estabilidad después. No usa `readFileSync(path)` sobre un
+ * `lstat` que puede quedar obsoleto.
  */
 export function authenticateStaticResource(
   target: string,
-  row: StaticResourceRow,
+  row: StaticResourceRow | null,
   currentBytes: Buffer | null,
   owned: boolean,
   root: string,
 ): StaticResourceAuth {
   const base: StaticResourceBase = { target, row, owned };
+  // Sin fila legacy y sin bytes actuales no hay canon que acreditar: se falla
+  // cerrado aunque el target no exista (no se puede asumir ausencia legítima).
+  if (row === null && currentBytes === null) return { ...base, verdict: "unreadable" };
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(target);
@@ -224,7 +232,7 @@ export function authenticateStaticResource(
       return { ...base, verdict: "unknown" };
     }
 
-    const candidateMax = Math.max(row.size, currentBytes === null ? -1 : currentBytes.length);
+    const candidateMax = Math.max(row === null ? -1 : row.size, currentBytes === null ? -1 : currentBytes.length);
     if (opened.size > candidateMax) return { ...base, verdict: "unknown" };
     const limit = candidateMax + 1;
     const buffer = Buffer.alloc(limit);
@@ -242,7 +250,7 @@ export function authenticateStaticResource(
     }
     const bytes = buffer.subarray(0, offset);
     if (currentBytes !== null && bytes.equals(currentBytes)) return { ...base, verdict: "current" };
-    if (matches(bytes, row.size, row.sha256)) return { ...base, verdict: "legacy" };
+    if (row !== null && matches(bytes, row.size, row.sha256)) return { ...base, verdict: "legacy" };
     return { ...base, verdict: "unknown" };
   } finally {
     fs.closeSync(fd);

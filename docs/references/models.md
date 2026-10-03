@@ -24,6 +24,16 @@ La cifra no equivale al contexto de la API. Este flujo usa la autenticación de 
 
 ### OpenCode v2
 
+Esta sección cubre el **server config** (`opencode.json` o
+`opencode.jsonc`): modelos, providers, permissions, MCP y el resto del
+estado nativo del host. El archivo compacto del **cliente v2**
+(`cli.json` —presentación, audio, panel TUI) es un archivo distinto
+en la misma raíz efectiva (`OPENCODE_CONFIG_DIR` →
+`$XDG_CONFIG_HOME/opencode` → default de HOME) y sus defaults se
+describen en el [README](../../README.md#opencode-v2-un-solo-runtime-soportado),
+no aquí. Una sección más abajo (§ Subagentes) sigue el roster de
+subagentes v2, también del server config.
+
 OpenCode v2 siembra `opencode.json`/`opencode.jsonc` (raíz efectiva:
 `OPENCODE_CONFIG_DIR` si está definido, si no `$XDG_CONFIG_HOME/opencode`
 o el default de HOME) con un agente principal nativo en

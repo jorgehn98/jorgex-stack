@@ -5,7 +5,7 @@
  */
 
 import { isDeepStrictEqual } from "node:util";
-import { applyEdits, modify, parse, printParseErrorCode, type ParseError } from "jsonc-parser";
+import { applyEdits, createScanner, findNodeAtLocation, modify, parse, parseTree, printParseErrorCode, SyntaxKind, type ParseError } from "jsonc-parser";
 
 type JsoncPath = (string | number)[];
 
@@ -102,6 +102,106 @@ function pruneUndefined(value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+export type JsoncArrayOperation =
+  | { readonly kind: "insert"; readonly path: JsoncPath; readonly index: number; readonly value: unknown }
+  | { readonly kind: "remove"; readonly path: JsoncPath; readonly index: number }
+  | { readonly kind: "prune"; readonly path: JsoncPath };
+
+function valueAtPath(root: unknown, path: JsoncPath): unknown {
+  let node = root;
+  for (const segment of path) {
+    if (Array.isArray(node) && typeof segment === "number") node = node[segment];
+    else if (isPlainObject(node) && typeof segment === "string") node = node[segment];
+    else return undefined;
+  }
+  return node;
+}
+
+function deletePath(root: Record<string, unknown>, path: JsoncPath): void {
+  const parent = valueAtPath(root, path.slice(0, -1));
+  const key = path[path.length - 1]!;
+  if (Array.isArray(parent) && typeof key === "number") parent.splice(key, 1);
+  else if (isPlainObject(parent) && typeof key === "string") delete parent[key];
+}
+
+/** El nodo del array contiene comentarios propios: no se poda a ciegas. */
+function arrayNodeHasComments(text: string, path: JsoncPath): boolean {
+  const root = parseTree(text);
+  const node = root === undefined ? undefined : findNodeAtLocation(root, path);
+  if (node === undefined) return false;
+  const raw = text.slice(node.offset, node.offset + node.length);
+  return raw.includes("//") || raw.includes("/*");
+}
+
+/**
+ * Edita UN array JSONC por posición preservando comentarios y entradas ajenas:
+ * inserta en `index`, retira el elemento en `index`, o poda la clave si quedó
+ * como array vacío sin comentarios, sin reescribir el array completo. La
+ * remoción recorta solo el span del valor y un token coma elegido por scanner,
+ * preservando toda la trivia ajena (comentarios de línea/bloque). Postcondición:
+ * el texto debe reparsear exactamente al objeto esperado, sin claves duplicadas
+ * ni ediciones parciales.
+ */
+export function editJsoncArray(existing: string, operation: JsoncArrayOperation): string {
+  const parsed = parseJsoncObject(existing);
+  if (parsed.value === null) throw new Error(`JSONC inválido: ${parsed.error ?? "no se pudo parsear"}`);
+  const expected = structuredClone(parsed.value) as Record<string, unknown>;
+  let text = existing;
+  try {
+    if (operation.kind === "prune") {
+      const current = valueAtPath(expected, operation.path);
+      if (Array.isArray(current) && current.length === 0 && !arrayNodeHasComments(existing, operation.path)) {
+        text = applyEdits(existing, modify(existing, operation.path, undefined, {
+          formattingOptions: { insertSpaces: true, tabSize: 2 },
+        }));
+        deletePath(expected, operation.path);
+      }
+    } else if (operation.kind === "insert") {
+      const array = valueAtPath(expected, operation.path);
+      if (!Array.isArray(array)) throw new Error("la ruta no resuelve a un array");
+      text = applyEdits(existing, modify(existing, [...operation.path, operation.index], operation.value, {
+        formattingOptions: { insertSpaces: true, tabSize: 2 },
+        isArrayInsertion: true,
+      }));
+      array.splice(operation.index, 0, operation.value);
+    } else {
+      const rootNode = parseTree(existing);
+      const arrayNode = rootNode === undefined ? undefined : findNodeAtLocation(rootNode, operation.path);
+      const children = arrayNode?.type === "array" ? arrayNode.children : undefined;
+      if (children === undefined || operation.index < 0 || operation.index >= children.length) {
+        throw new Error(`índice ${operation.index} fuera del array`);
+      }
+      const target = children[operation.index]!;
+      const previous = operation.index === 0 ? undefined : children[operation.index - 1]!;
+      // Retira SOLO el span del valor y UN token coma, elegido con el scanner
+      // nativo (que salta trivia): la coma siguiente si existe entre el fin del
+      // valor y el siguiente hijo/cierre; si no, la coma precedente. Así se
+      // preserva TODA la trivia ajena (comentarios de línea/bloque), no solo
+      // cuando el entry owned está al final.
+      const scanner = createScanner(existing, true);
+      scanner.setPosition(target.offset + target.length);
+      let commaOffset = scanner.scan() === SyntaxKind.CommaToken ? scanner.getTokenOffset() : -1;
+      if (commaOffset < 0 && previous !== undefined) {
+        scanner.setPosition(previous.offset + previous.length);
+        if (scanner.scan() === SyntaxKind.CommaToken) commaOffset = scanner.getTokenOffset();
+      }
+      const edits = [{ offset: target.offset, length: target.length, content: "" }];
+      if (commaOffset >= 0) edits.push({ offset: commaOffset, length: 1, content: "" });
+      text = applyEdits(existing, edits);
+      const array = valueAtPath(expected, operation.path);
+      if (!Array.isArray(array)) throw new Error("la ruta no resuelve a un array");
+      array.splice(operation.index, 1);
+    }
+  } catch (error) {
+    throw new Error(`JSONC: no se pudo aplicar una edición de array en una ruta ambigua; corrige el archivo antes de reintentar (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  const verified = parseJsoncObject(text);
+  if (verified.value === null || !isDeepStrictEqual(verified.value, expected)) {
+    throw new Error("JSONC: la edición de array no se pudo acreditar de forma exacta (clave duplicada o ruta ambigua); corrige el archivo antes de reintentar.");
+  }
+  return text;
 }
 
 function markers(name: string): { open: string; close: string } {
