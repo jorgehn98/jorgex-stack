@@ -8,6 +8,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   assertVerificationCancellationCapability,
   cleanupOwnedResourcesOrThrow,
+  registerOwnedProcessGroup,
   registerOwnedResourceCleanup,
   releaseOwnedProcessGroup,
   runBoundedProcess,
@@ -499,6 +500,41 @@ describe("single owner cleanup boundary", () => {
       expect(() => cleanupOwnedResourcesOrThrow()).toThrow(/failing-roots.*mock rm failure/s);
       expect(fs.existsSync(ownedRoot)).toBe(true);
     } finally {
+      unregister();
+      if (fs.existsSync(ownedRoot)) removeTemporaryRoots([ownedRoot]);
+    }
+  });
+
+  it("un grupo ya spawneado registrado se detiene en el mismo owner antes de los callbacks de raíz", () => {
+    const root = makeTempRoot("jx-owner-register-");
+    const ownedRoot = path.join(root, "owned-root");
+    fs.mkdirSync(ownedRoot);
+    const stopped: number[] = [];
+    const release = registerOwnedProcessGroup(999_999, (pid) => {
+      stopped.push(pid);
+      return { ok: false, cause: "mock stop failure" };
+    });
+    const unregister = registerOwnedResourceCleanup("registered-group-roots", () =>
+      removeTemporaryRoots([ownedRoot]),
+    );
+
+    try {
+      // El stop no verificado del grupo registrado retiene el root: el callback no corre.
+      expect(() => cleanupOwnedResourcesOrThrow()).toThrow(/999999.*mock stop failure/s);
+      expect(stopped).toEqual([999_999]);
+      expect(fs.existsSync(ownedRoot)).toBe(true);
+
+      // Con el stop verificado, el owner detiene el grupo y luego limpia el root.
+      release();
+      const releaseOk = registerOwnedProcessGroup(999_999, (pid) => {
+        stopped.push(pid);
+        return { ok: true };
+      });
+      cleanupOwnedResourcesOrThrow();
+      expect(fs.existsSync(ownedRoot)).toBe(false);
+      releaseOk();
+    } finally {
+      release();
       unregister();
       if (fs.existsSync(ownedRoot)) removeTemporaryRoots([ownedRoot]);
     }

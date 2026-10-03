@@ -226,6 +226,21 @@ export function releaseOwnedProcessGroup(pid: number): void {
 }
 
 /**
+ * Registers an already-spawned process group under the same owner used by
+ * `runBoundedProcess`. Minimal seam for long-lived children spawned directly
+ * (server, PTY driver, sandbox wrapper): on any cancellation path the owner
+ * stops registered groups and verifies them before running root callbacks.
+ * Returns a release function to call after the caller confirms the stop.
+ */
+export function registerOwnedProcessGroup(pid: number, stop: StopOwnProcessGroup = stopOwnProcessTree): () => void {
+  installOwnedResourceLifecycle();
+  ownedProcessGroups.set(pid, { pid, stop });
+  return () => {
+    ownedProcessGroups.delete(pid);
+  };
+}
+
+/**
  * Single cleanup boundary for callers (test hooks included): runs the same
  * owner cleanup — groups first, then registered callbacks — and throws with
  * every pending cause when any resource remains unverified. It never duplicates

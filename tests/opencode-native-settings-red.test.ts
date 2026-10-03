@@ -14,7 +14,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { FileAction, InstallContext } from "../src/adapters/types.js";
 import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
-import { snapshotEnv } from "./helpers/opencode-isolation.js";
+import { backupContains, snapshotEnv } from "./helpers/opencode-isolation.js";
 
 /** Binario v2 fixture: el gate ejecuta el binario detectado, nunca un mock. */
 const OPENCODE_V2_BIN = opencodeV2Binary();
@@ -361,8 +361,103 @@ describe("defaults de servidor v2: ownership real", () => {
   });
 });
 
+/**
+ * Oráculo literal e independiente de los defaults cliente v2 (Spec T19:12). Se
+ * declara aquí, sin importar constantes del adapter, para que el RED falle por
+ * defaults ausentes en el resultado real y no por una copia de la implementación.
+ * `configDir` es la raíz efectiva (ctx.configDir): los paths de audio se derivan
+ * de ella y no de un HOME fijo.
+ */
+function t19CliDefaults(configDir: string): Record<string, unknown> {
+  const sound = (name: string): string => path.join(configDir, "sounds", name);
+  return {
+    theme: { name: "system", mode: "system" },
+    session: { verbosity: "low", permissions: "autoaccept", tps: true },
+    debug: { turn_tokens: true },
+    attention: {
+      notifications: true,
+      sound: true,
+      volume: 0.1,
+      sounds: {
+        done: sound("done.wav"),
+        subagent_done: sound("silent.wav"),
+        question: sound("silent.wav"),
+        permission: sound("silent.wav"),
+        error: sound("silent.wav"),
+        default: sound("silent.wav"),
+      },
+    },
+    plugins: ["./tui/subagents"],
+  };
+}
+
+/** IDs file-qualificados de las hojas T19 y los contenedores creados en fresco. */
+function t19CliOwnedFields(): string[] {
+  const field = (...segments: string[]): string => JSON.stringify(["cli.json", ...segments]);
+  return [
+    field("theme"),
+    field("theme", "name"),
+    field("theme", "mode"),
+    field("session"),
+    field("session", "verbosity"),
+    field("session", "permissions"),
+    field("session", "tps"),
+    field("debug"),
+    field("debug", "turn_tokens"),
+    field("attention"),
+    field("attention", "notifications"),
+    field("attention", "sound"),
+    field("attention", "volume"),
+    field("attention", "sounds"),
+    field("attention", "sounds", "done"),
+    field("attention", "sounds", "subagent_done"),
+    field("attention", "sounds", "question"),
+    field("attention", "sounds", "permission"),
+    field("attention", "sounds", "error"),
+    field("attention", "sounds", "default"),
+    field("plugins"),
+    field("plugins", "./tui/subagents"),
+  ];
+}
+
+/**
+ * Parsea un WAV RIFF PCM de forma independiente (sin utilidades de
+ * implementación): duración, bits por muestra y muestras PCM16 del chunk `data`.
+ */
+function wavPcm16(bytes: Buffer): { duration: number; bitsPerSample: number; samples: Int16Array } {
+  if (bytes.length < 12 || bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WAVE") {
+    throw new Error("no es un contenedor RIFF/WAVE");
+  }
+  let offset = 12;
+  let byteRate = 0;
+  let bitsPerSample = 0;
+  let dataStart = 0;
+  let dataSize = 0;
+  let foundData = false;
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.subarray(offset, offset + 4).toString("ascii");
+    const size = bytes.readUInt32LE(offset + 4);
+    const body = offset + 8;
+    if (id === "fmt ") {
+      byteRate = bytes.readUInt32LE(body + 8);
+      bitsPerSample = bytes.readUInt16LE(body + 14);
+    } else if (id === "data") {
+      dataStart = body;
+      dataSize = size;
+      foundData = true;
+      break;
+    }
+    offset = body + size + (size % 2);
+  }
+  if (byteRate <= 0 || !foundData) throw new Error("WAV sin fmt/data");
+  if (bitsPerSample !== 16) throw new Error(`WAV no PCM16 (${bitsPerSample} bits)`);
+  const samples = new Int16Array(Math.floor(dataSize / 2));
+  for (let i = 0; i < samples.length; i++) samples[i] = bytes.readInt16LE(dataStart + i * 2);
+  return { duration: dataSize / byteRate, bitsPerSample, samples };
+}
+
 describe("cli.json compacto (B3)", () => {
-  it("proyecta cli.json con session.verbosity low solo si falta", async () => {
+  it("proyecta cli.json fresco con los defaults cliente T19 y reclama hojas/contenedores creados", async () => {
     await withIsolatedHome(async ({ configDir }) => {
       const cliFile = path.join(configDir, "cli.json");
       const { actions } = await planServerConfig(configDir);
@@ -370,10 +465,15 @@ describe("cli.json compacto (B3)", () => {
       const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
       expect(cliAction, "B3: falta la proyección de cli.json").toBeDefined();
       if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
-      expect(JSON.parse(cliAction.content)).toEqual({ session: { verbosity: "low" } });
-      expect(cliAction.primaryModelOwnership).toEqual([
-        { field: JSON.stringify(["cli.json", "session", "verbosity"]), owned: true },
-      ]);
+
+      // Defaults T19 exactos, con paths de audio derivados de ctx.configDir.
+      expect(JSON.parse(cliAction.content)).toEqual(t19CliDefaults(configDir));
+
+      // Claims por hoja y contenedor creados; ningún claim inesperado.
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      expect(owned).toEqual(new Set(t19CliOwnedFields()));
 
       // Ningún ajuste de verbosity pertenece al server config ni al modelo.
       const serverAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === path.join(configDir, "opencode.json"));
@@ -382,20 +482,57 @@ describe("cli.json compacto (B3)", () => {
     });
   });
 
-  it.each([
+  interface CliPreservedShape {
+    session: { verbosity: string; tps?: boolean };
+    theme?: { name: string };
+    attention?: { notifications?: boolean; volume?: number | null };
+  }
+  const cliPreservationCases: Array<[string, CliPreservedShape]> = [
     ["igual low", { session: { verbosity: "low" } }],
     ["custom high", { session: { verbosity: "high" }, theme: { name: "user-theme" } }],
-  ])("cli.json existente %s: se preserva sin reclamar ownership", async (_label, existing) => {
+    [
+      "falsy/null leaves",
+      { session: { verbosity: "high", tps: false }, attention: { notifications: false, volume: null }, theme: { name: "user-theme" } },
+    ],
+  ];
+  it.each(cliPreservationCases)("cli.json existente %s: valores previos se preservan y no se reclaman", async (_label, existing) => {
     await withIsolatedHome(async ({ configDir }) => {
       const cliFile = path.join(configDir, "cli.json");
       fs.writeFileSync(cliFile, JSON.stringify(existing, null, 2) + "\n");
 
       const { actions } = await planServerConfig(configDir);
       const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
-      // Sin acción (nada que sembrar) o content idéntico: nunca recorta al usuario.
-      if (cliAction?.kind === "write") {
-        expect(JSON.parse(cliAction.content)).toEqual(existing);
-        expect((cliAction.primaryModelOwnership ?? []).filter((change) => change.owned)).toEqual([]);
+      // Faltan defaults T19: se siembran, pero los valores previos no se tocan.
+      expect(cliAction, "debe sembrar los defaults ausentes").toBeDefined();
+      if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
+
+      const content = JSON.parse(cliAction.content) as {
+        session?: { verbosity?: string; tps?: boolean };
+        theme?: { name?: string };
+        attention?: { notifications?: boolean; volume?: number | null };
+      };
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      const notClaimed = (...segments: string[]): void => {
+        expect(owned.has(JSON.stringify(["cli.json", ...segments])), `un valor previo no se reclama (${segments.join(".")})`).toBe(false);
+      };
+
+      expect(content.session?.verbosity, "el valor previo se preserva").toBe(existing.session.verbosity);
+      notClaimed("session", "verbosity");
+      if (existing.session.tps !== undefined) {
+        expect(content.session?.tps, "un booleano previo se preserva sin seed").toBe(existing.session.tps);
+        notClaimed("session", "tps");
+      }
+      if (existing.theme !== undefined) {
+        expect(content.theme?.name, "el valor previo se preserva").toBe(existing.theme.name);
+        notClaimed("theme", "name");
+      }
+      if (existing.attention !== undefined) {
+        expect(content.attention?.notifications, "un booleano previo se preserva").toBe(existing.attention.notifications);
+        expect(content.attention?.volume, "un null manual se preserva").toBe(existing.attention.volume);
+        notClaimed("attention", "notifications");
+        notClaimed("attention", "volume");
       }
     });
   });
@@ -430,6 +567,7 @@ describe("cli.json compacto (B3)", () => {
       const installed = JSON.parse(fs.readFileSync(cliFile, "utf8")) as Record<string, any>;
       expect(installed.session.verbosity).toBe("low");
 
+      // Dato manual sobre la hoja canónica: debe sobrevivir al uninstall.
       installed.theme = { name: "user-theme" };
       fs.writeFileSync(cliFile, JSON.stringify(installed, null, 2) + "\n");
 
@@ -438,6 +576,13 @@ describe("cli.json compacto (B3)", () => {
       const afterUninstall = JSON.parse(fs.readFileSync(cliFile, "utf8")) as Record<string, any>;
       expect(afterUninstall.session?.verbosity).toBeUndefined();
       expect(afterUninstall.theme).toEqual({ name: "user-theme" });
+
+      // Raíz completa esperada (literal, sin importar constantes de implementación):
+      // solo queda el dato manual; las hojas canónicas owned desaparecen y todos
+      // los contenedores propios vacíos se podan, incluido `plugins` (owned-empty
+      // sin comentario ajeno). La semántica de entradas manuales/owned del plugin
+      // ya está cubierta por las pruebas dedicadas de `cli.plugins`.
+      expect(afterUninstall).toEqual({ theme: { name: "user-theme" } });
     });
   });
 
@@ -478,19 +623,220 @@ describe("cli.json compacto (B3)", () => {
     });
   });
 
-  it("cli.json vacío se trata como ausente y siembra low", async () => {
+  it("cli.json vacío se trata como ausente y siembra los defaults T19", async () => {
     await withIsolatedHome(async ({ configDir }) => {
       const cliFile = path.join(configDir, "cli.json");
       fs.writeFileSync(cliFile, "\n   \n");
 
       const { actions } = await planServerConfig(configDir);
       const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
-      expect(cliAction, "cli.json vacío debe sembrar session.verbosity low").toBeDefined();
+      expect(cliAction, "cli.json vacío debe sembrar los defaults T19").toBeDefined();
       if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
-      expect(JSON.parse(cliAction.content)).toEqual({ session: { verbosity: "low" } });
-      expect(cliAction.primaryModelOwnership).toEqual([
-        { field: JSON.stringify(["cli.json", "session", "verbosity"]), owned: true },
-      ]);
+      expect(JSON.parse(cliAction.content)).toEqual(t19CliDefaults(configDir));
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      expect(owned).toEqual(new Set(t19CliOwnedFields()));
+    });
+  });
+
+  it("install real proyecta done.wav audible y silent.wav ×5 sin attention.wav, reconcilia y uninstall los retira owned con backup", async () => {
+    await withIsolatedHome(async ({ homeDir, configDir }) => {
+      const doneWav = path.join(configDir, "sounds", "done.wav");
+      const silentWav = path.join(configDir, "sounds", "silent.wav");
+      const attentionWav = path.join(configDir, "sounds", "attention.wav");
+
+      await runOpencodeInstall(configDir);
+
+      // 1) Dos targets reales derivados del mismo configDir; attention.wav ausente.
+      expect(fs.existsSync(doneWav), "falta sounds/done.wav tras install").toBe(true);
+      expect(fs.existsSync(silentWav), "falta sounds/silent.wav tras install").toBe(true);
+      expect(fs.existsSync(attentionWav), "attention.wav no debe proyectarse").toBe(false);
+      const { stackRoot } = await import("../src/lib/paths.js");
+      expect(
+        fs.existsSync(path.join(stackRoot(), "assets", "opencode", "sounds", "attention.wav")),
+        "attention.wav no debe distribuirse en el paquete",
+      ).toBe(false);
+
+      // 2) done.wav es la única audible; silent.wav es PCM16 todo a cero.
+      const doneBytes = fs.readFileSync(doneWav);
+      const silentBytes = fs.readFileSync(silentWav);
+      const done = wavPcm16(doneBytes);
+      const silent = wavPcm16(silentBytes);
+      expect(done.samples.length, "done.wav no está vacío").toBeGreaterThan(0);
+      expect(silent.samples.length, "silent.wav no está vacío").toBeGreaterThan(0);
+      expect(done.duration, "done.wav duración < 0.5s").toBeLessThan(0.5);
+      expect(silent.duration, "silent.wav duración < 0.5s").toBeLessThan(0.5);
+      expect([...done.samples].some((sample) => sample !== 0), "done.wav es la única audible").toBe(true);
+      expect([...silent.samples].every((sample) => sample === 0), "silent.wav es PCM16 todo a cero").toBe(true);
+
+      // El path del cliente deriva del mismo configDir: done audible, 5 alias silenciosos.
+      const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8")) as {
+        attention?: { sounds?: Record<string, string> };
+      };
+      expect(cli.attention?.sounds?.done, "done apunta al audible").toBe(doneWav);
+      for (const alias of ["subagent_done", "question", "permission", "error", "default"] as const) {
+        expect(cli.attention?.sounds?.[alias], `${alias} apunta al silencioso`).toBe(silentWav);
+      }
+
+      // 3) Ownership: solo los dos targets creados entran al manifest owned.
+      const { readManifest } = await import("../src/lib/manifest.js");
+      const owned = (): string[] => (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file));
+      expect(owned(), "el WAV creado se reclama").toContain(path.resolve(doneWav));
+      expect(owned(), "el WAV creado se reclama").toContain(path.resolve(silentWav));
+      expect(owned(), "attention.wav no es un target").not.toContain(path.resolve(attentionWav));
+
+      // 4) Reconcile: una segunda pasada es byte-idéntica.
+      await runOpencodeInstall(configDir);
+      expect(fs.readFileSync(doneWav).equals(doneBytes), "reconcile no reescribe done.wav").toBe(true);
+      expect(fs.readFileSync(silentWav).equals(silentBytes), "reconcile no reescribe silent.wav").toBe(true);
+
+      // 5) Uninstall: los WAV owned canónicos se respaldan y se retiran.
+      await runOpencodeUninstall(configDir);
+      expect(fs.existsSync(doneWav), "uninstall retira el WAV owned").toBe(false);
+      expect(fs.existsSync(silentWav), "uninstall retira el WAV owned").toBe(false);
+      expect(backupContains(homeDir, doneBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
+      expect(backupContains(homeDir, silentBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
+
+      // 6) Manual igual/unowned: se conserva sin claim y no se retira.
+      fs.mkdirSync(path.dirname(doneWav), { recursive: true });
+      fs.writeFileSync(doneWav, doneBytes);
+      fs.writeFileSync(silentWav, silentBytes);
+      await runOpencodeInstall(configDir);
+      expect(fs.readFileSync(doneWav).equals(doneBytes), "un manual igual no se pisa").toBe(true);
+      expect(fs.readFileSync(silentWav).equals(silentBytes), "un manual igual no se pisa").toBe(true);
+      expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(doneWav));
+      expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(silentWav));
+
+      await runOpencodeUninstall(configDir);
+      expect(fs.existsSync(doneWav), "un WAV unowned no se borra").toBe(true);
+      expect(fs.existsSync(silentWav), "un WAV unowned no se borra").toBe(true);
+      expect(fs.readFileSync(doneWav).equals(doneBytes)).toBe(true);
+      expect(fs.readFileSync(silentWav).equals(silentBytes)).toBe(true);
+    });
+  });
+
+  it("registra ./tui/subagents en plugins JSONC preservando comentarios, Herdr, objeto manual y disable directives", async () => {
+    await withIsolatedHome(async ({ configDir }) => {
+      const cliFile = path.join(configDir, "cli.json");
+      const original = [
+        "{",
+        '  // preferencias del usuario',
+        '  "theme": { "name": "user-theme" },',
+        '  "plugins": [',
+        '    "./herdr-opencode", // Herdr manual',
+        "    {",
+        '      "package": "@acme/opencode-plugin",',
+        '      "options": { "enabled": true }',
+        "    },",
+        '    "-acme.reviewer" // disable directive ajena',
+        "  ]",
+        "}",
+        "",
+      ].join("\n");
+      fs.writeFileSync(cliFile, original);
+
+      await runOpencodeInstall(configDir);
+
+      // La entrada propia se añade al array preservando comentarios y ajenos.
+      const afterInstall = fs.readFileSync(cliFile, "utf8");
+      expect(afterInstall, "falta el registro ./tui/subagents").toContain('"./tui/subagents"');
+      expect(afterInstall, "se preserva el comentario del usuario").toContain("// preferencias del usuario");
+      expect(afterInstall, "se preserva el comentario del array").toContain("// Herdr manual");
+      expect(afterInstall, "se preserva la disable directive ajena").toContain('"-acme.reviewer"');
+      expect(afterInstall, "se preserva el objeto manual con opciones").toContain('"@acme/opencode-plugin"');
+      expect(afterInstall, "se preservan las opciones manuales").toContain('"enabled": true');
+      expect(afterInstall, "se preserva Herdr").toContain('"./herdr-opencode"');
+
+      // Ownership semántico sobre la entrada, nunca por índice posicional.
+      const segments = ownedSegments(await readOwnedFields(configDir));
+      expect(segments, "el claim debe ser la entrada semántica").toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
+      expect(
+        segments.some((parts) => /^\d+$/.test(parts[2] ?? "")),
+        "sin ownership por índice de array",
+      ).toBe(false);
+
+      // Idempotencia: segunda pasada byte-idéntica.
+      await runOpencodeInstall(configDir);
+      expect(fs.readFileSync(cliFile, "utf8"), "reconcile no reescribe cli.json").toBe(afterInstall);
+
+      // Unmerge: retira solo la entrada propia, preserva comentarios y ajenos.
+      await runOpencodeUninstall(configDir);
+      const afterUninstall = fs.readFileSync(cliFile, "utf8");
+      expect(afterUninstall, "uninstall retira la entrada propia").not.toContain('"./tui/subagents"');
+      expect(afterUninstall, "se preserva el comentario del usuario").toContain("// preferencias del usuario");
+      expect(afterUninstall, "se preserva el comentario del array").toContain("// Herdr manual");
+      expect(afterUninstall, "se preserva Herdr").toContain('"./herdr-opencode"');
+      expect(afterUninstall, "se preserva el objeto manual con opciones").toContain('"@acme/opencode-plugin"');
+      expect(afterUninstall, "se preservan las opciones manuales").toContain('"enabled": true');
+      expect(afterUninstall, "se preserva la disable directive ajena").toContain('"-acme.reviewer"');
+    });
+  });
+
+  it("un ./tui/subagents manual igual al canon se preserva sin claim", async () => {
+    await withIsolatedHome(async ({ configDir }) => {
+      const cliFile = path.join(configDir, "cli.json");
+      fs.writeFileSync(cliFile, JSON.stringify({ plugins: ["./tui/subagents"] }, null, 2) + "\n");
+
+      await runOpencodeInstall(configDir);
+
+      const installed = JSON.parse(fs.readFileSync(cliFile, "utf8")) as { plugins?: unknown[] };
+      expect(
+        installed.plugins?.filter((entry) => entry === "./tui/subagents"),
+        "no debe duplicar una entrada manual igual",
+      ).toHaveLength(1);
+      const segments = ownedSegments(await readOwnedFields(configDir));
+      expect(segments, "la igualdad de valor no acredita ownership").not.toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
+    });
+  });
+
+  it.each([
+    {
+      label: "plugins escalar inválido",
+      plugins: "not-an-array",
+      expectedPlugins: "not-an-array",
+      warn: /array|plugins/i,
+    },
+    {
+      label: "disable directive que alcanza el panel",
+      plugins: ["./herdr-opencode", "-jorgex.subagents"],
+      expectedPlugins: ["./herdr-opencode", "-jorgex.subagents"],
+      warn: /desactiv|disable|plugins/i,
+    },
+    {
+      label: "objeto manual que ya registra el panel",
+      plugins: [{ package: "./tui/subagents", options: { compact: false } }],
+      expectedPlugins: [{ package: "./tui/subagents", options: { compact: false } }],
+      warn: null,
+    },
+  ])("cli.plugins $label: se preserva sin registro ni claim del panel", async ({ plugins, expectedPlugins, warn }) => {
+    await withIsolatedHome(async ({ configDir }) => {
+      const cliFile = path.join(configDir, "cli.json");
+      fs.writeFileSync(cliFile, JSON.stringify({ plugins }, null, 2) + "\n");
+
+      const { actions, warnings } = await planServerConfig(configDir);
+      const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
+      expect(cliAction, "faltan los defaults T19: debe existir la acción de cli.json").toBeDefined();
+      if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
+
+      // El valor ajeno se preserva lógicamente: sin convertirlo ni añadir el entry.
+      const content = JSON.parse(cliAction.content) as Record<string, unknown>;
+      expect(content["plugins"], "el valor ajeno se preserva sin convertirlo").toEqual(expectedPlugins);
+
+      // Sin claim semántico del entry ni del contenedor del panel (nunca por índice).
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      const segments = ownedSegments(owned);
+      expect(segments, "sin claim del entry del panel").not.toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
+      expect(segments, "sin claim del contenedor plugins").not.toContainEqual(["cli.json", "plugins"]);
+
+      const joined = warnings.join("\n");
+      if (warn === null) {
+        expect(joined, "un registro manual ya presente no genera aviso").not.toMatch(/plugins/i);
+      } else {
+        expect(joined, "debe quedar un aviso accionable de preservación").toMatch(warn);
+      }
     });
   });
 });

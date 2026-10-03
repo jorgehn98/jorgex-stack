@@ -440,6 +440,7 @@ export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAct
     ...planHooks(adapter, ctx),
     ...planPlugins(adapter, ctx),
     ...planBrowserControlSkill(adapter, ctx),
+    ...(adapter.planAdditionalResources?.(ctx) ?? []),
   ];
 }
 
@@ -1096,23 +1097,31 @@ export function assertOpenCodeManifestCoherence(configDir: string): void {
 }
 
 /**
- * Autenticación de bytes de los cuatro recursos estáticos OpenCode. No sustituye
+ * Autenticación de bytes de los recursos estáticos OpenCode. No sustituye
  * al ownership: el manifest coherente sigue siendo la única autoridad y el
  * digest solo clasifica el contenido (actual/legacy/desconocido) para bloquear
  * o permitir la mutación. Corre antes de writing-style, model-map, backups,
- * proyección y setup.
+ * proyección y setup. Incluye los assets adicionales current-only del adapter
+ * (fila `null`: sin canon legacy, solo bytes actuales) para que el preflight
+ * bloquee un target inseguro antes de cualquier write.
  */
 function openCodeStaticResourceAuths(
-  configDir: string,
+  adapter: Adapter,
+  ctx: InstallContext,
   actions: readonly FileAction[],
   ownedPaths: readonly string[],
 ): StaticResourceAuth[] {
+  const configDir = ctx.configDir;
   const targets = staticResourceTargets(configDir);
-  if (targets.size === 0) return [];
   const bytesByTarget = projectedBytesByTarget(actions);
   const ownedSet = new Set(ownedPaths.map((file) => path.resolve(file)));
-  return [...targets].map(([target, row]) =>
+  const auths = [...targets].map(([target, row]) =>
     authenticateStaticResource(target, row, bytesByTarget.get(target) ?? null, ownedSet.has(target), configDir));
+  for (const action of adapter.planAdditionalResources?.(ctx) ?? []) {
+    const target = path.resolve(action.target);
+    auths.push(authenticateStaticResource(target, null, bytesByTarget.get(target) ?? null, ownedSet.has(target), configDir));
+  }
+  return auths;
 }
 
 /**
@@ -1182,7 +1191,7 @@ function assertOpenCodeStaticResourcePreflight(configDir: string): void {
   // Solo `buildContentPlan`: la autenticación de bytes no depende del bloque
   // MCP/modelo (cuyo plan puede fallar cerrado por estado legacy legítimo que
   // el pipeline real migra con su ledger de ownership).
-  assertOpenCodeStaticResourcesUsable(openCodeStaticResourceAuths(configDir, buildContentPlan(opencodeAdapter, ctx), owned));
+  assertOpenCodeStaticResourcesUsable(openCodeStaticResourceAuths(opencodeAdapter, ctx, buildContentPlan(opencodeAdapter, ctx), owned));
 }
 
 /**
@@ -1941,7 +1950,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     // cualquier backup/escritura/claim. `preservedStaticTargets` son los
     // unowned ya idénticos al actual: no-op permitido, jamás reclamados.
     const staticAuths = id === "opencode"
-      ? openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? [])
+      ? openCodeStaticResourceAuths(adapter, ctx, plan, prevManifest?.owned ?? [])
       : [];
     if (id === "opencode") {
       const browserSkillAuth = browserControlSkillAuth(configDir, ctx, prevManifest?.owned ?? []);
@@ -2160,10 +2169,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         // Autenticación FINAL (post-reconfirmación) que usa `writeManifest`: una
         // creación ajena current durante el prompt debe ser un no-op unowned y
         // no un owned reclamado por la lista cacheada anterior al prompt. Debe
-        // reautenticar el mismo conjunto completo que el preflight (los cuatro
-        // recursos estáticos MÁS la skill Browser Control): omitir la skill dejaría
+        // reautenticar el mismo conjunto completo que el preflight (los estáticos
+        // legacy MÁS los adicionales current-only MÁS la skill Browser Control): omitir la skill dejaría
         // reclamar como owned o pisar un archivo ajeno creado durante el prompt.
-        const finalStaticAuths = openCodeStaticResourceAuths(configDir, plan, prevManifest?.owned ?? []);
+        const finalStaticAuths = openCodeStaticResourceAuths(adapter, ctx, plan, prevManifest?.owned ?? []);
         const finalBrowserSkillAuth = browserControlSkillAuth(configDir, ctx, prevManifest?.owned ?? []);
         if (finalBrowserSkillAuth !== null) finalStaticAuths.push(finalBrowserSkillAuth);
         assertOpenCodeStaticResourcesUsable(finalStaticAuths);

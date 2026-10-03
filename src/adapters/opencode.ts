@@ -10,7 +10,7 @@ import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, resolveOpenCodeConfigDir, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { editJsonc, parseJsoncObject, upsertJson } from "../lib/filemerge.js";
+import { editJsonc, editJsoncArray, parseJsoncObject, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
@@ -77,6 +77,22 @@ function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][str
 const CONFIG_FILENAME = "opencode.json";
 const CONFIG_FILENAME_JSONC = "opencode.jsonc";
 const CLI_FILENAME = "cli.json";
+/** Entrada local del panel TUI en cli.json (ruta relativa al configDir). */
+const TUI_PLUGIN_ENTRY = "./tui/subagents";
+/** Id declarado por el plugin del panel; se usa para casar disable directives. */
+const TUI_PLUGIN_ID = "jorgex.subagents";
+/**
+ * Copias fijas current-only del cliente v2 (Spec T19): el WAV audible `done.wav`,
+ * el silencioso `silent.wav` y los dos archivos del panel TUI. Viven fuera de
+ * `stack/plugins/` para no auto-cargarse como plugin de servidor; la entrada de
+ * cli.json apunta a `./tui/subagents`.
+ */
+const CLIENT_ADDITIONAL_RESOURCES = [
+  { source: "assets/opencode/sounds/done.wav", target: "sounds/done.wav" },
+  { source: "assets/opencode/sounds/silent.wav", target: "sounds/silent.wav" },
+  { source: "assets/opencode/tui/subagents/tui.tsx", target: "tui/subagents/tui.tsx" },
+  { source: "assets/opencode/tui/subagents/state.mjs", target: "tui/subagents/state.mjs" },
+] as const;
 const BROWSER_CONTROL_SERVER = "browser-control";
 
 /**
@@ -641,28 +657,155 @@ function freshPermissions(): PermissionRule[] {
   return rules;
 }
 
-const CLI_VERBOSITY_FIELD = fieldId(CLI_FILENAME, "session", "verbosity");
+/**
+ * Hojas exactas del cliente v2 (Spec T19:12). Los paths de audio se derivan de
+ * la raíz efectiva (`ctx.configDir`): `done.wav` es el único audible y
+ * `silent.wav` (PCM16 de muestras cero, no vacío) sirve los cinco alias
+ * restantes para evitar el fallback builtin. Ambos se copian por
+ * `planAdditionalResources` en el mismo configDir.
+ */
+interface CliDefaultLeaf {
+  segments: readonly string[];
+  value: unknown;
+}
+
+function cliDefaultLeaves(configDir: string): CliDefaultLeaf[] {
+  const sound = (name: string): string => path.join(configDir, "sounds", name);
+  return [
+    { segments: ["theme", "name"], value: "system" },
+    { segments: ["theme", "mode"], value: "system" },
+    { segments: ["session", "verbosity"], value: "low" },
+    { segments: ["session", "permissions"], value: "autoaccept" },
+    { segments: ["session", "tps"], value: true },
+    { segments: ["debug", "turn_tokens"], value: true },
+    { segments: ["attention", "notifications"], value: true },
+    { segments: ["attention", "sound"], value: true },
+    { segments: ["attention", "volume"], value: 0.1 },
+    { segments: ["attention", "sounds", "done"], value: sound("done.wav") },
+    { segments: ["attention", "sounds", "subagent_done"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "question"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "permission"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "error"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "default"], value: sound("silent.wav") },
+  ];
+}
+
+/** Contenedores propios (prefijos de las hojas), de más superficial a más profundo. */
+function cliContainerPaths(leaves: readonly CliDefaultLeaf[]): string[][] {
+  const seen = new Set<string>();
+  const paths: string[][] = [];
+  for (const leaf of leaves) {
+    for (let depth = 1; depth < leaf.segments.length; depth++) {
+      const prefix = leaf.segments.slice(0, depth);
+      const key = JSON.stringify(prefix);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(prefix);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Un contenedor propio presente pero no-objeto (escalar/array) es dato ambiguo
+ * del usuario: no se puede sembrar esa rama sin sobrescribirlo. Devuelve la
+ * ruta afectada para preservar los bytes y dejar remedio, o null si el árbol es
+ * compatible (contenedores ausentes u objetos).
+ */
+function findInvalidCliContainer(root: Record<string, unknown>, leaves: readonly CliDefaultLeaf[]): string | null {
+  for (const prefix of cliContainerPaths(leaves)) {
+    let node: Record<string, unknown> = root;
+    let absent = false;
+    for (const segment of prefix) {
+      const next = node[segment];
+      if (next === undefined) {
+        absent = true;
+        break;
+      }
+      const block = objectValue(next);
+      if (block === null) return prefix.join(".");
+      node = block;
+    }
+    if (absent) continue;
+  }
+  return null;
+}
+
+/**
+ * Directiva de desactivación documentada: una entrada `-X` desactiva plugins
+ * cuyo id/ruta casa X. Se soportan la igualdad exacta, `*` global y el prefijo
+ * `prefijo.*` del contrato oficial; no se adivinan otras gramáticas glob.
+ */
+function pluginDisableMatches(pattern: string, candidate: string): boolean {
+  if (pattern === candidate || pattern === "*") return true;
+  if (pattern.endsWith(".*")) return candidate.startsWith(pattern.slice(0, -1));
+  return false;
+}
+
+/** Una entrada manual (string igual o `{ package }` igual) ya registra el panel. */
+function panelEntryPresent(entries: readonly unknown[]): boolean {
+  return entries.some((entry) =>
+    entry === TUI_PLUGIN_ENTRY || objectValue(entry)?.["package"] === TUI_PLUGIN_ENTRY);
+}
+
+/** Una disable directive existente alcanza la ruta o el id del panel. */
+function panelEntryDisabled(entries: readonly unknown[]): boolean {
+  return entries.some((entry) => {
+    if (typeof entry !== "string" || !entry.startsWith("-") || entry.length < 2) return false;
+    const pattern = entry.slice(1);
+    return pluginDisableMatches(pattern, TUI_PLUGIN_ENTRY) || pluginDisableMatches(pattern, TUI_PLUGIN_ID);
+  });
+}
+
+interface CliPluginsPlan {
+  readonly create: boolean;
+  readonly appendIndex: number | null;
+  readonly warning: string | null;
+}
+
+/**
+ * Decide el registro de `./tui/subagents` sobre el `plugins` existente: crea el
+ * contenedor si falta, no duplica una entrada manual igual (sin claim) y se
+ * detiene ante un `plugins` no-array o una disable directive que alcance el
+ * panel (se preserva sin neutralizarla con un override posterior).
+ */
+function planCliPlugins(root: Record<string, unknown>): CliPluginsPlan {
+  const raw = root["plugins"];
+  if (raw === undefined) return { create: true, appendIndex: 0, warning: null };
+  if (!Array.isArray(raw)) {
+    return { create: false, appendIndex: null, warning: "OpenCode: 'cli.json' tiene 'plugins' que no es un array; se conserva sin tocar y no se registra ./tui/subagents." };
+  }
+  if (panelEntryDisabled(raw)) {
+    return { create: false, appendIndex: null, warning: "OpenCode: una directiva de desactivación en 'cli.json.plugins' alcanza el panel jorgex.subagents; se conserva y no se registra ./tui/subagents." };
+  }
+  if (panelEntryPresent(raw)) return { create: false, appendIndex: null, warning: null };
+  return { create: false, appendIndex: raw.length, warning: null };
+}
 
 /**
  * Proyección del archivo compacto del cliente v2 (`cli.json`, separado del
- * server config): siembra `session.verbosity: "low"` solo si falta, conserva
- * cualquier valor ajeno y nunca precrea el archivo mientras exista una fuente
- * legacy (tui.json/kv.json) que el migrador nativo deba consumir primero.
+ * server config): siembra SOLO las hojas T19 ausentes —revisando todas aunque
+ * `session.verbosity` ya exista—, conserva cualquier valor ajeno (igual,
+ * custom, false o null) sin reclamarlo, y nunca precrea el archivo mientras
+ * exista una fuente legacy (tui.json/kv.json) que el migrador nativo deba
+ * consumir primero. Los contenedores y hojas que crea se reclaman en el ledger
+ * actual; los preexistentes no.
  */
 function planCliConfig(ctx: InstallContext): FileAction | null {
   const file = path.join(ctx.configDir, CLI_FILENAME);
   const existing = readTextIfExists(file);
+  const leaves = cliDefaultLeaves(ctx.configDir);
 
-  // Ausente o vacío/solo espacios: equivale a "falta low", se siembra salvo que
-  // el migrador nativo tenga una fuente legacy pendiente.
+  // Ausente o vacío/solo espacios: se siembra salvo que el migrador nativo
+  // tenga una fuente legacy pendiente.
   if (existing === null || existing.trim() === "") {
     if (hasPendingCliMigration(ctx)) {
       ctx.warnings.push(
-        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite install para sembrar session.verbosity: low.",
+        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite install para sembrar los defaults del cliente.",
       );
       return null;
     }
-    return seedCliVerbosity(ctx, null);
+    return seedCliDefaults(ctx, leaves, null, {});
   }
 
   const parsed = parseJsoncObject(existing);
@@ -670,29 +813,66 @@ function planCliConfig(ctx: InstallContext): FileAction | null {
     ctx.warnings.push("OpenCode: 'cli.json' no es un objeto JSON válido; se conserva sin tocar.");
     return null;
   }
-  const session = parsed.value["session"];
-  // `session` no-objeto es dato ambiguo del usuario: se preservan los bytes y se
-  // deja remedio, sin reclamar ownership ni reserializar un escalar/array ajeno.
-  if (session !== undefined && objectValue(session) === null) {
+  const invalid = findInvalidCliContainer(parsed.value, leaves);
+  if (invalid !== null) {
     ctx.warnings.push(
-      "OpenCode: 'cli.json' tiene un 'session' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite install para sembrar session.verbosity: low.",
+      `OpenCode: 'cli.json' tiene '${invalid}' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite install para sembrar los defaults del cliente.`,
     );
     return null;
   }
-  if (objectValue(session)?.["verbosity"] !== undefined) return null;
-  return seedCliVerbosity(ctx, existing);
+  return seedCliDefaults(ctx, leaves, existing, parsed.value);
 }
 
-/** Siembra `session.verbosity: low` sobre un cli.json ausente/vacío o existente válido. */
-function seedCliVerbosity(ctx: InstallContext, existing: string | null): FileAction {
+/**
+ * Siembra las hojas T19 ausentes sobre un cli.json ausente/vacío o existente
+ * válido. Devuelve null si no faltaba ninguna hoja (no se reimpone nada). El
+ * registro del panel (`./tui/subagents`) se planifica siempre con las mismas
+ * reglas de ausencia/preservación; `ctx.ownedPrimaryModelFields` es autoridad
+ * del ledger, no un flag de ejecución.
+ */
+function seedCliDefaults(
+  ctx: InstallContext,
+  leaves: readonly CliDefaultLeaf[],
+  existing: string | null,
+  root: Record<string, unknown>,
+): FileAction | null {
+  const plugins = planCliPlugins(root);
+  if (plugins.warning !== null) ctx.warnings.push(plugins.warning);
   const ownership: PrimaryModelOwnershipChange[] = [];
-  const content = editConfigContent(existing, (root) => {
-    const session = objectValue(root["session"]);
-    const sessionBlock = session ?? {};
-    if (session === null) root["session"] = sessionBlock;
-    sessionBlock["verbosity"] = "low";
-    claimFieldId(ctx.ownedPrimaryModelFields, ownership, CLI_VERBOSITY_FIELD);
+  let changed = false;
+  let content = editConfigContent(existing, (target) => {
+    for (const leaf of leaves) {
+      let node = target;
+      for (let index = 0; index < leaf.segments.length - 1; index++) {
+        const key = leaf.segments[index]!;
+        const absent = node[key] === undefined;
+        node = ensureOwnedPrimaryObject(
+          node,
+          key,
+          ownedField(CLI_FILENAME, ...leaf.segments.slice(0, index + 1)),
+          ctx.ownedPrimaryModelFields,
+          ownership,
+        );
+        if (absent) changed = true;
+      }
+      const leafKey = leaf.segments[leaf.segments.length - 1]!;
+      if (node[leafKey] !== undefined) continue;
+      node[leafKey] = leaf.value;
+      claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, ...leaf.segments));
+      changed = true;
+    }
+    if (plugins.create) {
+      target["plugins"] = [];
+      claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, "plugins"));
+      changed = true;
+    }
   });
+  if (plugins.appendIndex !== null) {
+    content = editJsoncArray(content, { kind: "insert", path: ["plugins"], index: plugins.appendIndex, value: TUI_PLUGIN_ENTRY });
+    claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, "plugins", TUI_PLUGIN_ENTRY));
+    changed = true;
+  }
+  if (!changed) return null;
   return {
     kind: "write",
     target: path.join(ctx.configDir, CLI_FILENAME),
@@ -1402,6 +1582,31 @@ export const opencodeAdapter: Adapter = {
     return actions;
   },
 
+  /**
+   * Copias fijas current-only del cliente v2 (Spec T19): los dos WAV de sonido
+   * y los dos archivos del panel TUI, desde `stack/assets/opencode/` al
+   * configDir derivado de ctx. Viven fuera de `stack/plugins/` para no
+   * auto-cargarse como plugin de servidor ni relajar `planPlugins`. Una fuente
+   * ausente/ilegible bloquea el plan antes de cualquier write: nunca se omite en
+   * silencio.
+   */
+  planAdditionalResources(ctx: InstallContext): FileAction[] {
+    return CLIENT_ADDITIONAL_RESOURCES.map(({ source, target }): FileAction => {
+      const sourcePath = path.join(ctx.stackDir, source);
+      try {
+        fs.readFileSync(sourcePath);
+      } catch (error) {
+        const code = error instanceof Error && "code" in error && typeof error.code === "string"
+          ? error.code
+          : "UNKNOWN";
+        throw new Error(
+          `OpenCode: el asset canónico '${sourcePath}' falta o no se puede leer (${code}); no se proyecta ningún recurso adicional. Restaura el paquete antes de reintentar.`,
+        );
+      }
+      return { kind: "copy", source: sourcePath, target: path.join(ctx.configDir, target) };
+    });
+  },
+
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
     const { systemPromptFile, pluginsDir } = this.paths(ctx.configDir);
@@ -1642,19 +1847,72 @@ export const opencodeAdapter: Adapter = {
     // la primera pasada, donde el ctx se construyó antes del write) y (b) lo
     // corrobora en el inventario del manifest. Sin el campo owned la acción es
     // un no-op byte-idéntico: diffPlan la marca "unchanged" y no se reescribe
-    // nada. Con el campo owned solo se retira el valor que siga siendo canónico,
-    // preservando las claves ajenas.
+    // nada. Con campos owned solo se retira la hoja que siga siendo el valor
+    // canónico, preservando claves ajenas y comentarios JSONC.
     const cliFile = path.join(ctx.configDir, CLI_FILENAME);
     const cliRaw = readTextIfExists(cliFile);
     if (cliRaw !== null) {
-      if (ctx.ownedPrimaryModelFields?.has(CLI_VERBOSITY_FIELD) === true) {
+      const cliLeaves = cliDefaultLeaves(ctx.configDir);
+      const cliOwned = ctx.ownedPrimaryModelFields;
+      const cliField = (...segments: string[]): string => ownedField(CLI_FILENAME, ...segments);
+      const pluginsContainerField = cliField("plugins");
+      const pluginsEntryField = cliField("plugins", TUI_PLUGIN_ENTRY);
+      const hasOwnedCliField =
+        cliLeaves.some((leaf) => cliOwned?.has(cliField(...leaf.segments)) === true)
+        || cliContainerPaths(cliLeaves).some((prefix) => cliOwned?.has(cliField(...prefix)) === true)
+        || cliOwned?.has(pluginsContainerField) === true
+        || cliOwned?.has(pluginsEntryField) === true;
+      if (hasOwnedCliField) {
         const cliOwnership: PrimaryModelOwnershipChange[] = [];
-        const content = editConfigContent(cliRaw, (root) => {
-          const session = objectValue(root["session"]);
-          if (session !== null && session["verbosity"] === "low") delete session["verbosity"];
-          pruneEmpty(root, "session");
-          cliOwnership.push({ field: CLI_VERBOSITY_FIELD, owned: false });
+        let content = editConfigContent(cliRaw, (root) => {
+          // Solo se retira la hoja owned que siga siendo el valor canónico; un
+          // valor modificado se preserva. La marca se libera siempre.
+          for (const leaf of cliLeaves) {
+            const field = cliField(...leaf.segments);
+            if (cliOwned?.has(field) !== true) continue;
+            let node: Record<string, unknown> | null = root;
+            for (const segment of leaf.segments.slice(0, -1)) {
+              node = node === null ? null : objectValue(node[segment]);
+            }
+            const leafKey = leaf.segments[leaf.segments.length - 1]!;
+            if (node !== null && isDeepStrictEqual(node[leafKey], leaf.value)) delete node[leafKey];
+            cliOwnership.push({ field, owned: false });
+          }
+          // Contenedores propios vacíos: se podan solo si su ID es owned (un
+          // `{}` ajeno preexistente sobrevive) y de más profundo a más
+          // superficial para que el padre quede vacío tras podar al hijo.
+          for (const prefix of [...cliContainerPaths(cliLeaves)].sort((a, b) => b.length - a.length)) {
+            const field = cliField(...prefix);
+            if (cliOwned?.has(field) !== true) continue;
+            let parent: Record<string, unknown> | null = root;
+            for (const segment of prefix.slice(0, -1)) {
+              parent = parent === null ? null : objectValue(parent[segment]);
+            }
+            const key = prefix[prefix.length - 1]!;
+            if (parent !== null) pruneEmpty(parent, key);
+            cliOwnership.push({ field, owned: false });
+          }
         });
+        // Entrada propia del panel: solo se retira el string canónico único; un
+        // duplicado o una forma de objeto ajena se preservan. La marca se libera.
+        if (cliOwned?.has(pluginsEntryField) === true) {
+          const parsed = parseJsoncObject(content);
+          const entries = parsed.value !== null && Array.isArray(parsed.value["plugins"]) ? parsed.value["plugins"] : null;
+          if (entries !== null) {
+            const indices = entries.flatMap((entry, index) => (entry === TUI_PLUGIN_ENTRY ? [index] : []));
+            const objectForm = entries.some((entry) => objectValue(entry)?.["package"] === TUI_PLUGIN_ENTRY);
+            if (indices.length === 1 && !objectForm) {
+              content = editJsoncArray(content, { kind: "remove", path: ["plugins"], index: indices[0]! });
+            }
+          }
+          cliOwnership.push({ field: pluginsEntryField, owned: false });
+        }
+        // Contenedor propio creado: se poda solo si quedó vacío y sin
+        // comentarios ajenos; un `plugins` preexistente nunca se toca.
+        if (cliOwned?.has(pluginsContainerField) === true) {
+          content = editJsoncArray(content, { kind: "prune", path: ["plugins"] });
+          cliOwnership.push({ field: pluginsContainerField, owned: false });
+        }
         actions.push({
           kind: "write",
           target: cliFile,
