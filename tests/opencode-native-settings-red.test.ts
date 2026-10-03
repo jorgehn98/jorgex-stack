@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { FileAction, InstallContext } from "../src/adapters/types.js";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
 import { snapshotEnv } from "./helpers/opencode-isolation.js";
 
@@ -57,6 +58,38 @@ vi.mock("../src/lib/detect.js", async () => {
   return { ...actual, detectEngram: () => null };
 });
 
+/**
+ * Frontera Browser Control (Spec T13): estas suites prueban modelo/config/
+ * ownership/backup, no el publicador de Browser Control. El coordinador real
+ * adquiriría el paquete publicado (`latest` + SRI) y sondearía el relay del
+ * usuario; aquí se sustituyen SOLO las fronteras de adquisición y lectura
+ * cacheada por un `ready` sintético para que el pipeline real (runInstall,
+ * adapter, backups, manifest, permisos, Engram) y el uninstall offline sigan
+ * ejecutándose sin red, relay ni perfiles. El doble NO certifica bytes oficiales
+ * ni es evidencia del contrato Browser Control.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare, inspectCachedBrowserControlRuntime: browserControlReady.inspect };
+});
+
+// Defensa independiente del mock: si algún camino importara el módulo real, un
+// puerto inválido garantiza que nunca se contacte el relay del usuario (19989
+// por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
+});
+
 const roots: string[] = [];
 
 afterEach(() => {
@@ -84,20 +117,28 @@ async function withIsolatedHome<T>(run: (input: IsolatedHome) => Promise<T>): Pr
   const configDir = path.join(homeDir, ".config", "opencode");
   const stateDir = path.join(root, "state");
   const xdgConfigDir = path.join(root, "xdg-config");
+  const xdgDataDir = path.join(root, "xdg-data");
+  const xdgCacheDir = path.join(root, "xdg-cache");
   fs.mkdirSync(configDir, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(xdgConfigDir, { recursive: true });
+  fs.mkdirSync(xdgDataDir, { recursive: true });
+  fs.mkdirSync(xdgCacheDir, { recursive: true });
   const restore = snapshotEnv([
     "HOME",
     "USERPROFILE",
     "XDG_STATE_HOME",
     "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
     "OPENCODE_CONFIG_DIR",
   ]);
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
   process.env.XDG_STATE_HOME = stateDir;
   process.env.XDG_CONFIG_HOME = xdgConfigDir;
+  process.env.XDG_DATA_HOME = xdgDataDir;
+  process.env.XDG_CACHE_HOME = xdgCacheDir;
   delete process.env.OPENCODE_CONFIG_DIR;
   try {
     vi.resetModules();
@@ -481,6 +522,12 @@ describe("raíz nativa y aislamiento de --target-dir", () => {
           showSummary: false,
         });
         expect(exitCode).toBe(0);
+
+        // Camino offline: el coordinador Browser Control (red/relay) no se llama.
+        expect(
+          browserControlReady.prepare,
+          "--target-dir no debe llamar al coordinador Browser Control",
+        ).not.toHaveBeenCalled();
 
         // Frontera real: el state personal no se lee bajo --target-dir.
         const readPaths = readSpy.mock.calls.map((call) => String(call[0]));

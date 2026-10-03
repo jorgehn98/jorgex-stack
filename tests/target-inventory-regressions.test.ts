@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
 
 /** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
@@ -54,10 +55,41 @@ vi.mock("../src/lib/detect.js", async () => {
   };
 });
 
+/**
+ * Frontera Browser Control (Spec T13): estas regresiones prueban inventario/
+ * manifest/ownership OpenCode, no el publicador de Browser Control. El
+ * coordinador real adquiriría el paquete publicado y sondearía el relay; aquí se
+ * sustituye SOLO esa frontera por un `ready` sintético, conservando reales
+ * install/adapter/backups/manifest/ownership/Engram. El doble NO certifica bytes
+ * oficiales.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
+});
+
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
   const originalHome = process.env.HOME;
   const originalUserProfile = process.env.USERPROFILE;
   const originalXdgConfig = process.env.XDG_CONFIG_HOME;
+  const originalXdgData = process.env.XDG_DATA_HOME;
+  const originalXdgCache = process.env.XDG_CACHE_HOME;
   const originalXdgState = process.env.XDG_STATE_HOME;
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
@@ -65,7 +97,12 @@ async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<
   // que debe apuntar al HOME temporal. Sin esto, `paths()` vería como ajena la
   // raíz `HOME/.config/opencode` y anclaría skills al padre del configDir.
   process.env.XDG_CONFIG_HOME = path.join(homeDir, ".config");
+  process.env.XDG_DATA_HOME = path.join(homeDir, ".local", "share");
+  process.env.XDG_CACHE_HOME = path.join(homeDir, ".cache");
   process.env.XDG_STATE_HOME = path.join(homeDir, ".local", "state");
+  for (const dir of [process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_CACHE_HOME, process.env.XDG_STATE_HOME]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 
   try {
     vi.resetModules();
@@ -77,6 +114,10 @@ async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<
     else process.env.USERPROFILE = originalUserProfile;
     if (originalXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = originalXdgConfig;
+    if (originalXdgData === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = originalXdgData;
+    if (originalXdgCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = originalXdgCache;
     if (originalXdgState === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = originalXdgState;
     vi.resetModules();
@@ -738,6 +779,9 @@ describe("target inventory regressions", () => {
         opencode.detect = originalOpencodeDetect;
         codex.detect = originalCodexDetect;
         claudeCode.detect = originalClaudeDetect;
+        // Own tmp only: never sweep sibling `jx-agent-browser-manifest-*` roots
+        // left by other runs.
+        fs.rmSync(tmp, { recursive: true, force: true });
       }
     });
   });

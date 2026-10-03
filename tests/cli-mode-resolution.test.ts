@@ -11,18 +11,20 @@ const OPENCODE_V2_BIN = opencodeV2Binary();
 afterAll(cleanupOpenCodeBinaries);
 
 const mocks = vi.hoisted(() => {
-  const inspectPlaywrightCapability = vi.fn(() => ({
+  const legacyBrowserCapability = () => ({
     cli: { status: "current", binPath: "/isolated/playwright-cli", detectedVersion: "0.1.18" },
     browserCache: { status: "ready", path: "/isolated/browser" },
     browserVerified: true,
     effective: true,
-  }));
-  const inspectManagedPlaywrightCapability = vi.fn(() => ({
+  });
+  const managedBrowserCapability = () => ({
     cli: { status: "current", binPath: "/isolated/managed-launcher", detectedVersion: "0.1.18" },
     browserCache: { status: "ready", path: "/isolated/browser" },
     browserVerified: true,
     effective: true,
-  }));
+  });
+  const inspectPlaywrightCapability = vi.fn(legacyBrowserCapability);
+  const inspectManagedPlaywrightCapability = vi.fn(managedBrowserCapability);
   const runInstall = vi.fn().mockResolvedValue(0);
   const runInteractiveUpdate = vi.fn().mockResolvedValue({ exitCode: 0, appliedUpdates: false, syncRequired: false });
   const runModelsPicker = vi.fn().mockResolvedValue(0);
@@ -56,6 +58,8 @@ const mocks = vi.hoisted(() => {
   };
   return {
     prompts,
+    legacyBrowserCapability,
+    managedBrowserCapability,
     inspectPlaywrightCapability,
     inspectManagedPlaywrightCapability,
     runInteractiveUpdate,
@@ -214,6 +218,10 @@ async function runCli(
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
+  // `clearAllMocks` no vacía las colas de `*Once`: sin reset explícito, una cola
+  // no consumida contaminaría la siguiente prueba con una capacidad obsoleta.
+  mocks.inspectPlaywrightCapability.mockReset().mockImplementation(mocks.legacyBrowserCapability);
+  mocks.inspectManagedPlaywrightCapability.mockReset().mockImplementation(mocks.managedBrowserCapability);
   mocks.detectPiRuntime.mockReset().mockReturnValue({
     id: "pi",
     name: "Pi",
@@ -603,26 +611,45 @@ describe("opciones de navegador en main()", () => {
     }
   });
 
-  it("entrega el consentimiento de Playwright y la selección DevTools a install", async () => {
+  it("OpenCode conserva la selección DevTools sin ofrecer Playwright CLI", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-install-flags-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
 
-    await runCli(
-      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--playwright", "--devtools"],
+    const exitCode = await runCli(
+      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--devtools"],
       homeDir,
     );
 
+    expect(exitCode).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
-      playwrightToolConsent: expect.objectContaining({
-        command: "install",
-        explicitToolSelection: true,
-      }),
       devtoolsMcpSelection: { opencode: true },
     }));
   });
 
-  it("accepts --playwright-runtimes with --playwright and passes true/false for current agents", async () => {
+  it("rechaza --playwright cuando OpenCode es el único destino sin runtime elegible", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-opencode-only-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    writeOpenCodeModelMap(homeDir);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "opencode", "--mode", "human", "--yes", "--playwright"],
+        homeDir,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      const messages = collectedMessages([error]);
+      expect(messages.some((message) => /browser.?control/i.test(message))).toBe(true);
+      expect(messages.some((message) => /opencode/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("acepta --playwright-runtimes con solo runtimes elegibles y omite OpenCode de la selección", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-flag-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
@@ -635,19 +662,47 @@ describe("opciones de navegador en main()", () => {
       "human",
       "--yes",
       "--playwright",
-      "--playwright-runtimes=opencode,codex",
+      "--playwright-runtimes=codex",
     ], homeDir);
 
     expect(exitCode).toBe(0);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       playwrightToolConsent: expect.objectContaining({
         explicitToolSelection: true,
-        runtimeSelection: { opencode: true, "claude-code": false, codex: true },
+        runtimeSelection: { "claude-code": false, codex: true },
       }),
     }));
   });
 
-  it("opens the runtime selector only after Playwright consent and passes partial choices", async () => {
+  it("rechaza --playwright-runtimes opencode antes de ejecutar install", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-opencode-reject-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    writeOpenCodeModelMap(homeDir);
+
+    try {
+      const exitCode = await runCli([
+        "install",
+        "--agents",
+        "opencode,claude-code,codex",
+        "--mode",
+        "human",
+        "--yes",
+        "--playwright",
+        "--playwright-runtimes=opencode,codex",
+      ], homeDir);
+
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      const messages = collectedMessages([error]);
+      expect(messages.some((message) => /browser.?control/i.test(message))).toBe(true);
+      expect(messages.some((message) => /opencode/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("abre el selector solo tras el consentimiento y ofrece únicamente runtimes elegibles", async () => {
     const tmp = makeTempDir(path.join(os.tmpdir(), "jx-playwright-runtime-picker-"));
     const homeDir = path.join(tmp, "home");
     writeOpenCodeModelMap(homeDir);
@@ -670,10 +725,12 @@ describe("opciones de navegador en main()", () => {
         && /Playwright/i.test(String(Reflect.get(input, "message"))),
     );
     expect(playwrightPicker?.[0]).toMatchObject({ required: false });
+    const pickerOptions = (playwrightPicker?.[0] as { options?: Array<{ value: string }> } | undefined)?.options;
+    expect(pickerOptions?.map((option) => option.value)).toEqual(["claude-code", "codex"]);
     expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
       playwrightToolConsent: expect.objectContaining({
         confirmed: true,
-        runtimeSelection: { opencode: false, "claude-code": false, codex: true },
+        runtimeSelection: { "claude-code": false, codex: true },
       }),
     }));
     const playwrightPickerIndex = mocks.prompts.multiselect.mock.calls.findIndex(([input]) =>
@@ -795,11 +852,10 @@ describe("CLI effective browser capability", () => {
     const afterUpdate = { ...beforeUpdate, browserVerified: true, effective: true };
 
     try {
-      writeOpenCodeModelMap(homeDir);
       fs.mkdirSync(path.join(homeDir, ".jorgex-stack"), { recursive: true });
       fs.writeFileSync(path.join(homeDir, ".jorgex-stack", "playwright-cli.json"), JSON.stringify({
         version: 2,
-        enabled: { opencode: true },
+        enabled: { "claude-code": true },
       }) + "\n");
       mocks.inspectManagedPlaywrightCapability
         .mockReturnValueOnce(beforeUpdate)
@@ -811,7 +867,7 @@ describe("CLI effective browser capability", () => {
         playwrightCapability: afterUpdate,
       });
 
-      await runCli(["update", "--agents", "opencode", "--mode", "human"], homeDir, true);
+      await runCli(["update", "--agents", "claude-code", "--mode", "human"], homeDir, true);
 
       expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(2);
       expect(mocks.runInstall).toHaveBeenCalledTimes(2);
@@ -942,6 +998,206 @@ describe("CLI effective browser capability", () => {
       }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CLI no inspecciona Playwright para destinos OpenCode-only", () => {
+  const OPENCODE_ONLY_PREFERENCE = JSON.stringify({
+    version: 2,
+    enabled: { opencode: true, "claude-code": false, codex: false, pi: false },
+  }, null, 2) + "\n";
+
+  function writeRawPlaywrightPreference(homeDir: string, raw: string): string {
+    const file = path.join(homeDir, ".jorgex-stack", "playwright-cli.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, raw);
+    return file;
+  }
+
+  it(
+    "install con OpenCode-only y preferencia legacy no inspecciona la capacidad ni muta la preferencia",
+    async () => {
+      const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-opencode-no-inspect-install-"));
+      const homeDir = path.join(tmp, "home");
+      const preferenceFile = writeRawPlaywrightPreference(homeDir, OPENCODE_ONLY_PREFERENCE);
+      writeOpenCodeModelMap(homeDir);
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        const exitCode = await runCli(
+          ["install", "--agents", "opencode", "--mode", "human", "--yes"],
+          homeDir,
+          false,
+          { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
+        );
+
+        expect(exitCode).toBe(0);
+        expect(mocks.runInstall).toHaveBeenCalledTimes(1);
+        expect(mocks.inspectManagedPlaywrightCapability).not.toHaveBeenCalled();
+        expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
+        expect(fs.readFileSync(preferenceFile, "utf8")).toBe(OPENCODE_ONLY_PREFERENCE);
+      } finally {
+        log.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it("update con OpenCode-only y preferencia legacy no inspecciona la capacidad ni muta la preferencia", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-opencode-no-inspect-update-"));
+    const homeDir = path.join(tmp, "home");
+    const preferenceFile = writeRawPlaywrightPreference(homeDir, OPENCODE_ONLY_PREFERENCE);
+    writeOpenCodeModelMap(homeDir);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["update", "--agents", "opencode", "--mode", "human", "--yes"],
+        homeDir,
+        false,
+        { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
+      );
+
+      expect(exitCode).toBe(0);
+      expect(mocks.inspectManagedPlaywrightCapability).not.toHaveBeenCalled();
+      expect(mocks.inspectPlaywrightCapability).not.toHaveBeenCalled();
+      expect(fs.readFileSync(preferenceFile, "utf8")).toBe(OPENCODE_ONLY_PREFERENCE);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("un destino de fichero distinto de OpenCode conserva la inspección habilitada", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-cli-other-runtime-inspect-"));
+    const homeDir = path.join(tmp, "home");
+    const rawPreference = JSON.stringify({
+      version: 2,
+      enabled: { opencode: false, "claude-code": true, codex: false, pi: false },
+    }, null, 2) + "\n";
+    const preferenceFile = writeRawPlaywrightPreference(homeDir, rawPreference);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "claude-code", "--mode", "human", "--yes"],
+        homeDir,
+        false,
+        { XDG_CONFIG_HOME: path.join(homeDir, ".config") },
+      );
+
+      expect(exitCode).toBe(0);
+      expect(mocks.runInstall).toHaveBeenCalledTimes(1);
+      expect(mocks.inspectManagedPlaywrightCapability).toHaveBeenCalledTimes(1);
+      expect(fs.readFileSync(preferenceFile, "utf8")).toBe(rawPreference);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+});
+
+describe("CLI cablea --browser-control-service al install", () => {
+  /** install y update comparten bloque; update reconcilia internamente con su propio call site. */
+  it(
+    "install reenvía el opt-in de servicio al runInstall de OpenCode",
+    async () => {
+      const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-install-"));
+      const homeDir = path.join(tmp, "home");
+      writeOpenCodeModelMap(homeDir);
+
+      const exitCode = await runCli(
+        ["install", "--agents", "opencode", "--mode", "human", "--yes", "--browser-control-service"],
+        homeDir,
+      );
+
+      // El flag debe llegar como opt-in explícito: el CLI no puede fallar en
+      // silencio ni dejar de invocar el API que materializa el servicio.
+      expect(exitCode).toBe(0);
+      expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+        runtimes: ["opencode"],
+        browserControlService: true,
+      }));
+    },
+  );
+
+  it("update reenvía el opt-in de servicio en el sync previo a la actualización", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-update-"));
+    const homeDir = path.join(tmp, "home");
+
+    const exitCode = await runCli(
+      ["update", "--agents", "opencode", "--mode", "human", "--yes", "--browser-control-service"],
+      homeDir,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      browserControlService: true,
+    }));
+    expect(mocks.runInteractiveUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("install --target-dir reenvía el opt-in sin invocar el manager real", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-target-"));
+    const homeDir = path.join(tmp, "home");
+    const targetDir = path.join(tmp, "target");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli(
+      ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes", "--browser-control-service"],
+      homeDir,
+      false,
+      { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
+    );
+
+    // `--target-dir` no desactiva el flag: el API decide omitir el manager en
+    // el sandbox; el CLI solo debe reenviar el opt-in explícito.
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      targetDir,
+      browserControlService: true,
+    }));
+  });
+
+  it("install --dry-run reenvía el opt-in sin escribir la unidad", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-dry-"));
+    const homeDir = path.join(tmp, "home");
+    writeOpenCodeModelMap(homeDir);
+
+    const exitCode = await runCli(
+      ["install", "--agents", "opencode", "--mode", "human", "--yes", "--dry-run", "--browser-control-service"],
+      homeDir,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(mocks.runInstall).toHaveBeenCalledWith(expect.objectContaining({
+      dryRun: true,
+      browserControlService: true,
+    }));
+  });
+
+  it("rechaza el opt-in cuando ningún destino incluye OpenCode antes de runInstall", async () => {
+    const tmp = makeTempDir(path.join(os.tmpdir(), "jx-browser-control-service-codex-only-"));
+    const homeDir = path.join(tmp, "home");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const exitCode = await runCli(
+        ["install", "--agents", "codex", "--mode", "human", "--yes", "--browser-control-service"],
+        homeDir,
+      );
+
+      // El servicio solo existe para OpenCode: un destino ajeno debe fallar
+      // cerrado, sin llegar a runInstall ni simular una escritura.
+      expect(exitCode).toBe(1);
+      expect(mocks.runInstall).not.toHaveBeenCalled();
+      expect(collectedMessages([error]).some((message) => /browser.?control/i.test(message))).toBe(true);
+    } finally {
+      error.mockRestore();
     }
   });
 });

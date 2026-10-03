@@ -9,6 +9,26 @@ it("passes Playwright CLI flags through the managed browser command", () => {
   });
 });
 
+it("passes Browser Control provider flags through the managed browser command", () => {
+  // Flags documentados del CLI Browser Control: no deben interpretarse como
+  // flags globales de Stack (--help) ni caer a unknown-flags.
+  const providerArgs = [
+    "execute",
+    "--session", "docs",
+    "--json",
+    "--file", "script.js",
+    "--help",
+    "return page.getByText('Continue').click()",
+  ];
+  const parsed = parseCliArgs(["browser", "control", ...providerArgs]);
+
+  expect(parsed.action).toBe("run");
+  expect(parsed.command).toBe("browser");
+  expect(parsed.flags.positional).toEqual(["control", ...providerArgs]);
+  expect(parsed.flags.unknownFlags).toEqual([]);
+  expect(parsed.flags.help).toBe(false);
+});
+
 describe("CLI argument parsing", () => {
   it.each([
     [["--help"], "install"],
@@ -89,6 +109,7 @@ describe("CLI argument parsing", () => {
     ["--remove-playwright"],
     ["--devtools"],
     ["--no-devtools"],
+    ["--browser-control-service"],
     ["--upgrade-permissions"],
   ] as const)("rechaza %j en quality como flag de otro comando sin convertir su operando en plan", (...args) => {
     const [flag, operand] = args;
@@ -152,6 +173,26 @@ describe("CLI argument parsing", () => {
     expect(parsed.flags[property]).toBe(true);
     expect(parsed.flags.unknownFlags).toEqual([]);
   });
+
+  it.each(["install", "update"] as const)(
+    "reconoce --browser-control-service como opt-in de servicio en %s",
+    (command) => {
+      const enabled = parseCliArgs([command, "--browser-control-service"]);
+      const enabledFlags = enabled.flags as Flags & { browserControlService?: boolean };
+
+      expect(enabled.action).toBe("run");
+      expect(enabled.command).toBe(command);
+      expect(enabledFlags.browserControlService).toBe(true);
+      expect(enabled.flags.unknownFlags).toEqual([]);
+
+      const absent = parseCliArgs([command, "--devtools"]);
+      const absentFlags = absent.flags as Flags & { browserControlService?: boolean };
+
+      expect(absentFlags.browserControlService).toBeFalsy();
+      expect(absent.flags.devtools).toBe(true);
+      expect(absent.flags.unknownFlags).toEqual([]);
+    },
+  );
 
   it.each(["install"] as const)("off por defecto: %s no activa --upgrade-permissions", (command) => {
     const parsed = parseCliArgs([command]);

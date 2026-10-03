@@ -26,7 +26,7 @@ interface FileIdentity {
   readonly ino: number;
 }
 
-export type ManagedBrowserPackageName = "@playwright/cli" | "chrome-devtools-mcp";
+export type ManagedBrowserPackageName = "@playwright/cli" | "chrome-devtools-mcp" | "@opencode-ai/browser-control";
 
 /** The exact provider release whose bytes were verified before staging. */
 export type ManagedBrowserRelease = NpmPackageRelease;
@@ -191,7 +191,8 @@ function ensureDirectory(directory: string, label: string): string {
 }
 
 function packageDirectoryName(packageName: ManagedBrowserPackageName): string {
-  return packageName === "@playwright/cli" ? "playwright-cli" : "chrome-devtools-mcp";
+  if (packageName === "@playwright/cli") return "playwright-cli";
+  return packageName === "chrome-devtools-mcp" ? "chrome-devtools-mcp" : "browser-control";
 }
 
 function validateRelease(value: unknown): ManagedBrowserRelease {
@@ -254,7 +255,11 @@ function validateStagedInput(input: ActivateManagedBrowserTreeInput): {
   browserExecutablePath: string | undefined;
 } {
   if (!isRecord(input)) fail("input must be an object");
-  if (input.packageName !== "@playwright/cli" && input.packageName !== "chrome-devtools-mcp") {
+  if (
+    input.packageName !== "@playwright/cli" &&
+    input.packageName !== "chrome-devtools-mcp" &&
+    input.packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const packageName = input.packageName;
@@ -374,7 +379,11 @@ export function resolveStagedBrowserEntry(
   staged: StageVerifiedBrowserTreeResult,
   packageName: ManagedBrowserPackageName,
 ): string {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const root = absolutePath(staged.treePath, "staged.treePath");
@@ -388,7 +397,12 @@ export function resolveStagedBrowserEntry(
     fail("staged package manifest is invalid JSON");
   }
   if (!isRecord(manifest) || manifest.name !== packageName) fail("staged package identity differs");
-  const binName = packageName === "@playwright/cli" ? "playwright-cli" : "chrome-devtools-mcp";
+  const binName =
+    packageName === "@playwright/cli"
+      ? "playwright-cli"
+      : packageName === "chrome-devtools-mcp"
+        ? "chrome-devtools-mcp"
+        : "browser-control";
   const bin = typeof manifest.bin === "string"
     ? manifest.bin
     : isRecord(manifest.bin) ? manifest.bin[binName] : undefined;
@@ -570,7 +584,11 @@ export function loadVerifiedManagedBrowserReceipt(
   stateDir: string,
   packageName: ManagedBrowserPackageName,
 ): ManagedBrowserReceipt | null {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const statePath = absolutePath(stateDir, "stateDir");
@@ -587,6 +605,131 @@ export function loadVerifiedManagedBrowserReceipt(
   if (active !== null) return active.receipt;
   assertNoOrphanedManagedBrowserState(packageDirectory, false);
   return null;
+}
+
+/** Active release plus the exact evidence a service binding may record. */
+export interface VerifiedRetainedBrowserRelease {
+  readonly receipt: ManagedBrowserReceipt;
+  /** SHA-256 of the exact receipt bytes selected by the active pointer. */
+  readonly receiptSha256: string;
+  /** Basename of the owned `release-*` root; never an arbitrary path or the candidate. */
+  readonly releaseDirectory: string;
+}
+
+/**
+ * Same strict active verification as `loadVerifiedManagedBrowserReceipt`, but
+ * additionally returns the receipt digest and the owned release basename a
+ * service binding may persist. The candidate namespace is never consulted: only
+ * the operational active pointer authenticates the retained release.
+ */
+export function loadVerifiedRetainedBrowserRelease(
+  stateDir: string,
+  packageName: ManagedBrowserPackageName,
+): VerifiedRetainedBrowserRelease | null {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
+    fail("unsupported managed browser package");
+  }
+  const statePath = absolutePath(stateDir, "stateDir");
+  const realStateDir = existingRealDirectory(statePath, "stateDir");
+  if (realStateDir === null) return null;
+  const managedRoot = existingRealDirectory(path.join(realStateDir, MANAGED_ROOT), "managed browser root");
+  if (managedRoot === null) return null;
+  const packageDirectory = existingRealDirectory(
+    path.join(managedRoot, packageDirectoryName(packageName)),
+    "managed browser package root",
+  );
+  if (packageDirectory === null) return null;
+  const active = readValidatedActiveBrowser(packageDirectory, packageName);
+  if (active === null) {
+    assertNoOrphanedManagedBrowserState(packageDirectory, false);
+    return null;
+  }
+  return {
+    receipt: active.receipt,
+    receiptSha256: createHash("sha256").update(active.receiptRaw).digest("hex"),
+    releaseDirectory: path.basename(active.receipt.rootPath),
+  };
+}
+
+/**
+ * Selector de una release retenida concreta por identidad física: basename
+ * `release-*` del namespace operativo y SHA-256 de sus bytes exactos de receipt.
+ * Nunca selecciona el candidato ni una ruta/URL arbitraria.
+ */
+export interface RetainedBrowserReleaseSelector {
+  readonly releaseDirectory: string;
+  readonly receiptSha256: string;
+}
+
+/**
+ * Autentica una release retenida concreta del namespace operativo (no el
+ * candidato, no el pointer activo) reutilizando `validateReceiptObject` y el
+ * hashing estricto de árbol/launcher de la activación. Permite reconciliar una
+ * unidad ligada a una release histórica A mientras el active real es B sin
+ * reescribir el pointer. El namespace y su active se verifican primero:
+ * corrupción/orfandad bloquean. Lanza si el binding no autentica.
+ */
+export function loadVerifiedRetainedBrowserReleaseByBinding(
+  stateDir: string,
+  packageName: ManagedBrowserPackageName,
+  selector: RetainedBrowserReleaseSelector,
+): VerifiedRetainedBrowserRelease {
+  assertSupportedBrowserPackage(packageName);
+  if (!isRecord(selector)) fail("retained release selector must be an object");
+  const releaseDirectory = selector.releaseDirectory;
+  if (
+    typeof releaseDirectory !== "string" ||
+    releaseDirectory === "" ||
+    releaseDirectory !== path.basename(releaseDirectory) ||
+    !releaseDirectory.startsWith("release-") ||
+    releaseDirectory.includes("/") ||
+    releaseDirectory.includes("\\")
+  ) {
+    fail("retained release selector directory is not an owned release basename");
+  }
+  const receiptSha256 = selector.receiptSha256;
+  if (typeof receiptSha256 !== "string" || !HASH.test(receiptSha256)) {
+    fail("retained release selector receiptSha256 is invalid");
+  }
+
+  const statePath = absolutePath(stateDir, "stateDir");
+  const realStateDir = existingRealDirectory(statePath, "stateDir");
+  if (realStateDir === null) fail("stateDir does not exist");
+  const managedRoot = existingRealDirectory(path.join(realStateDir, MANAGED_ROOT), "managed browser root");
+  if (managedRoot === null) fail("managed browser root does not exist");
+  const packageDirectory = existingRealDirectory(
+    path.join(managedRoot, packageDirectoryName(packageName)),
+    "managed browser package root",
+  );
+  if (packageDirectory === null) fail("managed browser package root does not exist");
+  // El active real autentica el namespace operativo antes de inspeccionar una
+  // release histórica; un pointer/receipt activo corrupto o ausente bloquea.
+  if (readValidatedActiveBrowser(packageDirectory, packageName) === null) {
+    fail("no verified active release authenticates the retained-release namespace");
+  }
+
+  const rootPath = path.join(packageDirectory, releaseDirectory);
+  if (path.dirname(rootPath) !== packageDirectory || !path.basename(rootPath).startsWith("release-")) {
+    fail("retained release selector escapes the managed package root");
+  }
+  const rootStat = lstatOrFail(rootPath, "retained release root");
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    fail("retained release root is not a real directory");
+  }
+  const receiptRaw = readBoundedRegularFile(path.join(rootPath, RECEIPT_FILE), "retained release receipt", 4 * 1024 * 1024);
+  const observedReceiptSha256 = createHash("sha256").update(receiptRaw).digest("hex");
+  if (observedReceiptSha256 !== receiptSha256) fail("retained release receipt hash differs from the binding");
+  const receipt = validateReceiptObject(
+    parseJsonObject(receiptRaw, "managed receipt"),
+    packageDirectory,
+    packageName,
+    rootPath,
+  );
+  return { receipt, receiptSha256: observedReceiptSha256, releaseDirectory: path.basename(receipt.rootPath) };
 }
 
 function hashRegularFile(file: string): string {
@@ -852,14 +995,20 @@ await evaluateVerifiedLauncher(launcherSource);
 `;
 }
 
-export function planManagedBrowserInvocation(
-  stateDir: string,
-  packageName: ManagedBrowserPackageName,
-  runtimeArgs: readonly string[],
-): ManagedBrowserInvocationPlan {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+function assertSupportedBrowserPackage(packageName: ManagedBrowserPackageName): void {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
+}
+
+function assertBrowserRuntimeArgs(
+  packageName: ManagedBrowserPackageName,
+  runtimeArgs: readonly string[],
+): void {
   if (!Array.isArray(runtimeArgs)) fail("runtimeArgs must be an array");
   if (runtimeArgs.some((arg) => typeof arg !== "string" || CONTROL_CHARACTERS.test(arg))) {
     fail("runtimeArgs contain an invalid control character");
@@ -871,8 +1020,12 @@ export function planManagedBrowserInvocation(
   ) {
     fail("chrome-devtools-mcp requires the fixed privacy flags in order");
   }
-  const receipt = loadVerifiedManagedBrowserReceipt(stateDir, packageName);
-  if (receipt === null) fail("verified managed browser receipt not found");
+}
+
+function buildInvocationPlan(
+  receipt: ManagedBrowserReceipt,
+  runtimeArgs: readonly string[],
+): ManagedBrowserInvocationPlan {
   return {
     command: process.execPath,
     args: [
@@ -883,6 +1036,33 @@ export function planManagedBrowserInvocation(
       ...runtimeArgs,
     ],
   };
+}
+
+export function planManagedBrowserInvocation(
+  stateDir: string,
+  packageName: ManagedBrowserPackageName,
+  runtimeArgs: readonly string[],
+): ManagedBrowserInvocationPlan {
+  assertSupportedBrowserPackage(packageName);
+  assertBrowserRuntimeArgs(packageName, runtimeArgs);
+  const receipt = loadVerifiedManagedBrowserReceipt(stateDir, packageName);
+  if (receipt === null) fail("verified managed browser receipt not found");
+  return buildInvocationPlan(receipt, runtimeArgs);
+}
+
+/**
+ * Plan de invocación de una release retenida concreta ya autenticada por
+ * `loadVerifiedRetainedBrowserReleaseByBinding`. Reutiliza el mismo guard que
+ * `planManagedBrowserInvocation`; existe para ligar la unidad a su release
+ * histórica A sin depender del active operativo B.
+ */
+export function planManagedBrowserInvocationForRetainedRelease(
+  release: VerifiedRetainedBrowserRelease,
+  runtimeArgs: readonly string[],
+): ManagedBrowserInvocationPlan {
+  assertSupportedBrowserPackage(release.receipt.packageName);
+  assertBrowserRuntimeArgs(release.receipt.packageName, runtimeArgs);
+  return buildInvocationPlan(release.receipt, runtimeArgs);
 }
 
 function writeNewFile(file: string, content: string, mode: number): void {
@@ -1191,7 +1371,11 @@ export async function rollbackManagedBrowserActivation(
   activated: ManagedBrowserReceipt,
   previous: ManagedBrowserReceipt | null,
 ): Promise<void> {
-  if (packageName !== "@playwright/cli" && packageName !== "chrome-devtools-mcp") {
+  if (
+    packageName !== "@playwright/cli" &&
+    packageName !== "chrome-devtools-mcp" &&
+    packageName !== "@opencode-ai/browser-control"
+  ) {
     fail("unsupported managed browser package");
   }
   const realStateDir = assertRealDirectory(stateDir, "stateDir");

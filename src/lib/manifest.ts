@@ -13,6 +13,52 @@ import { isContainedIn, readTextIfExists, writeText } from "./fsx.js";
  * no van aquí: se gestionan por unmerge de secciones.
  */
 
+/**
+ * Binding de la unidad de usuario Browser Control. Evidencia de la release
+ * retenida que autoriza los bytes de la unidad; `owned` sigue siendo la única
+ * autoridad de propiedad, este digest no la reclama por sí solo. `releaseDirectory`
+ * es siempre el basename `release-*` del namespace operativo, nunca una ruta
+ * arbitraria ni el candidato.
+ */
+export interface ManagedBrowserControlServiceBinding {
+  schemaVersion: 1;
+  releaseDirectory: string;
+  receiptSha256: string;
+  nodePath: string;
+  port: number;
+  unitSha256: string;
+}
+
+/**
+ * Autoridad granular del entorno del servicio Browser Control verificado.
+ * `projectionSha256` liga la proyección local+comando completo+puerto+autostart
+ * false; `portOwned` distingue el puerto introducido por Stack de uno manual.
+ */
+export interface BrowserControlAutostartStamp {
+  schemaVersion: 1;
+  projectionSha256: string;
+  portOwned: boolean;
+}
+
+/**
+ * Fase de recuperación de una retirada de servicio Browser Control a medias:
+ * `environment-retired` acredita el entorno ENV ya retirado con la unidad
+ * aún presente; `unit-removed` acredita el archivo de unidad ya retirado y solo
+ * el `daemon-reload` final pendiente; `manager-reloaded` acredita la limpieza
+ * del manager y permite terminar el unmerge/manifest ordinario sin repetir
+ * mutaciones. No es un ledger: vive en la misma row y solo autoriza junto al
+ * binding/estampa autenticados.
+ */
+export type BrowserControlServiceRetirementPhase =
+  | "environment-retired"
+  | "unit-removed"
+  | "manager-reloaded";
+
+export interface BrowserControlServiceRetirement {
+  schemaVersion: 1;
+  phase: BrowserControlServiceRetirementPhase;
+}
+
 export interface RuntimeManifest {
   configDir: string;
   /** Rutas absolutas resueltas de los archivos enteramente nuestros. */
@@ -24,6 +70,17 @@ export interface RuntimeManifest {
    * pendientes.
    */
   pendingOrphans?: string[];
+  /** Binding de la unidad de servicio gestionada, si existe (solo OpenCode/Linux). */
+  serviceUnit?: ManagedBrowserControlServiceBinding;
+  /** Estampa de autostart del MCP cuando un servicio externo quedó verificado. */
+  browserControlAutostart?: BrowserControlAutostartStamp;
+  /**
+   * Progreso de recuperación de una retirada de servicio Browser Control a
+   * medias. Cada fase se persiste tras el readback que la acredita y antes del
+   * siguiente efecto; el binding/estampa se conservan como evidencia histórica
+   * hasta cerrar la limpieza. Ausente = sin retirada pendiente.
+   */
+  browserControlServiceRetirement?: BrowserControlServiceRetirement;
   updatedAt: string;
 }
 
@@ -87,6 +144,27 @@ export function readManifestStrict(file = manifestFile()): ManifestRead {
   if (runtimes === undefined) return { status: "ok", manifest: { runtimes: {} } };
   if (!isPlainObject(runtimes)) return { status: "invalid", reason: `${file}: 'runtimes' no es un objeto` };
   return { status: "ok", manifest: { runtimes: runtimes as StackManifest["runtimes"] } };
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Validación estricta del borde del manifest para la estampa granular de
+ * autostart: claves exactas, schema 1, digest válido y `portOwned` booleano
+ * estricto (nunca truthiness). La co-presencia con binding/unidad/perfil la
+ * decide el caller. Un estado malformado nunca se adopta ni se repara: bloquea
+ * conservando recursos.
+ */
+export function isBrowserControlAutostartStamp(value: unknown): value is BrowserControlAutostartStamp {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 3 || keys[0] !== "portOwned" || keys[1] !== "projectionSha256" || keys[2] !== "schemaVersion") {
+    return false;
+  }
+  if (value["schemaVersion"] !== 1) return false;
+  if (typeof value["projectionSha256"] !== "string" || !SHA256_HEX.test(value["projectionSha256"])) return false;
+  if (typeof value["portOwned"] !== "boolean") return false;
+  return true;
 }
 
 export function writeRuntimeManifest(id: RuntimeId, entry: RuntimeManifest, file = manifestFile()): void {

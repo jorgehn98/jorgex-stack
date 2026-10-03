@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupOwnedResourcesOrThrow, runBoundedProcess } from "./helpers/bounded-process.js";
 import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 import {
   activateManagedBrowserTree,
@@ -1191,5 +1192,141 @@ describe.skipIf(process.platform !== "linux")("[T25-RED] managed browser activat
     await expect(activateManagedBrowserTree(fixture.input)).rejects.toThrow(/tree|digest|drift/i);
     expect(readManagedReceipts(fixture.stateDir)).toHaveLength(0);
     expect(fs.readFileSync(fixture.foreignMarker, "utf8")).toBe("foreign installation must remain untouched\n");
+  });
+});
+
+/**
+ * T12 RED tracer: `@opencode-ai/browser-control` is the third verified package.
+ * The lifecycle reuses the managed launcher/guard with the single runtime arg
+ * `["mcp"]`; the guard must execute exactly that argv against the active
+ * receipt and never fall back to a PATH/global binary.
+ *
+ * The fixture is a self-consistent stage witness at the input boundary: the
+ * tree digest and the closure integrity use real `node:crypto`, but this test
+ * does not re-prove artifact SRI (that belongs to the T12 acquisition seam).
+ */
+const BROWSER_CONTROL_PACKAGE = "@opencode-ai/browser-control" as const;
+const BROWSER_CONTROL_BIN = "browser-control" as const;
+
+type BrowserControlFixture = {
+  root: string;
+  stateDir: string;
+  marker: string;
+  staged: ActivateManagedBrowserTreeInput["staged"];
+  entryPath: string;
+  input: ActivateManagedBrowserTreeInput;
+};
+
+function writeBrowserControlFixture(): BrowserControlFixture {
+  const root = sandbox();
+  const stageDir = path.join(root, "stage");
+  const stateDir = path.join(root, "state");
+  const nodeModulesPath = path.join(stageDir, "node_modules");
+  const treePath = path.join(nodeModulesPath, "@opencode-ai", "browser-control");
+  const entryPath = path.join(treePath, "dist", "cli.js");
+  const marker = path.join(root, "browser-control.marker");
+  const version = "9.9.30";
+  const rootBytes = Buffer.from("official-browser-control-root-9.9.30\n");
+  const integrity = `sha512-${createHash("sha512").update(rootBytes).digest("base64")}`;
+
+  fs.mkdirSync(path.dirname(entryPath), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(treePath, "package.json"),
+    `${JSON.stringify(
+      {
+        name: BROWSER_CONTROL_PACKAGE,
+        version,
+        bin: { [BROWSER_CONTROL_BIN]: "dist/cli.js" },
+        engines: { node: ">=22.19.0" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  fs.writeFileSync(
+    entryPath,
+    [
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));`,
+      "",
+    ].join("\n"),
+  );
+
+  const staged: ActivateManagedBrowserTreeInput["staged"] = {
+    treePath,
+    nodeModulesPath,
+    treeSha256: browserTreeSha256(nodeModulesPath, stageDir),
+    closure: [{ name: BROWSER_CONTROL_PACKAGE, version, integrity }],
+  };
+  const input: ActivateManagedBrowserTreeInput = {
+    stateDir,
+    packageName: BROWSER_CONTROL_PACKAGE,
+    release: {
+      version,
+      tarballUrl: `https://registry.npmjs.org/${BROWSER_CONTROL_PACKAGE}/-/browser-control-${version}.tgz`,
+      integrity,
+    },
+    staged,
+    entryPath,
+  };
+  return { root, stateDir, marker, staged, entryPath, input };
+}
+
+describe.skipIf(process.platform !== "linux")("[T12-RED] managed Browser Control package", () => {
+  afterEach(() => {
+    cleanupOwnedResourcesOrThrow();
+  });
+
+  it("activates the third verified package and guards argv exactly ['mcp'] without PATH fallback", async () => {
+    const fixture = writeBrowserControlFixture();
+    const receipt = await activateManagedBrowserTree(fixture.input);
+
+    expect(loadVerifiedManagedBrowserReceipt(fixture.stateDir, BROWSER_CONTROL_PACKAGE)).toEqual(receipt);
+    const declaredRelativeEntry = path.relative(fixture.staged.nodeModulesPath, fixture.entryPath);
+    expect(isContained(receipt.treePath, receipt.entryPath)).toBe(true);
+    expect(path.relative(receipt.treePath, receipt.entryPath)).toBe(declaredRelativeEntry);
+    expect(fs.readFileSync(receipt.entryPath)).toEqual(fs.readFileSync(fixture.entryPath));
+    expect(receipt.treeSha256).toBe(fixture.staged.treeSha256);
+
+    const planner = await loadManagedBrowserInvocationPlanner();
+    const plan = planner(fixture.stateDir, BROWSER_CONTROL_PACKAGE, ["mcp"]);
+    expect(plan.command).toBe(process.execPath);
+    expect(plan.args.slice(0, 2)).toEqual(["--input-type=module", "--eval"]);
+    expect(plan.args[3]).toBe(receipt.launcherPath);
+    expect(plan.args.slice(4)).toEqual(["mcp"]);
+
+    const privateEnv: NodeJS.ProcessEnv = {
+      HOME: path.join(fixture.root, "home"),
+      XDG_CONFIG_HOME: path.join(fixture.root, "xdg-config"),
+      XDG_CACHE_HOME: path.join(fixture.root, "xdg-cache"),
+      TMPDIR: path.join(fixture.root, "tmp"),
+      TMP: path.join(fixture.root, "tmp"),
+      TEMP: path.join(fixture.root, "tmp"),
+      PATH: path.dirname(process.execPath),
+      CI: "true",
+      NO_UPDATE_NOTIFIER: "1",
+    };
+    for (const directory of [privateEnv.HOME!, privateEnv.XDG_CONFIG_HOME!, privateEnv.XDG_CACHE_HOME!, privateEnv.TMPDIR!]) {
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
+    const runPlan = () =>
+      runBoundedProcess(
+        { command: plan.command, args: [...plan.args] },
+        { cwd: fixture.root, env: privateEnv, timeoutMs: 30_000 },
+      );
+
+    const intact = await runPlan();
+    expect(intact.error).toBeUndefined();
+    expect(intact.status, intact.stderr).toBe(0);
+    expect(JSON.parse(fs.readFileSync(fixture.marker, "utf8"))).toEqual(["mcp"]);
+
+    fs.unlinkSync(fixture.marker);
+    fs.appendFileSync(receipt.entryPath, "// tampered after activation\n");
+    const tampered = await runPlan();
+    expect(tampered.error).toBeUndefined();
+    expect(tampered.status).not.toBe(0);
+    expect(`${tampered.stdout}${tampered.stderr}`).toMatch(/digest|drift/i);
+    expect(fs.existsSync(fixture.marker)).toBe(false);
   });
 });
