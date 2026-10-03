@@ -10,7 +10,7 @@ import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, resolveOpenCodeConfigDir, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { editJsonc, parseJsoncObject, upsertJson } from "../lib/filemerge.js";
+import { editJsonc, editJsoncArray, parseJsoncObject, upsertJson } from "../lib/filemerge.js";
 import { hookScriptNames } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { stackRoot } from "../lib/paths.js";
@@ -77,8 +77,22 @@ function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][str
 const CONFIG_FILENAME = "opencode.json";
 const CONFIG_FILENAME_JSONC = "opencode.jsonc";
 const CLI_FILENAME = "cli.json";
-/** Assets de sonido propios del cliente v2 (Spec T19), sin canon legacy. */
-const CLIENT_SOUND_ASSETS = ["done.wav", "attention.wav"] as const;
+/** Entrada local del panel TUI en cli.json (ruta relativa al configDir). */
+const TUI_PLUGIN_ENTRY = "./tui/subagents";
+/** Id declarado por el plugin del panel; se usa para casar disable directives. */
+const TUI_PLUGIN_ID = "jorgex.subagents";
+/**
+ * Copias fijas current-only del cliente v2 (Spec T19): el WAV audible `done.wav`,
+ * el silencioso `silent.wav` y los dos archivos del panel TUI. Viven fuera de
+ * `stack/plugins/` para no auto-cargarse como plugin de servidor; la entrada de
+ * cli.json apunta a `./tui/subagents`.
+ */
+const CLIENT_ADDITIONAL_RESOURCES = [
+  { source: "assets/opencode/sounds/done.wav", target: "sounds/done.wav" },
+  { source: "assets/opencode/sounds/silent.wav", target: "sounds/silent.wav" },
+  { source: "assets/opencode/tui/subagents/tui.tsx", target: "tui/subagents/tui.tsx" },
+  { source: "assets/opencode/tui/subagents/state.mjs", target: "tui/subagents/state.mjs" },
+] as const;
 const BROWSER_CONTROL_SERVER = "browser-control";
 
 /**
@@ -645,8 +659,10 @@ function freshPermissions(): PermissionRule[] {
 
 /**
  * Hojas exactas del cliente v2 (Spec T19:12). Los paths de audio se derivan de
- * la raíz efectiva (`ctx.configDir`) y apuntan a los dos assets propios del
- * Stack, copiados por `planAdditionalResources` en el mismo configDir.
+ * la raíz efectiva (`ctx.configDir`): `done.wav` es el único audible y
+ * `silent.wav` (PCM16 de muestras cero, no vacío) sirve los cinco alias
+ * restantes para evitar el fallback builtin. Ambos se copian por
+ * `planAdditionalResources` en el mismo configDir.
  */
 interface CliDefaultLeaf {
   segments: readonly string[];
@@ -666,11 +682,11 @@ function cliDefaultLeaves(configDir: string): CliDefaultLeaf[] {
     { segments: ["attention", "sound"], value: true },
     { segments: ["attention", "volume"], value: 0.1 },
     { segments: ["attention", "sounds", "done"], value: sound("done.wav") },
-    { segments: ["attention", "sounds", "subagent_done"], value: sound("done.wav") },
-    { segments: ["attention", "sounds", "question"], value: sound("attention.wav") },
-    { segments: ["attention", "sounds", "permission"], value: sound("attention.wav") },
-    { segments: ["attention", "sounds", "error"], value: sound("attention.wav") },
-    { segments: ["attention", "sounds", "default"], value: sound("attention.wav") },
+    { segments: ["attention", "sounds", "subagent_done"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "question"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "permission"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "error"], value: sound("silent.wav") },
+    { segments: ["attention", "sounds", "default"], value: sound("silent.wav") },
   ];
 }
 
@@ -716,6 +732,57 @@ function findInvalidCliContainer(root: Record<string, unknown>, leaves: readonly
 }
 
 /**
+ * Directiva de desactivación documentada: una entrada `-X` desactiva plugins
+ * cuyo id/ruta casa X. Se soportan la igualdad exacta, `*` global y el prefijo
+ * `prefijo.*` del contrato oficial; no se adivinan otras gramáticas glob.
+ */
+function pluginDisableMatches(pattern: string, candidate: string): boolean {
+  if (pattern === candidate || pattern === "*") return true;
+  if (pattern.endsWith(".*")) return candidate.startsWith(pattern.slice(0, -1));
+  return false;
+}
+
+/** Una entrada manual (string igual o `{ package }` igual) ya registra el panel. */
+function panelEntryPresent(entries: readonly unknown[]): boolean {
+  return entries.some((entry) =>
+    entry === TUI_PLUGIN_ENTRY || objectValue(entry)?.["package"] === TUI_PLUGIN_ENTRY);
+}
+
+/** Una disable directive existente alcanza la ruta o el id del panel. */
+function panelEntryDisabled(entries: readonly unknown[]): boolean {
+  return entries.some((entry) => {
+    if (typeof entry !== "string" || !entry.startsWith("-") || entry.length < 2) return false;
+    const pattern = entry.slice(1);
+    return pluginDisableMatches(pattern, TUI_PLUGIN_ENTRY) || pluginDisableMatches(pattern, TUI_PLUGIN_ID);
+  });
+}
+
+interface CliPluginsPlan {
+  readonly create: boolean;
+  readonly appendIndex: number | null;
+  readonly warning: string | null;
+}
+
+/**
+ * Decide el registro de `./tui/subagents` sobre el `plugins` existente: crea el
+ * contenedor si falta, no duplica una entrada manual igual (sin claim) y se
+ * detiene ante un `plugins` no-array o una disable directive que alcance el
+ * panel (se preserva sin neutralizarla con un override posterior).
+ */
+function planCliPlugins(root: Record<string, unknown>): CliPluginsPlan {
+  const raw = root["plugins"];
+  if (raw === undefined) return { create: true, appendIndex: 0, warning: null };
+  if (!Array.isArray(raw)) {
+    return { create: false, appendIndex: null, warning: "OpenCode: 'cli.json' tiene 'plugins' que no es un array; se conserva sin tocar y no se registra ./tui/subagents." };
+  }
+  if (panelEntryDisabled(raw)) {
+    return { create: false, appendIndex: null, warning: "OpenCode: una directiva de desactivación en 'cli.json.plugins' alcanza el panel jorgex.subagents; se conserva y no se registra ./tui/subagents." };
+  }
+  if (panelEntryPresent(raw)) return { create: false, appendIndex: null, warning: null };
+  return { create: false, appendIndex: raw.length, warning: null };
+}
+
+/**
  * Proyección del archivo compacto del cliente v2 (`cli.json`, separado del
  * server config): siembra SOLO las hojas T19 ausentes —revisando todas aunque
  * `session.verbosity` ya exista—, conserva cualquier valor ajeno (igual,
@@ -738,7 +805,7 @@ function planCliConfig(ctx: InstallContext): FileAction | null {
       );
       return null;
     }
-    return seedCliDefaults(ctx, leaves, null);
+    return seedCliDefaults(ctx, leaves, null, {});
   }
 
   const parsed = parseJsoncObject(existing);
@@ -753,19 +820,29 @@ function planCliConfig(ctx: InstallContext): FileAction | null {
     );
     return null;
   }
-  return seedCliDefaults(ctx, leaves, existing);
+  return seedCliDefaults(ctx, leaves, existing, parsed.value);
 }
 
 /**
  * Siembra las hojas T19 ausentes sobre un cli.json ausente/vacío o existente
- * válido. Devuelve null si no faltaba ninguna hoja (no se reimpone nada).
+ * válido. Devuelve null si no faltaba ninguna hoja (no se reimpone nada). El
+ * registro del panel (`./tui/subagents`) se planifica siempre con las mismas
+ * reglas de ausencia/preservación; `ctx.ownedPrimaryModelFields` es autoridad
+ * del ledger, no un flag de ejecución.
  */
-function seedCliDefaults(ctx: InstallContext, leaves: readonly CliDefaultLeaf[], existing: string | null): FileAction | null {
+function seedCliDefaults(
+  ctx: InstallContext,
+  leaves: readonly CliDefaultLeaf[],
+  existing: string | null,
+  root: Record<string, unknown>,
+): FileAction | null {
+  const plugins = planCliPlugins(root);
+  if (plugins.warning !== null) ctx.warnings.push(plugins.warning);
   const ownership: PrimaryModelOwnershipChange[] = [];
   let changed = false;
-  const content = editConfigContent(existing, (root) => {
+  let content = editConfigContent(existing, (target) => {
     for (const leaf of leaves) {
-      let node = root;
+      let node = target;
       for (let index = 0; index < leaf.segments.length - 1; index++) {
         const key = leaf.segments[index]!;
         const current = node[key];
@@ -786,7 +863,17 @@ function seedCliDefaults(ctx: InstallContext, leaves: readonly CliDefaultLeaf[],
       claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, ...leaf.segments));
       changed = true;
     }
+    if (plugins.create) {
+      target["plugins"] = [];
+      claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, "plugins"));
+      changed = true;
+    }
   });
+  if (plugins.appendIndex !== null) {
+    content = editJsoncArray(content, { kind: "insert", path: ["plugins"], index: plugins.appendIndex, value: TUI_PLUGIN_ENTRY });
+    claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, "plugins", TUI_PLUGIN_ENTRY));
+    changed = true;
+  }
   if (!changed) return null;
   return {
     kind: "write",
@@ -1498,28 +1585,27 @@ export const opencodeAdapter: Adapter = {
   },
 
   /**
-   * Dos WAV propios del cliente v2 (Spec T19): copias fijas desde el canon
-   * `stack/assets/opencode/sounds/` a `configDir/sounds/`, derivado de ctx. No
-   * pasan por el loader de plugins (viven fuera de `stack/plugins/`) ni relajan
-   * `planPlugins`. Una fuente ausente/ilegible bloquea el plan antes de
-   * cualquier write: nunca se omite en silencio.
+   * Copias fijas current-only del cliente v2 (Spec T19): los dos WAV de sonido
+   * y los dos archivos del panel TUI, desde `stack/assets/opencode/` al
+   * configDir derivado de ctx. Viven fuera de `stack/plugins/` para no
+   * auto-cargarse como plugin de servidor ni relajar `planPlugins`. Una fuente
+   * ausente/ilegible bloquea el plan antes de cualquier write: nunca se omite en
+   * silencio.
    */
   planAdditionalResources(ctx: InstallContext): FileAction[] {
-    const sourceDir = path.join(ctx.stackDir, "assets", "opencode", "sounds");
-    const targetDir = path.join(ctx.configDir, "sounds");
-    return CLIENT_SOUND_ASSETS.map((name): FileAction => {
-      const source = path.join(sourceDir, name);
+    return CLIENT_ADDITIONAL_RESOURCES.map(({ source, target }): FileAction => {
+      const sourcePath = path.join(ctx.stackDir, source);
       try {
-        fs.readFileSync(source);
+        fs.readFileSync(sourcePath);
       } catch (error) {
         const code = error instanceof Error && "code" in error && typeof error.code === "string"
           ? error.code
           : "UNKNOWN";
         throw new Error(
-          `OpenCode: el asset canónico de sonido '${source}' falta o no se puede leer (${code}); no se proyecta ningún WAV. Restaura el paquete antes de reintentar.`,
+          `OpenCode: el asset canónico '${sourcePath}' falta o no se puede leer (${code}); no se proyecta ningún recurso adicional. Restaura el paquete antes de reintentar.`,
         );
       }
-      return { kind: "copy", source, target: path.join(targetDir, name) };
+      return { kind: "copy", source: sourcePath, target: path.join(ctx.configDir, target) };
     });
   },
 
@@ -1771,12 +1857,16 @@ export const opencodeAdapter: Adapter = {
       const cliLeaves = cliDefaultLeaves(ctx.configDir);
       const cliOwned = ctx.ownedPrimaryModelFields;
       const cliField = (...segments: string[]): string => ownedField(CLI_FILENAME, ...segments);
+      const pluginsContainerField = cliField("plugins");
+      const pluginsEntryField = cliField("plugins", TUI_PLUGIN_ENTRY);
       const hasOwnedCliField =
         cliLeaves.some((leaf) => cliOwned?.has(cliField(...leaf.segments)) === true)
-        || cliContainerPaths(cliLeaves).some((prefix) => cliOwned?.has(cliField(...prefix)) === true);
+        || cliContainerPaths(cliLeaves).some((prefix) => cliOwned?.has(cliField(...prefix)) === true)
+        || cliOwned?.has(pluginsContainerField) === true
+        || cliOwned?.has(pluginsEntryField) === true;
       if (hasOwnedCliField) {
         const cliOwnership: PrimaryModelOwnershipChange[] = [];
-        const content = editConfigContent(cliRaw, (root) => {
+        let content = editConfigContent(cliRaw, (root) => {
           // Solo se retira la hoja owned que siga siendo el valor canónico; un
           // valor modificado se preserva. La marca se libera siempre.
           for (const leaf of cliLeaves) {
@@ -1805,6 +1895,26 @@ export const opencodeAdapter: Adapter = {
             cliOwnership.push({ field, owned: false });
           }
         });
+        // Entrada propia del panel: solo se retira el string canónico único; un
+        // duplicado o una forma de objeto ajena se preservan. La marca se libera.
+        if (cliOwned?.has(pluginsEntryField) === true) {
+          const parsed = parseJsoncObject(content);
+          const entries = parsed.value !== null && Array.isArray(parsed.value["plugins"]) ? parsed.value["plugins"] : null;
+          if (entries !== null) {
+            const indices = entries.flatMap((entry, index) => (entry === TUI_PLUGIN_ENTRY ? [index] : []));
+            const objectForm = entries.some((entry) => objectValue(entry)?.["package"] === TUI_PLUGIN_ENTRY);
+            if (indices.length === 1 && !objectForm) {
+              content = editJsoncArray(content, { kind: "remove", path: ["plugins"], index: indices[0]! });
+            }
+          }
+          cliOwnership.push({ field: pluginsEntryField, owned: false });
+        }
+        // Contenedor propio creado: se poda solo si quedó vacío y sin
+        // comentarios ajenos; un `plugins` preexistente nunca se toca.
+        if (cliOwned?.has(pluginsContainerField) === true) {
+          content = editJsoncArray(content, { kind: "prune", path: ["plugins"] });
+          cliOwnership.push({ field: pluginsContainerField, owned: false });
+        }
         actions.push({
           kind: "write",
           target: cliFile,

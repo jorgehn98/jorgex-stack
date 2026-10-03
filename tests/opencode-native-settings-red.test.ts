@@ -380,13 +380,14 @@ function t19CliDefaults(configDir: string): Record<string, unknown> {
       volume: 0.1,
       sounds: {
         done: sound("done.wav"),
-        subagent_done: sound("done.wav"),
-        question: sound("attention.wav"),
-        permission: sound("attention.wav"),
-        error: sound("attention.wav"),
-        default: sound("attention.wav"),
+        subagent_done: sound("silent.wav"),
+        question: sound("silent.wav"),
+        permission: sound("silent.wav"),
+        error: sound("silent.wav"),
+        default: sound("silent.wav"),
       },
     },
+    plugins: ["./tui/subagents"],
   };
 }
 
@@ -414,33 +415,45 @@ function t19CliOwnedFields(): string[] {
     field("attention", "sounds", "permission"),
     field("attention", "sounds", "error"),
     field("attention", "sounds", "default"),
+    field("plugins"),
+    field("plugins", "./tui/subagents"),
   ];
 }
 
 /**
- * Duración en segundos de un WAV RIFF parseado de forma independiente (sin
- * importar utilidades de implementación): recorre chunks y usa `data`/`byteRate`.
+ * Parsea un WAV RIFF PCM de forma independiente (sin utilidades de
+ * implementación): duración, bits por muestra y muestras PCM16 del chunk `data`.
  */
-function wavDurationSeconds(bytes: Buffer): number {
+function wavPcm16(bytes: Buffer): { duration: number; bitsPerSample: number; samples: Int16Array } {
   if (bytes.length < 12 || bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WAVE") {
     throw new Error("no es un contenedor RIFF/WAVE");
   }
   let offset = 12;
   let byteRate = 0;
+  let bitsPerSample = 0;
+  let dataStart = 0;
   let dataSize = 0;
+  let foundData = false;
   while (offset + 8 <= bytes.length) {
     const id = bytes.subarray(offset, offset + 4).toString("ascii");
     const size = bytes.readUInt32LE(offset + 4);
     const body = offset + 8;
-    if (id === "fmt ") byteRate = bytes.readUInt32LE(body + 8);
-    else if (id === "data") {
+    if (id === "fmt ") {
+      byteRate = bytes.readUInt32LE(body + 8);
+      bitsPerSample = bytes.readUInt16LE(body + 14);
+    } else if (id === "data") {
+      dataStart = body;
       dataSize = size;
+      foundData = true;
       break;
     }
     offset = body + size + (size % 2);
   }
-  if (byteRate <= 0) throw new Error("WAV sin byteRate");
-  return dataSize / byteRate;
+  if (byteRate <= 0 || !foundData) throw new Error("WAV sin fmt/data");
+  if (bitsPerSample !== 16) throw new Error(`WAV no PCM16 (${bitsPerSample} bits)`);
+  const samples = new Int16Array(Math.floor(dataSize / 2));
+  for (let i = 0; i < samples.length; i++) samples[i] = bytes.readInt16LE(dataStart + i * 2);
+  return { duration: dataSize / byteRate, bitsPerSample, samples };
 }
 
 describe("cli.json compacto (B3)", () => {
@@ -598,66 +611,153 @@ describe("cli.json compacto (B3)", () => {
     });
   });
 
-  it("install real proyecta los dos WAV T19, reconcilia byte-idéntico y uninstall los retira owned con backup", async () => {
+  it("install real proyecta done.wav audible y silent.wav ×5 sin attention.wav, reconcilia y uninstall los retira owned con backup", async () => {
     await withIsolatedHome(async ({ homeDir, configDir }) => {
       const doneWav = path.join(configDir, "sounds", "done.wav");
+      const silentWav = path.join(configDir, "sounds", "silent.wav");
       const attentionWav = path.join(configDir, "sounds", "attention.wav");
 
       await runOpencodeInstall(configDir);
 
-      // 1) Dos targets reales derivados del mismo configDir.
+      // 1) Dos targets reales derivados del mismo configDir; attention.wav ausente.
       expect(fs.existsSync(doneWav), "falta sounds/done.wav tras install").toBe(true);
-      expect(fs.existsSync(attentionWav), "falta sounds/attention.wav tras install").toBe(true);
+      expect(fs.existsSync(silentWav), "falta sounds/silent.wav tras install").toBe(true);
+      expect(fs.existsSync(attentionWav), "attention.wav no debe proyectarse").toBe(false);
+      const { stackRoot } = await import("../src/lib/paths.js");
+      expect(
+        fs.existsSync(path.join(stackRoot(), "assets", "opencode", "sounds", "attention.wav")),
+        "attention.wav no debe distribuirse en el paquete",
+      ).toBe(false);
 
-      // 2) Formato RIFF/WAVE válido y duración < 0.5s (oráculo independiente).
+      // 2) done.wav es la única audible; silent.wav es PCM16 todo a cero.
       const doneBytes = fs.readFileSync(doneWav);
-      const attentionBytes = fs.readFileSync(attentionWav);
-      for (const [label, bytes] of [["done", doneBytes], ["attention", attentionBytes]] as const) {
-        expect(bytes.subarray(0, 4).toString("ascii"), `${label}: cabecera RIFF`).toBe("RIFF");
-        expect(bytes.subarray(8, 12).toString("ascii"), `${label}: formato WAVE`).toBe("WAVE");
-        expect(wavDurationSeconds(bytes), `${label}: duración < 0.5s`).toBeLessThan(0.5);
-      }
+      const silentBytes = fs.readFileSync(silentWav);
+      const done = wavPcm16(doneBytes);
+      const silent = wavPcm16(silentBytes);
+      expect(done.samples.length, "done.wav no está vacío").toBeGreaterThan(0);
+      expect(silent.samples.length, "silent.wav no está vacío").toBeGreaterThan(0);
+      expect(done.duration, "done.wav duración < 0.5s").toBeLessThan(0.5);
+      expect(silent.duration, "silent.wav duración < 0.5s").toBeLessThan(0.5);
+      expect([...done.samples].some((sample) => sample !== 0), "done.wav es la única audible").toBe(true);
+      expect([...silent.samples].every((sample) => sample === 0), "silent.wav es PCM16 todo a cero").toBe(true);
 
-      // El path del cliente deriva del mismo configDir que el target real.
+      // El path del cliente deriva del mismo configDir: done audible, 5 alias silenciosos.
       const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8")) as {
-        attention?: { sounds?: { done?: string; default?: string } };
+        attention?: { sounds?: Record<string, string> };
       };
-      expect(cli.attention?.sounds?.done, "el path del cliente deriva del mismo configDir").toBe(doneWav);
-      expect(cli.attention?.sounds?.default, "el path del cliente deriva del mismo configDir").toBe(attentionWav);
+      expect(cli.attention?.sounds?.done, "done apunta al audible").toBe(doneWav);
+      for (const alias of ["subagent_done", "question", "permission", "error", "default"] as const) {
+        expect(cli.attention?.sounds?.[alias], `${alias} apunta al silencioso`).toBe(silentWav);
+      }
 
       // 3) Ownership: solo los dos targets creados entran al manifest owned.
       const { readManifest } = await import("../src/lib/manifest.js");
       const owned = (): string[] => (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file));
       expect(owned(), "el WAV creado se reclama").toContain(path.resolve(doneWav));
-      expect(owned(), "el WAV creado se reclama").toContain(path.resolve(attentionWav));
+      expect(owned(), "el WAV creado se reclama").toContain(path.resolve(silentWav));
+      expect(owned(), "attention.wav no es un target").not.toContain(path.resolve(attentionWav));
 
       // 4) Reconcile: una segunda pasada es byte-idéntica.
       await runOpencodeInstall(configDir);
       expect(fs.readFileSync(doneWav).equals(doneBytes), "reconcile no reescribe done.wav").toBe(true);
-      expect(fs.readFileSync(attentionWav).equals(attentionBytes), "reconcile no reescribe attention.wav").toBe(true);
+      expect(fs.readFileSync(silentWav).equals(silentBytes), "reconcile no reescribe silent.wav").toBe(true);
 
-      // 5) Uninstall: el WAV owned canónico se respalda y se retira.
+      // 5) Uninstall: los WAV owned canónicos se respaldan y se retiran.
       await runOpencodeUninstall(configDir);
       expect(fs.existsSync(doneWav), "uninstall retira el WAV owned").toBe(false);
-      expect(fs.existsSync(attentionWav), "uninstall retira el WAV owned").toBe(false);
+      expect(fs.existsSync(silentWav), "uninstall retira el WAV owned").toBe(false);
       expect(backupContains(homeDir, doneBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
-      expect(backupContains(homeDir, attentionBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
+      expect(backupContains(homeDir, silentBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
 
       // 6) Manual igual/unowned: se conserva sin claim y no se retira.
       fs.mkdirSync(path.dirname(doneWav), { recursive: true });
       fs.writeFileSync(doneWav, doneBytes);
-      fs.writeFileSync(attentionWav, attentionBytes);
+      fs.writeFileSync(silentWav, silentBytes);
       await runOpencodeInstall(configDir);
       expect(fs.readFileSync(doneWav).equals(doneBytes), "un manual igual no se pisa").toBe(true);
-      expect(fs.readFileSync(attentionWav).equals(attentionBytes), "un manual igual no se pisa").toBe(true);
+      expect(fs.readFileSync(silentWav).equals(silentBytes), "un manual igual no se pisa").toBe(true);
       expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(doneWav));
-      expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(attentionWav));
+      expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(silentWav));
 
       await runOpencodeUninstall(configDir);
       expect(fs.existsSync(doneWav), "un WAV unowned no se borra").toBe(true);
-      expect(fs.existsSync(attentionWav), "un WAV unowned no se borra").toBe(true);
+      expect(fs.existsSync(silentWav), "un WAV unowned no se borra").toBe(true);
       expect(fs.readFileSync(doneWav).equals(doneBytes)).toBe(true);
-      expect(fs.readFileSync(attentionWav).equals(attentionBytes)).toBe(true);
+      expect(fs.readFileSync(silentWav).equals(silentBytes)).toBe(true);
+    });
+  });
+
+  it("registra ./tui/subagents en plugins JSONC preservando comentarios, Herdr, objeto manual y disable directives", async () => {
+    await withIsolatedHome(async ({ configDir }) => {
+      const cliFile = path.join(configDir, "cli.json");
+      const original = [
+        "{",
+        '  // preferencias del usuario',
+        '  "theme": { "name": "user-theme" },',
+        '  "plugins": [',
+        '    "./herdr-opencode", // Herdr manual',
+        "    {",
+        '      "package": "@acme/opencode-plugin",',
+        '      "options": { "enabled": true }',
+        "    },",
+        '    "-acme.reviewer" // disable directive ajena',
+        "  ]",
+        "}",
+        "",
+      ].join("\n");
+      fs.writeFileSync(cliFile, original);
+
+      await runOpencodeInstall(configDir);
+
+      // La entrada propia se añade al array preservando comentarios y ajenos.
+      const afterInstall = fs.readFileSync(cliFile, "utf8");
+      expect(afterInstall, "falta el registro ./tui/subagents").toContain('"./tui/subagents"');
+      expect(afterInstall, "se preserva el comentario del usuario").toContain("// preferencias del usuario");
+      expect(afterInstall, "se preserva el comentario del array").toContain("// Herdr manual");
+      expect(afterInstall, "se preserva la disable directive ajena").toContain('"-acme.reviewer"');
+      expect(afterInstall, "se preserva el objeto manual con opciones").toContain('"@acme/opencode-plugin"');
+      expect(afterInstall, "se preservan las opciones manuales").toContain('"enabled": true');
+      expect(afterInstall, "se preserva Herdr").toContain('"./herdr-opencode"');
+
+      // Ownership semántico sobre la entrada, nunca por índice posicional.
+      const segments = ownedSegments(await readOwnedFields(configDir));
+      expect(segments, "el claim debe ser la entrada semántica").toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
+      expect(
+        segments.some((parts) => /^\d+$/.test(parts[2] ?? "")),
+        "sin ownership por índice de array",
+      ).toBe(false);
+
+      // Idempotencia: segunda pasada byte-idéntica.
+      await runOpencodeInstall(configDir);
+      expect(fs.readFileSync(cliFile, "utf8"), "reconcile no reescribe cli.json").toBe(afterInstall);
+
+      // Unmerge: retira solo la entrada propia, preserva comentarios y ajenos.
+      await runOpencodeUninstall(configDir);
+      const afterUninstall = fs.readFileSync(cliFile, "utf8");
+      expect(afterUninstall, "uninstall retira la entrada propia").not.toContain('"./tui/subagents"');
+      expect(afterUninstall, "se preserva el comentario del usuario").toContain("// preferencias del usuario");
+      expect(afterUninstall, "se preserva el comentario del array").toContain("// Herdr manual");
+      expect(afterUninstall, "se preserva Herdr").toContain('"./herdr-opencode"');
+      expect(afterUninstall, "se preserva el objeto manual con opciones").toContain('"@acme/opencode-plugin"');
+      expect(afterUninstall, "se preservan las opciones manuales").toContain('"enabled": true');
+      expect(afterUninstall, "se preserva la disable directive ajena").toContain('"-acme.reviewer"');
+    });
+  });
+
+  it("un ./tui/subagents manual igual al canon se preserva sin claim", async () => {
+    await withIsolatedHome(async ({ configDir }) => {
+      const cliFile = path.join(configDir, "cli.json");
+      fs.writeFileSync(cliFile, JSON.stringify({ plugins: ["./tui/subagents"] }, null, 2) + "\n");
+
+      await runOpencodeInstall(configDir);
+
+      const installed = JSON.parse(fs.readFileSync(cliFile, "utf8")) as { plugins?: unknown[] };
+      expect(
+        installed.plugins?.filter((entry) => entry === "./tui/subagents"),
+        "no debe duplicar una entrada manual igual",
+      ).toHaveLength(1);
+      const segments = ownedSegments(await readOwnedFields(configDir));
+      expect(segments, "la igualdad de valor no acredita ownership").not.toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
     });
   });
 });
