@@ -8,6 +8,7 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import type { InstallContext } from "../src/adapters/types.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { NATIVE_OPENCODE_PERMISSIONS } from "./helpers/opencode-native-contract.js";
 
 /** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
@@ -63,6 +64,35 @@ vi.mock("../src/lib/detect.js", async () => {
     "../src/lib/detect.js",
   );
   return { ...actual, detectEngram: () => null, runDetectedBin: () => "1.2.3" };
+});
+
+/**
+ * Frontera Browser Control (Spec T13): esta suite prueba el reseed/backup/restore
+ * de permisos nativos OpenCode, no el publicador de Browser Control. El
+ * coordinador real adquiriría el paquete publicado y sondearía el relay; aquí se
+ * sustituye SOLO esa frontera por un `ready` sintético, conservando reales
+ * install/adapter/backups/manifest/permisos/Engram. El doble NO certifica bytes
+ * oficiales.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
 });
 
 const tmpRoots: string[] = [];

@@ -87,6 +87,35 @@ export interface InstallContext {
   devtoolsMcpObservedVersion?: { version: string; integrity: string };
   /** Verified Stack-owned Node guard, supplied by the managed browser lifecycle. */
   devtoolsMcpInvocation?: { command: string; args: readonly string[] };
+  /**
+   * Invocación MCP completa del guard Browser Control verificado (launcher
+   * `active`): sus `args` ya incluyen el subcomando `mcp`. No autoriza un
+   * PATH/global arbitrario. El adapter proyecta `command: [command, ...args]`
+   * sin anexar `mcp` de nuevo, porque el guard verifica exactamente esos
+   * argumentos. Su ausencia es Browser Control pendiente, nunca un MCP
+   * apuntando a bytes ausentes.
+   */
+  browserControlInvocation?: { command: string; args: readonly string[] };
+  /**
+   * SKILL.md oficial retenido en la release `active` verificada (byte-identical).
+   * Solo lo llena el lifecycle Browser Control para OpenCode; se proyecta en
+   * `<configDir>/skills/browser-control/SKILL.md`, nunca en el canon compartido
+   * `~/.agents/skills`. Su ausencia no proyecta skill ni declara la capacidad.
+   */
+  browserControlSkillSource?: string;
+  /**
+   * Invocación completa del launcher `active` PREVIO (A) cuando el lifecycle
+   * sustituyó A por B. Permite autenticar un comando gestionado existente como
+   * el vector exacto de A antes de reemplazarlo por B; nunca autoriza un PATH ni
+   * una entrada manual ajena.
+   */
+  browserControlPreviousInvocation?: { command: string; args: readonly string[] };
+  /**
+   * SKILL.md retenido en la release `active` previa (A) antes de sustituirla por
+   * B: fingerprint de bytes para autenticar el target owned. Un target que no
+   * coincide ni con B ni con A se conserva y bloquea.
+   */
+  browserControlPreviousSkillSource?: string;
   /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
   playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */

@@ -1,0 +1,666 @@
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import {
+  activateVerifiedBrowserArtifact,
+  prepareVerifiedBrowserRelease,
+  type BrowserPackageRelease,
+} from "./browser-provider.js";
+import {
+  activateManagedBrowserTree,
+  loadVerifiedManagedBrowserReceipt,
+  planManagedBrowserInvocation,
+  resolveStagedBrowserEntry,
+  rollbackManagedBrowserActivation,
+  type ManagedBrowserInvocationPlan,
+  type ManagedBrowserReceipt,
+} from "./browser-managed.js";
+import type { StageVerifiedBrowserTreeResult } from "./browser-stage.js";
+
+/**
+ * Browser Control: adquisición verificada del complemento externo y
+ * sondeo cerrado del relay. El namespace candidato es fijo y se deriva dentro
+ * del state root verificado; el pointer que escribe selecciona SOLO un
+ * candidato, nunca el active operativo, y el caller MCP/CLI/skill no lo usa
+ * como fallback.
+ */
+export const BROWSER_CONTROL_PACKAGE = "@opencode-ai/browser-control";
+export const BROWSER_CONTROL_CANDIDATE_DIRNAME = ".browser-control-candidate";
+
+const RELAY_HOST = "127.0.0.1";
+const RELAY_DEFAULT_PORT = 19_989;
+const RELAY_VERSION_PATH = "/version";
+const RELAY_DEADLINE_MS = 2_000;
+const RELAY_MAX_RESPONSE_BYTES = 64 * 1024;
+
+/** Ausencia comprobada, presencia con respuesta válida, o estado incierto. */
+export type BrowserControlRelayStatus = "absent" | "present" | "unknown";
+
+export interface BrowserControlCandidate {
+  readonly candidateDir: string;
+  readonly receipt: ManagedBrowserReceipt;
+  readonly release: BrowserPackageRelease;
+}
+
+export function browserControlCandidateDir(stateDir: string): string {
+  return path.join(stateDir, BROWSER_CONTROL_CANDIDATE_DIRNAME);
+}
+
+/**
+ * Puerto efectivo que usarán CLI/MCP/unidad: `BROWSER_CONTROL_PORT` entero, con
+ * 19989 por defecto SOLO cuando la variable está ausente. Un valor presente pero
+ * en blanco, no entero o fuera de rango no se reinterpreta ni se escanea: la
+ * procedencia es incierta.
+ */
+export function resolveBrowserControlRelayPort(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.BROWSER_CONTROL_PORT;
+  if (raw === undefined) return RELAY_DEFAULT_PORT;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const port = Number(trimmed);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : null;
+}
+
+/**
+ * Resultado crudo y acotado del `/version`: solo ausencia puntual, lectura
+ * incierta o el payload JSON objeto. El cuerpo nunca se registra; el caller
+ * decide qué campos exige. Compartido por el gate de relay y por la prueba de
+ * readiness del servicio, para no duplicar el transporte (agente propio sin
+ * proxy, deadline total y tope de bytes).
+ */
+export type BrowserControlRelayVersionRead =
+  | { readonly status: "absent" }
+  | { readonly status: "unknown"; readonly reason: string }
+  | { readonly status: "present"; readonly payload: Record<string, unknown> };
+
+/**
+ * HTTP Node directo y acotado a `http://127.0.0.1:<puerto>/version`, sin
+ * proxy/redirects/credenciales ni SDK. Solo `ECONNREFUSED` directo contra ese
+ * destino significa ausencia puntual; una respuesta 200 con un objeto JSON es
+ * `present` (el caller valida los campos); cualquier otro error, timeout, aborto
+ * o schema inválido es `unknown`. Nunca registra cuerpos ni URLs de sesión.
+ */
+async function readRelayVersionAtPort(port: number): Promise<BrowserControlRelayVersionRead> {
+  return await new Promise((resolve) => {
+    // Agente propio: nunca el global, de modo que NODE_USE_ENV_PROXY no pueda
+    // reclasificar ECONNREFUSED a través de un proxy implícito.
+    const agent = new http.Agent({ keepAlive: false });
+    let settled = false;
+    let request: http.ClientRequest | null = null;
+    let response: http.IncomingMessage | null = null;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (result: BrowserControlRelayVersionRead): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (request !== null) request.destroy();
+      if (response !== null) response.destroy();
+      agent.destroy();
+      resolve(result);
+    };
+    request = http.request(
+      {
+        host: RELAY_HOST,
+        port,
+        path: RELAY_VERSION_PATH,
+        method: "GET",
+        agent,
+        headers: { accept: "application/json" },
+      },
+      (res) => {
+        response = res;
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        res.on("data", (chunk: Buffer) => {
+          bytes += chunk.length;
+          if (bytes > RELAY_MAX_RESPONSE_BYTES) {
+            finish({ status: "unknown", reason: "respuesta del relay demasiado grande" });
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("error", () => finish({ status: "unknown", reason: "error al leer la respuesta del relay" }));
+        res.on("end", () => {
+          if (settled) return;
+          if (res.statusCode !== 200) {
+            finish({ status: "unknown", reason: `el relay devolvió HTTP ${res.statusCode ?? "desconocido"}` });
+            return;
+          }
+          try {
+            const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+            if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+              finish({ status: "unknown", reason: "el payload del relay no es un objeto JSON" });
+              return;
+            }
+            finish({ status: "present", payload: parsed as Record<string, unknown> });
+          } catch {
+            finish({ status: "unknown", reason: "JSON del relay inválido" });
+          }
+        });
+      },
+    );
+    request.on("error", (error: NodeJS.ErrnoException) => {
+      finish(error.code === "ECONNREFUSED" ? { status: "absent" } : { status: "unknown", reason: `error de red ${error.code ?? "UNKNOWN"}` });
+    });
+    request.on("close", () => {
+      if (timer !== null) clearTimeout(timer);
+    });
+    timer = setTimeout(() => finish({ status: "unknown", reason: "timeout al sondear el relay" }), RELAY_DEADLINE_MS);
+    timer.unref();
+    request.end();
+  });
+}
+
+/**
+ * Sondeo del gate en un puerto ya validado por el caller (procedente del MCP
+ * preservado o del binding del servicio). No acepta URLs ni proxy: reutiliza el
+ * mismo transporte acotado. Un puerto fuera de rango es procedencia incierta.
+ */
+export function probeBrowserControlRelayAtPort(port: number): Promise<BrowserControlRelayStatus> {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return Promise.resolve("unknown");
+  return readRelayVersionAtPort(port).then((read) => {
+    if (read.status !== "present") return read.status;
+    const version = read.payload.version;
+    return typeof version === "string" && version.trim() !== "" ? "present" : "unknown";
+  });
+}
+
+/**
+ * Sondeo del gate de relay: ausente/presente/incierto. Reutiliza el transporte
+ * anterior; `present` exige un 200 con un objeto JSON que declare `version` como
+ * string no vacío.
+ */
+export function probeBrowserControlRelay(env: NodeJS.ProcessEnv = process.env): Promise<BrowserControlRelayStatus> {
+  const port = resolveBrowserControlRelayPort(env);
+  if (port === null) return Promise.resolve("unknown");
+  return probeBrowserControlRelayAtPort(port);
+}
+
+/** Lectura del `/version` en un puerto explícito ya validado (prueba de readiness). */
+export function readBrowserControlRelayVersion(port: number): Promise<BrowserControlRelayVersionRead> {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    return Promise.resolve({ status: "unknown", reason: "puerto de relay inválido" });
+  }
+  return readRelayVersionAtPort(port);
+}
+
+/**
+ * Resuelve el `latest` publicado del proveedor, verifica el SRI del tarball raíz
+ * y retiene el árbol verificado como candidato bajo el namespace fijo. Si ya
+ * existe un candidato verificado que coincide en paquete/versión/SRI, reutiliza
+ * su clausura certificada sin re-staging ni nueva resolución transitiva, sin
+ * reescribir pointer/launcher. Un estado candidato corrupto u huérfano bloquea.
+ * La URL del tarball proviene siempre de metadata fresca, nunca del receipt.
+ */
+export async function retainVerifiedBrowserControlCandidate(options: {
+  stateDir: string;
+  pnpmBin: string;
+  fetchImpl: typeof fetch;
+  stageParent?: string;
+}): Promise<BrowserControlCandidate> {
+  const candidateDir = browserControlCandidateDir(options.stateDir);
+  const existing = loadVerifiedManagedBrowserReceipt(candidateDir, BROWSER_CONTROL_PACKAGE);
+  let receipt: ManagedBrowserReceipt | null = existing;
+  const release = await prepareVerifiedBrowserRelease(BROWSER_CONTROL_PACKAGE, {
+    fetchImpl: options.fetchImpl,
+    ...(options.stageParent === undefined ? {} : { stageParent: options.stageParent }),
+    withVerifiedArtifact: async (context) => {
+      if (
+        receipt !== null &&
+        receipt.version === context.release.version &&
+        receipt.integrity === context.release.integrity
+      ) {
+        return;
+      }
+      receipt = await activateVerifiedBrowserArtifact(context, {
+        stateDir: candidateDir,
+        pnpmBin: options.pnpmBin,
+        fetchImpl: options.fetchImpl,
+      });
+    },
+  });
+  if (receipt === null) {
+    throw new Error("browser-control: la activación del candidato no produjo un receipt");
+  }
+  return { candidateDir, receipt, release };
+}
+
+const BROWSER_CONTROL_SERVER = "browser-control";
+
+/** Skill oficial dentro del paquete físico de la release activa (no el canon compartido). */
+export function browserControlSkillPath(receipt: ManagedBrowserReceipt): string {
+  return path.join(
+    receipt.treePath,
+    ...BROWSER_CONTROL_PACKAGE.split("/"),
+    "skills",
+    BROWSER_CONTROL_SERVER,
+    "SKILL.md",
+  );
+}
+
+/**
+ * Snapshot de proyección del active previo A cuando esta llamada promovió B:
+ * invocación completa del launcher A y fuente de skill retenida. Nunca un
+ * receipt ni un stage crudo; permite al caller autenticar su proyección anterior
+ * (comando/flags gestionados y bytes de skill) antes de sustituirla.
+ */
+export interface BrowserControlPreviousProjection {
+  readonly version: string;
+  readonly invocation: ManagedBrowserInvocationPlan;
+  readonly skillSource: string;
+}
+
+/**
+ * Resultado discriminado del controlador Browser Control. El caller nunca
+ * recibe receipts/stages crudos: `ready` describe únicamente la proyección del
+ * active operativo ya autenticado, `pending` retiene un candidato verificado sin
+ * sustituir al active, y `unavailable` conserva un diagnóstico accionable.
+ */
+export interface BrowserControlReady {
+  readonly kind: "ready";
+  readonly version: string;
+  /** Invocación MCP completa del launcher `active` (sus args ya incluyen `mcp`). */
+  readonly invocation: ManagedBrowserInvocationPlan;
+  /** Ruta absoluta del SKILL.md retenido en la release activa, byte-identical. */
+  readonly skillSource: string;
+  /**
+   * Solo presente cuando esta llamada sustituyó un active A por B. Ausente en
+   * una instalación fresca y en la reutilización idempotente (A ya es B).
+   */
+  readonly previous?: BrowserControlPreviousProjection;
+  /**
+   * Recuperación acotada: solo si esta llamada promovió una release nueva,
+   * restaura el active previo (o lo retira) cuando la proyección del caller
+   * falla. No es un receipt; el candidato retenido nunca se toca.
+   */
+  readonly rollback?: () => Promise<void>;
+}
+
+export interface BrowserControlPending {
+  readonly kind: "pending";
+  readonly candidateVersion: string;
+  readonly reason: string;
+  /** Versión del active previo aún utilizable, si existe. Nunca convierte el pending en ready. */
+  readonly activeVersion?: string;
+}
+
+export interface BrowserControlUnavailable {
+  readonly kind: "unavailable";
+  readonly reason: string;
+}
+
+export type BrowserControlRuntimeResult = BrowserControlReady | BrowserControlPending | BrowserControlUnavailable;
+
+export interface PrepareBrowserControlRuntimeOptions {
+  readonly stateDir: string;
+  readonly pnpmBin: string;
+  readonly fetchImpl: typeof fetch;
+  readonly stageParent?: string;
+  /**
+   * Puerto efectivo del relay ya resuelto y validado por el caller desde la
+   * configuración MCP preservada o el binding autenticado del servicio. Manda
+   * sobre el entorno del proceso. Ausente: se conserva el contrato anterior
+   * (entorno del proceso o `probeRelay` inyectado en tests unitarios).
+   */
+  readonly relayPort?: number;
+  readonly probeRelay?: () => Promise<BrowserControlRelayStatus>;
+}
+
+function runtimeReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function relayPendingReason(status: Exclude<BrowserControlRelayStatus, "absent">): string {
+  return status === "present"
+    ? "el relay de Browser Control está presente y no se puede acreditar que esté inactivo; coordina manualmente con quien lo opera antes de reintentar"
+    : "no se pudo determinar si el relay de Browser Control está presente; compruébalo y coordina antes de reintentar";
+}
+
+/**
+ * Reconstruye la evidencia mínima que conserva el receipt de un candidato
+ * verificado y la promueve al namespace operativo real con el activador
+ * compartido. `nodeModulesPath = receipt.treePath`; el root físico del paquete
+ * es `nodeModules/<pkg>` (confinado, metadata/bin verificados) y el bin
+ * declarado debe coincidir con `receipt.entryPath`. La URL de release proviene
+ * de la adquisición fresca, nunca del receipt (que no guarda tarballUrl).
+ */
+async function promoteVerifiedBrowserControlCandidate(
+  stateDir: string,
+  candidate: BrowserControlCandidate,
+  previous: ManagedBrowserReceipt | null,
+): Promise<ManagedBrowserReceipt> {
+  const receipt = candidate.receipt;
+  const nodeModulesPath = receipt.treePath;
+  const treePath = path.join(nodeModulesPath, ...BROWSER_CONTROL_PACKAGE.split("/"));
+  const staged: StageVerifiedBrowserTreeResult = {
+    treePath,
+    nodeModulesPath,
+    treeSha256: receipt.treeSha256,
+    closure: [...receipt.closure],
+  };
+  const entryPath = resolveStagedBrowserEntry(staged, BROWSER_CONTROL_PACKAGE);
+  if (entryPath !== receipt.entryPath) {
+    throw new Error("browser-control: el binario del candidato no coincide con su receipt verificado");
+  }
+  return activateManagedBrowserTree({
+    stateDir,
+    packageName: BROWSER_CONTROL_PACKAGE,
+    release: {
+      version: receipt.version,
+      tarballUrl: candidate.release.tarballUrl,
+      integrity: receipt.integrity,
+    },
+    staged,
+    entryPath,
+  });
+}
+
+/**
+ * Valida el SKILL.md oficial de una release verificada y devuelve su ruta. Un
+ * árbol con SRI correcto pero sin skill regular, confinada y UTF-8 estricto no
+ * es una release funcional: se reutiliza tanto para el candidato (antes de
+ * publicar) como para el active (al construir `ready`).
+ */
+function assertBrowserControlSkill(receipt: ManagedBrowserReceipt): string {
+  const skillSource = browserControlSkillPath(receipt);
+  let skillStat: fs.Stats;
+  try {
+    skillStat = fs.lstatSync(skillSource);
+  } catch {
+    throw new Error(`la release verificada no contiene la skill oficial (${skillSource})`);
+  }
+  if (!skillStat.isFile() || skillStat.isSymbolicLink()) {
+    throw new Error(`la skill oficial de la release verificada no es un archivo regular (${skillSource})`);
+  }
+  // Confinamiento físico: el SKILL.md debe resolver dentro del árbol verificado.
+  let realSkill: string;
+  try {
+    realSkill = fs.realpathSync(skillSource);
+  } catch {
+    throw new Error(`la skill oficial de la release verificada no se puede resolver (${skillSource})`);
+  }
+  const relative = path.relative(path.resolve(receipt.treePath), path.resolve(realSkill));
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`la skill oficial de la release verificada escapa de su árbol (${skillSource})`);
+  }
+  // UTF-8 estricto: la proyección byte-identical es texto, no bytes opacos.
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(realSkill);
+  } catch {
+    throw new Error(`la skill oficial de la release verificada no se puede leer (${skillSource})`);
+  }
+  if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) {
+    throw new Error(`la skill oficial de la release verificada no es UTF-8 estricto (${skillSource})`);
+  }
+  return skillSource;
+}
+
+function browserControlReadyFromReceipt(
+  stateDir: string,
+  receipt: ManagedBrowserReceipt,
+  rollback?: () => Promise<void>,
+  previous?: BrowserControlPreviousProjection,
+): BrowserControlReady {
+  const skillSource = assertBrowserControlSkill(receipt);
+  return {
+    kind: "ready",
+    version: receipt.version,
+    invocation: planManagedBrowserInvocation(stateDir, BROWSER_CONTROL_PACKAGE, ["mcp"]),
+    skillSource,
+    ...(previous === undefined ? {} : { previous }),
+    ...(rollback === undefined ? {} : { rollback }),
+  };
+}
+
+/**
+ * Controlador cerrado del complemento Browser Control: adquiere el `latest`
+ * verificado (metadata + SRI del tarball raíz), lo retiene en el namespace
+ * candidato, sondea el relay y decide `ready | pending | unavailable`.
+ *
+ * - Active verificado que ya coincide en paquete/versión/SRI con el latest
+ *   recién resuelto: se reutiliza como `ready` (con validación de skill) antes
+ *   del gate, sin promover ni tocar pointer/launcher/relay.
+ * - Relay presente/incierto sin active coincidente: nunca promueve ni reinicia;
+ *   conserva el candidato y reporta pending (con el active previo si existe).
+ * - Ausencia comprobada: promueve el candidato validado al namespace real y
+ *   devuelve la proyección del active, solo si el re-sondeo inmediatamente
+ *   anterior a publicar sigue observando ausencia en el mismo endpoint.
+ * - Corrupción/orfandad en cualquiera de los dos namespaces falla cerrado.
+ */
+export async function prepareBrowserControlRuntime(
+  options: PrepareBrowserControlRuntimeOptions,
+): Promise<BrowserControlRuntimeResult> {
+  // El puerto efectivo ya resuelto por el caller manda: se sondea exactamente
+  // ese destino local, nunca el shell ni una URL/proxy arbitrarios. Sin puerto
+  // explícito se conserva el contrato anterior.
+  const relayPort = options.relayPort;
+  const probe = relayPort === undefined
+    ? (options.probeRelay ?? (() => probeBrowserControlRelay()))
+    : () => probeBrowserControlRelayAtPort(relayPort);
+  const relay = await probe();
+
+  let previousActive: ManagedBrowserReceipt | null;
+  try {
+    previousActive = loadVerifiedManagedBrowserReceipt(options.stateDir, BROWSER_CONTROL_PACKAGE);
+  } catch (error) {
+    return {
+      kind: "unavailable",
+      reason: `el namespace activo gestionado no es válido (${runtimeReason(error)}); no se muta ni se declara la capacidad`,
+    };
+  }
+
+  let candidate: BrowserControlCandidate;
+  try {
+    candidate = await retainVerifiedBrowserControlCandidate({
+      stateDir: options.stateDir,
+      pnpmBin: options.pnpmBin,
+      fetchImpl: options.fetchImpl,
+      ...(options.stageParent === undefined ? {} : { stageParent: options.stageParent }),
+    });
+  } catch (error) {
+    return {
+      kind: "unavailable",
+      reason: `no se pudo verificar el candidato del proveedor (${runtimeReason(error)})`,
+    };
+  }
+
+  const candidateVersion = candidate.receipt.version;
+
+  // El gate de presencia/inactividad aplaza una NUEVA activación, no invalida un
+  // active ya autenticado que coincide con el latest/SRI recién verificado. Se
+  // resuelve la reutilización ANTES del gate: sin nada que promover se devuelve
+  // su proyección ready (con validación de skill) sin tocar pointer/launcher/
+  // relay, aunque haya relay presente, en vez de fabricar un pending del mismo
+  // release.
+  if (
+    previousActive !== null &&
+    previousActive.version === candidate.receipt.version &&
+    previousActive.integrity === candidate.receipt.integrity
+  ) {
+    try {
+      return browserControlReadyFromReceipt(options.stateDir, previousActive);
+    } catch (error) {
+      return { kind: "unavailable", reason: runtimeReason(error) };
+    }
+  }
+
+  if (relay !== "absent") {
+    return {
+      kind: "pending",
+      candidateVersion,
+      reason: relayPendingReason(relay),
+      ...(previousActive === null ? {} : { activeVersion: previousActive.version }),
+    };
+  }
+
+  // Pre-publicación: un árbol verificado sin la skill oficial no es una release
+  // funcional. Se valida el candidato ANTES de tocar el pointer operativo, de
+  // modo que un fallo aquí no publica un active roto.
+  try {
+    assertBrowserControlSkill(candidate.receipt);
+  } catch (error) {
+    return { kind: "unavailable", reason: runtimeReason(error) };
+  }
+
+  // Captura autenticada del active A ANTES de publicar B: la invocación completa
+  // del launcher A y la fuente de skill retenida. El caller la usa para
+  // autenticar la proyección previa (comando/flags y bytes de skill) antes de
+  // sustituirla; si no se puede reconstruir, no se publica una release nueva.
+  let previousProjection: BrowserControlPreviousProjection | undefined;
+  if (previousActive !== null) {
+    try {
+      previousProjection = {
+        version: previousActive.version,
+        invocation: planManagedBrowserInvocation(options.stateDir, BROWSER_CONTROL_PACKAGE, ["mcp"]),
+        // Valida la skill del active A (existencia, regularidad, confinamiento,
+        // UTF-8) antes de publicar B: una proyección previa no autenticable no
+        // autoriza la sustitución.
+        skillSource: assertBrowserControlSkill(previousActive),
+      };
+    } catch (error) {
+      return {
+        kind: "unavailable",
+        reason: `no se pudo autenticar la proyección previa del active (${runtimeReason(error)}); no se publica una release nueva`,
+      };
+    }
+  }
+
+  // Re-sondeo del MISMO endpoint efectivo inmediatamente antes de publicar: la
+  // observación inicial se tomó antes de la adquisición/retención/autenticación
+  // asíncronas. Un relay que aparezca en ese intervalo debe aplazar la
+  // promoción (pending honesto con A+B), no ser sustituido por B. Se reutiliza
+  // la sonda ya capturada (mismo puerto/transporte), sin re-resolver entorno,
+  // URL ni proxy.
+  const lateRelay = await probe();
+  if (lateRelay !== "absent") {
+    return {
+      kind: "pending",
+      candidateVersion,
+      reason: relayPendingReason(lateRelay),
+      ...(previousActive === null ? {} : { activeVersion: previousActive.version }),
+    };
+  }
+
+  let promoted: ManagedBrowserReceipt;
+  try {
+    promoted = await promoteVerifiedBrowserControlCandidate(options.stateDir, candidate, previousActive);
+  } catch (error) {
+    return {
+      kind: "unavailable",
+      reason: `no se pudo publicar el candidato verificado (${runtimeReason(error)})`,
+    };
+  }
+
+  const rollback = async (): Promise<void> => {
+    await rollbackManagedBrowserActivation(
+      options.stateDir,
+      BROWSER_CONTROL_PACKAGE,
+      promoted,
+      previousActive,
+    );
+  };
+
+  // La proyección del active puede fallar tras publicar el pointer (p.ej. el plan
+  // de invocación). Se restaura el active previo (o se retira) con el rollback
+  // existente; si el rollback también falla, el resultado lo hace observable sin
+  // fabricar ausencia: conserva el error primario y la recuperación pendiente.
+  try {
+    return browserControlReadyFromReceipt(options.stateDir, promoted, rollback, previousProjection);
+  } catch (error) {
+    const primary = runtimeReason(error);
+    try {
+      await rollback();
+    } catch (rollbackError) {
+      return {
+        kind: "unavailable",
+        reason: `la release promovida no se pudo proyectar (${primary}); además el rollback al active previo falló (${runtimeReason(rollbackError)}); revisa el receipt gestionado antes de reintentar`,
+      };
+    }
+    return { kind: "unavailable", reason: primary };
+  }
+}
+
+/**
+ * Frontera offline real del mismo complemento: lee ÚNICAMENTE el active
+ * operativo ya verificado y sus datos mínimos de proyección (`ready |
+ * unavailable`), sin adquirir el `latest`, sondear relay/manager, activar,
+ * retener/usar el candidato ni reparar. Reutiliza la validación estricta del
+ * receipt activo y la proyección cacheada —skill regular/confinada/UTF-8 estricta
+ * e invocación MCP completa—, nunca el preparador de adquisición. Uninstall y
+ * doctor consumen esta lectura; ausencia o corrupción se diagnostican como
+ * `unavailable` sin lanzar.
+ */
+export function inspectCachedBrowserControlRuntime(
+  stateDir: string,
+): BrowserControlReady | BrowserControlUnavailable {
+  let receipt: ManagedBrowserReceipt | null;
+  try {
+    receipt = loadVerifiedManagedBrowserReceipt(stateDir, BROWSER_CONTROL_PACKAGE);
+  } catch (error) {
+    return {
+      kind: "unavailable",
+      reason: `el namespace activo gestionado no es válido (${runtimeReason(error)}); no se declara la capacidad`,
+    };
+  }
+  if (receipt === null) {
+    return {
+      kind: "unavailable",
+      reason: "no hay un active gestionado verificado que acredite la proyección de Browser Control",
+    };
+  }
+  try {
+    return browserControlReadyFromReceipt(stateDir, receipt);
+  } catch (error) {
+    return { kind: "unavailable", reason: runtimeReason(error) };
+  }
+}
+
+/**
+ * Lectura offline mínima del namespace candidato, separada del active: usa el
+ * mismo verificador estricto del receipt sobre el directorio candidato fijo,
+ * sin adquirir, sondear, activar, reparar ni caer de vuelta al active. Solo
+ * expone la versión retenida y si su identidad coincide con el active
+ * (paquete/versión/SRI del receipt real, derivado aquí dentro), o la
+ * ausencia/el motivo de invalidez; nunca el receipt crudo ni sus sha. Una
+ * ausencia es un estado legítimo, no un fallback.
+ */
+export type BrowserControlCachedCandidate =
+  | { readonly kind: "retained"; readonly version: string; readonly identityMatchesActive: boolean }
+  | { readonly kind: "absent" }
+  | { readonly kind: "invalid"; readonly reason: string };
+
+export function inspectCachedBrowserControlCandidate(stateDir: string): BrowserControlCachedCandidate {
+  const candidateDir = browserControlCandidateDir(stateDir);
+  let receipt: ManagedBrowserReceipt | null;
+  try {
+    receipt = loadVerifiedManagedBrowserReceipt(candidateDir, BROWSER_CONTROL_PACKAGE);
+  } catch (error) {
+    return { kind: "invalid", reason: runtimeReason(error) };
+  }
+  if (receipt === null) return { kind: "absent" };
+  return {
+    kind: "retained",
+    version: receipt.version,
+    identityMatchesActive: candidateCoincidesWithActive(stateDir, receipt),
+  };
+}
+
+/**
+ * Identidad estricta del candidato frente al active real: mismo paquete
+ * verificado (mismo verificador estricto del receipt) y coincidencia de versión
+ * Y SRI raíz. No basta la versión. Un active ausente o inválido no permite
+ * probar la coincidencia, así que se informa `false` (no una supuesta
+ * coincidencia): el candidato conserva su diagnóstico honesto de pendiente.
+ */
+function candidateCoincidesWithActive(stateDir: string, candidate: ManagedBrowserReceipt): boolean {
+  let active: ManagedBrowserReceipt | null;
+  try {
+    active = loadVerifiedManagedBrowserReceipt(stateDir, BROWSER_CONTROL_PACKAGE);
+  } catch {
+    return false;
+  }
+  return (
+    active !== null && active.version === candidate.version && active.integrity === candidate.integrity
+  );
+}

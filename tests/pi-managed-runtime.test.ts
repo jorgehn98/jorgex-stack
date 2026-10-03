@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerOwnedResourceCleanup } from "./helpers/bounded-process.js";
+import { createOwnedVerificationHome, removeTemporaryRoots, resolveVerificationDiskBase } from "./helpers/pnpm-tooling.js";
 
 const playwrightRefreshMock = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/pi-browser-update.js", () => ({ refreshPiPlaywright: playwrightRefreshMock }));
@@ -35,6 +38,73 @@ vi.mock("../src/lib/browser-managed.js", async (importOriginal) => ({
   detectChromiumExecutable: chromiumDetectionMock,
   loadVerifiedManagedBrowserReceipt: vi.fn(() => ({ version: DEVTOOLS_VERSION, integrity: DEVTOOLS_INTEGRITY })),
 }));
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// This file exercises real native derivation from the process HOME: the
+// managed runtime reads `os.homedir()` and `src/lib/paths.ts` captures HOME at
+// import time. A host with a managed Pi receipt would flip
+// `nativeFresh`/`installedNative` and leak real state into the assertions, so
+// every test runs against a private HOME/XDG/TMP created before the tested
+// modules are imported. Tests that need their own HOME still override it.
+const isolatedHomeRoots: string[] = [];
+registerOwnedResourceCleanup(
+  "pi-managed-runtime-isolated-home",
+  () => removeTemporaryRoots(isolatedHomeRoots),
+);
+const ISOLATED_ENV_KEYS = [
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "PI_CODING_AGENT_DIR",
+] as const;
+let isolatedHomeRoot: string | undefined;
+let isolatedSavedEnv: Map<string, string | undefined> | undefined;
+
+beforeEach(() => {
+  const diskOverride = process.env.JORGEX_VERIFICATION_DISK_ROOT;
+  const baseEnv = diskOverride !== undefined
+    ? process.env
+    : fs.existsSync("/var/tmp")
+      ? { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" }
+      : process.env;
+  const base = resolveVerificationDiskBase({ repoRoot: REPO_ROOT, env: baseEnv });
+  const owned = createOwnedVerificationHome({
+    base,
+    prefix: ".jorgex-pi-managed-home-",
+    register: (root) => isolatedHomeRoots.push(root),
+  });
+  const xdgState = path.join(owned.root, "xdg-state");
+  fs.mkdirSync(xdgState, { recursive: true });
+  isolatedHomeRoot = owned.root;
+  isolatedSavedEnv = new Map();
+  for (const key of ISOLATED_ENV_KEYS) isolatedSavedEnv.set(key, process.env[key]);
+  for (const [key, value] of Object.entries(owned.env)) process.env[key] = value;
+  process.env.XDG_STATE_HOME = xdgState;
+  delete process.env.PI_CODING_AGENT_DIR;
+});
+
+afterEach(() => {
+  if (isolatedSavedEnv !== undefined) {
+    for (const key of ISOLATED_ENV_KEYS) {
+      const previous = isolatedSavedEnv.get(key);
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+    isolatedSavedEnv = undefined;
+  }
+  const roots = isolatedHomeRoots.splice(0);
+  if (roots.length > 0) removeTemporaryRoots(roots);
+  isolatedHomeRoot = undefined;
+});
 
 type Operation = "install" | "sync" | "models" | "doctor" | "uninstall" | "update";
 type ProjectionOperation = Exclude<Operation, "models" | "update">;
@@ -1914,6 +1984,11 @@ describe("Pi managed package and projection coordination", () => {
 
       expect(runNativePiMcpPhase).toHaveBeenCalledTimes(1);
       expect(phaseInputs[0]).toMatchObject({ engramTypeboxCompat: true, fresh: true });
+      // Anti-leak: the phase derives its home from this test's private HOME,
+      // never from a host Pi install.
+      expect(isolatedHomeRoot).toBeDefined();
+      const phaseHomeDir = (phaseInputs[0] as { homeDir?: string }).homeDir;
+      expect(phaseHomeDir?.startsWith(isolatedHomeRoot!)).toBe(true);
     } finally {
       vi.doUnmock("../src/lib/pi-runtime.js");
       vi.doUnmock("../src/lib/pi-projection-lifecycle.js");

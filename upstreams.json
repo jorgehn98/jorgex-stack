@@ -59,7 +59,14 @@
       "version": null,
       "strategy": "provider-managed",
       "reviewed": "2026-09-24",
-      "note": "CLI global compartido por la máquina, camino recomendado opt-in con smoke de navegador; preferencia observada por máquina; provider-managed sin re-pin manual ni selector fijo futuro"
+      "note": "Árbol Stack gestionado y verificado con guard (no un CLI global compartido); opt-in para los runtimes distintos de OpenCode; OpenCode v2 usa Browser Control obligatorio (sin selector Playwright CLI). provider-managed sin re-pin manual ni selector fijo futuro"
+    },
+    "browser-control": {
+      "source": "npm:@opencode-ai/browser-control",
+      "version": null,
+      "strategy": "provider-managed",
+      "reviewed": "2026-10-02",
+      "note": "CLI+skill+MCP oficiales; provider gestiona la versión (rolling/latest) con SRI verificado y guard de ejecución; solo OpenCode v2. Último observado latest 0.8.3 (SRI sha512) como referencia informativa, sin fijarlo"
     }
   },
   "skills": {

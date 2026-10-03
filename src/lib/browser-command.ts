@@ -29,19 +29,47 @@ export function runManagedPlaywrightCommand(args: readonly string[], stateDir = 
   return result.status ?? 1;
 }
 
+/**
+ * Revalidates the verified active receipt and spawns its guarded launcher.
+ * `planManagedBrowserInvocation` re-checks tree/launcher on every call, so a
+ * missing, drifted or manipulated runtime fails closed before any provider code
+ * runs; there is no PATH, global or candidate fallback.
+ */
+function runVerifiedManagedBrowser(
+  stateDir: string,
+  packageName: "@playwright/cli" | "@opencode-ai/browser-control",
+  args: readonly string[],
+  options: { captureOutput?: boolean; timeoutMs?: number } = {},
+) {
+  const plan = planManagedBrowserInvocation(stateDir, packageName, args);
+  return spawnSync(plan.command, [...plan.args], {
+    encoding: "utf8", stdio: options.captureOutput ? "pipe" : "inherit", shell: false,
+    timeout: options.timeoutMs ?? 120_000, maxBuffer: 2 * 1024 * 1024,
+    env: { ...process.env, NO_UPDATE_NOTIFIER: "1" },
+  });
+}
+
 /** Install/doctor can invoke the verified tree before opt-in is persisted. */
 export function runVerifiedManagedPlaywright(
   stateDir: string,
   args: readonly string[],
   options: { captureOutput?: boolean; timeoutMs?: number } = {},
 ) {
-  const plan = planManagedBrowserInvocation(stateDir, "@playwright/cli", args);
-  const result = spawnSync(plan.command, [...plan.args], {
-    encoding: "utf8", stdio: options.captureOutput ? "pipe" : "inherit", shell: false,
-    timeout: options.timeoutMs ?? 120_000, maxBuffer: 2 * 1024 * 1024,
-    env: { ...process.env, NO_UPDATE_NOTIFIER: "1" },
-  });
-  return result;
+  return runVerifiedManagedBrowser(stateDir, "@playwright/cli", args, options);
+}
+
+/**
+ * `jorgex-stack browser control <args>`: forwards the provider's own arguments
+ * (including `--help`/`--json`/`--session`/`--file`) exactly to the verified
+ * active Browser Control runtime, without adding an `mcp` argument.
+ */
+export function runManagedBrowserControlCommand(args: readonly string[], stateDir = dataDir()): number {
+  // `timeoutMs: 0` disables Stack's spawnSync deadline: foreground `serve`,
+  // human handoff and recording outlive any fixed budget, so the provider's own
+  // deadline or the caller governs. Playwright keeps its 120s default.
+  const result = runVerifiedManagedBrowser(stateDir, "@opencode-ai/browser-control", args, { timeoutMs: 0 });
+  if (result.error !== undefined) throw result.error;
+  return result.status ?? 1;
 }
 
 /** No global pnpm lookup: smoke Chromium from the authenticated managed tree. */

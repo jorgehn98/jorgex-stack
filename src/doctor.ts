@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import * as p from "@clack/prompts";
 import type { InstallModePreference, RuntimeId, SelectableRuntimeId } from "./adapters/types.js";
 import { ADAPTERS, buildPlan, collectAllCurrentTargets, diffPlan, makeContext } from "./install.js";
@@ -9,9 +10,15 @@ import { DEFAULT_INSTALL_MODE_PREFERENCE, loadInstallModePreference } from "./li
 import { findOrphans, readManifest } from "./lib/manifest.js";
 import { modelMapFile } from "./lib/model-map.js";
 import { piAdapter, readPiProviderReceiptReport, type PiProviderReceiptReport } from "./adapters/pi.js";
-import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
+import { PI_RUNTIME_CANDIDATE } from "./lib/pi-runtime.js";
+import { hasHealthyManagedMarkdownMarkers, parseJsoncObject, upsertMarkdownSection } from "./lib/filemerge.js";
 import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
-import { HOME } from "./lib/paths.js";
+import { dataDir, HOME } from "./lib/paths.js";
+import {
+  inspectCachedBrowserControlCandidate,
+  inspectCachedBrowserControlRuntime,
+  type BrowserControlReady,
+} from "./lib/browser-control-runtime.js";
 import { OPENCODE_OFFICIAL_SETUP_V2_REASON } from "./lib/official-engram-setup.js";
 import {
   type PlaywrightBrowserCacheState,
@@ -130,6 +137,142 @@ export function resolvePlaywrightDoctorState(input: PlaywrightDoctorState): Reso
   return { status: "healthy" };
 }
 
+const BROWSER_CONTROL_SERVER = "browser-control";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Fichero efectivo de config de OpenCode con la misma selección que la
+ * proyección (jsonc gana; coexistencia ambigua falla cerrado). Solo lectura.
+ */
+function opencodeBrowserControlConfigFile(configDir: string): { file: string } | { conflict: string[] } {
+  const json = path.join(configDir, "opencode.json");
+  const jsonc = path.join(configDir, "opencode.jsonc");
+  const hasJson = fs.existsSync(json);
+  const hasJsonc = fs.existsSync(jsonc);
+  if (hasJson && hasJsonc) return { conflict: [json, jsonc] };
+  return { file: hasJsonc ? jsonc : json };
+}
+
+/**
+ * Entrada `browser-control` compatible con el launcher gestionado: local,
+ * habilitada/expuesta y command exactamente `[command, ...args]`. Mismos
+ * campos que autentica la proyección de install; los campos ajenos del usuario
+ * no invalidan la entrada.
+ */
+function isManagedBrowserControlServer(
+  value: unknown,
+  invocation: { command: string; args: readonly string[] },
+): boolean {
+  const entry = asRecord(value);
+  if (entry === null || entry["type"] !== "local") return false;
+  if (entry["disabled"] === true || entry["enabled"] === false || entry["codemode"] === false) return false;
+  const command = entry["command"];
+  return Array.isArray(command)
+    && command.every((part) => typeof part === "string")
+    && isDeepStrictEqual(command, [invocation.command, ...invocation.args]);
+}
+
+/**
+ * Problemas de la proyección nativa obligatoria del `active` verificado, por
+ * capa (skill y MCP), con el mismo parser JSONC y el comparador estructural de
+ * la proyección de install. Vacío = canónica. No adquiere, sondea, adopta ni
+ * repara: la proyección no coincide se diagnostica, no se corrige.
+ */
+function browserControlProjectionProblems(configDir: string, active: BrowserControlReady): string[] {
+  const problems: string[] = [];
+  const skillTarget = path.join(configDir, "skills", BROWSER_CONTROL_SERVER, "SKILL.md");
+  const [skillChange] = diffPlan([{ kind: "copy", source: active.skillSource, target: skillTarget }]);
+  if (skillChange?.status !== "unchanged") {
+    problems.push("la skill oficial 'browser-control' está ausente o con bytes distintos del active verificado");
+  }
+  const selection = opencodeBrowserControlConfigFile(configDir);
+  if ("conflict" in selection) {
+    problems.push("coexisten 'opencode.json' y 'opencode.jsonc'; la proyección efectiva es ambigua");
+    return problems;
+  }
+  let source: string | null;
+  try {
+    source = readDoctorTextIfExists(selection.file);
+  } catch {
+    problems.push(`no se puede leer la config de OpenCode (${selection.file}); revisa archivos y permisos`);
+    return problems;
+  }
+  if (source === null) {
+    problems.push("el MCP 'browser-control' no está proyectado (config de OpenCode ausente)");
+    return problems;
+  }
+  const parsed = parseJsoncObject(source);
+  if (parsed.value === null) {
+    problems.push(`la config de OpenCode no es JSONC válido (${parsed.error ?? "desconocido"}); se conserva sin adoptar`);
+    return problems;
+  }
+  const mcp = asRecord(parsed.value["mcp"]);
+  const entry = asRecord(mcp?.["servers"])?.[BROWSER_CONTROL_SERVER] ?? mcp?.[BROWSER_CONTROL_SERVER];
+  if (entry === undefined) {
+    problems.push("el MCP 'browser-control' no está proyectado");
+  } else if (!isManagedBrowserControlServer(entry, active.invocation)) {
+    problems.push("el MCP 'browser-control' no coincide con el launcher gestionado verificado (type/command/flags)");
+  }
+  return problems;
+}
+
+/**
+ * Diagnóstico solo-lectura de Browser Control: separa el
+ * active operativo ya autenticado del candidato verificado retenido usando las
+ * lecturas cacheadas del complemento, sin adquirir el proveedor, sondear el
+ * relay, invocar el manager, activar, reparar ni usar el candidato como
+ * fallback. El candidato nunca se presenta como la release activa/utilizable:
+ * solo active acreditado cuenta como proyección operativa; extensión, navegador
+ * y relay conservan su diagnóstico independiente. La proyección nativa
+ * obligatoria (skill + MCP) se diagnostica en su propia capa: un active
+ * cacheado verificado no implica que el MCP/skill proyectados sean correctos.
+ * Cuenta como problema el active ausente/inválido, la proyección ausente/desviada
+ * y el candidato corrupto; un candidato pendiente retenido es informativo.
+ */
+function reportBrowserControl(stateDir: string, configDir: string): number {
+  let problems = 0;
+  const active = inspectCachedBrowserControlRuntime(stateDir);
+  if (active.kind === "ready") {
+    const projectionProblems = browserControlProjectionProblems(configDir, active);
+    if (projectionProblems.length === 0) {
+      p.log.success(
+        `Browser Control: active ${active.version} verificado con su proyección gestionada; la extensión, el navegador y el relay se diagnostican aparte.`,
+      );
+    } else {
+      p.log.warn(
+        `Browser Control: active ${active.version} verificado, pero su proyección nativa obligatoria no coincide: ${projectionProblems.join("; ")}. Ejecuta 'jorgex-stack install --agents opencode' para reproyectarla; no se adopta ni se repara automáticamente.`,
+      );
+      problems++;
+    }
+  } else {
+    p.log.warn(`Browser Control: no hay un active gestionado verificado (${active.reason}).`);
+    problems++;
+  }
+  const candidate = inspectCachedBrowserControlCandidate(stateDir);
+  if (candidate.kind === "retained") {
+    if (candidate.identityMatchesActive) {
+      p.log.info(
+        `Browser Control: candidato ${candidate.version} retenido coincide en versión e integridad con el active verificado; no hay una release distinta que activar.`,
+      );
+    } else {
+      p.log.info(
+        `Browser Control: candidato ${candidate.version} retenido y verificado, pendiente de activación; no sustituye ni se presenta como la release activa. Coordina la parada del relay si debe promoverse.`,
+      );
+    }
+  } else if (candidate.kind === "invalid") {
+    p.log.error(
+      `Browser Control: el candidato retenido no es válido (${candidate.reason}); no se usa como fallback ni se repara.`,
+    );
+    problems++;
+  }
+  return problems;
+}
+
 /** Dónde mirar la key de context7 en la config de cada runtime. */
 function context7KeyConfigured(id: RuntimeId, configDir: string): boolean | null {
   const file =
@@ -152,6 +295,31 @@ export interface DoctorOptions {
   dryRun?: boolean;
   /** Snapshot de capacidad compartida por el coordinador para este comando. */
   playwrightCapability?: PlaywrightCapabilitySnapshot;
+}
+
+/**
+ * Elegibilidad de Playwright por runtime, idéntica al selector de CLI: OpenCode
+ * v2 usa Browser Control y ya no ofrece Playwright CLI; Pi solo si declara el
+ * handoff. Sin runtimes resueltos se asume el conjunto completo, pero solo los
+ * elegibles cuentan: una preferencia legacy `enabled.opencode` no debe disparar
+ * la inspección del Playwright gestionado.
+ */
+function isPlaywrightEligibleRuntime(runtime: SelectableRuntimeId): boolean {
+  const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  return runtime !== "opencode" && (runtime !== "pi" || supportsPiPlaywright);
+}
+
+/**
+ * Decide la inspección de Playwright del fallback de doctor sin depender de que
+ * exista un snapshot: la elegibilidad se computa por runtimes seleccionados y su
+ * preferencia runtime-scoped, nunca por el snapshot ausente ni por la
+ * preferencia global sin runtime.
+ */
+function shouldInspectPlaywright(options: DoctorOptions): boolean {
+  const inspectable = options.runtimes ?? [...(Object.keys(ADAPTERS) as RuntimeId[]), "pi"];
+  return inspectable
+    .filter(isPlaywrightEligibleRuntime)
+    .some((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true);
 }
 
 function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mode: InstallModePreference): number {
@@ -445,12 +613,17 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
   } else if (options.dryRun) {
     p.log.info("Playwright CLI: comprobación omitida en dry-run; no se evalúa el estado del paquete ni del navegador.");
   } else {
-    const enabled = loadPlaywrightCliPreference();
-    const capability = options.playwrightCapability ?? (enabled === true ? inspectManagedPlaywrightCapability() : undefined);
+    // El fallback solo inspecciona Playwright si el destino seleccionado lo
+    // ofrece y su preferencia runtime-scoped lo habilita. Un snapshot ausente no
+    // significa elegibilidad, así que se computa antes del fallback.
+    const shouldInspect = shouldInspectPlaywright(options);
+    const capability = shouldInspect
+      ? (options.playwrightCapability ?? inspectManagedPlaywrightCapability())
+      : undefined;
     effectivePlaywright = capability?.effective;
     const cli = capability?.cli ?? { status: "absent" as const };
     const playwright = resolvePlaywrightDoctorState({
-      enabled,
+      enabled: shouldInspect,
       cli,
       browserReady: capability?.effective ?? false,
       browserVerified: capability?.browserVerified,
@@ -503,6 +676,10 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       .map((capability) => `${capability.id}=${capability.state}`)
       .join(", ");
     p.log.info(`${adapter.name}: capabilities diagnostic (${capabilitySummary}); no certifica enforcement local.`);
+
+    // Browser Control solo aplica al runtime OpenCode; no se filtra la capacidad
+    // ni el estado del complemento a Claude/Codex/Pi.
+    if (adapter.id === "opencode") problems += reportBrowserControl(dataDir(), detection.configDir);
 
     let pending: number;
     let stalePermissions = false;

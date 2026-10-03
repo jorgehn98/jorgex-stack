@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
 
 /** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
@@ -134,6 +135,35 @@ vi.mock("../src/lib/tool-preferences.js", async (importOriginal) => {
       return actual.saveDevtoolsMcpOwnership(...args);
     },
   };
+});
+
+/**
+ * Frontera Browser Control (Spec T13): esta suite prueba seguridad de
+ * preferencias (sandbox de HOME, backup, no reimposición), no el publicador de
+ * Browser Control. El coordinador real adquiriría el paquete publicado y
+ * sondearía el relay; aquí se sustituye SOLO esa frontera por un `ready`
+ * sintético, conservando reales install/uninstall/adapter/backups/manifest/
+ * preferencias/Engram. El doble NO certifica bytes oficiales.
+ */
+const browserControlReady = createBrowserControlReadyDouble();
+
+vi.mock("../src/lib/browser-control-runtime.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../src/lib/browser-control-runtime.js")>(
+      "../src/lib/browser-control-runtime.js",
+    );
+  return { ...actual, prepareBrowserControlRuntime: browserControlReady.prepare };
+});
+
+// Defensa independiente del mock: un puerto inválido nunca contacta el relay del
+// usuario (19989 por defecto). Se restaura al terminar el archivo.
+const originalBrowserControlPort = process.env.BROWSER_CONTROL_PORT;
+process.env.BROWSER_CONTROL_PORT = "not-a-port";
+
+afterAll(() => {
+  browserControlReady.cleanup();
+  if (originalBrowserControlPort === undefined) delete process.env.BROWSER_CONTROL_PORT;
+  else process.env.BROWSER_CONTROL_PORT = originalBrowserControlPort;
 });
 
 function isStrictChild(child: string, root: string): boolean {
@@ -961,4 +991,88 @@ describe("browser observed-version preferences [T14-RED]", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+/**
+ * Bug revisado (Spec T13/12): la CLI omite correctamente la inspección para un
+ * destino OpenCode-only (OpenCode v2 no ofrece Playwright CLI), pero los
+ * consumidores `runInstall`/`runDoctor` volvían a caer en la preferencia global
+ * (`loadPlaywrightCliPreference()` sin runtime) e inspeccionaban el Playwright
+ * gestionado. La frontera real de este archivo (install real + HOME aislado +
+ * spy del módulo hoja) es el seam correcto; no se mockean runInstall/runDoctor.
+ */
+describe("OpenCode-only browser tooling eligibility", () => {
+  const OPENCODE_ONLY_PLAYWRIGHT = JSON.stringify({
+    version: 2,
+    enabled: { opencode: true, "claude-code": false, codex: false, pi: false },
+  }, null, 2) + "\n";
+
+  it.each(["doctor", "install"] as const)(
+    "%s on an OpenCode-only target with a legacy Playwright preference never inspects managed Playwright nor smokes Chromium",
+    async (command) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `jx-opencode-only-playwright-${command}-`));
+      const homeDir = path.join(root, "home");
+      const configDir = path.join(homeDir, ".config", "opencode");
+      const stateDir = path.join(homeDir, ".jorgex-stack");
+      const preferenceFile = path.join(stateDir, "playwright-cli.json");
+      const inspectManaged = vi.fn(() => ({
+        cli: { status: "absent" as const, binPath: null, detectedVersion: null },
+        browserCache: { status: "missing" as const, path: path.join(homeDir, "ms-playwright"), errorCode: "ENOENT" },
+        browserVerified: false,
+        effective: false,
+      }));
+
+      try {
+        writeModelMap(homeDir);
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(preferenceFile, OPENCODE_ONLY_PLAYWRIGHT);
+
+        await withTempHome(homeDir, async () => {
+          // Spy del módulo hoja: captura los argumentos reales de la inspección
+          // sin sustituir runInstall/runDoctor (bajo prueba).
+          vi.doMock("../src/lib/playwright-capability.js", async (importOriginal) => ({
+            ...(await importOriginal<typeof import("../src/lib/playwright-capability.js")>()),
+            inspectManagedPlaywrightCapability: inspectManaged,
+          }));
+          try {
+            const install = await import("../src/install.js");
+            const restoreDetect = setOnlyOpenCodeDetected(install, configDir);
+            try {
+              if (command === "doctor") {
+                const { runDoctor } = await import("../src/doctor.js");
+                await runDoctor({ runtimes: ["opencode"] });
+              } else {
+                await install.runInstall({
+                  runtimes: ["opencode"],
+                  dryRun: false,
+                  yes: true,
+                  mode: { mode: "human", subagentConcurrency: "serial" },
+                });
+              }
+
+              expect(
+                inspectManaged.mock.calls,
+                `${command} must never inspect managed Playwright for an OpenCode-only target`,
+              ).toEqual([]);
+              expect(
+                mocks.isPlaywrightBrowserReady.mock.calls,
+                `${command} must not smoke Chromium for an OpenCode-only target`,
+              ).toEqual([]);
+              expect(
+                mocks.detectPlaywrightCli.mock.calls,
+                `${command} must not fall back to the legacy global Playwright inspector`,
+              ).toEqual([]);
+              expect(fs.readFileSync(preferenceFile, "utf8")).toBe(OPENCODE_ONLY_PLAYWRIGHT);
+            } finally {
+              restoreDetect();
+            }
+          } finally {
+            vi.doUnmock("../src/lib/playwright-capability.js");
+          }
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

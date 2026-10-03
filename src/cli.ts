@@ -36,7 +36,7 @@ import { writeText } from "./lib/fsx.js";
 import { runQualityPlan } from "./lib/quality-runner.js";
 import { serializeQualityReceipt } from "./lib/quality-receipt.js";
 import { installMissingEngram } from "./lib/engram-install.js";
-import { runManagedPlaywrightCommand } from "./lib/browser-command.js";
+import { runManagedBrowserControlCommand, runManagedPlaywrightCommand } from "./lib/browser-command.js";
 
 const VERSION = readPackageVersion();
 
@@ -62,6 +62,8 @@ export interface Flags {
   devtools: boolean;
   noDevtools: boolean;
   upgradePermissions: boolean;
+  /** Opt-in Linux explícito al servicio Browser Control (install/sync/update). */
+  browserControlService: boolean;
   /** Opt-in explícito a la variante temporal #1567 solo en install/update con Pi. */
   engramTypeboxCompat?: boolean;
   receipt?: string;
@@ -103,11 +105,24 @@ async function ensureOpenCodeModelsForInstall(
   return false;
 }
 
-function shouldInspectPlaywrightCapability(targetDir: string | undefined, dryRun: boolean): boolean {
-  return targetDir === undefined
-    && !dryRun
-    && browserPreferenceErrors().length === 0
-    && loadPlaywrightCliPreference() === true;
+function isPlaywrightEligibleRuntime(runtime: SelectableRuntimeId): boolean {
+  const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
+  return runtime !== "opencode" && (runtime !== "pi" || supportsPiPlaywright);
+}
+
+function shouldInspectPlaywrightCapability(
+  targetDir: string | undefined,
+  dryRun: boolean,
+  runtimes?: readonly SelectableRuntimeId[],
+): boolean {
+  if (targetDir !== undefined || dryRun || browserPreferenceErrors().length > 0) return false;
+  // Sin destinos resueltos se asume el conjunto completo, pero sólo los runtimes
+  // elegibles cuentan: una preferencia legacy `enabled.opencode` no debe disparar
+  // la inspección de Playwright, que OpenCode v2 ya no ofrece.
+  const inspectable = runtimes ?? [...(Object.keys(ADAPTERS) as RuntimeId[]), "pi"];
+  return inspectable
+    .filter(isPlaywrightEligibleRuntime)
+    .some((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true);
 }
 
 export function parseFlags(args: string[], allowReceipt = false): Flags {
@@ -128,6 +143,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     devtools: false,
     noDevtools: false,
     upgradePermissions: false,
+    browserControlService: false,
     receipt: undefined,
     positional: [],
     unknownFlags: [],
@@ -205,6 +221,7 @@ export function parseFlags(args: string[], allowReceipt = false): Flags {
     else if (arg === "--devtools") flags.devtools = true;
     else if (arg === "--no-devtools") flags.noDevtools = true;
     else if (arg === "--upgrade-permissions") flags.upgradePermissions = true;
+    else if (arg === "--browser-control-service") flags.browserControlService = true;
     else if (arg === "--engram-typebox-compat") flags.engramTypeboxCompat = true;
     else if (arg.startsWith("-")) flags.unknownFlags.push(arg);
     else flags.positional.push(arg);
@@ -292,27 +309,44 @@ async function resolvePlaywrightToolConsent(
   runtimeSelection?: PlaywrightRuntimeSelection;
 } | null> {
   const interactive = Boolean(process.stdout.isTTY);
-  const supportsPiPlaywright = (PI_RUNTIME_CANDIDATE.contract.capabilities as readonly string[]).includes("playwright-handoff-v1");
-  const supported: SelectableRuntimeId[] = runtimes.filter((runtime) => runtime !== "pi" || supportsPiPlaywright);
+  const supportsPiPlaywright = isPlaywrightEligibleRuntime("pi");
+  // OpenCode v2 usa Browser Control (CLI/skill/MCP) obligatorio y no ofrece el
+  // selector Playwright CLI; el resto conserva su contrato (Pi condicionado a su
+  // handoff). `eligible` es la única lista que alimenta confirm/multiselect y la
+  // selección resultante.
+  const eligible: SelectableRuntimeId[] = runtimes.filter(isPlaywrightEligibleRuntime);
   if (flags.playwrightRuntimes !== undefined) {
     const requested = flags.playwrightRuntimes;
     let error: string | undefined;
     if (requested.length === 0) error = "--playwright-runtimes requiere al menos un runtime.";
+    // Identidad y cobertura de TODOS los runtimes pedidos primero: un nombre
+    // desconocido o fuera de --agents no queda enmascarado por el rechazo de
+    // OpenCode (que se evalúa después).
     for (const runtime of requested) {
       if (!["opencode", "claude-code", "codex", "pi"].includes(runtime)) error = `Runtime Playwright desconocido: ${runtime}.`;
       else if (!runtimes.includes(runtime)) error = `El runtime ${runtime} no está en --agents/destinos de esta instalación.`;
-      else if (!supported.includes(runtime)) error = "Pi no declara el handoff Playwright requerido.";
       if (error) break;
+    }
+    if (error === undefined) {
+      for (const runtime of requested) {
+        if (runtime === "opencode") error = "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio. Retira --playwright-runtimes opencode.";
+        else if (!eligible.includes(runtime)) error = "Pi no declara el handoff Playwright requerido.";
+        if (error) break;
+      }
     }
     if (error) { console.error(error); process.exitCode = 1; return null; }
   }
-  if (flags.playwright && supported.length === 0 && runtimes.includes("pi")) {
-    console.error("Pi no declara el handoff Playwright requerido.");
+  if (flags.playwright && eligible.length === 0) {
+    console.error(
+      runtimes.includes("pi") && !supportsPiPlaywright
+        ? "Pi no declara el handoff Playwright requerido."
+        : "OpenCode v2 no ofrece Playwright CLI: usa Browser Control (CLI/skill/MCP) obligatorio; no hay runtime elegible para --playwright.",
+    );
     process.exitCode = 1;
     return null;
   }
   let confirmed = false;
-  if (interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
+  if (eligible.length > 0 && interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined) {
     const answer = await p.confirm({
       message: "Recomendado: ¿instalar Playwright CLI gestionado y descargar Chromium?",
       initialValue: false,
@@ -322,19 +356,19 @@ async function resolvePlaywrightToolConsent(
   }
   let runtimeSelection: PlaywrightRuntimeSelection | undefined;
   const approved = interactive && !flags.yes ? confirmed : flags.yes && flags.playwright;
-  if (approved && supported.length > 0) {
-    let selected = flags.playwrightRuntimes ?? supported;
+  if (approved && eligible.length > 0) {
+    let selected = flags.playwrightRuntimes ?? eligible;
     if (interactive && !flags.yes && !flags.dryRun && flags.targetDir === undefined && flags.playwrightRuntimes === undefined) {
       const answer = await p.multiselect({
         message: "¿En qué runtimes activar la guía de Playwright gestionado?",
         required: false,
-        options: supported.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
-        initialValues: supported.filter((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true),
+        options: eligible.map((runtime) => ({ value: runtime, label: runtime === "pi" ? "Pi" : ADAPTERS[runtime]?.name ?? runtime })),
+        initialValues: eligible.filter((runtime) => loadPlaywrightCliPreference(undefined, runtime) === true),
       });
       if (p.isCancel(answer)) return null;
       selected = answer as SelectableRuntimeId[];
     }
-    runtimeSelection = Object.fromEntries(supported.map((runtime) => [runtime, selected.includes(runtime)]));
+    runtimeSelection = Object.fromEntries(eligible.map((runtime) => [runtime, selected.includes(runtime)]));
   }
   return {
     command: "install",
@@ -628,6 +662,7 @@ Comandos:
                desregistrarlo exige --remove-engram o el sí explícito
   quality     Ejecuta un plan JSON explícito y emite un receipt local
   browser playwright <args>  Ejecuta Playwright desde el árbol gestionado verificado
+  browser control <args>     Ejecuta Browser Control CLI desde el runtime gestionado verificado
 
 Opciones:
   --agents, -a opencode,claude-code,codex,pi   Runtimes destino (default: detectados)
@@ -641,6 +676,9 @@ Opciones:
   --devtools            (install) activa Chrome DevTools MCP para los runtimes destino (opt-in)
   --no-devtools         (install) desactiva Chrome DevTools MCP (incompatible con --devtools)
   --upgrade-permissions (install) re-aplica permisos gestionados sobre config existente (opt-in)
+  --browser-control-service (install/update, Linux) opt-in al servicio de usuario
+                        Browser Control; arranque inicial propio y autostart externo
+                        sólo tras verificación; bloquea si hay recuperación pendiente
   --engram-typebox-compat (install/update con Pi) opt-in explícito a la variante temporal #1567;
                         sin el flag no se adquiere ni persiste ninguna preferencia
   --remove-engram       (uninstall) desregistra Engram de los runtimes;
@@ -651,6 +689,43 @@ Opciones:
   --receipt <path>      (quality) escribe el receipt en ese path de forma atómica
 
 Ver PRD.md para el diseño completo.`);
+}
+
+/**
+ * Valida el opt-in Linux del servicio Browser Control. Se invoca antes del
+ * switch (comando, plataforma y ruta de solo lectura) y de nuevo tras resolver
+ * runtimes (destino OpenCode), siempre antes de cualquier mutación o runInstall.
+ */
+function validateBrowserControlServiceOptIn(
+  command: Command,
+  flags: Flags,
+  runtimes?: readonly SelectableRuntimeId[],
+): boolean {
+  if (!flags.browserControlService) return true;
+
+  if (command !== "install" && command !== "update") {
+    console.error("--browser-control-service solo se admite en install/update (Linux, opt-in al servicio).");
+    return false;
+  }
+  if (command === "update" && (flags.check || flags.dryRun)) {
+    console.error(
+      "--browser-control-service no aplica a update --check/--dry-run: esa ruta es de solo lectura " +
+        "y no ejecuta el install que materializa el servicio.",
+    );
+    return false;
+  }
+  if (process.platform !== "linux" && !flags.dryRun && flags.targetDir === undefined) {
+    console.error(
+      "--browser-control-service requiere Linux (unidad systemd de usuario). " +
+        "En otras plataformas Browser Control usa su autostart nativo: ejecuta sin el flag.",
+    );
+    return false;
+  }
+  if (runtimes !== undefined && !runtimes.includes("opencode")) {
+    console.error("--browser-control-service solo aplica cuando OpenCode está entre los runtimes destino.");
+    return false;
+  }
+  return true;
 }
 
 async function main(): Promise<void> {
@@ -711,15 +786,27 @@ async function main(): Promise<void> {
     }
   }
 
+  if (!validateBrowserControlServiceOptIn(command, flags)) {
+    process.exitCode = 1;
+    return;
+  }
+
   switch (command) {
     case "browser": {
-      if (flags.positional[0] !== "playwright") {
-        console.error("Uso: jorgex-stack browser playwright <argumentos de Playwright CLI>");
+      const subcommand = flags.positional[0];
+      if (subcommand !== "playwright" && subcommand !== "control") {
+        console.error(
+          "Uso: jorgex-stack browser playwright <argumentos de Playwright CLI> | " +
+            "jorgex-stack browser control <argumentos de Browser Control CLI>",
+        );
         process.exitCode = 1;
         return;
       }
-      try { process.exitCode = runManagedPlaywrightCommand(flags.positional.slice(1)); }
-      catch (error) {
+      try {
+        process.exitCode = subcommand === "playwright"
+          ? runManagedPlaywrightCommand(flags.positional.slice(1))
+          : runManagedBrowserControlCommand(flags.positional.slice(1));
+      } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
       }
@@ -784,6 +871,12 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      // Gate tras resolver runtimes y antes de cualquier mutación: el opt-in
+      // Linux solo tiene sentido si OpenCode es uno de los destinos.
+      if (!validateBrowserControlServiceOptIn(command, flags, runtimes)) {
+        process.exitCode = 1;
+        return;
+      }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       let exitCode = 0;
       let completed = false;
@@ -813,7 +906,7 @@ async function main(): Promise<void> {
         const playwrightToolConsent = await resolvePlaywrightToolConsent(flags, runtimes);
         if (playwrightToolConsent === null) { exitCode = process.exitCode === 1 ? 1 : 0; return; }
         const playwrightToolPlan = resolvePlaywrightToolPlan(playwrightToolConsent);
-        let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+        let playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
           && playwrightToolPlan.actions.length === 0
           ? inspectManagedPlaywrightCapability()
           : undefined;
@@ -841,6 +934,7 @@ async function main(): Promise<void> {
             devtoolsMcpSelection,
             engramBin,
             upgradePermissions: flags.upgradePermissions,
+            browserControlService: flags.browserControlService,
             ...(playwrightCapability === undefined ? {} : { playwrightCapability }),
             ...(playwrightToolPlan.actions.length === 0 ? {} : { onPlaywrightCapability: capturePlaywrightCapability }),
             showSummary: false,
@@ -880,7 +974,7 @@ async function main(): Promise<void> {
               modePreference: mode,
               playwrightCliEnabled: flags.targetDir === undefined && exitCode === 0 && playwrightToolPlan.actions.length > 0
                 ? playwrightToolConsent.runtimeSelection?.pi : undefined,
-              playwrightCapability: playwrightCapability ?? (shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+              playwrightCapability: playwrightCapability ?? (shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
                 ? inspectManagedPlaywrightCapability() : undefined),
               ...(flags.upgradePermissions ? { upgradePermissions: true as const } : {}),
               ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
@@ -954,7 +1048,7 @@ async function main(): Promise<void> {
               ...(piSelected ? ["pi" as const] : []),
             ]
           : [...Object.keys(ADAPTERS) as RuntimeId[], ...(piSelected ? ["pi" as const] : [])];
-      const doctorCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+      const doctorCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, doctorRuntimes)
         ? inspectManagedPlaywrightCapability()
         : undefined;
       let exitCode = await runDoctor({
@@ -971,7 +1065,7 @@ async function main(): Promise<void> {
             operation: "doctor",
             targetDir: flags.targetDir,
             modePreference: mode,
-            playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+            playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, doctorRuntimes)
               ? inspectManagedPlaywrightCapability() : undefined,
           }));
         }
@@ -1007,6 +1101,12 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      // Gate tras resolver runtimes y antes de cualquier mutación: el opt-in
+      // Linux solo tiene sentido si OpenCode es uno de los destinos.
+      if (!validateBrowserControlServiceOptIn(command, flags, runtimes)) {
+        process.exitCode = 1;
+        return;
+      }
       const fileRuntimes = runtimes.filter(isFileManagedRuntime);
       try {
         // Mismo invariante que install/sync: rejectar OpenCode no-v2 antes de
@@ -1032,7 +1132,7 @@ async function main(): Promise<void> {
         { rootDir: flags.targetDir },
       );
       applyWritingStyle(writingStyle, flags.dryRun);
-      let updateCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+      let updateCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
         ? inspectManagedPlaywrightCapability()
         : undefined;
       if (fileRuntimes.length === 0 && runtimes.includes("pi")) {
@@ -1041,7 +1141,7 @@ async function main(): Promise<void> {
           targetDir: flags.targetDir,
           writingStyle,
           modePreference: mode,
-          playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+          playwrightCapability: shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
             ? inspectManagedPlaywrightCapability() : undefined,
           ...(flags.engramTypeboxCompat === true ? { engramTypeboxCompat: true as const } : {}),
         });
@@ -1058,6 +1158,7 @@ async function main(): Promise<void> {
           dryRun: flags.dryRun,
           yes: true,
           mode,
+          browserControlService: flags.browserControlService,
           ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
         });
         if (code !== 0) {
@@ -1085,6 +1186,7 @@ async function main(): Promise<void> {
             dryRun: false,
             yes: true,
             mode,
+            browserControlService: flags.browserControlService,
             playwrightCapability: updateCapability,
           });
           process.exitCode = Math.max(process.exitCode ?? 0, code);
@@ -1114,6 +1216,7 @@ async function main(): Promise<void> {
             dryRun: false,
             yes: false,
             mode,
+            browserControlService: flags.browserControlService,
             ...(updateCapability === undefined ? {} : { playwrightCapability: updateCapability }),
           });
         } else {
@@ -1159,7 +1262,7 @@ async function main(): Promise<void> {
           }
           const mode = await resolveInstallMode(flags, false);
           if (mode === null) return;
-          const playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun)
+          const playwrightCapability = shouldInspectPlaywrightCapability(flags.targetDir, flags.dryRun, runtimes)
             ? inspectManagedPlaywrightCapability()
             : undefined;
           process.exitCode = await runInstall({
