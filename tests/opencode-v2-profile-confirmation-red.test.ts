@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+import { backupFiles, seedFakeEngram, snapshotEnv } from "./helpers/opencode-isolation.js";
 
 /**
  * T07 fix (review ff7a54f, spec 08 §validation):
@@ -64,32 +65,6 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** Fake Engram: install real falla con exit 1 por el prerrequisito externo. */
-function seedFakeEngram(home: string): string {
-  const bin = path.join(home, ".local", "bin", "engram");
-  fs.mkdirSync(path.dirname(bin), { recursive: true });
-  fs.writeFileSync(bin, ["#!/bin/sh", "exit 0", ""].join("\n"), { mode: 0o755 });
-  try {
-    fs.chmodSync(bin, 0o755);
-  } catch {
-    // Windows: exec bit no aplica.
-  }
-  return bin;
-}
-
-/** Backups propios de Stack bajo un HOME aislado. */
-function backupFiles(home: string): string[] {
-  const root = path.join(home, ".jorgex-stack", "backups");
-  if (!fs.existsSync(root)) return [];
-  const out: string[] = [];
-  for (const entry of fs.readdirSync(root)) {
-    const filesDir = path.join(root, entry, "files");
-    if (!fs.existsSync(filesDir)) continue;
-    for (const name of fs.readdirSync(filesDir)) out.push(path.join(filesDir, name));
-  }
-  return out;
-}
-
 interface Harness {
   root: string;
   home: string;
@@ -119,26 +94,20 @@ async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise
   fs.mkdirSync(oldConfigDir, { recursive: true });
   fs.mkdirSync(newConfigDir, { recursive: true });
   fs.mkdirSync(tmpDir, { recursive: true });
-  const engramBin = seedFakeEngram(home);
+  const { bin: engramBin } = seedFakeEngram(home);
 
-  const saved = {
-    HOME: process.env.HOME,
-    USERPROFILE: process.env.USERPROFILE,
-    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-    TMPDIR: process.env.TMPDIR,
-    TEMP: process.env.TEMP,
-    TMP: process.env.TMP,
-    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
-    CODEX_HOME: process.env.CODEX_HOME,
-    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  };
-  const restore = (): void => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  };
+  const restore = snapshotEnv([
+    "HOME",
+    "USERPROFILE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "OPENCODE_CONFIG_DIR",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+  ]);
 
   process.env.HOME = home;
   process.env.USERPROFILE = home;
