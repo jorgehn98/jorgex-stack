@@ -760,6 +760,56 @@ describe("cli.json compacto (B3)", () => {
       expect(segments, "la igualdad de valor no acredita ownership").not.toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
     });
   });
+
+  it.each([
+    {
+      label: "plugins escalar inválido",
+      plugins: "not-an-array",
+      expectedPlugins: "not-an-array",
+      warn: /array|plugins/i,
+    },
+    {
+      label: "disable directive que alcanza el panel",
+      plugins: ["./herdr-opencode", "-jorgex.subagents"],
+      expectedPlugins: ["./herdr-opencode", "-jorgex.subagents"],
+      warn: /desactiv|disable|plugins/i,
+    },
+    {
+      label: "objeto manual que ya registra el panel",
+      plugins: [{ package: "./tui/subagents", options: { compact: false } }],
+      expectedPlugins: [{ package: "./tui/subagents", options: { compact: false } }],
+      warn: null,
+    },
+  ])("cli.plugins $label: se preserva sin registro ni claim del panel", async ({ plugins, expectedPlugins, warn }) => {
+    await withIsolatedHome(async ({ configDir }) => {
+      const cliFile = path.join(configDir, "cli.json");
+      fs.writeFileSync(cliFile, JSON.stringify({ plugins }, null, 2) + "\n");
+
+      const { actions, warnings } = await planServerConfig(configDir);
+      const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
+      expect(cliAction, "faltan los defaults T19: debe existir la acción de cli.json").toBeDefined();
+      if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
+
+      // El valor ajeno se preserva lógicamente: sin convertirlo ni añadir el entry.
+      const content = JSON.parse(cliAction.content) as Record<string, unknown>;
+      expect(content["plugins"], "el valor ajeno se preserva sin convertirlo").toEqual(expectedPlugins);
+
+      // Sin claim semántico del entry ni del contenedor del panel (nunca por índice).
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      const segments = ownedSegments(owned);
+      expect(segments, "sin claim del entry del panel").not.toContainEqual(["cli.json", "plugins", "./tui/subagents"]);
+      expect(segments, "sin claim del contenedor plugins").not.toContainEqual(["cli.json", "plugins"]);
+
+      const joined = warnings.join("\n");
+      if (warn === null) {
+        expect(joined, "un registro manual ya presente no genera aviso").not.toMatch(/plugins/i);
+      } else {
+        expect(joined, "debe quedar un aviso accionable de preservación").toMatch(warn);
+      }
+    });
+  });
 });
 
 describe("raíz nativa y aislamiento de --target-dir", () => {
