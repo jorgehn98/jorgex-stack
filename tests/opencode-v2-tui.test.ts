@@ -1051,7 +1051,37 @@ describe.skipIf(hostBinary === undefined)(
     }, CASE_TIMEOUT_MS);
 
     it("muestra la fila bloqueada y el contador needs input con un formulario pendiente real", async () => {
-      await withTuiCase("form-blocked", 60_000, async (testCase) => {
+      // Stub breve: la ejecución propia completa y acumula usage antes del formulario.
+      await withTuiCase("form-blocked", 1_000, async (testCase) => {
+        // La fila bloqueada debe mostrar el total positivo acumulado, no un cero fijo:
+        // esperar a que Session.Info exponga el usage conocido del stub (3 input + 2 output).
+        let tokens:
+          | { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+          | undefined;
+        const deadline = Date.now() + 20_000;
+        for (;;) {
+          tokens = (await api(testCase.server, "GET", `/api/session/${testCase.childID}`)).data?.tokens;
+          const total =
+            (tokens?.input ?? 0) +
+            (tokens?.output ?? 0) +
+            (tokens?.reasoning ?? 0) +
+            (tokens?.cache?.read ?? 0) +
+            (tokens?.cache?.write ?? 0);
+          if (Number.isFinite(total) && total > 0) break;
+          if (Date.now() > deadline) throw new Error("la ejecución propia no acumuló tokens del stub");
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        // Mapeo confirmado del usage del stub: 3 input + 2 output, sin reason/cache.
+        expect(tokens?.input, "input del stub en Session.Info").toBe(3);
+        expect(tokens?.output, "output del stub en Session.Info").toBe(2);
+        const expectedTotal =
+          (tokens?.input ?? 0) +
+          (tokens?.output ?? 0) +
+          (tokens?.reasoning ?? 0) +
+          (tokens?.cache?.read ?? 0) +
+          (tokens?.cache?.write ?? 0);
+        expect(expectedTotal, "total positivo del stub").toBe(5);
+
         // Formulario pendiente real sobre la sesión hija (schema público Form.CreatePayload).
         const created = await api(testCase.server, "POST", `/api/session/${testCase.childID}/form`, {
           title: "T18 live form",
@@ -1070,11 +1100,12 @@ describe.skipIf(hostBinary === undefined)(
           35,
         );
 
-        // El estado bloqueado precede a running: contador y fila reales del terminal.
+        // El estado bloqueado precede a running: contador y fila reales del terminal,
+        // con el total positivo que prueba que la fila no queda clavada en cero.
         expect(screens["before:blocked"]).toContain("1 needs input");
         expect(screens["before:blocked"]).toContain("Needs input");
         expect(screens["before:blocked"]).toContain("T18 child zzz");
-        expect(screens["before:blocked"]).toContain("0 tok");
+        expect(screens["before:blocked"]).toContain(`${expectedTotal} tok`);
       });
     }, CASE_TIMEOUT_MS);
   },
