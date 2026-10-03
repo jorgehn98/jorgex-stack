@@ -777,5 +777,98 @@ describe.skipIf(process.platform !== "linux")(
         }
       });
     });
+
+    /**
+     * Residual de error delta-review: `markWritten` registra el claim deseado
+     * (`previous=false → written=true`) ANTES de que
+     * `persistConfigurationOwnershipChanges` lo persista. Si la persistencia del
+     * ledger falla en su rename atómico, el ledger sigue en el valor previo
+     * (`false`), pero `claimRecoverable` exige observar el valor escrito (`true`)
+     * y bloquea TODA la recuperación propia. Instalación fresca (sin active
+     * previo): el claim BC/context7 pasa de ausente a `true` por primera vez. El
+     * EIO cae en el rename atómico del ledger propio, antes de persistir, con el
+     * target ya escrito. La recuperación debe reconocer que el claim nunca se
+     * persistió (ya está en su valor previo), retirar el pointer fresco y el
+     * config, sin tocar campos ajenos; el reintento debe completar MCP/skill/
+     * ledger propios.
+     */
+    it("recupera una instalación fresca cuando falla el rename del ledger antes de persistir el primer claim propio", async () => {
+      await withScenario(async (ctx) => {
+        const { devtoolsMcpPreferenceFile, loadDevtoolsMcpOwnership, loadDevtoolsMcpPreference } =
+          await import("../src/lib/tool-preferences.js");
+        const ledgerFile = devtoolsMcpPreferenceFile();
+        // Ledger inicial fresco: sin claim propio y con una preferencia ajena válida.
+        fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+        fs.writeFileSync(ledgerFile, `${JSON.stringify({ version: 1, enabled: { codex: true }, owned: {} })}\n`);
+        expect(loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER)).toBe(false);
+        expect(loadDevtoolsMcpPreference(ledgerFile, "codex")).toBe(true);
+
+        // Fresh: sin active ni config previos.
+        expect(await loadActive(ctx.stateDir), "fresh: no debe haber active").toBeNull();
+        expect(fs.existsSync(ctx.configPath), "fresh: no debe haber config").toBe(false);
+
+        // EIO en el rename atómico del ledger propio, antes de persistir el claim.
+        const originalRenameSync = fs.renameSync;
+        let faulted = false;
+        let atFaultConfigExists = false;
+        let atFaultClaim: boolean | null = null;
+        const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(((
+          oldPath: fs.PathLike,
+          newPath: fs.PathLike,
+        ) => {
+          if (!faulted && typeof newPath === "string" && newPath === ledgerFile) {
+            faulted = true;
+            atFaultConfigExists = fs.existsSync(ctx.configPath);
+            atFaultClaim = loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER);
+            throw eio("EIO: simulated own ledger rename failure before the claim is persisted");
+          }
+          return originalRenameSync(oldPath, newPath);
+        }) as typeof fs.renameSync);
+
+        let exitCode: number | undefined;
+        let thrown: unknown;
+        try {
+          exitCode = await ctx.runInstall();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          renameSpy.mockRestore();
+        }
+
+        expect(faulted, "el fallo debe ocurrir en el rename del ledger propio").toBe(true);
+        expect(atFaultConfigExists, "el target ya debe estar escrito en el fallo").toBe(true);
+        expect(atFaultClaim, "el claim propio no debe estar persistido en el fallo").toBe(false);
+        expect(thrown, "el fallo no debe escapar sin control").toBeUndefined();
+        expect(exitCode, "el install debe reportar fallo controlado").toBe(1);
+
+        // El claim nunca se persistió: sigue en su valor previo (false/ausente),
+        // reconocible como ya restaurado. La preferencia ajena no se toca.
+        expect(
+          loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER),
+          "el claim propio debe seguir en su valor previo",
+        ).toBe(false);
+        expect(
+          loadDevtoolsMcpPreference(ledgerFile, "codex"),
+          "el campo ajeno no debe perderse en la recuperación",
+        ).toBe(true);
+
+        // Recuperación fresca: sin active previo se retira el pointer y el config.
+        expect(await loadActive(ctx.stateDir), "el active fresco debe retirarse").toBeNull();
+        expect(fs.existsSync(ctx.configPath), "el config fresco debe retirarse").toBe(false);
+
+        // Reintento seguro: completa MCP/skill/ledger propios reales.
+        await ctx.runInstall();
+        expect(await loadActive(ctx.stateDir), "el reintento debe publicar un active").not.toBeNull();
+        expect(fs.existsSync(ctx.skillTarget), "el reintento debe proyectar la skill").toBe(true);
+        expect(
+          loadDevtoolsMcpOwnership(ledgerFile, "opencode", BROWSER_CONTROL_SERVER),
+          "el reintento debe reclamar el MCP gestionado",
+        ).toBe(true);
+        expect(
+          loadDevtoolsMcpPreference(ledgerFile, "codex"),
+          "el campo ajeno debe sobrevivir al reintento",
+        ).toBe(true);
+      });
+    });
   },
 );

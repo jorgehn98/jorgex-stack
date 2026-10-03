@@ -584,14 +584,19 @@ interface OwnershipClaimRecord {
   readonly field?: string;
   readonly previous: boolean;
   readonly written: boolean;
+  /** true solo tras confirmar el write propio (save + readback === written). */
+  persisted: boolean;
 }
 
 /**
- * Registra el valor previo de cada claim ANTES de que se persista (el callback
- * de escritura corre antes del de ownership). Solo la primera escritura de un
- * claim fija el valor previo; las siguientes reescriben el mismo valor.
+ * Persiste los claims de ownership declarados por UNA acción con evidencia por
+ * campo: captura el valor previo en el primer write real, ejecuta la API de
+ * save existente por claim y marca `persisted` solo tras el readback que
+ * confirma el valor propio. Un save que falla antes del rename atómico deja el
+ * claim en su valor previo (no persistido) y no debe bloquear la recuperación
+ * de los targets. Conserva la semántica de la API: un fallo se propaga.
  */
-function recordOwnershipClaims(
+function persistOwnershipClaimsTracked(
   action: FileAction,
   runtime: RuntimeId,
   configDir: string,
@@ -600,27 +605,45 @@ function recordOwnershipClaims(
   if (action.kind !== "write") return;
   for (const change of action.mcpOwnership ?? []) {
     const key = `mcp:${change.server}`;
-    if (records.has(key)) continue;
-    records.set(key, {
-      runtime,
-      configDir,
-      kind: "mcp",
-      server: change.server,
-      previous: loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), runtime, change.server),
-      written: change.owned,
-    });
+    let record = records.get(key);
+    if (record === undefined) {
+      record = {
+        runtime,
+        configDir,
+        kind: "mcp",
+        server: change.server,
+        previous: loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), runtime, change.server),
+        written: change.owned,
+        persisted: false,
+      };
+      records.set(key, record);
+    }
+    if (record.persisted) continue;
+    saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), runtime, change.server, change.owned);
+    if (loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), runtime, change.server) === change.owned) {
+      record.persisted = true;
+    }
   }
   for (const change of action.primaryModelOwnership ?? []) {
     const key = `primary:${change.field}`;
-    if (records.has(key)) continue;
-    records.set(key, {
-      runtime,
-      configDir,
-      kind: "primary",
-      field: change.field,
-      previous: loadPrimaryModelOwnership(primaryModelOwnershipFile(), runtime, configDir).has(change.field),
-      written: change.owned,
-    });
+    let record = records.get(key);
+    if (record === undefined) {
+      record = {
+        runtime,
+        configDir,
+        kind: "primary",
+        field: change.field,
+        previous: loadPrimaryModelOwnership(primaryModelOwnershipFile(), runtime, configDir).has(change.field),
+        written: change.owned,
+        persisted: false,
+      };
+      records.set(key, record);
+    }
+    if (record.persisted) continue;
+    savePrimaryModelOwnership(primaryModelOwnershipFile(), runtime, configDir, change.field, change.owned);
+    if (loadPrimaryModelOwnership(primaryModelOwnershipFile(), runtime, configDir).has(change.field) === change.owned) {
+      record.persisted = true;
+    }
   }
 }
 
@@ -638,17 +661,27 @@ function targetRecoverable(snap: ProjectionTargetSnapshot): boolean {
   return leaf.bytes.equals(snap.expected);
 }
 
-/** ¿Sigue el claim en el valor que esta operación escribió? */
+/**
+ * ¿Es recuperable este claim? Un claim persistido exige observar el valor propio
+ * escrito o el previo (ya restaurado); un claim que nunca se persistió solo es
+ * aceptable si sigue en su valor previo, nunca se adopta por igualdad con el
+ * valor escrito.
+ */
 function claimRecoverable(record: OwnershipClaimRecord): boolean {
-  if (record.previous === record.written) return true;
   if (record.kind === "mcp") {
     const file = devtoolsMcpPreferenceFile();
     if (devtoolsMcpPreferenceError(file) !== null) return false;
-    return loadDevtoolsMcpOwnership(file, record.runtime, record.server!) === record.written;
+    const current = loadDevtoolsMcpOwnership(file, record.runtime, record.server!);
+    return record.persisted
+      ? current === record.written || current === record.previous
+      : current === record.previous;
   }
   const file = primaryModelOwnershipFile();
   if (primaryModelOwnershipError(file) !== null) return false;
-  return loadPrimaryModelOwnership(file, record.runtime, record.configDir).has(record.field!) === record.written;
+  const current = loadPrimaryModelOwnership(file, record.runtime, record.configDir).has(record.field!);
+  return record.persisted
+    ? current === record.written || current === record.previous
+    : current === record.previous;
 }
 
 function restoreTarget(snap: ProjectionTargetSnapshot): boolean {
@@ -663,7 +696,8 @@ function restoreTarget(snap: ProjectionTargetSnapshot): boolean {
 
 /** Inverso exacto de los claims propios: nunca reescribe el ledger completo. */
 function restoreClaim(record: OwnershipClaimRecord): boolean {
-  if (record.previous === record.written) return true;
+  // Un claim que nunca se persistió ya está en su valor previo: no hay inverso.
+  if (!record.persisted || record.previous === record.written) return true;
   try {
     if (record.kind === "mcp") {
       saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), record.runtime, record.server!, record.previous);
@@ -2150,18 +2184,20 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     // controla antes de cualquier escritura y no se omite ningún target.
     let projectionSnapshots: Map<string, ProjectionTargetSnapshot> | null = null;
     const ownershipRecords = new Map<string, OwnershipClaimRecord>();
+    // Evidencia FS de target (onWritten) separada de la evidencia de persistencia
+    // de claims (callback de ownership). Con una promoción BC pendiente el
+    // callback usa el wrapper transaccional por campo; sin ella, la API existente
+    // no cambia.
     const markWritten = (action: FileAction): void => {
       const snap = projectionSnapshots?.get(path.resolve(action.target));
-      if (snap !== undefined) {
-        snap.written = true;
-        try {
-          const stat = fs.lstatSync(snap.target);
-          snap.afterIdentity = { dev: stat.dev, ino: stat.ino };
-        } catch {
-          snap.afterIdentity = null;
-        }
+      if (snap === undefined) return;
+      snap.written = true;
+      try {
+        const stat = fs.lstatSync(snap.target);
+        snap.afterIdentity = { dev: stat.dev, ino: stat.ino };
+      } catch {
+        snap.afterIdentity = null;
       }
-      if (id === "opencode") recordOwnershipClaims(action, id, configDir, ownershipRecords);
     };
     let dirty: PlannedChange[] = [];
     try {
@@ -2172,7 +2208,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       applyChanges(
         changes,
         browserControlRollback === undefined ? undefined : markWritten,
-        useManifest ? (action) => persistConfigurationOwnershipChanges(id, configDir, [action]) : undefined,
+        useManifest
+          ? (browserControlRollback !== undefined
+              ? (action) => persistOwnershipClaimsTracked(action, id, configDir, ownershipRecords)
+              : (action) => persistConfigurationOwnershipChanges(id, configDir, [action]))
+          : undefined,
       );
 
       // Verificación de idempotencia: re-planificar debe dar cero cambios.
