@@ -166,14 +166,30 @@ function expectDeliveryAgentContract(adapter: Adapter, ctx: InstallContext, file
   if (adapter.id === "opencode") {
     const header = frontmatter(content);
     expect(header).toContain(`mode: ${agent.mode}`);
-    if (agent.readonly) expect(header).toContain("edit: deny");
-    else expect(header).not.toMatch(/edit: allow/);
+    // Permisos nativos v2 (Spec T04): array ordenado `permissions` con reglas
+    // action/resource/effect, no el mapa singular v1 (`edit: deny`, `"*": deny`).
+    // Se valida la semántica real de cada regla, no un literal de formato.
+    const headerLines = header.split("\n");
+    expect(headerLines.some((line) => line.startsWith("permission:")), "sin campo legacy `permission:`").toBe(false);
+    const permissionsLine = headerLines.find((line) => line.startsWith("permissions:"));
+    const rules = permissionsLine === undefined
+      ? []
+      : JSON.parse(permissionsLine.slice("permissions:".length).trim()) as Array<{ action: string; resource: string; effect: string }>;
+    if (agent.readonly) {
+      expect(rules.some((rule) => rule.action === "edit" && rule.resource === "*" && rule.effect === "deny"), "readonly: deny nativo de edit").toBe(true);
+    } else {
+      expect(rules.some((rule) => rule.action === "edit" && rule.effect === "allow"), "sin allow de edit").toBe(false);
+    }
+    expect(rules.filter((rule) => rule.effect === "ask"), "el overlay v2 no añade asks").toEqual([]);
     if (agent.bash === "git-read") {
-      expect(header).toContain('"*": deny');
-      expect(header).toContain('--end-of-options *": allow');
-      expect(header).not.toMatch(/"\*": allow/);
+      const shell = rules.filter((rule) => rule.action === "shell");
+      expect(shell[0]).toEqual({ action: "shell", resource: "*", effect: "deny" });
+      const allows = shell.filter((rule) => rule.effect === "allow").map((rule) => rule.resource);
+      expect(allows.length).toBeGreaterThanOrEqual(6);
+      for (const resource of allows) expect(resource).toContain("--end-of-options");
+      expect(allows.some((resource) => resource.endsWith(" *"))).toBe(true);
     } else if (agent.bash === "full") {
-      expect(header).not.toMatch(/bash:/);
+      expect(rules.some((rule) => rule.action === "shell" && rule.effect === "deny"), "full-trust hereda la política general").toBe(false);
     }
   } else if (adapter.id === "claude-code") {
     const header = frontmatter(content);

@@ -22,14 +22,19 @@ import { afterEach, describe, expect, it } from "vitest";
  *   reason to update to 2.0.0+ (mentions `update` + `2.0.0` + existing version).
  * - Stable `2.0.0` must pass through to setup (verifier runs).
  * - The existing binary file must remain byte-identical (never auto-replaced).
- * - Codex/OpenCode are provider-managed: the same old versions must NOT be
- *   version-blocked there unless a diagnosis supports it (controls below).
+ * - Codex is provider-managed: the same old versions must NOT be
+ *   version-blocked there unless a diagnosis supports it (control below).
+ * - OpenCode v2 is blocked by the closed v2 contract, not by Engram version:
+ *   `engram setup opencode` is the v1 integration and the guard returns the
+ *   external prerequisite without invoking setup, whatever the version
+ *   (control below).
  *
  * Current `runOfficialSetupIfNeeded` accepts no `engramVersion` and performs
  * no Claude version gate, so the two rejection cases below must FAIL now for
  * the intended behavioral reason (setup proceeds instead of rejecting).
- * The `2.0.0` and Codex/OpenCode controls lock the non-blocking contract and
- * must keep passing after GREEN.
+ * The `2.0.0` and Codex controls lock the non-blocking contract and the
+ * OpenCode control locks the version-independent v2 block; all must keep
+ * passing after GREEN.
  */
 
 const tempRoots: string[] = [];
@@ -214,11 +219,12 @@ describe("[claude-version-preflight] provider-managed runtimes are not version-b
     });
   });
 
-  it("control: opencode with 1.20.0 still reaches setup (no Claude gate)", async () => {
+  it("control: opencode v2 blocks the v1 setup regardless of Engram version (no Claude gate)", async () => {
     const home = tempHome("jx-opencode-ver-120-");
     const configDir = path.join(home, ".config", "opencode");
     fs.mkdirSync(configDir, { recursive: true });
     const engramBin = seedFakeBin(home);
+    const before = fs.readFileSync(engramBin, "utf8");
 
     await withCountingVerifier("opencode", async (count) => {
       const mod = await import("../src/lib/official-engram-setup.js");
@@ -232,9 +238,20 @@ describe("[claude-version-preflight] provider-managed runtimes are not version-b
         engramVersion: "1.20.0",
       })) as Record<string, unknown>;
 
-      expect(count.calls).toBe(1);
+      // Contrato cerrado T08: OpenCode v2 no admite el setup v1, así que el
+      // mismo 1.20.0 que en Codex sí llega al verifier aquí se bloquea antes
+      // de backup/spawn, con el prerrequisito externo visible (no un skip).
+      expect(count.calls).toBe(0);
       expect(result["ran"]).toBe(true);
-      expect(result["ok"]).toBe(true);
+      expect(result["ok"]).toBe(false);
+      expect(result["backupId"] ?? null).toBeNull();
+      expect(result["recovery"] ?? "none").toBe("none");
+      const detail = versionDetail(result);
+      expect(detail).toMatch(/release|prerrequisit|pendiente|validaci|adopci/i);
+      // El bloqueo no es el gate de versión de Claude.
+      expect(detail).not.toMatch(/2\.0\.0/);
+      // El binario existente nunca se reemplaza.
+      expect(fs.readFileSync(engramBin, "utf8")).toBe(before);
     });
   });
 });

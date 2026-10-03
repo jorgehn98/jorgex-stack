@@ -12,6 +12,7 @@ import { piAdapter, readPiProviderReceiptReport, type PiProviderReceiptReport } 
 import { hasHealthyManagedMarkdownMarkers, upsertMarkdownSection } from "./lib/filemerge.js";
 import { prepareWritingStyle, resolveWritingStyleFile, type WritingStylePlan } from "./lib/writing-style.js";
 import { HOME } from "./lib/paths.js";
+import { OPENCODE_OFFICIAL_SETUP_V2_REASON } from "./lib/official-engram-setup.js";
 import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliStatus,
@@ -279,10 +280,14 @@ async function verifyOfficialForRuntime(
   }
   const { verifyOfficialSetup } = await import("./adapters/opencode.js");
   const report = await verifyOfficialSetup({ configDir, engramBin });
+  // Contrato cerrado (previo a PR04): OpenCode v2 no admite la integración v1
+  // del proveedor. La presencia de plugin/MCP/statusline v1 no acredita la ruta
+  // efectiva validada de v2, así que doctor nunca reporta `ok`/healthy aquí:
+  // devuelve el prerrequisito externo con las capas observadas.
   return {
-    ok: report.ok,
+    ok: false,
     layers: report.layers,
-    ...(report.reason === undefined ? {} : { reason: report.reason }),
+    reason: OPENCODE_OFFICIAL_SETUP_V2_REASON,
   };
 }
 
@@ -304,7 +309,7 @@ async function doctorHasCodexSetup(
 async function doctorHasOpencodeSetup(
   homeDir: string,
   engramBin: string,
-): Promise<{ ok: boolean; layers: string[] }> {
+): Promise<{ ok: boolean; layers: string[]; reason?: string }> {
   return verifyOfficialForRuntime("opencode", path.join(homeDir, ".config", "opencode"), engramBin);
 }
 
@@ -364,9 +369,9 @@ export async function resolveEngramOfficialState(args: { homeDir: string }): Pro
       codex: codex.layers.includes("mcp") && bin.found
         ? { exposed: true, reason: "MCP registrado y binario disponible." }
         : { exposed: false, reason: "MCP o binario ausente." },
-      opencode: opencode.layers.includes("mcp") && bin.found
+      opencode: opencode.ok && opencode.layers.includes("mcp") && bin.found
         ? { exposed: true, reason: "MCP registrado y binario disponible." }
-        : { exposed: false, reason: "MCP o binario ausente." },
+        : { exposed: false, reason: opencode.reason ?? "MCP o binario ausente." },
       pi: pi.layers.includes("mcp") && bin.found
         ? { exposed: true, reason: "MCP registrado y binario disponible." }
         : { exposed: false, reason: "MCP o binario ausente." },
@@ -560,7 +565,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
         HOME,
         explicitClaude,
       );
-      const exposed = setup.layers.includes("mcp") && engramBinAvailable;
+      // Exposición como ruta efectiva validada: para OpenCode v2, el setup v1
+      // bloqueado nunca acredita exposición aunque los ficheros v1 estén
+      // presentes. Los demás runtimes conservan su cómputo por capas.
+      const exposed = adapter.id === "opencode"
+        ? setup.ok && setup.layers.includes("mcp") && engramBinAvailable
+        : setup.layers.includes("mcp") && engramBinAvailable;
       officialResults.push({ runtime: adapter.id, ok: setup.ok, layers: setup.layers, exposed });
       if (!setup.ok) {
         const reason = typeof setup.reason === "string" ? setup.reason.trim() : "";

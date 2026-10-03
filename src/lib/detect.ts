@@ -1,7 +1,7 @@
 import path from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { HOME } from "./paths.js";
+import { HOME, resolveOpenCodeConfigDir } from "./paths.js";
 import type { RuntimeId } from "../adapters/types.js";
 
 export interface RuntimeDetection {
@@ -60,6 +60,7 @@ export function runDetectedBin(bin: string, args: string[], timeoutMs: number, e
     return execFileSync(command.command, command.args, {
       encoding: "utf8",
       timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
       ...(envOverrides === undefined ? {} : { env: { ...process.env, ...envOverrides } }),
     });
@@ -69,7 +70,7 @@ export function runDetectedBin(bin: string, args: string[], timeoutMs: number, e
 }
 
 export function detectOpenCode(): RuntimeDetection {
-  const configDir = process.env.OPENCODE_CONFIG_DIR ?? path.join(HOME, ".config", "opencode");
+  const configDir = resolveOpenCodeConfigDir();
   const binPath = lookPath("opencode");
   return {
     id: "opencode",
@@ -78,6 +79,24 @@ export function detectOpenCode(): RuntimeDetection {
     binPath,
     configDir,
   };
+}
+
+/**
+ * Major del binario OpenCode (`--version`, argv directo sin shell). Admite SOLO
+ * una única versión completa en stdout: el literal real `opencode v2.0.20` o
+ * una versión plana `2.0.19`. Una salida con varias líneas/versiones, números
+ * de error/dependencia o cualquier texto adicional devuelve null para que el
+ * caller falle cerrado y nunca asuma v1 ni v2. Reutiliza runDetectedBin
+ * (timeout y maxBuffer acotados); no añade una familia de detectores.
+ */
+export function opencodeMajorVersion(bin: string): number | null {
+  const out = runDetectedBin(bin, ["--version"], 5_000);
+  if (out === null) return null;
+  const lines = out.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+  if (lines.length !== 1) return null;
+  const match = /^opencode\s+v?(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/i.exec(lines[0]!)
+    ?? /^(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.exec(lines[0]!);
+  return match ? Number(match[1]) : null;
 }
 
 export function detectClaudeCode(): RuntimeDetection {

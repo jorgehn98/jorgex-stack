@@ -2,11 +2,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import type { InstallContext } from "../src/adapters/types.js";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+import { NATIVE_OPENCODE_PERMISSIONS } from "./helpers/opencode-native-contract.js";
+
+/** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 import {
   loadCanonicalDefaults,
   loadCanonicalHooks,
@@ -98,8 +105,9 @@ async function withIsolatedHome<T>(run: (homeDir: string, root: string) => Promi
   }
 }
 
-const canonicalOpencodePermission = () =>
-  loadCanonicalDefaults(stackRoot())["opencode"]?.["permission"] as Record<string, unknown>;
+// Contrato nativo v2 (Spec T04), literal e independiente del adapter: el overlay
+// de permisos OpenCode dejó de vivir en stack/config/defaults.json (canon
+// compartido con Pi, que se mantiene intacto). Ver tests/helpers/opencode-native-contract.ts.
 const canonicalClaudePermissions = () =>
   loadCanonicalDefaults(stackRoot())["claude-code"]?.["permissions"] as Record<string, unknown>;
 
@@ -174,7 +182,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     expect(warnings).toMatch(/--upgrade-permissions/);
     expect(warnings).toMatch(/backup/i);
     expect(warnings).toMatch(/discards your own permission changes/i);
-    expect(warnings).not.toContain(JSON.stringify(canonicalOpencodePermission()).slice(0, 80));
+    expect(warnings).not.toContain(JSON.stringify(NATIVE_OPENCODE_PERMISSIONS).slice(0, 80));
     expect(warnings).not.toContain('"external_directory"');
   });
 
@@ -189,7 +197,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     const parsed = JSON.parse((action as { content: string }).content) as Record<string, unknown>;
 
     expect(parsed.other).toBe(true);
-    expect(parsed.permission).toEqual(canonicalOpencodePermission());
+    expect(parsed.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
     expect(ctx.warnings.join("\n")).not.toMatch(/differs from the stack default/);
   });
 
@@ -203,7 +211,7 @@ describe("permissions-upgrade: opencode planMainConfig", () => {
     const [action] = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
     const parsed = JSON.parse((action as { content: string }).content) as Record<string, unknown>;
 
-    expect(parsed.permission).toEqual(canonicalOpencodePermission());
+    expect(parsed.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
     expect((action as { content: string }).content).toBe(freshContent);
     expect(ctx.warnings.join("\n")).not.toMatch(/differs from the stack default/);
     expect(ctx.warnings.join("\n")).not.toContain("--upgrade-permissions");
@@ -382,6 +390,7 @@ describe("permissions-upgrade: dry-run no escribe con flag", () => {
       const exitCode = await install.runInstall({
         runtimes: ["opencode"],
         targetDir,
+        opencodeTargetMajor: 2,
         dryRun: true,
         yes: true,
         mode: { mode: "human", subagentConcurrency: "serial" },
@@ -414,7 +423,7 @@ describe("permissions-upgrade: backup precede al reseed y restore lo revierte", 
       const originalOpencodeDetect = opencode.detect;
       const originalCodexDetect = codex.detect;
       const originalClaudeDetect = claudeCode.detect;
-      opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir });
+      opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: OPENCODE_V2_BIN, configDir });
       codex.detect = () => ({ id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex") });
       claudeCode.detect = () => ({ id: "claude-code", name: "Claude Code", installed: false, binPath: null, configDir: path.join(homeDir, ".claude") });
 
@@ -432,7 +441,7 @@ describe("permissions-upgrade: backup precede al reseed y restore lo revierte", 
 
         const reseeded = JSON.parse(fs.readFileSync(target, "utf8")) as Record<string, unknown>;
         expect(reseeded.other).toBe(true);
-        expect(reseeded.permission).toEqual(canonicalOpencodePermission());
+        expect(reseeded.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
 
         const { listBackups, restoreBackup } = await import("../src/lib/backup.js");
         const entry = listBackups()
@@ -456,13 +465,21 @@ describe("permissions-upgrade: CLI flag end-to-end (install --target-dir)", () =
   const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
   const CLI_PATH = path.join(ROOT, "src", "cli.ts");
 
-  async function runCli(args: string[], homeDir: string): Promise<number | undefined> {
+  async function runCli(
+    args: string[],
+    homeDir: string,
+    extraEnv: Record<string, string | undefined> = {},
+  ): Promise<number | undefined> {
     const originalArgv = [...process.argv];
     const originalExitCode = process.exitCode;
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
+    const managedKeys = [...new Set(["HOME", "USERPROFILE", ...Object.keys(extraEnv)])];
+    const originals = new Map<string, string | undefined>(managedKeys.map((key) => [key, process.env[key]]));
     process.env.HOME = homeDir;
     process.env.USERPROFILE = homeDir;
+    for (const [key, value] of Object.entries(extraEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     process.exitCode = undefined;
     try {
       vi.resetModules();
@@ -472,10 +489,10 @@ describe("permissions-upgrade: CLI flag end-to-end (install --target-dir)", () =
     } finally {
       process.argv = originalArgv;
       process.exitCode = originalExitCode;
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = originalUserProfile;
+      for (const [key, value] of originals) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       vi.resetModules();
     }
   }
@@ -510,11 +527,12 @@ describe("permissions-upgrade: CLI flag end-to-end (install --target-dir)", () =
     const exitCode = await runCli(
       ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes", "--upgrade-permissions"],
       homeDir,
+      { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
     );
 
     expect(exitCode).toBe(0);
     const reseeded = JSON.parse(fs.readFileSync(target, "utf8")) as Record<string, unknown>;
-    expect(reseeded.permission).toEqual(canonicalOpencodePermission());
+    expect(reseeded.permissions).toEqual(NATIVE_OPENCODE_PERMISSIONS);
   });
 
   it("install sin flag preserva el stale (off por defecto end-to-end)", async () => {
@@ -533,6 +551,7 @@ describe("permissions-upgrade: CLI flag end-to-end (install --target-dir)", () =
     const exitCode = await runCli(
       ["install", "--agents", "opencode", "--target-dir", targetDir, "--yes"],
       homeDir,
+      { JORGEX_OPENCODE_TARGET_MAJOR: "2" },
     );
 
     expect(exitCode).toBe(0);

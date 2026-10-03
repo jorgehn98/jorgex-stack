@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
@@ -10,6 +10,12 @@ import type { Adapter, InstallContext, RuntimeId } from "../src/adapters/types.j
 import { planSystemPrompt } from "../src/components/system-prompt.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
 import { upsertMarkdownSection } from "../src/lib/filemerge.js";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+
+/** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 import { stackRoot } from "../src/lib/paths.js";
 import { savePlaywrightCliPreference } from "../src/lib/tool-preferences.js";
 import { testModelsForRuntime } from "./fixtures/model-map.js";
@@ -255,7 +261,7 @@ function setOnlyOpenCodeDetected(install: typeof import("../src/install.js"), co
       id: adapter.id,
       name: adapter.name,
       installed: adapter.id === "opencode",
-      binPath: null,
+      binPath: adapter.id === "opencode" ? OPENCODE_V2_BIN : null,
       configDir: adapter.id === "opencode" ? configDir : path.join(configDir, adapter.id),
     });
   }
@@ -275,7 +281,7 @@ function setDetectedRuntimes(
       id: adapter.id,
       name: adapter.name,
       installed: runtimes.includes(adapter.id),
-      binPath: null,
+      binPath: adapter.id === "opencode" ? OPENCODE_V2_BIN : null,
       configDir: path.join(configRoot, adapter.id),
     });
   }
@@ -956,7 +962,7 @@ describe("Playwright prompt install ordering", () => {
         expect(browserSection(disabledPrompt)).toBeNull();
         expect(managedSection(disabledPrompt, "playwright")).toBeNull();
         expect(managedSection(disabledPrompt, "chrome-devtools")).toBeNull();
-        expect(JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER]).toBeUndefined();
+        expect(JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).mcp?.servers?.[DEVTOOLS_SERVER]).toBeUndefined();
       } finally {
         restoreDetect();
       }
@@ -1031,6 +1037,7 @@ describe("Playwright prompt install ordering", () => {
         await expect(install.runInstall({
           runtimes: ["opencode"],
           targetDir,
+          opencodeTargetMajor: 2,
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -1045,6 +1052,7 @@ describe("Playwright prompt install ordering", () => {
         await expect(install.runInstall({
           runtimes: ["opencode"],
           targetDir,
+          opencodeTargetMajor: 2,
           dryRun: false,
           yes: true,
           mode: { mode: "human", subagentConcurrency: "serial" },
@@ -1053,7 +1061,7 @@ describe("Playwright prompt install ordering", () => {
         })).resolves.toBe(0);
 
         expectCapabilities(fs.readFileSync(path.join(targetDir, "AGENTS.md"), "utf8"), false, true);
-        const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.[DEVTOOLS_SERVER] as {
+        const targetServer = JSON.parse(fs.readFileSync(path.join(targetDir, "opencode.json"), "utf8")).mcp?.servers?.[DEVTOOLS_SERVER] as {
           command?: unknown;
         };
         expect(Array.isArray(targetServer?.command)).toBe(true);

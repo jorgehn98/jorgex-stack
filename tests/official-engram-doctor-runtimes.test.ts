@@ -141,60 +141,39 @@ describe("[doctor-runtimes] incomplete selected installed runtime is unhealthy",
     }
   });
 
-  it("healthy control: complete official setup in custom dir → no official problem", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-doc-rt-ok-"));
+  it("[T07] v1-looking official Engram files on OpenCode v2 are pending, not healthy", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-doc-rt-opencode-v2-"));
     const homeDir = path.join(tmp, "home");
     try {
       await withTempHome(homeDir, async () => {
         mocks.modelMapOverride = { opencode: OPEN_CODE_TEST_MODELS };
         const bin = path.join(homeDir, ".local", "bin", "engram");
         fs.mkdirSync(path.dirname(bin), { recursive: true });
-        fs.writeFileSync(bin, "#!/bin/sh\n");
+        fs.writeFileSync(bin, "#!/bin/sh\necho 2.2.1\n");
+        try { fs.chmodSync(bin, 0o755); } catch { /* best-effort en tmp */ }
         mocks.detectEngram.mockReturnValue(bin);
-        mocks.runDetectedBin.mockReturnValue("1.20.0");
-        const customDir = path.join(homeDir, "custom-opencode");
-        fs.mkdirSync(path.join(customDir, "plugins"), { recursive: true });
-        fs.writeFileSync(path.join(customDir, "plugins", "engram.ts"), REAL_OPENCODE_TS);
+        mocks.runDetectedBin.mockReturnValue("2.2.1");
+        // Huella "oficial" v1: plugin con marcadores v1 + MCP exacto + statusline.
+        const configDir = path.join(homeDir, ".config", "opencode");
+        fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
+        fs.writeFileSync(path.join(configDir, "plugins", "engram.ts"), REAL_OPENCODE_TS);
         fs.writeFileSync(
-          path.join(customDir, "opencode.json"),
+          path.join(configDir, "opencode.json"),
           JSON.stringify({
             mcp: { engram: { type: "local", command: [bin, "mcp", "--tools=agent"] } },
             statusline: { command: "engram statusline" },
           }),
         );
 
-        const install = await import("../src/install.js");
-        const { runDoctor } = await import("../src/doctor.js");
-        const opencode = install.ADAPTERS.opencode!;
-        const codex = install.ADAPTERS.codex!;
-        const claudeCode = install.ADAPTERS["claude-code"]!;
-        const o = opencode.detect;
-        const c = codex.detect;
-        const cc = claudeCode.detect;
-        opencode.detect = () => ({ id: "opencode", name: "OpenCode", installed: true, binPath: null, configDir: customDir });
-        codex.detect = () => ({ id: "codex", name: "Codex CLI", installed: false, binPath: null, configDir: path.join(homeDir, ".codex") });
-        claudeCode.detect = () => ({ id: "claude-code", name: "Claude Code", installed: false, binPath: null, configDir: path.join(homeDir, ".claude") });
-        try {
-          // Stack al día: siembra mínima para que el diff no sume problemas.
-          await install.runInstall({ runtimes: ["opencode"], dryRun: false, yes: true, mode: { mode: "human", subagentConcurrency: "serial" } });
-          vi.clearAllMocks();
-          mocks.detectEngram.mockReturnValue(bin);
-          mocks.runDetectedBin.mockReturnValue("1.20.0");
-          const code = await runDoctor({ runtimes: ["opencode"] });
-          const logs = [
-            ...mocks.prompts.log.info.mock.calls.flat(),
-            ...mocks.prompts.log.warn.mock.calls.flat(),
-            ...mocks.prompts.log.error.mock.calls.flat(),
-          ].join("\n");
-          expect(logs).toMatch(/setup|exposure/i);
-          // Sin problemas oficiales; el exit depende solo del resto del estado.
-          expect(logs).not.toMatch(/setup oficial Engram incompleto/i);
-          void code;
-        } finally {
-          opencode.detect = o;
-          codex.detect = c;
-          claudeCode.detect = cc;
-        }
+        const { resolveEngramOfficialState } = await import("../src/doctor.js") as any;
+        expect(typeof resolveEngramOfficialState, "falta doctor oficial por capas (T07)").toBe("function");
+        const state = await resolveEngramOfficialState({ homeDir });
+
+        // Presencia de ficheros v1 ≠ integración v2 activa: nunca healthy/full.
+        expect(state.setup.runtimes.opencode.ok, "ficheros v1 no acreditan el setup oficial v2").toBe(false);
+        expect(state.exposure.runtimes.opencode.exposed, "sin activación verificada no hay exposición").toBe(false);
+        expect(JSON.stringify(state.setup.runtimes.opencode))
+          .toMatch(/release|upstream|prerrequisit|pendiente|no disponible|unsupported/i);
       });
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

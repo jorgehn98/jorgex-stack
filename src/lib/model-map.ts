@@ -22,7 +22,7 @@ export type ModelMap = Partial<Record<RuntimeId, RuntimeModelMap>>;
 type DefaultModelMap = {
   "claude-code": RuntimeModelMap;
   codex: RuntimeModelMap;
-  opencode?: never;
+  opencode: RuntimeModelMap;
 };
 
 /**
@@ -40,9 +40,10 @@ export function resolveAgentModel(models: RuntimeModelMap, agentName: string, ti
 }
 
 /**
- * Defaults de los runtimes con catálogo controlado. OpenCode se omite porque
- * sus proveedores dependen de cada usuario: la primera instalación interactiva
- * construye su mapa desde `opencode models`. La elección vive en
+ * Defaults de los runtimes con catálogo controlado. OpenCode v2 ya no espera
+ * una primera selección interactiva de proveedores: su roster aprobado vive
+ * aquí (Spec T04) y un install/sync fresh (incluido `--yes`/sin TTY) lo
+ * siembra. La elección del usuario sigue viviendo en
  * ~/.jorgex-stack/model-map.json (local, nunca en el repo).
  */
 export const DEFAULT_MODEL_MAP: DefaultModelMap = {
@@ -58,6 +59,21 @@ export const DEFAULT_MODEL_MAP: DefaultModelMap = {
     strong: { model: "gpt-6-astra", variant: "low" },
     standard: { model: "gpt-5.6-luna", variant: "max" },
     cheap: { model: "gpt-5.6-luna", variant: "medium" },
+  },
+  // Roster v2 aprobado (Spec T04). Los subagentes que no encajan en su tier
+  // llevan override explícito; el primary (orchestrator) nunca fija modelo.
+  opencode: {
+    strong: { model: "openai/gpt-6.1-sol", variant: "xhigh" },
+    standard: { model: "openai/gpt-6.1-sol", variant: "medium" },
+    cheap: { model: "opencode-go/muse-spark-1.3-contributor", variant: "medium" },
+    overrides: {
+      "test-analyzer": { model: "openai/gpt-6-luna", variant: "max" },
+      "type-design-analyzer": { model: "openai/gpt-6-luna", variant: "max" },
+      implementer: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" },
+      tester: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" },
+      "docs-maintainer": { model: "minimax/MiniMax-M3", variant: "thinking" },
+      engram: { model: "minimax/MiniMax-M3", variant: "thinking" },
+    },
   },
 };
 

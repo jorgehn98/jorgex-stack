@@ -318,7 +318,58 @@ Este contrato de recibo/transacción aplica al agent Pi y a los providers asocia
 
 Engram es obligatorio para el paquete gestionado, pero queda fuera de ownership. Si ya existe un binario válido, siempre se conserva. Cuando falta y hay autorización, `install` consulta en tiempo de ejecución el último release estable oficial de GitHub (`releases/latest`, sin prerelease ni draft y nunca una branch) antes de configurar cualquier runtime. Comprueba la metadata viva del asset exacto para plataforma y arquitectura —nombre esperado, estado publicado, tamaño y SHA-256— y falla cerrado si no hay red o falta cualquier dato; no existe fallback estático u offline. Escribe bajo `~/.local/bin/engram` (o el equivalente de la plataforma) y no requiere Brew ni Go. En una ejecución interactiva se pide confirmación; `--engram` autoriza la descarga en flujos no interactivos. `sync`, dry-run y `--target-dir` no descargan Engram. Update sigue siendo explícito y no reemplaza implícitamente un binario existente. La base de datos y las memorias nunca se actualizan ni eliminan, y `uninstall` nunca borra el binario. La ruta verificada se conserva en el package receipt como hand-off para el runtime.
 
+La integración oficial de Engram v2 sobre OpenCode se completa en un PR posterior (PR04 del roadmap de OpenCode v2) cuando el release oficial estable posterior al gate Engram #1526 (o equivalente) sea verificado y adoptado. Hasta entonces OpenCode v2 conserva memorias y binario, no ejecuta setup v1 sobre el runtime y no presenta Memory Protocol completo; las instalaciones reales pueden devolver estado parcial visible con prerrequisito pendiente en lugar de éxito total, y `sync`/`dry-run`/`--target-dir` mantienen sus skips intencionales (`ran:false`). Stack no asume que el prerrequisito ya está disponible solo porque `update --check` no lo haya localizado hoy: la adopción es deliberada, con verificación y stage. La conservación del binario/DB no equivale a una integración Engram oficial v2.
+
 El plugin oficial de Claude sigue requiriendo Engram estable 2.0.0 o superior. Un binario existente por debajo de ese mínimo haría que Claude escribiera el archivo obsoleto `mcp/engram.json`; por eso el preflight de Claude lo bloquea antes del setup. Stack nunca reemplaza automáticamente un binario existente: hay que actualizarlo explícitamente y repetir `install`. El plugin oficial de Claude aporta hooks y skill; `engram setup claude-code` registra aparte el MCP del usuario y no implica un MCP incluido en Stack ni un smoke autenticado de modelo-herramienta.
+
+### Impacto del cambio de Stack sobre OpenCode v2
+
+El cambio de Stack para soportar OpenCode v2 vive en su adapter
+(`src/adapters/opencode.ts`), en sus rutas overlay
+(`stack/plugins/opencode/`), en la nueva fuente de bytes
+(`src/lib/opencode-static-resources.json`) y en su herramienta de
+mantenimiento (`scripts/regenerate-opencode-static-resources.py`). El
+generador de snapshot de Pi (`scripts/generate-snapshot.mjs`) lee un
+conjunto explícito de fuentes canónicas: `stack/config/defaults.json`,
+`stack/contracts/{quality-receipt,quality-capabilities}.v1.schema.json`,
+`stack/system-prompt/{AGENTS.md,context7.md,browser-playwright.md,browser-chrome-devtools.md}`,
+`stack/commands/lean-audit.md`, `stack/agents/*.md` y `stack/skills/`.
+**No** consume `src/lib/opencode-static-resources.json`,
+`scripts/regenerate-opencode-static-resources.py`,
+`stack/plugins/opencode/*`, `src/adapters/opencode.ts` ni
+`src/lib/model-map.ts`; esos cambios son propios del runtime `opencode`
+y quedan fuera del canon que Pi declara como input. En el snapshot
+actual de Pi, `stack/commands/opencode/xreview.md` sigue figurando en la
+lista `EXCLUSIONS` del generador (overlays runtime específicos), por lo
+que el cambio OpenCode v2 tampoco entra por esa ruta.
+
+Sobre el canon que Pi sí consume: `stack/config/defaults.json` conserva
+el bloque legacy `opencode.permission` del v1 sin modificar en este PR;
+las schemas de quality no cambian; `AGENTS.md`, los módulos de system
+prompt, el comando `lean-audit`, los agentes y las skills compartidas
+no se modifican en este PR. La policy de permisos de Pi, sus receipts
+(`PI_CODING_AGENT_DIR/jorgex-pi/*`) y su proyección compartida dependen
+de ese canon común y no del overlay OpenCode v2.
+
+**Alcance de la comprobación.** La no-impacto de este PR sobre Pi se
+sostiene en evidencia read-only: (a) lectura del generador de snapshot
+(`scripts/generate-snapshot.mjs`) y de sus inputs declarados
+(`stack/config/defaults.json`, `stack/contracts/*`, `stack/system-prompt/*`,
+`stack/commands/lean-audit.md`, `stack/agents/*.md`, `stack/skills/`); (b)
+las fuentes compartidas (defaults y `DEFAULT_MODEL_MAP.codex`) y los
+contratos de Pi permanecen sin cambios respecto al canon previo; (c)
+los paths OpenCode propios de este PR (`src/adapters/opencode.ts`,
+`stack/plugins/opencode/*`, `src/lib/opencode-static-resources.json`,
+`scripts/regenerate-opencode-static-resources.py`, `src/lib/model-map.ts`)
+están excluidos de los inputs del generador de Pi y siguen figurando en
+su lista `EXCLUSIONS` cuando aplica. Esta comprobación es de solo
+lectura: no se regeneró ni se alteró una instalación personal de Pi.
+La adopción gestionada de Pi sigue requiriendo un `install`/`update
+--agents pi` deliberado y verificado; este PR no la ejecuta. La resolución del paquete Pi y de los providers
+oficiales (`gentle-engram`, `pi-mcp-adapter`) sigue siendo dinámica
+desde `dist-tags.latest`, con stage aislado y verificación previa a la
+activación. Un cambio semántico en el contrato Stack↔Pi abriría un PR
+Pi secuencial.
 
 ## Comandos
 

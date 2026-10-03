@@ -254,224 +254,23 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
   });
   const mcp = () => loadCanonicalMcp(stackRoot());
 
-  it("opencode: la config fresca permite trabajo ordinario y conserva protección de secretos y destrucción", () => {
-    const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
-    const fresh = JSON.parse((action as { content: string }).content);
-    expect(fresh.permission).toMatchObject({
-      external_directory: { "*": "allow" },
-      read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
-      edit: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
-      glob: "allow",
-      grep: "allow",
-      lsp: "allow",
-      webfetch: "allow",
-      websearch: "allow",
-      task: "allow",
-      skill: "allow",
-      todowrite: "allow",
-      question: "allow",
-      bash: {
-        "*": "allow",
-        "git rebase": "ask",
-        "git rebase *": "ask",
-        "git reset --hard": "ask",
-        "git reset --hard *": "ask",
-        "ssh": "ask",
-        "ssh *": "ask",
-        "scp": "ask",
-        "scp *": "ask",
-        "sftp": "ask",
-        "sftp *": "ask",
-        "rsync": "ask",
-        "rsync *": "ask",
-        "format": "deny",
-        "format *": "deny",
-        "*/format": "deny",
-        "*/format *": "deny",
-        "mkfs": "deny",
-        "mkfs *": "deny",
-        "*/mkfs": "deny",
-        "*/mkfs *": "deny",
-        "mkfs.*": "deny",
-        "*/mkfs.*": "deny",
-        "dd": "deny",
-        "dd *": "deny",
-        "*/dd": "deny",
-        "*/dd *": "deny",
-        "shred": "deny",
-        "shred *": "deny",
-        "*/shred": "deny",
-        "*/shred *": "deny",
-      },
-    });
-    // Sin fricción para trabajo ordinario: ni ask global ni reglas de push/rm/lenguajes.
-    expect(fresh.permission["*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *push*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *reset*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *restore*"]).toBeUndefined();
-    expect(fresh.permission.bash["git *rebase*"]).toBeUndefined();
-    expect(fresh.permission.bash["rm *"]).toBeUndefined();
-    expect(fresh.permission.bash["rm * /"]).toBeUndefined();
-    expect(fresh.permission.bash["node *"]).toBeUndefined();
-    expect(fresh.permission.bash["python *"]).toBeUndefined();
-    expect(fresh.permission.bash["sudo *"]).toBeUndefined();
-    expect(fresh.permission.bash["pnpm dlx*"]).toBeUndefined();
-    // Sin claves muertas ni allowlist por herramienta MCP.
-    expect(fresh.permission.list).toBeUndefined();
-    expect(fresh.permission.todoread).toBeUndefined();
-    expect(fresh.permission["engram_*"]).toBeUndefined();
-    expect(fresh.permission["context7_*"]).toBeUndefined();
-  });
-
-  it("opencode: una config no vacía sin permission no recibe permission", () => {
+  it("opencode: una config no vacía sin permissions no recibe el bloque ni se auto-migra", () => {
     writeText(path.join(tmp, "opencode.json"), JSON.stringify({ other: true }));
 
-    const [action] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
+    const ctx = makeCtx("opencode");
+    const [action] = opencodeAdapter.planMainConfig(mcp(), ctx);
     const config = JSON.parse((action as { content: string }).content) as Record<string, unknown>;
 
     expect(config.other).toBe(true);
+    expect(config).not.toHaveProperty("permissions");
     expect(config).not.toHaveProperty("permission");
+    expect(ctx.warnings.join("\n")).toMatch(/--upgrade-permissions/);
   });
 
-  it("opencode: la config fresca también avisa y deniega stores de secretos más amplios", () => {
+  it("opencode: la config fresca avisa sobre stores de secretos más amplios", () => {
     const ctx = makeCtx("opencode");
-    const [action] = opencodeAdapter.planMainConfig(mcp(), ctx);
-    const fresh = JSON.parse((action as { content: string }).content);
-    const readRules = fresh.permission.read as Record<string, string>;
-
-    expect(Object.keys(readRules)).toEqual(
-      expect.arrayContaining([
-        "*",
-        "*.env",
-        "*.env.*",
-        "*.env.example",
-        "*/.ssh/*",
-        "*/.aws/credentials",
-        "*/.npmrc",
-        "*/.git-credentials",
-        "*/id_rsa",
-        "*/id_ed25519",
-        "*.pem",
-        "*.key",
-      ]),
-    );
+    opencodeAdapter.planMainConfig(mcp(), ctx);
     expect(ctx.warnings.join("\n")).toMatch(/ordinary|sensitive/i);
-  });
-
-  it("opencode: deja intacta la config custom y no auto-migra el legacy exacto", () => {
-    writeText(path.join(tmp, "opencode.json"), JSON.stringify({ permission: { edit: "deny", read: "ask" } }));
-    const [custom] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
-    expect(JSON.parse((custom as { content: string }).content).permission).toEqual({ edit: "deny", read: "ask" });
-
-    writeText(
-      path.join(tmp, "opencode.json"),
-      JSON.stringify({
-        permission: {
-          edit: "allow",
-          read: "allow",
-          glob: "allow",
-          grep: "allow",
-          list: "allow",
-          lsp: "allow",
-          webfetch: "allow",
-          websearch: "allow",
-          bash: {
-            "*": "allow",
-            "rm *": "ask",
-            "del *": "ask",
-            "rmdir *": "ask",
-            "git push --force*": "ask",
-            "format *": "deny",
-            "mkfs *": "deny",
-            "dd *": "deny",
-            "shred *": "deny",
-          },
-        },
-      }),
-    );
-
-    const [legacy] = opencodeAdapter.planMainConfig(mcp(), makeCtx("opencode"));
-    const migrated = JSON.parse((legacy as { content: string }).content);
-    expect(migrated.permission).toEqual({
-      edit: "allow",
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      list: "allow",
-      lsp: "allow",
-      webfetch: "allow",
-      websearch: "allow",
-      bash: {
-        "*": "allow",
-        "rm *": "ask",
-        "del *": "ask",
-        "rmdir *": "ask",
-        "git push --force*": "ask",
-        "format *": "deny",
-        "mkfs *": "deny",
-        "dd *": "deny",
-        "shred *": "deny",
-      },
-    });
-    expect(migrated.permission.external_directory).toBeUndefined();
-    expect(migrated.permission.read).toBe("allow");
-  });
-
-  it("opencode: el legacy exacto no se auto-migra ni avisa", () => {
-    writeText(
-      path.join(tmp, "opencode.json"),
-      JSON.stringify({
-        permission: {
-          edit: "allow",
-          read: "allow",
-          glob: "allow",
-          grep: "allow",
-          list: "allow",
-          lsp: "allow",
-          webfetch: "allow",
-          websearch: "allow",
-          bash: {
-            "*": "allow",
-            "rm *": "ask",
-            "del *": "ask",
-            "rmdir *": "ask",
-            "git push --force*": "ask",
-            "format *": "deny",
-            "mkfs *": "deny",
-            "dd *": "deny",
-            "shred *": "deny",
-          },
-        },
-      }),
-    );
-
-    const ctx = { ...makeCtx("opencode"), engramBin: "/opt/engram" };
-    const [legacy] = opencodeAdapter.planMainConfig(mcp(), ctx);
-    const migrated = JSON.parse((legacy as { content: string }).content);
-
-    expect(migrated.permission).toEqual({
-      edit: "allow",
-      read: "allow",
-      glob: "allow",
-      grep: "allow",
-      list: "allow",
-      lsp: "allow",
-      webfetch: "allow",
-      websearch: "allow",
-      bash: {
-        "*": "allow",
-        "rm *": "ask",
-        "del *": "ask",
-        "rmdir *": "ask",
-        "git push --force*": "ask",
-        "format *": "deny",
-        "mkfs *": "deny",
-        "dd *": "deny",
-        "shred *": "deny",
-      },
-    });
-    expect(migrated.permission.external_directory).toBeUndefined();
-    expect(ctx.warnings.join("\n")).not.toMatch(/external\s+directory|read-anywhere|external edits/i);
   });
 
   it("codex: la config fresca publica jorgex-read-anywhere sin sandbox_mode", () => {

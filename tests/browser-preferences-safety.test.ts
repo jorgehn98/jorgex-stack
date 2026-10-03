@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupOpenCodeBinaries, opencodeV2Binary } from "./helpers/opencode-binary.js";
+
+/** Binario v2 real: el gate OpenCode ejecuta el binario detectado. */
+const OPENCODE_V2_BIN = opencodeV2Binary();
+
+afterAll(cleanupOpenCodeBinaries);
 
 const DEVTOOLS_SERVER = "chrome-devtools";
 const MODELS = {
@@ -191,7 +197,7 @@ function setOnlyOpenCodeDetected(install: typeof import("../src/install.js"), co
       id: adapter.id,
       name: adapter.name,
       installed: adapter.id === "opencode",
-      binPath: null,
+      binPath: adapter.id === "opencode" ? OPENCODE_V2_BIN : null,
       configDir: adapter.id === "opencode" ? configDir : path.join(configDir, adapter.id),
     });
   }
@@ -282,6 +288,7 @@ describe("browser preference safety", () => {
           const installCode = await install.runInstall({
             runtimes: ["opencode"],
             targetDir,
+            opencodeTargetMajor: 2,
             dryRun: false,
             yes: true,
             mode: { mode: "human", subagentConcurrency: "serial" },
@@ -305,6 +312,7 @@ describe("browser preference safety", () => {
           const uninstallCode = await runUninstall({
             runtimes: ["opencode"],
             targetDir,
+            opencodeTargetMajor: 2,
             dryRun: false,
             yes: true,
             removeEngram: false,
@@ -726,6 +734,7 @@ describe("browser preference safety", () => {
           const installCode = await install.runInstall({
             runtimes: ["opencode"],
             targetDir,
+            opencodeTargetMajor: 2,
             dryRun: false,
             yes: true,
             mode: { mode: "human", subagentConcurrency: "serial" },
@@ -749,6 +758,7 @@ describe("browser preference safety", () => {
           const uninstallCode = await runUninstall({
             runtimes: ["opencode"],
             targetDir,
+            opencodeTargetMajor: 2,
             dryRun: false,
             yes: true,
             removeEngram: false,
