@@ -76,7 +76,8 @@ Every formal task has exactly one recoverable `Spec` reference in the plan table
 | 03 | 02 | [agent] | [bounded scope] | [one declared source] | [descriptive name] | [one-line description] | SC-01 | ⬜ | 2 | 01 |
 | 04 | 02 | [agent] | [bounded scope] | [one declared source] | [descriptive name] | [one-line description] | SC-02 | ⬜ | 2 | 01, 02 |
 
-**Statuses**: ⬜ Pending → 🔴 RED → 🟢 GREEN → 🔍 Review → ✅ Done
+**Statuses**: ⬜ Pending → In progress → Verified → 🔍 Review → ✅ Done
+For test-first work that adds or strengthens protection, use 🔴 RED → 🟢 GREEN within In progress. Tasks using `reuse` or `no new test` proceed with their chosen verification; do not require a new failing test to advance.
 ```
 
 ---
@@ -111,7 +112,7 @@ Use this adaptable content in the one source declared by the plan's `Spec` colum
 - **Existing protection**: [specific existing test/evidence, or none]
 - **New behavior**: [behavior needing new protection, or none]
 - **Chosen seam**: [closest authoritative seam and why]
-- **Action**: [add | update | reuse | no new test] — [concrete reason]
+- **Action**: [add | update | reuse | no new test] — [for new or stronger protection, the concrete regression existing coverage misses; for a mechanical test update, reuse or no new test, why existing protection or other verification is sufficient]
 ```
 
 Use only the headings and fields that are pertinent, except retain the complete testing decision when the task changes behavior. Do not require literal code, input/output blocks or empty heading, section or field. Existing Engram task observations remain compatible; adapt this template only for newly created or materially revised specs.
@@ -137,11 +138,11 @@ Mutation is serialized: the coordinator is the single writer, reads the exact ob
 
 ### Atomicity
 
-- **Max ~5 implementation steps** per task. If more → split into two tasks.
+- Bound each task by an independently verifiable behavior or contract and its concrete regression risk. Keep the layers needed for that outcome together; split when outcomes can be verified independently or coupling and risk warrant it, not at a fixed step count.
 
 ### Structure
 
-- **Natural order**: data layer → generated types → services/hooks → components/UI.
+- **Vertical slices**: organize tasks by behavior and risk, not by technical layer. Sequence implementation within a task by its real dependencies; data, types, services and UI are not mandatory separate tasks.
 - **Numbering**: `01`, `02`, `03`... (two digits) — shared by the plan table row and the topic_key.
 
 ### Context
@@ -154,7 +155,7 @@ Mutation is serialized: the coordinator is the single writer, reads the exact ob
 
 - **VERIFIABLE**: "the type includes X", not "the type is correct".
 - **SPECIFIC**: no copy-paste of generic criteria.
-- **COMPLETE**: cover happy path, edge cases and errors.
+- **COMPLETE**: cover the relevant happy path, boundary cases and errors for the approved contract and concrete risk; do not manufacture speculative scenarios.
 
 ### Constraints
 

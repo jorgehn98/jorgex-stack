@@ -13,8 +13,6 @@ describe("CLI argument parsing", () => {
   it.each([
     [["--help"], "install"],
     [["-h"], "install"],
-    [["sync", "--help"], "sync"],
-    [["sync", "-h"], "sync"],
     [["install", "--target-dir", "tmp", "--help"], "install"],
   ] as const)("%j imprime ayuda sin ejecutar el comando", (argv, command) => {
     const parsed = parseCliArgs([...argv]);
@@ -26,8 +24,6 @@ describe("CLI argument parsing", () => {
   it.each([
     [["--version"], "install"],
     [["-v"], "install"],
-    [["sync", "--version"], "sync"],
-    [["sync", "-v"], "sync"],
   ] as const)("%j imprime versión sin ejecutar el comando", (argv, command) => {
     const parsed = parseCliArgs([...argv]);
 
@@ -35,16 +31,11 @@ describe("CLI argument parsing", () => {
     expect(parsed.command).toBe(command);
   });
 
-  it("parsea sync normal como ejecución", () => {
+  it("el sync público con flags válidos ya no se interpreta como ejecución", () => {
     const parsed = parseCliArgs(["sync", "--agents", "opencode", "--target-dir", "tmp", "--yes"]);
 
-    expect(parsed.action).toBe("run");
-    expect(parsed.command).toBe("sync");
-    expect(parsed.flags).toMatchObject({
-      agents: ["opencode"],
-      targetDir: "tmp",
-      yes: true,
-    });
+    expect(parsed.action).toBe("unknown");
+    expect(parsed.unknownCommand).toBe("sync");
   });
 
   it.each([
@@ -110,7 +101,6 @@ describe("CLI argument parsing", () => {
 
   it.each([
     "install",
-    "sync",
     "models",
     "update",
     "doctor",
@@ -163,7 +153,7 @@ describe("CLI argument parsing", () => {
     expect(parsed.flags.unknownFlags).toEqual([]);
   });
 
-  it.each(["install", "sync"] as const)("off por defecto: %s no activa --upgrade-permissions", (command) => {
+  it.each(["install"] as const)("off por defecto: %s no activa --upgrade-permissions", (command) => {
     const parsed = parseCliArgs([command]);
 
     expect(parsed.action).toBe("run");
@@ -171,7 +161,7 @@ describe("CLI argument parsing", () => {
     expect(parsed.flags.unknownFlags).toEqual([]);
   });
 
-  it.each(["install", "sync"] as const)("acepta --upgrade-permissions en %s sin flags desconocidos", (command) => {
+  it.each(["install"] as const)("acepta --upgrade-permissions en %s sin flags desconocidos", (command) => {
     const parsed = parseCliArgs([command, "--upgrade-permissions"]);
 
     expect(parsed.action).toBe("run");
@@ -238,5 +228,33 @@ describe("flags desconocidos", () => {
     const parsed = parseCliArgs(["install", "--frobnicate", "--version"]);
 
     expect(parsed.action).toBe("version");
+  });
+});
+
+// T78: el sync público se retira. `sync` deja de ser comando reconocido y no es
+// alias de install; la reconciliación sigue viviendo en `install`/`update` y en
+// el contrato interno `runInstall({ command: "sync" })`.
+describe("retirada del sync público", () => {
+  it.each([
+    ["sin argumentos", ["sync"]],
+    ["--help", ["sync", "--help"]],
+    ["-h", ["sync", "-h"]],
+    ["--version", ["sync", "--version"]],
+    ["-v", ["sync", "-v"]],
+    ["con --engram", ["sync", "--engram"]],
+    ["con --upgrade-permissions", ["sync", "--upgrade-permissions"]],
+    ["con --receipt", ["sync", "--receipt", "receipt.json"]],
+  ] as const)("%s: sync es comando desconocido, no un alias de install", (_label, argv) => {
+    const parsed = parseCliArgs([...argv]);
+
+    expect(parsed.action).toBe("unknown");
+    expect(parsed.unknownCommand).toBe("sync");
+  });
+
+  it.each(["install", "update"] as const)("control: %s sigue reconocido como ejecución", (command) => {
+    const parsed = parseCliArgs([command]);
+
+    expect(parsed.action).toBe("run");
+    expect(parsed.command).toBe(command);
   });
 });

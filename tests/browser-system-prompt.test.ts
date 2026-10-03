@@ -895,7 +895,7 @@ describe("Playwright prompt install ordering", () => {
         expect(output).toMatch(/Playwright CLI/i);
         expect(output).toMatch(/instalad[oa]|preparad[oa]/i);
         expect(output).toMatch(/preferencia.*activ[ao]|activ[ao].*preferencia/i);
-        expect(output).toMatch(/jorgex-stack (?:sync|install --playwright)/i);
+        expect(output).toMatch(/jorgex-stack install/i);
       } finally {
         adapter.adaptSystemPromptSections = originalAdaptSystemPromptSections;
         restoreDetect();

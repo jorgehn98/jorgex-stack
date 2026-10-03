@@ -1,20 +1,21 @@
 # Permisos por defecto del stack
 
 Esta referencia describe los defaults que `pnpm dlx jorgex-stack install` (o
-`sync`) siembra en una configuración fresca o vacía. La política común es
-semántica: el trabajo ordinario se permite, las operaciones legítimas pero
-sensible o irreversibles piden aprobación, y los secretos y la destrucción
-evidente se deniegan. En OpenCode v2 fresco el array nativo no tiene
-regla global ni `ask` para git/shell ordinarios; lo que el array no
-declara se queda al default del host v2 (no se afirma que ese default
-sea universal `allow` para todas las herramientas: el runtime del
-host decide qué hace con cada `action` no listada, y el array puede
-convivir con reglas destructivas del propio host). En Claude Code y
+`pnpm cli install` desde un clon de desarrollo) siembra en una configuración
+fresca o vacía. `sync` ya no es un comando público; `install` reconcilia el
+canon internamente. La política común es semántica: el trabajo ordinario se
+permite, las operaciones legítimas pero sensible o irreversibles piden
+aprobación, y los secretos y la destrucción evidente se deniegan. En OpenCode
+v2 fresco el array nativo no tiene regla global ni `ask` para git/shell
+ordinarios; lo que el array no declara se queda al default del host v2 (no se
+afirma que ese default sea universal `allow` para todas las herramientas: el
+runtime del host decide qué hace con cada `action` no listada, y el array
+puede convivir con reglas destructivas del propio host). En Claude Code y
 Codex, lo no listado sigue pidiendo aprobación.
 
 La regla fresh-only sigue siendo el default: una configuración existente
 se conserva completa y el stack no reimpone ni migra sus permisos solo. La
-única excepción es el opt-in explícito `install`/`sync
+única excepción es el opt-in explícito `install
 --upgrade-permissions`, que reemplaza el bloque gestionado entero cuando
 difiere del default, con backup automático previo en instalaciones reales. Sin ese flag, una config
 existente que difiera solo avisa (warn-only-by-default); una config al día
@@ -34,14 +35,14 @@ queda en silencio.
 | Claude Code  | `~/.claude/settings.json`        | `permissions`                                           |
 | Codex CLI    | `~/.codex/config.toml`           | `approval_policy` + `default_permissions` + perfil      |
 
-Pi mantiene una política separada en `PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json`, con receipt en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json` y backups en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-backups`. Pi solo posee la copia de configuración que creó y cuyo ownership registra en su receipt y backups; una configuración ajena no pasa a ser propiedad de Pi y Stack nunca la reclama. Por defecto Stack es solo-diagnóstico con Pi: `sync` siembra solo si la configuración está ausente (seed-only) y nunca reescribe, retira ni reimpone su estado. Con `sync/install --upgrade-permissions`, Stack reenvía el flag al comando `upgrade` del paquete Pi, pero solo si el candidato adoptado anuncia la capability `permissions-upgrade-v1`; sin esa capability se continúa en modo seed-only. El `upgrade` del paquete reemplaza únicamente la copia gestionada receipt-owned que difiera del default, con backup previo, y siembra si está ausente; una configuración ajena, inválida o editada por el usuario se conserva (la edición libera ownership) y nunca se fusiona ni repara. Una política existente sin receipt se conserva y `doctor` la marca como aviso (warn-only); un JSON legible pero inválido o un estado ilegible se conserva y `doctor` lo marca como error. `cleanup` solo retira una copia exacta que el receipt identifique como creada por Pi. Ante contención (el runner devuelve salida 1 con `CONFIG_LOCKED`), Stack reintenta el `upgrade` hasta dos veces y luego falla de forma visible; ninguna otra señal se reintenta. Tras liberar ownership (edición del usuario o fichero owned ausente, sin resembrado), el siguiente `upgrade` es no-op (`changed: false` sin acciones).
+Pi mantiene una política separada en `PI_CODING_AGENT_DIR/extensions/pi-permission-system/config.json`, con receipt en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-lifecycle.v1.json` y backups en `PI_CODING_AGENT_DIR/jorgex-pi/permissions-backups`. Pi solo posee la copia de configuración que creó y cuyo ownership registra en su receipt y backups; una configuración ajena no pasa a ser propiedad de Pi y Stack nunca la reclama. Por defecto Stack es solo-diagnóstico con Pi: `install` siembra solo si la configuración está ausente (seed-only) y nunca reescribe, retira ni reimpone su estado. Con `install --upgrade-permissions`, Stack reenvía el flag al comando `upgrade` del paquete Pi, pero solo si el candidato adoptado anuncia la capability `permissions-upgrade-v1`; sin esa capability se continúa en modo seed-only. El `upgrade` del paquete reemplaza únicamente la copia gestionada receipt-owned que difiera del default, con backup previo, y siembra si está ausente; una configuración ajena, inválida o editada por el usuario se conserva (la edición libera ownership) y nunca se fusiona ni repara. Una política existente sin receipt se conserva y `doctor` la marca como aviso (warn-only); un JSON legible pero inválido o un estado ilegible se conserva y `doctor` lo marca como error. `cleanup` solo retira una copia exacta que el receipt identifique como creada por Pi. Ante contención (el runner devuelve salida 1 con `CONFIG_LOCKED`), Stack reintenta el `upgrade` hasta dos veces y luego falla de forma visible; ninguna otra señal se reintenta. Tras liberar ownership (edición del usuario o fichero owned ausente, sin resembrado), el siguiente `upgrade` es no-op (`changed: false` sin acciones).
 
 Cada adapter siembra su bloque en config fresca o vacía (el archivo de
 usuario no existe o está vacío). Una config existente — sea custom o
 coincidente con el legacy exacto — se preserva byte a byte por defecto;
 el adapter no la toca sin el opt-in. Una vez escrita (en la primera
 instalación), esa sección pasa a ser **config del usuario**: quitarla o
-editarla a mano es seguro, y el próximo `sync` sin
+editarla a mano es seguro, y el próximo `install` sin
 `--upgrade-permissions` no la sobrescribirá porque ya no es "fresca".
 Esta es la regla fresh-only: el default se siembra en un archivo fresco
 y las decisiones posteriores quedan bajo control del usuario, salvo el
@@ -56,12 +57,12 @@ opt-in explícito del §5.
 > fresco**: el adapter respeta tu archivo y no siembra el default. Para
 > alinear el bloque con el default, edita a mano o usa
 > `--upgrade-permissions` (ver §5); vaciar el archivo entero antes del
-> `sync` sigue siendo una migración puntual válida pero ya no es la vía
+> Vaciar el archivo entero antes de `install` sigue siendo una migración puntual válida pero ya no es la vía
 > recomendada.
 
 **Aviso en config fresca.** Cuando el adapter siembra el bloque en
 instalación fresca, además de escribirlo deja constancia en
-`ctx.warnings` (visible al final de `install`/`sync`). Los mensajes son:
+`ctx.warnings` (visible al final de `install`). Los mensajes son:
 
 - OpenCode v2 → `OpenCode v2: fresh permissions allow ordinary reads, edits
   and external_directory; bash inherits the host default and protected
@@ -100,7 +101,7 @@ preservando el resto del archivo; en instalaciones reales el pipeline crea
 el backup automático antes de escribir (`restore --list` / `restore <id>`
 para revertir). En `--dry-run` no se escribe nada ni se crean backups. `doctor` reemite el
 mismo aviso stale sin volcar el bloque y con el remedio exacto:
-`jorgex-stack sync --upgrade-permissions --dry-run` para previsualizar.
+`jorgex-stack install --upgrade-permissions --dry-run` para previsualizar.
 
 ---
 
@@ -302,7 +303,7 @@ no se fusionan entradas sueltas).
 ya trae una `permissions` (custom o exactamente igual a ese legacy), el
 adapter la deja intacta por defecto y emite el aviso stale
 (solo-si-difiere, sin volcar el bloque). Para subir al nuevo default,
-edita a mano o usa `sync --upgrade-permissions` (ver §5).
+edita a mano o usa `install --upgrade-permissions` (ver §5).
 
 ---
 
@@ -411,22 +412,21 @@ nuevo default, las opciones son:
 1. **Editar a mano.** Compara tu bloque actual con el default canónico
    en `stack/config/defaults.json` y ajusta lo que difiera. El adapter
    no va a sembrar el bloque mientras el archivo exista y no esté vacío.
-2. **`sync --upgrade-permissions` (opt-in explícito, vía
+2. **`install --upgrade-permissions` (opt-in explícito, vía
    recomendada).** Reemplaza entero cualquier bloque gestionado que
    difiera del canon, preservando el resto del archivo (claves ajenas en
    OpenCode/Claude; `sandbox_mode`, `model`, MCP y secciones ajenas en
    Codex). En instalaciones reales el pipeline crea el backup automático
    antes de escribir; revísalo con `restore --list` y revierte con
    `restore <id>` si hace falta. El aviso stale nunca vuelca el contenido
-   del bloque. Para previsualizar sin escribir: `jorgex-stack sync
+   del bloque. Para previsualizar sin escribir: `jorgex-stack install
    --upgrade-permissions --dry-run` (no escribe ni crea backups). `doctor`
-   apunta a ese mismo comando cuando detecta el bloque stale. También
-   disponible en `install --upgrade-permissions`.
-3. **Dejar el archivo ausente o vacío antes del `sync`.** Esto solo es
+   apunta a ese mismo comando cuando detecta el bloque stale.
+3. **Dejar el archivo ausente o vacío antes del `install`.** Esto solo es
    razonable en una migración puntual (no en una sesión de trabajo):
    vacía el archivo (p. ej. redirige `> ~/.claude/settings.json`),
-   ejecuta `sync`, restaura lo tuyo desde el backup automático que
-   `sync` deja en `~/.jorgex-stack/backups/`. Cada `sync` real ya hace
+   ejecuta `install`, restaura lo tuyo desde el backup automático que
+   `install` deja en `~/.jorgex-stack/backups/`. Cada `install` real ya hace
    backup automático de los archivos que toca; `uninstall` también
    restaura desde backup (ver README §Usage). Excepción: las corridas
    aisladas con `--target-dir` escriben sin manifest ni backup por diseño
@@ -487,9 +487,9 @@ añadidas en T17/T20:
   perfil de Codex en la primera instalación, esa sección ya es tuya:
   una edición tuya no provoca un re-seed automático. Si tu bloque
   difiere del default canónico (por edición tuya o porque el default
-  mejoró después), `install`/`sync`/`doctor` emiten el aviso stale
+  mejoró después), `install`/`doctor` emiten el aviso stale
   (solo-si-difiere, sin volcar el bloque) y tu config sigue intacta;
-  solo `sync --upgrade-permissions` la realinea (ver §5).
+  solo `install --upgrade-permissions` la realinea (ver §5).
 
 Las denies **reducen** la exposición accidental; **no la eliminan**. Trata
 read-anywhere como "más cómodo, menos fricción", no como "modelo aislado".

@@ -37,7 +37,7 @@ function readDoctorTextIfExists(file: string): string | null {
  */
 const STALE_PERMISSIONS_MARKER = "differs from the stack default and was left untouched";
 
-const UPGRADE_PERMISSIONS_REMEDY = "jorgex-stack sync --upgrade-permissions --dry-run";
+const UPGRADE_PERMISSIONS_REMEDY = "jorgex-stack install --upgrade-permissions --dry-run";
 
 /** Resuelve el dir de Pi igual que la proyección de estilo (global o target-dir). */
 function piAgentDir(targetDir?: string): string {
@@ -95,7 +95,7 @@ function reportPiPermissions(targetDir?: string): number {
   p.log.warn(
     `Pi: permission policy present without package ownership (${configFile}) and left untouched; ` +
       "Stack never rewrites Pi state — align it by hand or remove it so a later " +
-      "'jorgex-stack sync --agents pi' can seed the package default.",
+      "'jorgex-stack install --agents pi' can seed the package default.",
   );
   return 1;
 }
@@ -159,7 +159,7 @@ function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mod
   p.log.info(`Estilo de escritura incluido: ${style.canonicalPath}; fuente local ${style.sourcePath}; tamaño ${Buffer.byteLength(style.content, "utf8")} bytes de texto normalizado. La carga nativa no está verificada.`);
   if (style.originalContent === style.installedContent) p.log.success("Archivo local de estilo actualizado con el canon incluido.");
   else {
-    p.log.warn(`Archivo local de estilo ${style.originalContent === null ? "pendiente de instalar" : "desactualizado; pendiente de sincronizar"}; ejecuta install o sync (${style.sourcePath}).`);
+    p.log.warn(`Archivo local de estilo ${style.originalContent === null ? "pendiente de instalar" : "desactualizado; pendiente de sincronizar"}; ejecuta install (${style.sourcePath}).`);
     problems++;
   }
   const expected = mode.mode !== "programmatic"
@@ -186,7 +186,7 @@ function reportWritingStyle(options: DoctorOptions, style: WritingStylePlan, mod
         : healthy && block === expected;
       if (matches) p.log.success(`${id}: proyección de estilo coincide (${file})${mode.mode === "programmatic" ? "; omitida en modo programmatic" : ""}.`);
       else {
-        p.log.warn(`${id}: proyección de estilo desactualizada o ausente (${file}); ejecuta sync.`);
+        p.log.warn(`${id}: proyección de estilo desactualizada o ausente (${file}); ejecuta install.`);
         problems++;
       }
       if (id === "codex") {
@@ -529,7 +529,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
       problems++;
     }
     if (pending > 0) {
-      p.log.warn(`${adapter.name}: ${pending} archivos gestionados desactualizados o ausentes → ejecuta 'sync'.`);
+      p.log.warn(`${adapter.name}: ${pending} archivos gestionados desactualizados o ausentes → ejecuta 'install'.`);
       problems++;
     } else if (!stalePermissions) {
       p.log.success(`${adapter.name}: config del stack al día (${detection.configDir}).`);
@@ -538,7 +538,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
     const prev = manifest.runtimes[adapter.id];
     const orphans = prev && current.complete ? findOrphans(prev.owned, current.targets) : [];
     if (orphans.length > 0) {
-      p.log.warn(`${adapter.name}: ${orphans.length} archivos huérfanos de versiones previas → ejecuta 'sync'.`);
+      p.log.warn(`${adapter.name}: ${orphans.length} archivos huérfanos de versiones previas → ejecuta 'install'.`);
       problems++;
     }
 

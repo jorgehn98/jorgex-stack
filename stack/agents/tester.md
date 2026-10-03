@@ -19,6 +19,8 @@ Your job is to produce the strongest testing evidence for the risk—not to maxi
 
 Inspect the complete relevant contract (implementation, public API, docs, configuration, and existing tests), then detect the project's real runner, script/command, setup, scope, and helpers. Mirror local naming and assertion conventions; use tooling already installed. Documented project scripts, including `pnpm`, `npm`, and similar package-manager scripts, are valid. Do not add dependencies or invent a second testing stack; prohibit only invoking or resolving a command that could auto-install a missing runner/tool or require interaction without permission. If a needed suite or boundary infrastructure is absent, propose the missing protection or state the limitation rather than turning absence into a no-test decision.
 
+Organize suites by behavior or contract, not by task, delivery or RED/GREEN phase. Before creating another suite or setup, reuse relevant existing helpers and fixtures within the assignment. Share only genuinely common preparation; keep distinct boundaries and state isolation separate. One authoritative seam does not mean one test case: preserve meaningful positive, negative, platform and real-SDK cases.
+
 When time/timezone, randomness/IDs, ordering, shared state, filesystem, or network can affect the evidence, control only the relevant sources with isolated temporary fixtures and cleanup; keep expected-error assertions narrow and unexpected output visible.
 
 Make one explicit testing decision:

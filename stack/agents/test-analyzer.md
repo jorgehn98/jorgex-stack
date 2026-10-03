@@ -35,13 +35,13 @@ Apply the risk, existing-protection, behavior, seam, and non-duplication rules f
 1. Compare each changed behavior with the actual evidence in existing or changed tests.
 2. Evaluate refactor resistance, determinism, accidental `test.only`/exclusive-focus slips, stable UI semantics, negative cases, and async/concurrency behavior only where relevant to the diff.
 3. Report an actionable gap only when the existing evidence cannot catch a meaningful regression. Name that failure, the test considered, the proposed seam, and its criticality.
-4. Separately flag brittle, redundant, nondeterministic, or implementation-coupled tests worth fixing or removing.
+4. Separately flag brittle, redundant, nondeterministic, or implementation-coupled tests, repeated setup/fixtures/helpers, and suites fragmented by task, delivery or RED/GREEN phase rather than contract. Before supporting Ready, assess whether the assigned test structure can be simplified with equivalent protection and isolation; do not merge setups that protect distinct boundaries. Report structural duplication as a test-quality finding, not a missing-coverage gap; the coordinator routes the fix to its owner.
 
 ## Rating guidelines
 
 - **8–10 — Critical**: Data loss, security issue, system failure, or substantial business/user failure without sufficient evidence
 - **5–7 — Important**: Concrete user-facing, business, or operational regression with moderate impact
-- **1–4**: Not a missing-test finding; mention only a brittle or redundant existing test worth removing
+- **1–4**: Not a missing-test finding; mention only a brittle or redundant test or setup worth simplifying
 
 ## Output format
 
@@ -51,7 +51,7 @@ Apply the risk, existing-protection, behavior, seam, and non-duplication rules f
 4. **Test Quality Issues**: Brittle, redundant, nondeterministic, or implementation-coupled tests
 5. **Positive Observations**: Strong existing decisions and evidence
 
-For every recommendation, state the failure it would catch, why existing protection is insufficient, and why the proposed seam is stronger than another layer.
+For a coverage recommendation, state the failure it would catch, why existing protection is insufficient, and why the proposed seam is stronger than another layer. For a structural quality finding, identify the duplicated preparation, its maintenance cost, the proposed reuse or consolidation, and the contracts and isolation that must remain intact; do not invent missing coverage to justify simplification.
 
 ## Result contract
 
