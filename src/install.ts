@@ -2169,8 +2169,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         // Autenticación FINAL (post-reconfirmación) que usa `writeManifest`: una
         // creación ajena current durante el prompt debe ser un no-op unowned y
         // no un owned reclamado por la lista cacheada anterior al prompt. Debe
-        // reautenticar el mismo conjunto completo que el preflight (los cuatro
-        // recursos estáticos MÁS la skill Browser Control): omitir la skill dejaría
+        // reautenticar el mismo conjunto completo que el preflight (los estáticos
+        // legacy MÁS los adicionales current-only MÁS la skill Browser Control): omitir la skill dejaría
         // reclamar como owned o pisar un archivo ajeno creado durante el prompt.
         const finalStaticAuths = openCodeStaticResourceAuths(adapter, ctx, plan, prevManifest?.owned ?? []);
         const finalBrowserSkillAuth = browserControlSkillAuth(configDir, ctx, prevManifest?.owned ?? []);

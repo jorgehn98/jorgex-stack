@@ -552,7 +552,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
     // Recursos estáticos OpenCode: unowned → se omiten sin leer/borrar/reclamar;
     // owned → solo se retiran con bytes actuales o legacy v1 acreditados. Un
     // owned modificado/desconocido/enlace bloquea ANTES de backup o borrado.
-    // Los assets adicionales current-only (WAV propios, fila `null`) siguen la
+    // Los assets adicionales current-only (WAV y panel TUI propios, fila `null`) siguen la
     // misma regla: unowned se preserva, owned exige bytes actuales acreditados.
     const staticResources = id === "opencode" ? staticResourceTargets(configDir) : new Map<string, StaticResourceRow>();
     const additionalStaticResources = id === "opencode" ? (adapter.planAdditionalResources?.(ctx) ?? []) : [];
