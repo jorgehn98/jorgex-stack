@@ -4020,6 +4020,151 @@ describe.skipIf(process.platform !== "linux")(
     });
 
     /**
+     * `unit-removed` only retries the pending reload (Spec T13): once the
+     * durable `unit-removed` checkpoint is recorded, the retry must NOT repeat
+     * `remove → persist(unit-removed)`. The reviewer trace is explicit: the
+     * common continuation rewrites `unit-removed` again, and a redundant EIO on
+     * that persist triggers `restoreOwnedServiceUnitFile`, which resurrects the
+     * unit while the phase stays `unit-removed`; the next retry then blocks on
+     * the reappeared file. This case stages a bounded FS fault that triggers ONLY
+     * on a manifest persist whose content marks the `unit-removed` phase and
+     * proves no such write is even attempted: the retry closes through
+     * `daemon-reload → manager-reloaded → ordinary cleanup`, the unit stays
+     * absent and the resources/claims are closed.
+     */
+    it("does not repeat remove/persist when the entry phase is already unit-removed, so no restoration resurrects the unit", async () => {
+      const ownedRoots: string[] = [];
+      const releaseRoots = registerOwnedResourceCleanup("browser-control-service-unit-removed-only-reload-roots", () =>
+        removeTemporaryRoots(ownedRoots),
+      );
+      const port = await reserveOwnedLoopbackPort();
+      let firstRun: FullServiceUninstallEvidence | undefined;
+      let retry: ServiceRetirementRetryEvidence | undefined;
+      let thirdRetry: ServiceRetirementRetryEvidence | undefined;
+      let phaseAfterFirstRun: BrowserControlServiceRetirement | undefined;
+      let unitRemovedPersistAttempts = 0;
+      let faulted = false;
+      let unitPresentAfterRetry = true;
+      try {
+        await runServiceInstall({
+          prefix: ".jorgex-browser-control-service-unit-removed-only-reload-",
+          registerOwnedRoot: (root) => ownedRoots.push(root),
+          base: verificationBase(),
+          browserControlService: true,
+          supervisor: { port },
+          onVerified: async (ctx) => {
+            const { readManifest } = await import("../src/lib/manifest.js");
+            // First real removal: ONLY the FIRST final daemon-reload fails, so the
+            // unlink and `persist(unit-removed)` completed and the durable phase
+            // remains with the unit file already absent.
+            const fault = failFirstDaemonReload();
+            firstRun = await runFullUninstallInPlace(ctx, { wrapRunner: fault.wrap });
+            phaseAfterFirstRun = (readManifest().runtimes.opencode as AutostartManifestRow | undefined)
+              ?.browserControlServiceRetirement;
+
+            // Bounded FS fault: ONLY a manifest persist whose content marks the
+            // `unit-removed` phase (the redundant repeat) faults once. Every other
+            // manifest write runs real.
+            const manifestPath = path.join(process.env.HOME!, ".jorgex-stack", "manifest.json");
+            const originalRenameSync = fs.renameSync;
+            const renameSpy = vi.spyOn(fs, "renameSync");
+            renameSpy.mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+              if (path.resolve(String(to)) === path.resolve(manifestPath)) {
+                let content = "";
+                try {
+                  content = fs.readFileSync(String(from), "utf8");
+                } catch {
+                  content = "";
+                }
+                if (content.includes('"phase": "unit-removed"')) {
+                  unitRemovedPersistAttempts += 1;
+                  if (!faulted) {
+                    faulted = true;
+                    const error = new Error("EIO: redundant unit-removed persist") as NodeJS.ErrnoException;
+                    error.code = "EIO";
+                    throw error;
+                  }
+                }
+              }
+              return originalRenameSync(from, to);
+            }) as typeof fs.renameSync);
+            try {
+              retry = await runServiceRetirementRetryInPlace(ctx);
+            } finally {
+              renameSpy.mockRestore();
+            }
+            unitPresentAfterRetry = fs.existsSync(ctx.unitPath);
+            thirdRetry = await runServiceRetirementRetryInPlace(ctx);
+          },
+        });
+        if (firstRun === undefined || retry === undefined || thirdRetry === undefined) {
+          throw new Error("fixture: the unit-removed-only-reload callbacks did not run");
+        }
+        const partial = firstRun;
+        const closed = retry;
+
+        // Precondition: the first run left the durable `unit-removed` checkpoint,
+        // the unit file absent and its removal backed up.
+        expect(partial.uninstallExitCode, "the first run must be incomplete").not.toBe(0);
+        expect(partial.unitBytesAfter, "the first run must have removed the unit file").toBeNull();
+        expect(partial.unitBackedUp, "the removed unit must have been backed up").toBe(true);
+        expect(
+          phaseAfterFirstRun,
+          "the first run must leave the durable unit-removed checkpoint",
+        ).toEqual({ schemaVersion: 1, phase: "unit-removed" });
+
+        // Contract: the entry phase already certifies the removal, so the retry
+        // must not rewrite it. RED today: the common continuation repeats
+        // `persist(unit-removed)`, the staged EIO fires and the restoration
+        // resurrects the unit. Soft so both the repeat and its restoration
+        // consequence are observed in the same run.
+        expect.soft(
+          unitRemovedPersistAttempts,
+          "the retry must not rewrite the unit-removed phase again",
+        ).toBe(0);
+        expect.soft(faulted, "no redundant unit-removed persist may be attempted").toBe(false);
+
+        // Bounded diagnostic of the current bad path: the redundant persist fault
+        // restored the unit, so the next retry is blocked on the reappeared file.
+        if (unitPresentAfterRetry) {
+          expect.soft(
+            thirdRetry.uninstallExitCode,
+            "the bad path must leave the next retry blocked on the reappeared unit",
+          ).not.toBe(0);
+          expect.soft(
+            thirdRetry.diagnostics.some((message) => /reapareci|drift|conserva/i.test(message)),
+            `the bad path must diagnose the reappeared unit (got ${JSON.stringify(thirdRetry.diagnostics)})`,
+          ).toBe(true);
+        }
+
+        // The retry closes only through reload + manager-reloaded + ordinary cleanup.
+        expect(unitPresentAfterRetry, "the unit file must stay absent after the retry").toBe(false);
+        expect(closed.uninstallExitCode, "the retry must close the removal with exit 0").toBe(0);
+        expect(
+          closed.manifestOwnedAfter.map((file) => path.resolve(file)),
+          "the retry must retire the owned unit claim",
+        ).not.toContain(path.resolve(partial.unitPathResolved));
+        expect(closed.manifestServiceUnitAfter, "the retry must retire the binding").toBeUndefined();
+        expect(closed.manifestAutostartAfter, "the retry must retire the authority").toBeUndefined();
+        const retryMutating = closed.managerVerbs.filter(
+          (verb): verb is string => verb !== undefined && SERVICE_MUTATING_VERBS.has(verb),
+        );
+        expect(retryMutating, "the retry must not re-stop the inactive unit").not.toContain("stop");
+        expect(retryMutating, "the retry must not re-disable the inactive unit").not.toContain("disable");
+        expect(retryMutating, "the retry must not start the unit").not.toContain("start");
+        expect(retryMutating, "the retry must not restart the unit").not.toContain("restart");
+        expect(retryMutating, "the retry must complete the final daemon-reload").toContain("daemon-reload");
+        expect(
+          closed.outroMessages.some((message) => /^Hecho\./.test(message)),
+          "the closed removal must print the global success outro",
+        ).toBe(true);
+      } finally {
+        cleanupOwnedResourcesOrThrow();
+        releaseRoots();
+      }
+    });
+
+    /**
      * Recovery at the `environment-retired` checkpoint on the REAL
      * install→uninstall lifecycle. A real `runInstall` with the explicit Linux
      * opt-in creates and supervises the owned unit. The first real `runUninstall`

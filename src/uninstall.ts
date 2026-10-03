@@ -272,8 +272,9 @@ async function retireOwnedBrowserControlService(input: {
   }
 
   // Prefijo específico de fase: autenticación de recursos, retirada de ENV y
-  // stop/disable. Tras él, TODAS las ramas convergen en una única continuación
-  // `remove → persist(unit-removed) → reload → persist(manager-reloaded)`.
+  // stop/disable. Tras él, las ramas que aún deben retirar el archivo convergen
+  // en `remove → persist(unit-removed) → reload → persist(manager-reloaded)`;
+  // una entrada ya en 'unit-removed' retoma solo `reload → persist(manager-reloaded)`.
   if (phase === "unit-removed") {
     // Archivo ya retirado: solo queda el reload final. No se repite stop/disable
     // ni se reincorporan bytes de unidad/ENV.
@@ -361,19 +362,24 @@ async function retireOwnedBrowserControlService(input: {
     if (persistedEnv !== null) return pending(persistedEnv);
   }
 
-  // Continuación común única.
-  const removed = removeOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
-  if (removed.kind === "pending") return pending(removed.reason ?? "retirada del archivo incierta");
-  const persistedUnit = persistPhase("unit-removed");
-  if (persistedUnit !== null) {
-    // El unlink se completó pero su checkpoint no: se restauran los bytes propios
-    // autenticados (sin clobber) para reentrar legítimamente desde
-    // 'environment-retired'. Un reemplazo ajeno se conserva.
-    const restored = restoreOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
-    if (restored.kind === "restored") {
-      return pending(`${persistedUnit}; se restauraron los bytes propios autenticados de la unidad y se reentra desde 'environment-retired'`);
+  // Continuación común única. La fase de ENTRADA 'unit-removed' ya acredita el
+  // unlink y su checkpoint: no se repite el remove, ni el persist('unit-removed'),
+  // ni la restauración de bytes (que resucitaría la unidad). Solo la rama que
+  // retira el archivo en ESTE intento puede restaurarlo si su checkpoint falla.
+  if (phase !== "unit-removed") {
+    const removed = removeOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
+    if (removed.kind === "pending") return pending(removed.reason ?? "retirada del archivo incierta");
+    const persistedUnit = persistPhase("unit-removed");
+    if (persistedUnit !== null) {
+      // El unlink se completó pero su checkpoint no: se restauran los bytes propios
+      // autenticados (sin clobber) para reentrar legítimamente desde
+      // 'environment-retired'. Un reemplazo ajeno se conserva.
+      const restored = restoreOwnedServiceUnitFile({ stateDir: input.stateDir, unitPath, binding });
+      if (restored.kind === "restored") {
+        return pending(`${persistedUnit}; se restauraron los bytes propios autenticados de la unidad y se reentra desde 'environment-retired'`);
+      }
+      return pending(`${persistedUnit}; la restauración de los bytes propios de la unidad falló (${restored.reason}). No se finge que la unidad esté presente: revisa el estado antes de reintentar`);
     }
-    return pending(`${persistedUnit}; la restauración de los bytes propios de la unidad falló (${restored.reason}). No se finge que la unidad esté presente: revisa el estado antes de reintentar`);
   }
   const reloaded = await reloadOwnedServiceUnitManager(input.runner);
   if (reloaded.kind === "pending") return pending(reloaded.reason ?? "daemon-reload incierto");
