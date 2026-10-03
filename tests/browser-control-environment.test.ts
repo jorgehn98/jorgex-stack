@@ -27,11 +27,6 @@ import { removeTemporaryRoots, resolveVerificationDiskBase } from "./helpers/pnp
  * doble de core (forma del launcher real, bytes ficticios). Este seam solo
  * comprueba campos/readback y NO afirma autenticación criptográfica ni bytes
  * oficiales: eso pertenece a los verticales de runtime/servicio.
- *
- * RED hoy: al existir AUTOSTART el helper devuelve `unchanged` sin comparar el
- * valor actual contra el deseado, así que los dos casos de drift fallan por la
- * razón de comportamiento (se acepta como estable un entorno desviado), no por
- * setup, import o fixture inválida.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

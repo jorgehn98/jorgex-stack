@@ -32,8 +32,7 @@ import type {
 
 /**
  * T12/T13 Linux service vertical (Spec 12/13) — the positive `runInstall` case
- * evolves to the complete supervisor contract at the EXISTING API, without
- * importing any module that does not exist yet.
+ * covers the complete supervisor contract at the existing API.
  *
  * Contract under test: the explicit Linux opt-in (`browserControlService`)
  * reaches `runInstall`, materializes the fixed managed user unit
@@ -58,12 +57,6 @@ import type {
  * OWN loopback `/version` on the reserved port when `start` is issued; no real
  * manager, DBus, personal session or browser is touched, and the reserved port is
  * owned and closed by this test.
- *
- * RED today: `parseFlags` recognizes `--browser-control-service` and the unit is
- * created, but `runInstall` ignores the supervisor — no manager verb is issued,
- * no `/version` is probed, and neither `BROWSER_CONTROL_AUTOSTART=false` nor the
- * `browserControlAutostart` stamp is produced. The positive case fails on the
- * missing supervisor operations, not on an API import or an invalid fixture.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -654,9 +647,11 @@ interface VerifiedServiceContext {
  */
 function createOwnedServiceHome(input: { readonly base: string; readonly prefix: string }) {
   const ownedRoots: string[] = [];
-  registerOwnedResourceCleanup(`browser-control-service-${input.prefix}`, () =>
-    removeTemporaryRoots(ownedRoots),
-  );
+  let unregister: (() => void) | undefined;
+  unregister = registerOwnedResourceCleanup(`browser-control-service-${input.prefix}`, () => {
+    removeTemporaryRoots(ownedRoots);
+    unregister?.();
+  });
   return createOwnedVerificationHome({
     base: input.base,
     prefix: input.prefix,
@@ -1460,8 +1455,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * FALSE and the still-canonical owned port — preserving the user extra, unit A
    * and binding A, and projects B with native autostart. The stamp is retired
    * after the readback and the second run issues only read-only manager probes
-   * (no daemon-reload/enable/start/restart/reload). RED today: the occupied unit
-   * branch keeps the stale FALSE/port and the stamp while the command advances.
+   * (no daemon-reload/enable/start/restart/reload).
    */
   it("retires the Stack-owned autostart environment and preserves unit/binding A when an inactive service A is advanced to B", async () => {
     const port = await reserveOwnedLoopbackPort();
@@ -1574,8 +1568,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * preserves the manual port literal and the user extra verbatim — the manual
    * port was never Stack's, so it must not be removed with the owned pair. Unit A
    * and binding A survive untouched and the second run issues only read-only
-   * manager probes. Result is GREEN when the code is correct: no RED is fabricated
-   * for an already-implemented branch.
+   * manager probes.
    */
   it("retires only the introduced FALSE and preserves the manual port and extras when an inactive service A is advanced to B", async () => {
     const port = await reserveOwnedLoopbackPort();
@@ -1691,10 +1684,6 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * through the acquisition DTO's REAL rollback BEFORE any write, leaving the
    * config byte-for-byte A (command, canonical FALSE/port and the user extra),
    * unit/binding A and the recorded authority unrewritten.
-   *
-   * RED today: the command is advanced to B first and the authority is only
-   * checked afterwards, so the managed config keeps B's launcher with the stale
-   * FALSE while active B is never rolled back to A.
    */
   it("fails closed and keeps the A projection when the recorded autostart authority does not authenticate before an A→B rotation", async () => {
     const port = await reserveOwnedLoopbackPort();
@@ -1825,8 +1814,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
       });
 
       // 1) No authority is stamped for an environment Stack never created and
-      //    had no prior claim for. (RED today: reconcile reports `unchanged` and
-      //    install stamps `portOwned:true` by equality.)
+      //    had no prior claim for.
       expect.soft(
         observables.manifestAutostart,
         "a manual FALSE without a prior claim must never be adopted by equality",
@@ -1888,9 +1876,7 @@ describe.skipIf(process.platform !== "linux")("[T12-RED] Browser Control Linux u
    * verbatim, and records the granular authority with `portOwned:false`: the
    * port was already there, so it must not be claimed by equality with the
    * managed port. The verified-service marker is emitted only after the full
-   * manager/version proof. Today the reconcile rejects any non-exact
-   * `environment` as foreign/corrupt, so this is RED on the missing merge, the
-   * missing `false`, the missing stamp and the missing marker.
+   * manager/version proof.
    */
   it("merges the introduced FALSE into a manual MCP environment without claiming the manual port or dropping user extras", async () => {
     const port = await reserveOwnedLoopbackPort();
@@ -2412,8 +2398,7 @@ describe.skipIf(process.platform !== "linux")(
      * path no longer names the fd's inode, so any path-based cleanup deletes the
      * foreign file. `ensure` must fail closed and preserve the foreign bytes and
      * inode: it must not claim ownership and must not read back the swapped file
-     * as its own. Today both the write catch and the readback branch call
-     * `rmSync(unitPath)` blind, so this is RED on the first assertion.
+     * as its own.
      */
     it("fails closed and keeps the foreign file when the opened fd write faults after an external swap", async () => {
       try {
@@ -3295,18 +3280,15 @@ describe.skipIf(process.platform !== "linux")(
      * `runInstall` with the explicit Linux opt-in creates and supervises the
      * owned unit, pins the canonical `BROWSER_CONTROL_AUTOSTART=false` + literal
      * port on the managed MCP and records the granular
-     * `browserControlAutostart` stamp. The authenticated stop/disable lifecycle
-     * does not exist yet, so the real `runUninstall` must leave the unit, its
-     * claim and its binding pending.
+     * `browserControlAutostart` stamp. The pending removal cannot complete, so
+     * the real `runUninstall` must leave the unit, its claim and its binding
+     * pending.
      *
-     * The granular authority must survive exactly as recorded: the pending
-     * branch currently rewrites the manifest row with only `owned` and
-     * `serviceUnit`, silently dropping `browserControlAutostart` while the
+     * The granular authority must survive exactly as recorded alongside the
+     * preserved unit/claim/binding and environment (scenario integrity): the
      * canonical manual-free environment it authorizes stays in the config, so a
-     * later recovery can no longer tell a Stack-introduced environment from a
-     * user's manual one. The first RED is the lost stamp (`manifestAutostart`
-     * undefined after the pending uninstall); the preserved unit/claim/binding
-     * and environment are scenario integrity.
+     * later recovery can still tell a Stack-introduced environment from a
+     * user's manual one.
      */
     it("keeps the granular autostart authority verbatim across a pending uninstall", async () => {
       const port = await reserveOwnedLoopbackPort();
@@ -3368,8 +3350,6 @@ describe.skipIf(process.platform !== "linux")(
           "the serviceUnit binding must survive verbatim",
         ).toEqual(shown.serviceUnitBefore);
 
-        // PRIMARY RED: the pending manifest write only preserves `owned` and
-        // `serviceUnit` today, so the granular authority is lost here.
         expect(
           observables.manifestAutostart,
           "the pending uninstall must preserve the granular autostart authority verbatim",
@@ -3428,10 +3408,6 @@ describe.skipIf(process.platform !== "linux")(
      * global/linger), remove the canonical unit file with backup, retire the
      * canonical FALSE/port and the manifest claims, and only then `daemon-reload`
      * and report the global success.
-     *
-     * RED today: `runUninstall` has no manager lifecycle, so it preserves the
-     * unit, its claim/binding/stamp and returns exit 1 without issuing any
-     * stop/disable/daemon-reload or removing the file.
      */
     it("stops, disables and removes the canonical owned unit with backup and retires its claims", async () => {
       const port = await reserveOwnedLoopbackPort();
@@ -3581,12 +3557,6 @@ describe.skipIf(process.platform !== "linux")(
      * destructive effect: no mutating manager verb, the owned unit, its
      * claim/binding/stamp, the canonical MCP environment and the user-modified
      * skill all survive, and the retained active package/SRI is intact.
-     *
-     * RED today: `retireOwnedBrowserControlService` runs before the static
-     * resource/skill preflight, so the service is already stopped, disabled and
-     * its unit file removed (and the canonical environment retired) by the time
-     * the skill block aborts. The first RED is the mutating manager verbs and the
-     * missing unit file while the skill is blocked.
      */
     it("aborts before any destructive effect when the projected owned skill is user-modified", async () => {
       const port = await reserveOwnedLoopbackPort();
@@ -3717,10 +3687,6 @@ describe.skipIf(process.platform !== "linux")(
      * re-stopping or restarting, complete the final reload and release the
      * claims/serviceUnit/autostart, exiting 0 while user config and the retained
      * active stay intact.
-     *
-     * RED today: the retry rejects the absent unit file as `drift` (the
-     * preflight demands the file), so it preserves the claims again and exits 1;
-     * the removal never closes.
      */
     it("recovers a partial removal whose final daemon-reload failed and closes on retry", async () => {
       const port = await reserveOwnedLoopbackPort();
@@ -3795,8 +3761,6 @@ describe.skipIf(process.platform !== "linux")(
         //     the removal without re-stopping or restarting the service.
         expect(closed.unitExistsBefore, "the unit file must already be gone before the retry").toBe(false);
 
-        // PRIMARY RED today: the retry rejects the absent file as drift and
-        // preserves the claims again, so it never exits 0.
         expect.soft(closed.uninstallExitCode, "the retry must close the removal with exit 0").toBe(0);
         expect.soft(
           closed.manifestOwnedAfter.map((file) => path.resolve(file)),
@@ -3929,10 +3893,7 @@ describe.skipIf(process.platform !== "linux")(
         ).toEqual({ schemaVersion: 1, phase: "unit-removed" });
 
         // Contract: the entry phase already certifies the removal, so the retry
-        // must not rewrite it. RED today: the common continuation repeats
-        // `persist(unit-removed)`, the staged EIO fires and the restoration
-        // resurrects the unit. Soft so both the repeat and its restoration
-        // consequence are observed in the same run.
+        // must not rewrite it.
         expect.soft(
           unitRemovedPersistAttempts,
           "the retry must not rewrite the unit-removed phase again",
@@ -4249,7 +4210,7 @@ describe.skipIf(process.platform !== "linux")(
         // The recovery checkpoint must preserve the FULL owned inventory: a row
         // truncated to the unit loses the owned plugins/scripts/skill the retry
         // still has to remove. Soft so the real-FS leftover check below is also
-        // observed in the same RED run.
+        // observed in the same run.
         expect.soft(
           [...partial.manifestOwnedAfter].map((file) => path.resolve(file)).sort(),
           "the faulted run must preserve the full owned inventory, not truncate it to the unit",
@@ -4881,10 +4842,7 @@ describe.skipIf(process.platform !== "linux")(
      * with no environment and no stamp. The spy is restored before the retries
      * and every other write runs real.
      *
-     * RED today: the `ensure`-unchanged branch only warns and exits 0, so the
-     * incomplete retry prints the global `Hecho.` with zero manager/HTTP proof,
-     * and the fixed retry never projects the canonical FALSE/port nor records the
-     * authority. The service-specific markers, ENV/stamp, read-only `show` and
+     * The service-specific markers, ENV/stamp, read-only `show` and
      * `/version` counter and manager verbs are the oracle — never the aggregate
      * exit code.
      */
@@ -5064,11 +5022,6 @@ describe.skipIf(process.platform !== "linux")(
      * artificial deletion), the guard B command is compared before/after and the
      * unit A binding must survive verbatim while both retained releases keep
      * authenticating.
-     *
-     * RED today: the existing-unit read-only branch authenticates the operational
-     * unit A and then reconciles the environment using the effective active B
-     * invocation, so it introduces the canonical FALSE for B and records the
-     * authority.
      */
     it("stays pending without environment or stamp when the reactivated old unit A is not the effective active B", async () => {
       const port = await reserveOwnedLoopbackPort();
@@ -5170,10 +5123,6 @@ describe.skipIf(process.platform !== "linux")(
      * proof and the projected environment before any manager mutation; it must
      * not bind or probe the shell port B. The manual port is preserved without a
      * claim (`portOwned:false`).
-     *
-     * RED today: the service block's preflight/ensure still derive the port from
-     * the shell (`resolveBrowserControlRelayPort`), so the unit binding records B
-     * and the supervisor probes B (absent) instead of proving A.
      */
     it("binds the unit and proves the service on the preserved MCP port instead of the shell port", async () => {
       const preservedPort = await reserveOwnedLoopbackPort();

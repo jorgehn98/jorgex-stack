@@ -395,9 +395,11 @@ async function withIsolatedEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>)
  */
 function createOwnedRuntimeHome(prefix: string) {
   const ownedRoots: string[] = [];
-  registerOwnedResourceCleanup(`browser-control-runtime-${prefix}`, () =>
-    removeTemporaryRoots(ownedRoots),
-  );
+  let unregister: (() => void) | undefined;
+  unregister = registerOwnedResourceCleanup(`browser-control-runtime-${prefix}`, () => {
+    removeTemporaryRoots(ownedRoots);
+    unregister?.();
+  });
   const base = resolveVerificationDiskBase({
     repoRoot: REPO_ROOT,
     env: { ...process.env, JORGEX_VERIFICATION_DISK_ROOT: "/var/tmp" },
