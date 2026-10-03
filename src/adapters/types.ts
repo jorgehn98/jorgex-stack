@@ -200,6 +200,13 @@ export interface Adapter extends SharedProjectionAdapter {
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];
   /**
+   * Copias fijas adicionales del runtime (assets propios sin canon legacy, p.ej.
+   * los WAV del cliente OpenCode). `buildContentPlan` las incorpora y el pipeline
+   * las autentica como recursos current-only. Opcional: los runtimes sin assets
+   * no lo definen, y no se relaja `planPlugins` por extensión.
+   */
+  planAdditionalResources?(ctx: InstallContext): FileAction[];
+  /**
    * Inversa para uninstall: devuelve los archivos COMPARTIDOS con el usuario
    * (system prompt, configs, hooks) reescritos sin nuestras secciones/claves.
    * Un write con content vacío significa "borrar el archivo". Los targets de

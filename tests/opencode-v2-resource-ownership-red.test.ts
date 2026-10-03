@@ -340,6 +340,35 @@ describe("[T07-delta] tipo físico ambiguo se bloquea preservando el fixture ext
       });
     },
   );
+
+  it.skipIf(process.platform === "win32")(
+    "install real bloquea un symlink unowned en el nuevo target WAV y lo conserva antes de escribir",
+    async () => {
+      await withIsolatedOpenCode(async (h) => {
+        const wavTarget = path.join(h.configDir, "sounds", "done.wav");
+        fs.mkdirSync(path.dirname(wavTarget), { recursive: true });
+        const sentinel = path.join(h.externalDir, "done.wav.sentinel");
+        const sentinelContent = "user audio placeholder\n";
+        fs.writeFileSync(sentinel, sentinelContent);
+        fs.symlinkSync(sentinel, wavTarget);
+
+        const { outcome, rejection, output } = await installWithOutput(h);
+
+        expect(
+          outcome,
+          `el preflight debe bloquear con salida controlada (rejection=${String(rejection)})`,
+        ).toBe(1);
+        expect(
+          output,
+          "el preflight debe nombrar el WAV como recurso estático inseguro",
+        ).toMatch(/sounds[\\/]done\.wav/);
+        expect(output, "el motivo debe ser una guardia OpenCode accionable").toMatch(GUARD_REASON);
+        expect(fs.lstatSync(wavTarget).isSymbolicLink(), "el symlink unowned se conserva").toBe(true);
+        expect(fs.readFileSync(sentinel, "utf8"), "el archivo externo no se toca").toBe(sentinelContent);
+        expect(backupFiles(h.home), "se bloquea antes de crear backups").toEqual([]);
+      });
+    },
+  );
 });
 
 describe("[T07-delta] control independiente: owned v1 exacto sí migra con backup", () => {

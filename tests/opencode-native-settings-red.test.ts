@@ -14,7 +14,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { FileAction, InstallContext } from "../src/adapters/types.js";
 import { createBrowserControlReadyDouble } from "./helpers/browser-control-ready.js";
 import { cleanupOpenCodeBinaries, opencodeV2Binary, writeOpenCodeBinary } from "./helpers/opencode-binary.js";
-import { snapshotEnv } from "./helpers/opencode-isolation.js";
+import { backupContains, snapshotEnv } from "./helpers/opencode-isolation.js";
 
 /** Binario v2 fixture: el gate ejecuta el binario detectado, nunca un mock. */
 const OPENCODE_V2_BIN = opencodeV2Binary();
@@ -361,8 +361,90 @@ describe("defaults de servidor v2: ownership real", () => {
   });
 });
 
+/**
+ * Oráculo literal e independiente de los defaults cliente v2 (Spec T19:12). Se
+ * declara aquí, sin importar constantes del adapter, para que el RED falle por
+ * defaults ausentes en el resultado real y no por una copia de la implementación.
+ * `configDir` es la raíz efectiva (ctx.configDir): los paths de audio se derivan
+ * de ella y no de un HOME fijo.
+ */
+function t19CliDefaults(configDir: string): Record<string, unknown> {
+  const sound = (name: string): string => path.join(configDir, "sounds", name);
+  return {
+    theme: { name: "system", mode: "system" },
+    session: { verbosity: "low", permissions: "autoaccept", tps: true },
+    debug: { turn_tokens: true },
+    attention: {
+      notifications: true,
+      sound: true,
+      volume: 0.1,
+      sounds: {
+        done: sound("done.wav"),
+        subagent_done: sound("done.wav"),
+        question: sound("attention.wav"),
+        permission: sound("attention.wav"),
+        error: sound("attention.wav"),
+        default: sound("attention.wav"),
+      },
+    },
+  };
+}
+
+/** IDs file-qualificados de las hojas T19 y los contenedores creados en fresco. */
+function t19CliOwnedFields(): string[] {
+  const field = (...segments: string[]): string => JSON.stringify(["cli.json", ...segments]);
+  return [
+    field("theme"),
+    field("theme", "name"),
+    field("theme", "mode"),
+    field("session"),
+    field("session", "verbosity"),
+    field("session", "permissions"),
+    field("session", "tps"),
+    field("debug"),
+    field("debug", "turn_tokens"),
+    field("attention"),
+    field("attention", "notifications"),
+    field("attention", "sound"),
+    field("attention", "volume"),
+    field("attention", "sounds"),
+    field("attention", "sounds", "done"),
+    field("attention", "sounds", "subagent_done"),
+    field("attention", "sounds", "question"),
+    field("attention", "sounds", "permission"),
+    field("attention", "sounds", "error"),
+    field("attention", "sounds", "default"),
+  ];
+}
+
+/**
+ * Duración en segundos de un WAV RIFF parseado de forma independiente (sin
+ * importar utilidades de implementación): recorre chunks y usa `data`/`byteRate`.
+ */
+function wavDurationSeconds(bytes: Buffer): number {
+  if (bytes.length < 12 || bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WAVE") {
+    throw new Error("no es un contenedor RIFF/WAVE");
+  }
+  let offset = 12;
+  let byteRate = 0;
+  let dataSize = 0;
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.subarray(offset, offset + 4).toString("ascii");
+    const size = bytes.readUInt32LE(offset + 4);
+    const body = offset + 8;
+    if (id === "fmt ") byteRate = bytes.readUInt32LE(body + 8);
+    else if (id === "data") {
+      dataSize = size;
+      break;
+    }
+    offset = body + size + (size % 2);
+  }
+  if (byteRate <= 0) throw new Error("WAV sin byteRate");
+  return dataSize / byteRate;
+}
+
 describe("cli.json compacto (B3)", () => {
-  it("proyecta cli.json con session.verbosity low solo si falta", async () => {
+  it("proyecta cli.json fresco con los defaults cliente T19 y reclama hojas/contenedores creados", async () => {
     await withIsolatedHome(async ({ configDir }) => {
       const cliFile = path.join(configDir, "cli.json");
       const { actions } = await planServerConfig(configDir);
@@ -370,10 +452,15 @@ describe("cli.json compacto (B3)", () => {
       const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
       expect(cliAction, "B3: falta la proyección de cli.json").toBeDefined();
       if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
-      expect(JSON.parse(cliAction.content)).toEqual({ session: { verbosity: "low" } });
-      expect(cliAction.primaryModelOwnership).toEqual([
-        { field: JSON.stringify(["cli.json", "session", "verbosity"]), owned: true },
-      ]);
+
+      // Defaults T19 exactos, con paths de audio derivados de ctx.configDir.
+      expect(JSON.parse(cliAction.content)).toEqual(t19CliDefaults(configDir));
+
+      // Claims por hoja y contenedor creados; ningún claim inesperado.
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      expect(owned).toEqual(new Set(t19CliOwnedFields()));
 
       // Ningún ajuste de verbosity pertenece al server config ni al modelo.
       const serverAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === path.join(configDir, "opencode.json"));
@@ -382,20 +469,36 @@ describe("cli.json compacto (B3)", () => {
     });
   });
 
-  it.each([
+  const cliPreservationCases: Array<[string, { session: { verbosity: string }; theme?: { name: string } }]> = [
     ["igual low", { session: { verbosity: "low" } }],
     ["custom high", { session: { verbosity: "high" }, theme: { name: "user-theme" } }],
-  ])("cli.json existente %s: se preserva sin reclamar ownership", async (_label, existing) => {
+  ];
+  it.each(cliPreservationCases)("cli.json existente %s: valores previos se preservan y no se reclaman", async (_label, existing) => {
     await withIsolatedHome(async ({ configDir }) => {
       const cliFile = path.join(configDir, "cli.json");
       fs.writeFileSync(cliFile, JSON.stringify(existing, null, 2) + "\n");
 
       const { actions } = await planServerConfig(configDir);
       const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
-      // Sin acción (nada que sembrar) o content idéntico: nunca recorta al usuario.
-      if (cliAction?.kind === "write") {
-        expect(JSON.parse(cliAction.content)).toEqual(existing);
-        expect((cliAction.primaryModelOwnership ?? []).filter((change) => change.owned)).toEqual([]);
+      // Faltan defaults T19: se siembran, pero los valores previos no se tocan.
+      expect(cliAction, "debe sembrar los defaults ausentes").toBeDefined();
+      if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
+
+      const content = JSON.parse(cliAction.content) as {
+        session?: { verbosity?: string };
+        theme?: { name?: string };
+      };
+      expect(content.session?.verbosity, "el valor previo se preserva").toBe(existing.session.verbosity);
+      if (existing.theme !== undefined) {
+        expect(content.theme?.name, "el valor previo se preserva").toBe(existing.theme.name);
+      }
+
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      expect(owned.has(JSON.stringify(["cli.json", "session", "verbosity"])), "un valor previo no se reclama").toBe(false);
+      if (existing.theme !== undefined) {
+        expect(owned.has(JSON.stringify(["cli.json", "theme", "name"])), "un valor previo no se reclama").toBe(false);
       }
     });
   });
@@ -478,19 +581,83 @@ describe("cli.json compacto (B3)", () => {
     });
   });
 
-  it("cli.json vacío se trata como ausente y siembra low", async () => {
+  it("cli.json vacío se trata como ausente y siembra los defaults T19", async () => {
     await withIsolatedHome(async ({ configDir }) => {
       const cliFile = path.join(configDir, "cli.json");
       fs.writeFileSync(cliFile, "\n   \n");
 
       const { actions } = await planServerConfig(configDir);
       const cliAction = actions.find((candidate) => candidate.kind === "write" && candidate.target === cliFile);
-      expect(cliAction, "cli.json vacío debe sembrar session.verbosity low").toBeDefined();
+      expect(cliAction, "cli.json vacío debe sembrar los defaults T19").toBeDefined();
       if (cliAction?.kind !== "write") throw new Error("Falta la escritura de cli.json");
-      expect(JSON.parse(cliAction.content)).toEqual({ session: { verbosity: "low" } });
-      expect(cliAction.primaryModelOwnership).toEqual([
-        { field: JSON.stringify(["cli.json", "session", "verbosity"]), owned: true },
-      ]);
+      expect(JSON.parse(cliAction.content)).toEqual(t19CliDefaults(configDir));
+      const owned = new Set(
+        (cliAction.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field),
+      );
+      expect(owned).toEqual(new Set(t19CliOwnedFields()));
+    });
+  });
+
+  it("install real proyecta los dos WAV T19, reconcilia byte-idéntico y uninstall los retira owned con backup", async () => {
+    await withIsolatedHome(async ({ homeDir, configDir }) => {
+      const doneWav = path.join(configDir, "sounds", "done.wav");
+      const attentionWav = path.join(configDir, "sounds", "attention.wav");
+
+      await runOpencodeInstall(configDir);
+
+      // 1) Dos targets reales derivados del mismo configDir.
+      expect(fs.existsSync(doneWav), "falta sounds/done.wav tras install").toBe(true);
+      expect(fs.existsSync(attentionWav), "falta sounds/attention.wav tras install").toBe(true);
+
+      // 2) Formato RIFF/WAVE válido y duración < 0.5s (oráculo independiente).
+      const doneBytes = fs.readFileSync(doneWav);
+      const attentionBytes = fs.readFileSync(attentionWav);
+      for (const [label, bytes] of [["done", doneBytes], ["attention", attentionBytes]] as const) {
+        expect(bytes.subarray(0, 4).toString("ascii"), `${label}: cabecera RIFF`).toBe("RIFF");
+        expect(bytes.subarray(8, 12).toString("ascii"), `${label}: formato WAVE`).toBe("WAVE");
+        expect(wavDurationSeconds(bytes), `${label}: duración < 0.5s`).toBeLessThan(0.5);
+      }
+
+      // El path del cliente deriva del mismo configDir que el target real.
+      const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8")) as {
+        attention?: { sounds?: { done?: string; default?: string } };
+      };
+      expect(cli.attention?.sounds?.done, "el path del cliente deriva del mismo configDir").toBe(doneWav);
+      expect(cli.attention?.sounds?.default, "el path del cliente deriva del mismo configDir").toBe(attentionWav);
+
+      // 3) Ownership: solo los dos targets creados entran al manifest owned.
+      const { readManifest } = await import("../src/lib/manifest.js");
+      const owned = (): string[] => (readManifest().runtimes.opencode?.owned ?? []).map((file) => path.resolve(file));
+      expect(owned(), "el WAV creado se reclama").toContain(path.resolve(doneWav));
+      expect(owned(), "el WAV creado se reclama").toContain(path.resolve(attentionWav));
+
+      // 4) Reconcile: una segunda pasada es byte-idéntica.
+      await runOpencodeInstall(configDir);
+      expect(fs.readFileSync(doneWav).equals(doneBytes), "reconcile no reescribe done.wav").toBe(true);
+      expect(fs.readFileSync(attentionWav).equals(attentionBytes), "reconcile no reescribe attention.wav").toBe(true);
+
+      // 5) Uninstall: el WAV owned canónico se respalda y se retira.
+      await runOpencodeUninstall(configDir);
+      expect(fs.existsSync(doneWav), "uninstall retira el WAV owned").toBe(false);
+      expect(fs.existsSync(attentionWav), "uninstall retira el WAV owned").toBe(false);
+      expect(backupContains(homeDir, doneBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
+      expect(backupContains(homeDir, attentionBytes), "el WAV owned se respalda antes de retirarse").toBe(true);
+
+      // 6) Manual igual/unowned: se conserva sin claim y no se retira.
+      fs.mkdirSync(path.dirname(doneWav), { recursive: true });
+      fs.writeFileSync(doneWav, doneBytes);
+      fs.writeFileSync(attentionWav, attentionBytes);
+      await runOpencodeInstall(configDir);
+      expect(fs.readFileSync(doneWav).equals(doneBytes), "un manual igual no se pisa").toBe(true);
+      expect(fs.readFileSync(attentionWav).equals(attentionBytes), "un manual igual no se pisa").toBe(true);
+      expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(doneWav));
+      expect(owned(), "la coincidencia de bytes no acredita ownership").not.toContain(path.resolve(attentionWav));
+
+      await runOpencodeUninstall(configDir);
+      expect(fs.existsSync(doneWav), "un WAV unowned no se borra").toBe(true);
+      expect(fs.existsSync(attentionWav), "un WAV unowned no se borra").toBe(true);
+      expect(fs.readFileSync(doneWav).equals(doneBytes)).toBe(true);
+      expect(fs.readFileSync(attentionWav).equals(attentionBytes)).toBe(true);
     });
   });
 });

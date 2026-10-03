@@ -77,6 +77,8 @@ function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][str
 const CONFIG_FILENAME = "opencode.json";
 const CONFIG_FILENAME_JSONC = "opencode.jsonc";
 const CLI_FILENAME = "cli.json";
+/** Assets de sonido propios del cliente v2 (Spec T19), sin canon legacy. */
+const CLIENT_SOUND_ASSETS = ["done.wav", "attention.wav"] as const;
 const BROWSER_CONTROL_SERVER = "browser-control";
 
 /**
@@ -641,28 +643,102 @@ function freshPermissions(): PermissionRule[] {
   return rules;
 }
 
-const CLI_VERBOSITY_FIELD = fieldId(CLI_FILENAME, "session", "verbosity");
+/**
+ * Hojas exactas del cliente v2 (Spec T19:12). Los paths de audio se derivan de
+ * la raíz efectiva (`ctx.configDir`) y apuntan a los dos assets propios del
+ * Stack, copiados por `planAdditionalResources` en el mismo configDir.
+ */
+interface CliDefaultLeaf {
+  segments: readonly string[];
+  value: unknown;
+}
+
+function cliDefaultLeaves(configDir: string): CliDefaultLeaf[] {
+  const sound = (name: string): string => path.join(configDir, "sounds", name);
+  return [
+    { segments: ["theme", "name"], value: "system" },
+    { segments: ["theme", "mode"], value: "system" },
+    { segments: ["session", "verbosity"], value: "low" },
+    { segments: ["session", "permissions"], value: "autoaccept" },
+    { segments: ["session", "tps"], value: true },
+    { segments: ["debug", "turn_tokens"], value: true },
+    { segments: ["attention", "notifications"], value: true },
+    { segments: ["attention", "sound"], value: true },
+    { segments: ["attention", "volume"], value: 0.1 },
+    { segments: ["attention", "sounds", "done"], value: sound("done.wav") },
+    { segments: ["attention", "sounds", "subagent_done"], value: sound("done.wav") },
+    { segments: ["attention", "sounds", "question"], value: sound("attention.wav") },
+    { segments: ["attention", "sounds", "permission"], value: sound("attention.wav") },
+    { segments: ["attention", "sounds", "error"], value: sound("attention.wav") },
+    { segments: ["attention", "sounds", "default"], value: sound("attention.wav") },
+  ];
+}
+
+/** Contenedores propios (prefijos de las hojas), de más superficial a más profundo. */
+function cliContainerPaths(leaves: readonly CliDefaultLeaf[]): string[][] {
+  const seen = new Set<string>();
+  const paths: string[][] = [];
+  for (const leaf of leaves) {
+    for (let depth = 1; depth < leaf.segments.length; depth++) {
+      const prefix = leaf.segments.slice(0, depth);
+      const key = JSON.stringify(prefix);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(prefix);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Un contenedor propio presente pero no-objeto (escalar/array) es dato ambiguo
+ * del usuario: no se puede sembrar esa rama sin sobrescribirlo. Devuelve la
+ * ruta afectada para preservar los bytes y dejar remedio, o null si el árbol es
+ * compatible (contenedores ausentes u objetos).
+ */
+function findInvalidCliContainer(root: Record<string, unknown>, leaves: readonly CliDefaultLeaf[]): string | null {
+  for (const prefix of cliContainerPaths(leaves)) {
+    let node: Record<string, unknown> = root;
+    let absent = false;
+    for (const segment of prefix) {
+      const next = node[segment];
+      if (next === undefined) {
+        absent = true;
+        break;
+      }
+      const block = objectValue(next);
+      if (block === null) return prefix.join(".");
+      node = block;
+    }
+    if (absent) continue;
+  }
+  return null;
+}
 
 /**
  * Proyección del archivo compacto del cliente v2 (`cli.json`, separado del
- * server config): siembra `session.verbosity: "low"` solo si falta, conserva
- * cualquier valor ajeno y nunca precrea el archivo mientras exista una fuente
- * legacy (tui.json/kv.json) que el migrador nativo deba consumir primero.
+ * server config): siembra SOLO las hojas T19 ausentes —revisando todas aunque
+ * `session.verbosity` ya exista—, conserva cualquier valor ajeno (igual,
+ * custom, false o null) sin reclamarlo, y nunca precrea el archivo mientras
+ * exista una fuente legacy (tui.json/kv.json) que el migrador nativo deba
+ * consumir primero. Los contenedores y hojas que crea se reclaman en el ledger
+ * actual; los preexistentes no.
  */
 function planCliConfig(ctx: InstallContext): FileAction | null {
   const file = path.join(ctx.configDir, CLI_FILENAME);
   const existing = readTextIfExists(file);
+  const leaves = cliDefaultLeaves(ctx.configDir);
 
-  // Ausente o vacío/solo espacios: equivale a "falta low", se siembra salvo que
-  // el migrador nativo tenga una fuente legacy pendiente.
+  // Ausente o vacío/solo espacios: se siembra salvo que el migrador nativo
+  // tenga una fuente legacy pendiente.
   if (existing === null || existing.trim() === "") {
     if (hasPendingCliMigration(ctx)) {
       ctx.warnings.push(
-        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite install para sembrar session.verbosity: low.",
+        "OpenCode: existe una fuente legacy (tui.json/kv.json) pendiente de la migración nativa; no se precrea cli.json. Inicia OpenCode v2 una vez y repite install para sembrar los defaults del cliente.",
       );
       return null;
     }
-    return seedCliVerbosity(ctx, null);
+    return seedCliDefaults(ctx, leaves, null);
   }
 
   const parsed = parseJsoncObject(existing);
@@ -670,29 +746,48 @@ function planCliConfig(ctx: InstallContext): FileAction | null {
     ctx.warnings.push("OpenCode: 'cli.json' no es un objeto JSON válido; se conserva sin tocar.");
     return null;
   }
-  const session = parsed.value["session"];
-  // `session` no-objeto es dato ambiguo del usuario: se preservan los bytes y se
-  // deja remedio, sin reclamar ownership ni reserializar un escalar/array ajeno.
-  if (session !== undefined && objectValue(session) === null) {
+  const invalid = findInvalidCliContainer(parsed.value, leaves);
+  if (invalid !== null) {
     ctx.warnings.push(
-      "OpenCode: 'cli.json' tiene un 'session' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite install para sembrar session.verbosity: low.",
+      `OpenCode: 'cli.json' tiene '${invalid}' que no es un objeto; se conserva sin tocar. Corrige o elimina esa clave y repite install para sembrar los defaults del cliente.`,
     );
     return null;
   }
-  if (objectValue(session)?.["verbosity"] !== undefined) return null;
-  return seedCliVerbosity(ctx, existing);
+  return seedCliDefaults(ctx, leaves, existing);
 }
 
-/** Siembra `session.verbosity: low` sobre un cli.json ausente/vacío o existente válido. */
-function seedCliVerbosity(ctx: InstallContext, existing: string | null): FileAction {
+/**
+ * Siembra las hojas T19 ausentes sobre un cli.json ausente/vacío o existente
+ * válido. Devuelve null si no faltaba ninguna hoja (no se reimpone nada).
+ */
+function seedCliDefaults(ctx: InstallContext, leaves: readonly CliDefaultLeaf[], existing: string | null): FileAction | null {
   const ownership: PrimaryModelOwnershipChange[] = [];
+  let changed = false;
   const content = editConfigContent(existing, (root) => {
-    const session = objectValue(root["session"]);
-    const sessionBlock = session ?? {};
-    if (session === null) root["session"] = sessionBlock;
-    sessionBlock["verbosity"] = "low";
-    claimFieldId(ctx.ownedPrimaryModelFields, ownership, CLI_VERBOSITY_FIELD);
+    for (const leaf of leaves) {
+      let node = root;
+      for (let index = 0; index < leaf.segments.length - 1; index++) {
+        const key = leaf.segments[index]!;
+        const current = node[key];
+        if (current === undefined) {
+          const block: Record<string, unknown> = {};
+          node[key] = block;
+          claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, ...leaf.segments.slice(0, index + 1)));
+          changed = true;
+          node = block;
+        } else {
+          // Validado en planCliConfig: todo contenedor presente es un objeto.
+          node = objectValue(current)!;
+        }
+      }
+      const leafKey = leaf.segments[leaf.segments.length - 1]!;
+      if (node[leafKey] !== undefined) continue;
+      node[leafKey] = leaf.value;
+      claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, ...leaf.segments));
+      changed = true;
+    }
   });
+  if (!changed) return null;
   return {
     kind: "write",
     target: path.join(ctx.configDir, CLI_FILENAME),
@@ -1402,6 +1497,32 @@ export const opencodeAdapter: Adapter = {
     return actions;
   },
 
+  /**
+   * Dos WAV propios del cliente v2 (Spec T19): copias fijas desde el canon
+   * `stack/assets/opencode/sounds/` a `configDir/sounds/`, derivado de ctx. No
+   * pasan por el loader de plugins (viven fuera de `stack/plugins/`) ni relajan
+   * `planPlugins`. Una fuente ausente/ilegible bloquea el plan antes de
+   * cualquier write: nunca se omite en silencio.
+   */
+  planAdditionalResources(ctx: InstallContext): FileAction[] {
+    const sourceDir = path.join(ctx.stackDir, "assets", "opencode", "sounds");
+    const targetDir = path.join(ctx.configDir, "sounds");
+    return CLIENT_SOUND_ASSETS.map((name): FileAction => {
+      const source = path.join(sourceDir, name);
+      try {
+        fs.readFileSync(source);
+      } catch (error) {
+        const code = error instanceof Error && "code" in error && typeof error.code === "string"
+          ? error.code
+          : "UNKNOWN";
+        throw new Error(
+          `OpenCode: el asset canónico de sonido '${source}' falta o no se puede leer (${code}); no se proyecta ningún WAV. Restaura el paquete antes de reintentar.`,
+        );
+      }
+      return { kind: "copy", source, target: path.join(targetDir, name) };
+    });
+  },
+
   planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
     const { systemPromptFile, pluginsDir } = this.paths(ctx.configDir);
@@ -1642,18 +1763,47 @@ export const opencodeAdapter: Adapter = {
     // la primera pasada, donde el ctx se construyó antes del write) y (b) lo
     // corrobora en el inventario del manifest. Sin el campo owned la acción es
     // un no-op byte-idéntico: diffPlan la marca "unchanged" y no se reescribe
-    // nada. Con el campo owned solo se retira el valor que siga siendo canónico,
-    // preservando las claves ajenas.
+    // nada. Con campos owned solo se retira la hoja que siga siendo el valor
+    // canónico, preservando claves ajenas y comentarios JSONC.
     const cliFile = path.join(ctx.configDir, CLI_FILENAME);
     const cliRaw = readTextIfExists(cliFile);
     if (cliRaw !== null) {
-      if (ctx.ownedPrimaryModelFields?.has(CLI_VERBOSITY_FIELD) === true) {
+      const cliLeaves = cliDefaultLeaves(ctx.configDir);
+      const cliOwned = ctx.ownedPrimaryModelFields;
+      const cliField = (...segments: string[]): string => ownedField(CLI_FILENAME, ...segments);
+      const hasOwnedCliField =
+        cliLeaves.some((leaf) => cliOwned?.has(cliField(...leaf.segments)) === true)
+        || cliContainerPaths(cliLeaves).some((prefix) => cliOwned?.has(cliField(...prefix)) === true);
+      if (hasOwnedCliField) {
         const cliOwnership: PrimaryModelOwnershipChange[] = [];
         const content = editConfigContent(cliRaw, (root) => {
-          const session = objectValue(root["session"]);
-          if (session !== null && session["verbosity"] === "low") delete session["verbosity"];
-          pruneEmpty(root, "session");
-          cliOwnership.push({ field: CLI_VERBOSITY_FIELD, owned: false });
+          // Solo se retira la hoja owned que siga siendo el valor canónico; un
+          // valor modificado se preserva. La marca se libera siempre.
+          for (const leaf of cliLeaves) {
+            const field = cliField(...leaf.segments);
+            if (cliOwned?.has(field) !== true) continue;
+            let node: Record<string, unknown> | null = root;
+            for (const segment of leaf.segments.slice(0, -1)) {
+              node = node === null ? null : objectValue(node[segment]);
+            }
+            const leafKey = leaf.segments[leaf.segments.length - 1]!;
+            if (node !== null && isDeepStrictEqual(node[leafKey], leaf.value)) delete node[leafKey];
+            cliOwnership.push({ field, owned: false });
+          }
+          // Contenedores propios vacíos: se podan solo si su ID es owned (un
+          // `{}` ajeno preexistente sobrevive) y de más profundo a más
+          // superficial para que el padre quede vacío tras podar al hijo.
+          for (const prefix of [...cliContainerPaths(cliLeaves)].sort((a, b) => b.length - a.length)) {
+            const field = cliField(...prefix);
+            if (cliOwned?.has(field) !== true) continue;
+            let parent: Record<string, unknown> | null = root;
+            for (const segment of prefix.slice(0, -1)) {
+              parent = parent === null ? null : objectValue(parent[segment]);
+            }
+            const key = prefix[prefix.length - 1]!;
+            if (parent !== null) pruneEmpty(parent, key);
+            cliOwnership.push({ field, owned: false });
+          }
         });
         actions.push({
           kind: "write",
