@@ -19,7 +19,6 @@ import {
   inspectCachedBrowserControlRuntime,
   type BrowserControlReady,
 } from "./lib/browser-control-runtime.js";
-import { OPENCODE_OFFICIAL_SETUP_V2_REASON } from "./lib/official-engram-setup.js";
 import {
   type PlaywrightBrowserCacheState,
   type PlaywrightCliStatus,
@@ -448,14 +447,12 @@ async function verifyOfficialForRuntime(
   }
   const { verifyOfficialSetup } = await import("./adapters/opencode.js");
   const report = await verifyOfficialSetup({ configDir, engramBin });
-  // Contrato cerrado (previo a PR04): OpenCode v2 no admite la integración v1
-  // del proveedor. La presencia de plugin/MCP/statusline v1 no acredita la ruta
-  // efectiva validada de v2, así que doctor nunca reporta `ok`/healthy aquí:
-  // devuelve el prerrequisito externo con las capas observadas.
+  // El verificador estático describe las capas de config/artefacto (plugin y
+  // MCP efectivo); no certifica carga en runtime ni protocolo privado.
   return {
-    ok: false,
+    ok: report.ok,
     layers: report.layers,
-    reason: OPENCODE_OFFICIAL_SETUP_V2_REASON,
+    ...(report.reason === undefined ? {} : { reason: report.reason }),
   };
 }
 
@@ -742,12 +739,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<number> {
         HOME,
         explicitClaude,
       );
-      // Exposición como ruta efectiva validada: para OpenCode v2, el setup v1
-      // bloqueado nunca acredita exposición aunque los ficheros v1 estén
-      // presentes. Los demás runtimes conservan su cómputo por capas.
-      const exposed = adapter.id === "opencode"
-        ? setup.ok && setup.layers.includes("mcp") && engramBinAvailable
-        : setup.layers.includes("mcp") && engramBinAvailable;
+      // Exposición como ruta efectiva validada: el verificador estático acredita
+      // la capa MCP observada en config; no certifica carga en runtime.
+      const exposed = setup.layers.includes("mcp") && engramBinAvailable;
       officialResults.push({ runtime: adapter.id, ok: setup.ok, layers: setup.layers, exposed });
       if (!setup.ok) {
         const reason = typeof setup.reason === "string" ? setup.reason.trim() : "";

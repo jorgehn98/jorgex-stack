@@ -92,6 +92,14 @@ const REAL_OPENCODE_TS = [
   "",
 ].join("\n");
 
+// Forma representativa del entrypoint nativo v2 (id + setup). No es prueba ABI
+// ni la firma pública real: solo distingue el plugin legacy v1 del nativo.
+const NATIVE_V2_OPENCODE_TS = [
+  "// native opencode v2 entrypoint (fixture shape, not an ABI proof)",
+  "export default { id: 'engram', setup: setupEngramV2 };",
+  "",
+].join("\n");
+
 describe("[doctor-runtimes] incomplete selected installed runtime is unhealthy", () => {
   it("opencode installed with custom configDir and incomplete setup → nonzero, outro not healthy", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-doc-rt-"));
@@ -141,7 +149,7 @@ describe("[doctor-runtimes] incomplete selected installed runtime is unhealthy",
     }
   });
 
-  it("[T07] v1-looking official Engram files on OpenCode v2 are pending, not healthy", async () => {
+  it("[T07] v1-marker official-looking plugin is legacy, not the native OpenCode v2 entrypoint", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-doc-rt-opencode-v2-"));
     const homeDir = path.join(tmp, "home");
     try {
@@ -153,10 +161,12 @@ describe("[doctor-runtimes] incomplete selected installed runtime is unhealthy",
         try { fs.chmodSync(bin, 0o755); } catch { /* best-effort en tmp */ }
         mocks.detectEngram.mockReturnValue(bin);
         mocks.runDetectedBin.mockReturnValue("2.2.1");
-        // Huella "oficial" v1: plugin con marcadores v1 + MCP exacto + statusline.
         const configDir = path.join(homeDir, ".config", "opencode");
         fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
-        fs.writeFileSync(path.join(configDir, "plugins", "engram.ts"), REAL_OPENCODE_TS);
+        const pluginFile = path.join(configDir, "plugins", "engram.ts");
+        // Control negativo: huella v1 exacta (marcadores v1) + MCP exacto válido
+        // + statusline. Presencia de ficheros v1 ≠ entrypoint nativo v2.
+        fs.writeFileSync(pluginFile, REAL_OPENCODE_TS);
         fs.writeFileSync(
           path.join(configDir, "opencode.json"),
           JSON.stringify({
@@ -169,11 +179,24 @@ describe("[doctor-runtimes] incomplete selected installed runtime is unhealthy",
         expect(typeof resolveEngramOfficialState, "falta doctor oficial por capas (T07)").toBe("function");
         const state = await resolveEngramOfficialState({ homeDir });
 
-        // Presencia de ficheros v1 ≠ integración v2 activa: nunca healthy/full.
-        expect(state.setup.runtimes.opencode.ok, "ficheros v1 no acreditan el setup oficial v2").toBe(false);
-        expect(state.exposure.runtimes.opencode.exposed, "sin activación verificada no hay exposición").toBe(false);
-        expect(JSON.stringify(state.setup.runtimes.opencode))
-          .toMatch(/release|upstream|prerrequisit|pendiente|no disponible|unsupported/i);
+        // El checker real que usa el doctor debe rechazar el plugin legacy:
+        // marcadores v1 no acreditan el entrypoint nativo, nunca healthy/full.
+        const opencodeSetup = state.setup.runtimes.opencode;
+        expect(opencodeSetup.ok, "marcadores v1 no acreditan el entrypoint nativo v2").toBe(false);
+        expect(opencodeSetup.layers, "la capa plugin debe reportar legacy, no acreditar").toEqual(
+          expect.arrayContaining([expect.stringMatching(/^plugin:(legacy-or-foreign|missing)$/)]),
+        );
+        // El MCP exacto es válido, pero sin plugin nativo no hay setup sano.
+        expect(state.exposure.runtimes.opencode.exposed, "plugin legacy + MCP válido no expone").toBe(false);
+
+        // Control positivo: el entrypoint nativo v2, sobre el MISMO fixture y MCP,
+        // sí acredita. Se asserta el verificador real que usa el doctor para no
+        // duplicar el recorrido end-to-end.
+        fs.writeFileSync(pluginFile, NATIVE_V2_OPENCODE_TS);
+        const { verifyOfficialSetup } = await import("../src/adapters/opencode.js");
+        const nativeReport = await verifyOfficialSetup({ configDir, engramBin: bin });
+        expect(nativeReport.ok, "el entrypoint nativo v2 con MCP válido sí acredita").toBe(true);
+        expect(nativeReport.layers).toEqual(expect.arrayContaining(["plugin", "mcp"]));
       });
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   complementsToScan,
   resolveComplementUpdateCheck,
 } from "../src/update.js";
 import { createBackup, restoreBackup } from "../src/lib/backup.js";
+import { parseJsoncObject } from "../src/lib/filemerge.js";
 
 /**
  * Verifica la integración oficial de Engram con subprocess/filesystem
@@ -1766,5 +1767,453 @@ describe("[T50-RED] Pi configDir fuera de HOME rechazado en validate", () => {
       expect(fs.readFileSync(marker, "utf8")).toBe(JSON.stringify({ packages: [] }));
       expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T15-RED: setup oficial OpenCode v2 (transacción, no ABI). El provider escribe
+// por JSON marshal (pierde comentarios/trivia como el Go real); Stack debe
+// reconciliar el delta MCP sobre los bytes JSONC originales y devolver el TUI
+// a sus bytes exactos cuando el único cambio sea el statusline retirado.
+// ---------------------------------------------------------------------------
+
+const T15_NATIVE_PLUGIN = [
+  "// engram native v2 plugin emitted by `engram setup opencode`",
+  "// Markers del checker OpenCode existente; no son prueba de origen/ABI.",
+  "// ensureLocalReady CONFIGURED_ENGRAM_URL SESSION_ATTRIBUTED_WRITE_TOOLS canonicalEngramToolName localInstanceID",
+  "export function setupEngramV2(ctx) {",
+  '  return { id: "engram", ctx };',
+  "}",
+  'export default { id: "engram", setup: setupEngramV2 };',
+  "",
+].join("\n");
+
+/** Emitter Node del setup v2: resuelve XDG/HOME como el Go oficial y re-serializa por JSON. */
+function t15EmitterScript(): string {
+  return [
+    "#!/usr/bin/env node",
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    "const argv = process.argv.slice(2);",
+    'if (argv.length !== 2 || argv[0] !== "setup" || argv[1] !== "opencode") {',
+    '  process.stderr.write("fake engram: unexpected argv " + argv.join(" ") + "\\n");',
+    "  process.exit(2);",
+    "}",
+    "const self = process.argv[1];",
+    "const xdg = process.env.XDG_CONFIG_HOME;",
+    "const home = process.env.HOME;",
+    'const configDir = path.join(xdg && xdg !== "" ? xdg : path.join(home || "", ".config"), "opencode");',
+    'if (!configDir) { process.stderr.write("fake engram: no config dir\\n"); process.exit(3); }',
+    'const strip = (text) => text.split("\\n").map((line) => line.replace(/^\\s*\\/\\/.*$/, "")).join("\\n");',
+    'const readJsonc = (file) => JSON.parse(strip(fs.readFileSync(file, "utf8")));',
+    `const plugin = ${JSON.stringify(T15_NATIVE_PLUGIN)};`,
+    'fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });',
+    'fs.writeFileSync(path.join(configDir, "plugins", "engram.ts"), plugin);',
+    'const opencodeFile = path.join(configDir, "opencode.jsonc");',
+    "const opencode = readJsonc(opencodeFile);",
+    // Go real: solo añade el MCP Engram si falta; una segunda ejecución no
+    // reasigna ni reescribe (no hay mutación imaginada que reconciliar).
+    'if (!opencode.mcp || !opencode.mcp.engram) {',
+    '  opencode.mcp = { ...(opencode.mcp || {}), engram: { type: "local", command: [self, "mcp", "--tools=agent"], enabled: true } };',
+    '  fs.writeFileSync(opencodeFile, JSON.stringify(opencode, null, 2) + "\\n");',
+    "}",
+    'const tuiFile = path.join(configDir, "tui.jsonc");',
+    "const tui = readJsonc(tuiFile);",
+    'const tuiPlugins = Array.isArray(tui.plugin) ? tui.plugin : [];',
+    'if (!tuiPlugins.includes("opencode-subagent-statusline")) {',
+    '  tui.plugin = [...tuiPlugins, "opencode-subagent-statusline"];',
+    '  fs.writeFileSync(tuiFile, JSON.stringify(tui, null, 2) + "\\n");',
+    "}",
+    "process.exit(0);",
+    "",
+  ].join("\n");
+}
+
+describe("[T15-RED] setup oficial OpenCode v2: transacción real y reconciliación final", () => {
+  it("completa el setup nativo, retira solo el statusline añadido y conserva bytes ajenos", async () => {
+    const home = tempHome("jx-t15-opencode-");
+    const configDir = path.join(home, ".config", "opencode");
+    const pluginsDir = path.join(configDir, "plugins");
+    const panelDir = path.join(configDir, "tui", "subagents");
+    fs.mkdirSync(pluginsDir, { recursive: true });
+    fs.mkdirSync(panelDir, { recursive: true });
+
+    const originalTui = [
+      "// tui personal: conservar trivia",
+      "{",
+      '  "theme": "user-theme",',
+      '  "plugin": ["./manual-tui-plugin"],',
+      '  "custom": { "keep": true }',
+      "}",
+      "",
+    ].join("\n");
+    const tuiFile = path.join(configDir, "tui.jsonc");
+    fs.writeFileSync(tuiFile, originalTui);
+
+    const originalOpencode = [
+      "// opencode personal: conservar comentarios",
+      "{",
+      '  "mcp": {',
+      '    "ajeno": { "type": "remote", "url": "https://ajeno.invalid" }',
+      "  },",
+      '  "foreign": "keep-me"',
+      "}",
+      "",
+    ].join("\n");
+    const opencodeFile = path.join(configDir, "opencode.jsonc");
+    fs.writeFileSync(opencodeFile, originalOpencode);
+
+    const originalCli = `${JSON.stringify({ plugins: ["./tui/subagents"], session: { verbosity: "low" } }, null, 2)}\n`;
+    const cliFile = path.join(configDir, "cli.json");
+    fs.writeFileSync(cliFile, originalCli);
+    const panelTuiFile = path.join(panelDir, "tui.tsx");
+    const panelStateFile = path.join(panelDir, "state.mjs");
+    const panelTui = "// jorgex panel tui sentinel\n";
+    const panelState = "// jorgex panel state sentinel\n";
+    fs.writeFileSync(panelTuiFile, panelTui);
+    fs.writeFileSync(panelStateFile, panelState);
+
+    const engramBin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, t15EmitterScript(), { mode: 0o755 });
+    fs.chmodSync(engramBin, 0o755);
+
+    // HOME privado: el backup real del coordinador debe caer en el temp, nunca
+    // en el HOME personal. Se recarga el grafo de módulos para que `paths.ts`
+    // evalúe `os.homedir()` con el HOME temporal.
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    vi.resetModules();
+    try {
+      await import("../src/adapters/opencode.js");
+      const mod = await import("../src/lib/official-engram-setup.js");
+
+      const setupOpts = {
+        command: "install",
+        dryRun: false,
+        targetDir: undefined,
+        engramBin,
+        configDir,
+        homeDir: home,
+        // Metadata observada de la release; no es un pin de runtime.
+        engramVersion: "engram 3.0.0",
+      };
+
+      const first = await mod.runOfficialSetupIfNeeded("opencode", setupOpts);
+
+      expect(first.ran, "el setup opencode v2 debe ejecutarse, no saltarse").toBe(true);
+      if (!first.ran) throw new Error("gate install cerrado inesperado");
+      expect(
+        first.ok,
+        `setup opencode v2 debe completar la transacción (hardgate v1 previo: ${String(first.reason ?? first.stderr ?? "")})`,
+      ).toBe(true);
+      expect(typeof first.backupId, "backup real del coordinador").toBe("string");
+      expect(fs.existsSync(path.join(home, ".jorgex-stack", "backups"))).toBe(true);
+
+      expect(fs.readFileSync(path.join(pluginsDir, "engram.ts"), "utf8")).toBe(T15_NATIVE_PLUGIN);
+
+      // TUI: el único cambio semántico fue el statusline retirado → bytes exactos.
+      expect(fs.readFileSync(tuiFile, "utf8")).toBe(originalTui);
+      expect(fs.readFileSync(tuiFile, "utf8")).not.toContain("opencode-subagent-statusline");
+
+      // opencode.jsonc: MCP efectivo añadido; comentarios y campos ajenos intactos.
+      const finalOpencode = fs.readFileSync(opencodeFile, "utf8");
+      expect(finalOpencode).toContain("// opencode personal: conservar comentarios");
+      expect(finalOpencode).toContain('"foreign": "keep-me"');
+      const parsedOpencode = parseJsoncObject(finalOpencode);
+      expect(parsedOpencode.error).toBeNull();
+      const mcp = (parsedOpencode.value?.["mcp"] ?? null) as Record<string, unknown> | null;
+      expect(mcp?.["ajeno"]).toMatchObject({ type: "remote", url: "https://ajeno.invalid" });
+      expect(mcp?.["engram"]).toMatchObject({
+        type: "local",
+        command: [engramBin, "mcp", "--tools=agent"],
+        enabled: true,
+      });
+
+      // cli.json y assets del panel intactos byte a byte.
+      expect(fs.readFileSync(cliFile, "utf8")).toBe(originalCli);
+      expect(fs.readFileSync(panelTuiFile, "utf8")).toBe(panelTui);
+      expect(fs.readFileSync(panelStateFile, "utf8")).toBe(panelState);
+
+      // Idempotencia: un segundo setup real con las mismas opciones no puede
+      // ser un skip ni un fallo, y no debe mutar config/TUI/plugin/panel. Solo
+      // el log de backups puede crecer.
+      const firstConfig = finalOpencode;
+      const firstTui = fs.readFileSync(tuiFile, "utf8");
+      const firstPlugin = fs.readFileSync(path.join(pluginsDir, "engram.ts"), "utf8");
+      const firstCli = fs.readFileSync(cliFile, "utf8");
+      const firstPanelTui = fs.readFileSync(panelTuiFile, "utf8");
+      const firstPanelState = fs.readFileSync(panelStateFile, "utf8");
+
+      const second = await mod.runOfficialSetupIfNeeded("opencode", setupOpts);
+      expect(second.ran, "el segundo setup no puede ser un skip silencioso").toBe(true);
+      if (!second.ran) throw new Error("segundo setup omitido inesperadamente");
+      expect(
+        second.ok,
+        `el segundo setup idempotente debe completar (${String(second.reason ?? second.stderr ?? "")})`,
+      ).toBe(true);
+
+      expect(fs.readFileSync(opencodeFile, "utf8")).toBe(firstConfig);
+      expect(fs.readFileSync(tuiFile, "utf8")).toBe(firstTui);
+      expect(fs.readFileSync(path.join(pluginsDir, "engram.ts"), "utf8")).toBe(firstPlugin);
+      expect(fs.readFileSync(cliFile, "utf8")).toBe(firstCli);
+      expect(fs.readFileSync(panelTuiFile, "utf8")).toBe(firstPanelTui);
+      expect(fs.readFileSync(panelStateFile, "utf8")).toBe(firstPanelState);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      vi.resetModules();
+    }
+  });
+
+  it("plugin preexistente con parche personal (mismo id/setup y marcadores) bloquea antes de efectos reales y lo conserva byte a byte", async () => {
+    const home = tempHome("jx-t15-opencode-preexisting-");
+    const configDir = path.join(home, ".config", "opencode");
+    const pluginsDir = path.join(configDir, "plugins");
+    const panelDir = path.join(configDir, "tui", "subagents");
+    fs.mkdirSync(pluginsDir, { recursive: true });
+    fs.mkdirSync(panelDir, { recursive: true });
+
+    // Misma forma que el emitido (id/setup + marcadores del checker) más una
+    // línea propia: un clasificador por substrings lo aceptaría, solo la
+    // comparación byte a byte contra el stage lo bloquea.
+    const personalPlugin = `${T15_NATIVE_PLUGIN}// personal local tweak: keep-me\n`;
+    const pluginFile = path.join(pluginsDir, "engram.ts");
+    fs.writeFileSync(pluginFile, personalPlugin);
+    expect(personalPlugin).toContain('export default { id: "engram", setup: setupEngramV2 };');
+    expect(personalPlugin).toContain("CONFIGURED_ENGRAM_URL");
+    expect(personalPlugin).not.toBe(T15_NATIVE_PLUGIN);
+
+    const originalTui = [
+      "// tui personal: conservar trivia",
+      "{",
+      '  "theme": "user-theme",',
+      '  "plugin": ["./manual-tui-plugin"],',
+      '  "custom": { "keep": true }',
+      "}",
+      "",
+    ].join("\n");
+    const tuiFile = path.join(configDir, "tui.jsonc");
+    fs.writeFileSync(tuiFile, originalTui);
+
+    const originalOpencode = [
+      "// opencode personal: conservar comentarios",
+      "{",
+      '  "mcp": {',
+      '    "ajeno": { "type": "remote", "url": "https://ajeno.invalid" }',
+      "  },",
+      '  "foreign": "keep-me"',
+      "}",
+      "",
+    ].join("\n");
+    const opencodeFile = path.join(configDir, "opencode.jsonc");
+    fs.writeFileSync(opencodeFile, originalOpencode);
+
+    const originalCli = `${JSON.stringify({ plugins: ["./tui/subagents"], session: { verbosity: "low" } }, null, 2)}\n`;
+    const cliFile = path.join(configDir, "cli.json");
+    fs.writeFileSync(cliFile, originalCli);
+    const panelTui = "// jorgex panel tui sentinel\n";
+    const panelState = "// jorgex panel state sentinel\n";
+    const panelTuiFile = path.join(panelDir, "tui.tsx");
+    const panelStateFile = path.join(panelDir, "state.mjs");
+    fs.writeFileSync(panelTuiFile, panelTui);
+    fs.writeFileSync(panelStateFile, panelState);
+
+    const engramBin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, t15EmitterScript(), { mode: 0o755 });
+    fs.chmodSync(engramBin, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    vi.resetModules();
+    try {
+      await import("../src/adapters/opencode.js");
+      const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+
+      const result = await mod.runOfficialSetupIfNeeded("opencode", {
+        command: "install",
+        dryRun: false,
+        targetDir: undefined,
+        engramBin,
+        configDir,
+        homeDir: home,
+        engramVersion: "engram 3.0.0",
+      });
+
+      // Falla cerrado antes de backup/spawn real: sin ownership ni recovery.
+      expect(result.ran).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.ownershipTransferred ?? false).toBe(false);
+      expect(result.backupId ?? null).toBeNull();
+      expect(result.recovery ?? "none").toBe("none");
+      // El motivo es la comparación byte a byte, no un stage vacío.
+      expect(String(result.reason ?? result.stderr ?? "")).toMatch(/no coincide byte a byte|conserva sin sobrescribir/i);
+
+      // El stage privado pudo ejecutar el binario (llamada legítima), pero el
+      // perfil real no registró ningún efecto: plugin y configs intactos.
+      expect(fs.readFileSync(pluginFile, "utf8")).toBe(personalPlugin);
+      expect(fs.readFileSync(opencodeFile, "utf8")).toBe(originalOpencode);
+      expect(fs.readFileSync(tuiFile, "utf8")).toBe(originalTui);
+      expect(fs.readFileSync(cliFile, "utf8")).toBe(originalCli);
+      expect(fs.readFileSync(panelTuiFile, "utf8")).toBe(panelTui);
+      expect(fs.readFileSync(panelStateFile, "utf8")).toBe(panelState);
+      expect(fs.readFileSync(opencodeFile, "utf8")).not.toContain('"engram"');
+      expect(fs.readFileSync(tuiFile, "utf8")).not.toContain("opencode-subagent-statusline");
+      // El backup real nunca se creó.
+      expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      vi.resetModules();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR04-RED: el post-guard de symlinks del núcleo corre DESPUÉS de la
+// reconciliación OpenCode del wrapper. Si el spawn sustituye el ancestro
+// configDir por un symlink hacia un directorio externo (fuera de HOME, dentro
+// de la raíz temporal propia), `assertSetupPathWritable` solo mira el fichero
+// final (lstat) y la reconciliación puede borrar/escribir ficheros externos
+// antes de que el post-guard detecte el alias. Contrato: Stack no debe mutar
+// ningún byte externo aunque el alias se detecte post-spawn; ok=false.
+// Es una guarda operativa best-effort, no un sandbox del proveedor ni una
+// promesa anti-TOCTOU total. Temporales aislados; cero HOME real.
+// ---------------------------------------------------------------------------
+
+/** Emisor Node que imita `engram setup opencode` y luego aliasa el configDir. */
+function pr04AliasEmitterScript(): string {
+  return [
+    "#!/usr/bin/env node",
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    "const argv = process.argv.slice(2);",
+    'if (argv.length !== 2 || argv[0] !== "setup" || argv[1] !== "opencode") {',
+    '  process.stderr.write("fake engram: unexpected argv " + argv.join(" ") + "\\n");',
+    "  process.exit(2);",
+    "}",
+    "const xdg = process.env.XDG_CONFIG_HOME;",
+    "const home = process.env.HOME;",
+    'const configDir = path.join(xdg && xdg !== "" ? xdg : path.join(home || "", ".config"), "opencode");',
+    `const plugin = ${JSON.stringify(T15_NATIVE_PLUGIN)};`,
+    // 1) El proveedor emite primero el plugin nativo esperado en el configDir real.
+    'fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });',
+    'fs.writeFileSync(path.join(configDir, "plugins", "engram.ts"), plugin);',
+    // 2) Sustituye el configDir real por un symlink hacia el fixture externo.
+    "const hold = process.env.JORGEX_PR04_HOLD;",
+    "const external = process.env.JORGEX_PR04_EXTERNAL;",
+    'if (!hold || !external) { process.stderr.write("fake engram: missing alias env\\n"); process.exit(4); }',
+    "fs.renameSync(configDir, hold);",
+    "fs.symlinkSync(external, configDir);",
+    "process.exit(0);",
+    "",
+  ].join("\n");
+}
+
+describe("[PR04-RED] reconciliación OpenCode no muta a través de ancestro aliasado", () => {
+  it("alias del configDir durante el spawn: ok=false y el fixture externo queda byte-exacto (TUI/MCP/plugin sin borrar ni escribir)", async () => {
+    const home = tempHome("jx-pr04-alias-");
+    // El directorio externo queda fuera de HOME pero dentro de la MISMA raíz
+    // temporal test-owned: nunca un HOME ni una carpeta personal.
+    const ownRoot = path.dirname(home);
+    const external = path.join(ownRoot, "external");
+    const configDir = path.join(home, ".config", "opencode");
+    const hold = path.join(home, ".config", "opencode-hold");
+    fs.mkdirSync(path.join(configDir, "plugins"), { recursive: true });
+
+    const engramBin = path.join(home, ".local", "bin", "engram");
+    fs.mkdirSync(path.dirname(engramBin), { recursive: true });
+    fs.writeFileSync(engramBin, pr04AliasEmitterScript(), { mode: 0o755 });
+    fs.chmodSync(engramBin, 0o755);
+
+    // Config original con trivia JSONC (snapshot pre-spawn) y SIN tui.jsonc:
+    // la base TUI ausente es la que dispara el borrado del fichero nuevo.
+    const originalOpencode = [
+      "// opencode personal: conservar trivia",
+      "{",
+      '  "foreign": "keep-me"',
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(configDir, "opencode.jsonc"), originalOpencode);
+    expect(fs.existsSync(path.join(configDir, "tui.jsonc"))).toBe(false);
+    // Plugin preexistente ausente: evita que la autenticación dispare el stage
+    // privado (que también ejecutaría el emisor) antes del alias.
+    expect(fs.existsSync(path.join(configDir, "plugins", "engram.ts"))).toBe(false);
+
+    // Fixture externo test-owned: fila MCP estricta del provider (delta MCP
+    // correcto sobre base ausente → reconciliación MCP no escribe) y TUI
+    // exclusivo con el statusline retirado (→ borrado por reconciliación).
+    fs.mkdirSync(path.join(external, "plugins"), { recursive: true });
+    const externalOpencode =
+      `${JSON.stringify({ mcp: { engram: { type: "local", command: [engramBin, "mcp", "--tools=agent"], enabled: true } } }, null, 2)}\n`;
+    fs.writeFileSync(path.join(external, "opencode.json"), externalOpencode);
+    const externalTui = `${JSON.stringify({ plugin: ["opencode-subagent-statusline"] }, null, 2)}\n`;
+    fs.writeFileSync(path.join(external, "tui.jsonc"), externalTui);
+    const externalPlugin = "// external plugin sentinel (no debe escribirse a través del alias)\n";
+    fs.writeFileSync(path.join(external, "plugins", "engram.ts"), externalPlugin);
+
+    const baselineOpencode = fs.readFileSync(path.join(external, "opencode.json"), "utf8");
+    const baselineTui = fs.readFileSync(path.join(external, "tui.jsonc"), "utf8");
+    const baselinePlugin = fs.readFileSync(path.join(external, "plugins", "engram.ts"), "utf8");
+
+    const previousHome = process.env.HOME;
+    const previousHold = process.env.JORGEX_PR04_HOLD;
+    const previousExternal = process.env.JORGEX_PR04_EXTERNAL;
+    process.env.HOME = home;
+    process.env.JORGEX_PR04_HOLD = hold;
+    process.env.JORGEX_PR04_EXTERNAL = external;
+    vi.resetModules();
+    try {
+      await import("../src/adapters/opencode.js");
+      const mod = (await import("../src/lib/official-engram-setup.js")) as any;
+
+      const result = await mod.runOfficialSetupIfNeeded("opencode", {
+        command: "install",
+        dryRun: false,
+        targetDir: undefined,
+        engramBin,
+        configDir,
+        homeDir: home,
+        engramVersion: "engram 3.0.0",
+      });
+
+      // El alias quedó instalado por el spawn y el post-guard debe detectarlo.
+      expect(fs.lstatSync(configDir).isSymbolicLink()).toBe(true);
+      expect(result.ran).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.ownershipTransferred ?? false).toBe(false);
+      // Recuperación puede ser incompleta: las rutas tainted no se restauran.
+      expect(["incomplete", "none"]).toContain(result.recovery ?? "none");
+
+      // ORACLE: la reconciliación del wrapper no puede haber mutado el fixture
+      // externo a través del ancestro aliasado. Los sentinels MCP/plugin deben
+      // quedar exactos (prueban que no hubo escritura de frontera); el TUI
+      // externo se borra en RED (fs.rmSync en reconcileOpencodeTui) antes del
+      // post-guard.
+      expect(fs.readFileSync(path.join(external, "opencode.json"), "utf8")).toBe(baselineOpencode);
+      expect(fs.readFileSync(path.join(external, "plugins", "engram.ts"), "utf8")).toBe(baselinePlugin);
+      expect(fs.existsSync(path.join(external, "tui.jsonc"))).toBe(true);
+      expect(fs.readFileSync(path.join(external, "tui.jsonc"), "utf8")).toBe(baselineTui);
+      expect(fs.readFileSync(path.join(external, "tui.jsonc"), "utf8")).toContain(
+        "opencode-subagent-statusline",
+      );
+    } finally {
+      // Limpieza del alias propio: unlink del symlink, nunca borrado recursivo
+      // del destino externo (queda para el teardown de la raíz temporal).
+      try {
+        if (fs.lstatSync(configDir).isSymbolicLink()) fs.unlinkSync(configDir);
+      } catch {
+        // Sin alias o ya retirado.
+      }
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousHold === undefined) delete process.env.JORGEX_PR04_HOLD;
+      else process.env.JORGEX_PR04_HOLD = previousHold;
+      if (previousExternal === undefined) delete process.env.JORGEX_PR04_EXTERNAL;
+      else process.env.JORGEX_PR04_EXTERNAL = previousExternal;
+      vi.resetModules();
+    }
   });
 });

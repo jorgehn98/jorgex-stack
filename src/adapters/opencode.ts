@@ -1966,20 +1966,158 @@ export const opencodeAdapter: Adapter = {
 
 const OPENCODE_STACK_KEPT_PLUGINS = ["hooks.ts", "worktree.ts"] as const;
 
+/** Avanza desde una comilla hasta cerrarla, respetando escapes. */
+function skipOpencodePluginQuoted(source: string, start: number): number {
+  const quote = source[start]!;
+  let index = start + 1;
+  while (index < source.length) {
+    if (source[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    if (source[index] === quote) return index + 1;
+    index += 1;
+  }
+  return source.length;
+}
+
+/** Salta espacios y comentarios; devuelve el índice del siguiente token de código. */
+function skipOpencodePluginTrivia(source: string, start: number): number {
+  let index = start;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === " " || char === "\t" || char === "\r" || char === "\n") {
+      index += 1;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "/") {
+      index += 2;
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) index += 1;
+      index += 2;
+      continue;
+    }
+    return index;
+  }
+  return index;
+}
+
+/** `true` si en `index` empieza `word` como token completo (no dentro de otro identificador). */
+function isOpencodePluginWordAt(source: string, index: number, word: string): boolean {
+  if (!source.startsWith(word, index)) return false;
+  const before = index === 0 ? "" : source[index - 1]!;
+  const after = source[index + word.length] ?? "";
+  return !/[\w$]/.test(before) && !/[\w$]/.test(after);
+}
+
+/** Cuerpo balanceado del objeto literal que abre en `open`; `null` si no cierra. */
+function readOpencodePluginObjectBody(source: string, open: number): string | null {
+  let depth = 0;
+  for (let index = open; index < source.length; ) {
+    const char = source[index]!;
+    if (char === "/" && (source[index + 1] === "/" || source[index + 1] === "*")) {
+      index = skipOpencodePluginTrivia(source, index);
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      index = skipOpencodePluginQuoted(source, index);
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(open + 1, index);
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/**
+ * Cuerpo del objeto de `export default { … }` a nivel de código. Se saltan
+ * comentarios y strings, así que un `export default` dentro de un comentario o
+ * de un literal no acredita. `null` si no hay entrypoint con esa forma.
+ */
+function readDefaultExportObjectBody(source: string): string | null {
+  for (let index = 0; index < source.length; ) {
+    const char = source[index]!;
+    if (char === "/" && (source[index + 1] === "/" || source[index + 1] === "*")) {
+      index = skipOpencodePluginTrivia(source, index);
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      index = skipOpencodePluginQuoted(source, index);
+      continue;
+    }
+    if (isOpencodePluginWordAt(source, index, "export")) {
+      const afterExport = skipOpencodePluginTrivia(source, index + "export".length);
+      if (isOpencodePluginWordAt(source, afterExport, "default")) {
+        const open = skipOpencodePluginTrivia(source, afterExport + "default".length);
+        return source[open] === "{" ? readOpencodePluginObjectBody(source, open) : null;
+      }
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/** Propiedades de primer nivel del cuerpo de un objeto (clave → valor crudo). */
+function readOpencodePluginTopLevelProperties(body: string): Map<string, string> {
+  const properties = new Map<string, string>();
+  let depth = 0;
+  let segmentStart = 0;
+  const record = (segmentEnd: number): void => {
+    const segment = body.slice(segmentStart, segmentEnd).trim();
+    segmentStart = segmentEnd + 1;
+    const match = /^([A-Za-z_$][\w$]*)\s*:\s*([\s\S]+)$/.exec(segment);
+    if (match !== null) properties.set(match[1]!, match[2]!.trim());
+  };
+  for (let index = 0; index < body.length; ) {
+    const char = body[index]!;
+    if (char === "/" && (body[index + 1] === "/" || body[index + 1] === "*")) {
+      index = skipOpencodePluginTrivia(body, index);
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      index = skipOpencodePluginQuoted(body, index);
+      continue;
+    }
+    if (char === "{" || char === "[" || char === "(") depth += 1;
+    else if (char === "}" || char === "]" || char === ")") depth -= 1;
+    else if (char === "," && depth === 0) record(index);
+    index += 1;
+  }
+  if (segmentStart < body.length) record(body.length);
+  return properties;
+}
+
 /**
  * Único predicado oficial OpenCode (real, sin stubs de test).
- * Marcadores únicos del setup oficial en la misma ruta.
- * Compartido por adapter/doctor/uninstall para no duplicar ni aceptar
- * el marcador de test `engram official plugin`.
+ *
+ * Reconoce la forma canónica del entrypoint nativo V2 que emite
+ * `engram setup opencode` en la MISMA ruta: un `export default` cuyo objeto
+ * declara `id: "engram"` y un `setup` con binding (la variante real incluye
+ * además `server`). Es reconocimiento estático de forma, no autenticación del
+ * publisher ni prueba de ABI/carga/protocolo: la comparación byte a byte con
+ * los bytes emitidos por el binario detectado sigue siendo el preflight de
+ * sobrescritura.
+ *
+ * Los marcadores V1 sueltos (`ensureLocalReady`, `CONFIGURED_ENGRAM_URL`, …) ya
+ * no acreditan: pueden aparecer en código ajeno o en comentarios. Por eso se
+ * saltan comentarios y strings antes de buscar el entrypoint.
  */
 export function isOfficialOpencodePluginContent(content: string): boolean {
-  return (
-    content.includes("ensureLocalReady") ||
-    content.includes("CONFIGURED_ENGRAM_URL") ||
-    content.includes("SESSION_ATTRIBUTED_WRITE_TOOLS") ||
-    content.includes("canonicalEngramToolName") ||
-    content.includes("localInstanceID")
-  );
+  const body = readDefaultExportObjectBody(content);
+  if (body === null) return false;
+  const properties = readOpencodePluginTopLevelProperties(body);
+  const id = properties.get("id");
+  const setup = properties.get("setup");
+  if (id === undefined || setup === undefined) return false;
+  return /^(["'`])engram\1$/.test(id) && /^[A-Za-z_$][\w$]*$/.test(setup);
 }
 
 /**
@@ -2037,7 +2175,7 @@ function hasOfficialEngramPlugin(configDir: string): boolean {
 }
 
 /**
- * Lectura estructural estricta (JSON válido, sin dependencias ni regex):
+ * Lectura estructural estricta (JSONC válido, sin dependencias ni regex):
  * distingue ausente (ENOENT, se ignora) de ilegible/malformado/no-objeto.
  * Un archivo existente no verificable bloquea la verificación aunque otro
  * aporte capas: no se puede descartar conflicto ni duplicado oculto.
@@ -2058,29 +2196,16 @@ export function readOpencodeConfigFile(file: string): OpencodeConfigRead {
     if (code === "ENOENT") return { file, status: "absent" };
     return { file, status: "unverifiable", reason: `${file}: ilegible (${code})` };
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    return { file, status: "unverifiable", reason: `${file}: JSON malformado` };
+  const parsed = parseJsoncObject(raw);
+  if (parsed.value === null) {
+    return { file, status: "unverifiable", reason: `${file}: JSONC malformado (${parsed.error ?? "desconocido"})` };
   }
-  const root = objectValue(parsed);
-  if (root === null) return { file, status: "unverifiable", reason: `${file}: no es un objeto JSON` };
-  return { file, status: "ok", parsed: root };
+  return { file, status: "ok", parsed: parsed.value };
 }
 
 function readExistingOpencodeConfigs(configDir: string): Array<Extract<OpencodeConfigRead, { status: "ok" }>> {
   const out: Array<Extract<OpencodeConfigRead, { status: "ok" }>> = [];
   for (const name of ["opencode.json", "opencode.jsonc"]) {
-    const read = readOpencodeConfigFile(path.join(configDir, name));
-    if (read.status === "ok") out.push(read);
-  }
-  return out;
-}
-
-function readExistingTuiConfigs(configDir: string): Array<Extract<OpencodeConfigRead, { status: "ok" }>> {
-  const out: Array<Extract<OpencodeConfigRead, { status: "ok" }>> = [];
-  for (const name of ["tui.json", "tui.jsonc"]) {
     const read = readOpencodeConfigFile(path.join(configDir, name));
     if (read.status === "ok") out.push(read);
   }
@@ -2104,6 +2229,9 @@ function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): bool
   const record = objectValue(value);
   if (record === null) return false;
   if (record["type"] !== "local") return false;
+  // Entrada efectivamente habilitada: un servidor nativo `disabled: true` o
+  // legacy `enabled: false` no acredita el MCP activo.
+  if (record["disabled"] === true || record["enabled"] === false) return false;
   const command = record["command"];
   if (!Array.isArray(command) || command.length !== 3) return false;
   if (command[1] !== "mcp" || command[2] !== "--tools=agent") return false;
@@ -2116,36 +2244,24 @@ function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): bool
 }
 
 /**
- * MCP exacto en opencode.json/jsonc.
- * Solo JSON estructural válido acredita; JSON truncado/malformado o
- * fragmentos sueltos en JSONC ilegible fallan cerrados (sin regex).
+ * MCP Engram efectivo en opencode.json/jsonc: contenedor nativo
+ * `mcp.servers.engram` (precedencia) y legacy `mcp.engram`. Solo JSON
+ * estructural válido acredita; JSON truncado/malformado o fragmentos sueltos
+ * en JSONC ilegible fallan cerrados (sin regex).
  */
 export function checkOpencodeOfficialMcp(configDir: string, engramBin?: string): boolean {
   for (const { parsed } of readExistingOpencodeConfigs(configDir)) {
     const mcp = objectValue(parsed["mcp"]);
-    if (mcp !== null && isExactOpencodeEngramMcpValue(mcp["engram"], engramBin)) return true;
-  }
-  return false;
-}
-
-/**
- * Statusline oficial: `statusline.command` con engram en opencode.json/jsonc
- * o plugin `opencode-subagent-statusline` en tui.json/jsonc.
- * Solo JSON estructural válido acredita; JSONC ilegible falla cerrado.
- */
-export function checkOpencodeOfficialStatusline(configDir: string): boolean {
-  for (const { parsed } of readExistingOpencodeConfigs(configDir)) {
-    const statusline = objectValue(parsed["statusline"]);
-    if (statusline !== null) {
-      const command = statusline["command"];
-      if (typeof command === "string" && command.includes("engram")) return true;
+    if (mcp === null) continue;
+    const servers = objectValue(mcp["servers"]);
+    // `mcp.servers.engram` es autoritativo cuando la clave existe (el host
+    // nativo la hace prevalecer): aunque esté deshabilitada o malformada no se
+    // cae al duplicado legacy habilitado. El legacy solo decide su ausencia.
+    if (servers !== null && Object.prototype.hasOwnProperty.call(servers, "engram")) {
+      if (isExactOpencodeEngramMcpValue(servers["engram"], engramBin)) return true;
+      continue;
     }
-  }
-  for (const { parsed } of readExistingTuiConfigs(configDir)) {
-    const plugin = parsed["plugin"];
-    if (Array.isArray(plugin) && plugin.some((entry) => typeof entry === "string" && /statusline/i.test(entry))) {
-      return true;
-    }
+    if (isExactOpencodeEngramMcpValue(mcp["engram"], engramBin)) return true;
   }
   return false;
 }
@@ -2162,8 +2278,10 @@ export function checkOpencodeDuplicates(configDir: string): boolean {
 
 /**
  * Verificador oficial OpenCode por capas (solo lectura, registrado en T12).
- * Capas: plugin (misma ruta, contenido oficial vs legacy canónico),
- * MCP exacto y statusline. Preserva JSONC/config ajena; sin claim OpenCode2.
+ * Capas: plugin (misma ruta, contenido oficial vs legacy canónico) y MCP
+ * efectivo (nativo/legacy, habilitado). El statusline v1 retirado no es
+ * requisito de verificación V2. Preserva JSONC/config ajena; sin claim de
+ * carga en runtime.
  */
 export async function verifyOfficialSetup(args: { configDir: string; engramBin: string }): Promise<{
   ok: boolean;
@@ -2174,7 +2292,6 @@ export async function verifyOfficialSetup(args: { configDir: string; engramBin: 
   const plugin = readOpencodePluginFile(args.configDir);
   const hasPlugin = plugin !== null && isOfficialOpencodePluginContent(plugin);
   const hasMcp = checkOpencodeOfficialMcp(args.configDir, args.engramBin);
-  const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
   const duplicates = checkOpencodeDuplicates(args.configDir);
   const unverifiable = collectUnverifiableOpencodeConfigs(args.configDir);
   const passed: string[] = [];
@@ -2183,8 +2300,6 @@ export async function verifyOfficialSetup(args: { configDir: string; engramBin: 
   else missing.push(plugin === null ? "plugin:missing" : "plugin:legacy-or-foreign");
   if (hasMcp) passed.push("mcp");
   else missing.push("mcp:missing");
-  if (hasStatusline) passed.push("statusline");
-  else missing.push("statusline:missing");
   if (duplicates) missing.push("duplicates:detected");
   if (unverifiable.length > 0) missing.push("config:unverifiable");
   if (missing.length === 0) {
@@ -2207,8 +2322,9 @@ registerOfficialSetupVerifier("opencode", verifyOfficialSetup);
 
 /**
  * Decide en filesystem real si el legacy puede retirarse. Solo `true` con
- * reemplazo oficial verificado (plugin + MCP + statusline); cualquier
- * ambiguity/foreign/custom bloquea y conserva el archivo en la misma ruta.
+ * reemplazo oficial verificado (plugin + MCP efectivo); cualquier
+ * ambiguity/foreign/custom bloquea y conserva el archivo en la misma ruta. El
+ * statusline v1 retirado no es requisito.
  */
 export async function shouldRetireLegacyEngram(args: { configDir: string }): Promise<{
   retire: boolean;
@@ -2224,13 +2340,12 @@ export async function shouldRetireLegacyEngram(args: { configDir: string }): Pro
       return { retire: false, reason: `ambiguous: config no verificable (${unverifiable.join("; ")}), se conserva` };
     }
     const hasMcp = checkOpencodeOfficialMcp(args.configDir);
-    const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
-    if (hasMcp && hasStatusline) {
-      return { retire: true, reason: "official verified: plugin + MCP + statusline en filesystem" };
+    if (hasMcp) {
+      return { retire: true, reason: "official verified: plugin + MCP efectivo en filesystem" };
     }
     return {
       retire: false,
-      reason: `ambiguous: plugin oficial sin MCP/statusline verificables (mcp=${hasMcp}, statusline=${hasStatusline})`,
+      reason: `ambiguous: plugin oficial sin MCP efectivo verificable (mcp=${hasMcp})`,
     };
   }
   if (isStackLegacyOpencodePluginContent(plugin)) {
@@ -2288,9 +2403,8 @@ export async function transferEngramOwnership(args: { configDir: string }): Prom
     };
   }
   const hasMcp = checkOpencodeOfficialMcp(args.configDir);
-  const hasStatusline = checkOpencodeOfficialStatusline(args.configDir);
-  const layers = ["plugin", ...(hasMcp ? ["mcp"] : ["mcp:missing"]), ...(hasStatusline ? ["statusline"] : ["statusline:missing"])];
-  if (!hasMcp || !hasStatusline) {
+  const layers = ["plugin", ...(hasMcp ? ["mcp"] : ["mcp:missing"])];
+  if (!hasMcp) {
     return {
       ownershipRetired: false,
       retired: false,
@@ -2298,7 +2412,7 @@ export async function transferEngramOwnership(args: { configDir: string }): Prom
       recreateOnSync: false,
       preserveOfficialOnUninstall: true,
       layers,
-      reason: `OpenCode: transferencia bloqueada (plugin oficial sin MCP/statusline verificables); se conserva el archivo oficial.`,
+      reason: `OpenCode: transferencia bloqueada (plugin oficial sin MCP efectivo verificable); se conserva el archivo oficial.`,
     };
   }
   // Archivo oficial intacto: sin rm ni rewrite. hooks/worktree se conservan
@@ -2311,6 +2425,6 @@ export async function transferEngramOwnership(args: { configDir: string }): Prom
     kept,
     recreateOnSync: false,
     preserveOfficialOnUninstall: true,
-    layers: ["plugin", "mcp", "statusline"],
+    layers: ["plugin", "mcp"],
   };
 };

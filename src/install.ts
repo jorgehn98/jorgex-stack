@@ -789,12 +789,19 @@ async function runOfficialSetupForInstall(args: {
   dryRun: boolean;
   targetDir?: string;
 }): Promise<OfficialSetupIfNeededResult> {
-  // Solo Claude necesita la comprobación de versión de Engram; Codex/OpenCode son
-  // gestionados por el proveedor. Ejecuta `--version` localmente, sin red ni
-  // estado personal; un resultado nulo/ilegible falla cerrado en el preflight
-  // Claude (binario intacto, antes de targets/backup/spawn).
+  // Claude y OpenCode consumen la versión detectada de Engram (preflight de MCP
+  // nativo); Codex/Pi son gestionados por el proveedor y no la necesitan. Solo el
+  // install real deliberado ejecuta `--version` localmente (sin red ni estado
+  // personal); dry-run/sync/target-dir no lo hacen. Un resultado nulo/ilegible
+  // falla cerrado antes de targets/backup/spawn, con el binario intacto.
+  const needsDetectedVersion = args.runtime === "claude-code" || args.runtime === "opencode";
   let detectedVersion: string | null = null;
-  if (args.runtime === "claude-code" && typeof args.engramBin === "string" && args.engramBin !== "") {
+  if (
+    needsDetectedVersion &&
+    shouldRunOfficialSetup({ command: args.command, dryRun: args.dryRun, targetDir: args.targetDir }) &&
+    typeof args.engramBin === "string" &&
+    args.engramBin !== ""
+  ) {
     try {
       detectedVersion = engramVersion(args.engramBin);
     } catch {
