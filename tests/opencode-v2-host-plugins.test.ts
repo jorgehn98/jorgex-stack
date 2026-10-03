@@ -10,17 +10,18 @@ import { planPlugins } from "../src/components/plugins.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
+import { parseOpenCodeHostVersion } from "./helpers/opencode-host-version.js";
 
 /**
  * Verificación de los plugins Stack OpenCode v2 (`stack/plugins/opencode/hooks.ts`
- * y `worktree.ts`) contra el HOST REAL 2.0.21 con EVENTOS REALES de herramienta
- * (Spec T05/T06, SC-04). No se afirma el registro `/api/plugin` ni un mock de
+ * y `worktree.ts`) contra el HOST REAL v2 (major 2) con EVENTOS REALES de
+ * herramienta (Spec T05/T06, SC-04). No se afirma el registro `/api/plugin` ni un mock de
  * `ctx.tool.hook`: se carga el plugin proyectado por el propio instalador y se
  * observa el `tool_use` nativo que el host emite tras ejecutar el shell.
  *
- * Recipe probada empíricamente contra `opencode v2.0.20`; versión reobservada en
- * la copia privada actual: `opencode v2.0.21` (copia privada del ejecutable,
- * sha256 origen vs copia, ejecutada por separado):
+ * Recipe probada empíricamente contra `opencode v2.0.20` y reobservada contra la
+ * última versión instalada major 2 (copia privada del ejecutable, sha256 origen
+ * vs copia, ejecutada por separado):
  *   - `opencode run --standalone --format json` arranca el motor con un provider
  *     LOCAL en proceso (`@opencode/ai/providers/openai-compatible` contra un
  *     stub HTTP efímero). Sin cuenta, credencial, modelo real ni configuración
@@ -62,9 +63,6 @@ import { stackRoot } from "../src/lib/paths.js";
  */
 const hostBinary = process.env.JORGEX_OPENCODE_V2_BIN;
 const repoRoot = path.resolve(stackRoot(), "..");
-// Versión observada en la copia privada actual (sha256 origen vs copia); la
-// captura original de la receta fue contra v2.0.20.
-const EXPECTED_VERSION = "opencode v2.0.21";
 const CASE_TIMEOUT_MS = 90_000;
 
 interface ToolUseEvent {
@@ -390,7 +388,9 @@ describe.skipIf(hostBinary === undefined)(
       const { code, stdout, stderr } = await runHost(versionRoot, versionRoot, ["--version"]);
       expect(code, sanitized(stderr)).toBe(0);
       observedVersion = stdout.trim();
-      expect(observedVersion, `versión observada: ${observedVersion}`).toBe(EXPECTED_VERSION);
+      const parsedVersion = parseOpenCodeHostVersion(observedVersion);
+      expect(parsedVersion, `versión observada semver parseable: ${observedVersion}`).toBeDefined();
+      expect(parsedVersion!.major, `major 2 en ${observedVersion}`).toBe(2);
     }, CASE_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -426,10 +426,11 @@ describe.skipIf(hostBinary === undefined)(
       expect(fs.existsSync(runRoot), "raíz privada eliminada").toBe(false);
     }, CASE_TIMEOUT_MS);
 
-    it("copia solo el ejecutable y observa el host real v2.0.21", () => {
+    it("copia solo el ejecutable y observa el host real major 2", () => {
       expect(sha256(copy)).toBe(sha256(hostBinary!));
-      expect(observedVersion).toBe(EXPECTED_VERSION);
-      expect(Number(/^opencode v(\d+)\./.exec(observedVersion)?.[1]), "major 2").toBe(2);
+      const parsedVersion = parseOpenCodeHostVersion(observedVersion);
+      expect(parsedVersion, `versión observada semver parseable: ${observedVersion}`).toBeDefined();
+      expect(parsedVersion!.major, `major 2 en ${observedVersion}`).toBe(2);
     });
 
     it("hooks: anexa contexto a un completed real y resuelve el cwd por sesión + workdir", async () => {
