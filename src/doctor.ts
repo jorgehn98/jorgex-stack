@@ -245,7 +245,7 @@ function reportBrowserControl(stateDir: string, configDir: string): number {
       );
     } else {
       p.log.warn(
-        `Browser Control: active ${active.version} verificado, pero su proyección nativa obligatoria no coincide: ${projectionProblems.join("; ")}. Ejecuta 'sync' para reproyectarla; no se adopta ni se repara automáticamente.`,
+        `Browser Control: active ${active.version} verificado, pero su proyección nativa obligatoria no coincide: ${projectionProblems.join("; ")}. Ejecuta 'jorgex-stack install --agents opencode' para reproyectarla; no se adopta ni se repara automáticamente.`,
       );
       problems++;
     }

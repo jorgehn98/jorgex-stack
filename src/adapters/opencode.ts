@@ -1331,7 +1331,7 @@ export const opencodeAdapter: Adapter = {
       const browserControl = ctx.browserControlInvocation;
       if (browserControl === undefined) {
         ctx.warnings.push(
-          "OpenCode: Browser Control pendiente — no hay una invocación MCP gestionada y verificada (launcher active), así que no se proyecta el MCP 'browser-control'. Reintenta sync cuando la verificación esté disponible: revisa o instala el launcher gestionado.",
+          "OpenCode: Browser Control pendiente — no hay una invocación MCP gestionada y verificada (launcher active), así que no se proyecta el MCP 'browser-control'. Reintenta con 'jorgex-stack install --agents opencode' cuando la verificación esté disponible: revisa o instala el launcher gestionado.",
         );
       } else {
         const existingBrowserControl = inContext(BROWSER_CONTROL_SERVER);
@@ -1360,7 +1360,7 @@ export const opencodeAdapter: Adapter = {
             entry["command"] = [browserControl.command, ...browserControl.args];
           } else {
             throw new Error(
-              "OpenCode: 'browser-control' es un MCP manual incompatible con el launcher Browser Control verificado (type/command/disabled/enabled/codemode); se conserva sin shadow ni sobrescritura. Revisa, retira o corrige esa entrada antes de reintentar sync.",
+              "OpenCode: 'browser-control' es un MCP manual incompatible con el launcher Browser Control verificado (type/command/disabled/enabled/codemode); se conserva sin shadow ni sobrescritura. Revisa, retira o corrige esa entrada antes de reintentar con 'jorgex-stack install --agents opencode'.",
             );
           }
         }
