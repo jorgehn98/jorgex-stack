@@ -54,10 +54,6 @@ const tempRoots: string[] = [];
 afterEach(() => {
   vi.clearAllMocks();
   for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-  for (const key of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG_DIR"] as const) {
-    const leaked = process.env[key];
-    if (typeof leaked === "string" && leaked.includes(os.tmpdir())) delete process.env[key];
-  }
 });
 
 function tempDir(prefix: string): string {
@@ -67,13 +63,26 @@ function tempDir(prefix: string): string {
 }
 
 async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<T> {
-  const restore = snapshotEnv(["HOME", "USERPROFILE"]);
+  // Aísla del padre: snapshot/restore de las cinco claves que este flujo puede
+  // tocar; los tres overrides se limpian ANTES de los imports para que el
+  // runtime detectado no herede la config personal del proceso.
+  const restore = snapshotEnv([
+    "HOME",
+    "USERPROFILE",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "OPENCODE_CONFIG_DIR",
+  ]);
   process.env.HOME = homeDir;
   process.env.USERPROFILE = homeDir;
+  delete process.env.CODEX_HOME;
+  delete process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.OPENCODE_CONFIG_DIR;
   try {
     vi.resetModules();
     return await run();
   } finally {
+    // Restaurar ANTES de que afterEach borre la raíz temporal.
     restore();
     vi.resetModules();
   }
