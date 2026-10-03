@@ -25,6 +25,7 @@ export function formatTokens(tokens) {
   const buckets = [tokens.input, tokens.output, tokens.reasoning, tokens.cache?.read, tokens.cache?.write]
   if (buckets.some((value) => !Number.isFinite(value) || value < 0)) return undefined
   const total = buckets.reduce((sum, value) => sum + value, 0)
+  if (!Number.isFinite(total)) return undefined
   if (total >= 1000000) return `${(total / 1000000).toFixed(1)}m tok`
   if (total >= 1000) return `${(total / 1000).toFixed(1)}k tok`
   return `${Math.round(total)} tok`

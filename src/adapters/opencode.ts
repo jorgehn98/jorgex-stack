@@ -845,17 +845,15 @@ function seedCliDefaults(
       let node = target;
       for (let index = 0; index < leaf.segments.length - 1; index++) {
         const key = leaf.segments[index]!;
-        const current = node[key];
-        if (current === undefined) {
-          const block: Record<string, unknown> = {};
-          node[key] = block;
-          claimFieldId(ctx.ownedPrimaryModelFields, ownership, ownedField(CLI_FILENAME, ...leaf.segments.slice(0, index + 1)));
-          changed = true;
-          node = block;
-        } else {
-          // Validado en planCliConfig: todo contenedor presente es un objeto.
-          node = objectValue(current)!;
-        }
+        const absent = node[key] === undefined;
+        node = ensureOwnedPrimaryObject(
+          node,
+          key,
+          ownedField(CLI_FILENAME, ...leaf.segments.slice(0, index + 1)),
+          ctx.ownedPrimaryModelFields,
+          ownership,
+        );
+        if (absent) changed = true;
       }
       const leafKey = leaf.segments[leaf.segments.length - 1]!;
       if (node[leafKey] !== undefined) continue;
