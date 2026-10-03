@@ -96,6 +96,7 @@ import {
 } from "./lib/playwright-capability.js";
 import {
   browserPreferenceErrors,
+  devtoolsMcpPreferenceError,
   devtoolsMcpPreferenceFile,
   loadDevtoolsMcpObservation,
   loadDevtoolsMcpOwnership,
@@ -467,13 +468,228 @@ export function diffPlan(plan: FileAction[]): PlannedChange[] {
   });
 }
 
-function applyChanges(changes: PlannedChange[], onOwnershipWritten?: (action: FileAction) => void): void {
+function applyChanges(
+  changes: PlannedChange[],
+  onWritten?: (action: FileAction) => void,
+  onOwnershipWritten?: (action: FileAction) => void,
+): void {
   for (const { action } of changes) {
     if (action.kind === "write") {
       writeText(action.target, action.content);
+      onWritten?.(action);
       if (action.mcpOwnership !== undefined || action.primaryModelOwnership !== undefined) onOwnershipWritten?.(action);
-    } else copyFile(action.source, action.target);
+    } else {
+      copyFile(action.source, action.target);
+      onWritten?.(action);
+    }
   }
+}
+
+/** Identidad física (dev/ino) de un leaf regular: evidencia de no-sustitución. */
+interface LeafIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+interface OwnLeaf {
+  readonly exists: boolean;
+  readonly bytes: Buffer | null;
+  readonly identity: LeafIdentity | null;
+}
+
+/**
+ * Lee un leaf de la propia proyección exigiendo archivo regular, un solo enlace
+ * y sin seguir enlaces. ENOENT es ausencia legítima (target nuevo); cualquier
+ * otro error (EACCES/EIO/enlace/leaf inseguro) bloquea la transacción antes de
+ * escribir. Nunca sigue un alias del usuario.
+ */
+function readOwnLeaf(target: string): OwnLeaf {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false, bytes: null, identity: null };
+    throw new Error(`no se pudo inspeccionar ${target} antes de la proyección (${error instanceof Error ? error.message : String(error)})`);
+  }
+  if (stat.isSymbolicLink()) throw new Error(`${target}: es un enlace simbólico; no se sigue ni se sobrescribe.`);
+  if (!stat.isFile() || stat.nlink !== 1) throw new Error(`${target}: no es un archivo regular de un solo enlace; no se sobrescribe.`);
+  const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  let fd: number;
+  try {
+    fd = fs.openSync(target, fs.constants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw new Error(`${target}: no se pudo abrir sin seguir enlaces (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1) throw new Error(`${target}: leaf inseguro al abrir.`);
+    if (opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error(`${target}: cambió durante la inspección.`);
+    return { exists: true, bytes: fs.readFileSync(fd), identity: { dev: opened.dev, ino: opened.ino } };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Estado pre-escritura y evidencia de la escritura propia de un target del plan. */
+interface ProjectionTargetSnapshot {
+  readonly target: string;
+  readonly existed: boolean;
+  readonly previous: Buffer | null;
+  readonly previousIdentity: LeafIdentity | null;
+  readonly expected: Buffer;
+  written: boolean;
+  afterIdentity: LeafIdentity | null;
+}
+
+/**
+ * Captura el estado pre-escritura y la salida esperada de los targets exactos
+ * que `applyChanges` va a modificar. Solo lee destinos del propio plan; no
+ * explora datos ajenos. Un leaf inseguro o una fuente ilegible lanza y bloquea
+ * la transacción antes de cualquier escritura.
+ */
+function snapshotProjectionTargets(changes: readonly PlannedChange[]): Map<string, ProjectionTargetSnapshot> {
+  const snapshots = new Map<string, ProjectionTargetSnapshot>();
+  for (const { action } of changes) {
+    const target = path.resolve(action.target);
+    if (snapshots.has(target)) continue;
+    let expected: Buffer;
+    try {
+      expected = action.kind === "write" ? Buffer.from(action.content) : fs.readFileSync(action.source);
+    } catch (error) {
+      throw new Error(`no se pudo leer la salida esperada de ${target} (${error instanceof Error ? error.message : String(error)})`);
+    }
+    const leaf = readOwnLeaf(target);
+    snapshots.set(target, {
+      target,
+      existed: leaf.exists,
+      previous: leaf.bytes,
+      previousIdentity: leaf.identity,
+      expected,
+      written: false,
+      afterIdentity: null,
+    });
+  }
+  return snapshots;
+}
+
+/** Claim de ownership que esta operación declara/escribe, con su valor previo. */
+interface OwnershipClaimRecord {
+  readonly runtime: RuntimeId;
+  readonly configDir: string;
+  readonly kind: "mcp" | "primary";
+  readonly server?: string;
+  readonly field?: string;
+  readonly previous: boolean;
+  readonly written: boolean;
+}
+
+/**
+ * Registra el valor previo de cada claim ANTES de que se persista (el callback
+ * de escritura corre antes del de ownership). Solo la primera escritura de un
+ * claim fija el valor previo; las siguientes reescriben el mismo valor.
+ */
+function recordOwnershipClaims(
+  action: FileAction,
+  runtime: RuntimeId,
+  configDir: string,
+  records: Map<string, OwnershipClaimRecord>,
+): void {
+  if (action.kind !== "write") return;
+  for (const change of action.mcpOwnership ?? []) {
+    const key = `mcp:${change.server}`;
+    if (records.has(key)) continue;
+    records.set(key, {
+      runtime,
+      configDir,
+      kind: "mcp",
+      server: change.server,
+      previous: loadDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), runtime, change.server),
+      written: change.owned,
+    });
+  }
+  for (const change of action.primaryModelOwnership ?? []) {
+    const key = `primary:${change.field}`;
+    if (records.has(key)) continue;
+    records.set(key, {
+      runtime,
+      configDir,
+      kind: "primary",
+      field: change.field,
+      previous: loadPrimaryModelOwnership(primaryModelOwnershipFile(), runtime, configDir).has(change.field),
+      written: change.owned,
+    });
+  }
+}
+
+/** ¿Sigue siendo observable como propia la escritura de este target? */
+function targetRecoverable(snap: ProjectionTargetSnapshot): boolean {
+  if (snap.afterIdentity === null) return false;
+  let leaf: OwnLeaf;
+  try {
+    leaf = readOwnLeaf(snap.target);
+  } catch {
+    return false;
+  }
+  if (!leaf.exists || leaf.bytes === null || leaf.identity === null) return false;
+  if (leaf.identity.dev !== snap.afterIdentity.dev || leaf.identity.ino !== snap.afterIdentity.ino) return false;
+  return leaf.bytes.equals(snap.expected);
+}
+
+/** ¿Sigue el claim en el valor que esta operación escribió? */
+function claimRecoverable(record: OwnershipClaimRecord): boolean {
+  if (record.previous === record.written) return true;
+  if (record.kind === "mcp") {
+    const file = devtoolsMcpPreferenceFile();
+    if (devtoolsMcpPreferenceError(file) !== null) return false;
+    return loadDevtoolsMcpOwnership(file, record.runtime, record.server!) === record.written;
+  }
+  const file = primaryModelOwnershipFile();
+  if (primaryModelOwnershipError(file) !== null) return false;
+  return loadPrimaryModelOwnership(file, record.runtime, record.configDir).has(record.field!) === record.written;
+}
+
+function restoreTarget(snap: ProjectionTargetSnapshot): boolean {
+  try {
+    if (snap.existed) fs.writeFileSync(snap.target, snap.previous!);
+    else fs.rmSync(snap.target, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Inverso exacto de los claims propios: nunca reescribe el ledger completo. */
+function restoreClaim(record: OwnershipClaimRecord): boolean {
+  if (record.previous === record.written) return true;
+  try {
+    if (record.kind === "mcp") {
+      saveDevtoolsMcpOwnership(devtoolsMcpPreferenceFile(), record.runtime, record.server!, record.previous);
+    } else {
+      savePrimaryModelOwnership(primaryModelOwnershipFile(), record.runtime, record.configDir, record.field!, record.previous);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recuperación acotada en dos fases: primero se verifica que TODA escritura y
+ * claim propios sigan observables como propios; solo entonces se muta. Si algo
+ * derivó a ajeno o el ledger no es verificable, no se toca nada y se conserva
+ * el estado observado. No promete atomicidad comprobación+syscall (cota
+ * mismo-UID).
+ */
+function recoverProjection(
+  snapshots: readonly ProjectionTargetSnapshot[],
+  claims: readonly OwnershipClaimRecord[],
+): boolean {
+  const written = snapshots.filter((snap) => snap.written);
+  for (const snap of written) if (!targetRecoverable(snap)) return false;
+  for (const record of claims) if (!claimRecoverable(record)) return false;
+  for (const snap of written) if (!restoreTarget(snap)) return false;
+  for (const record of claims) if (!restoreClaim(record)) return false;
+  return true;
 }
 
 /**
@@ -1828,24 +2044,78 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
     }
 
-    const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
-    if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
-
-    applyChanges(changes, useManifest ? (action) => persistConfigurationOwnershipChanges(id, configDir, [action]) : undefined);
-
-    // Verificación de idempotencia: re-planificar debe dar cero cambios.
-    // Huérfanos diferidos hasta verificación oficial (nada irreversible
-    // antes del setup).
-    const verifiedOwnedMcpServers = new Set(ctx.ownedMcpServers ?? []);
-    for (const action of plan) {
-      if (action.kind !== "write") continue;
-      for (const change of action.mcpOwnership ?? []) {
-        if (change.owned) verifiedOwnedMcpServers.add(change.server);
-        else verifiedOwnedMcpServers.delete(change.server);
+    // Transacción acotada de proyección: con una promoción Browser Control
+    // pendiente, un fallo de backup/escritura no debe dejar active B/config A
+    // ni escapar como excepción no controlada. Los snapshots y la recuperación
+    // se preparan DENTRO de la guarda: un leaf inseguro o un error de FS se
+    // controla antes de cualquier escritura y no se omite ningún target.
+    let projectionSnapshots: Map<string, ProjectionTargetSnapshot> | null = null;
+    const ownershipRecords = new Map<string, OwnershipClaimRecord>();
+    const markWritten = (action: FileAction): void => {
+      const snap = projectionSnapshots?.get(path.resolve(action.target));
+      if (snap !== undefined) {
+        snap.written = true;
+        try {
+          const stat = fs.lstatSync(snap.target);
+          snap.afterIdentity = { dev: stat.dev, ino: stat.ino };
+        } catch {
+          snap.afterIdentity = null;
+        }
       }
+      if (id === "opencode") recordOwnershipClaims(action, id, configDir, ownershipRecords);
+    };
+    let dirty: PlannedChange[] = [];
+    try {
+      if (browserControlRollback !== undefined) projectionSnapshots = snapshotProjectionTargets(changes);
+      const backup = useManifest ? createBackup([...updates.map((c) => c.action.target), ...orphans], `install-${id}`) : null;
+      if (backup) p.log.info(`Backup: ${backup.id} (${backup.files.length} archivos)`);
+
+      applyChanges(
+        changes,
+        browserControlRollback === undefined ? undefined : markWritten,
+        useManifest ? (action) => persistConfigurationOwnershipChanges(id, configDir, [action]) : undefined,
+      );
+
+      // Verificación de idempotencia: re-planificar debe dar cero cambios.
+      // Huérfanos diferidos hasta verificación oficial (nada irreversible
+      // antes del setup).
+      const verifiedOwnedMcpServers = new Set(ctx.ownedMcpServers ?? []);
+      for (const action of plan) {
+        if (action.kind !== "write") continue;
+        for (const change of action.mcpOwnership ?? []) {
+          if (change.owned) verifiedOwnedMcpServers.add(change.server);
+          else verifiedOwnedMcpServers.delete(change.server);
+        }
+      }
+      const verifyCtx: InstallContext = { ...ctx, warnings: [], ownedMcpServers: verifiedOwnedMcpServers };
+      dirty = diffPlan(buildPlan(adapter, verifyCtx)).filter((d) => d.status !== "unchanged");
+    } catch (error) {
+      // Sin promoción Browser Control pendiente se conserva la propagación
+      // original; con ella, el fallo tras promover B se recupera de forma
+      // acotada para no dejar el active/config inconsistentes.
+      if (browserControlRollback === undefined) throw error;
+      p.log.error(
+        `${adapter.name}: fallo al aplicar la proyección (${error instanceof Error ? error.message : String(error)}); se verifica la recuperación acotada antes de restaurar el active previo.`,
+      );
+      exitCode = 1;
+      reportStatus(adapter.name, "failed");
+      // Un snapshot fallido antes de escribir deja el estado intacto en A: el
+      // rollback es seguro. Con escrituras parciales, solo se restaura el active
+      // si TODA la evidencia propia (targets y claims) se pudo revertir; si no,
+      // se conserva el estado observado y se reportan ambos errores sin declarar
+      // coherencia falsa.
+      const recovered = projectionSnapshots === null
+        ? true
+        : recoverProjection([...projectionSnapshots.values()], [...ownershipRecords.values()]);
+      if (recovered) {
+        await rollbackBrowserControlProjection();
+      } else {
+        p.log.error(
+          `${adapter.name}: la proyección parcial no pudo recuperarse por completo (drift ajeno, leaf inseguro o ledger no verificable); se conserva el estado observado y NO se restaura el active para no declarar una coherencia falsa. Revisa el estado gestionado antes de reintentar.`,
+        );
+      }
+      continue;
     }
-    const verifyCtx: InstallContext = { ...ctx, warnings: [], ownedMcpServers: verifiedOwnedMcpServers };
-    const dirty = diffPlan(buildPlan(adapter, verifyCtx)).filter((d) => d.status !== "unchanged");
     if (dirty.length > 0) {
       p.log.error(`${adapter.name}: verificación de idempotencia FALLÓ (${dirty.length} acciones inestables).`);
       for (const d of dirty.slice(0, 10)) p.log.message(`  ! ${d.action.target}`);
