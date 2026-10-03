@@ -120,6 +120,58 @@ modificada, la ruta se conserva sin claim y sin reescritura: una unidad
 ajena no pasa a ser propiedad de Stack por coincidencia. Stack no
 reescribe, no reinicia ni repara una unidad existente ajena.
 
+**Unidad existente owned: solo autenticar; no habilitar ni reescribir.**
+Cuando la ruta fija ya contiene la unidad propia autenticada
+(`ensureBrowserControlServiceUnit` retorna `unchanged`), Stack solo
+**autentica** contra su binding, estampa y bytes: nunca la arranca, ni
+la reinicia, ni la recarga, ni la reescribe. La verificación siguiente
+es de solo lectura: `inspectOwnedServiceUnitRetirement` consulta el
+manager + `/version` (pid, version, build) y exige que la invocación
+MCP del guard retenido por el binding coincida exactamente con la
+invocación efectiva del active/MCP actual
+(`authenticateOwnedServiceUnitInvocation`). Solo cuando esa
+verificación acredita `pid`, `version`, `buildId` y `MainPID` estables,
+y la invocación del binding reproduce el comando/args del active,
+Stack completa únicamente los campos del entorno de autostart propio
+que aún faltan (`reconcileVerifiedBrowserControlEnvironment`) y deja
+constancia del claim tras el readback. **No** se habilita, ni se
+arranca, ni se recarga, ni se reescribe la unidad: la autoridad del
+servicio externo ya está acreditada en lectura y la unidad propia
+queda exactamente como estaba.
+
+**Unidad histórica A distinta del active/MCP B.** Si la invocación del
+binding (comando/args del guard retenido) **no** coincide con la del
+active/MCP efectivo, la unidad histórica A permanece pendiente y Stack
+**no fuerza** `BROWSER_CONTROL_AUTOSTART=false` sobre B. La unidad no
+se reescribe ni se arranca: el usuario decide cómo alinear el
+supervisor (rotación manual o coordinada con el relay externo). Stack
+no hace `autoRestart`, no impone linger, no relanza el relay por su
+cuenta. Si la unidad A sirve una release distinta de la del active/MCP
+B, no puede acreditar el servicio externo para B; la guía no
+recomienda "instalar" para forzar la sustitución — solo la rotación
+deliberada del active/MCP cerrará esa brecha.
+
+**Puerto, probe y entorno, fuente única MCP preservado + binding.**
+El puerto efectivo del supervisor y del `environment` del MCP se
+resuelve con `resolvePreservedBrowserControlRelayPort` sobre la
+configuración OpenCode (entrada nativa `mcp.servers` o legacy
+`mcp.<nombre>`, solo lectura). En la captura del binario
+(`prepareBrowserControlRuntime`) y en el preflight del servicio, el
+puerto del MCP preservado manda: si está declarado, se conserva y se
+usa como `relayPort`; en su defecto se usa el `port` del binding de
+servicio autenticado por el manifest; y solo si ninguno está
+disponible se conserva el contrato anterior
+(`resolveBrowserControlRelayPort` lee `BROWSER_CONTROL_PORT` del
+proceso, default 19989). La autoridad del puerto es **una** —
+preservado o binding, no shell literal — y Stack no impone reglas
+sobre `--port` u otros literales que el proveedor del relé pueda
+aceptar en su CLI: `jorgex-stack browser control <args>` reenvía los
+argumentos del proveedor sin restricción nueva
+(`runManagedBrowserControlCommand` solo verifica launcher + árbol +
+no-mcp). Si el puerto preservado y el del binding difieren en la
+captura, `prepareBrowserControlRuntime` devuelve `unavailable` y no
+se adquiere ni se promueve.
+
 **`FALSE` solo con evidencia completa.** El marcador
 `BROWSER_CONTROL_AUTOSTART=false` solo se proyecta (en el `environment`
 del MCP, no en la unidad) cuando el supervisor
@@ -205,6 +257,43 @@ reentra en la fase ya acreditada y continúa desde ahí: no se repite
 edita el hash, nunca se borra el DB y nunca se descarta la autoridad
 del row para "limpiar" un estado incierto.
 
+Las fases conservan el **inventario y el ledger completos** del row
+hasta el `resource cleanup` final: el manifest preserva `owned`,
+`serviceUnit`, `browserControlAutostart` y la fase mientras la
+limpieza no haya llegado a `manager-reloaded`. Una fase pendiente
+**interrumpe** la limpieza ordinaria del runtime: el bucle principal
+de `uninstall` no poda huérfanos, no retira archivos del configDir y
+no borra el manifest del row hasta que la fase se cierre, porque
+borrar esos recursos rompería la fuente que acredita la retirada.
+
+**Authority archivo vs. authority ENV.** La unidad de servicio (el
+archivo en `~/.config/systemd/user/`) requiere cuatro condiciones
+concurrentes para ser tratada como owned:
+- **claim OWN en el manifest**: la ruta fija del XDG config efectivo
+  está incluida en `runtime.opencode.owned` del manifest, y el
+  `configDir` registrado coincide con el detectado por
+  `assertOpenCodeManifestCoherence` (ownership ambiguo si difiere);
+- **perfil coherente**: `configDir` y `serviceConfigBase` derivan del
+  mismo XDG config efectivo (la unidad no se considera del perfil);
+- **binding íntegro**: `serviceUnit` declara exactamente los campos
+  requeridos (`schemaVersion`, `releaseDirectory`, `receiptSha256`,
+  `unitSha256`, `nodePath` absoluto, `port` 1–65535), validado por
+  `assertManagedBrowserControlServiceBinding`;
+- **bytes físicos propios**: el `authenticateOwnedServiceUnitBytes`
+  autentica el archivo contra el guard reconstruido a partir de la
+  release retenida del binding.
+
+La unidad no se acredita ni se opera por **igualdad parcial** ni por
+analogía: una unidad ajena, un binding distinto o un archivo con
+bytes modificados se conservan sin claim y sin reescritura. El
+`environment` del MCP (claim `BROWSER_CONTROL_AUTOSTART` +
+`BROWSER_CONTROL_PORT`) es independiente y vive en la entrada del
+servidor nativo: tras una rotación A→B o un primer install parcial
+sin estampa previa acreditada, la unidad sigue siendo removable por
+su propio archivo, aunque el ENV no deje constancia de claim. Esa
+separación es deliberada: el archivo autoriza el borrado físico del
+servicio, el ENV autoriza la configuración del cliente.
+
 **Después de los efectos.** El estado "preservar unidad" solo aplica
 antes del `unlink` del archivo. Una vez retirado el archivo de la
 unidad, la unidad ya no existe en disco: el manifest conserva el
@@ -221,6 +310,51 @@ proceso, se conserva sin mutar: una sustitución detectada no se
 revierte con borrado a ciegas. El binding retenido (autenticado contra
 el receipt y el árbol verificado) es la única autoridad que autoriza
 la retirada de bytes propios.
+
+**Proyección: fallo antes de escribir de la config B.** Cuando la
+adquisición/promoción ha devuelto `ready` con `previous`, el pointer
+operativo puede haber pasado de A a B **antes** de que se escriba la
+configuración B: en ese punto, ningún archivo del configDir B ni del
+MCP ha sido tocado, pero el namespace activo ya apunta a B. Si una
+verificación posterior falla **antes** de cualquier escritura de la
+proyección B (snapshot dev/ino + autenticación de identidad física +
+owning-claim), la recuperación **pre-write** ejecuta el rollback
+disponible: `rollbackManagedBrowserActivation` restaura el pointer
+del active A contra el receipt autenticado de A y conserva la
+configuración A intacta (porque ningún byte de B se ha escrito). El
+candidato verificado B **se retiene** en su namespace candidato
+(`.browser-control-candidate/`); no se pierde ni se reescribe; un
+futuro `install`/`sync` puede reutilizarlo si la verificación de B
+sigue válida. Un leaf inseguro, un mismatch de identidad o un ledger
+no verificable bloquean el avance; el caller ve un diagnóstico
+accionable sin que se declare éxito. La sección `Lo que no se ha
+verificado` describe qué acredita el guard.
+
+**Proyección: fallo tras escrituras propias.** Tras las primeras
+escrituras propias, la recuperación es **estricta**: solo se
+restaurará el active previo (`rollbackBrowserControlProjection`) si
+**toda** la evidencia propia —cada target por su identidad física
+(dev/ino) y sus bytes, y cada claim de ownership a nivel de campo—
+puede revertirse por completo. Los snapshots capturan
+`written`/`afterIdentity`/`beforeIdentity` por target; los
+ownership-claims se registran antes y durante la escritura.
+Las claves/preferencias del usuario ajenas a esos claims se preservan
+verbatim: nunca se reclama un campo foráneo por coincidencia, y la
+recuperación no toca claves ajenas al row del runtime. Si alguna
+pieza no puede revertirse, `recoverProjection` falla y Stack
+**no** activa el rollback: conserva el estado observado y reporta el
+diagnóstico primario y la recuperación pendiente.
+
+El modelo de estados preserva **los hechos observados**, no promete
+autocuración: no se afirma que el siguiente `install`/`sync`
+resuelva el conflicto sin intervención. El caller debe revisar el
+diagnóstico, resolver el conflicto de evidencia (por ejemplo: un
+archivo escrito por un escritor externo, una unidad reaparecida con
+bytes ajenos, un profile XDG no alineado), restaurar el estado del
+supervisor o de los receipts cuando proceda, y reintentar el comando
+apropiado. Sin una recuperación probada, Stack no declara "Hecho",
+no edita hashes, no borra la DB ni hace `kill` del proceso por su
+cuenta.
 
 **Datos que uninstall no elimina.** Stack no toca la DB ni el binario de
 Engram, ni el árbol retenido del candidato, ni los perfiles del
