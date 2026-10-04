@@ -1402,8 +1402,9 @@ async function authenticateExistingOpencodePlugin(args: { configDir: string; eng
 
 /**
  * Integración real para `runInstall`: comprobación solo en install + binario
- * absoluto + verificador registrado + comprobación previa de versión para
- * Claude. Los saltos intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
+ * absoluto + verificador registrado + preflight de versión para Claude
+ * (>=2.0.0) y para OpenCode (core nativo V2, major mínimo). Los saltos
+ * intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
  * En install real, runtime desconocido, verificador ausente o binario no
  * absoluto devuelven fallo explícito (`ran:true, ok:false`), nunca skip
  * silencioso. Codex/Pi son gestionados por el proveedor: nunca bloqueados por

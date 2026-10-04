@@ -96,6 +96,7 @@ interface Harness {
   hooksTarget: string;
   engramBin: string;
   engramInvoked: string;
+  engramSetup: string;
   install: typeof import("../src/install.js");
   uninstall: typeof import("../src/uninstall.js");
   readManifest: typeof import("../src/lib/manifest.js").readManifest;
@@ -112,7 +113,7 @@ async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise
   fs.mkdirSync(configDir, { recursive: true });
   fs.mkdirSync(externalDir, { recursive: true });
   fs.mkdirSync(tmpDir, { recursive: true });
-  const { bin: engramBin, invokedMarker: engramInvoked } = seedFakeEngram(home);
+  const { bin: engramBin, invokedMarker: engramInvoked, setupMarker: engramSetup } = seedFakeEngram(home);
 
   const restore = snapshotEnv([
     "HOME",
@@ -176,6 +177,7 @@ async function withIsolatedOpenCode(run: (h: Harness) => Promise<void>): Promise
         hooksTarget: path.join(configDir, "plugins", "hooks.ts"),
         engramBin,
         engramInvoked,
+        engramSetup,
         install,
         uninstall,
         readManifest,
@@ -214,6 +216,12 @@ describe("[T07-delta] install/uninstall no pisan ni borran un owned modificado",
       expect(firstExit, "install real sigue saliendo 1 por el prerrequisito Engram").toBe(1);
       expect(ownedPaths(h), "el manifest coherente debe reclamar hooks.ts").toContain(path.resolve(h.hooksTarget));
 
+      // Baseline del sondeo legítimo del primer install (`--version`, nunca
+      // `setup`): el segundo intento bloqueado no debe añadir ninguna invocación.
+      const engramBaseline = fs.readFileSync(h.engramInvoked);
+      expect(engramBaseline.toString("utf8").trim(), "el primer install solo sondea `--version` sin `setup`").toBe("--version");
+      expect(fs.existsSync(h.engramSetup), "el primer install no ejecuta `engram setup`").toBe(false);
+
       const modified = "// modificación del usuario sobre un recurso owned\nexport default {};\n";
       fs.writeFileSync(h.hooksTarget, modified);
       const modifiedBytes = fs.readFileSync(h.hooksTarget);
@@ -226,7 +234,11 @@ describe("[T07-delta] install/uninstall no pisan ni borran un owned modificado",
       ).toBe(true);
       expect(ownedPaths(h), "el ledger de propiedad debe conservarse").toContain(path.resolve(h.hooksTarget));
       expect(backupFiles(h.home), "un recurso ambiguo se bloquea antes de crear backups").toEqual([]);
-      expect(fs.existsSync(h.engramInvoked), "Engram no debe invocarse").toBe(false);
+      expect(
+        fs.readFileSync(h.engramInvoked).equals(engramBaseline),
+        "el bloqueo por ownership no debe añadir ninguna invocación nueva de Engram",
+      ).toBe(true);
+      expect(fs.existsSync(h.engramSetup), "el bloqueo por ownership no debe ejecutar `engram setup`").toBe(false);
     });
   });
 

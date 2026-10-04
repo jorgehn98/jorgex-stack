@@ -1951,17 +1951,19 @@ export const opencodeAdapter: Adapter = {
 };
 
 /**
- * Transferencia de ownership OpenCode al plugin oficial.
+ * Transferencia de ownership OpenCode al plugin oficial v2 nativo.
  *
  * `engram setup opencode` reemplaza el contenido en la MISMA ruta
  * `plugins/engram.ts` (no es un archivo nuevo) + registra MCP exacto y
- * statusline. La transferencia verifica esas tres capas en filesystem real y
- * retira solo ownership/manifest Stack: deja el archivo oficial intacto,
- * conserva `hooks.ts`/`worktree.ts` y plugins ajenos, preserva JSONC/config
- * ajena y evita recreación en sync/uninstall. Ambiguity/custom bloquea y
- * conserva el custom. OpenCode 2 fuera de scope (sin claims ni adapter v2).
+ * el statusline `opencode-subagent-statusline` que la reconciliación retira.
+ * La transferencia verifica esas capas en filesystem real y retira solo
+ * ownership/manifest Stack: deja el archivo oficial intacto, conserva
+ * `hooks.ts`/`worktree.ts` y plugins ajenos, preserva JSONC/config ajena y
+ * evita recreación en sync/uninstall. Ambiguity/custom bloquea y conserva el
+ * custom.
  *
- * Sin booleanos declarativos: todo se deriva de paths/manifest reales.
+ * Devuelve señales booleanas (`ownershipRetired`/`retired`/`recreateOnSync`/
+ * `preserveOfficialOnUninstall`) derivadas de paths/manifest reales.
  */
 
 const OPENCODE_STACK_KEPT_PLUGINS = ["hooks.ts", "worktree.ts"] as const;
@@ -2281,9 +2283,9 @@ export function checkOpencodeDuplicates(configDir: string): boolean {
 /**
  * Verificador oficial OpenCode por capas (solo lectura, registrado en T12).
  * Capas: plugin (misma ruta, contenido oficial vs legacy canónico) y MCP
- * efectivo (nativo/legacy, habilitado). El statusline v1 retirado no es
- * requisito de verificación V2. Preserva JSONC/config ajena; sin claim de
- * carga en runtime.
+ * efectivo (nativo/legacy, habilitado). El statusline
+ * `opencode-subagent-statusline` retirado no es requisito de verificación V2.
+ * Preserva JSONC/config ajena; sin claim de carga en runtime.
  */
 export async function verifyOfficialSetup(args: { configDir: string; engramBin: string }): Promise<{
   ok: boolean;
@@ -2326,7 +2328,7 @@ registerOfficialSetupVerifier("opencode", verifyOfficialSetup);
  * Decide en filesystem real si el legacy puede retirarse. Solo `true` con
  * reemplazo oficial verificado (plugin + MCP efectivo); cualquier
  * ambiguity/foreign/custom bloquea y conserva el archivo en la misma ruta. El
- * statusline v1 retirado no es requisito.
+ * statusline `opencode-subagent-statusline` retirado no es requisito.
  */
 export async function shouldRetireLegacyEngram(args: { configDir: string }): Promise<{
   retire: boolean;

@@ -1715,8 +1715,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // fuente en vez de volver a leer `BROWSER_CONTROL_PORT` del proceso.
   let browserControlServicePort: number | undefined;
   // El artifact de servicio solo se materializa si la proyección OpenCode quedó
-  // aplicada en disco (idempotente o recién escrita); el setup oficial v1/v2
-  // pendiente no la invalida.
+  // aplicada en disco (idempotente o recién escrita); el setup oficial Engram
+  // (nativo v2) pendiente no la invalida.
   let opencodeProjectionApplied = false;
   let opencodeConfigDir: string | undefined;
   // Decisión del preflight A→B (solo OpenCode/Linux): se calcula una vez antes
