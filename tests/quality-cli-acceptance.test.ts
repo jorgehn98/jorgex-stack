@@ -8,54 +8,15 @@ import {
   cleanupOwnedResourcesOrThrow,
   registerOwnedResourceCleanup,
   runBoundedProcess,
-  type BoundedProcessResult,
   type CliResult,
 } from "./helpers/bounded-process.js";
-import { prepareRepoBuildRun, removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
+import { removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
 const CLI_TIMEOUT_MS = 10_000;
-const BUILD_TIMEOUT_MS = 30_000;
-const PNPM_VERSION_CHECK_TIMEOUT_MS = 10_000;
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
-
-async function buildDist(): Promise<void> {
-  // Owned-resource owner armed before the first root is created.
-  releaseBuildRootsCleanup = registerOwnedResourceCleanup("acceptance-temp-roots", () =>
-    removeTemporaryRoots(temporaryRoots),
-  );
-  const prepared = await prepareRepoBuildRun({
-    repoRoot: REPO_ROOT,
-    env: process.env,
-    runProcess: runBoundedProcess,
-    versionCheckTimeoutMs: PNPM_VERSION_CHECK_TIMEOUT_MS,
-    registerTempRoot: (root) => temporaryRoots.push(root),
-  });
-  let result: BoundedProcessResult;
-  try {
-    result = await runBoundedProcess(prepared.invocation, {
-      cwd: REPO_ROOT,
-      env: prepared.env,
-      timeoutMs: BUILD_TIMEOUT_MS,
-    });
-  } catch (error) {
-    throw new Error(`pnpm build failed to start: ${errorMessage(error)}`);
-  }
-
-  if (result.error === undefined && !result.timedOut && result.status === 0) return;
-
-  const details = [
-    result.timedOut ? `timeout after ${BUILD_TIMEOUT_MS}ms` : undefined,
-    result.error?.message,
-    result.status === null ? undefined : `exit status: ${result.status}`,
-    result.signal === null ? undefined : `signal: ${result.signal}`,
-    result.stdout,
-    result.stderr,
-  ].filter((value): value is string => value !== undefined && value !== "");
-  throw new Error(`pnpm build failed${details.length === 0 ? "" : `:\n${details.join("\n")}`}`);
-}
 
 type PlanCommand = {
   controlId: string;
@@ -132,7 +93,7 @@ type QualityReceipt = {
 };
 
 const temporaryRoots: string[] = [];
-let releaseBuildRootsCleanup: (() => void) | undefined;
+let releaseRootsCleanup: (() => void) | undefined;
 
 function createLayout(): TestLayout {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-quality-cli-"));
@@ -232,10 +193,6 @@ function qualityPlan(command: PlanCommand, profile: QualityProfile = "routine"):
     controls: [{ id: command.controlId, requirement: "required" }],
     commands: [command],
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 async function runQuality(
@@ -364,14 +321,18 @@ afterEach(() => {
 afterAll(() => {
   cleanupOwnedResourcesOrThrow();
   // Unregister only after the owner confirms every owned resource.
-  releaseBuildRootsCleanup?.();
-  releaseBuildRootsCleanup = undefined;
+  releaseRootsCleanup?.();
+  releaseRootsCleanup = undefined;
 });
 
 describe("quality CLI acceptance black-box", () => {
-  beforeAll(async () => {
-    await buildDist();
-  }, 60_000);
+  beforeAll(() => {
+    // Build once before the suite; concurrent builds clean the CLI used by other tests.
+    expect(fs.existsSync(CLI_PATH), "Run pnpm build before CLI acceptance tests.").toBe(true);
+    releaseRootsCleanup = registerOwnedResourceCleanup("acceptance-temp-roots", () =>
+      removeTemporaryRoots(temporaryRoots),
+    );
+  });
 
   it("ejecuta el CLI compilado real, emite pass por stdout y no hereda el entorno", async () => {
     const layout = createLayout();
