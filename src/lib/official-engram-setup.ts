@@ -1,8 +1,12 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import { createBackup, restoreBackup } from "./backup.js";
+import { editJsonc, parseJsoncObject } from "./filemerge.js";
 import { isContainedIn } from "./fsx.js";
+import { isStableSemverVersion } from "./npm-provider.js";
 import { HOME } from "./paths.js";
 import { migrateOfficialPiMcpConfig, resolvePiAdapterConfigPath } from "./pi-mcp-config.js";
 
@@ -44,17 +48,35 @@ export function isOfficialSetupRuntime(runtime: string): runtime is OfficialSetu
 }
 
 /**
- * Contrato cerrado previo a PR04: el runtime OpenCode gestionado por Stack es
- * major 2 y `engram setup opencode` es la integración v1, incompatible con v2.
- * Mientras no exista una release estable oficial de Engram con soporte v2
- * verificado, el coordinador nunca invoca el setup v1 y el doctor no lo
- * presenta como integración completa: ambos devuelven el prerrequisito externo
- * visible (fail-closed, sin fork ni snapshot local). Ningún perfil
- * interactivo/no interactivo, marcador de versión, receipt ni la presencia de
- * ficheros v1 habilita el setup. Una única fuente para coordinator y doctor.
+ * Major mínimo del core nativo V2 publicado que expone `engram setup opencode`.
+ * Solo decide el candidato: la escritura emitida (plugin/MCP) se sigue
+ * verificando después; nunca se acepta por versión ni se fija un patch exacto.
  */
-export const OPENCODE_OFFICIAL_SETUP_V2_REASON =
-  "OpenCode v2: integración oficial Engram pendiente de validación y adopción desde una release estable compatible (prerrequisito upstream). No se ejecuta el setup v1 ni se acredita Memory Protocol completo.";
+const OPENCODE_NATIVE_V2_MIN_MAJOR = 3;
+
+/**
+ * Extrae el major de una versión estable `X.Y.Z` dentro del texto que emite
+ * `engram --version`. Rechaza prereleases (`3.0.0-rc.1`) y textos sin triple
+ * numérica; reutiliza el validador semver estable del proveedor npm.
+ */
+function stableMajorFromVersionText(version: string | null | undefined): number | null {
+  if (typeof version !== "string") return null;
+  const match = /(\d+\.\d+\.\d+)(?![\d-])/.exec(version.trim());
+  if (match === null || !isStableSemverVersion(match[1]!)) return null;
+  const major = Number(match[1]!.split(".")[0]);
+  return Number.isSafeInteger(major) ? major : null;
+}
+
+/**
+ * Preflight de versión OpenCode: solo una release estable con core nativo V2
+ * (major mínimo actual) elige el candidato `engram setup opencode`. Un binario
+ * desconocido, prerelease o anterior falla cerrado antes de backup/spawn/
+ * transferencia de ownership; el binario existente nunca se reemplaza.
+ */
+export function isOpencodeEngramNativeV2Supported(version: string | null | undefined): boolean {
+  const major = stableMajorFromVersionText(version);
+  return major !== null && major >= OPENCODE_NATIVE_V2_MIN_MAJOR;
+}
 
 /** Argv fijo del setup oficial; sin aliases (`claude` no existe). */
 export function resolveOfficialSetupArgv(runtime: string): string[] {
@@ -1025,16 +1047,377 @@ export function isClaudeEngramVersionSupported(version: string): boolean {
   return minor >= 0;
 }
 
+// ---------------------------------------------------------------------------
+// Reconciliación OpenCode: el setup oficial serializa por JSON (pierde
+// comentarios/trivia) y añade un statusline retirado. Stack reproduce solo el
+// delta MCP permitido sobre los bytes originales y devuelve el TUI a sus bytes
+// exactos cuando el único cambio fue ese statusline.
+// ---------------------------------------------------------------------------
+
+const OPENCODE_RETIRED_STATUSLINE = "opencode-subagent-statusline";
+const OPENCODE_CONFIG_FILENAMES = ["opencode.jsonc", "opencode.json"] as const;
+const OPENCODE_TUI_FILENAMES = ["tui.jsonc", "tui.json"] as const;
+
+interface SetupFileSnapshot {
+  readonly existed: boolean;
+  readonly content: string | null;
+}
+
+interface OpencodeSetupSnapshot {
+  readonly configFiles: Record<string, SetupFileSnapshot>;
+  readonly plugin: SetupFileSnapshot;
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function snapshotSetupFile(file: string): SetupFileSnapshot {
+  try {
+    return { existed: true, content: fs.readFileSync(file, "utf8") };
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return { existed: false, content: null };
+    throw new Error(`OpenCode: no se pudo leer ${file} antes del setup (${errnoCode(error)}).`);
+  }
+}
+
+function captureOpencodeSetupSnapshot(configDir: string): OpencodeSetupSnapshot {
+  const configFiles: Record<string, SetupFileSnapshot> = {};
+  for (const name of [...OPENCODE_CONFIG_FILENAMES, ...OPENCODE_TUI_FILENAMES]) {
+    configFiles[name] = snapshotSetupFile(path.join(configDir, name));
+  }
+  return { configFiles, plugin: snapshotSetupFile(path.join(configDir, "plugins", "engram.ts")) };
+}
+
+function assertSetupPathWritable(file: string): void {
+  let isLink = false;
+  try {
+    isLink = fs.lstatSync(file).isSymbolicLink();
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return;
+    throw new Error(`OpenCode: no se pudo validar ${file} antes de reconciliar (${errnoCode(error)}).`);
+  }
+  if (isLink) throw new Error(`OpenCode: ${file} es un symlink; se bloquea la reconciliación.`);
+}
+
+function resolveEffectiveSnapshotFile(
+  snapshot: OpencodeSetupSnapshot,
+  candidates: readonly string[],
+  configDir: string,
+): { file: string; base: SetupFileSnapshot } | null {
+  const existing: string[] = [];
+  for (const name of candidates) {
+    const file = path.join(configDir, name);
+    try {
+      if (fs.existsSync(file)) existing.push(file);
+    } catch {
+      // Ilegible: lo trata la lectura posterior.
+    }
+  }
+  if (existing.length === 0) return null;
+  if (existing.length > 1) {
+    throw new Error(`OpenCode: coexisten ${existing.join(", ")} tras el setup; el archivo efectivo es ambiguo y se bloquea la reconciliación.`);
+  }
+  const file = existing[0]!;
+  const base = snapshot.configFiles[path.basename(file)];
+  return base === undefined ? null : { file, base };
+}
+
+function isProviderEngramMcpEntry(entry: Record<string, unknown>, engramBin: string): boolean {
+  if (entry["type"] !== "local") return false;
+  if (Object.hasOwn(entry, "disabled") && typeof entry["disabled"] !== "boolean") return false;
+  if (Object.hasOwn(entry, "enabled") && typeof entry["enabled"] !== "boolean") return false;
+  if (entry["disabled"] === true || entry["enabled"] === false) return false;
+  const command = entry["command"];
+  if (!Array.isArray(command) || command.length < 2) return false;
+  if (command[0] !== engramBin || command[1] !== "mcp") return false;
+  return command.slice(2).every((part) => typeof part === "string");
+}
+
+function readProviderEngramMcpEntry(parsed: Record<string, unknown>): Record<string, unknown> | null {
+  const mcp = asObject(parsed["mcp"]);
+  if (mcp === null) return null;
+  const servers = asObject(mcp["servers"]);
+  const native = servers === null ? null : asObject(servers["engram"]);
+  if (native !== null) return native;
+  return asObject(mcp["engram"]);
+}
+
+function hasCompatibleEngramServer(parsed: Record<string, unknown>, engramBin: string): boolean {
+  const mcp = asObject(parsed["mcp"]);
+  if (mcp === null) return false;
+  const servers = asObject(mcp["servers"]);
+  // El contenedor nativo es autoritativo cuando declara `engram`: una entrada
+  // nativa deshabilitada/malformada no se refuerza desde el duplicado legacy.
+  if (servers !== null && Object.prototype.hasOwnProperty.call(servers, "engram")) {
+    const native = asObject(servers["engram"]);
+    return native !== null && isProviderEngramMcpEntry(native, engramBin);
+  }
+  const legacy = asObject(mcp["engram"]);
+  return legacy !== null && isProviderEngramMcpEntry(legacy, engramBin);
+}
+
+/** Entradas Engram nativas/legacy presentes en una config (pueden coexistir). */
+function readEngramMcpEntries(parsed: Record<string, unknown>): {
+  native: Record<string, unknown> | null;
+  legacy: Record<string, unknown> | null;
+} {
+  const mcp = asObject(parsed["mcp"]);
+  if (mcp === null) return { native: null, legacy: null };
+  const servers = asObject(mcp["servers"]);
+  return {
+    native: servers === null ? null : asObject(servers["engram"]),
+    legacy: asObject(mcp["engram"]),
+  };
+}
+
+/**
+ * Un Engram preexistente (nativo o legacy) no puede cambiar ni reemplazarse: el
+ * setup solo añade la fila del provider cuando falta. Si alguna entrada previa
+ * difiere de la posterior, la reconciliación se bloquea.
+ */
+function engramMcpEntriesPreserved(
+  pre: Record<string, unknown>,
+  post: Record<string, unknown>,
+): boolean {
+  const before = readEngramMcpEntries(pre);
+  const after = readEngramMcpEntries(post);
+  if (before.native !== null && !isDeepStrictEqual(before.native, after.native)) return false;
+  if (before.legacy !== null && !isDeepStrictEqual(before.legacy, after.legacy)) return false;
+  return true;
+}
+
+/**
+ * Solo se permite añadir la fila Engram exacta del provider detectado; una
+ * entrada nueva desconocida/custom (aunque no reemplace a otra) se bloquea.
+ */
+function addedEngramMcpEntriesAreProvider(
+  pre: Record<string, unknown>,
+  post: Record<string, unknown>,
+  engramBin: string,
+): boolean {
+  const before = readEngramMcpEntries(pre);
+  const after = readEngramMcpEntries(post);
+  if (before.native === null && after.native !== null && !isProviderEngramMcpEntry(after.native, engramBin)) return false;
+  if (before.legacy === null && after.legacy !== null && !isProviderEngramMcpEntry(after.legacy, engramBin)) return false;
+  return true;
+}
+
+/** Elimina el MCP Engram (nativo o legacy) para comparar el resto sin cambios. */
+function removeEngramMcp(parsed: Record<string, unknown>): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(parsed)) as Record<string, unknown>;
+  const mcp = asObject(clone["mcp"]);
+  if (mcp === null) return clone;
+  delete mcp["engram"];
+  const servers = asObject(mcp["servers"]);
+  if (servers !== null) {
+    delete servers["engram"];
+    if (Object.keys(servers).length === 0) delete mcp["servers"];
+  }
+  if (Object.keys(mcp).length === 0) delete clone["mcp"];
+  return clone;
+}
+
+function reconcileOpencodeMcp(configDir: string, engramBin: string, snapshot: OpencodeSetupSnapshot): void {
+  const effective = resolveEffectiveSnapshotFile(snapshot, OPENCODE_CONFIG_FILENAMES, configDir);
+  if (effective === null) return;
+  const { file, base } = effective;
+  assertSetupPathWritable(file);
+  const postRaw = fs.readFileSync(file, "utf8");
+  const post = parseJsoncObject(postRaw);
+  if (post.value === null) {
+    throw new Error(`OpenCode: la config ${file} quedó ilegible tras el setup (${post.error ?? "JSONC inválido"}); se bloquea la reconciliación.`);
+  }
+  const preParsed = base.existed ? parseJsoncObject(base.content ?? "").value : {};
+  if (base.existed && preParsed === null) {
+    throw new Error(`OpenCode: la config original ${file} no era JSONC válido; no se puede reproducir el delta MCP.`);
+  }
+  const pre = (preParsed ?? {}) as Record<string, unknown>;
+
+  // Guardas de delta antes de cualquier atajo: ninguna entrada Engram previa
+  // cambia ni desaparece, el resto de la config (sin Engram) permanece igual y
+  // lo añadido es la fila exacta del provider. Evita reemplazar/reimponer un
+  // servidor manual y permite detectar una retirada inesperada del MCP.
+  if (base.existed && !engramMcpEntriesPreserved(pre, post.value)) {
+    throw new Error(`OpenCode: el setup mutó un MCP Engram preexistente en ${file}; se conserva el original y se bloquea.`);
+  }
+  if (!isDeepStrictEqual(removeEngramMcp(post.value), removeEngramMcp(pre))) {
+    throw new Error(`OpenCode: el setup mutó ${file} más allá del MCP Engram permitido; se conserva el original y se bloquea.`);
+  }
+  if (!addedEngramMcpEntriesAreProvider(pre, post.value, engramBin)) {
+    throw new Error(`OpenCode: el setup añadió un MCP Engram no reconocido en ${file}; se conserva el original y se bloquea.`);
+  }
+
+  const providerEntry = readProviderEngramMcpEntry(post.value);
+  if (providerEntry === null) return;
+  if (!isProviderEngramMcpEntry(providerEntry, engramBin)) {
+    throw new Error(`OpenCode: el setup escribió un MCP Engram inesperado en ${file}; se bloquea la reconciliación.`);
+  }
+  if (base.existed && hasCompatibleEngramServer(pre, engramBin)) {
+    // El servidor del provider ya existía: se conservan los bytes JSONC
+    // originales (trivia) y se descarta cualquier fila legacy añadida.
+    if (base.content !== null && base.content !== postRaw) fs.writeFileSync(file, base.content);
+    return;
+  }
+  if (!base.existed) return;
+  const content = editJsonc(base.content ?? "", (root) => {
+    const mcp = asObject(root["mcp"]);
+    if (mcp === null) root["mcp"] = { engram: providerEntry };
+    else mcp["engram"] = providerEntry;
+  });
+  if (content !== base.content) fs.writeFileSync(file, content);
+}
+
+function statuslinePluginArray(parsed: unknown): unknown[] | null {
+  const root = asObject(parsed);
+  if (root === null) return null;
+  const plugin = root["plugin"];
+  return Array.isArray(plugin) ? plugin : null;
+}
+
+function hasStatuslinePlugin(parsed: unknown): boolean {
+  const plugin = statuslinePluginArray(parsed);
+  return plugin !== null && plugin.some((entry) => entry === OPENCODE_RETIRED_STATUSLINE);
+}
+
+function countStatuslinePlugins(parsed: unknown): number {
+  const plugin = statuslinePluginArray(parsed);
+  if (plugin === null) return 0;
+  return plugin.filter((entry) => entry === OPENCODE_RETIRED_STATUSLINE).length;
+}
+
+function removeStatuslinePlugins(parsed: unknown): unknown {
+  const clone = JSON.parse(JSON.stringify(parsed)) as unknown;
+  const root = asObject(clone);
+  if (root !== null && Array.isArray(root["plugin"])) {
+    const kept = (root["plugin"] as unknown[]).filter((entry) => entry !== OPENCODE_RETIRED_STATUSLINE);
+    if (kept.length === 0) delete root["plugin"];
+    else root["plugin"] = kept;
+  }
+  return clone;
+}
+
+function isExclusiveStatuslineTui(parsed: unknown): boolean {
+  const root = asObject(parsed);
+  if (root === null) return false;
+  const keys = Object.keys(root);
+  const plugin = root["plugin"];
+  return keys.length === 1 && keys[0] === "plugin"
+    && Array.isArray(plugin) && plugin.length === 1 && plugin[0] === OPENCODE_RETIRED_STATUSLINE;
+}
+
+function reconcileOpencodeTui(configDir: string, snapshot: OpencodeSetupSnapshot): void {
+  const effective = resolveEffectiveSnapshotFile(snapshot, OPENCODE_TUI_FILENAMES, configDir);
+  if (effective === null) return;
+  const { file, base } = effective;
+  assertSetupPathWritable(file);
+  const postRaw = fs.readFileSync(file, "utf8");
+  const post = parseJsoncObject(postRaw);
+  if (post.value === null) {
+    throw new Error(`OpenCode: el TUI ${file} quedó ilegible tras el setup; se bloquea la reconciliación.`);
+  }
+  const preParsed = base.existed ? parseJsoncObject(base.content ?? "").value : null;
+  if (base.existed && hasStatuslinePlugin(preParsed)) {
+    // Entrada manual previa: no se reclama ni se poda; se restauran los bytes
+    // originales para conservar trivia y la entrada ajena (sin claim).
+    if (base.content !== null && base.content !== postRaw) fs.writeFileSync(file, base.content);
+    return;
+  }
+  if (!base.existed) {
+    if (isExclusiveStatuslineTui(post.value)) {
+      fs.rmSync(file, { force: true });
+      return;
+    }
+    throw new Error(`OpenCode: el setup creó ${file} con contenido inesperado; se bloquea la reconciliación.`);
+  }
+  if (!isDeepStrictEqual(removeStatuslinePlugins(post.value), preParsed)) {
+    throw new Error(`OpenCode: el setup mutó ${file} más allá del statusline retirado; se restaura el original y se bloquea.`);
+  }
+  if (countStatuslinePlugins(post.value) > 0) fs.writeFileSync(file, base.content ?? "");
+}
+
+function reconcileOpencodeProviderEffects(args: {
+  configDir: string;
+  engramBin: string;
+  snapshot: OpencodeSetupSnapshot;
+}): void {
+  reconcileOpencodeMcp(args.configDir, args.engramBin, args.snapshot);
+  reconcileOpencodeTui(args.configDir, args.snapshot);
+}
+
+/**
+ * Emite el plugin nativo en un stage privado (HOME/XDG propios, sin perfil
+ * personal) con el mismo argv que el setup real. Devuelve los bytes emitidos o
+ * null si el stage no los produjo. Es una comparación de bytes contra el
+ * emisor, no una attestation del publisher ni un claim por igualdad.
+ */
+async function emitOpencodePluginInPrivateStage(engramBin: string): Promise<string | null> {
+  const stageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jorgex-engram-stage-"));
+  try {
+    const stageHome = path.join(stageRoot, "home");
+    const stageXdg = path.join(stageRoot, "xdg");
+    const stageConfig = path.join(stageXdg, "opencode");
+    // El `engram.db` regular presente bloquea la migración de la DB huérfana
+    // verificada del Go; el setup no abre la DB, así que el centinela de 0 B basta.
+    const stageData = path.join(stageRoot, "data");
+    fs.mkdirSync(stageData, { recursive: true });
+    fs.writeFileSync(path.join(stageData, "engram.db"), "", { flag: "wx", mode: 0o600 });
+    fs.mkdirSync(path.join(stageConfig, "plugins"), { recursive: true });
+    // El emisor controlado lee los JSONC; un objeto vacío permite el stage sin
+    // imponer contenido. El Go real también acepta su ausencia.
+    fs.writeFileSync(path.join(stageConfig, "opencode.jsonc"), "{}\n");
+    fs.writeFileSync(path.join(stageConfig, "tui.jsonc"), "{}\n");
+    const result = await spawnOfficialSetupBin(engramBin, ["setup", "opencode"], {
+      HOME: stageHome,
+      USERPROFILE: stageHome,
+      XDG_CONFIG_HOME: stageXdg,
+      OPENCODE_CONFIG_DIR: undefined,
+      ENGRAM_DATA_DIR: stageData,
+      ENGRAM_CLOUD_AUTOSYNC: "0",
+    });
+    if (!result.ok) return null;
+    try {
+      return fs.readFileSync(path.join(stageConfig, "plugins", "engram.ts"), "utf8");
+    } catch {
+      return null;
+    }
+  } finally {
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+  }
+}
+
+async function authenticateExistingOpencodePlugin(args: { configDir: string; engramBin: string }): Promise<void> {
+  const pluginPath = path.join(args.configDir, "plugins", "engram.ts");
+  let existing: string;
+  try {
+    existing = fs.readFileSync(pluginPath, "utf8");
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return;
+    throw new Error(`OpenCode: no se pudo leer el plugin existente ${pluginPath} (${errnoCode(error)}); se bloquea antes de sobrescribirlo.`);
+  }
+  const emitted = await emitOpencodePluginInPrivateStage(args.engramBin);
+  if (emitted === null) {
+    throw new Error(`OpenCode: el binario Engram no emitió el plugin nativo en el stage privado; no se sobrescribe el plugin existente ${pluginPath}.`);
+  }
+  if (emitted !== existing) {
+    throw new Error(`OpenCode: el plugin existente ${pluginPath} no coincide byte a byte con el emitido por el binario detectado; se conserva sin sobrescribir. Restaura el plugin oficial o retíralo manualmente antes de reintentar.`);
+  }
+}
+
+
 /**
  * Integración real para `runInstall`: comprobación solo en install + binario
- * absoluto + verificador registrado + comprobación previa de versión para
- * Claude. Los saltos intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
+ * absoluto + verificador registrado + preflight de versión para Claude
+ * (>=2.0.0) y para OpenCode (core nativo V2, major mínimo). Los saltos
+ * intencionales (sync/dry-run/target-dir) siguen siendo `{ran:false}`.
  * En install real, runtime desconocido, verificador ausente o binario no
  * absoluto devuelven fallo explícito (`ran:true, ok:false`), nunca skip
  * silencioso. Codex/Pi son gestionados por el proveedor: nunca bloqueados por
- * versión. OpenCode v2 queda bloqueado por el contrato cerrado de Engram v1
- * (`OPENCODE_OFFICIAL_SETUP_V2_REASON`), no por versión. El binario existente
- * jamás se modifica.
+ * versión. OpenCode exige una release estable con core nativo V2 (major
+ * mínimo) antes de backup/spawn; la escritura emitida se verifica después. El
+ * binario existente jamás se modifica.
  */
 export async function runOfficialSetupIfNeeded(
   runtime: string,
@@ -1060,14 +1443,15 @@ export async function runOfficialSetupIfNeeded(
     const detail = `runOfficialSetupIfNeeded: runtime desconocido en install real: ${runtime}.`;
     return { ran: true, ok: false, ownershipTransferred: false, stderr: detail, reason: detail, recovery: "none" };
   }
-  // Contrato cerrado (previo a PR04): el runtime OpenCode v2 no admite la
-  // integración v1 del proveedor. El guard bloquea antes de targets/backup/
-  // spawn y devuelve el prerrequisito externo visible (ran:true, ok:false),
-  // sin invocar `engram setup opencode` ni tocar ficheros/estado del proveedor.
-  // No lo saltan perfiles no interactivos/autenticados, marcadores de versión,
-  // receipts ni la presencia de ficheros v1.
-  if (runtime === "opencode") {
-    const detail = OPENCODE_OFFICIAL_SETUP_V2_REASON;
+  // OpenCode exige una release estable con core nativo V2 (major mínimo) antes
+  // de targets/backup/spawn; desconocido/prerelease/anterior falla cerrado con
+  // el prerrequisito visible y el binario existente intacto. La versión solo
+  // elige el candidato: la escritura emitida (plugin/MCP) se verifica después.
+  if (runtime === "opencode" && !isOpencodeEngramNativeV2Supported(opts.engramVersion)) {
+    const shown = typeof opts.engramVersion === "string" && opts.engramVersion.trim() !== ""
+      ? opts.engramVersion.trim()
+      : "unknown/unreadable";
+    const detail = `runOfficialSetupIfNeeded: Engram ${shown} no expone el entrypoint nativo OpenCode v2; se requiere una release oficial estable con core nativo (major >= ${OPENCODE_NATIVE_V2_MIN_MAJOR}) como prerrequisito upstream. El binario existente no se reemplaza ni se ejecuta el setup v1.`;
     return {
       ran: true,
       ok: false,
@@ -1091,8 +1475,9 @@ export async function runOfficialSetupIfNeeded(
   // Preflight estricto solo para Claude antes de targets/backup/spawn: exige
   // una versión estable numérica >=2.0.0. `null`, vacía, malformada,
   // fallida/timeout o sin triple numérica falla cerrado con razón accionable
-  // (check/update a 2.0.0+) y binario intacto. Codex/OpenCode/Pi son gestionados
-  // por el proveedor y nunca se bloquean por versión.
+  // (check/update a 2.0.0+) y binario intacto. Codex/Pi son gestionados por el
+  // proveedor y nunca se bloquean por versión (OpenCode ya pasó su preflight
+  // de core nativo V2 arriba).
   if (runtime === "claude-code") {
     const raw = opts.engramVersion;
     const provided = typeof raw === "string" ? raw.trim() : "";
@@ -1124,6 +1509,9 @@ export async function runOfficialSetupIfNeeded(
   const setupEnv = resolveOfficialSetupEnv(runtime, configDir, opts.homeDir, explicitClaude);
   let backupId: string | null = null;
   let expectedBackupFiles = 0;
+  // Bytes/ausencia pre-setup de la config OpenCode y del plugin, capturados
+  // tras el preflight del núcleo y antes de cualquier efecto del proveedor.
+  let opencodeSnapshot: OpencodeSetupSnapshot | null = null;
   const expandBackupTargets = (files: string[]): string[] => {
     const out: string[] = [];
     for (const file of files) {
@@ -1161,6 +1549,10 @@ export async function runOfficialSetupIfNeeded(
     homeDir: opts.homeDir,
     engramBin,
     backup: async () => {
+      if (runtime === "opencode") {
+        opencodeSnapshot = captureOpencodeSetupSnapshot(configDir);
+        await authenticateExistingOpencodePlugin({ configDir, engramBin });
+      }
       const backup = createBackup(expandBackupTargets(targets), `official-engram-setup-${runtime}`);
       backupId = backup?.id ?? null;
       expectedBackupFiles = backup?.files.length ?? 0;
@@ -1174,6 +1566,21 @@ export async function runOfficialSetupIfNeeded(
           throw new Error("El candidato Pi verificado no declara lector mcp-adapter.json; no se migra la configuración.");
         }
         migrateOfficialPiMcpConfig({ configDir, engramBin });
+      }
+      if (result.ok && runtime === "opencode" && opencodeSnapshot !== null) {
+        // El proveedor puede haber creado un alias (target o ancestro) durante
+        // el spawn; revalidar con la guardia del núcleo antes de que la
+        // reconciliación lea o escriba, para no mutar bytes fuera de HOME. Un
+        // alias se propaga como spawn fallido (throw capturado) y el post-guard
+        // posterior tacha el target: sin restore/cleanup, recovery
+        // incomplete/none y sin ownership. Guarda operativa best-effort contra
+        // TOCTOU: reduce la ventana, no la elimina; no es un sandbox del
+        // proveedor ni una promesa de ausencia total de carrera.
+        const aliasViolation = findSetupSymlinkViolation(targets, opts.homeDir);
+        if (aliasViolation !== null) {
+          throw new Error(`OpenCode: symlink detectado tras el setup antes de reconciliar (${aliasViolation}); reconciliación omitida para no escribir a través del enlace.`);
+        }
+        reconcileOpencodeProviderEffects({ configDir, engramBin, snapshot: opencodeSnapshot });
       }
       return result;
     },

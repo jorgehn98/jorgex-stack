@@ -122,13 +122,18 @@ async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<
   }
 }
 
+// Fixture representativa del entrypoint nativo v2 que emite
+// `engram setup opencode` (forma controlada; NO es prueba de ABI/origen). Los
+// marcadores v1 quedan solo como comentario inerte: ya no acreditan por sí solos.
 const REAL_OFFICIAL_OPENCODE_TS = [
-  "// official engram setup opencode (same path, real markers)",
-  "const url = CONFIGURED_ENGRAM_URL;",
-  "async function ensureLocalReady() { return true; }",
-  "const tools = SESSION_ATTRIBUTED_WRITE_TOOLS;",
-  "function canonicalEngramToolName() { return 'engram'; }",
-  "const id = localInstanceID;",
+  "// engram native v2 entrypoint emitted by `engram setup opencode` (fixture shape, not an ABI proof)",
+  "// v1 markers below are inert comments and never acreditan:",
+  "// ensureLocalReady CONFIGURED_ENGRAM_URL SESSION_ATTRIBUTED_WRITE_TOOLS canonicalEngramToolName localInstanceID",
+  "export function setupEngramV2(ctx) {",
+  "  return { id: 'engram', ctx };",
+  "}",
+  "const server = { name: 'engram', command: 'engram mcp --tools=agent' };",
+  "export default { id: 'engram', server, setup: setupEngramV2 };",
   "",
 ].join("\n");
 
@@ -453,6 +458,83 @@ describe("[residual-3] empty engramBin rejects foreign path containing engram", 
     const codex = await import("../src/adapters/codex.js");
     const codexReport = await codex.verifyOfficialSetup({ configDir: codexDir, engramBin: "" });
     expect(codexReport.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b) Effective MCP precedence: an explicitly disabled native entry must not
+//     fall back to an enabled legacy duplicate.
+// ---------------------------------------------------------------------------
+
+/** Añade `mcp.servers.engram` nativo al `opencode.json` ya sembrado. */
+function addNativeEngramServer(dir: string, bin: string, disabled: boolean): void {
+  const file = path.join(dir, "opencode.json");
+  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+  const mcp = raw["mcp"] as Record<string, unknown>;
+  mcp["servers"] = {
+    engram: { type: "local", command: [bin, "mcp", "--tools=agent"], ...(disabled ? { disabled: true } : {}) },
+  };
+  fs.writeFileSync(file, JSON.stringify(raw));
+}
+
+describe("[residual-3b] native Engram MCP precedence over legacy duplicate", () => {
+  it("control: enabled native mcp.servers.engram wins with the legacy duplicate present", async () => {
+    const home = tempHome("jx-res3b-ctrl-");
+    const bin = path.join(home, ".local", "bin", "engram");
+    const dir = seedOpencodeExact(home, REAL_OFFICIAL_OPENCODE_TS, bin);
+    addNativeEngramServer(dir, bin, false);
+    const mod = await import("../src/adapters/opencode.js");
+    expect(mod.checkOpencodeOfficialMcp(dir, bin)).toBe(true);
+    const report = await mod.verifyOfficialSetup({ configDir: dir, engramBin: bin });
+    expect(report.ok).toBe(true);
+  });
+
+  it("explicitly disabled native entry does not fall back to the enabled legacy duplicate", async () => {
+    const home = tempHome("jx-res3b-disabled-");
+    const bin = path.join(home, ".local", "bin", "engram");
+    const dir = seedOpencodeExact(home, REAL_OFFICIAL_OPENCODE_TS, bin);
+    // The native entry exists and is explicitly disabled; the legacy duplicate
+    // is the canonical enabled form. The effective native entry must win, so
+    // the checker must NOT fall back to the enabled legacy row.
+    addNativeEngramServer(dir, bin, true);
+    const mod = await import("../src/adapters/opencode.js");
+    // RED: the current adapter falls through to the enabled legacy duplicate.
+    expect(mod.checkOpencodeOfficialMcp(dir, bin)).toBe(false);
+    const report = await mod.verifyOfficialSetup({ configDir: dir, engramBin: bin });
+    expect(report.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3c) Non-boolean flag never acredita the native MCP.
+// ---------------------------------------------------------------------------
+
+describe("[residual-3c] non-boolean disabled flag never acredita the native MCP", () => {
+  it("native disabled:'true' (string) is not healthy; boolean disabled:false is healthy", async () => {
+    const home = tempHome("jx-res3c-");
+    const bin = path.join(home, ".local", "bin", "engram");
+    const dir = seedOpencodeExact(home, REAL_OFFICIAL_OPENCODE_TS, bin);
+    const file = path.join(dir, "opencode.json");
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    const mcp = raw["mcp"] as Record<string, unknown>;
+    delete mcp["engram"];
+
+    mcp["servers"] = {
+      engram: { type: "local", command: [bin, "mcp", "--tools=agent"], disabled: "true" },
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const mod = await import("../src/adapters/opencode.js");
+    expect(mod.checkOpencodeOfficialMcp(dir, bin)).toBe(false);
+    const report = await mod.verifyOfficialSetup({ configDir: dir, engramBin: bin });
+    expect(report.ok).toBe(false);
+
+    mcp["servers"] = {
+      engram: { type: "local", command: [bin, "mcp", "--tools=agent"], disabled: false },
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    expect(mod.checkOpencodeOfficialMcp(dir, bin)).toBe(true);
+    const control = await mod.verifyOfficialSetup({ configDir: dir, engramBin: bin });
+    expect(control.ok).toBe(true);
   });
 });
 

@@ -129,14 +129,18 @@ async function withTempHome<T>(homeDir: string, run: () => Promise<T>): Promise<
  * intended behavioral reason (not fixture noise). No production change here.
  */
 
-// Representative REAL official OpenCode markers (adapter-recognized).
+// Fixture representativa del entrypoint nativo v2 que emite
+// `engram setup opencode` (forma controlada; NO es prueba de ABI/origen). Los
+// marcadores v1 quedan solo como comentario inerte: ya no acreditan por sí solos.
 const REAL_OFFICIAL_OPENCODE_TS = [
-  "// official engram setup opencode (same path, real markers)",
-  "const url = CONFIGURED_ENGRAM_URL;",
-  "async function ensureLocalReady() { return true; }",
-  "const tools = SESSION_ATTRIBUTED_WRITE_TOOLS;",
-  "function canonicalEngramToolName() { return 'engram'; }",
-  "const id = localInstanceID;",
+  "// engram native v2 entrypoint emitted by `engram setup opencode` (fixture shape, not an ABI proof)",
+  "// v1 markers below are inert comments and never acreditan:",
+  "// ensureLocalReady CONFIGURED_ENGRAM_URL SESSION_ATTRIBUTED_WRITE_TOOLS canonicalEngramToolName localInstanceID",
+  "export function setupEngramV2(ctx) {",
+  "  return { id: 'engram', ctx };",
+  "}",
+  "const server = { name: 'engram', command: 'engram mcp --tools=agent' };",
+  "export default { id: 'engram', server, setup: setupEngramV2 };",
   "",
 ].join("\n");
 
