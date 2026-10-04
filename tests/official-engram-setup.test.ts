@@ -1804,6 +1804,20 @@ function t15EmitterScript(): string {
     "const home = process.env.HOME;",
     'const configDir = path.join(xdg && xdg !== "" ? xdg : path.join(home || "", ".config"), "opencode");',
     'if (!configDir) { process.stderr.write("fake engram: no config dir\\n"); process.exit(3); }',
+    // Guard Go simulado: `migrateOrphanedDB` solo mueve una DB huérfana al data
+    // dir efectivo si allí NO existe ya un `engram.db`. Condicionado a la
+    // variable de test propia T15_ORPHAN_DB: el resto de casos no la fijan.
+    "const orphan = process.env.T15_ORPHAN_DB;",
+    "if (orphan) {",
+    '  const dataDir = process.env.ENGRAM_DATA_DIR && process.env.ENGRAM_DATA_DIR !== "" ? process.env.ENGRAM_DATA_DIR : path.join(home || "", ".engram");',
+    '  if (!fs.existsSync(path.join(dataDir, "engram.db"))) {',
+    "    fs.mkdirSync(dataDir, { recursive: true });",
+    '    for (const suffix of ["", "-wal", "-shm"]) {',
+    "      const src = orphan + suffix;",
+    '      if (fs.existsSync(src)) fs.renameSync(src, path.join(dataDir, "engram.db" + suffix));',
+    "    }",
+    "  }",
+    "}",
     'const strip = (text) => text.split("\\n").map((line) => line.replace(/^\\s*\\/\\/.*$/, "")).join("\\n");',
     'const readJsonc = (file) => JSON.parse(strip(fs.readFileSync(file, "utf8")));',
     `const plugin = ${JSON.stringify(T15_NATIVE_PLUGIN)};`,
@@ -2019,13 +2033,34 @@ describe("[T15-RED] setup oficial OpenCode v2: transacción real y reconciliaci�
     fs.writeFileSync(panelTuiFile, panelTui);
     fs.writeFileSync(panelStateFile, panelState);
 
+    // PR04 security fixture: DB huérfana ajena, fuera de HOME/stage pero dentro
+    // de la MISMA raíz temporal test-owned. El stage privado no puede moverla ni
+    // borrarla: el guard Go solo la ignora si el data dir efectivo ya contiene
+    // un `engram.db` regular. Contenido sintético (el fake no abre SQLite).
+    const ownRoot = path.dirname(home);
+    const orphanDir = path.join(ownRoot, "orphan");
+    fs.mkdirSync(orphanDir, { recursive: true });
+    const orphanDb = path.join(orphanDir, "engram.db");
+    const orphanDbBytes = Buffer.from("synthetic orphan engram db (not SQLite open)\n");
+    const orphanWalBytes = Buffer.from("synthetic orphan wal\n");
+    const orphanShmBytes = Buffer.from("synthetic orphan shm\n");
+    fs.writeFileSync(orphanDb, orphanDbBytes);
+    fs.writeFileSync(`${orphanDb}-wal`, orphanWalBytes);
+    fs.writeFileSync(`${orphanDb}-shm`, orphanShmBytes);
+
     const engramBin = path.join(home, ".local", "bin", "engram");
     fs.mkdirSync(path.dirname(engramBin), { recursive: true });
     fs.writeFileSync(engramBin, t15EmitterScript(), { mode: 0o755 });
     fs.chmodSync(engramBin, 0o755);
 
     const previousHome = process.env.HOME;
+    const previousOrphanDb = process.env.T15_ORPHAN_DB;
+    const previousDataDir = process.env.ENGRAM_DATA_DIR;
     process.env.HOME = home;
+    process.env.T15_ORPHAN_DB = orphanDb;
+    // Sin ENGRAM_DATA_DIR heredado: el stage usa su HOME privado y, sin el fix,
+    // mueve la DB huérfana a un scratch que el `finally` del stage elimina.
+    delete process.env.ENGRAM_DATA_DIR;
     vi.resetModules();
     try {
       await import("../src/adapters/opencode.js");
@@ -2062,9 +2097,21 @@ describe("[T15-RED] setup oficial OpenCode v2: transacción real y reconciliaci�
       expect(fs.readFileSync(tuiFile, "utf8")).not.toContain("opencode-subagent-statusline");
       // El backup real nunca se creó.
       expect(fs.existsSync(path.join(home, ".jorgex-stack"))).toBe(false);
+
+      // PR04: el stage privado pudo ejecutar el binario (llamada legítima), pero
+      // no puede mover ni borrar la DB huérfana ajena. Frontera de origen: sigue
+      // siendo un fichero regular y sus bytes (DB/WAL/SHM) son idénticos.
+      expect(fs.statSync(orphanDb).isFile(), "la DB huérfana ajena debe seguir siendo un fichero regular").toBe(true);
+      expect(fs.readFileSync(orphanDb)).toEqual(orphanDbBytes);
+      expect(fs.readFileSync(`${orphanDb}-wal`)).toEqual(orphanWalBytes);
+      expect(fs.readFileSync(`${orphanDb}-shm`)).toEqual(orphanShmBytes);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousOrphanDb === undefined) delete process.env.T15_ORPHAN_DB;
+      else process.env.T15_ORPHAN_DB = previousOrphanDb;
+      if (previousDataDir === undefined) delete process.env.ENGRAM_DATA_DIR;
+      else process.env.ENGRAM_DATA_DIR = previousDataDir;
       vi.resetModules();
     }
   });

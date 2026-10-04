@@ -1359,6 +1359,11 @@ async function emitOpencodePluginInPrivateStage(engramBin: string): Promise<stri
     const stageHome = path.join(stageRoot, "home");
     const stageXdg = path.join(stageRoot, "xdg");
     const stageConfig = path.join(stageXdg, "opencode");
+    // El `engram.db` regular presente bloquea la migración de la DB huérfana
+    // verificada del Go; el setup no abre la DB, así que el centinela de 0 B basta.
+    const stageData = path.join(stageRoot, "data");
+    fs.mkdirSync(stageData, { recursive: true });
+    fs.writeFileSync(path.join(stageData, "engram.db"), "", { flag: "wx", mode: 0o600 });
     fs.mkdirSync(path.join(stageConfig, "plugins"), { recursive: true });
     // El emisor controlado lee los JSONC; un objeto vacío permite el stage sin
     // imponer contenido. El Go real también acepta su ausencia.
@@ -1369,6 +1374,8 @@ async function emitOpencodePluginInPrivateStage(engramBin: string): Promise<stri
       USERPROFILE: stageHome,
       XDG_CONFIG_HOME: stageXdg,
       OPENCODE_CONFIG_DIR: undefined,
+      ENGRAM_DATA_DIR: stageData,
+      ENGRAM_CLOUD_AUTOSYNC: "0",
     });
     if (!result.ok) return null;
     try {
