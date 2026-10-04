@@ -2229,6 +2229,8 @@ function isExactOpencodeEngramMcpValue(value: unknown, engramBin?: string): bool
   const record = objectValue(value);
   if (record === null) return false;
   if (record["type"] !== "local") return false;
+  if (Object.hasOwn(record, "disabled") && typeof record["disabled"] !== "boolean") return false;
+  if (Object.hasOwn(record, "enabled") && typeof record["enabled"] !== "boolean") return false;
   // Entrada efectivamente habilitada: un servidor nativo `disabled: true` o
   // legacy `enabled: false` no acredita el MCP activo.
   if (record["disabled"] === true || record["enabled"] === false) return false;

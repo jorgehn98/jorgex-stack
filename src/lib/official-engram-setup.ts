@@ -1127,6 +1127,8 @@ function resolveEffectiveSnapshotFile(
 
 function isProviderEngramMcpEntry(entry: Record<string, unknown>, engramBin: string): boolean {
   if (entry["type"] !== "local") return false;
+  if (Object.hasOwn(entry, "disabled") && typeof entry["disabled"] !== "boolean") return false;
+  if (Object.hasOwn(entry, "enabled") && typeof entry["enabled"] !== "boolean") return false;
   if (entry["disabled"] === true || entry["enabled"] === false) return false;
   const command = entry["command"];
   if (!Array.isArray(command) || command.length < 2) return false;

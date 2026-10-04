@@ -506,6 +506,39 @@ describe("[residual-3b] native Engram MCP precedence over legacy duplicate", () 
 });
 
 // ---------------------------------------------------------------------------
+// 3c) Non-boolean flag never acredita the native MCP.
+// ---------------------------------------------------------------------------
+
+describe("[residual-3c] non-boolean disabled flag never acredita the native MCP", () => {
+  it("native disabled:'true' (string) is not healthy; boolean disabled:false is healthy", async () => {
+    const home = tempHome("jx-res3c-");
+    const bin = path.join(home, ".local", "bin", "engram");
+    const dir = seedOpencodeExact(home, REAL_OFFICIAL_OPENCODE_TS, bin);
+    const file = path.join(dir, "opencode.json");
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    const mcp = raw["mcp"] as Record<string, unknown>;
+    delete mcp["engram"];
+
+    mcp["servers"] = {
+      engram: { type: "local", command: [bin, "mcp", "--tools=agent"], disabled: "true" },
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const mod = await import("../src/adapters/opencode.js");
+    expect(mod.checkOpencodeOfficialMcp(dir, bin)).toBe(false);
+    const report = await mod.verifyOfficialSetup({ configDir: dir, engramBin: bin });
+    expect(report.ok).toBe(false);
+
+    mcp["servers"] = {
+      engram: { type: "local", command: [bin, "mcp", "--tools=agent"], disabled: false },
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    expect(mod.checkOpencodeOfficialMcp(dir, bin)).toBe(true);
+    const control = await mod.verifyOfficialSetup({ configDir: dir, engramBin: bin });
+    expect(control.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 4) Uninstall EACCES on official plugin preserves via runUninstall
 // ---------------------------------------------------------------------------
 
