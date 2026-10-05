@@ -19,7 +19,7 @@ El workflow tiene una sola fuente: [orchestrator](stack/skills/orchestrator/SKIL
 
 Usar un worktree para trabajo no trivial, dentro de `worktrees/` de la raíz comprobada con Git y excluido localmente; también son válidos los worktrees nativos del runtime. No sobrescribir trabajo ni usar Git destructivo sin autorización. Mantener PR draft mientras cambia; Ready al final de implementación/verificación/review pertinente. Verificar checks requeridos y SHA candidato antes de integrar. Commit/push según autorización del encargo; merge siempre por orden explícita de Jorge. Un merge intermedio no cierra todo el objetivo.
 
-**pnpm siempre**, excepto los dos comandos npm de registry del workflow de publicación. Requisitos en `package.json`; verificar toolchain preparado antes de aislar HOME. No instalar/cambiar herramientas implícitamente. Comandos reales:
+**pnpm siempre**, excepto `npm publish` por OIDC en el workflow de publicación. Requisitos en `package.json`; verificar toolchain preparado antes de aislar HOME. No instalar/cambiar herramientas implícitamente. Comandos reales:
 
 ```text
 pnpm install --frozen-lockfile
@@ -34,6 +34,6 @@ No hay lint ni qa:quality. Reutilizar tests de preservación, merge, backups e i
 
 ## Publicación y CI
 
-[Publicación](README.md#publicación): major/minor explícito dentro del PR; auto-patch existente elige patch libre si la versión ya está publicada. No prometer número futuro, editar pins/hash ajenos ni publicar manualmente sin autorización. Quality gate verifica build/typecheck/tests del producto, no contratos Pi retirados. Trusted Publisher, rulesets y credenciales son configuración del titular, nunca un cambio implícito de código.
+[Publicación](README.md#publicación): versión preparada en el PR y major/minor explícito; publicación automática de una versión nueva al merge, sin auto-patch ni commits de versión en main. Un tarball validado, OIDC, SRI de registry y tag inmutable del mismo SHA; recuperación con SHA explícita de main y coincidencia de bytes. No prometer número futuro, editar pins/hash ajenos ni publicar manualmente sin autorización. Quality gate verifica build/typecheck/tests del producto, no contratos Pi retirados. Trusted Publisher, rulesets y credenciales son configuración del titular, nunca un cambio implícito de código.
 
 Código/identificadores en inglés; documentación/comunicación en español. KISS, YAGNI y lean-code antes de código significativo. Verificar APIs/rutas contra fuentes reales, no inventar contratos ni enforcement de permisos. Cero secretos en código, ejemplos, fixtures, logs y reportes. [Referencias operativas](README.md#referencias).
