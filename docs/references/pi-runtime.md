@@ -12,6 +12,10 @@ Browser Control se registra como MCP stdio; su proveedor posee relay/extension/a
 
 ## Permisos y límites
 
+**Carga con pnpm aislado:** se reprodujo un fallo de resolución de `p-limit` al cargar pi-web-access0.35.0 con Pi1.0.2, también mediante el bin publicado. El seguimiento está en [Pi#8092](https://github.com/earendil-works/pi/issues/8092) y [PR#8112](https://github.com/earendil-works/pi/pull/8112). Registrar el paquete no demuestra que cargue; no se considera resuelto hasta verificar una release corregida. Stack no añade dependencias, hoisting ni un loader privado para ocultarlo.
+
+Pi utiliza el gestor configurado por el usuario. Si es pnpm11, su espera predeterminada de24h puede seleccionar una versión anterior a `latest`; Stack no desactiva esa protección ni promete haber probado una release que el gestor no instaló.
+
 Lectores Stack usan tools `read, grep, find, ls`; implementer/generalist incluyen bash/edit/write. Sin delegación anidada. Pi tiene seis archivos propios, no modifica builtin del proveedor. El sistema de permisos es extensión nativa; doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
 
 **Timeout temporal de dos horas:** al Aplicar Configuración/Todo, Stack siembra `timeoutMs: 7200000` en la configuración nativa `~/.pi/agent/extensions/subagent/config.json` **solo si el campo está ausente**. Conserva cualquier elección previa (también si vale dos horas), sin reclamarla por igualdad, y los demás campos. Hay backup antes de modificar un archivo existente; reaplicar no produce cambios. Desinstalar retira únicamente el campo creado por Stack que siga valiendo 7200000; un override personal se conserva.
