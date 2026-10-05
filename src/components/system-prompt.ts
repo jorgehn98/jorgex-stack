@@ -23,6 +23,7 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
   const modules: SystemPromptSections = {
     "system-prompt": readModule("AGENTS.md"),
     context7: readModule("context7.md"),
+    browser: readModule("browser-use.md"),
     "writing-style": ctx.writingStyle?.content ?? undefined,
   };
   const sections = adapter.adaptSystemPromptSections?.(modules) ?? modules;
@@ -31,7 +32,7 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
     const body = sections[section];
     content = body ? upsertMarkdownSection(content, section, body) : removeMarkdownSection(content, section);
   }
-  // Provider-only: las secciones retiradas ya no se inyectan; los bloques que
+  // Las secciones retiradas ya no se inyectan; los bloques que
   // versiones anteriores instalaron se eliminan idempotentemente aquí (y en
   // uninstall vía removeSystemPromptSections).
   for (const section of LEGACY_SYSTEM_PROMPT_SECTIONS) {
