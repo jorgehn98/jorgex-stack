@@ -3,15 +3,13 @@ import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
-import { DEVTOOLS_MCP_SERVER, isCanonicalMcpServerEnabled, loadCanonicalDefaults, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "../lib/canonical.js";
-import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
+import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
+import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
+import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { upsertJson } from "../lib/filemerge.js";
-import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
-import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
-import { stackRoot } from "../lib/paths.js";
+import { HOME, samePath } from "../lib/paths.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
 function yamlString(value: string): string {
@@ -70,36 +68,10 @@ function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value
   }
 }
 
-function hasClaudeManualApproval(configDir: string): boolean {
-  const content = readTextIfExists(path.join(configDir, "settings.json"));
-  if (content === null) return false;
 
-  try {
-    const root = JSON.parse(content) as unknown;
-    const permissions = isRecord(root) ? root.permissions : undefined;
-    const expected = loadCanonicalDefaults(stackRoot())["claude-code"]?.["permissions"];
-    return isRecord(permissions) && expected !== undefined && isDeepStrictEqual(permissions, expected);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * readonly → allowlist explícita; sin restricción → se omite `tools` y el
- * subagente hereda todo (Edit, Write, Bash, MCPs). La granularidad fina de
- * bash (solo git diff/log) no existe en el frontmatter de Claude Code: se da
- * Bash y el prompt del agente limita su uso (documentado en stack/agents/README.md).
- */
+/** Los lectores no reciben shell ni herramientas de escritura/delegación. */
 function toolsFor(agent: CanonicalAgent): string | null {
-  // Provider-only: el agente engram omite `tools` y hereda todo del provider
-  // oficial — una allowlist Stack filtraría sus tools oficiales.
-  if (agent.name === "engram") return null;
-  if (!agent.readonly) return null;
-  // Skill SIEMPRE: todos los subagentes cargan agent-delegation como primera
-  // acción obligatoria — sin la tool en la allowlist no podrían.
-  const tools = ["Read", "Grep", "Glob", "Skill"];
-  if (agent.bash !== "none") tools.push("Bash");
-  return tools.join(", ");
+  return agent.readonly ? "Read, Grep, Glob, Skill" : null;
 }
 
 /** Engram integrado por el plugin oficial de marketplace; sus hooks y skill de memoria no sustituyen al MCP user separado que registra el setup oficial y que Stack no posee ni muta. */
@@ -132,102 +104,17 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], v
     && current.args.every((arg, index) => arg === expectedArgs[index]);
 }
 
-function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][string], value: unknown, ctx: InstallContext): boolean {
-  if (isManagedOptionalStdioServer(server, value)) return true;
-  if (name !== DEVTOOLS_MCP_SERVER) return false;
-  const template = loadCanonicalMcp(ctx.stackDir).servers[DEVTOOLS_MCP_SERVER];
-  return template !== undefined
-    && isManagedOptionalStdioServer(materializeCanonicalDevtoolsServerForRemoval(template), value);
-}
-
-export const claudeCodeAdapter: Adapter = {
-  id: "claude-code",
-  name: "Claude Code",
-  detect: detectClaudeCode,
-
-  reportCapabilities(configDir) {
-    const prompt = readTextIfExists(path.join(configDir, "CLAUDE.md"));
-    return createLocalCapabilityReport("claude-code", [
-      ...(hasManagedMarkdownSection(prompt, "system-prompt")
-        ? [{
-            id: "policy-guidance",
-            state: "prompt-only",
-            reason: "The managed policy prompt is advisory and cannot enforce the policy",
-            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
-          }]
-        : []),
-      ...(hasClaudeManualApproval(configDir)
-        ? [{
-            id: "tool-approval",
-            state: "manual",
-            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
-            evidence: { source: "jorgex-stack-claude-approval-policy", version: "1" },
-          }]
-        : []),
-    ]);
-  },
-
-  paths(configDir) {
-    return {
-      systemPromptFile: path.join(configDir, "CLAUDE.md"),
-      agentsDir: path.join(configDir, "agents"),
-      skillsDir: path.join(configDir, "skills"),
-      commandsDir: path.join(configDir, "commands"),
-      pluginsDir: null,
-      scriptsDir: path.join(configDir, "scripts"),
-      outputStylesDir: path.join(configDir, "output-styles"),
-      profilesDir: null,
-    };
-  },
-
-  renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
-    // El orchestrator (primary) es un output style del agente principal. Su
-    // body es solo el wrapper; planSkills instala el workflow canónico.
-    if (agent.mode === "primary") {
-      const title = agent.name.charAt(0).toUpperCase() + agent.name.slice(1);
-      const style = `---\nname: ${title}\ndescription: ${yamlString(agent.description)}\nkeep-coding-instructions: true\n---\n${agent.body}`;
-      return [{ file: `${agent.name}.md`, content: style, kind: "output-style" as const }];
-    }
-
-    const lines = [`name: ${agent.name}`, `description: ${yamlString(agent.description)}`];
-    const tools = toolsFor(agent);
-    if (tools !== null) lines.push(`tools: ${tools}`);
-    lines.push(`model: ${resolveAgentModel(models, agent.name, agent.tier).model}`);
-
-    // Sin bloqueos por-subagente: el git destructivo (reset/clean/checkout con
-    // descarte/restore/push --force) cae en el `ask` global de `Bash` y pide
-    // aprobación explícita — decisión #153 (2026-09-17): ask con vía de escape,
-    // no bloqueo. El primary hereda el global sin más.
-
-    return [
-      {
-        file: `${agent.name}.md`,
-        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
-        kind: "agent" as const,
-      },
-    ];
-  },
-
-  renderCommand(file, content) {
-    // Dialecto de input: {{input}} (OpenCode) → $ARGUMENTS (Claude Code).
-    return { file, content: content.replace(/\{\{input\}\}/g, "$ARGUMENTS") };
-  },
-
-  planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {
+function planClaudePermissions(ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
-    const { scriptsDir } = this.paths(ctx.configDir);
     const original = readTextIfExists(path.join(ctx.configDir, "settings.json"));
     const contentSource = original === null || original.trim() === "" ? null : original;
 
     // El formato canónico ES el de Claude Code: upsert directo en settings.json.
     const settingsFile = path.join(ctx.configDir, "settings.json");
-    let content = upsertNativeHooks(contentSource, canonical, scriptsDir);
+    let content = contentSource ?? "{}";
 
-    // Permisos por defecto: se siembran en config fresca o vacía (vía este
-    // hooks-path en settings.json, nunca vía main-config). Una config
-    // existente se preserva byte a byte y solo avisa cuando el bloque
-    // difiere del default; con --upgrade-permissions se reemplaza el bloque
-    // entero (el pipeline hace backup antes de escribir).
+    // Permisos por defecto: se siembran en settings.json fresca o vacía. Una config
+    // existente se preserva byte a byte y solo avisa cuando el bloque difiere.
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
     const canonicalPermissions = defaults?.["permissions"];
     if (contentSource === null) {
@@ -244,25 +131,53 @@ export const claudeCodeAdapter: Adapter = {
     } else if (canonicalPermissions !== undefined) {
       content = upsertJson(content, (root) => {
         if (isDeepStrictEqual(root["permissions"], canonicalPermissions)) return;
-        if (ctx.upgradePermissions === true) {
-          root["permissions"] = canonicalPermissions;
-        } else {
-          ctx.warnings.push(
-            "Claude Code: permissions block differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.",
-          );
-        }
+        ctx.warnings.push(
+          "Claude Code: permissions block differs from the stack default and was left untouched; review/edit the native settings.json manually after creating a backup. Replacing permissions can discard personal choices and extra hardenings.",
+        );
       });
     }
     actions.push({ kind: "write", target: settingsFile, content });
 
-    const scriptsSource = path.join(ctx.stackDir, "scripts");
-    if (fs.existsSync(scriptsSource)) {
-      for (const f of fs.readdirSync(scriptsSource)) {
-        actions.push({ kind: "copy", source: path.join(scriptsSource, f), target: path.join(scriptsDir, f) });
-      }
-    }
     return actions;
+}
+
+export const claudeCodeAdapter: Adapter = {
+  id: "claude-code",
+  name: "Claude Code",
+  detect: detectClaudeCode,
+
+
+  paths(configDir) {
+    const agentsHome = samePath(configDir, process.env.CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude")) ? HOME : path.dirname(configDir);
+    return {
+      systemPromptFile: path.join(configDir, "CLAUDE.md"),
+      agentsDir: path.join(configDir, "agents"),
+      skillsDir: path.join(agentsHome, ".agents", "skills"),
+      skillLinksDir: path.join(configDir, "skills"),
+      sharedPromptFile: path.join(agentsHome, ".agents", "AGENTS.md"),
+      pluginsDir: null,
+      scriptsDir: path.join(configDir, "scripts"),
+    };
   },
+
+  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
+    const lines = [`name: ${agent.name}`, `description: ${yamlString(agent.description)}`];
+    const tools = toolsFor(agent);
+    if (tools !== null) lines.push(`tools: ${tools}`);
+    const selected = agentModelChoice(models, agent.name);
+    if (selected.model) lines.push(`model: ${yamlString(selected.model)}`);
+    if (selected.variant) lines.push(`effort: ${yamlString(selected.variant)}`);
+    if (!agent.spawn) lines.push("disallowedTools: Agent");
+
+    return [
+      {
+        file: `${agent.name}.md`,
+        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
+        kind: "agent" as const,
+      },
+    ];
+  },
+
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     // MCP de scope user: ~/.claude.json (hermano del configDir, así --target-dir
@@ -308,20 +223,20 @@ export const claudeCodeAdapter: Adapter = {
         }
         if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
           if (owned) {
-            if (isOwnedDevtoolsServer(name, server, existing, ctx)) delete servers[name];
+            if (isManagedOptionalStdioServer(server, existing)) delete servers[name];
             mcpOwnership.push({ server: name, owned: false });
           }
           continue;
         }
         if (server.optional && existing !== undefined) {
-          if (!owned || !isOwnedDevtoolsServer(name, server, existing, ctx)) {
+          if (!owned || !isManagedOptionalStdioServer(server, existing)) {
             throw new Error(`Claude Code: ${name}: conflicto con servidor MCP existente ajeno o modificado; se conserva. Retira esa entrada explícitamente antes de activar DevTools gestionado.`);
           }
         }
         if (server.transport === "stdio") {
           if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
             ctx.warnings.push(
-              "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta install.",
+              "Engram no detectado: el MCP 'engram' no se registra. Abre jorgex-stack → Instalar/configurar → Configuración por runtime y elige Aplicar para instalar/configurar la integración oficial.",
             );
             continue;
           }
@@ -354,26 +269,20 @@ export const claudeCodeAdapter: Adapter = {
       }
     });
 
-    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }];
+    return [{ kind: "write", target: file, content, ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}) }, ...planClaudePermissions(ctx)];
   },
 
-  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
+  planUnmerge(mcp: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
-    const { systemPromptFile } = this.paths(ctx.configDir);
-
+    const { systemPromptFile, sharedPromptFile } = this.paths(ctx.configDir);
+    if (sharedPromptFile) {
+      const shared = readTextIfExists(sharedPromptFile);
+      if (shared !== null) actions.push({ kind: "write", target: sharedPromptFile, content: removeSystemPromptSections(shared) });
+    }
     const prompt = readTextIfExists(systemPromptFile);
     if (prompt !== null) {
       const content = removeSystemPromptSections(prompt);
       actions.push({ kind: "write", target: systemPromptFile, content });
-    }
-
-    const settingsFile = path.join(ctx.configDir, "settings.json");
-    const settings = readTextIfExists(settingsFile);
-    if (settings !== null) {
-      const content = removeNativeHooks(settings, hooks);
-      if (content !== null) {
-        actions.push({ kind: "write", target: settingsFile, content: content.trim() === "{}" ? "" : content });
-      }
     }
 
     const mainFile = path.join(path.dirname(ctx.configDir), `${path.basename(ctx.configDir)}.json`);
@@ -412,7 +321,7 @@ export const claudeCodeAdapter: Adapter = {
             continue;
           }
           if (ctx.ownedMcpServers?.has(name) === true) {
-            if (isOwnedDevtoolsServer(name, server, servers[name], ctx)) delete servers[name];
+            if (isManagedOptionalStdioServer(server, servers[name])) delete servers[name];
             mcpOwnership.push({ server: name, owned: false });
           }
         }
@@ -700,7 +609,7 @@ export async function verifyOfficialSetup(args: {
       ok: false,
       layers: [...passed, ...missing],
       duplicates: false,
-      reason: `Claude Code: incompatible existing setup (obsolete mcp/engram.json without valid MCP in ${claudeOfficialMcpFile(args.configDir, args.homeDir, explicit)}). Update to Engram 2.0.0+ and rerun install; never auto-replace existing binary. (falta: ${missing.join(", ")}).`,
+      reason: `Claude Code: incompatible existing setup (obsolete mcp/engram.json without valid MCP in ${claudeOfficialMcpFile(args.configDir, args.homeDir, explicit)}). Revisa la configuración Engram existente y aplica la unidad desde jorgex-stack → Instalar/configurar → Configuración por runtime; nunca sustituir silenciosamente el binario existente. (falta: ${missing.join(", ")}).`,
     };
   }
   return {

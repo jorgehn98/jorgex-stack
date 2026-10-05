@@ -1,290 +1,116 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
-import type { RuntimeId, Tier } from "./adapters/types.js";
-import { detectClaudeCode, detectCodex, detectOpenCode, runDetectedBin } from "./lib/detect.js";
-import { loadCanonicalAgents } from "./lib/canonical.js";
-import {
-  ensureModelMapFile,
-  loadModelMap,
-  modelMapFile,
-  resolveAgentModel,
-  type ModelMap,
-  type RuntimeModelMap,
-  type TierModel,
-} from "./lib/model-map.js";
-import { stackRoot } from "./lib/paths.js";
-import { writeText } from "./lib/fsx.js";
+import type { RuntimeId } from "./adapters/types.js";
+import type { AgentModel } from "./lib/agent-model.js";
+import { ADAPTERS, makeContext, stateDirectory, assertOpenCodeV2Preflight } from "./install.js";
+import { discoverModels, openCodeServerAddress, type ModelCatalog } from "./lib/native-model-catalog.js";
+import { readAgentModel, saveAgentModel } from "./lib/agent-model.js";
 
-const TIERS: Tier[] = ["strong", "standard", "cheap"];
+const KEEP = { action: "keep" } as const;
+const INHERIT = { action: "inherit" } as const;
+const MANUAL = { action: "manual" } as const;
+const BACK = { action: "back" } as const;
 
-/** Niveles de reasoning effort (variant en OpenCode, model_reasoning_effort en Codex). */
-const EFFORTS = ["low", "medium", "high", "xhigh"];
-// `max` solo se ofrece para modelos conocidos; no certifica el soporte del backend.
-const CODEX_EFFORTS = [...EFFORTS, "max"];
-
-const CLAUDE_ALIASES = ["fable", "opus", "sonnet", "haiku", "inherit"];
-
-/**
- * Lista curada de modelos de Codex (login ChatGPT) — sin typos: se elige, no
- * se escribe. "default" usa el modelo vigente del CLI y nunca caduca; los IDs
- * concretos se refrescan con cada release del stack (septiembre 2026:
- * developers.openai.com/codex/models). "custom" queda como vía de escape.
- */
-export const CODEX_MODELS = [
-  "default",
-  "gpt-6-astra",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-];
-const CODEX_CUSTOM = "__custom__";
-
-const CANCEL = Symbol("cancel");
-
-/** Lista en vivo de modelos conectados en OpenCode (PRD §6.1 / D6). */
-function opencodeLiveModels(binPath: string): string[] | null {
-  const out = runDetectedBin(binPath, ["models"], 20_000);
-  if (out === null) return null;
-  const models = out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l !== "" && l.includes("/"));
-  return models.length > 0 ? models : null;
-}
-
-/** Subagentes canónicos agrupados por tier. El primary (orchestrator) nunca lleva modelo. */
-function agentsByTier(): Record<Tier, string[]> {
-  const grouped: Record<Tier, string[]> = { strong: [], standard: [], cheap: [] };
-  for (const agent of loadCanonicalAgents(path.join(stackRoot(), "agents"))) {
-    if (agent.mode === "subagent") grouped[agent.tier].push(agent.name);
-  }
-  return grouped;
-}
-
-function isCompleteRuntimeModelMap(models: Partial<RuntimeModelMap>): models is RuntimeModelMap {
-  return TIERS.every((tier) => models[tier]?.model);
-}
-
-interface Detection {
-  id: RuntimeId;
-  name: string;
-  installed: boolean;
-  options: string[] | null;
-}
-
-/**
- * Pregunta el modelo (y el reasoning effort donde el runtime lo soporta) para
- * un sujeto ("tier strong (…)" o "code-reviewer (tier standard)"):
- * - OpenCode → select de modelo (lista en vivo) + select de variant.
- * - Claude Code → select de alias; no existe effort por subagente.
- * - Codex → select curado de modelo (con vía de escape) y effort; `max` solo
- *   aparece para modelos conocidos, y la variante actual se conserva al
- *   mantener el mismo modelo; para `custom`/`default` no certifica el
- *   soporte del backend.
- */
-async function askModel(det: Detection, subject: string, current?: TierModel): Promise<TierModel | typeof CANCEL> {
-  if (det.id === "codex") {
-    if (!current) throw new Error("Codex requiere un model-map base.");
-    const modelOptions = [
-      ...(CODEX_MODELS.includes(current.model) ? [] : [{ value: current.model, label: `${current.model} (actual)` }]),
-      ...CODEX_MODELS.map((m) => ({
-        value: m,
-        label: m === "default" ? "default — el del CLI, se actualiza solo (recomendado)" : m,
-      })),
-      { value: CODEX_CUSTOM, label: "otro… (escribir un ID a mano)" },
-    ];
-    let model = await p.select({
-      message: `${det.name} · ${subject} — modelo`,
-      options: modelOptions,
-      initialValue: current.model,
-    });
-    if (p.isCancel(model)) return CANCEL;
-    if (model === CODEX_CUSTOM) {
-      const typed = await p.text({
-        message: `${det.name} · ${subject} — ID exacto del modelo (minúsculas; compruébalo con /model dentro de codex)`,
-        initialValue: current.model,
-        validate: (v) => (!v || v.trim() === "" ? 'Vacío no — usa "default" o un ID.' : undefined),
-      });
-      if (p.isCancel(typed)) return CANCEL;
-      model = typed.trim().toLowerCase();
-    }
-    const efforts = ["gpt-6-astra", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(model)
-      ? CODEX_EFFORTS
-      : EFFORTS;
-    const keptEffort = model === current.model ? current.variant : undefined;
-    const effort = await p.select({
-      message: `${det.name} · ${subject} — reasoning effort`,
-      options: [
-        ...efforts.map((v) => ({ value: v, label: v })),
-        ...(keptEffort && !efforts.includes(keptEffort)
-          ? [{ value: keptEffort, label: `${keptEffort} (actual)` }]
-          : []),
-      ],
-      initialValue: keptEffort ?? "medium",
-    });
-    if (p.isCancel(effort)) return CANCEL;
-    return { model, variant: effort };
-  }
-
-  const optionsList = det.options!;
-  const options = optionsList.map((m) => ({ value: m, label: m }));
-  if (current && !optionsList.includes(current.model)) {
-    options.unshift({ value: current.model, label: `${current.model} (actual)` });
-  }
-  const choice = await p.select({
-    message: `${det.name} · ${subject} — modelo`,
-    options,
-    initialValue: current?.model,
-    maxItems: 12,
-  });
-  if (p.isCancel(choice)) return CANCEL;
-
-  // Claude Code: alias auto-actualizable y listo — no existe effort por subagente.
-  if (det.id === "claude-code") return { model: choice };
-
-  // OpenCode: variant (reasoning effort). `opencode models` no expone qué
-  // variants soporta cada modelo, así que la lista es genérica: si el modelo
-  // no los soporta, deja "(sin variant)". Nunca se arrastra el variant del
-  // modelo anterior (podría no existir en el nuevo).
-  const keptCurrent = current && choice === current.model && current.variant ? current.variant : null;
-  const variant = await p.select({
-    message: `${det.name} · ${subject} — reasoning effort (variant; solo si el modelo lo soporta)`,
+export async function chooseAgentModel(runtime: RuntimeId, current: AgentModel, catalog: ModelCatalog, field: "model" | "effort" | "both" = "both"): Promise<AgentModel | undefined> {
+  if (catalog.warning) p.log.warn(catalog.warning);
+  p.log.info("Catálogo observado en la ubicación actual; un ID no prueba acceso. El arranque nativo puede cargar plugins/hooks y cachés.");
+  const chosen = field === "effort" ? KEEP : await p.select<string | typeof KEEP | typeof INHERIT | typeof MANUAL | typeof BACK>({
+    message: "Modelo del agente",
     options: [
-      { value: "", label: "(sin variant — el default del modelo)" },
-      ...EFFORTS.map((v) => ({ value: v, label: v })),
-      ...(keptCurrent && !EFFORTS.includes(keptCurrent) ? [{ value: keptCurrent, label: `${keptCurrent} (actual)` }] : []),
-    ],
-    initialValue: keptCurrent ?? "",
+      { value: KEEP, label: `Mantener ${current.model ?? "herencia"}${current.model && !catalog.models.some((model) => model.id === current.model) ? " (no figura en el catálogo)" : ""}` },
+      { value: INHERIT, label: "Heredar — sin override de modelo" },
+      ...catalog.models.map((model) => ({ value: model.id, label: `${model.name} · ${model.id}` })),
+      { value: MANUAL, label: "Introducir ID exacto (sin acreditar acceso)" },
+      { value: BACK, label: "Volver" },
+    ], maxItems: 12,
   });
-  if (p.isCancel(variant)) return CANCEL;
-  return { model: choice, ...(variant ? { variant } : {}) };
+  if (p.isCancel(chosen) || chosen === BACK) return undefined;
+  let model = chosen === KEEP ? current.model : chosen === INHERIT ? undefined : chosen as string;
+  if (chosen === MANUAL) {
+    p.log.warn("ID manual: no se certifica soporte ni entitlement; consulta el runtime si falla.");
+    const typed = await p.text({ message: "ID exacto (sin normalizar ni sustituir aliases)", initialValue: current.model, validate: (value) => !value?.trim() || /[\x00-\x1f\x7f]/.test(value) ? "Introduce un ID sin caracteres de control." : undefined });
+    if (p.isCancel(typed)) return undefined;
+    model = typed.trim();
+  }
+  if (field === "model") {
+    if (runtime === "opencode" && !model && current.variant) {
+      p.log.warn("Heredar modelo requiere heredar primero la variante de OpenCode; selección conservada.");
+      return undefined;
+    }
+    if (model !== current.model && current.variant) p.log.info("Se conserva el esfuerzo/variante existente, sin acreditar soporte para el nuevo modelo.");
+    return { ...(model ? { model } : {}), ...(current.variant ? { variant: current.variant } : {}) };
+  }
+  const efforts = model ? catalog.models.find((item) => item.id === model)?.efforts : undefined;
+  if (!efforts) p.log.info("Esfuerzos/variantes desconocidos para esta selección: solo mantener o heredar.");
+  const effort = await p.select<string | typeof KEEP | typeof INHERIT | typeof MANUAL | typeof BACK>({
+    message: runtime === "opencode" ? "Variante del agente (no escala universal)" : "Esfuerzo del agente",
+    options: [
+      { value: KEEP, label: `Mantener ${current.variant ?? "herencia"}${current.variant && !efforts?.includes(current.variant) ? " (no acreditado para esta selección)" : ""}` },
+      { value: INHERIT, label: "Heredar — sin override de esfuerzo/variante" },
+      ...(efforts ?? []).map((value) => ({ value, label: value })),
+    ],
+  });
+  const variant = p.isCancel(effort) || effort === KEEP ? current.variant : effort === INHERIT ? undefined : effort as string;
+  if (runtime === "opencode" && !model && variant) {
+    p.log.warn("OpenCode requiere modelo del agente para persistir una variante; se conserva la selección, sin guardar.");
+    return undefined;
+  }
+  return { ...(model ? { model } : {}), ...(variant ? { variant } : {}) };
 }
 
-export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[] }): Promise<number> {
-  const file = ensureModelMapFile();
-  const map = loadModelMap();
-  if (opts.yes || !process.stdout.isTTY) {
-    // v2: el roster OpenCode vive en DEFAULT_MODEL_MAP, así que un install
-    // fresh (incluido --yes/sin TTY) no exige selección previa ni consulta
-    // catálogo, detección ni credenciales.
-    console.log(`Model-map en ${file}. Edítalo o ejecuta 'models' sin --yes para el picker.`);
-    return 0;
-  }
-
-  p.intro("jorgex-stack models — modelos por tier o por subagente");
-  const grouped = agentsByTier();
-  const tierLine = (tier: Tier): string => grouped[tier].join(", ");
-  const agentCount = TIERS.reduce((n, tier) => n + grouped[tier].length, 0);
-
-  const detections: Detection[] = [];
-  if (opts.runtimes.includes("opencode")) {
-    const opencode = detectOpenCode();
-    detections.push({
-      id: "opencode",
-      name: "OpenCode",
-      installed: opencode.installed,
-      options: opencode.binPath ? opencodeLiveModels(opencode.binPath) : null,
-    });
-  }
-  if (opts.runtimes.includes("claude-code")) {
-    detections.push({ id: "claude-code", name: "Claude Code", installed: detectClaudeCode().installed, options: CLAUDE_ALIASES });
-  }
-  if (opts.runtimes.includes("codex")) {
-    detections.push({ id: "codex", name: "Codex CLI", installed: detectCodex().installed, options: null });
-  }
-
-  for (const det of detections) {
-    if (!det.installed) {
-      p.log.info(`${det.name}: no instalado — se mantienen los defaults.`);
-      continue;
+export async function editAgent(runtime: RuntimeId, name: string, route: string): Promise<void> {
+  const adapter = ADAPTERS[runtime];
+  const detection = adapter.detect();
+  if (!detection.installed || !detection.binPath) { p.log.warn("Runtime ausente; sin cambios."); return; }
+  if (runtime === "opencode") assertOpenCodeV2Preflight({}, detection.binPath);
+  const ctx = makeContext(adapter, detection.configDir);
+  const file = path.join(adapter.paths(detection.configDir).agentsDir, `${name}.${runtime === "codex" ? "toml" : "md"}`);
+  if (!fs.existsSync(file) || !ctx.ownedFiles?.has(file)) { p.log.warn("Agente ausente o ajeno; aplica su definición gestionada primero."); return; }
+  let unit = readAgentModel(runtime, file);
+  let draft = unit.selection;
+  let catalog: ModelCatalog | undefined;
+  while (true) {
+    p.log.info(`JorgeX Stack · ${route}\nModelo: ${draft.model ?? "herencia"} · Esfuerzo/variante: ${draft.variant ?? "herencia"}`);
+    let action: string | symbol = await p.select({ message: "Agente", options: [
+      { value: "model", label: "Modelo" }, { value: "effort", label: "Esfuerzo / variante" },
+      { value: "save", label: "Guardar y aplicar" }, { value: "back", label: "Volver" },
+    ] });
+    const dirty = JSON.stringify(draft) !== JSON.stringify(unit.selection);
+    const leaving = p.isCancel(action) || action === "back";
+    if (leaving) {
+      if (!dirty) return;
+      action = await p.select({ message: "Cambios pendientes de este agente", options: [
+        { value: "save", label: "Guardar y aplicar" }, { value: "discard", label: "Descartar" }, { value: "continue", label: "Continuar editando" },
+      ] });
+      if (action === "discard") return;
+      if (p.isCancel(action) || action === "continue") continue;
     }
-    if (det.id === "opencode" && det.options === null) {
-      p.log.warn("OpenCode: no se pudo listar `opencode models` — se mantiene la selección actual.");
-      continue;
-    }
-
-    const existingRuntimeMap = map[det.id];
-    const runtimeMap: Partial<RuntimeModelMap> & Pick<RuntimeModelMap, "overrides"> = {
-      ...existingRuntimeMap,
-    };
-
-    p.log.message(
-      `${det.name} — tiers y sus subagentes:\n` +
-        `  strong   → ${tierLine("strong")}\n` +
-        `  standard → ${tierLine("standard")}\n` +
-        `  cheap    → ${tierLine("cheap")}`,
-    );
-    const mode = await p.select({
-      message: `${det.name} — ¿cómo asignar los modelos?`,
-      options: [
-        { value: "tier", label: "Por tier — 3 grupos (rápido)" },
-        { value: "agent", label: `Por subagente — uno a uno (${agentCount} subagentes, control total)` },
-      ],
-      initialValue: "tier",
-    });
-    if (p.isCancel(mode)) return cancelled();
-
-    if (mode === "tier") {
-      for (const tier of TIERS) {
-        const asked = await askModel(det, `tier ${tier} (${tierLine(tier)})`, existingRuntimeMap?.[tier]);
-        if (asked === CANCEL) return cancelled();
-        runtimeMap[tier] = asked;
-      }
-      const overrideCount = Object.keys(runtimeMap.overrides ?? {}).length;
-      if (overrideCount > 0) {
-        p.log.info(
-          `${det.name}: se conservan ${overrideCount} ajustes por subagente previos — elige "Por subagente" para revisarlos.`,
-        );
-      }
-    } else {
-      // Por subagente: solo se guarda como override lo que difiera de su tier,
-      // así el model-map queda mínimo y el modo "por tier" sigue mandando
-      // sobre los agentes no personalizados.
-      const overrides = { ...(runtimeMap.overrides ?? {}) };
-      for (const tier of TIERS) {
-        let base = runtimeMap[tier];
-        for (const name of grouped[tier]) {
-          const current = existingRuntimeMap
-            ? resolveAgentModel(existingRuntimeMap, name, tier)
-            : undefined;
-          const asked = await askModel(det, `${name} (tier ${tier})`, current);
-          if (asked === CANCEL) return cancelled();
-          if (!base) {
-            base = asked;
-            runtimeMap[tier] = base;
+    try {
+      if (action === "save") {
+        if (!dirty) { p.log.info("Sin cambios pendientes."); continue; }
+        saveAgentModel(runtime, file, unit.content, draft, ctx.ownedFiles!, detection.configDir, path.join(stateDirectory(), "backups"));
+        unit = readAgentModel(runtime, file);
+        draft = unit.selection;
+        p.log.success("Agente guardado con backup. Nueva sesión o reload para usarlo; volver no deshace lo guardado.");
+        if (leaving) return;
+      } else if (action === "model" || action === "effort") {
+        if (!catalog) {
+          let server: string | undefined;
+          if (runtime === "opencode") {
+            const observed = openCodeServerAddress();
+            if (observed.warning) p.log.warn(observed.warning);
+            const answer = await p.text({ message: "Servidor OpenCode v2 existente (loopback; URL nativa observada si disponible)", initialValue: observed.url });
+            if (p.isCancel(answer)) continue;
+            server = answer;
           }
-          const sameAsTier = asked.model === base.model && (asked.variant ?? "") === (base.variant ?? "");
-          if (sameAsTier) {
-            delete overrides[name];
-          } else {
-            // `variant: ""` explícito = limpiar el effort del tier (un override
-            // sin la clave heredaría el variant base tras el JSON round-trip).
-            overrides[name] = {
-              model: asked.model,
-              ...(asked.variant ? { variant: asked.variant } : base.variant ? { variant: "" } : {}),
-            };
-          }
+          catalog = await discoverModels(runtime, detection.binPath, process.cwd(), server);
         }
+        draft = await chooseAgentModel(runtime, draft, catalog, action) ?? draft;
       }
-      if (Object.keys(overrides).length > 0) runtimeMap.overrides = overrides;
-      else delete runtimeMap.overrides;
+    } catch (error) {
+      p.log.error(error instanceof Error ? error.message : "No se pudo aplicar el agente.");
+      p.log.warn("Unidad pendiente; lo guardado anteriormente permanece. Reintenta explícitamente Guardar o descarta.");
     }
-
-    if (!isCompleteRuntimeModelMap(runtimeMap)) {
-      throw new Error(`${det.name}: selección de modelos incompleta.`);
-    }
-    map[det.id] = runtimeMap;
   }
-
-  writeText(file, JSON.stringify(map satisfies ModelMap, null, 2) + "\n");
-  p.log.success(`Guardado en ${file}`);
-  return 0;
-}
-
-function cancelled(): number {
-  p.cancel("Cancelado — no se ha guardado nada.");
-  return 1;
 }

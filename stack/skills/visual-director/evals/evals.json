@@ -1,0 +1,61 @@
+{
+  "skill_name": "visual-director",
+  "evals": [
+    {
+      "id": 1,
+      "name": "reel-marketing-feature-fotografos",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Soy responsable de producto de Lumen Suite, una herramienta B2B para fotógrafos profesionales que acaba de añadir galería, reservas y contratos. Quiero un Reel vertical de marketing que presente esa función, dirigido a fotógrafos: busco una pieza de producto que venda el beneficio, no un tutorial de clic a clic. Tengo fotos de producto autorizadas y una maqueta gráfica de la interfaz, pero ningún repositorio ni vídeo; además hay retratos que quizá usaríamos y cuyo permiso de imagen y publicidad aún no está confirmado. Solo quiero la propuesta: no instales nada ni escribas código. Dame dos o tres direcciones distintas, recomienda una e incluye un prototipo corto y duraciones provisionales; si la voz no aporta, puede no haber narración. La exportación sería a 30 fps nominales, aunque todavía no tengo una muestra real.",
+      "expected_output": "Contrato de fidelidad esperado: propuesta de marketing (no tutorial paso a paso) con dos o tres direcciones propias del tema, una recomendación razonada, un prototipo corto y duraciones provisionales. Trata la autorización de retratos/publicidad como permiso abierto antes de usar material real y se apoya solo en fotos de producto autorizadas y la maqueta de UI. No afirma haber inspeccionado repositorio, vídeo ni audio que no se entregaron. No instala, no produce código ni vídeo, y decide captura o voz según necesidad real, sin imponerlas por defecto. Declara los 30 fps como objetivo pendiente de muestra, sin inventar archivos ni fijar duraciones rígidas.",
+      "files": [],
+      "assertions": [
+        "Propone dos o tres direcciones de marketing diferenciadas y vinculadas al beneficio para fotógrafos, no un tutorial de clics; la dirección recomendada incluye una llamada a la acción provisional clara, sin inventar destino o prestación reales.",
+        "Recomienda una dirección con razones ligadas al brief e incluye un plan de prototipo corto, sin afirmar haber producido un archivo o render real.",
+        "Trata el permiso de imagen y publicidad de los retratos como una puerta abierta antes de usarlos, y se apoya solo en las fotos de producto autorizadas y la maqueta de UI.",
+        "No inventa hechos de inspección (repositorio, vídeo, audio, render o métricas) y presenta duraciones y los 30 fps como provisionales u objetivo, sin afirmar cadencia revisada.",
+        "Se mantiene en propuesta: sin instalar, sin código y sin añadir voz por defecto, pudiendo proponerla opcional si la justifica."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "web-museo-taller-hero-generativo",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Gestiono la web de un museo-taller que vende un objeto físico táctil; la marca y sus tokens ya están aprobados, aunque no te paso los valores. La web es HTML y CSS vanilla, con GSAP y un GLB ya existentes que puedes reutilizar si ayudan; no quiero resetear la marca ni cambiar el stack. Busco un recorrido más distintivo y orientado a conversión, y me interesa un hero generado como asset además de la parte web. Ahora mismo no hay ningún MCP de generación conectado. Dame solo la propuesta, sin nuevas dependencias ni código, eligiendo entre continuar la marca actual o replantear el recorrido visual sin rehacer la identidad. Si encaja, puedes plantear un CTA de contacto o un diálogo como parte de la experiencia. No te entrego capturas ni sé qué habrá disponible para revisar.",
+      "expected_output": "Contrato de fidelidad esperado: conserva la marca aprobada, los tokens, el stack vanilla y GSAP/GLB existentes sin inventar valores ni resetear identidad, y entrega solo propuesta sin nuevas dependencias ni código. Enruta el trabajo como web más el asset visual generado que propone (imagen o vídeo según el brief), sin sustituir el stack ni imponer 3D/GLB o un motor, y manteniendo el 3D condicional a que aporte. Sin MCP generativo conectado, es neutro de proveedor: pregunta plataforma/conector en vez de imponerlo o instalarlo. Cubre recorrido y conversión con accesibilidad y fallback de rendimiento, y un CTA usable con independencia del motion; cualquier diálogo de contacto o reserva es estado de UI con éxito simulado, no backend. No reclama capturas ni validaciones que no se le dieron, ni convierte el brief en un cuestionario largo.",
+      "files": [],
+      "assertions": [
+        "Conserva marca, tokens y stack aprobados (vanilla, GSAP y GLB) sin inventar valores ni familias no entregados y sin resetear la identidad.",
+        "Planifica la web y el asset visual generado que propone (imagen o vídeo según el brief), sin sustituir el stack ni imponer 3D/GLB o un motor, y mantiene el 3D condicional a que aporte.",
+        "Si no hay MCP o capacidad generativa conectada, solicita o deja pendiente la elección de plataforma y los permisos necesarios, sin imponer proveedor ni configurar, instalar o subir material automáticamente; el conector concreto puede verificarse después de elegir plataforma.",
+        "Aborda recorrido de lectura, teclado, reduced-motion, CTA y fallback de rendimiento de forma específica y significativa, no como una lista de palabras.",
+        "La propuesta es honesta: no afirma capturas ni backend reales, y cualquier diálogo o estado de UI se plantea como propuesta con éxito simulado."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "campana-jazz-cartel-miniatura",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Trabajo en el festival de jazz de una biblioteca y quiero un cartel y una miniatura con la misma identidad a partir de un kit ya aprobado. El kit documenta roles de paleta (fondo, texto, acento) y estilos tipográficos (titular y cuerpo), con licencias de fuentes declaradas, pero no tengo a mano los valores ni las familias. El texto exacto es: «Noche de Jazz», «Biblioteca Río», «Sábado 14 de noviembre», «Entrada libre». El cartel es 1080x1350 y la miniatura 480x270; la tipografía es la protagonista, sin fotos, animación, 3D ni fotografía generada. Te delego la composición: quiero dos variaciones y tu recomendación. Solo la propuesta; no necesito un PDF terminado ni una previsualización real, porque no te entrego los archivos de fuentes.",
+      "expected_output": "Contrato de fidelidad esperado: entrega gráfica fija (cartel y miniatura) con identidad común y enfoque tipográfico, sin foto, animación, 3D ni generación. Reutiliza el kit aprobado y trata paleta, estilos y textos como insumos documentados, sin inventar valores ni familias, sin sustituir la tipografía o paleta por otras y sin reescribir el brand kit desde una propuesta. Respeta el texto exacto y plantea dos variaciones diferenciadas con jerarquía real y una recomendación, no un escalado ciego. Al ser solo propuesta, no fabrica un PDF terminado ni afirma una previsualización real, y planifica la comprobación al tamaño objetivo para más adelante. No da por visto ningún archivo de fuentes que solo está declarado y deja la revisión final a criterio humano.",
+      "files": [],
+      "assertions": [
+        "Conserva las cuatro cadenas de texto exactas sin inventar valores ni familias y sin entregar un PDF o render falso.",
+        "Presenta dos composiciones significativas con una recomendación y la misma identidad, sin resetear la marca.",
+        "Adapta la composición a cada proporción y tamaño (1080x1350 y 480x270) en lugar de aplicar un escalado ciego.",
+        "Es una pieza tipográfica estática: sin fotos, 3D, motion ni generación, y sin añadir herramientas ajenas al encargo.",
+        "Trata el kit como ejemplo aprobado y no sobrescribe el canon; deja la comprobación al tamaño real y la validación de licencias para más adelante."
+      ]
+    },
+    {
+      "id": 4,
+      "name": "edicion-video-grabado-espanol",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Tengo una grabación en español de 46 s, VFR, que quiero editar para YouTube e Instagram: recortar repeticiones, añadir subtítulos y algo de motion si ayuda. Solo te doy un extracto de transcripción declarada, con segmentos estimados y no tiempos de palabra: 0.8–6.2 «Hoy quiero enseñarte mi nueva galería.»; 6.4–13.1 «Puedes presentar tu trabajo y recibir reservas.»; 13.5–20.0 «Puedes presentar tu trabajo y recibir reservas.»; 23.0–39.0 «En la demostración final verás la galería, las reservas y el contrato funcionando juntos.»; de 39 a 46 hay un cierre visual sin habla. No tienes el vídeo ni el audio y no hay permisos de subida. Tienes HyperFrames y Remotion declarados como instalados, aunque no sé qué modelos de transcripción hay. Quiero únicamente la propuesta antes de compartir archivos: sin ejecutar, sin borrar originales y sin instalar modelos. Dame un flujo de trabajo y los cortes candidatos a partir de esos rangos estimados.",
+      "expected_output": "Contrato de fidelidad esperado: entrega un flujo de trabajo y una lista de cortes candidatos construida solo con los rangos estimados anotados, sin presentarlos como tiempos de palabra reales ni como audio verificado. Trata la línea repetida (6.4–13.1 y 13.5–20.0) como decisión de sentido, sin dar por hecho el corte final, y cubre subtítulos y motion sutil opcional para YouTube e Instagram sin ejecutar. Conserva el máster original y no borra ni renderiza nada; no instala modelos y condiciona el uso de futuras herramientas/MCP/modelos, incluida una posible retranscripción, a confirmación. No afirma haber oído voces o silencios ni haber previsualizado un resultado que no existe. La elección de método se mide como propuesta en curso, no por un render entregado.",
+      "files": [],
+      "assertions": [
+        "Propone cortes candidatos a partir de los rangos declarados, expresando incertidumbre y tratando la línea repetida como decisión de sentido, no como borrado final automático.",
+        "Preserva el máster y reconoce la duración completa de origen (46 s), incluido el cierre visual 39–46: no termina ni descarta automáticamente el material en la última palabra; un recorte del cierre, si lo propone, queda condicionado a revisar imagen y finalidad, sin inventar escenas, audio oído ni previsualización.",
+        "Distingue conceptualmente la transcripción estimada de las palabras reales y separa transcripción, alineación temporal y detección de actividad o silencio, sin afirmar silencios verificados.",
+        "Al cambiar la timeline, conserva el mapeo de subtítulos considerando palabras conservadas, velocidad y VFR/PTS antes que frames o sincronía, sin exigir retranscribir cada corte.",
+        "Respeta que es solo propuesta: sin borrar originales, renders, descargas de modelos ni subidas, y sin confundir herramienta instalada o declarada con modelos o permisos disponibles."
+      ]
+    }
+  ]
+}

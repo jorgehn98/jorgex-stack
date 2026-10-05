@@ -4,13 +4,11 @@ import crypto from "node:crypto";
 import { dataDir, HOME } from "./paths.js";
 import { ensureDir, isContainedIn, writeText, readTextIfExists } from "./fsx.js";
 
-const KEEP_BACKUPS = 10;
-
 export interface BackupInfo {
   id: string;
   label: string;
   createdAt: string;
-  files: { original: string; stored: string }[];
+  files: { original: string; stored: string; symlinkTarget?: string }[];
   /** Checksum compuesto del contenido respaldado (dedup de snapshots idénticos). */
   checksum?: string;
 }
@@ -23,7 +21,7 @@ function backupsRoot(): string {
 function compositeChecksum(files: string[]): string {
   const hash = crypto.createHash("sha256");
   for (const file of [...files].sort()) {
-    const content = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    const content = crypto.createHash("sha256").update(fs.lstatSync(file).isSymbolicLink() ? `symlink:${fs.readlinkSync(file)}` : fs.readFileSync(file)).digest("hex");
     hash.update(`${file}:${content}\n`);
   }
   return hash.digest("hex");
@@ -33,10 +31,10 @@ function compositeChecksum(files: string[]): string {
  * Copia los archivos existentes que se van a tocar a un snapshot con manifest.
  * Devuelve null si ninguno de los targets existe todavía (nada que respaldar).
  * Si el contenido es idéntico al backup más reciente, lo reutiliza en vez de
- * duplicarlo (así los slots de retención no se llenan de copias iguales).
+ * duplicarlo. Los snapshots se conservan hasta su limpieza deliberada.
  */
 export function createBackup(files: string[], label: string, root = backupsRoot()): BackupInfo | null {
-  const existing = [...new Set(files)].filter((f) => fs.existsSync(f));
+  const existing = [...new Set(files)].filter((f) => fs.lstatSync(f, { throwIfNoEntry: false }) !== undefined);
   if (existing.length === 0) return null;
 
   const checksum = compositeChecksum(existing);
@@ -57,13 +55,17 @@ export function createBackup(files: string[], label: string, root = backupsRoot(
 
   const entries = existing.map((original, i) => {
     const stored = path.join(dir, "files", `${String(i).padStart(4, "0")}-${path.basename(original)}`);
+    if (fs.lstatSync(original).isSymbolicLink()) {
+      const symlinkTarget = path.resolve(path.dirname(original), fs.readlinkSync(original));
+      fs.writeFileSync(stored, symlinkTarget);
+      return { original, stored, symlinkTarget };
+    }
     fs.copyFileSync(original, stored);
     return { original, stored };
   });
 
   const info: BackupInfo = { id, label, createdAt: new Date().toISOString(), files: entries, checksum };
   writeText(path.join(dir, "manifest.json"), JSON.stringify(info, null, 2) + "\n");
-  pruneBackups(root);
   return info;
 }
 
@@ -77,7 +79,7 @@ export function listBackups(root = backupsRoot()): BackupInfo[] {
     try {
       infos.push(JSON.parse(manifest) as BackupInfo);
     } catch {
-      // Manifest corrupto: se lista vacío para que sea visible y prune lo recicle.
+      // Manifest corrupto: se lista vacío para que sea visible, sin eliminarlo.
       infos.push({ id: entry.name, label: "(manifest corrupto)", createdAt: "", files: [] });
     }
   }
@@ -115,7 +117,7 @@ export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME)
     return false;
   };
   let restored = 0;
-  for (const { original, stored } of info.files) {
+  for (const { original, stored, symlinkTarget } of info.files) {
     if (!fs.existsSync(stored)) continue;
     // El manifest del backup es estado local editable: nunca puede dirigir
     // una escritura fuera de la frontera (HOME en uso real).
@@ -132,15 +134,11 @@ export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME)
     }
     if (hasSymlinkAncestor(original)) continue;
     ensureDir(path.dirname(original));
-    fs.copyFileSync(stored, original);
+    if (symlinkTarget !== undefined) {
+      if (!isContainedIn(symlinkTarget, boundary) || fs.existsSync(original)) continue;
+      fs.symlinkSync(symlinkTarget, original, process.platform === "win32" ? "junction" : "dir");
+    } else fs.copyFileSync(stored, original);
     restored++;
   }
   return restored;
-}
-
-function pruneBackups(root: string): void {
-  const all = listBackups(root);
-  for (const old of all.slice(KEEP_BACKUPS)) {
-    fs.rmSync(path.join(root, old.id), { recursive: true, force: true });
-  }
 }

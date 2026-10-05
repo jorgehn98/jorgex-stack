@@ -303,9 +303,8 @@ describe("parseCanonicalAgent", () => {
 name: demo-agent
 description: Does demo things. Not for: production.
 mode: subagent
-tier: strong
 readonly: true
-bash: git-read
+bash: none
 spawn: false
 ---
 
@@ -319,19 +318,15 @@ Body text.
     expect(agent.name).toBe("demo-agent");
     expect(agent.description).toContain("Not for: production.");
     expect(agent.mode).toBe("subagent");
-    expect(agent.tier).toBe("strong");
     expect(agent.readonly).toBe(true);
-    expect(agent.bash).toBe("git-read");
+    expect(agent.bash).toBe("none");
     expect(agent.spawn).toBe(false);
     expect(agent.body).toContain("# Demo");
   });
 
-  it("aplica defaults: bash=full, spawn=true, readonly=false", () => {
-    const minimal = `---\nname: x\ndescription: d\nmode: primary\ntier: cheap\n---\nbody`;
-    const agent = parseCanonicalAgent(minimal, "x.md");
-    expect(agent.bash).toBe("full");
-    expect(agent.spawn).toBe(true);
-    expect(agent.readonly).toBe(false);
+  it("no inventa permisos por defecto si faltan campos", () => {
+    const minimal = `---\nname: x\ndescription: d\nmode: subagent\n---\nbody`;
+    expect(() => parseCanonicalAgent(minimal, "x.md")).toThrow(/falta/);
   });
 
   it("falla claramente si falta un campo requerido", () => {

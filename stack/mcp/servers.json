@@ -1,27 +1,16 @@
 {
-  "$comment": "Manifiesto MCP canónico (PRD D5): SOLO engram y context7. Sin secretos jamás — '${VAR}' son referencias que cada adapter traduce a la sintaxis nativa de su runtime: OpenCode '{env:VAR}' · Codex 'env_http_headers' · Claude Code no tiene sintaxis de referencia en ~/.claude.json, así que queda vacío y el usuario lo conecta a mano. El secreto vive en la variable de entorno del usuario, nunca en un archivo de config. Un valor que el usuario ya tenga puesto (literal o referencia) se preserva siempre. '{{ENGRAM_BIN}}' lo resuelve el instalador a la ruta del binario Engram detectado en la máquina (D7: nunca reinstala uno existente).",
+  "$comment": "Context7 compartido, sin secretos. Engram lo configura íntegramente su proveedor oficial; Browser Control utiliza MCP nativo en OpenCode/Pi.",
   "servers": {
-    "engram": {
-      "transport": "stdio",
-      "command": "{{ENGRAM_BIN}}",
-      "args": ["mcp", "--tools=agent"]
-    },
     "context7": {
       "transport": "http",
       "url": "https://mcp.context7.com/mcp",
       "headers": {
         "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
       },
-      "optionalSecrets": ["CONTEXT7_API_KEY"],
+      "optionalSecrets": [
+        "CONTEXT7_API_KEY"
+      ],
       "note": "Se instala vacío: cada usuario conecta su propia cuenta. Sin key, el instalador deja el header sin valor y context7 queda listo para configurar después."
-    },
-    "chrome-devtools": {
-      "transport": "stdio",
-      "command": "pnpm",
-      "args": ["dlx", "chrome-devtools-mcp@{{VERSION}}", "--isolated", "--redact-network-headers", "--no-performance-crux", "--no-usage-statistics"],
-      "optional": true,
-      "defaultEnabled": false,
-      "note": "Diagnóstico avanzado opt-in: modo full (~29 tools; ~5.8–7.7k tokens de schemas). Lanza Chrome instalado con un perfil temporal aislado, redacta cabeceras de red y desactiva CrUX/estadísticas."
     }
   }
 }

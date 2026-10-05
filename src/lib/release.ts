@@ -21,7 +21,6 @@ const GIT_LOCALE_ENV = { LC_ALL: "C", LANGUAGE: "C" } as const;
 // Exportadas para que un test asegure que la copia inline del clasificador en
 // .github/workflows/publish.yml no se desincronice de esta (fuente única real).
 export const PUBLICABLE_EXACT = new Set([
-  "upstreams.json",
   "package.json",
   "pnpm-lock.yaml",
   "tsconfig.json",

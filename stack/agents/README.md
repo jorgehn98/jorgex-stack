@@ -1,36 +1,9 @@
 # Agentes canónicos
 
-Una sola fuente por agente. El instalador los traduce al formato de cada runtime (PRD §6): Markdown+frontmatter para Claude Code y OpenCode, TOML para Codex. El workflow completo del orchestrator vive únicamente en `skills/orchestrator/SKILL.md`; el agente primary es un wrapper corto que obliga a cargar esa skill.
+Seis roles: implementer, analyst, reviewer, security-auditor, simplifier y generalist. El principal es el nativo de cada runtime y usa la skill orchestrator; no hay un agente primary propio.
 
-`codebase-analyst` es el único explorador general: recibe una pregunta y un alcance, y activa solo las comprobaciones de UI/renderizado o de servicios/datos que hagan falta. `type-design-analyzer` se reserva para una garantía relevante o una pregunta explícita de invariantes; añadir o renombrar un tipo trivial no lo activa.
+Cada Markdown declara nombre, descripción y capacidades, seguido del prompt. Sin tier, modelo o esfuerzo de fábrica. Los adapters proyectan el formato nativo y las preferencias personales se configuran por runtime, sin copiar cuerpos.
 
-## Frontmatter canónico
+`readonly`, `bash` y `spawn` describen la capacidad por defecto. Analyst/reviewer/security-auditor y simplifier son siempre lectores, sin shell general ni subdelegación; reciben el diff del coordinador. Implementer posee producción y pruebas. Generalist resuelve tareas acotadas sencillas. Simplifier siempre es lector; implementer aplica simplificaciones autorizadas con lean-code. La simplificación directa no requiere una review previa ni otro perfil.
 
-| Campo | Valores | Significado |
-|---|---|---|
-| `name` | kebab-case | Identificador (= nombre de archivo) |
-| `description` | texto | Cuándo usarlo — los runtimes lo usan para la auto-delegación |
-| `mode` | `primary` \| `subagent` | Agente principal o subagente delegable |
-| `tier` | `strong` \| `standard` \| `cheap` | Se resuelve a un modelo concreto por runtime vía model-map (PRD §6.1) |
-| `readonly` | `true` \| `false` | `true` → sin edición ni escritura de archivos |
-| `bash` | `none` \| `git-read` \| `full` | `none`: sin shell · `git-read`: solo los prefijos Git de lectura validados · `full`: Bash sujeto a la política general |
-| `spawn` | `false` (opcional) | `false` → no puede lanzar subagentes (default: puede) |
-
-## Traducción por adapter (en install)
-
-| Canónico | Claude Code | Codex | OpenCode |
-|---|---|---|---|
-| `tier` | alias `fable`/`opus`/`sonnet`/`haiku` según model-map | `model` + `model_reasoning_effort` | `provider/model` del model-map |
-| `readonly: true` | `tools: Read, Grep, Glob` (+Bash si aplica) | `sandbox_mode = "read-only"` | `permission: { edit: deny }` |
-| `bash: git-read` | `Bash` completo en tools — la restricción a Git read es un contrato de prompt en Claude Code | con `readonly: true` el sandbox read-only impide escrituras; con `readonly: false` la restricción es solo de prompt | catch-all `deny` y allow solo para `diff`, `diff --stat`, `diff --name-only`, `diff --cached`, `log` y `log --oneline -10`, con prefijos que desactivan pager, fsmonitor, firmas, ext-diff y textconv y colocan `--end-of-options` antes de refs/rutas |
-| `bash: none` | sin `Bash` en tools | sandbox read-only | `permission: { bash: deny }` |
-| `spawn: false` | sin tool `Agent`/`Task` | n/a | `permission: { task: deny }` |
-
-> Ojo: entre estos tres adapters, solo OpenCode aplica `git-read` de verdad. En Claude Code y Codex la combinación `readonly: false` + `bash: git-read` (p.ej. `docs-maintainer`) se degrada a shell completo guiado por prompt. En OpenCode, `full` hereda la política global y `none` deniega Bash. Pi mantiene su propia proyección validada.
-
-## Convenciones de contenido
-
-- Todo subagente termina con el **Result contract** (Status / Delegations / Risks) — el orchestrator lo procesa.
-- **Incertidumbre crítica no se improvisa**: si una decisión puede hacer la tarea incorrecta, el subagente devuelve `Status: blocked`/`partial` con **una pregunta concreta** al main agent/orchestrator dentro del Result contract; el trabajo de otro especialista sigue yendo como delegación normal. La regla completa está en la skill `agent-delegation`.
-- Las delegaciones usan el formato `→ [agent]: [work] — [paths] — [inputs]` (skill `agent-delegation`).
-- El flujo de trabajo lo define la skill `work-lifecycle`: `work/{nombre}/plan.md` es el tablero de estado y se mantiene entre merges intermedios; cada tarea formal declara en su columna `Spec` una única fuente recuperable: una observación Engram (proyecto + topic_key `work/{nombre}/task/{NN}`; ID local opcional, vinculado a esa identidad en el almacén actual) o Markdown canónico (`work/{nombre}/tasks/{NN}.md`). Los resultados de fase (`work/{nombre}/{fase}`), los checkpoints de PR (`work/{nombre}/pr/{NN}`) y el cierre final (`work/{nombre}/done`) viven en Engram. Los subagentes reciben el título y la referencia `Spec` exacta como solo lectura; guardan el resultado en el destino separado asignado o lo devuelven al coordinador. El get directo requiere un ID ya vinculado en el almacén actual; en otro caso, se resuelve por proyecto/topic antes del get o se bloquea, y se vuelve a comprobar la identidad al recuperar la spec; un mensaje directo o inline solo es un microencargo auxiliar de su tarea padre y, si crece o se independiza, debe persistirse antes de continuar.
+Los permisos efectivos deben comprobarse en cada runtime: un prompt de solo lectura no sustituye una restricción que el runtime sí permite aplicar. No modificar builtin del proveedor ni mantener aliases históricos de los roles retirados.

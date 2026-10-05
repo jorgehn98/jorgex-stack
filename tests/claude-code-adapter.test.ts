@@ -4,108 +4,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import type { InstallContext } from "../src/adapters/types.js";
-import type { CanonicalAgent } from "../src/lib/canonical.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
-import type { RuntimeModelMap } from "../src/lib/model-map.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
+import type { AgentModelChoices } from "../src/lib/agent-model.js";
 import { stackRoot } from "../src/lib/paths.js";
 
-const MODELS: RuntimeModelMap = {
-  strong: { model: "fable" },
-  standard: { model: "sonnet" },
-  cheap: { model: "haiku" },
+const MODELS: AgentModelChoices = {
 };
 
-function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
-  return {
-    name: "demo",
-    description: "Demo agent",
-    mode: "subagent",
-    tier: "strong",
-    readonly: false,
-    bash: "full",
-    spawn: true,
-    body: "\n# Demo\n\nBody.\n",
-    ...overrides,
-  };
-}
 
-describe("claudeCodeAdapter.renderAgent", () => {
-  it("el primary (orchestrator) es un output style wrapper; la skill canónica la instala planSkills", () => {
-    const out = claudeCodeAdapter.renderAgent(agent({
-      name: "orchestrator",
-      mode: "primary",
-      body: "Load and follow the `orchestrator` skill.",
-    }), MODELS);
-    expect(out).toHaveLength(1);
-
-    const style = out[0]!;
-    expect(style.kind).toBe("output-style");
-    expect(style.file).toBe("orchestrator.md");
-    expect(style.content).toContain("name: Orchestrator");
-    expect(style.content).toContain("keep-coding-instructions: true");
-    expect(style.content).toContain("Load and follow the `orchestrator` skill");
-    expect(style.content).not.toContain("## Phases");
-  });
-
-  it("subagente readonly con git-read: allowlist con Skill y Bash, sin tools de memoria (provider-only)", () => {
-    const [out] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-    expect(out!.kind).toBe("agent");
-    expect(out!.content).toContain("tools: Read, Grep, Glob, Skill, Bash");
-    expect(out!.content).not.toContain("mcp__engram__");
-    expect(out!.content).toContain("model: fable");
-  });
-
-  it("subagente sin restricciones: hereda todo (sin clave tools)", () => {
-    const [out] = claudeCodeAdapter.renderAgent(agent({ tier: "standard" }), MODELS);
-    expect(out!.content).not.toContain("tools:");
-    expect(out!.content).toContain("model: sonnet");
-  });
-
-  it("override por agente pisa el tier solo para ese agente", () => {
-    const models: RuntimeModelMap = { ...MODELS, overrides: { demo: { model: "opus" } } };
-    const [out] = claudeCodeAdapter.renderAgent(agent({}), models);
-    expect(out!.content).toContain("model: opus");
-    const [other] = claudeCodeAdapter.renderAgent(agent({ name: "otro" }), models);
-    expect(other!.content).toContain("model: fable");
-  });
-
-  it("el agente engram omite tools y hereda todo del provider oficial", () => {
-    const [out] = claudeCodeAdapter.renderAgent(
-      agent({ name: "engram", readonly: true, bash: "none", tier: "cheap" }),
-      MODELS,
-    );
-    expect(out!.content).not.toMatch(/^tools:/m);
-    expect(out!.content).not.toContain("mcp__engram__");
-    expect(out!.content).not.toContain("mem_save");
-    expect(out!.content).not.toContain("Bash");
-  });
-
-  it("subagente full-bash: sin hook de bloqueo — el git destructivo cae al ask global de Bash", () => {
-    const [out] = claudeCodeAdapter.renderAgent(agent({ name: "implementer", bash: "full" }), MODELS);
-    expect(out!.content).not.toContain("PreToolUse");
-    expect(out!.content).not.toContain("block-destructive-git");
-  });
-
-  it("subagente que no es full-bash NO recibe el hook guard", () => {
-    const [gitRead] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-    expect(gitRead!.content).not.toContain("PreToolUse");
-    const [none] = claudeCodeAdapter.renderAgent(agent({ readonly: true, bash: "none" }), MODELS);
-    expect(none!.content).not.toContain("PreToolUse");
-  });
-
-  it("el primary (orchestrator) NO recibe el hook guard — es el main agent", () => {
-    const out = claudeCodeAdapter.renderAgent(agent({ name: "orchestrator", mode: "primary" }), MODELS);
-    for (const o of out) expect(o.content).not.toContain("PreToolUse");
-  });
-});
-
-describe("claudeCodeAdapter.renderCommand", () => {
-  it("traduce {{input}} a $ARGUMENTS", () => {
-    const out = claudeCodeAdapter.renderCommand("demo.md", "Haz X.\n\nInput: {{input}}\n");
-    expect(out.content).toContain("Input: $ARGUMENTS");
-    expect(out.content).not.toContain("{{input}}");
-  });
-});
 
 describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
   let tmp: string;
@@ -136,14 +42,13 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     return { content, servers: (JSON.parse(content) as { mcpServers: Record<string, Server> }).mcpServers };
   };
 
-  it("registra el server stdio con type explícito y el http con type http", () => {
-    // configDir vacío → sin plugin engram, así que el MCP stdio SÍ se registra.
+  it("proyecta Context7 HTTP y deja Engram íntegramente al setup oficial", () => {
     const { servers } = run(makeCtx());
-    expect(servers.engram).toMatchObject({ type: "stdio", command: "/opt/engram" });
+    expect(servers.engram).toBeUndefined();
     expect(servers.context7!.type).toBe("http");
   });
 
-  it("con plugin oficial activo y MCP oficial exacto preserva bytes y libera ownership (idempotente)", () => {
+  it("con plugin oficial activo y MCP oficial exacto preserva bytes sin reclamar ownership (idempotente)", () => {
     // Plugin oficial presente (registry v2 engram@engram) + MCP exacto de
     // `engram setup claude-code`. El plugin NO trae MCP bundled: el setup
     // registra un MCP user separado que el sync debe preservar.
@@ -164,10 +69,10 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx);
     if (action?.kind !== "write") throw new Error("Expected a config write");
     const servers = (JSON.parse(action.content) as { mcpServers: Record<string, unknown> }).mcpServers;
-    // Preserva, no borra; libera el ownership previo del Stack.
+    // La proyección no posee ni reescribe el registro oficial.
     expect(servers["engram"]).toEqual(previous.mcpServers.engram);
     expect(servers["ajeno"]).toEqual(previous.mcpServers.ajeno);
-    expect(action.mcpOwnership).toEqual(expect.arrayContaining([{ server: "engram", owned: false }]));
+    expect(action.mcpOwnership?.some((change) => change.server === "engram")).not.toBe(true);
     // Idempotente tras el setup oficial real: el siguiente sync no muta.
     fs.writeFileSync(mainFile, action.content);
     const ctx2 = makeCtx({ engramBin, ownedMcpServers: new Set() });
@@ -211,12 +116,11 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     expect(servers["ajeno"]).toEqual({ type: "http", url: "https://x" });
   });
 
-  it("sin binario de Engram (engramBin null) NO registra el MCP y avisa", () => {
+  it("sin binario de Engram no fabrica un registro MCP paralelo", () => {
     const ctx = makeCtx({ engramBin: null });
     const { servers } = run(ctx);
     expect(servers.engram).toBeUndefined();
     expect(servers.context7!.type).toBe("http");
-    expect(ctx.warnings.join("\n")).toContain("Engram no detectado");
   });
 
   it("http D5: una referencia ${VAR} se escribe vacía, nunca el literal", () => {
@@ -242,7 +146,7 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     fs.writeFileSync(mainFile, JSON.stringify({ mcpServers: { ajeno: { type: "http", url: "https://x" } } }));
     const { servers } = run(makeCtx());
     expect(servers.ajeno).toEqual({ type: "http", url: "https://x" });
-    expect(servers.engram).toMatchObject({ type: "stdio" });
+    expect(servers.engram).toBeUndefined();
   });
 
   it("registra Context7 ausente y reclama ownership solo después de crear su entrada", () => {
@@ -349,7 +253,7 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
   });
 });
 
-describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
+describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
   let tmp: string;
   let configDir: string;
   let settingsFile: string;
@@ -364,7 +268,7 @@ describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
   });
 
   const run = (ctx: InstallContext): { content: string; settings: Record<string, unknown>; warnings: string[] } => {
-    const [action] = claudeCodeAdapter.planHooks(loadCanonicalHooks(stackRoot()), ctx);
+    const [action] = claudeCodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx).filter((action) => action.target.endsWith("settings.json"));
     const content = (action as { content: string }).content;
     return { content, settings: JSON.parse(content) as Record<string, unknown>, warnings: [...ctx.warnings] };
   };
@@ -380,9 +284,9 @@ describe("claudeCodeAdapter.planHooks: permissions por defecto", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("la config fresca mezcla hooks con permissions read-anywhere y denies de .env", () => {
+  it("la config fresca siembra permissions sin hooks propios read-anywhere y denies de .env", () => {
     const { settings, content } = run(makeCtx());
-    expect(settings).toHaveProperty("hooks");
+    expect(settings).not.toHaveProperty("hooks");
     expect(settings).toHaveProperty("permissions");
 
     const permissions = settings.permissions as { allow?: string[]; ask?: string[]; deny?: string[] };

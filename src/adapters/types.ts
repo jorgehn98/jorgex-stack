@@ -6,17 +6,12 @@
 
 import type { WritingStyleSnapshot } from "../lib/writing-style.js";
 import type { RuntimeDetection } from "../lib/detect.js";
-import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import type { RuntimeModelMap } from "../lib/model-map.js";
-import type { LocalQualityCapabilityReport } from "../lib/quality-capabilities.js";
+import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
+import type { AgentModelChoices } from "../lib/agent-model.js";
 import type { SystemPromptSections } from "../lib/system-prompt-sections.js";
 
-export type RuntimeId = "claude-code" | "codex" | "opencode";
-export type SelectableRuntimeId = RuntimeId | "pi";
-
-export type InstallMode = "human" | "programmatic";
-
-export type SubagentConcurrency = "serial" | "parallel";
+export type RuntimeId = "claude-code" | "codex" | "opencode" | "pi";
+export type SelectableRuntimeId = RuntimeId;
 
 /**
  * Evidencia de major OpenCode EXCLUSIVAMENTE para el sandbox --target-dir (en
@@ -28,19 +23,12 @@ export interface OpenCodeTargetEvidenceOption {
   opencodeTargetMajor?: number;
 }
 
-export type InstallModePreference =
-  | { mode: "human"; subagentConcurrency: "serial" }
-  | { mode: "programmatic"; subagentConcurrency: SubagentConcurrency };
-
-/** Tier canónico de modelo por agente; el model-map lo resuelve por runtime (PRD §6.1). */
-export type Tier = "strong" | "standard" | "cheap";
-
 export interface McpOwnershipChange {
   server: string;
   owned: boolean;
 }
 
-export interface PrimaryModelOwnershipChange {
+export interface ConfigOwnershipChange {
   field: string;
   owned: boolean;
 }
@@ -52,11 +40,12 @@ export type FileAction =
       target: string;
       content: string;
       mcpOwnership?: McpOwnershipChange[];
-      primaryModelOwnership?: PrimaryModelOwnershipChange[];
+      configOwnership?: ConfigOwnershipChange[];
     }
-  | { kind: "copy"; target: string; source: string };
+  | { kind: "copy"; target: string; source: string; symlink?: true };
 
 export interface InstallContext {
+  ownedFiles?: ReadonlySet<string>;
   writingStyle?: WritingStyleSnapshot;
   /** Raíz de la fuente canónica (stack/). */
   stackDir: string;
@@ -68,68 +57,19 @@ export interface InstallContext {
    * personal. No se infiere comparando configDir con la raíz global.
    */
   targetDir?: string;
-  /** Modo de instalación resuelto para este run. */
-  mode?: InstallMode;
-  /** Concurrencia de subagentes resuelta para este run. */
-  subagentConcurrency?: SubagentConcurrency;
   /** Binario Engram detectado (D7: siempre el existente). null = no instalado. */
   engramBin: string | null;
-  models: RuntimeModelMap;
+  models: AgentModelChoices;
   /** Avisos no fatales que el pipeline muestra al final. */
   warnings: string[];
   /** MCPs opcionales habilitados explícitamente para este runtime. */
   enabledMcpServers?: ReadonlySet<string>;
-  /**
-   * Versión DevTools realmente observada y verificada (devtools-mcp.json).
-   * Se exige cuando el MCP opcional chrome-devtools está habilitado para
-   * materializar el template canónico `chrome-devtools-mcp@{{VERSION}}`.
-   */
-  devtoolsMcpObservedVersion?: { version: string; integrity: string };
-  /** Verified Stack-owned Node guard, supplied by the managed browser lifecycle. */
-  devtoolsMcpInvocation?: { command: string; args: readonly string[] };
-  /**
-   * Invocación MCP completa del guard Browser Control verificado (launcher
-   * `active`): sus `args` ya incluyen el subcomando `mcp`. No autoriza un
-   * PATH/global arbitrario. El adapter proyecta `command: [command, ...args]`
-   * sin anexar `mcp` de nuevo, porque el guard verifica exactamente esos
-   * argumentos. Su ausencia es Browser Control pendiente, nunca un MCP
-   * apuntando a bytes ausentes.
-   */
+  /** Native stdio command; the provider owns relay startup and browser attachment. */
   browserControlInvocation?: { command: string; args: readonly string[] };
-  /**
-   * SKILL.md oficial retenido en la release `active` verificada (byte-identical).
-   * Solo lo llena el lifecycle Browser Control para OpenCode; se proyecta en
-   * `<configDir>/skills/browser-control/SKILL.md`, nunca en el canon compartido
-   * `~/.agents/skills`. Su ausencia no proyecta skill ni declara la capacidad.
-   */
-  browserControlSkillSource?: string;
-  /**
-   * Invocación completa del launcher `active` PREVIO (A) cuando el lifecycle
-   * sustituyó A por B. Permite autenticar un comando gestionado existente como
-   * el vector exacto de A antes de reemplazarlo por B; nunca autoriza un PATH ni
-   * una entrada manual ajena.
-   */
-  browserControlPreviousInvocation?: { command: string; args: readonly string[] };
-  /**
-   * SKILL.md retenido en la release `active` previa (A) antes de sustituirla por
-   * B: fingerprint de bytes para autenticar el target owned. Un target que no
-   * coincide ni con B ni con A se conserva y bloquea.
-   */
-  browserControlPreviousSkillSource?: string;
-  /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
-  playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
-  /** Campos del primary model que una escritura previa del stack creó. */
-  ownedPrimaryModelFields?: ReadonlySet<string>;
-  /**
-   * Opt-in para re-aplicar el bloque de permisos gestionados sobre una
-   * config existente: sin flag se preserva byte a byte y solo se avisa
-   * cuando difiere; con flag se reemplaza el bloque entero (con backup
-   * previo en el pipeline). Nunca default — lo fija runInstall desde
-   * InstallOptions.
-   */
-  upgradePermissions?: boolean;
+  /** Campos de configuración que una escritura previa del Stack creó. */
+  ownedConfigFields?: ReadonlySet<string>;
   /**
    * Solo uninstall (D7): true = conservar TODO lo de Engram (registro MCP,
    * plugin engram.ts, entrada en configs). Es el default — desregistrar
@@ -141,22 +81,19 @@ export interface InstallContext {
 
 export interface AdapterPaths {
   systemPromptFile: string;
+  sharedPromptFile?: string;
+  skillLinksDir?: string;
   agentsDir: string;
   skillsDir: string;
-  commandsDir: string;
   /** null si el runtime no tiene plugins TS (Claude Code, Codex). */
   pluginsDir: string | null;
   scriptsDir: string;
-  /** Solo Claude Code: modos del main agent (output styles). null en el resto. */
-  outputStylesDir: string | null;
-  /** Solo Codex: profiles (<nombre>.config.toml). null en el resto. */
-  profilesDir: string | null;
 }
 
 /**
  * Secciones retiradas (provider-only): Stack ya no las inyecta en ningún
  * runtime — el provider oficial (`engram setup` + plugin/MCP/skills oficiales)
- * es el único owner. Lista acotada SOLO para migración: sync/install/uninstall
+ * es el único owner. Lista acotada SOLO para migración: install/uninstall
  * eliminan idempotentemente los bloques que versiones anteriores instalaron.
  * No añadir secciones activas aquí.
  */
@@ -164,53 +101,37 @@ export const LEGACY_SYSTEM_PROMPT_SECTIONS = ["engram-protocol"] as const;
 
 /**
  * Contrato mínimo de los recursos que todos los runtimes pueden proyectar.
- * Pi lo usa sin participar aún en el ciclo de vida completo de Adapter.
+ * Todos los adapters comparten esta proyección.
  */
 export interface SharedProjectionAdapter {
   id: SelectableRuntimeId;
   paths(configDir: string): AdapterPaths;
-  /** Transforma un command canónico al dialecto del runtime (placeholders de input, etc.). */
-  renderCommand(file: string, content: string): { file: string; content: string };
-  /** Adapta los bloques a un formato legado cuando el runtime aún lo requiere. */
+  /** Añade orientación propia del runtime a las secciones compartidas. */
   adaptSystemPromptSections?(sections: SystemPromptSections): SystemPromptSections;
 }
 
 export interface Adapter extends SharedProjectionAdapter {
   id: RuntimeId;
   name: string;
-  /** Basenames de plugins que este runtime excluye del plan Stack (p.ej. legacy retirado). */
-  excludedPluginBasenames?: readonly string[];
   detect(): RuntimeDetection;
-  /** Diagnóstico local de capabilities; nunca certifica enforcement del runtime. */
-  reportCapabilities(configDir: string): LocalQualityCapabilityReport;
-  /**
-   * Convierte un agente canónico a uno o varios artefactos nativos del runtime.
-   * El orchestrator (primary) es SIEMPRE un modo del agente principal que el
-   * usuario pilota, nunca un subagente invocado: OpenCode → primary agent
-   * (Tab) · Claude Code → output style (modo persistente, /config) · Codex →
-   * profile con developer_instructions. Los tres son wrappers de la skill
-   * canónica instalada por planSkills.
-   */
+  /** Proyecta los seis subagentes en su formato nativo; el principal pertenece al host. */
   renderAgent(
     agent: CanonicalAgent,
-    models: RuntimeModelMap,
-  ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "profile" }[];
-  /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */
-  planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[];
+    models: AgentModelChoices,
+  ): { file: string; content: string; kind: "agent" }[];
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];
   /**
    * Copias fijas adicionales del runtime (assets propios sin canon legacy, p.ej.
    * los WAV del cliente OpenCode). `buildContentPlan` las incorpora y el pipeline
-   * las autentica como recursos current-only. Opcional: los runtimes sin assets
-   * no lo definen, y no se relaja `planPlugins` por extensión.
+   * las registra como recursos propios. Opcional para runtimes sin assets.
    */
   planAdditionalResources?(ctx: InstallContext): FileAction[];
   /**
    * Inversa para uninstall: devuelve los archivos COMPARTIDOS con el usuario
-   * (system prompt, configs, hooks) reescritos sin nuestras secciones/claves.
+   * (system prompt y configs) reescritos sin nuestras secciones/claves.
    * Un write con content vacío significa "borrar el archivo". Los targets de
    * estas acciones marcan además qué archivos del plan normal NO se borran.
    */
-  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[];
+  planUnmerge(mcp: CanonicalMcp, ctx: InstallContext): FileAction[];
 }

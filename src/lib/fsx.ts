@@ -4,8 +4,9 @@ import path from "node:path";
 export function readTextIfExists(file: string): string | null {
   try {
     return fs.readFileSync(file, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 
@@ -38,14 +39,6 @@ export function writeText(file: string, content: string, mode?: number): void {
   const tmp = tmpPath(file);
   fs.writeFileSync(tmp, content, { encoding: "utf8", mode });
   renameInto(tmp, file);
-}
-
-/** Copia atómica: misma garantía que writeText. */
-export function copyFile(source: string, target: string): void {
-  ensureDir(path.dirname(target));
-  const tmp = tmpPath(target);
-  fs.copyFileSync(source, tmp);
-  renameInto(tmp, target);
 }
 
 /** true si child queda estrictamente dentro de root (child === root no cuenta). */

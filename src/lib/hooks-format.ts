@@ -1,109 +1,21 @@
-import path from "node:path";
-import type { CanonicalHooks } from "./canonical.js";
 import { upsertJson } from "./filemerge.js";
 
-/**
- * Claude Code y Codex comparten el formato nativo de hooks (el canónico).
- * Renderiza el upsert sobre el JSON destino: resuelve {{SCRIPTS_DIR}}, omite
- * la extensión x-command-includes (el script filtra solo) y traduce el
- * matcher por runtime (Codex llama "shell" al tool de bash). Las entradas
- * nuestras se identifican por nombre de script (NO por matcher): re-aplicar
- * actualiza el matcher en sitio sin duplicar, y los hooks propios del usuario
- * no se tocan.
- */
-/** Nombres de archivo de los scripts referenciados por los hooks canónicos. */
-export function hookScriptNames(canonical: CanonicalHooks): string[] {
-  return Object.values(canonical.hooks)
-    .flat()
-    .flatMap((entry) => entry.hooks)
-    .map((h) => /\{\{SCRIPTS_DIR\}\}[/\\]([\w./-]+)/.exec(h.command)?.[1])
-    .filter((s): s is string => s !== undefined)
-    .map((s) => path.basename(s));
-}
-
-/** Comandos canónicos SIN {{SCRIPTS_DIR}}: se identifican por igualdad literal. */
-function plainHookCommands(canonical: CanonicalHooks): Set<string> {
-  return new Set(
-    Object.values(canonical.hooks)
-      .flat()
-      .flatMap((entry) => entry.hooks)
-      .map((h) => h.command)
-      .filter((c) => !c.includes("{{SCRIPTS_DIR}}")),
-  );
-}
-
-/**
- * Inversa de upsertNativeHooks: elimina del JSON las entradas cuyos hooks
- * ejecutan scripts del stack. Eventos/objetos que quedan vacíos se borran;
- * el resto del contenido del usuario se preserva.
- */
-export function removeNativeHooks(existing: string | null, canonical: CanonicalHooks): string | null {
+/** Retira únicamente comandos exactos de scripts registrados como propios; conserva hooks del proveedor y del usuario. */
+export function removeNativeHooks(existing: string | null, commands: ReadonlySet<string>): string | null {
   if (existing === null || existing.trim() === "") return existing;
-  const scriptNames = hookScriptNames(canonical);
-  const plainCommands = plainHookCommands(canonical);
-
   return upsertJson(existing, (root) => {
-    const hooks = root["hooks"] as Record<string, unknown[]> | undefined;
-    if (!hooks) return;
-    for (const event of Object.keys(hooks)) {
-      const list = hooks[event];
-      if (!Array.isArray(list)) continue;
-      hooks[event] = list.filter((entry) => {
-        const e = entry as { hooks?: { command?: string }[] };
-        if (!Array.isArray(e?.hooks)) return true;
-        const ours = e.hooks.some((hh) => {
-          const cmd = String(hh?.command ?? "");
-          return scriptNames.some((s) => cmd.includes(s)) || plainCommands.has(cmd);
-        });
-        return !ours;
+    const hooks = root.hooks;
+    if (hooks === null || typeof hooks !== "object" || Array.isArray(hooks)) return;
+    const events = hooks as Record<string, unknown>;
+    for (const [event, entries] of Object.entries(events)) {
+      if (!Array.isArray(entries)) continue;
+      events[event] = entries.flatMap((entry) => {
+        if (entry === null || typeof entry !== "object" || !Array.isArray(entry.hooks)) return [entry];
+        const kept = entry.hooks.filter((hook: unknown) => !(hook !== null && typeof hook === "object" && "command" in hook && typeof hook.command === "string" && commands.has(hook.command)));
+        return kept.length === entry.hooks.length ? [entry] : kept.length ? [{ ...entry, hooks: kept }] : [];
       });
-      if ((hooks[event] as unknown[]).length === 0) delete hooks[event];
+      if ((events[event] as unknown[]).length === 0) delete events[event];
     }
-    if (Object.keys(hooks).length === 0) delete root["hooks"];
-  });
-}
-
-export function upsertNativeHooks(
-  existing: string | null,
-  canonical: CanonicalHooks,
-  scriptsDir: string,
-  mapMatcher: (matcher: string) => string = (m) => m,
-): string {
-  const scriptsDirForCommand = scriptsDir.replace(/\\/g, "/");
-
-  return upsertJson(existing, (root) => {
-    const hooks = (root["hooks"] ??= {}) as Record<string, unknown[]>;
-    for (const [event, entries] of Object.entries(canonical.hooks)) {
-      const list = (hooks[event] ??= []);
-      for (const entry of entries) {
-        const matcher = entry.matcher !== undefined ? mapMatcher(entry.matcher) : undefined;
-        const rendered = {
-          ...(matcher !== undefined ? { matcher } : {}),
-          hooks: entry.hooks.map((h) => ({
-            type: h.type,
-            command: h.command.replace(/\{\{SCRIPTS_DIR\}\}/g, scriptsDirForCommand),
-            ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
-          })),
-        };
-
-        const scriptNames = entry.hooks
-          .map((h) => /\{\{SCRIPTS_DIR\}\}[/\\]([\w./-]+)/.exec(h.command)?.[1])
-          .filter((s): s is string => s !== undefined)
-          .map((s) => path.basename(s));
-        // Hooks sin {{SCRIPTS_DIR}}: identidad por los comandos literales
-        // (sin esto, cada sync los re-añadiría y rompería la idempotencia).
-        const plainCommands = entry.hooks.map((h) => h.command).filter((c) => !c.includes("{{SCRIPTS_DIR}}"));
-        const index = list.findIndex((existingEntry) => {
-          const e = existingEntry as { matcher?: string; hooks?: { command?: string }[] };
-          if (!Array.isArray(e?.hooks)) return false;
-          return e.hooks.some((hh) => {
-            const cmd = String(hh?.command ?? "");
-            return scriptNames.some((s) => cmd.includes(s)) || plainCommands.includes(cmd);
-          });
-        });
-        if (index >= 0) list[index] = rendered;
-        else list.push(rendered);
-      }
-    }
+    if (Object.keys(events).length === 0) delete root.hooks;
   });
 }

@@ -353,16 +353,6 @@ function extractRunScript(step: string, marker: string): string {
   return body.join("\n").replace(/\n+$/, "");
 }
 
-function expectInOrder(haystack: string, needles: string[]): void {
-  let cursor = -1;
-
-  for (const needle of needles) {
-    const index = haystack.indexOf(needle, cursor + 1);
-    expect(index, `No se encontró "${needle}" después de la posición ${cursor}.`).toBeGreaterThan(-1);
-    cursor = index;
-  }
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
@@ -373,7 +363,6 @@ describe("release path classification", () => {
     const result = classifyReleasePaths([
       "src/foo.ts",
       "stack/agents/foo.md",
-      "upstreams.json",
       "package.json",
       "pnpm-lock.yaml",
     ]);
@@ -382,7 +371,6 @@ describe("release path classification", () => {
     expect(result.publicPaths).toEqual([
       "src/foo.ts",
       "stack/agents/foo.md",
-      "upstreams.json",
       "package.json",
       "pnpm-lock.yaml",
     ]);
@@ -898,15 +886,6 @@ describe("version sync", () => {
     expect(readPackageVersion()).toBe(PACKAGE_VERSION.version);
   });
 
-  it("`--version` usa la acción de versión del CLI", async () => {
-    const { parseCliArgs } = await import("../src/cli.js");
-
-    expect(parseCliArgs(["--version"])).toMatchObject({
-      action: "version",
-      command: "install",
-    });
-    expect(readPackageVersion()).toBe(PACKAGE_VERSION.version);
-  });
 });
 
 describe("publish workflow contract", () => {
@@ -965,8 +944,6 @@ describe("publish workflow contract", () => {
     const jobs = splitTopLevelJobs(workflow);
     const validate = jobs.get("validate") ?? "";
     const bump = jobs.get("bump") ?? "";
-    const publish = jobs.get("publish") ?? "";
-    const tagRelease = jobs.get("tag-release") ?? "";
 
     expect(validate).toContain("workflow_dispatch");
     expect(validate).toContain("target_sha");

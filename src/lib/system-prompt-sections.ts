@@ -13,7 +13,7 @@ export type SystemPromptSections = Partial<Record<typeof SYSTEM_PROMPT_SECTIONS[
 /**
  * Secciones gestionadas + retiradas: los bloques legacy se siguen validando
  * para no romper su contenido, y se eliminan (nunca se inyectan) en
- * sync/install/uninstall.
+ * install/uninstall.
  */
 const KNOWN_SECTIONS: readonly string[] = [...SYSTEM_PROMPT_SECTIONS, ...LEGACY_SYSTEM_PROMPT_SECTIONS];
 

@@ -330,7 +330,6 @@ jobs:
           // Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
           // Mantener en sync con src/lib/release.ts.
           const PUBLICABLE_EXACT = new Set([
-            'upstreams.json',
             'package.json',
             'pnpm-lock.yaml',
             'tsconfig.json',

@@ -25,6 +25,9 @@ type InstallMissingEngram = (options: {
   platform?: NodeJS.Platform;
   arch?: string;
   fetch?: typeof globalThis.fetch;
+  updateBin?: string;
+  installedVersion?: string | null;
+  beforeUpdate?: (version: string) => Promise<void>;
 }) => Promise<InstallResult>;
 
 async function installMissingEngram(): Promise<InstallMissingEngram> {
@@ -282,4 +285,46 @@ describe("installMissingEngram", () => {
     expect(calls).toEqual([LATEST_URL, assetUrl()]);
     expect(fs.readFileSync(bin)).toEqual(existingBytes);
   });
+});
+
+it("deliberate update refreshes a previous regular binary from live release metadata without touching memories", async () => {
+  const home = temporaryHome();
+  const bin = path.join(home, "custom-bin", "engram");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, "previous bytes", { mode: 0o755 });
+  const data = path.join(home, ".engram"); fs.mkdirSync(data); fs.writeFileSync(path.join(data, "engram.db"), "memory sentinel");
+  const download = fixtureFetch();
+  const approve = vi.fn(async () => { expect(download.calls).toEqual([LATEST_URL]); });
+  const result = await (await installMissingEngram())({ homeDir: home, platform: "linux", arch: "x64", fetch: download.fetch, updateBin: bin, installedVersion: "1.19.0", beforeUpdate: approve });
+  expect(result).toEqual({ ok: true, bin });
+  expect(approve).toHaveBeenCalledWith("1.20.0");
+  expect(download.calls).toEqual([LATEST_URL, assetUrl()]);
+  expect(fs.readFileSync(bin)).toEqual(binaryBytes);
+  expect(fs.readFileSync(path.join(data, "engram.db"), "utf8")).toBe("memory sentinel");
+  expect(fs.readdirSync(path.dirname(bin))).toEqual(["engram"]);
+});
+
+it("resolves latest for a current existing binary without downloading or requesting backup", async () => {
+  const home = temporaryHome();
+  const bin = path.join(home, "engram"); fs.writeFileSync(bin, "current binary", { mode: 0o755 });
+  const network = fixtureFetch();
+  const beforeUpdate = vi.fn(async () => {});
+  expect(await (await installMissingEngram())({ homeDir: home, platform: "linux", arch: "x64", updateBin: bin,
+    installedVersion: "1.20.0", beforeUpdate, fetch: network.fetch })).toEqual({ ok: true, bin });
+  expect(network.calls).toEqual([LATEST_URL]);
+  expect(beforeUpdate).not.toHaveBeenCalled();
+  expect(fs.readFileSync(bin, "utf8")).toBe("current binary");
+});
+
+it("leaves an outdated binary and filesystem intact when backup/update is declined", async () => {
+  const home = temporaryHome();
+  const bin = path.join(home, "engram"); fs.writeFileSync(bin, "previous binary", { mode: 0o755 });
+  const network = fixtureFetch();
+  const beforeUpdate = vi.fn(async () => { throw new Error("backup declined"); });
+  expect(await (await installMissingEngram())({ homeDir: home, platform: "linux", arch: "x64", updateBin: bin,
+    installedVersion: "1.19.0", beforeUpdate, fetch: network.fetch })).toEqual({ ok: false, reason: "backup declined" });
+  expect(network.calls).toEqual([LATEST_URL]);
+  expect(beforeUpdate).toHaveBeenCalledOnce();
+  expect(fs.readFileSync(bin, "utf8")).toBe("previous binary");
+  expect(fs.readdirSync(home)).toEqual(["engram"]);
 });
