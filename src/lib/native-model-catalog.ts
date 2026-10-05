@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { RuntimeId } from "../adapters/types.js";
@@ -44,6 +46,38 @@ export function normalizeModels(runtime: RuntimeId, value: unknown): AvailableMo
     return { id, name, ...(efforts !== undefined ? { efforts } : {}) };
   });
 }
+const standaloneServer = "http://127.0.0.1:4096";
+function loopbackServer(address: string): URL {
+  // Reject aliases normalized by URL (e.g. shortened IPv4), paths and embedded credentials.
+  if (!/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::[1-9]\d{0,4})?\/?$/.test(address)) throw failure();
+  return new URL(address);
+}
+function readOpenCodeService(): { service?: { url: string; password?: string }; warning?: string } {
+  try {
+    const state = process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state");
+    if (!path.isAbsolute(state)) throw failure();
+    const file = path.join(state, "opencode", "service.json");
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) throw failure();
+    const info = record(JSON.parse(fs.readFileSync(file, "utf8")));
+    if (Object.keys(info).some(key => !["id", "version", "url", "pid", "password"].includes(key))
+      || typeof info.url !== "string" || !Number.isSafeInteger(info.pid) || (info.pid as number) <= 0
+      || (info.id !== undefined && typeof info.id !== "string")
+      || (info.version !== undefined && typeof info.version !== "string")
+      || (info.password !== undefined && typeof info.password !== "string")) throw failure();
+    loopbackServer(info.url);
+    return { service: { url: info.url, ...(typeof info.password === "string" ? { password: info.password } : {}) } };
+  } catch {
+    return { warning: "Registro nativo OpenCode ausente, ilegible o inválido; consulta manual sin autenticación nativa. No se inicia ni modifica el servicio." };
+  }
+}
+
+/** Expose only the observed URL to the picker, never authentication material. */
+export function openCodeServerAddress(): { url: string; warning?: string } {
+  const observed = readOpenCodeService();
+  return { url: observed.service?.url ?? standaloneServer, ...(observed.warning ? { warning: observed.warning } : {}) };
+}
+
 export type CatalogRequest = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 export async function listCodexModels(request: CatalogRequest): Promise<AvailableModel[]> {
   const models: AvailableModel[] = [];
@@ -132,9 +166,10 @@ export async function stdioCatalog(runtime: "codex" | "pi", bin: string, cwd: st
   }
 }
 
-export async function discoverModels(runtime: RuntimeId, bin: string, cwd = process.cwd(), server = "http://127.0.0.1:4096"): Promise<ModelCatalog> {
+export async function discoverModels(runtime: RuntimeId, bin: string, cwd = process.cwd(), server?: string): Promise<ModelCatalog> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
+  let registrationWarning: string | undefined;
   try {
     let models: AvailableModel[];
     if (runtime === "claude-code") {
@@ -151,11 +186,16 @@ export async function discoverModels(runtime: RuntimeId, bin: string, cwd = proc
       try { models = normalizeModels(runtime, await Promise.race([client.supportedModels(), timeout])); }
       finally { close(); controller.signal.removeEventListener("abort", abort); }
     } else if (runtime === "opencode") {
-      const url = new URL(server);
-      if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password) throw failure();
-      url.pathname = "/api/model"; url.search = "";
+      const observed = readOpenCodeService();
+      registrationWarning = observed.warning;
+      const url = loopbackServer(server ?? observed.service?.url ?? standaloneServer);
+      const headers = new Headers();
+      if (observed.service?.password !== undefined && url.origin === loopbackServer(observed.service.url).origin) {
+        headers.set("authorization", "Basic " + btoa("opencode:" + observed.service.password));
+      }
+      url.pathname = "/api/model";
       url.searchParams.set("location[directory]", cwd);
-      const response = await fetch(url, { signal: controller.signal, redirect: "error" });
+      const response = await fetch(url, { headers, signal: controller.signal, redirect: "error" });
       if (!response.ok) throw failure();
       const reader = response.body?.getReader();
       if (!reader) throw failure();
@@ -170,7 +210,7 @@ export async function discoverModels(runtime: RuntimeId, bin: string, cwd = proc
         models = normalizeModels(runtime, JSON.parse(text + decoder.decode()));
       } finally { await reader.cancel(); }
     } else models = await stdioCatalog(runtime, bin, cwd, controller.signal);
-    return { models, ...(runtime === "pi" ? { warning: "Pi: niveles solo del modelo activo; no se ha cambiado el principal." } : runtime === "opencode" ? { warning: "OpenCode: API experimental, snapshot por ubicación; plugins pueden seguir cargando. Variantes no equivalen a una escala universal." } : runtime === "codex" ? { warning: "Codex: app-server model/list experimental; no acredita entitlement." } : {}) };
-  } catch { return { models: [], warning: failure().message }; }
+    return { models, ...(runtime === "pi" ? { warning: "Pi: niveles solo del modelo activo; no se ha cambiado el principal." } : runtime === "opencode" ? { warning: [registrationWarning, "OpenCode: API experimental, snapshot por ubicación; plugins pueden seguir cargando. Variantes no equivalen a una escala universal."].filter(Boolean).join(" ") } : runtime === "codex" ? { warning: "Codex: app-server model/list experimental; no acredita entitlement." } : {}) };
+  } catch { return { models: [], warning: [registrationWarning, failure().message].filter(Boolean).join(" ") }; }
   finally { clearTimeout(timer); controller.abort(); }
 }

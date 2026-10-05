@@ -5,17 +5,24 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const fixture = vi.hoisted(() => ({ root: "", file: "" }));
 const prompts = vi.hoisted(() => ({ select: vi.fn(), text: vi.fn(), log: { warn: vi.fn(), info: vi.fn(), success: vi.fn(), error: vi.fn() } }));
 vi.mock("@clack/prompts", () => ({ ...prompts, isCancel: (value: unknown) => typeof value === "symbol" }));
-vi.mock("../src/lib/native-model-catalog.js", () => ({ discoverModels: vi.fn(async () => ({ models: [{ id: "native", name: "Native", efforts: ["specific"] }] })) }));
+vi.mock("../src/lib/native-model-catalog.js", () => ({
+  discoverModels: vi.fn(async () => ({ models: [{ id: "native", name: "Native", efforts: ["specific"] }] })),
+  openCodeServerAddress: vi.fn(() => ({ url: "http://127.0.0.1:49374" })),
+}));
 vi.mock("../src/install.js", async () => {
   const actual = await vi.importActual<typeof import("../src/install.js")>("../src/install.js");
   return { ...actual,
-    ADAPTERS: { pi: { ...actual.ADAPTERS.pi, detect: () => ({ installed: true, binPath: "synthetic", configDir: fixture.root }) } },
+    ADAPTERS: {
+      pi: { ...actual.ADAPTERS.pi, detect: () => ({ installed: true, binPath: "synthetic", configDir: fixture.root }) },
+      opencode: { ...actual.ADAPTERS.opencode, detect: () => ({ installed: true, binPath: "synthetic", configDir: fixture.root }) },
+    },
+    assertOpenCodeV2Preflight: vi.fn(),
     makeContext: () => ({ ownedFiles: new Set([fixture.file]) }), stateDirectory: () => fixture.root,
   };
 });
 import { editAgent } from "../src/models-picker.js";
 import { readAgentModel } from "../src/lib/agent-model.js";
-import { discoverModels } from "../src/lib/native-model-catalog.js";
+import { discoverModels, openCodeServerAddress } from "../src/lib/native-model-catalog.js";
 
 beforeEach(() => {
   fixture.root = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/var/tmp", "jx-t07-picker-"));
@@ -66,5 +73,21 @@ it("retains the draft after a save conflict and does not repeat the operation au
   expect(prompts.log.error).toHaveBeenCalledOnce();
   expect(fs.readFileSync(fixture.file, "utf8")).toContain("external change");
   expect(readAgentModel("pi", fixture.file).selection).toEqual({});
+  expect(fs.existsSync(path.join(fixture.root, "backups"))).toBe(false);
+});
+it("offers the observed OpenCode URL only on model editing, while retaining manual server selection", async () => {
+  answers(["Volver"]);
+  await editAgent("opencode", "implementer", "OpenCode › implementer");
+  expect(openCodeServerAddress).not.toHaveBeenCalled();
+  expect(discoverModels).not.toHaveBeenCalled();
+  prompts.text.mockImplementationOnce((question) => {
+    expect(question.initialValue).toBe("http://127.0.0.1:49374");
+    return "http://127.0.0.1:49375";
+  });
+  answers(["Modelo", "Mantener", "Volver"]);
+  await editAgent("opencode", "implementer", "OpenCode › implementer");
+  expect(openCodeServerAddress).toHaveBeenCalledOnce();
+  expect(discoverModels).toHaveBeenCalledWith("opencode", "synthetic", process.cwd(), "http://127.0.0.1:49375");
+  expect(readAgentModel("opencode", fixture.file).selection).toEqual({});
   expect(fs.existsSync(path.join(fixture.root, "backups"))).toBe(false);
 });

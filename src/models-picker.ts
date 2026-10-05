@@ -4,7 +4,7 @@ import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import type { AgentModel } from "./lib/agent-model.js";
 import { ADAPTERS, makeContext, stateDirectory, assertOpenCodeV2Preflight } from "./install.js";
-import { discoverModels, type ModelCatalog } from "./lib/native-model-catalog.js";
+import { discoverModels, openCodeServerAddress, type ModelCatalog } from "./lib/native-model-catalog.js";
 import { readAgentModel, saveAgentModel } from "./lib/agent-model.js";
 
 const KEEP = { action: "keep" } as const;
@@ -98,7 +98,9 @@ export async function editAgent(runtime: RuntimeId, name: string, route: string)
         if (!catalog) {
           let server: string | undefined;
           if (runtime === "opencode") {
-            const answer = await p.text({ message: "Servidor OpenCode v2 existente (loopback)", initialValue: "http://127.0.0.1:4096" });
+            const observed = openCodeServerAddress();
+            if (observed.warning) p.log.warn(observed.warning);
+            const answer = await p.text({ message: "Servidor OpenCode v2 existente (loopback; URL nativa observada si disponible)", initialValue: observed.url });
             if (p.isCancel(answer)) continue;
             server = answer;
           }
