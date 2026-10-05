@@ -4,9 +4,9 @@ import path from "node:path";
 import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { loadCanonicalAgents } from "../lib/canonical.js";
 
-export function planAgents(adapter: Pick<Adapter, "paths" | "renderAgent">, ctx: InstallContext): FileAction[] {
+export function planAgents(adapter: Pick<Adapter, "paths" | "renderAgent">, ctx: InstallContext, name?: string): FileAction[] {
   const { agentsDir } = adapter.paths(ctx.configDir);
-  return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) =>
+  return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).filter((agent) => !name || agent.name === name).flatMap((agent) =>
     adapter.renderAgent(agent, ctx.models).flatMap((rendered) => {
       const target = path.join(agentsDir, rendered.file);
       const actions = planOwnedProjection({ kind: "write", target, content: rendered.content }, ctx);

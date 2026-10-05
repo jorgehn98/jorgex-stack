@@ -23,6 +23,7 @@ import { editJsonc, parseJsoncObject } from "./lib/filemerge.js";
 import { installMissingEngram } from "./lib/engram-install.js";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
 import type { AgentModelChoices } from "./lib/agent-model.js";
+import { includesOwnedFile, type OperationScope } from "./lib/operation-scope.js";
 
 export const ADAPTERS: Record<RuntimeId, Adapter> = { "claude-code": claudeCodeAdapter, codex: codexAdapter, opencode: opencodeAdapter, pi: piAdapter };
 export const PI_PACKAGES = ["pi-subagents", "@juicesharp/rpiv-ask-user-question", "pi-web-access", "@gotgenes/pi-permission-system", "gentle-engram", "@narumitw/pi-goal", "compact-tools"] as const;
@@ -37,6 +38,7 @@ export const executeNative: NativeExecutor = (bin, args, env) => {
 };
 export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   runtimes: RuntimeId[];
+  scope?: OperationScope;
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
@@ -76,6 +78,12 @@ export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAct
 }
 export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   return [...adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx), ...buildContentPlan(adapter, ctx)];
+}
+export function buildScopedPlan(adapter: Adapter, ctx: InstallContext, scope: OperationScope): FileAction[] {
+  if (scope.section === "skills") return planSkills(adapter, ctx);
+  if (scope.section === "agents") return planAgents(adapter, ctx, scope.agent);
+  if (scope.section === "config") return [...adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx), ...planSystemPrompt(adapter, ctx), ...(adapter.planAdditionalResources?.(ctx) ?? []).flatMap((action) => planOwnedProjection(action, ctx))];
+  return buildPlan(adapter, ctx);
 }
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 export function assertProjectionPath(target: string, boundary: string): void {
@@ -166,7 +174,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   const manifestPath = path.join(state, "manifest.json");
   const execute = opts.execute ?? executeNative;
   let engram = opts.engramBin === undefined ? opts.targetDir ? null : detectEngram() : opts.engramBin;
-  const deliberate = !opts.dryRun && !opts.targetDir && opts.command !== "sync";
+  const scope = opts.scope ?? { section: "all" };
+  const configSelected = scope.section === "all" || scope.section === "config";
+  const deliberate = configSelected && !opts.dryRun && !opts.targetDir && opts.command !== "sync";
   let engramPrepared = false;
   if (!engram && opts.engram && deliberate) {
     const acquired = await installMissingEngram();
@@ -196,9 +206,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         if (JSON.stringify(readManifest(manifestPath).runtimes[id]) === JSON.stringify(row)) return;
         createBackup([manifestPath], "manifest", path.join(state, "backups")); writeRuntimeManifest(id, row, manifestPath);
       };
-      if (!opts.targetDir && !opts.dryRun && opts.command !== "sync") {
+      if (deliberate) {
         phase = "integraciones nativas";
-        if (!engram) throw new Error("Engram binario ausente; instala el prerrequisito oficial o autoriza install --engram.");
+        if (!engram) throw new Error("Engram binario ausente; instala el prerrequisito oficial o autoriza su instalación desde el menú.");
         if (!engramPrepared) {
           const currentBin = engram;
           const acquired = await installMissingEngram({
@@ -306,14 +316,16 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
       if (id === "pi" || id === "opencode") ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
       phase = "proyección";
-      const plan = [...planRetiredHooks(adapter, ctx, row.owned), ...buildPlan(adapter, ctx)];
+      const selectedPlan = buildScopedPlan(adapter, ctx, scope);
+      const plan = [...(configSelected ? planRetiredHooks(adapter, ctx, row.owned) : []), ...selectedPlan];
       const changes = diffPlan(plan).filter((change) => change.status !== "unchanged");
       for (const { action } of changes) assertProjectionPath(action.target, opts.targetDir ?? HOME);
       if (!opts.dryRun) {
-        if ("installedContent" in style) applyWritingStyle(style as ReturnType<typeof prepareWritingStyle>);
+        if (configSelected && "installedContent" in style) applyWritingStyle(style as ReturnType<typeof prepareWritingStyle>);
         createBackup(changes.filter((change) => change.status === "update").map((change) => change.action.target), `install-${id}`, path.join(state, "backups"));
-        const shared = new Set(planSystemPrompt(adapter, ctx).map((action) => action.target));
-        const ownedCandidates = new Set(buildContentPlan(adapter, ctx).filter((action) => !shared.has(action.target)).map((action) => action.target));
+        const shared = new Set(configSelected ? planSystemPrompt(adapter, ctx).map((action) => action.target) : []);
+        const configTargets = new Set(configSelected ? adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx).map((action) => action.target) : []);
+        const ownedCandidates = new Set(selectedPlan.filter((action) => !shared.has(action.target) && !configTargets.has(action.target)).map((action) => action.target));
         applyChanges(changes, (action) => {
           if (ownedCandidates.has(action.target) && !row.owned.includes(action.target)) row.owned.push(action.target);
           if (action.kind === "write") {
@@ -326,7 +338,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         for (const target of ownedCandidates) if (ctx.ownedFiles?.has(target) && !row.owned.includes(target)) row.owned.push(target);
         const keep = new Set([...plan.map((action) => action.target), ...Object.entries(readManifest(manifestPath).runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? [])]);
         for (const orphan of [...row.owned]) {
-          if (keep.has(orphan) || path.basename(orphan) === "engram.ts") continue;
+          if (!includesOwnedFile(adapter, ctx, scope, orphan) || keep.has(orphan) || path.basename(orphan) === "engram.ts") continue;
           assertProjectionPath(orphan, opts.targetDir ?? HOME);
           if (fs.lstatSync(orphan, { throwIfNoEntry: false })) { createBackup([orphan], `retired-${id}`, path.join(state, "backups")); fs.unlinkSync(orphan); }
           row.owned = row.owned.filter((file) => file !== orphan);

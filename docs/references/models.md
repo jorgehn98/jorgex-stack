@@ -4,7 +4,7 @@ Stack instala los seis agentes sin modelos, esfuerzos, variantes ni límites de 
 
 ## Edición individual
 
-El selector conectado a `jorgex-stack models` permite elegir un runtime y un agente gestionado, consultar su catálogo y guardar esa unidad con backup. No reinstala ni actualiza herramientas ni cambia permisos. El guardado modifica únicamente los campos de modelo/esfuerzo del archivo nativo; mantiene instrucciones, herramientas y demás políticas. Los roles readonly conservan sus restricciones; Codex hereda el sandbox del padre.
+El menú `jorgex-stack` permite entrar en **Instalar / configurar › Subagentes › runtime › agente › Editar modelo / esfuerzo**, consultar su catálogo al editar y guardar esa unidad con backup. Volver retrocede un nivel y conserva lo guardado; con cambios pendientes exige guardar, descartar o continuar editando. No reinstala ni actualiza herramientas ni cambia permisos. El guardado modifica únicamente los campos de modelo/esfuerzo del archivo nativo; mantiene instrucciones, herramientas y demás políticas. Los roles readonly conservan sus restricciones; Codex hereda el sandbox del padre.
 
 - **Mantener:** conserva el valor actual aunque no figure en el catálogo. Guardar sin cambios no reescribe el archivo.
 - **Heredar:** elimina el override elegido, sin escribir nombres ficticios `default`/`inherit`. Modelo y esfuerzo tienen elecciones independientes; OpenCode necesita un modelo explícito para almacenar una variante.

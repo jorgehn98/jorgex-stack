@@ -1,96 +1,126 @@
-import fs from "node:fs";
 import { pathToFileURL } from "node:url";
+import path from "node:path";
+import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
-import { ADAPTERS, runInstall } from "./install.js";
-import { runUpdate, runUpdateCheck } from "./update.js";
+import { ADAPTERS, runInstall, type RuntimeSyncStatus } from "./install.js";
+import { runUpdate } from "./update.js";
 import { runDoctor } from "./doctor.js";
 import { runUninstall } from "./uninstall.js";
-import { runModelsPicker } from "./models-picker.js";
-import { listBackups, restoreBackup } from "./lib/backup.js";
-import { readPackageVersion } from "./lib/release.js";
-import { runQualityPlan } from "./lib/quality-runner.js";
-import { serializeQualityReceipt } from "./lib/quality-receipt.js";
-import { writeText } from "./lib/fsx.js";
+import { editAgent } from "./models-picker.js";
+import { loadCanonicalAgents } from "./lib/canonical.js";
+import { stackRoot } from "./lib/paths.js";
+import { readManifest } from "./lib/manifest.js";
+import { detectEngram } from "./lib/detect.js";
+import type { OperationScope } from "./lib/operation-scope.js";
 
-const COMMANDS = ["install", "update", "doctor", "uninstall", "models", "restore", "quality"] as const;
-export type Command = typeof COMMANDS[number];
-export interface Flags {
-  agents: RuntimeId[]; targetDir?: string; dryRun: boolean; yes: boolean;
-  help: boolean; version: boolean; check: boolean; list: boolean;
-  engram: boolean; removeEngram: boolean; upgradePermissions: boolean;
-  receipt?: string; positional: string[]; unknownFlags: string[];
+type Action = "install" | "update" | "doctor" | "uninstall";
+type Option = { value: string; label: string };
+export interface MenuOperations {
+  detect(): RuntimeId[];
+  agents(): string[];
+  operate(action: Action, scope: OperationScope, runtimes: RuntimeId[]): Promise<number>;
+  edit(runtime: RuntimeId, agent: string, route: string): Promise<void>;
+  managed?(): RuntimeId[];
 }
-export function parseFlags(args: string[], allowReceipt = false): Flags {
-  const flags: Flags = { agents: [], dryRun: false, yes: false, help: false, version: false, check: false, list: false, engram: false, removeEngram: false, upgradePermissions: false, positional: [], unknownFlags: [] };
-  for (let index = 0; index < args.length; index++) {
-    const argument = args[index]!;
-    const [key, inline] = argument.split(/=(.*)/s);
-    if (key === "--help" || key === "-h") flags.help = true;
-    else if (key === "--version" || key === "-v") flags.version = true;
-    else if ((key === "--agents" || key === "-a" || key === "--target-dir") && !allowReceipt || key === "--receipt" && allowReceipt) {
-      const value = inline ?? args[index + 1];
-      if (inline === undefined && value && !value.startsWith("-")) index++;
-      if (!value || value.startsWith("-")) { flags.unknownFlags.push(argument); continue; }
-      if (key === "--target-dir") flags.targetDir = value;
-      else if (key === "--receipt") flags.receipt = value;
-      else flags.agents = value.split(",") as RuntimeId[];
-    } else if (key === "--dry-run" && !allowReceipt) flags.dryRun = true;
-    else if ((key === "--yes" || key === "-y") && !allowReceipt) flags.yes = true;
-    else if (key === "--check" && !allowReceipt) flags.check = true;
-    else if (key === "--list" && !allowReceipt) flags.list = true;
-    else if (key === "--engram" && !allowReceipt) flags.engram = true;
-    else if (key === "--remove-engram" && !allowReceipt) flags.removeEngram = true;
-    else if (key === "--upgrade-permissions" && !allowReceipt) flags.upgradePermissions = true;
-    else if (argument.startsWith("-")) flags.unknownFlags.push(argument);
-    else flags.positional.push(argument);
-  }
-  return flags;
+export interface MenuUI {
+  select(route: string, options: Option[]): Promise<string>;
+  confirm(message: string): Promise<boolean>;
+  info(message: string): void;
 }
-export interface ParsedCli { action: "run" | "help" | "version" | "unknown" | "unknown-flags"; command: Command; flags: Flags; unknownCommand?: string }
-export function parseCliArgs(argv: string[]): ParsedCli {
-  const first = argv[0];
-  const known = (COMMANDS as readonly string[]).includes(first ?? "install");
-  const command = known ? (first ?? "install") as Command : "install";
-  const flags = parseFlags(known && first ? argv.slice(1) : argv, command === "quality");
-  const action = flags.help ? "help" : flags.version ? "version" : first && !known && !first.startsWith("-") ? "unknown" : flags.unknownFlags.length ? "unknown-flags" : "run";
-  return { action, command, flags, ...(action === "unknown" ? { unknownCommand: first } : {}) };
+const BACK: Option = { value: "back", label: "Volver" };
+const actions: Option[] = [
+  { value: "install", label: "Instalar / configurar" }, { value: "update", label: "Actualizar" },
+  { value: "doctor", label: "Doctor" }, { value: "uninstall", label: "Desinstalar" }, { value: "exit", label: "Salir" },
+];
+const sections: Option[] = [
+  { value: "all", label: "Todo" }, { value: "skills", label: "Skills compartidas" },
+  { value: "config", label: "Configuración por runtime" }, { value: "agents", label: "Subagentes" }, BACK,
+];
+
+export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boolean): Promise<void> {
+  if (!tty) { ui.info("JorgeX Stack requiere un terminal interactivo: ejecuta jorgex-stack en una terminal. Sin cambios ni espera de entrada."); return; }
+  const detected = operations.detect();
+  ui.info(`JorgeX Stack · Runtimes detectados: ${detected.map((id) => ADAPTERS[id].name).join(" · ") || "ninguno"}. Los ausentes no se instalan automáticamente.`);
+  async function unit(action: Action, scope: OperationScope, runtimes: RuntimeId[], route: string) {
+    while (true) {
+      const choice = await ui.select(route, [
+        { value: "apply", label: action === "doctor" ? "Comprobar (solo lectura)" : "Aplicar esta unidad" },
+        ...(action === "install" && scope.agent ? [{ value: "edit", label: "Editar modelo / esfuerzo" }] : []), BACK,
+      ]);
+      if (choice === "back") return;
+      if (choice === "edit") {
+        try { await operations.edit(runtimes[0]!, scope.agent!, route); }
+        catch { ui.info("Agente pendiente; no se deshace lo ya guardado. Reintenta explícitamente."); }
+        continue;
+      }
+      if (scope.section === "all" || scope.section === "skills") ui.info("Skills compartidas: alcance global, visible también para otros runtimes; no son copias aisladas por runtime.");
+      if (action === "uninstall" && !await ui.confirm(`Retirar ${route}${scope.section === "all" || scope.section === "skills" ? ": incluye skills compartidas usadas por otros runtimes" : ""}. Conserva runtimes, datos de Engram, credenciales, sesiones y herramientas compartidas. ¿Continuar?`)) continue;
+      try {
+        const result = await operations.operate(action, scope, runtimes);
+        ui.info(result ? "Aplicación parcial: consulta las unidades aplicadas y pendientes arriba. Reintento solo al elegir Aplicar; sin rollback global." : "Unidad completada. Configuración: nueva sesión / reload del runtime cuando corresponda.");
+      } catch { ui.info("Unidad pendiente; pueden existir cambios parciales. Reintenta explícitamente; sin rollback global."); }
+    }
+  }
+  while (true) {
+    const action = await ui.select("Inicio", actions) as Action | "exit" | "back";
+    if (action === "exit" || action === "back") return;
+    while (true) {
+      const section = await ui.select(actions.find((option) => option.value === action)!.label, sections) as OperationScope["section"] | "back";
+      if (section === "back") break;
+      const route = `${actions.find((option) => option.value === action)!.label} › ${sections.find((option) => option.value === section)!.label}`;
+      const runtimes = action === "uninstall" ? [...new Set([...detected, ...operations.managed?.() ?? []])] : detected;
+      if (!runtimes.length) { ui.info("Sin destinos locales; instala el runtime por su canal oficial. Sin cambios."); continue; }
+      if (section === "skills") { await unit(action, { section }, runtimes, route); continue; }
+      while (true) {
+        const runtime = await ui.select(route, [...runtimes.map((id) => ({ value: id, label: ADAPTERS[id].name })), ...(section === "all" ? [{ value: "all", label: "Todos los destinos" }] : []), BACK]);
+        if (runtime === "back") break;
+        const selected = runtime === "all" ? runtimes : [runtime as RuntimeId];
+        const runtimeRoute = `${route} › ${runtime === "all" ? "Todos" : ADAPTERS[runtime as RuntimeId].name}`;
+        if (section !== "agents") { await unit(action, { section }, selected, runtimeRoute); continue; }
+        while (true) {
+          const agent = await ui.select(runtimeRoute, [{ value: "all", label: "Todos los subagentes" }, ...operations.agents().map((name) => ({ value: name, label: name })), BACK]);
+          if (agent === "back") break;
+          await unit(action, { section, ...(agent === "all" ? {} : { agent }) }, selected, `${runtimeRoute} › ${agent}`);
+        }
+      }
+    }
+  }
 }
-function printHelp(): void {
-  console.log("jorgex-stack install|update|doctor|uninstall|models|restore|quality\n--agents claude-code,codex,opencode,pi --target-dir DIR --dry-run --yes\nInstall: --engram --upgrade-permissions. Update: --check. Uninstall: --remove-engram.\nModelos: edición nativa individual con backup. Menú común pendiente de T07.");
-}
-async function main(): Promise<void> {
-  const parsed = parseCliArgs(process.argv.slice(2));
-  const { flags, command } = parsed;
-  if (parsed.action === "version") { console.log(readPackageVersion()); return; }
-  if (parsed.action === "help" || process.argv.length === 2) { printHelp(); return; }
-  if (parsed.action !== "run") throw new Error(`Entrada desconocida: ${parsed.unknownCommand ?? flags.unknownFlags.join(", ")}`);
-  if (command === "quality") {
-    if (flags.positional.length !== 1) throw new Error("quality requiere un archivo de plan JSON.");
-    const result = await runQualityPlan(JSON.parse(fs.readFileSync(flags.positional[0]!, "utf8")));
-    if (flags.receipt) writeText(flags.receipt, serializeQualityReceipt(result.receipt));
-    else console.log(serializeQualityReceipt(result.receipt));
-    process.exitCode = result.evaluation.status === "pass" ? 0 : 1; return;
-  }
-  if (command === "restore") {
-    if (flags.targetDir) throw new Error("restore no admite target-dir.");
-    if (flags.list) { console.log(listBackups().map((backup) => `${backup.id} ${backup.label}`).join("\n")); return; }
-    if (flags.positional.length !== 1) throw new Error("restore requiere un ID de backup.");
-    console.log(`Restaurados ${restoreBackup(flags.positional[0]!)} archivos.`); return;
-  }
-  if (flags.agents.some((runtime) => !(runtime in ADAPTERS))) throw new Error("Runtime desconocido; solo Claude Code, Codex, OpenCode v2 y Pi.");
-  if (flags.targetDir && flags.agents.length !== 1) throw new Error("--target-dir requiere exactamente un runtime.");
-  if (flags.engram && command !== "install") throw new Error("--engram solo se admite en install.");
-  const runtimes = flags.agents.length ? flags.agents : Object.keys(ADAPTERS) as RuntimeId[];
-  const options = { ...flags, runtimes };
-  if (command === "models") {
-    if (flags.targetDir || flags.dryRun) throw new Error("El selector requiere configuración nativa y guardado explícito; no admite target-dir/dry-run.");
-    process.exitCode = await runModelsPicker(options); return;
-  }
-  if (command === "doctor") process.exitCode = await runDoctor(options);
-  else if (command === "uninstall") process.exitCode = await runUninstall(options);
-  else if (command === "update") process.exitCode = flags.check ? await runUpdateCheck() : await runUpdate(options);
-  else process.exitCode = await runInstall(options);
+
+const ui: MenuUI = {
+  async select(route, options) {
+    const answer = await p.select({ message: `JorgeX Stack · ${route}`, options });
+    return p.isCancel(answer) ? route === "Inicio" ? "exit" : "back" : answer;
+  },
+  async confirm(message) { const answer = await p.confirm({ message, initialValue: false }); return !p.isCancel(answer) && answer; },
+  info: (message) => p.log.info(message),
+};
+const operations: MenuOperations = {
+  detect: () => (Object.keys(ADAPTERS) as RuntimeId[]).filter((id) => ADAPTERS[id].detect().installed),
+  managed: () => Object.keys(readManifest().runtimes) as RuntimeId[],
+  agents: () => loadCanonicalAgents(path.join(stackRoot(), "agents")).map((agent) => agent.name),
+  edit: editAgent,
+  async operate(action, scope, runtimes) {
+    const opts = { scope, runtimes, dryRun: false, yes: false };
+    if (action === "doctor") return runDoctor(opts);
+    if (action === "uninstall") return runUninstall({ ...opts, removeEngram: false });
+    let engram = false;
+    if ((scope.section === "all" || scope.section === "config") && !detectEngram()) {
+      engram = await ui.confirm("Engram ausente: ¿instalar el último release oficial? El runtime y los datos personales se conservan.");
+      if (!engram) { ui.info("Configuración pendiente: Engram es prerrequisito. No se ha aplicado esta unidad."); return 1; }
+    }
+    const statuses: Array<{ runtime: RuntimeId; status: RuntimeSyncStatus }> = [];
+    const onRuntimeStatus = (runtime: string, status: RuntimeSyncStatus) => { statuses.push({ runtime: runtime as RuntimeId, status }); };
+    const result = action === "update" ? await runUpdate({ ...opts, engram, onRuntimeStatus }) : await runInstall({ ...opts, engram, onRuntimeStatus });
+    for (const { runtime, status } of statuses) ui.info(`${ADAPTERS[runtime].name}: ${status === "ok" ? "unidad aplicada" : "unidad pendiente / parcial"}.`);
+    return result;
+  },
+};
+
+async function main() {
+  if (process.argv.length > 2) { console.error("Solo entrada interactiva: jorgex-stack, sin subcomandos ni flags."); process.exitCode = 1; return; }
+  await runMenu(operations, ui, !!process.stdin.isTTY && !!process.stdout.isTTY);
 }
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : "Operación incompleta"); process.exitCode = 1; });
+  await main().catch(() => { console.error("Operación incompleta; revisa configuración/permisos. Sin rollback global."); process.exitCode = 1; });
 }

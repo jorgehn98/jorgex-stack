@@ -898,15 +898,6 @@ describe("version sync", () => {
     expect(readPackageVersion()).toBe(PACKAGE_VERSION.version);
   });
 
-  it("`--version` usa la acción de versión del CLI", async () => {
-    const { parseCliArgs } = await import("../src/cli.js");
-
-    expect(parseCliArgs(["--version"])).toMatchObject({
-      action: "version",
-      command: "install",
-    });
-    expect(readPackageVersion()).toBe(PACKAGE_VERSION.version);
-  });
 });
 
 describe("publish workflow contract", () => {

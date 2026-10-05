@@ -62,84 +62,25 @@ Stack mantiene un único `opencode` v2 entre los cuatro runtimes gestionados. El
 
 Más detalle de permisos en [docs/references/permissions.md](docs/references/permissions.md); roster y límites en [docs/references/models.md](docs/references/models.md); estado de Browser Control en [docs/references/browser-automation.md](docs/references/browser-automation.md); reconocimiento de capabilities en [docs/references/quality-receipt.md](docs/references/quality-receipt.md); recursos estáticos proyectados y verificación byte-auth en [docs/references/opencode-static-resources.md](docs/references/opencode-static-resources.md).
 
-## Usage
-
-Install and run via npm without cloning the repository:
+## Uso: una entrada interactiva
 
 ```bash
-# Install (also reapplies mode, models, permissions and browser guidance to the configured runtimes).
-pnpm dlx jorgex-stack install
+pnpm dlx jorgex-stack
+# Desde un clon preparado:
+pnpm cli
 ```
 
-For a fresh Engram installation, always consult the current published Stack and bypass only the `pnpm dlx` cache:
+`jorgex-stack` abre un menú con **Instalar / configurar**, **Actualizar**, **Doctor**, **Desinstalar** y **Salir**. No admite subcomandos, aliases antiguos ni flags del instalador. Sin terminal interactivo informa del requisito y termina sin consultas remotas, escrituras ni espera de entrada. La detección inicial es local: abrir pantallas no instala runtimes ausentes ni consulta catálogos de modelos.
 
-```bash
-pnpm --config.dlx-cache-max-age=0 dlx jorgex-stack@latest install --engram
-```
+Cada acción permite seleccionar **Todo**, **Skills compartidas**, **Configuración por runtime** o **Subagentes por runtime / agente**. La cabecera muestra la ruta; **Volver** retrocede un nivel. **Aplicar esta unidad** opera únicamente en ese alcance, conservando los recursos y el ownership no seleccionados. Todo permite un runtime o todos los detectados. Configuración puede ejecutar los setups y actualizadores oficiales deliberados; no lo hace al listar sus opciones.
 
-`dlx-cache-max-age` is separate from the pnpm 11 dependency-age filter: it controls only the cached `dlx` package, while `minimumReleaseAgeExclude` applies only to the named package resolution. An explicit Stack version such as `@1.9.30` does not reuse the cache entry for another version. Pi `install`/`update` resolve the registry's observed published `latest` dist-tag to an exact version and verify the artifact before activation; they do not install a floating `latest` alias.
+Las skills proceden únicamente del canon local distribuido con Stack. Son globales en `~/.agents/skills/` y Claude usa sus enlaces: afectan también a otros runtimes, no son copias aisladas por destino. Desinstalar solicita confirmación explícita del alcance, incluido ese efecto compartido. Retirar solo configuración de Pi conserva las skills, agentes y Browser Control de OpenCode. No se borran runtimes, DB/binario de Engram, credenciales, sesiones, perfiles del navegador ni herramientas globales ajenas.
 
-Other important commands:
+En **Instalar / configurar › Subagentes › runtime › agente › Editar modelo / esfuerzo**, **Modelo** o **Esfuerzo / variante** consulta el catálogo nativo al editar, nunca en los listados. **Guardar y aplicar** persiste ese agente con backup inmediato; **Volver** no deshace lo guardado. Con cambios pendientes ofrece **Guardar y aplicar**, **Descartar** o **Continuar editando**. Guardar no reinstala herramientas y requiere nueva sesión/reload cuando lo indique el runtime. Las fuentes y límites del catálogo están en [modelos](docs/references/models.md); Codex hereda el sandbox del padre, no garantiza aislamiento readonly por rol.
 
-```bash
-pnpm dlx jorgex-stack doctor          # check Engram, config drift, hooks and keys
-pnpm dlx jorgex-stack models          # change models by runtime, tier or subagent
-pnpm dlx jorgex-stack update --check  # report stack/Engram updates and maintainer-only skill discovery
-pnpm dlx jorgex-stack update          # interactively review and apply available updates
-pnpm dlx jorgex-stack restore --list  # list automatic backups
-pnpm dlx jorgex-stack restore <id>    # restore one backup
-pnpm dlx jorgex-stack uninstall       # remove managed files; keep Engram data intact
-```
+Los fallos muestran unidades aplicadas y pendientes, sin rollback global ni reintento automático. Un reintento exige otra selección explícita de aplicar/guardar. **Doctor** comprueba sin reparar. **Actualizar** conserva elecciones nativas de modelo/esfuerzo y configuración personal; para skills reaplica solo la biblioteca local. Engram consulta el release oficial únicamente al aplicar configuración deliberadamente; solo solicita exportación/backup cuando es necesario reemplazar su binario, no al mostrar el menú ni cuando ya está vigente.
 
-For development from a clone, run the same commands through `pnpm cli <command>` (see [Development](#development)).
-
-Every command supports `--dry-run`, `--yes`, and `--target-dir <dir>` for testing without touching the real config. Writes create automatic backups and verify idempotency; merges into user config are surgical (marked markdown sections, JSON/TOML upserts), so user-owned content is never touched. `--yes` does not authorize downloading missing Engram; use `--engram` for that explicit consent. The interactive install asks before installing it, while dry-run and target-dir never download it.
-
-Runtime defaults are documented in [docs/references/permissions.md](docs/references/permissions.md) for permissions and [docs/references/models.md](docs/references/models.md) for the Sol primary default, field-level ownership and independent subagent routing. The quality policy and `jorgex.quality.receipt` contract are documented in [docs/references/quality-receipt.md](docs/references/quality-receipt.md). OpenCode v2 sigue siendo provider-agnostic para subagentes; su agente principal fija `openai/gpt-6.1-sol` salvo que el usuario lo cambie (ver la sección OpenCode v2 arriba y la guía de modelos), y Codex/Pi conservan `gpt-5.6-sol` salvo sustitución del usuario.
-
-### Modes: Human and Programmatic
-
-`install` accepts two mutually-exclusive installation modes. The choice is global (not per runtime) and is saved in `~/.jorgex-stack/install-mode.json` on first run; subsequent `install` calls reuse it. Re-run `install` with `--mode` to switch.
-
-| Mode | Audience | Final assistant response | Subagents |
-|------|----------|--------------------------|-----------|
-| `human` (default) | interactive users, TUI | natural language, in the user's language | today's behavior (parallel where safe) |
-| `programmatic` | external orchestrators, CI, scripts, other agents | **strict JSON**, English | serial by default, parallel opt-in |
-
-`human` is the recommended mode for humans. `programmatic` exists for agent/script consumers and low-resource headless machines; it is not a "better" mode for humans.
-
-Flags:
-
-```
---mode human|programmatic
---subagent-concurrency serial|parallel   # only valid with --mode programmatic
-```
-
-- Non-interactive / agent install:
-
-  ```
-  pnpm dlx jorgex-stack install --mode programmatic --subagent-concurrency serial --yes
-  ```
-
-  This installs into all detected runtimes. To be explicit, add `--agents opencode,claude-code,codex,pi` or a comma-separated subset. Always pass `--mode programmatic`; without `--mode`, `--yes` and non-TTY installs default to `human`.
-
-  OpenCode v2 usa los defaults del roster aprobado en config fresca y no exige selección previa para `install --yes` ni procesos sin TTY. Si quieres cambiar el roster o mantener una selección por agente explícita, ejecuta `pnpm dlx jorgex-stack models --agents opencode` interactivamente; las selecciones guardadas tienen precedencia sobre los defaults del roster.
-
-- `--mode human` cannot be combined with `--subagent-concurrency`.
-- Without `--mode`, the first run asks interactively; `--yes`, non-TTY, and `--target-dir` default to `human`.
-- `pnpm dlx jorgex-stack install` reuses the saved mode; pass `--mode` to change and save the preference.
-
-Programmatic mode guarantees:
-
-- The final assistant response is **exactly one strict JSON object**, no Markdown fences or prose around it. Schema in `stack/modes/programmatic/final-output.schema.json` — required keys: `status`, `decision`, `confidence` (0..1), `summary`, `risks[]`, `next_steps[]`, `delegations[]`; `status` is `done|partial|blocked` and each `delegations[]` item uses `agent: work — paths — inputs`.
-- English only, compact and direct.
-- Subagents default to **serial** delegation (one at a time, no parallel). Pass `--subagent-concurrency parallel` to allow it.
-
-Programmatic mode does **not** provide:
-
-- An opt-out from Engram (Engram is always part of the install).
-- Any special stdout streaming guarantee — the runtime's normal output rules apply.
-- Telemetry, JSONL streams, or runtime token-budget enforcement.
+Los backups de escrituras viven en `~/.jorgex-stack/backups/`; el manifest existente registra lo escrito sin un segundo ledger. Los seams internos de sandbox son para tests, no un modo público headless. El uso programático de los agentes corresponde a las CLI/API/RPC nativas de cada runtime.
 
 ### Pi runtime
 
@@ -237,21 +178,9 @@ pnpm dlx jorgex-stack install --devtools
 
 `install`/`update` pueden adquirir un nuevo release browser verificado con opt-in explícito o preferencia persistida; no son una alternativa offline al comando retirado `sync`. `doctor` revisa receipt, versión, caché Chromium y arranque headless local sin reparar. `update --check` observa solo estado local. `uninstall` conserva por defecto el árbol gestionado y los datos del navegador; `--remove-playwright` desactiva preferencia y guía con backup, sin retirar un CLI global ajeno. Una preferencia ilegible bloquea mutaciones y `doctor` señala su ruta. Con `--target-dir` Stack no toca el estado browser del HOME real. Consulta [automatización de navegador](docs/references/browser-automation.md) para receipts, reparación y handoffs Pi.
 
-### Update: Interactive Flow
+### Actualización deliberada
 
-`update` manages three sources for the end user, plus a maintainer-only one:
-
-1. **Stack** (jorgex-stack): detects whether it is a git clone or a global install, then offers an update with confirmation.
-2. **Engram** (binary): detects the installed version and offers an update through the **native channel** only with explicit confirmation. The database and memories are never touched, and Stack does not replace an existing binary as part of runtime setup.
-3. **Playwright CLI** (solo si se habilitó explícitamente): compara el receipt local autenticado con la observación guardada, muestra el drift del proveedor en el selector interactivo y exige una segunda confirmación. Prepara y verifica el release seleccionado, promociona el árbol gestionado y comprueba Chromium; no actualiza ni elimina un CLI global.
-4. **Vendored skills** (maintainer only): third-party skills ship **pinned** with the stack version, so the installed package never reaches out to their upstreams. Only when running from a git clone (`pnpm cli update`) does `update` scan the upstreams in `upstreams.json`, download to a temp directory, **show a mandatory diff**, and ask for confirmation. A moved upstream is only a candidate until that review is accepted and a deliberate re-pin is made for a future release; it is never treated as an accepted official update automatically. Skills with local changes (`modified: true`) warn and require double confirmation.
-
-Usage:
-- `update --check`: scans versions without applying changes.
-- `update` (TTY, without `--yes`): interactive multiselect with visible diffs and step-by-step confirmations.
-- `update --yes` or non-TTY: behaves like `--check` (report only).
-
-GitHub authentication: requests use `GH_TOKEN`/`GITHUB_TOKEN` from the environment or, if unavailable, the token from your `gh` CLI session (`gh auth token` — local read only, never logged or persisted). Without a token, GitHub limits parallel requests and some upstreams may appear as "offline".
+El menú **Actualizar** opera sobre el alcance seleccionado. Usa los canales nativos de los runtimes y sus integraciones oficiales, incluyendo `pi update --all` para Pi y `codex update` para Codex; no sustituye el actualizador Codex por pnpm. Browser Control usa su gestor nativo y puede requerir recargar la extensión/reiniciar el relay del proveedor. No consulta upstreams de skills: distribuye el canon local de esta versión de Stack.
 
 ### OpenCode Goal Mode retirado
 
@@ -308,5 +237,5 @@ pnpm install
 pnpm build        # tsup -> dist/
 pnpm typecheck
 pnpm test         # vitest
-pnpm cli --help
+pnpm cli         # menú interactivo
 ```

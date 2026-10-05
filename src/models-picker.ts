@@ -3,8 +3,6 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import type { AgentModel } from "./lib/agent-model.js";
-import { loadCanonicalAgents } from "./lib/canonical.js";
-import { stackRoot } from "./lib/paths.js";
 import { ADAPTERS, makeContext, stateDirectory, assertOpenCodeV2Preflight } from "./install.js";
 import { discoverModels, type ModelCatalog } from "./lib/native-model-catalog.js";
 import { readAgentModel, saveAgentModel } from "./lib/agent-model.js";
@@ -14,10 +12,10 @@ const INHERIT = { action: "inherit" } as const;
 const MANUAL = { action: "manual" } as const;
 const BACK = { action: "back" } as const;
 
-export async function chooseAgentModel(runtime: RuntimeId, current: AgentModel, catalog: ModelCatalog): Promise<AgentModel | undefined> {
+export async function chooseAgentModel(runtime: RuntimeId, current: AgentModel, catalog: ModelCatalog, field: "model" | "effort" | "both" = "both"): Promise<AgentModel | undefined> {
   if (catalog.warning) p.log.warn(catalog.warning);
   p.log.info("Catálogo observado en la ubicación actual; un ID no prueba acceso. El arranque nativo puede cargar plugins/hooks y cachés.");
-  const chosen = await p.select<string | typeof KEEP | typeof INHERIT | typeof MANUAL | typeof BACK>({
+  const chosen = field === "effort" ? KEEP : await p.select<string | typeof KEEP | typeof INHERIT | typeof MANUAL | typeof BACK>({
     message: "Modelo del agente",
     options: [
       { value: KEEP, label: `Mantener ${current.model ?? "herencia"}${current.model && !catalog.models.some((model) => model.id === current.model) ? " (no figura en el catálogo)" : ""}` },
@@ -34,6 +32,14 @@ export async function chooseAgentModel(runtime: RuntimeId, current: AgentModel, 
     const typed = await p.text({ message: "ID exacto (sin normalizar ni sustituir aliases)", initialValue: current.model, validate: (value) => !value?.trim() || /[\x00-\x1f\x7f]/.test(value) ? "Introduce un ID sin caracteres de control." : undefined });
     if (p.isCancel(typed)) return undefined;
     model = typed.trim();
+  }
+  if (field === "model") {
+    if (runtime === "opencode" && !model && current.variant) {
+      p.log.warn("Heredar modelo requiere heredar primero la variante de OpenCode; selección conservada.");
+      return undefined;
+    }
+    if (model !== current.model && current.variant) p.log.info("Se conserva el esfuerzo/variante existente, sin acreditar soporte para el nuevo modelo.");
+    return { ...(model ? { model } : {}), ...(current.variant ? { variant: current.variant } : {}) };
   }
   const efforts = model ? catalog.models.find((item) => item.id === model)?.efforts : undefined;
   if (!efforts) p.log.info("Esfuerzos/variantes desconocidos para esta selección: solo mantener o heredar.");
@@ -53,48 +59,56 @@ export async function chooseAgentModel(runtime: RuntimeId, current: AgentModel, 
   return { ...(model ? { model } : {}), ...(variant ? { variant } : {}) };
 }
 
-/** T07 consumes this same picker; no lifecycle operations run when changing a model. */
-export async function runModelsPicker(opts: { yes: boolean; runtimes: RuntimeId[] }): Promise<number> {
-  if (opts.yes || !process.stdout.isTTY) { p.log.warn("La edición individual requiere un terminal interactivo. No se ha cambiado configuración."); return 1; }
-  p.intro("Modelos y esfuerzos · guardar por agente");
-  const agents = loadCanonicalAgents(path.join(stackRoot(), "agents"));
+export async function editAgent(runtime: RuntimeId, name: string, route: string): Promise<void> {
+  const adapter = ADAPTERS[runtime];
+  const detection = adapter.detect();
+  if (!detection.installed || !detection.binPath) { p.log.warn("Runtime ausente; sin cambios."); return; }
+  if (runtime === "opencode") assertOpenCodeV2Preflight({}, detection.binPath);
+  const ctx = makeContext(adapter, detection.configDir);
+  const file = path.join(adapter.paths(detection.configDir).agentsDir, `${name}.${runtime === "codex" ? "toml" : "md"}`);
+  if (!fs.existsSync(file) || !ctx.ownedFiles?.has(file)) { p.log.warn("Agente ausente o ajeno; aplica su definición gestionada primero."); return; }
+  let unit = readAgentModel(runtime, file);
+  let draft = unit.selection;
+  let catalog: ModelCatalog | undefined;
   while (true) {
-    const runtime = await p.select<RuntimeId | typeof BACK>({ message: "Runtime", options: [...opts.runtimes.map((id) => ({ value: id, label: ADAPTERS[id].name })), { value: BACK, label: "Volver" }] });
-    if (p.isCancel(runtime) || runtime === BACK) return 0;
-    const id = runtime as RuntimeId;
-    const adapter = ADAPTERS[id];
-    const detection = adapter.detect();
-    if (!detection.installed || !detection.binPath) { p.log.warn("Runtime no instalado; instala/configura primero. No se ha cambiado nada."); continue; }
-    while (true) {
-      const name = await p.select<string | typeof KEEP | typeof INHERIT | typeof MANUAL | typeof BACK>({ message: `${adapter.name} · agente`, options: [...agents.map((agent) => ({ value: agent.name, label: agent.name })), { value: BACK, label: "Volver" }] });
-      if (p.isCancel(name) || name === BACK) break;
-      try {
-        if (id === "opencode") assertOpenCodeV2Preflight({}, detection.binPath);
-        const ctx = makeContext(adapter, detection.configDir);
-        const file = path.join(adapter.paths(detection.configDir).agentsDir, `${String(name)}.${id === "codex" ? "toml" : "md"}`);
-        if (!fs.existsSync(file) || !ctx.ownedFiles?.has(file)) { p.log.warn("Agente ausente o ajeno: se conserva. Instala/configura el agente gestionado primero."); continue; }
-        const unit = readAgentModel(id, file);
-        let server: string | undefined;
-        if (id === "opencode") {
-          const address = await p.text({ message: "Servidor OpenCode v2 existente (loopback; no se inicia un servicio)", initialValue: "http://127.0.0.1:4096" });
-          if (p.isCancel(address)) continue;
-          server = address;
+    p.log.info(`JorgeX Stack · ${route}\nModelo: ${draft.model ?? "herencia"} · Esfuerzo/variante: ${draft.variant ?? "herencia"}`);
+    let action: string | symbol = await p.select({ message: "Agente", options: [
+      { value: "model", label: "Modelo" }, { value: "effort", label: "Esfuerzo / variante" },
+      { value: "save", label: "Guardar y aplicar" }, { value: "back", label: "Volver" },
+    ] });
+    const dirty = JSON.stringify(draft) !== JSON.stringify(unit.selection);
+    const leaving = p.isCancel(action) || action === "back";
+    if (leaving) {
+      if (!dirty) return;
+      action = await p.select({ message: "Cambios pendientes de este agente", options: [
+        { value: "save", label: "Guardar y aplicar" }, { value: "discard", label: "Descartar" }, { value: "continue", label: "Continuar editando" },
+      ] });
+      if (action === "discard") return;
+      if (p.isCancel(action) || action === "continue") continue;
+    }
+    try {
+      if (action === "save") {
+        if (!dirty) { p.log.info("Sin cambios pendientes."); continue; }
+        saveAgentModel(runtime, file, unit.content, draft, ctx.ownedFiles!, detection.configDir, path.join(stateDirectory(), "backups"));
+        unit = readAgentModel(runtime, file);
+        draft = unit.selection;
+        p.log.success("Agente guardado con backup. Nueva sesión o reload para usarlo; volver no deshace lo guardado.");
+        if (leaving) return;
+      } else if (action === "model" || action === "effort") {
+        if (!catalog) {
+          let server: string | undefined;
+          if (runtime === "opencode") {
+            const answer = await p.text({ message: "Servidor OpenCode v2 existente (loopback)", initialValue: "http://127.0.0.1:4096" });
+            if (p.isCancel(answer)) continue;
+            server = answer;
+          }
+          catalog = await discoverModels(runtime, detection.binPath, process.cwd(), server);
         }
-        const catalog = await discoverModels(id, detection.binPath, process.cwd(), server);
-        let selection = await chooseAgentModel(id, unit.selection, catalog);
-        while (selection) {
-          const action = await p.select({ message: "Cambios de este agente", options: [{ value: "save", label: "Guardar y aplicar" }, { value: "discard", label: "Descartar y volver" }, { value: "continue", label: "Continuar editando" }] });
-          if (p.isCancel(action)) { p.log.info("Cambios sin guardar: elige guardar, descartar o continuar."); continue; }
-          if (action === "discard") break;
-          if (action === "continue") { selection = await chooseAgentModel(id, selection, catalog) ?? selection; continue; }
-          saveAgentModel(id, file, unit.content, selection, ctx.ownedFiles!, detection.configDir, path.join(stateDirectory(), "backups"));
-          p.log.success("Agente guardado con backup. Nueva sesión o reload del runtime para usarlo; volver no deshace lo guardado.");
-          break;
-        }
-      } catch (error) {
-        // Persistence diagnostics are ours, never provider response text.
-        p.log.error(error instanceof Error ? error.message : "No se pudo guardar el agente; configuración conservada.");
+        draft = await chooseAgentModel(runtime, draft, catalog, action) ?? draft;
       }
+    } catch (error) {
+      p.log.error(error instanceof Error ? error.message : "No se pudo aplicar el agente.");
+      p.log.warn("Unidad pendiente; lo guardado anteriormente permanece. Reintenta explícitamente Guardar o descarta.");
     }
   }
 }
