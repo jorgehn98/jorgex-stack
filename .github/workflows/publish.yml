@@ -1,11 +1,4 @@
-name: Publish to npm
-
-# Publica en npm en cada push a main, pero SOLO si hay cambios publicables y
-# la versión resultante no existe ya en el registry. También hay un
-# workflow_dispatch de recuperación para publicar la versión actual sin re-bump
-# o crear el tag faltante. El build y los tests corren en un job sin permisos
-# privilegiados; el bump/push usa solo contents: write; el publish usa OIDC sin
-# capacidad de escribir en el repo.
+name: Publish package
 
 on:
   push:
@@ -13,11 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       release_sha:
-        description: SHA completa de 40 hex de recuperación anclada a main (opcional)
-        required: false
+        description: SHA completa de main aceptada/publicada para recuperación
+        required: true
+        type: string
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-main
   cancel-in-progress: false
 
 permissions:
@@ -25,832 +19,127 @@ permissions:
 
 jobs:
   validate:
-    timeout-minutes: 10
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 15
     outputs:
-      target_sha: ${{ steps.resolve.outputs.target_sha }}
-      should_validate: ${{ steps.preflight.outputs.should_validate }}
+      needed: ${{ steps.plan.outputs.needed }}
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+      integrity: ${{ steps.artifact.outputs.integrity }}
     steps:
-      - name: Reject GITHUB_RUN_ATTEMPT reruns before mutation
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
-            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
-            exit 1
-          fi
-
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Validate pinned action SHAs
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          action_refs="$(
-            grep -E '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*' .github/workflows/publish.yml |
-              sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*([^[:space:]#]+).*$/\2/' |
-              sort -u
-          )"
-
-          if [[ -z "$action_refs" ]]; then
-            echo "::error::No se encontraron actions remotas para validar."
-            exit 1
-          fi
-
-          while IFS= read -r action_ref; do
-            if ! [[ "$action_ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$ ]]; then
-              echo "::error::Action remota sin pin SHA válido: $action_ref"
-              exit 1
-            fi
-
-            repo="${action_ref%@*}"
-            sha="${action_ref#*@}"
-            curl -fsS "https://api.github.com/repos/${repo}/commits/${sha}" --header "Authorization: Bearer $GH_TOKEN" --connect-timeout 10 --max-time 30 > /dev/null
-          done <<< "$action_refs"
-
-      - name: Resolve validate checkout SHA
-        id: resolve
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_SHA: ${{ github.event.inputs.release_sha || '' }}
-        run: |
-          set -euo pipefail
-          git fetch origin main --tags
-          checkout_sha="$GITHUB_SHA"
-          origin_main="$(git rev-parse origin/main)"
-
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ -n "$RELEASE_SHA" ]]; then
-              release_sha="${RELEASE_SHA,,}"
-
-              if ! [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
-                echo "::error::La SHA de recuperación debe ser una SHA completa de 40 hex de main."
-                exit 1
-              fi
-
-              if git merge-base --is-ancestor "$release_sha" "$origin_main"; then
-                checkout_sha="$release_sha"
-              else
-                status=$?
-
-                if [[ "$status" -eq 1 ]]; then
-                  echo "::error::La SHA de recuperación $release_sha no pertenece a main. Reejecuta workflow_dispatch con release_sha=$release_sha."
-                  exit 1
-                fi
-
-                echo "::error::No se pudo comprobar la ascendencia de release_sha contra origin/main (git merge-base salió con status $status)."
-                exit 1
-              fi
-            else
-              checkout_sha="$origin_main"
-            fi
-          fi
-
-          echo "target_sha=$checkout_sha" >> "$GITHUB_OUTPUT"
-          git checkout --detach "$checkout_sha"
-
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          node-version: 24
-          package-manager-cache: false
-
-      - id: preflight
-        name: Decide whether validation is needed
-        shell: bash
+          node-version: "24.18.0"
+      - name: Resolve immutable main candidate
+        id: target
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_BEFORE: ${{ github.event.before }}
-          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-          import { execFileSync } from 'node:child_process';
-          import { pathToFileURL } from 'node:url';
-
-          const outputPath = (process.env.GITHUB_OUTPUT ?? '').trim();
-          const eventName = (process.env.EVENT_NAME ?? process.env.GITHUB_EVENT_NAME ?? '').trim();
-
-          if (outputPath === '') {
-            throw new Error('GITHUB_OUTPUT no está definido.');
-          }
-
-          const writeDecision = (shouldValidate, reason) => {
-            fs.appendFileSync(outputPath, `should_validate=${shouldValidate ? 'true' : 'false'}\n`, 'utf8');
-            console.log(`Preflight: ${reason}`);
-          };
-
-          // Dispatch siempre ejecuta la validación completa. Este guard debe
-          // ocurrir antes del import dinámico: un checkout histórico puede no
-          // contener todavía src/lib/release.ts.
-          if (eventName === 'workflow_dispatch') {
-            writeDecision(true, 'workflow_dispatch requiere validación completa.');
-          } else {
-            const targetSha = (process.env.TARGET_SHA ?? '').trim().toLowerCase();
-            if (!/^[0-9a-f]{40}$/.test(targetSha)) {
-              throw new Error('TARGET_SHA no es una SHA completa de 40 hex.');
-            }
-
-            const runGit = (args) => execFileSync('git', args, {
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            }).trim();
-            const realHead = runGit(['rev-parse', '--verify', 'HEAD^{commit}']).toLowerCase();
-
-            if (realHead !== targetSha) {
-              throw new Error(`El checkout real (${realHead}) no coincide con TARGET_SHA (${targetSha}).`);
-            }
-
-            const workspace = (process.env.GITHUB_WORKSPACE ?? process.cwd()).trim() || process.cwd();
-            const releaseModule = await import(pathToFileURL(path.join(workspace, 'src', 'lib', 'release.ts')).href);
-            const packageMetadata = releaseModule.readPackageMetadata();
-            const releaseTag = `v${packageMetadata.version.trim()}`;
-            const releaseTagSha = releaseModule.resolveGitTagSha(releaseTag);
-            const hasReliableTag = releaseTagSha !== null;
-
-            if (hasReliableTag) {
-              try {
-                runGit(['merge-base', '--is-ancestor', releaseTagSha, realHead]);
-              } catch (error) {
-                if (typeof error?.status === 'number' && error.status === 1) {
-                  throw new Error(`El tag ${releaseTag} no es ancestro de ${realHead}.`);
-                }
-
-                const detail = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
-                throw new Error(`No se pudo comprobar la ascendencia del tag ${releaseTag}. ${detail}`.trim());
-              }
-            }
-
-            const diffBase = releaseModule.resolvePublishDiffBase(
-              packageMetadata.version,
-              process.env.EVENT_BEFORE ?? process.env.GITHUB_EVENT_BEFORE ?? '',
-              () => hasReliableTag,
-              realHead,
-            );
-
-            const diffOutput = execFileSync('git', ['diff', '--name-only', '-z', diffBase, realHead, '--'], {
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
-            const changedPaths = diffOutput.split('\0').filter(Boolean);
-            const classification = releaseModule.classifyReleasePaths(changedPaths);
-            const commitMessage = runGit(['log', '-1', '--pretty=%B', realHead]);
-            const releaseBumpCommit = releaseModule.isReleaseBumpCommit({
-              message: commitMessage,
-              actor: process.env.GITHUB_ACTOR ?? '',
-            });
-            // Use publicPaths.length rather than classification.publishable:
-            // classification is false for a mixed workflow + public diff, but
-            // that diff may still auto-bump and needs full validation first.
-            const shouldValidate = !hasReliableTag || releaseBumpCommit || classification.publicPaths.length > 0;
-
-            writeDecision(
-              shouldValidate,
-              shouldValidate
-                ? 'hay cambios publicables, falta el tag acumulado o es un commit de bump.'
-                : 'el diff acumulado no contiene cambios publicables.',
-            );
-          }
-          NODE
-
-      - if: steps.preflight.outputs.should_validate == 'true'
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
-
-      - if: steps.preflight.outputs.should_validate == 'true'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24
-          cache: pnpm
-          package-manager-cache: false
-
-      - if: steps.preflight.outputs.should_validate == 'true'
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: node .github/scripts/release-policy.mjs target
+      - name: Select candidate
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: git checkout --detach "$TARGET_SHA"
+      - name: Resolve version prepared in PR
+        id: plan
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: node .github/scripts/release-policy.mjs plan
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        if: steps.plan.outputs.needed == 'true'
+      - if: steps.plan.outputs.needed == 'true'
         run: pnpm install --frozen-lockfile
-
-      - if: steps.preflight.outputs.should_validate == 'true'
-        run: pnpm typecheck
-
-      - if: steps.preflight.outputs.should_validate == 'true'
-        run: pnpm test
-
-      - if: steps.preflight.outputs.should_validate == 'true'
-        run: pnpm build
-
-      - if: steps.preflight.outputs.should_validate == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        with:
-          name: dist
-          path: dist
-          if-no-files-found: error
-
-  bump:
-    needs: validate
-    if: needs.validate.outputs.should_validate == 'true'
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    environment: stack-release
-    permissions:
-      contents: read
-    outputs:
-      publish: ${{ steps.release.outputs.publish }}
-      version: ${{ steps.release.outputs.version }}
-      publish_sha: ${{ steps.release.outputs.publish_sha }}
-      tag_needed: ${{ steps.release.outputs.tag_needed }}
-    steps:
-      - name: Validate release App context
-        shell: bash
+      - if: steps.plan.outputs.needed == 'true'
         run: |
-          set -euo pipefail
-          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
-            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
-            exit 1
-          fi
-          if [[ "${GITHUB_REF:-}" != "refs/heads/main" ]]; then
-            echo 'La ejecución no pertenece a main.' >&2
-            exit 1
-          fi
-          if [[ "${GITHUB_REPOSITORY:-}" != "jorgehn98/jorgex-stack" ]]; then
-            echo 'La ejecución no pertenece al repositorio esperado.' >&2
-            exit 1
-          fi
-
-      - name: Mint release App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          client-id: ${{ vars.STACK_RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.STACK_RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: jorgex-stack
-          permission-contents: write
-
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          ref: ${{ needs.validate.outputs.target_sha }}
-          fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: true
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      - run: |
-          corepack enable pnpm
-          corepack prepare pnpm@11.1.1 --activate
-
-      - id: release
-        shell: bash
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - name: Pack once and validate native integrity
+        if: steps.plan.outputs.needed == 'true'
+        id: artifact
         env:
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
-          RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_sha || '' }}
-          TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
+          PUBLISH: ${{ steps.plan.outputs.publish }}
         run: |
           set -euo pipefail
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import { execFileSync } from 'node:child_process';
-
-          const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-          const PNPM_VERSION_NOT_FOUND_PATTERN = /\bERR_PNPM_PACKAGE_NOT_FOUND\b/i;
-          const EVENT_NAME = (process.env.GITHUB_EVENT_NAME ?? '').trim();
-          const BRANCH_NAME = (process.env.GITHUB_REF_NAME ?? '').trim();
-          const RELEASE_SHA = (process.env.RELEASE_SHA ?? '').trim();
-          // Solo manifiestos/config que afectan al paquete publicado.
-          // Docs del repo (README.md, PRD.md, docs/) NO disparan versión.
-          // Mantener en sync con src/lib/release.ts.
-          const PUBLICABLE_EXACT = new Set([
-            'package.json',
-            'pnpm-lock.yaml',
-            'tsconfig.json',
-            'tsup.config.ts',
-          ]);
-          const PUBLICABLE_PREFIXES = ['src/', 'stack/'];
-          const WORK_PREFIXES = ['work/', 'worktrees/'];
-          const WORKFLOW_PREFIXES = ['.github/workflows/'];
-          const TEST_DIR_PATTERN = /(^|\/)(?:__tests__|tests?|specs?)\//i;
-          const TEST_FILE_PATTERN = /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i;
-          const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/i;
-
-          const normalize = (input) => input.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
-          const isWorkPath = (input) => {
-            const normalized = normalize(input);
-            return WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-          };
-          const isWorkflowPath = (input) => {
-            const normalized = normalize(input);
-            return WORKFLOW_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-          };
-          const isTestPath = (input) => {
-            const normalized = normalize(input);
-            return TEST_DIR_PATTERN.test(normalized) || TEST_FILE_PATTERN.test(normalized);
-          };
-          const isPublicablePath = (input) => {
-            const normalized = normalize(input);
-            if (WORK_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
-            if (PUBLICABLE_EXACT.has(normalized)) return true;
-            return PUBLICABLE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-          };
-          const bumpPatch = (version) => {
-            const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
-            if (!match) throw new Error(`La versión "${version}" no es un semver simple x.y.z.`);
-            return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
-          };
-          const npmHasVersion = (packageName, version) => {
-            try {
-              execFileSync('pnpm', ['view', `${packageName}@${version}`, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-              return true;
-            } catch (error) {
-              const message = `${error?.message ?? ''}\n${String(error?.stdout ?? '')}\n${String(error?.stderr ?? '')}`;
-              const target = `${packageName}@${version}`;
-              if (PNPM_VERSION_NOT_FOUND_PATTERN.test(message) || message.includes(`No matching version found for ${target}`)) return false;
-              throw error;
-            }
-          };
-          const isReleaseBumpCommit = ({ message, actor }) => {
-            const trimmedMessage = (message ?? '').trim();
-            const trimmedActor = (actor ?? '').trim();
-            const lowerMessage = trimmedMessage.toLowerCase();
-            if (trimmedMessage === '') return false;
-            if (/^chore\(release\):\s+/i.test(trimmedMessage)) return true;
-            if (/^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/i.test(trimmedMessage)) return true;
-            if (/\[bot\]$/i.test(trimmedActor) && /\b(?:release|publish|bump|version)\b/i.test(lowerMessage)) return true;
-            return false;
-          };
-          const assertCurrentReleaseRun = (headSha, originMainSha) => {
-            const head = headSha.trim();
-            const originMain = originMainSha.trim();
-
-            if (head === '' || originMain === '') {
-              throw new Error('No se pudo resolver la SHA de la run o de origin/main.');
-            }
-
-            if (head !== originMain) {
-              throw new Error('La run está obsoleta: origin/main cambió tras el fetch.');
-            }
-          };
-          const normalizeRecoveryReleaseSha = (input) => {
-            const normalized = input.trim().toLowerCase();
-
-            if (!FULL_GIT_SHA_PATTERN.test(normalized)) {
-              throw new Error('La SHA de recuperación debe ser una SHA completa de 40 hex de main.');
-            }
-
-            return normalized;
-          };
-          const assertRecoveryReleaseSha = (releaseSha, originMainSha) => {
-            const recoverySha = normalizeRecoveryReleaseSha(releaseSha);
-            const originMain = originMainSha.trim().toLowerCase();
-
-            if (recoverySha === '' || originMain === '') {
-              throw new Error('No se pudo resolver la SHA de recuperación o de origin/main.');
-            }
-
-            try {
-              execFileSync('git', ['merge-base', '--is-ancestor', recoverySha, originMain], { stdio: ['ignore', 'pipe', 'pipe'] });
-            } catch (error) {
-              if (typeof error?.status === 'number' && error.status === 1) {
-                throw new Error(`La SHA de recuperación ${recoverySha} no pertenece a main. Reejecuta workflow_dispatch con release_sha=${recoverySha}.`);
-              }
-
-              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
-              throw new Error(`No se pudo comprobar la ascendencia de release_sha contra origin/main. ${message}`.trim());
-            }
-
-            return recoverySha;
-          };
-          const readPackageMetadataAtRef = (ref) => {
-            const raw = execFileSync('git', ['show', `${ref}:package.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-            const parsed = JSON.parse(raw);
-            const name = typeof parsed.name === 'string' ? parsed.name.trim() : '';
-            const version = typeof parsed.version === 'string' ? parsed.version.trim() : '';
-
-            if (name === '' || version === '') {
-              throw new Error(`package.json en ${ref} no expone nombre o versión válidos.`);
-            }
-
-            return { name, version };
-          };
-          const resolveTagSha = (tagRef) => {
-            try {
-              const sha = execFileSync('git', ['rev-list', '-n', '1', tagRef], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().toLowerCase();
-              return sha === '' ? null : sha;
-            } catch (error) {
-              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
-              if (/unknown revision|ambiguous argument|needed a single revision|bad revision|unknown commit|does not have any parents/i.test(message)) {
-                return null;
-              }
-
-              throw new Error(`No se pudo resolver la SHA del tag ${tagRef}: ${message}`);
-            }
-          };
-          const resolveEventDiffBase = (eventBefore, head) => {
-            const trimmed = eventBefore.trim();
-            if (trimmed === '') {
-              try {
-                return execFileSync('git', ['rev-parse', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-              } catch (error) {
-                const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
-                if (/unknown revision|ambiguous argument|needed a single revision|does not have any parents/i.test(message)) {
-                  return EMPTY_TREE_SHA;
-                }
-                throw new Error(`No se pudo resolver la base de diff para ${head}: ${message}`);
-              }
-            }
-
-            return /^0+$/.test(trimmed) ? EMPTY_TREE_SHA : trimmed;
-          };
-          const resolvePublishDiffBase = (packageVersion, eventBefore, head) => {
-            const releaseTag = `v${packageVersion.trim()}`;
-            if (resolveTagSha(releaseTag) !== null) return releaseTag;
-            return resolveEventDiffBase(eventBefore, head);
-          };
-          const resolveRecoveryDiffBase = (head) => {
-            try {
-              const previousTag = execFileSync('git', ['describe', '--tags', '--abbrev=0', '--first-parent', '--match', 'v[0-9]*.[0-9]*.[0-9]*', `${head}^`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-              if (previousTag !== '') return previousTag;
-            } catch (error) {
-              const message = `${error?.message ?? ''}\n${String(error?.stderr ?? '')}`.trim();
-              if (!/No names found|No tags can describe|not a valid object name|unknown revision|ambiguous argument|needed a single revision/i.test(message)) {
-                throw new Error(`No se pudo resolver el último tag alcanzable desde ${head}^: ${message}`);
-              }
-            }
-
-            throw new Error(`No se pudo reconstruir la base de recovery para ${head}: falta un tag de release previo. No se continúa porque eso podría ocultar cambios anteriores, incluido .github/workflows/*. Haz publish/tag manuales con permisos elevados o recrea el tag previo.`);
-          };
-          const assertMetadataOnlyBump = (nextVersion) => {
-            const baselineRaw = execFileSync('git', ['show', 'HEAD:package.json'], {
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
-            const currentRaw = fs.readFileSync('package.json', 'utf8');
-            let baseline;
-            let current;
-
-            try {
-              baseline = JSON.parse(String(baselineRaw));
-              current = JSON.parse(String(currentRaw));
-            } catch (error) {
-              throw new Error(`No se pudo leer el package.json antes del bump: ${error?.message ?? String(error)}`);
-            }
-
-            if (baseline === null || typeof baseline !== 'object' || current === null || typeof current !== 'object') {
-              throw new Error('El package.json del bump debe contener un objeto JSON.');
-            }
-
-            const baselineVersion = typeof baseline.version === 'string' ? baseline.version.trim() : '';
-            const requestedVersion = typeof nextVersion === 'string' ? nextVersion.trim() : '';
-            const baselineMatch = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(baselineVersion);
-            const requestedMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(requestedVersion);
-
-            if (
-              baselineMatch === null
-              || requestedMatch === null
-              || requestedMatch[1] !== baselineMatch[1]
-              || requestedMatch[2] !== baselineMatch[2]
-              || Number(requestedMatch[3]) <= Number(baselineMatch[3])
-            ) {
-              throw new Error(`El bump debe conservar major/minor y avanzar patch desde ${baselineVersion}; se recibió ${requestedVersion || '<vacío>'}.`);
-            }
-
-            if (typeof current.version !== 'string' || current.version.trim() !== requestedVersion) {
-              throw new Error('El package.json no contiene la versión de bump solicitada.');
-            }
-
-            if (JSON.stringify({ ...baseline, version: requestedVersion }) !== JSON.stringify(current)) {
-              throw new Error('El bump solo puede modificar la versión de package.json.');
-            }
-
-            const statusOutput = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
-            const statusLines = String(statusOutput).split(/\r?\n/).filter((line) => line !== '');
-            if (statusLines.length !== 1 || statusLines[0] !== 'M  package.json') {
-              throw new Error('El bump debe dejar únicamente package.json modificado y staged.');
-            }
-          };
-
-          if (BRANCH_NAME !== 'main') {
-            throw new Error('El bump de release solo puede empujarse a main.');
-          }
-
-          execFileSync('git', ['fetch', 'origin', 'main', '--tags'], { stdio: 'inherit' });
-          const originMain = execFileSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
-          const pushHead = (process.env.GITHUB_SHA ?? '').trim();
-          const head = (process.env.TARGET_SHA ?? '').trim();
-
-          if (head === '') {
-            throw new Error('No se pudo resolver la SHA validada de la publicación.');
-          }
-
-          if (EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== '') {
-            const recoverySha = assertRecoveryReleaseSha(RELEASE_SHA, originMain);
-            if (recoverySha !== head) {
-              throw new Error('La SHA validada en validate no coincide con la SHA de recuperación.');
-            }
-          }
-
-          execFileSync('git', ['checkout', '--detach', head], { stdio: 'inherit' });
-
-          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          if (EVENT_NAME !== 'workflow_dispatch') {
-            if (pushHead === '' || originMain === '') {
-              throw new Error('No se pudo resolver la SHA de la run o de origin/main.');
-            }
-
-            try {
-              assertCurrentReleaseRun(head, originMain);
-            } catch (error) {
-              if (String(error?.message ?? error).includes('La run está obsoleta: origin/main cambió tras el fetch.')) {
-                console.log(String(error?.message ?? error));
-                fs.appendFileSync(process.env.GITHUB_OUTPUT, 'publish=false\nversion=\npublish_sha=\ntag_needed=false\nskip_reason=stale_run\n');
-                process.exit(0);
-              }
-
-              throw error;
-            }
-          }
-
-          if (EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== '') {
-            const recoveryPackage = readPackageMetadataAtRef(head);
-            if (recoveryPackage.name !== packageJson.name || recoveryPackage.version !== packageJson.version) {
-              throw new Error(`La SHA de recuperación ${head} no coincide con el package.json del checkout.`);
-            }
-          }
-          const before = EVENT_NAME === 'workflow_dispatch' && RELEASE_SHA !== ''
-            ? resolveRecoveryDiffBase(head)
-            : resolvePublishDiffBase(packageJson.version, process.env.GITHUB_EVENT_BEFORE ?? '', head);
-          const changedPaths = execFileSync('git', ['diff', '--name-only', '-z', before, head, '--'], { encoding: 'utf8' })
-            .split('\0')
-            .map((line) => normalize(line))
-            .filter(Boolean);
-
-          const publicPaths = [];
-          const ignoredPaths = [];
-          const testPaths = [];
-          const workPaths = [];
-          const workflowPaths = [];
-
-          for (const rawPath of changedPaths) {
-            if (isWorkPath(rawPath)) {
-              workPaths.push(rawPath);
-              continue;
-            }
-            if (isWorkflowPath(rawPath)) {
-              workflowPaths.push(rawPath);
-              continue;
-            }
-            if (isTestPath(rawPath)) {
-              testPaths.push(rawPath);
-              continue;
-            }
-            if (isPublicablePath(rawPath)) {
-              publicPaths.push(rawPath);
-              continue;
-            }
-            ignoredPaths.push(rawPath);
-          }
-
-          const recoveryRun = EVENT_NAME === 'workflow_dispatch';
-          const explicitRecoverySha = recoveryRun && RELEASE_SHA !== '';
-
-          const commitMessage = execFileSync('git', ['log', '-1', '--pretty=%B', head], { encoding: 'utf8' }).trim();
-          const releaseBumpCommit = isReleaseBumpCommit({ message: commitMessage, actor: process.env.GITHUB_ACTOR ?? '' });
-          const currentVersionExists = npmHasVersion(packageJson.name, packageJson.version);
-          const autoBumpRun = !recoveryRun && currentVersionExists && !releaseBumpCommit;
-          let releaseTag = `v${packageJson.version}`;
-          let releaseTagSha = resolveTagSha(releaseTag);
-
-          if (releaseBumpCommit && !recoveryRun) {
-            if (!currentVersionExists) {
-              throw new Error(`Publicación incompleta para ${releaseTag}. Ejecuta workflow_dispatch con release_sha=${head} para recuperar.`);
-            }
-
-            if (releaseTagSha === null) {
-              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya existe en npm pero falta el tag ${releaseTag}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
-            }
-
-            if (releaseTagSha !== head) {
-              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}. Reejecuta workflow_dispatch con release_sha=${head}.`);
-            }
-
-            console.log('Commit de bump de release detectado — se evita el bucle y no se vuelve a publicar.');
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=${packageJson.version}\npublish_sha=${head}\ntag_needed=false\nskip_reason=release_bump_commit\n`);
-            process.exit(0);
-          }
-
-          if (publicPaths.length === 0 && !recoveryRun) {
-            console.log('Sin cambios publicables.');
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=false\nversion=\npublish_sha=${head}\ntag_needed=false\nskip_reason=no_publicable_changes\n`);
-            process.exit(0);
-          }
-
-          if (publicPaths.length > 0 && workflowPaths.length > 0 && !autoBumpRun) {
-            if (currentVersionExists && releaseTagSha === null) {
-              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya está publicada, pero falta ${releaseTag}. El diff también mezcla cambios publicables con .github/workflows/*, así que crea el tag manualmente con permisos elevados.`);
-            }
-
-            if (releaseTagSha !== null && releaseTagSha !== head) {
-              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}.`);
-            }
-
-            throw new Error('El diff mezcla cambios publicables con .github/workflows/*; GitHub puede rechazar el push del tag sin permisos para workflows. Separa la release o publica/tagea manualmente con permisos elevados.');
-          }
-
-          if (publicPaths.length > 0) {
-            console.log(`Cambios publicables en ${publicPaths.join(', ')}`);
-          }
-
-          let releaseVersion = packageJson.version;
-          let shouldPublish = false;
-          let tagNeeded = false;
-          let publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-          if (recoveryRun) {
-            publishSha = head;
-
-            if (releaseTagSha !== null && releaseTagSha !== head) {
-              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
-            }
-
-            if (currentVersionExists && releaseTagSha === null && !explicitRecoverySha) {
-              throw new Error(`La versión ${packageJson.name}@${packageJson.version} ya existe en npm pero falta el tag ${releaseTag}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
-            }
-
-            shouldPublish = !currentVersionExists;
-            tagNeeded = releaseTagSha === null;
-          } else if (currentVersionExists && !releaseBumpCommit) {
-            let nextVersion = bumpPatch(packageJson.version);
-            while (npmHasVersion(packageJson.name, nextVersion)) {
-              console.log(`${packageJson.name}@${nextVersion} ya existe en npm — se prueba el siguiente patch.`);
-              nextVersion = bumpPatch(nextVersion);
-            }
-
-            const cleanBefore = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            }).trim();
-            if (cleanBefore !== '') {
-              throw new Error('El checkout no está limpio antes del bump de release.');
-            }
-
-            packageJson.version = nextVersion;
-            fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
-            execFileSync('git', ['config', 'user.name', 'github-actions[bot]'], { stdio: 'inherit' });
-            execFileSync('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], { stdio: 'inherit' });
-            execFileSync('git', ['add', 'package.json'], { stdio: 'inherit' });
-            assertMetadataOnlyBump(nextVersion);
-            execFileSync('git', ['commit', '-m', `chore(release): bump version to v${nextVersion} [skip ci]`], { stdio: 'inherit' });
-            execFileSync('git', ['push', 'origin', `HEAD:${process.env.GITHUB_REF_NAME}`], { stdio: 'inherit' });
-            publishSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-            releaseVersion = nextVersion;
-            releaseTag = `v${releaseVersion}`;
-            releaseTagSha = resolveTagSha(releaseTag);
-
-            if (releaseTagSha !== null && releaseTagSha !== publishSha) {
-              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${publishSha}. Reejecuta workflow_dispatch con release_sha=${publishSha}.`);
-            }
-
-            tagNeeded = releaseTagSha === null;
-            shouldPublish = true;
-          } else if (!currentVersionExists && !releaseBumpCommit) {
-            if (releaseTagSha !== null && releaseTagSha !== head) {
-              throw new Error(`El tag ${releaseTag} apunta a ${releaseTagSha}, no a ${head}. Reejecuta workflow_dispatch con release_sha=<sha publicada>.`);
-            }
-
-            tagNeeded = releaseTagSha === null;
-            shouldPublish = true;
-          }
-
-          if (shouldPublish) {
-            console.log(`${packageJson.name}@${releaseVersion} se publicará.`);
-          } else if (tagNeeded) {
-            console.log(`${packageJson.name}@${releaseVersion} ya está publicado; solo falta el tag.`);
-          } else {
-            console.log(`${packageJson.name}@${releaseVersion} ya está publicado y tageado.`);
-          }
-
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `publish=${shouldPublish ? 'true' : 'false'}\nversion=${releaseVersion}\npublish_sha=${publishSha}\ntag_needed=${tagNeeded ? 'true' : 'false'}\n`);
-          NODE
+          mkdir -p "$RUNNER_TEMP/release"
+          pnpm pack --pack-destination "$RUNNER_TEMP/release"
+          mv "$RUNNER_TEMP/release/"*.tgz "$RUNNER_TEMP/release/package.tgz"
+          node .github/scripts/release-policy.mjs artifact "$RUNNER_TEMP/release/package.tgz"
+          cp .github/scripts/release-policy.mjs "$RUNNER_TEMP/release/release-policy.mjs"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: steps.plan.outputs.needed == 'true'
+        with:
+          name: release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
-    needs: bump
-    if: needs.bump.outputs.publish == 'true'
-    timeout-minutes: 10
+    needs: validate
+    if: needs.validate.outputs.needed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write # OIDC: emite la provenance de npm al publicar
+      id-token: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      INTEGRITY: ${{ needs.validate.outputs.integrity }}
+      SHA: ${{ needs.validate.outputs.sha }}
+      PUBLISH: ${{ needs.validate.outputs.publish }}
     steps:
-      - name: Reject GITHUB_RUN_ATTEMPT reruns before mutation
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
-            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
-            exit 1
-          fi
-
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          ref: ${{ needs.bump.outputs.publish_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          name: dist
-          path: dist
-
+          name: release
+          path: ${{ runner.temp }}/release
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          node-version: 24
-          package-manager-cache: false
-          # registry-url activa el flujo OIDC de npm; NO añadir env vars de auth token
-          # (cualquier valor, aunque vacío, tiene precedencia sobre OIDC y rompe trusted publishing).
+          node-version: "24.18.0"
           registry-url: https://registry.npmjs.org
-
-      - run: |
-          npm pack --dry-run --ignore-scripts
-          npm publish --ignore-scripts --provenance
-
-  readback:
-    needs: [bump, publish]
-    if: always() && !cancelled() && needs.publish.result == 'success'
-    timeout-minutes: 7
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          ref: ${{ needs.bump.outputs.publish_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      - name: Observe npm availability
-        run: node .github/scripts/npm-readback.mjs
+      - name: Check bytes and registry before publishing or rerunning
+        id: ready
+        run: node "$RUNNER_TEMP/release/release-policy.mjs" prepare "$RUNNER_TEMP/release/package.tgz"
+      - name: Publish exact validated tarball by OIDC
+        if: steps.ready.outputs.publish == 'true'
+        run: npm publish "$RUNNER_TEMP/release/package.tgz" --ignore-scripts --provenance --access public
+      - name: Confirm registry integrity before tagging
+        run: node "$RUNNER_TEMP/release/release-policy.mjs" verify "$RUNNER_TEMP/release/package.tgz"
 
   tag-release:
-    needs: [bump, publish]
-    if: always() && !cancelled() && needs.publish.result != 'failure' && needs.publish.result != 'cancelled' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.bump.outputs.tag_needed == 'true')) && (needs.publish.result == 'success' || needs.bump.outputs.tag_needed == 'true')
-    timeout-minutes: 5
+    needs: [validate, publish]
+    if: needs.publish.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Reject GITHUB_RUN_ATTEMPT reruns before mutation
-        shell: bash
+      # No checkout, artifact execution or product code with a repository write token.
+      - name: Create immutable tag after registry byte confirmation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          SHA: ${{ needs.validate.outputs.sha }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
-            echo "::error::No reejecutes esta run: inicia workflow_dispatch con release_sha=<SHA pendiente o ya publicada> para recuperar una publicación o tag incompletos."
+          trap 'echo "::error::npm bytes were verified, but tagging failed. Recover using workflow_dispatch with release_sha=$SHA; never republish or move a tag."' ERR
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" > "$RUNNER_TEMP/ref.json" 2> "$RUNNER_TEMP/ref-error"; then
+            object="$(jq -c .object "$RUNNER_TEMP/ref.json")"
+            while [ "$(jq -r .type <<< "$object")" = tag ]; do
+              object="$(gh api "repos/$GH_REPO/git/tags/$(jq -r .sha <<< "$object")" --jq '.object')"
+            done
+            test "$(jq -r .type <<< "$object")" = commit
+            test "$(jq -r .sha <<< "$object")" = "$SHA"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/ref-error"; then
+            gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA"
+          else
+            cat "$RUNNER_TEMP/ref-error" >&2
             exit 1
           fi
-
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          ref: ${{ needs.bump.outputs.publish_sha }}
-          fetch-depth: 0
-
-      - shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.bump.outputs.version }}"
-          SHA="${{ needs.bump.outputs.publish_sha }}"
-          TAG="v$VERSION"
-
-          if [ -z "$VERSION" ] || [ -z "$SHA" ]; then
-            echo "No se pudo resolver la versión o SHA publicada."
-            exit 1
-          fi
-
-          git fetch origin --tags
-          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
-            EXISTING_SHA="$(git rev-list -n 1 "$TAG")"
-            if [ "$EXISTING_SHA" != "$SHA" ]; then
-              echo "$TAG ya existe pero apunta a $EXISTING_SHA, no a $SHA."
-              exit 1
-            fi
-            echo "$TAG ya existe — no se mueve."
-            exit 0
-          fi
-
-          git tag "$TAG" "$SHA"
-          git push origin "$TAG"
