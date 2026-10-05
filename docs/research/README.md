@@ -6,14 +6,11 @@ Fecha de esta primera consolidación: 2026-08-24.
 
 ## Cómo usar esta carpeta
 
-- Aquí van hallazgos, hipótesis, fuentes y candidatos.
-- Una propuesta solo pasa a implementación cuando tenga consumidor, alcance y criterio de verificación claros.
-- Las decisiones aprobadas deben ir después al flujo normal de JorgeX Stack: PRD, plan, tarea en Engram y worktree.
-- Si una idea no aporta un control o una señal accionable, se descarta aunque sea técnicamente interesante.
-- No se añaden dependencias ni herramientas globales por el mero hecho de mencionarlas.
+Este índice y el dossier son investigación/evidencia histórica, no contratos operativos. Los documentos conservan vocabulario y referencias de su época; no usar tiers, receipts, workflows o herramientas retiradas como instrucciones actuales. El [README del producto](../../README.md) y el [workflow canónico](../../stack/skills/orchestrator/SKILL.md) describen el uso vigente. Una propuesta requiere alcance/consumidor/autorización antes de implementarse; no instala herramientas por mencionarlas.
 
 ## Documentos
 
+- [Visual Director](./visual-director/README.md): dossier de investigación, análisis de proyectos externos y evaluaciones para mejorar la skill.
 - [Selección de modelos Codex](./codex-model-selection.md): defaults por tier, overrides acotados y evidencia externa contrastada.
 - [Calidad agéntica al estilo de Uncle Bob](./uncle-bob-agentic-quality.md): source-first, especificación, roles, handoffs, arquitectura, QA y hardening.
 - [Métricas y testing](./testing-metrics.md): coverage, CRAP, mutation testing, property testing y perfiles de calidad.
@@ -35,22 +32,9 @@ Fecha de esta primera consolidación: 2026-08-24.
 | Rechazado por defecto | Seis agentes para cada tarea | Aumenta coste, latencia y superficie de coordinación | Alto | No adoptar globalmente |
 | Rechazado por defecto | Umbral universal de 100% coverage o CRAP <= 6 | Incentiva gaming y penaliza legacy o código de bajo riesgo | Alto | No adoptar |
 
-## Estado actual de JorgeX Stack
+## Contexto histórico
 
-JorgeX Stack ya tiene varias piezas que cubren una parte importante de estas ideas:
-
-- PRD y plan separados del código.
-- Worktrees obligatorios y ramas aisladas.
-- Work lifecycle memory-first con tareas, handoffs y checkpoints.
-- TDD basado en riesgo; una decisión de testing por cambio.
-- Agents especializados para implementación, testing, análisis, revisión y seguridad.
-- Success criteria y evidencia en el lifecycle normal de trabajo.
-- Review final sobre el SHA candidato, no reviewers por reflejo.
-- Permisos por runtime y defaults read-anywhere con denies sensibles.
-- Playwright y Chrome DevTools como capacidades opt-in.
-- Tests de idempotencia, preservación, lifecycle y seguridad del instalador.
-
-La oportunidad no es copiar SwarmForge. Es añadir controles y artefactos donde todavía hay hueco: especificación de comportamiento, hardening medible, pruebas adversariales y una frontera de ejecución que el modelo no pueda reescribir.
+Las propuestas siguientes no son decisiones aprobadas del producto actual. El dossier Visual Director conserva snapshots, assets y transcripciones originales; su índice describe la ubicación operativa, no reescribe esa evidencia. Dos enlaces históricos (`Docs/clodyssey/PROCEDENCIA.md` y `verificacion-copia.json`) ya estaban ausentes antes del traslado. El dossier no es dependencia de runtime ni prueba de derechos sobre material externo.
 
 ## Regla de decisión
 

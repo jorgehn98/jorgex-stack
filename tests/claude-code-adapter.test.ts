@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import type { InstallContext } from "../src/adapters/types.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import type { AgentModelChoices } from "../src/lib/agent-model.js";
 import { stackRoot } from "../src/lib/paths.js";
 
@@ -12,13 +12,6 @@ const MODELS: AgentModelChoices = {
 };
 
 
-describe("claudeCodeAdapter.renderCommand", () => {
-  it("traduce {{input}} a $ARGUMENTS", () => {
-    const out = claudeCodeAdapter.renderCommand("demo.md", "Haz X.\n\nInput: {{input}}\n");
-    expect(out.content).toContain("Input: $ARGUMENTS");
-    expect(out.content).not.toContain("{{input}}");
-  });
-});
 
 describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
   let tmp: string;

@@ -70,14 +70,12 @@ describe("native six-agent canon", () => {
     }
   });
 
-  it("plans the same native bodies without a programmatic agent overlay", () => {
+  it("plans six native bodies without an overlay", () => {
     const context = {
       stackDir: path.resolve("stack"), configDir: "/synthetic/pi-agent", engramBin: null,
       models: DEFAULT_MODEL_MAP.codex, warnings: [],
     };
     const normal = planAgents(piAdapter, context);
-    const programmatic = planAgents(piAdapter, { ...context, mode: "programmatic", subagentConcurrency: "parallel" });
-    expect(programmatic).toEqual(normal);
     expect(normal).toHaveLength(6);
     for (const action of normal) {
       expect(action.kind).toBe("write");

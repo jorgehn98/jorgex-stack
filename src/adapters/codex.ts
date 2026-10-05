@@ -1,26 +1,21 @@
 import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
-import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
-import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
+import type { Adapter, FileAction, InstallContext, McpOwnershipChange, ConfigOwnershipChange } from "./types.js";
+import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
 import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectCodex } from "../lib/detect.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
-import { HOME, samePath, stackRoot } from "../lib/paths.js";
+import { HOME, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import {
   readTomlSection,
   hasTomlChildSection,
   headerName as tomlHeaderName,
   multilineStringMask,
-  removeMarkdownSection,
-  removeTomlRootKeyIfExact,
   removeTomlSection,
-  upsertTomlRootKeyIfMissing,
   upsertTomlSection,
 } from "../lib/filemerge.js";
-import { removeNativeHooks } from "../lib/hooks-format.js";
-import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
 /** String TOML de una línea (los escapes de JSON son válidos en basic strings). */
@@ -40,10 +35,6 @@ function readMcpConfig(file: string): string | null {
   }
 }
 
-const PRIMARY_MODEL = '"gpt-5.6-sol"';
-const PRIMARY_CONTEXT_WINDOW = "872000";
-const PRIMARY_MODEL_FIELD = "model";
-const PRIMARY_CONTEXT_FIELD = "model_context_window";
 
 /**
  * Bloques largos como literal multiline (''' no interpreta escapes: los
@@ -66,10 +57,6 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], s
     && section?.trim() === stdioMcpSection(server);
 }
 
-function isCanonicalOptionalServer(name: string, server: CanonicalMcp["servers"][string], section: string | null, ctx: InstallContext): boolean {
-  return isManagedOptionalStdioServer(server, section);
-}
-
 /**
  * Plugin de marketplace engram ACTIVO: sus hooks y skill de memoria son la
  * integración del plugin; el setup oficial registra aparte un MCP user
@@ -89,7 +76,6 @@ const CODEX_JSON_VALUE = String.raw`(?:${CODEX_JSON_STRING}|-?(?:\d+(?:\.\d*)?|\
 const CODEX_JSON_STRING_ARRAY = String.raw`\[(?:\s*${CODEX_JSON_STRING}(?:\s*,\s*${CODEX_JSON_STRING})*\s*)?\]`;
 const CODEX_KEY = String.raw`(?:[A-Za-z0-9_-]+|${CODEX_JSON_STRING})`;
 const CODEX_ASSIGNMENT = new RegExp(String.raw`^\s*(${CODEX_KEY})\s*=\s*(${CODEX_JSON_STRING_ARRAY}|${CODEX_JSON_VALUE})\s*(?:#.*)?$`);
-const CODEX_HEADER = new RegExp(String.raw`^\[\s*(${CODEX_KEY}(?:\s*\.\s*${CODEX_KEY})*)\s*\]\s*(?:#.*)?$`);
 
 function tomlAssignment(section: string, key: string): { present: boolean; raw?: string } {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -209,7 +195,7 @@ function renderCodexPermissionEntries(
 }
 
 const CODEX_STALE_PERMISSIONS_WARNING =
-  "Codex: permission profile differs from the stack default and was left untouched; re-run with --upgrade-permissions to replace it (a backup is created first), or edit it by hand. Overwriting discards your own permission changes, including any extra hardenings.";
+  "Codex: permission profile differs from the stack default and was left untouched; review/edit the native config.toml manually after creating a backup. Replacing permissions can discard personal choices and extra hardenings.";
 
 /** Header normalizado (segmentos sin comillas) para comparar/leer secciones. */
 function codexNormalizedHeader(header: string): string {
@@ -232,27 +218,6 @@ function readCodexRootValue(config: string, key: string): string | undefined {
   return undefined;
 }
 
-/** Fija una clave escalar del root TOML en su sitio (conserva indentación y comentario); la añade si falta. */
-function setCodexRootKey(config: string, key: string, value: string): string {
-  const eol = config.includes("\r\n") ? "\r\n" : "\n";
-  const lines = config.replace(/\r\n/g, "\n").split("\n");
-  const mask = multilineStringMask(lines);
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const keyPattern = new RegExp(`^\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=`);
-  const assignment = new RegExp(
-    `^(\\s*(?:${escaped}|"${escaped}"|'${escaped}')\\s*=\\s*)(${CODEX_JSON_STRING_ARRAY}|${CODEX_JSON_VALUE})(\\s*(?:#.*)?)$`,
-  );
-  for (const [index, line] of lines.entries()) {
-    if (mask[index]) continue;
-    if (line.trim().startsWith("[")) break;
-    if (!keyPattern.test(line)) continue;
-    const match = assignment.exec(line);
-    lines[index] = match === null ? `${key} = ${value}` : `${match[1]}${value}${match[3]}`;
-    return lines.join(eol);
-  }
-  return upsertTomlRootKeyIfMissing(config, key, value);
-}
-
 function isCodexPermissionBlockCurrent(config: string, defaults: Record<string, unknown>): boolean {
   const expectedApproval = defaults["approval_policy"];
   const expectedDefault = defaults["default_permissions"];
@@ -265,163 +230,11 @@ function isCodexPermissionBlockCurrent(config: string, defaults: Record<string, 
   );
 }
 
-/**
- * Reemplazo entero del bloque gestionado (claves root + secciones del
- * perfil). Nunca toca sandbox_mode, model, MCP ni secciones ajenas.
- */
-function reseedCodexPermissionBlock(config: string, defaults: Record<string, unknown>): string {
-  let out = setCodexRootKey(config, "approval_policy", tomlString(String(defaults["approval_policy"])));
-  out = setCodexRootKey(out, "default_permissions", tomlString(String(defaults["default_permissions"])));
-  for (const { header, entries, quoteKeys } of CODEX_PERMISSION_SECTIONS) {
-    out = upsertTomlSection(out, header, renderCodexPermissionEntries(entries, quoteKeys));
-  }
-  return out;
-}
-
-function parseCodexKey(raw: string): string | null {
-  if (!raw.startsWith('"')) return raw;
-  try {
-    const value: unknown = JSON.parse(raw);
-    return typeof value === "string" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseCodexValue(raw: string): unknown {
-  try {
-    const value: unknown = JSON.parse(raw);
-    return Array.isArray(value) && value.every((item) => typeof item === "string") || !Array.isArray(value) && (value === null || typeof value !== "object")
-      ? value
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseCodexHeader(line: string): string | null {
-  const match = CODEX_HEADER.exec(line.trim());
-  if (match === null) return null;
-  for (const quoted of match[1]!.match(/"(?:\\.|[^"\\\r\n])*"/g) ?? []) {
-    if (parseCodexKey(quoted) === null) return null;
-  }
-  return match[1]!.replace(/\s*\.\s*/g, ".");
-}
-
-type CodexScan = {
-  root: Map<string, unknown>;
-  sections: Map<string, Map<string, unknown>>;
-};
-
-function scanCodexToml(config: string): CodexScan | null {
-  if (config.includes("'''") || config.includes('"""')) return null;
-  const root = new Map<string, unknown>();
-  const sections = new Map<string, Map<string, unknown>>();
-  const headers = new Set<string>();
-  const keys = new Set<string>();
-  let section: string | null = null;
-
-  for (const line of config.replace(/\r\n/g, "\n").split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("[")) {
-      const header = parseCodexHeader(trimmed);
-      if (header === null || headers.has(header)) return null;
-      headers.add(header);
-      if (header.startsWith(`${CODEX_PERMISSION_HEADERS.base}.`) && !CODEX_PERMISSION_SECTIONS.some((entry) => entry.header === header)) {
-        return null;
-      }
-      section = header;
-      if (CODEX_PERMISSION_SECTIONS.some((entry) => entry.header === header)) sections.set(header, new Map());
-      continue;
-    }
-
-    const relevant = section === null || CODEX_PERMISSION_SECTIONS.some((entry) => entry.header === section);
-    const match = CODEX_ASSIGNMENT.exec(trimmed);
-    if (!relevant && match === null) continue;
-    if (match === null) return null;
-    const key = parseCodexKey(match[1]!);
-    const value = parseCodexValue(match[2]!);
-    if (key === null || value === undefined) return null;
-    if (section === null && (key === "profile" || key === "sandbox_mode")) return null;
-    const scope = section ?? "<root>";
-    const declaration = `${scope}\u0000${key}`;
-    if (keys.has(declaration)) return null;
-    keys.add(declaration);
-    if (section === null) root.set(key, value);
-    else if (sections.has(section)) sections.get(section)!.set(key, value);
-  }
-  return { root, sections };
-}
-
-function hasCanonicalCodexPermissionProfile(scan: CodexScan): boolean {
-  for (const { header, entries } of CODEX_PERMISSION_SECTIONS) {
-    const actual = scan.sections.get(header);
-    if (actual === undefined || actual.size !== entries.length) return false;
-    for (const [key, expected] of entries) {
-      if (actual.get(key) !== expected) return false;
-    }
-  }
-  return true;
-}
-
-/** Recognizes only the conservative single-line subset emitted by the canonical config. */
-function hasCodexManualApproval(configDir: string): boolean {
-  const config = readTextIfExists(path.join(configDir, "config.toml"));
-  if (config === null) return false;
-  const scan = scanCodexToml(config);
-  if (scan === null) return false;
-  try {
-    const defaults = loadCanonicalDefaults(stackRoot())["codex"];
-    const expectedApproval = defaults?.["approval_policy"];
-    const expectedPermissions = defaults?.["default_permissions"];
-    return typeof expectedApproval === "string"
-      && typeof expectedPermissions === "string"
-      && scan.root.get("approval_policy") === expectedApproval
-      && scan.root.get("default_permissions") === expectedPermissions
-      && hasCanonicalCodexPermissionProfile(scan);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Upsert "tonto" de un header TOML literal: necesario cuando el último
- * segmento del path contiene caracteres que `upsertTomlSection` normaliza
- * (p. ej. `[….":workspace_roots"]`: el `.` dentro del quoted segment rompe
- * el matching por path segmentado). Aquí solo se evita duplicar el header.
- */
 export const codexAdapter: Adapter = {
   id: "codex",
   name: "Codex CLI",
   detect: detectCodex,
 
-  reportCapabilities(configDir) {
-    const prompt = readTextIfExists(path.join(configDir, "AGENTS.md"));
-    return createLocalCapabilityReport("codex", [
-      ...(hasManagedMarkdownSection(prompt, "system-prompt")
-        ? [{
-            id: "policy-guidance",
-            state: "prompt-only",
-            reason: "The managed policy prompt is advisory and cannot enforce the policy",
-            evidence: { source: "jorgex-stack-system-prompt", version: "1" },
-          }]
-        : []),
-      ...(hasCodexManualApproval(configDir)
-        ? [{
-            id: "tool-approval",
-            state: "manual",
-            reason: "Canonical approval declarations require a human decision; runtime activation is not certified",
-            evidence: { source: "jorgex-stack-codex-approval-policy", version: "1" },
-          }]
-        : []),
-      {
-        id: "external-verification",
-        state: "unavailable",
-        reason: "External verification is available only through the external verifier",
-      },
-    ]);
-  },
 
   paths(configDir) {
     // Skills: estándar agentskills.io en ~/.agents/skills (NO ~/.codex/skills).
@@ -435,12 +248,8 @@ export const codexAdapter: Adapter = {
       agentsDir: path.join(configDir, "agents"),
       skillsDir,
       // Los custom prompts de Codex están deprecados: los commands se
-      // instalan como skills (renderCommand produce <nombre>/SKILL.md).
-      commandsDir: skillsDir,
       pluginsDir: null,
       scriptsDir: path.join(configDir, "scripts"),
-      outputStylesDir: null,
-      profilesDir: configDir,
     };
   },
 
@@ -459,23 +268,6 @@ export const codexAdapter: Adapter = {
     return [{ file: `${agent.name}.toml`, content: lines.join("\n") + "\n", kind: "agent" as const }];
   },
 
-  renderCommand(file, content) {
-    // Commands → skills (custom prompts deprecados en Codex).
-    const name = file.replace(/\.md$/, "");
-    let description = name;
-    let body = content;
-    const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(content);
-    if (fm) {
-      const match = /(?:^|\n)description:\s*(.+)/.exec(fm[1]!);
-      if (match) description = match[1]!.trim();
-      body = content.slice(fm[0].length);
-    }
-    body = body.replace(/\{\{input\}\}/g, "the user's request in this conversation");
-    return {
-      file: `${name}/SKILL.md`,
-      content: `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n${body}`,
-    };
-  },
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "config.toml");
@@ -483,7 +275,7 @@ export const codexAdapter: Adapter = {
     const contentSource = original === null || original.trim() === "" ? null : original;
     let content = contentSource;
     const mcpOwnership: McpOwnershipChange[] = [];
-    const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
+    const configOwnership: ConfigOwnershipChange[] = [];
 
     const context7 = canonical.servers.context7;
     if (context7 !== undefined) {
@@ -520,19 +312,11 @@ export const codexAdapter: Adapter = {
       ].join("\n");
     }
 
-    // Config existente: el bloque gestionado se compara contra el default
-    // canónico. Sin flag se preserva byte a byte y solo se avisa cuando
-    // difiere; con --upgrade-permissions se reemplaza entero (claves root +
-    // secciones del perfil; sandbox_mode y el resto intactos). El pipeline
-    // hace backup antes de escribir.
+    // Config existente: solo comparar/avisar; los permisos ajenos se preservan.
     if (contentSource !== null) {
       const codexDefaults = loadCanonicalDefaults(ctx.stackDir)["codex"];
       if (codexDefaults !== undefined && !isCodexPermissionBlockCurrent(contentSource, codexDefaults)) {
-        if (ctx.upgradePermissions === true) {
-          content = reseedCodexPermissionBlock(content!, codexDefaults);
-        } else {
-          ctx.warnings.push(CODEX_STALE_PERMISSIONS_WARNING);
-        }
+        ctx.warnings.push(CODEX_STALE_PERMISSIONS_WARNING);
       }
     }
 
@@ -564,20 +348,20 @@ export const codexAdapter: Adapter = {
       }
       if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
         if (owned) {
-          if (isCanonicalOptionalServer(name, server, existing, ctx)) content = removeTomlSection(content!, section);
+          if (isManagedOptionalStdioServer(server, existing)) content = removeTomlSection(content!, section);
           mcpOwnership.push({ server: name, owned: false });
         }
         continue;
       }
       if (server.optional && existing !== null) {
-        if (!owned || !isCanonicalOptionalServer(name, server, existing, ctx)) {
+        if (!owned || !isManagedOptionalStdioServer(server, existing)) {
           throw new Error(`Codex: ${name}: conflicto con servidor MCP existente ajeno o modificado; se conserva. Retira esa entrada explícitamente antes de activar DevTools gestionado.`);
         }
       }
       if (server.transport === "stdio") {
         if (server.command === "{{ENGRAM_BIN}}" && ctx.engramBin === null) {
           ctx.warnings.push(
-            "Engram no detectado: el MCP 'engram' no se registra. Instálalo (github.com/Gentleman-Programming/engram) y re-ejecuta install.",
+            "Engram no detectado: el MCP 'engram' no se registra. Abre jorgex-stack → Instalar/configurar → Configuración por runtime y elige Aplicar para instalar/configurar la integración oficial.",
           );
           continue;
         }
@@ -620,11 +404,11 @@ export const codexAdapter: Adapter = {
       target: file,
       content,
       ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
-      ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
+      ...(configOwnership.length > 0 ? { configOwnership } : {}),
     }];
   },
 
-  planUnmerge(mcp: CanonicalMcp, hooks: CanonicalHooks, ctx: InstallContext): FileAction[] {
+  planUnmerge(mcp: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const actions: FileAction[] = [];
     const { systemPromptFile } = this.paths(ctx.configDir);
 
@@ -638,15 +422,7 @@ export const codexAdapter: Adapter = {
     const config = readMcpConfig(configFile);
     if (config !== null) {
       let content = config;
-      const primaryModelOwnership: PrimaryModelOwnershipChange[] = [];
-      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) === true) {
-        content = removeTomlRootKeyIfExact(content, PRIMARY_MODEL_FIELD, PRIMARY_MODEL);
-        primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: false });
-      }
-      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_CONTEXT_FIELD) === true) {
-        content = removeTomlRootKeyIfExact(content, PRIMARY_CONTEXT_FIELD, PRIMARY_CONTEXT_WINDOW);
-        primaryModelOwnership.push({ field: PRIMARY_CONTEXT_FIELD, owned: false });
-      }
+      const configOwnership: ConfigOwnershipChange[] = [];
       const mcpOwnership: McpOwnershipChange[] = [];
       for (const [name, server] of Object.entries(mcp.servers)) {
         const section = `mcp_servers.${name}`;
@@ -676,7 +452,7 @@ export const codexAdapter: Adapter = {
           continue;
         }
         if (ctx.ownedMcpServers?.has(name) === true) {
-          if (isCanonicalOptionalServer(name, server, readTomlSection(content, section), ctx)) {
+          if (isManagedOptionalStdioServer(server, readTomlSection(content, section))) {
             content = removeTomlSection(content, section);
           }
           mcpOwnership.push({ server: name, owned: false });
@@ -687,17 +463,8 @@ export const codexAdapter: Adapter = {
         target: configFile,
         content,
         ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
-        ...(primaryModelOwnership.length > 0 ? { primaryModelOwnership } : {}),
+        ...(configOwnership.length > 0 ? { configOwnership } : {}),
       });
-    }
-
-    const hooksFile = path.join(ctx.configDir, "hooks.json");
-    const hooksJson = readTextIfExists(hooksFile);
-    if (hooksJson !== null) {
-      const content = removeNativeHooks(hooksJson, hooks);
-      if (content !== null) {
-        actions.push({ kind: "write", target: hooksFile, content: content.trim() === "{}" ? "" : content });
-      }
     }
 
     return actions;

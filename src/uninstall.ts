@@ -38,7 +38,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       const otherRows = Object.entries(manifest.runtimes).filter(([runtime]) => runtime !== id).map(([, entry]) => entry!);
       const referenced = new Set(scope.section === "skills" ? [] : otherRows.flatMap((entry) => entry.owned));
       const sharedPrompt = adapter.paths(ctx.configDir).sharedPromptFile;
-      const plan = configSelected ? [...planRetiredHooks(adapter, ctx, row.owned), ...adapter.planUnmerge(loadCanonicalMcp(ctx.stackDir), { hooks: {} }, ctx)].filter((action) => !(otherRows.length && action.target === sharedPrompt)) : [];
+      const plan = configSelected ? [...planRetiredHooks(adapter, ctx, row.owned), ...adapter.planUnmerge(loadCanonicalMcp(ctx.stackDir), ctx)].filter((action) => !(otherRows.length && action.target === sharedPrompt)) : [];
       const changes = diffPlan(plan).filter((change) => change.status !== "unchanged");
       const targets = new Set(plan.map((action) => action.target));
       const removable = row.owned.filter((file) => includesOwnedFile(adapter, ctx, scope, file) && !referenced.has(file) && !targets.has(file) && path.basename(file) !== "engram.ts" && fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined);
@@ -73,7 +73,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       const removed = new Set(removable);
       // Release selected references even when another runtime still owns the shared file.
       row.owned = row.owned.filter((file) => !includesOwnedFile(adapter, ctx, scope, file) || path.basename(file) === "engram.ts");
-      if (configSelected) { row.mcpOwned = []; row.primaryOwned = []; }
+      if (configSelected) { row.mcpOwned = []; row.configOwned = []; }
       if (scope.section === "skills") {
         for (const [runtime, entry] of Object.entries(readManifest(manifestPath).runtimes)) {
           if (runtime === id || !entry) continue;
@@ -81,7 +81,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
           writeRuntimeManifest(runtime as RuntimeId, entry, manifestPath);
         }
       }
-      if (!row.owned.length && !row.packages?.length && !row.engram && !row.mcpOwned?.length && !row.primaryOwned?.length) removeRuntimeManifest(id, manifestPath);
+      if (!row.owned.length && !row.packages?.length && !row.engram && !row.mcpOwned?.length && !row.configOwned?.length) removeRuntimeManifest(id, manifestPath);
       else writeRuntimeManifest(id, row, manifestPath);
       p.log.info(`${id}: recursos propios retirados. Engram binario/datos y herramientas compartidas se conservan.`);
     } catch (error) {

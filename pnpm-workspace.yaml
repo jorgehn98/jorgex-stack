@@ -5,4 +5,3 @@ allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
   - jorgex-stack
-  - jorgex-pi

@@ -4,8 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
-import type { AgentModelChoices } from "../src/lib/agent-model.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
@@ -37,25 +36,12 @@ function writeActionContent(actions: ReturnType<typeof codexAdapter.planMainConf
   return action.content;
 }
 
-function primaryOwnership(actions: ReturnType<typeof codexAdapter.planMainConfig>, target: string): ReadonlySet<string> {
+function configOwnership(actions: ReturnType<typeof codexAdapter.planMainConfig>, target: string): ReadonlySet<string> {
   const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
   if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
-  return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
+  return new Set((action.configOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
 }
 
-const MODELS: AgentModelChoices = {
-};
-
-
-describe("codexAdapter.renderCommand", () => {
-  it("convierte un command canónico en skill con name/description", () => {
-    const out = codexAdapter.renderCommand("demo.md", "---\ndescription: Launch the hub\n---\nDo it.\n\nInput: {{input}}\n");
-    expect(out.file).toBe("demo/SKILL.md");
-    expect(out.content).toContain("name: demo");
-    expect(out.content).toContain('"Launch the hub"');
-    expect(out.content).toContain("Input: the user's request in this conversation");
-  });
-});
 
 describe("codexAdapter model choices", () => {
   it("no impone modelo/contexto y preserva elecciones sin reclamarlas", () => {
@@ -90,9 +76,9 @@ describe("codexAdapter model choices", () => {
     const customized = 'model = "user/model"\n' + installed;
     fs.writeFileSync(configFile, customized);
     const unmerged = writeActionContent(
-      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+      codexAdapter.planUnmerge(mcp, {
         ...ctx,
-        ownedPrimaryModelFields: primaryOwnership(installActions, configFile),
+        ownedConfigFields: configOwnership(installActions, configFile),
       }),
       configFile,
     );
@@ -109,10 +95,10 @@ describe("codexAdapter model choices", () => {
     fs.writeFileSync(quotedFile, quoted);
     const quotedActions = codexAdapter.planMainConfig(mcp, codexContext(quotedDir));
     expect(writeActionContent(quotedActions, quotedFile).match(/gpt-5\.6-sol/g)).toHaveLength(1);
-    expect(primaryOwnership(quotedActions, quotedFile)).toEqual(new Set());
+    expect(configOwnership(quotedActions, quotedFile)).toEqual(new Set());
     fs.writeFileSync(quotedFile, writeActionContent(quotedActions, quotedFile));
     expect(writeActionContent(
-      codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), codexContext(quotedDir)),
+      codexAdapter.planUnmerge(mcp, codexContext(quotedDir)),
       quotedFile,
     )).toContain(quoted.trim());
   });
@@ -192,9 +178,9 @@ describe("upsertTomlSection", () => {
     ].join("\r\n");
     fs.writeFileSync(configFile, content);
 
-    const unmerged = writeActionContent(codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+    const unmerged = writeActionContent(codexAdapter.planUnmerge(mcp, {
       ...codexContext(configDir),
-      ownedPrimaryModelFields: new Set(["model", "model_context_window"]),
+      ownedConfigFields: new Set(["model", "model_context_window"]),
     }), configFile);
 
     expect(unmerged).toContain('[foreign]\r\nvalue = "kept"\r\n');
@@ -282,7 +268,7 @@ describe("codexAdapter Context7 registration safety", () => {
     expect(syncAction.content).toContain('[mcp_servers.context7.http_headers]\n');
     expect(syncAction.content).toContain('"X-Workspace" = "workspace"');
 
-    const uninstallAction = codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), ownedContext)
+    const uninstallAction = codexAdapter.planUnmerge(mcp, ownedContext)
       .find((candidate) => candidate.target === configFile);
     expect(uninstallAction).toMatchObject({
       kind: "write",

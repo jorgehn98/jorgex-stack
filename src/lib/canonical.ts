@@ -60,18 +60,6 @@ export function loadCanonicalAgents(agentsDir: string): CanonicalAgent[] {
     });
 }
 
-/** Hook canónico (stack/hooks/hooks.json, formato Claude Code + x-command-includes). */
-export interface CanonicalHooks {
-  hooks: Record<
-    string,
-    {
-      matcher?: string;
-      "x-command-includes"?: string;
-      hooks: { type: string; command: string; timeout?: number }[];
-    }[]
-  >;
-}
-
 /** Servidor MCP canónico (stack/mcp/servers.json). */
 export interface CanonicalMcpServer {
   transport: "stdio" | "http";
@@ -99,10 +87,6 @@ export function isCanonicalMcpServerEnabled(
 
 export function loadCanonicalMcp(stackDir: string): CanonicalMcp {
   return JSON.parse(fs.readFileSync(path.join(stackDir, "mcp", "servers.json"), "utf8")) as CanonicalMcp;
-}
-
-export function loadCanonicalHooks(stackDir: string): CanonicalHooks {
-  return JSON.parse(fs.readFileSync(path.join(stackDir, "hooks", "hooks.json"), "utf8")) as CanonicalHooks;
 }
 
 /**

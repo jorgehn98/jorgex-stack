@@ -27,6 +27,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
       if (id === "opencode") assertOpenCodeV2Preflight(opts, detection.binPath);
       const configDir = configDirectory(id, opts.targetDir);
       const ctx = makeContext(adapter, configDir, opts.targetDir);
+      if (configSelected && ctx.writingStyle.originalContent !== ctx.writingStyle.installedContent) throw new Error("Fuente de estilo ausente o desactualizada; aplica configuración deliberadamente.");
       if (configSelected && id === "pi") {
         const policyFile = path.join(configDir, "extensions", "pi-permission-system", "config.json");
         let raw: string | null;
@@ -49,7 +50,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
       }
       const drift = diffPlan(buildScopedPlan(adapter, ctx, scope)).filter((change) => change.status !== "unchanged");
       for (const warning of ctx.warnings) p.log.warn(warning);
-      if (drift.length) throw new Error(`${drift.length} recursos ausentes o pendientes de reconciliación; ejecuta install deliberadamente.`);
+      if (drift.length) throw new Error(`${drift.length} recursos ausentes o pendientes de reconciliación; abre jorgex-stack → Instalar/configurar y elige Aplicar para la unidad afectada.`);
       if (configSelected && !opts.targetDir && engram) {
         const verified = await officialSetupVerifiers[id]?.({ configDir, engramBin: engram, homeDir: HOME });
         if (!verified?.ok) throw new Error("Engram: integración oficial incompleta; doctor no repara ni escribe memorias.");

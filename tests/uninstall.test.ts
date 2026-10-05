@@ -2,10 +2,10 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
-import { removeNativeHooks, upsertNativeHooks } from "../src/lib/hooks-format.js";
-import { loadCanonicalAgents, loadCanonicalMcp, type CanonicalHooks } from "../src/lib/canonical.js";
+import { removeNativeHooks } from "../src/lib/hooks-format.js";
+import { loadCanonicalAgents, loadCanonicalMcp } from "../src/lib/canonical.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
@@ -54,68 +54,21 @@ describe("removeTomlSection", () => {
 });
 
 describe("removeNativeHooks", () => {
-  const CANONICAL: CanonicalHooks = {
-    hooks: {
-      PostToolUse: [
-        {
-          matcher: "Bash|PowerShell",
-          hooks: [{ type: "command", command: 'node "{{SCRIPTS_DIR}}/post-pr-review.cjs"', timeout: 30 }],
-        },
-      ],
-    },
-  };
-
-  it("quita solo nuestras entradas y limpia claves vacías", () => {
-    const withUserHook = JSON.stringify({
-      hooks: {
-        PostToolUse: [
-          { matcher: "Write", hooks: [{ type: "command", command: "echo user" }] },
-        ],
-      },
-      model: "opus",
-    });
-    const installed = upsertNativeHooks(withUserHook, CANONICAL, "C:/x/scripts");
-    const removed = removeNativeHooks(installed, CANONICAL)!;
-    const parsed = JSON.parse(removed);
-    expect(parsed.model).toBe("opus");
-    expect(parsed.hooks.PostToolUse).toHaveLength(1);
-    expect(parsed.hooks.PostToolUse[0].matcher).toBe("Write");
+  const own = 'node "/owned/script.cjs"';
+  const commands = new Set([own]);
+  it("retira solo comandos propios y preserva hooks ajenos en la misma entrada", () => {
+    const foreign = { type: "command", command: "echo user" };
+    const existing = JSON.stringify({ hooks: { PostToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: own }, foreign] }] }, model: "personal" });
+    expect(JSON.parse(removeNativeHooks(existing, commands)!)).toEqual({ hooks: { PostToolUse: [{ matcher: "Bash", hooks: [foreign] }] }, model: "personal" });
   });
-
-  it("elimina la clave hooks si queda vacía", () => {
-    const installed = upsertNativeHooks(null, CANONICAL, "C:/x/scripts");
-    const removed = removeNativeHooks(installed, CANONICAL)!;
-    expect(JSON.parse(removed)).toEqual({});
-  });
-
-  it("upsert migra el matcher en sitio sin duplicar cuando cambia de Bash a Bash|PowerShell", () => {
-    // Simula settings del usuario con la entrada vieja (matcher "Bash").
-    const CANONICAL_OLD: CanonicalHooks = {
-      hooks: {
-        PostToolUse: [
-          {
-            matcher: "Bash",
-            hooks: [{ type: "command", command: 'node "{{SCRIPTS_DIR}}/post-pr-review.cjs"', timeout: 30 }],
-          },
-        ],
-      },
-    };
-    const withOld = upsertNativeHooks(null, CANONICAL_OLD, "C:/x/scripts");
-
-    // Ahora el canónico es "Bash|PowerShell": el upsert debe REEMPLAZAR la entrada.
-    const migrated = upsertNativeHooks(withOld, CANONICAL, "C:/x/scripts");
-    const parsed = JSON.parse(migrated);
-    const entries: Array<{ matcher?: string }> = parsed.hooks?.PostToolUse ?? [];
-
-    // Sigue siendo UNA sola entrada (no duplicada).
-    expect(entries).toHaveLength(1);
-    // El matcher queda actualizado al canónico nuevo.
-    expect(entries[0]!.matcher).toBe("Bash|PowerShell");
+  it("limpia claves vacías sin reclamar un comando parecido", () => {
+    expect(JSON.parse(removeNativeHooks(JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: own }] }] } }), commands)!)).toEqual({});
+    const foreign = JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: own + " --user" }] }] } });
+    expect(JSON.parse(removeNativeHooks(foreign, commands)!)).toEqual(JSON.parse(foreign));
   });
 });
 
 describe("uninstall preserva Engram por defecto (D7)", () => {
-  const HOOKS = { hooks: {} } as CanonicalHooks;
   const MCP_SIN_ENGRAM = { servers: { context7: { transport: "http" as const, url: "https://mcp.context7.com/mcp" } } };
 
   it("planUnmerge de opencode con preserveEngram conserva mcp.engram y limpia registros file:// nuestros", () => {
@@ -143,7 +96,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       ownedFiles: new Set([path.join(pluginsDir, "hooks.ts"), path.join(pluginsDir, "worktree.ts")]),
       preserveEngram: true,
     };
-    const actions = opencodeAdapter.planUnmerge(MCP_SIN_ENGRAM, HOOKS, ctx);
+    const actions = opencodeAdapter.planUnmerge(MCP_SIN_ENGRAM, ctx);
     const configAction = actions.find((a) => a.target.endsWith("opencode.json"))!;
     const result = JSON.parse((configAction as { content: string }).content);
 
@@ -157,7 +110,6 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
 });
 
 describe("uninstall preserva una entrada Context7 owned que el usuario modificó", () => {
-  const HOOKS = { hooks: {} } as CanonicalHooks;
 
   it("Claude Code conserva la definición completa y libera ownership", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-context7-uninstall-claude-"));
@@ -174,7 +126,7 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     };
     fs.writeFileSync(mainFile, JSON.stringify(previous, null, 2) + "\n");
 
-    const action = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+    const action = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), {
       stackDir: stackRoot(),
       configDir,
       engramBin: null,
@@ -187,7 +139,7 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     if (action?.kind !== "write") throw new Error("Expected a Claude Code Context7 unmerge");
     expect(JSON.parse(action.content).mcpServers.context7).toEqual(previous.mcpServers.context7);
 
-    const unownedAction = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+    const unownedAction = claudeCodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), {
       stackDir: stackRoot(),
       configDir,
       engramBin: null,
@@ -218,7 +170,7 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     ].join("\n");
     fs.writeFileSync(configFile, previous);
 
-    const action = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+    const action = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
@@ -232,7 +184,7 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     expect(readTomlSection(action.content, "mcp_servers.context7")).toContain('user_setting = "preserve"');
     expect(readTomlSection(action.content, "mcp_servers.foreign")).toContain('command = "foreign-server"');
 
-    const unownedAction = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+    const unownedAction = codexAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
@@ -262,7 +214,7 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     };
     fs.writeFileSync(configFile, JSON.stringify(previous, null, 2) + "\n");
 
-    const action = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+    const action = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
@@ -277,7 +229,7 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     expect(result.mcp.context7).toEqual(previous.mcp.context7);
     expect(result.mcp.foreign).toEqual(previous.mcp.foreign);
 
-    const unownedAction = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), HOOKS, {
+    const unownedAction = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,

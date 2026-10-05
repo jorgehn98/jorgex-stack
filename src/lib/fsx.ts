@@ -41,14 +41,6 @@ export function writeText(file: string, content: string, mode?: number): void {
   renameInto(tmp, file);
 }
 
-/** Copia atómica: misma garantía que writeText. */
-export function copyFile(source: string, target: string): void {
-  ensureDir(path.dirname(target));
-  const tmp = tmpPath(target);
-  fs.copyFileSync(source, tmp);
-  renameInto(tmp, target);
-}
-
 /** true si child queda estrictamente dentro de root (child === root no cuenta). */
 export function isContainedIn(child: string, root: string): boolean {
   const rel = path.relative(path.resolve(root), path.resolve(child));

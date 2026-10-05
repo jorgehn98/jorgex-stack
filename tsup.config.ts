@@ -3,7 +3,6 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     cli: "src/cli.ts",
-    "quality-verifier": "src/lib/quality-verifier.ts",
   },
   format: ["esm"],
   splitting: false,

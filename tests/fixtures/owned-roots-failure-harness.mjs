@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import * as mod from "../helpers/bounded-process.ts";
-import { removeTemporaryRoots } from "../helpers/pnpm-tooling.ts";
+import { removeTemporaryRoots } from "../helpers/temporary-roots.ts";
 
 /**
  * Owned-roots failure harness: `stop-fail` leaves an owned group with an

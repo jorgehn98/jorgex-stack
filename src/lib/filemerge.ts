@@ -208,7 +208,7 @@ function markers(name: string): { open: string; close: string } {
   return { open: `<!-- jorgex:${name} -->`, close: `<!-- /jorgex:${name} -->` };
 }
 
-/** Pure health check shared by marker writers and capability diagnostics. */
+/** Pure health check shared by marker writers. */
 export function hasHealthyManagedMarkdownMarkers(existing: string, name: string): boolean {
   const { open, close } = markers(name);
   const count = (marker: string): number => existing.split(marker).length - 1;

@@ -21,7 +21,7 @@ import { readManifest, writeRuntimeManifest, type RuntimeManifest } from "./lib/
 import { officialSetupVerifiers } from "./lib/official-engram-setup.js";
 import { editJsonc, parseJsoncObject } from "./lib/filemerge.js";
 import { installMissingEngram } from "./lib/engram-install.js";
-import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
+import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
 import type { AgentModelChoices } from "./lib/agent-model.js";
 import { includesOwnedFile, type OperationScope } from "./lib/operation-scope.js";
 
@@ -46,22 +46,18 @@ export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   engram?: boolean;
   engramBin?: string | null;
   backupEngramData?: boolean;
-  upgradePermissions?: boolean;
-  command?: "install" | "sync" | "update";
+  command?: "install" | "update";
   execute?: NativeExecutor;
   detect?: (runtime: RuntimeId) => ReturnType<Adapter["detect"]>;
   verifyEngram?: (runtime: RuntimeId, configDir: string, bin: string) => Promise<boolean>;
   onRuntimeStatus?: (runtime: string, status: RuntimeSyncStatus) => void;
 }
 export type RuntimeSyncStatus = "ok" | "failed" | "skipped" | "preview";
-export function formatRuntimeSummary(command: string, statuses: ReadonlyArray<{ name: string; status: RuntimeSyncStatus }>): string {
-  return `Resumen ${command}: ${statuses.map(({ name, status }) => `${name} ${status}`).join(", ") || "sin runtimes"}.`;
-}
 export function stateDirectory(targetDir?: string): string { return targetDir ? path.join(path.resolve(targetDir), ".jorgex-stack") : dataDir(); }
 export function configDirectory(id: RuntimeId, targetDir?: string): string {
   return targetDir ? path.join(path.resolve(targetDir), id === "pi" ? "pi-agent" : id) : ADAPTERS[id].detect().configDir;
 }
-export function makeContext(adapter: Adapter, configDir: string, targetDir?: string): InstallContext {
+export function makeContext(adapter: Adapter, configDir: string, targetDir?: string): InstallContext & { writingStyle: WritingStylePlan } {
   const manifest = readManifest(path.join(stateDirectory(targetDir), "manifest.json"));
   const previous = manifest.runtimes[adapter.id];
   if (previous && !samePath(previous.configDir, configDir)) throw new Error(`${adapter.id}: configDir difiere del manifest; se conserva el perfil anterior.`);
@@ -70,7 +66,7 @@ export function makeContext(adapter: Adapter, configDir: string, targetDir?: str
     models: {} as AgentModelChoices, warnings: [],
     writingStyle: prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir }),
     ownedFiles: new Set(Object.values(manifest.runtimes).flatMap((row) => row?.owned ?? [])),
-    ownedMcpServers: new Set(previous?.mcpOwned), ownedPrimaryModelFields: new Set(previous?.primaryOwned),
+    ownedMcpServers: new Set(previous?.mcpOwned), ownedConfigFields: new Set(previous?.configOwned),
   };
 }
 export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
@@ -164,8 +160,8 @@ export function planRetiredHooks(adapter: Adapter, ctx: InstallContext, owned: r
       if (kept.length) bash[key] = kept; else delete bash[key];
     }
   }) }];
-  const canonical = { hooks: { retired: [{ hooks: scripts.map((file) => ({ type: "command", command: `node "${file}"` })) }] } };
-  return [{ kind: "write", target, content: removeNativeHooks(raw, canonical) ?? "" }];
+  const commands = new Set(scripts.map((file) => `node "${file}"`));
+  return [{ kind: "write", target, content: removeNativeHooks(raw, commands) ?? "" }];
 }
 
 export async function runInstall(opts: InstallOptions): Promise<number> {
@@ -176,7 +172,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   let engram = opts.engramBin === undefined ? opts.targetDir ? null : detectEngram() : opts.engramBin;
   const scope = opts.scope ?? { section: "all" };
   const configSelected = scope.section === "all" || scope.section === "config";
-  const deliberate = configSelected && !opts.dryRun && !opts.targetDir && opts.command !== "sync";
+  const deliberate = configSelected && !opts.dryRun && !opts.targetDir;
   let engramPrepared = false;
   if (!engram && opts.engram && deliberate) {
     const acquired = await installMissingEngram();
@@ -194,14 +190,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const detection = (opts.detect ?? ((runtime) => ADAPTERS[runtime].detect()))(id);
       if (!opts.targetDir && !detection.binPath) throw new Error(`${adapter.name} ausente; instálalo por su canal oficial antes de continuar.`);
       const configDir = opts.targetDir ? configDirectory(id, opts.targetDir) : detection.configDir;
-      const ctx = makeContext(adapter, configDir, opts.targetDir);
+      const ctx: InstallContext = makeContext(adapter, configDir, opts.targetDir);
       ctx.engramBin = engram;
       const style = opts.writingStyle ?? ctx.writingStyle!;
       ctx.writingStyle = style;
-      ctx.upgradePermissions = opts.upgradePermissions;
       if (id === "opencode") assertOpenCodeV2Preflight(opts, detection.binPath);
       const old = readManifest(manifestPath).runtimes[id];
-      const row: RuntimeManifest = { configDir, owned: [...old?.owned ?? []], mcpOwned: [...old?.mcpOwned ?? []], primaryOwned: [...old?.primaryOwned ?? []], packages: [...old?.packages ?? []], engram: old?.engram, updatedAt: old?.updatedAt ?? new Date().toISOString() };
+      const row: RuntimeManifest = { configDir, owned: [...old?.owned ?? []], mcpOwned: [...old?.mcpOwned ?? []], configOwned: [...old?.configOwned ?? []], packages: [...old?.packages ?? []], engram: old?.engram, updatedAt: old?.updatedAt ?? new Date().toISOString() };
       const persist = () => {
         if (JSON.stringify(readManifest(manifestPath).runtimes[id]) === JSON.stringify(row)) return;
         createBackup([manifestPath], "manifest", path.join(state, "backups")); writeRuntimeManifest(id, row, manifestPath);
@@ -239,12 +234,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         applyChanges(initialConfig, (action) => {
           if (action.kind === "write") {
             for (const change of action.mcpOwnership ?? []) row.mcpOwned = change.owned ? [...new Set([...row.mcpOwned!, change.server])] : row.mcpOwned!.filter((name) => name !== change.server);
-            for (const change of action.primaryModelOwnership ?? []) row.primaryOwned = change.owned ? [...new Set([...row.primaryOwned!, change.field])] : row.primaryOwned!.filter((name) => name !== change.field);
+            for (const change of action.configOwnership ?? []) row.configOwned = change.owned ? [...new Set([...row.configOwned!, change.field])] : row.configOwned!.filter((name) => name !== change.field);
           }
           persist();
         });
         ctx.ownedMcpServers = new Set(row.mcpOwned);
-        ctx.ownedPrimaryModelFields = new Set(row.primaryOwned);
+        ctx.ownedConfigFields = new Set(row.configOwned);
         const bin = detection.binPath!;
         const nativeEnv: NodeJS.ProcessEnv = { ENGRAM_BIN: engram };
         if (id === "pi") {
@@ -330,7 +325,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           if (ownedCandidates.has(action.target) && !row.owned.includes(action.target)) row.owned.push(action.target);
           if (action.kind === "write") {
             for (const change of action.mcpOwnership ?? []) row.mcpOwned = change.owned ? [...new Set([...row.mcpOwned!, change.server])] : row.mcpOwned!.filter((name) => name !== change.server);
-            for (const change of action.primaryModelOwnership ?? []) row.primaryOwned = change.owned ? [...new Set([...row.primaryOwned!, change.field])] : row.primaryOwned!.filter((name) => name !== change.field);
+            for (const change of action.configOwnership ?? []) row.configOwned = change.owned ? [...new Set([...row.configOwned!, change.field])] : row.configOwned!.filter((name) => name !== change.field);
           }
           persist();
         });

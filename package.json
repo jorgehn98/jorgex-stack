@@ -1,7 +1,7 @@
 {
   "name": "jorgex-stack",
-  "version": "1.9.76",
-  "description": "Harness multi-agente portable: instala la config JorgeX (agentes, skills, hooks, Engram, MCPs) en Claude Code, Codex CLI, OpenCode y Pi",
+  "version": "2.0.0",
+  "description": "Configuración compartida de skills, subagentes e integraciones nativas para Claude Code, Codex, OpenCode v2 y Pi oficial",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -23,16 +23,8 @@
   },
   "files": [
     "dist",
-    "stack",
-    "upstreams.json",
-    "PRD.md"
+    "stack"
   ],
-  "exports": {
-    "./quality-verifier": {
-      "types": "./dist/quality-verifier.d.ts",
-      "import": "./dist/quality-verifier.js"
-    }
-  },
   "engines": {
     "node": ">=22.5"
   },
@@ -43,7 +35,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:property": "vitest run --dir pilots/property",
-    "test:coverage": "vitest run --config pilots/coverage/vitest.config.ts --coverage",
     "cli": "node dist/cli.js",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
@@ -54,7 +45,6 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.2",
-    "@vitest/coverage-v8": "4.1.8",
     "fast-check": "4.9.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",

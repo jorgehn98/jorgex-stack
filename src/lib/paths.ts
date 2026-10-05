@@ -19,7 +19,7 @@ export function stackRoot(): string {
   throw new Error("No se encontró stack/ relativa al CLI — instalación rota.");
 }
 
-/** Datos locales del usuario (model-map, backups). Nunca van al repo. */
+/** Datos locales del usuario (manifest, estilo y backups). Nunca van al repo. */
 export function dataDir(): string {
   return path.join(HOME, ".jorgex-stack");
 }

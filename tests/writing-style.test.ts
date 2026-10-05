@@ -46,7 +46,7 @@ function tempRoot(prefix = "jx-writing-style-"): string {
 }
 
 function context(
-  adapter: SharedProjectionAdapter,
+  _adapter: SharedProjectionAdapter,
   configDir: string,
   mode: "human" | "programmatic" = "human",
   writingStyle?: WritingStyleSnapshot,
@@ -75,13 +75,12 @@ function styleSection(content: string): string | null {
 }
 
 function managedPromptAction(adapter: SharedProjectionAdapter, content: string, configDir: string): FileAction {
-  const prompt = adapter.paths(configDir).systemPromptFile;
+  const prompt = (adapter.paths(configDir).sharedPromptFile ?? adapter.paths(configDir).systemPromptFile);
   fs.mkdirSync(path.dirname(prompt), { recursive: true });
   fs.writeFileSync(prompt, content);
   const actions = "planUnmerge" in adapter
     ? (adapter as typeof claudeCodeAdapter).planUnmerge(
         { servers: {} },
-        { hooks: {} },
         context(adapter, configDir, "human"),
       )
     : [];
@@ -180,7 +179,7 @@ describe("proyección de estilo en el prompt compartido", () => {
   it.each(ALL_RUNTIMES)("añade exactamente un bloque aditivo en %s y conserva las instrucciones ajenas", (_name, adapter) => {
     const root = tempRoot();
     const configDir = path.join(root, adapter.id);
-    const promptFile = adapter.paths(configDir).systemPromptFile;
+    const promptFile = (adapter.paths(configDir).sharedPromptFile ?? adapter.paths(configDir).systemPromptFile);
     const userPrompt = "# Instrucción del usuario\n\nConserva esta regla.\n";
     fs.mkdirSync(path.dirname(promptFile), { recursive: true });
     fs.writeFileSync(promptFile, userPrompt);
@@ -234,7 +233,7 @@ describe("proyección de estilo en el prompt compartido", () => {
     expect(disabled).toContain("<!-- jorgex:system-prompt -->");
   });
 
-  it.each(ALL_RUNTIMES)("no proyecta el estilo en modo programmatic y conserva su contrato de salida en %s", (_name, adapter) => {
+  it.each(ALL_RUNTIMES)("proyecta el mismo estilo sin overlay de modo en %s", (_name, adapter) => {
     const root = tempRoot();
     const configDir = path.join(root, adapter.id);
     const content = plannedPrompt(adapter, context(adapter, configDir, "programmatic", {
@@ -242,15 +241,14 @@ describe("proyección de estilo en el prompt compartido", () => {
       content: SYNTHETIC_STYLE,
     }));
 
-    expect(styleSection(content)).toBeNull();
-    expect(content).toContain("PROGRAMMATIC MODE");
-    expect(content).toContain("strict JSON object");
+    expect(styleSection(content)).toContain(SYNTHETIC_STYLE);
+    expect(content).not.toContain("PROGRAMMATIC MODE");
+    expect(content).not.toContain("strict JSON object");
   });
 
   it.each(RUNTIMES)("uninstall retira solo la sección de estilo en %s y preserva contenido ajeno", (_name, adapter) => {
     const root = tempRoot();
     const configDir = path.join(root, adapter.id);
-    const promptFile = adapter.paths(configDir).systemPromptFile;
     const seeded = [
       "# Instrucción ajena",
       "",

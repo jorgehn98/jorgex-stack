@@ -4,9 +4,8 @@ import path from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
-import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import type { AgentModelChoices } from "../src/lib/agent-model.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];
@@ -37,10 +36,10 @@ function writeActionContent(actions: ReturnType<typeof opencodeAdapter.planMainC
   return action.content;
 }
 
-function primaryOwnership(actions: ReturnType<typeof opencodeAdapter.planMainConfig>, target: string): ReadonlySet<string> {
+function configOwnership(actions: ReturnType<typeof opencodeAdapter.planMainConfig>, target: string): ReadonlySet<string> {
   const action = actions.find((candidate) => candidate.kind === "write" && candidate.target === target);
   if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
-  return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
+  return new Set((action.configOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
 }
 
 /** Delimitador del frontmatter del agente: recorte, no un parser YAML. */
@@ -327,7 +326,7 @@ describe("opencodeAdapter v2: config nativa opencode.jsonc", () => {
     expect(parsed["formatter"]).toBe(true);
 
     // IDs file-qualificados con el basename REAL del archivo editado.
-    const owned = primaryOwnership(actions, jsoncFile);
+    const owned = configOwnership(actions, jsoncFile);
     expect(owned).toContain(JSON.stringify(["opencode.jsonc", "formatter"]));
     expect([...owned].some((field) => field.startsWith('["opencode.json"'))).toBe(false);
 
@@ -336,9 +335,9 @@ describe("opencodeAdapter v2: config nativa opencode.jsonc", () => {
     expect(writeActionContent(opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir)), jsoncFile)).toBe(content);
 
     // Unmerge: solo retira el campo owned y canónico; lo ajeno (y sus comentarios) queda.
-    const unmerged = opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+    const unmerged = opencodeAdapter.planUnmerge(mcp, {
       ...opencodeContext(configDir),
-      ownedPrimaryModelFields: new Set([JSON.stringify(["opencode.jsonc", "formatter"])]),
+      ownedConfigFields: new Set([JSON.stringify(["opencode.jsonc", "formatter"])]),
     });
     const afterUnmerge = writeActionContent(unmerged, jsoncFile);
     expect(afterUnmerge).toContain("// config propia del usuario");
@@ -373,92 +372,6 @@ describe("opencodeAdapter v2: config nativa opencode.jsonc", () => {
   });
 });
 
-describe("opencodeAdapter v2: límites de provider restantes (Spec T04)", () => {
-  /** Contrato literal de la Spec 04:55, sin inferir nombres futuros. */
-  const NATIVE_LIMITS = [
-    { provider: "openai", model: "gpt-6-astra", limit: { context: 872000, input: 744000, output: 128000 } },
-    { provider: "opencode-go", model: "deepseek-v4.1-flash", limit: { context: 400000, output: 128000 } },
-    { provider: "opencode-go", model: "muse-spark-1.3-contributor", limit: { context: 400000, output: 128000 } },
-  ] as const;
-
-  const limitFieldIds = (provider: string, model: string): string[] =>
-    Object.keys(NATIVE_LIMITS.find((entry) => entry.provider === provider && entry.model === model)!.limit)
-      .map((key) => JSON.stringify(["opencode.json", "providers", provider, "models", model, "limit", key]));
-
-  /**
-   * IDs file-qualificados de los contenedores que Stack crea al sembrar el
-   * modelo (Spec 04:62): la poda exige el ID propio del contenedor, no basta
-   * con las hojas. Un fixture que representa contenedores creados por Stack
-   * debe incluirlos para que el unmerge los retire cuando queden vacíos.
-   */
-  const limitContainerFieldIds = (provider: string, model: string): string[] =>
-    [
-      ["providers"],
-      ["providers", provider],
-      ["providers", provider, "models"],
-      ["providers", provider, "models", model],
-      ["providers", provider, "models", model, "limit"],
-    ].map((segments) => JSON.stringify(["opencode.json", ...segments]));
-
-  function providersOf(content: string): Record<string, { models?: Record<string, { limit?: Record<string, number> }> }> {
-    return (JSON.parse(content) as { providers?: Record<string, { models?: Record<string, { limit?: Record<string, number> }> }> }).providers ?? {};
-  }
-
-  it.each([
-    ["modificado a mano", { context: 1, input: 2, output: 3 }],
-    ["igual al canon", { context: 872000, input: 744000, output: 128000 }],
-  ])("un límite preexistente %s no se reclama y se preserva", (_label, limit) => {
-    const configDir = tempConfigDir();
-    const configFile = path.join(configDir, "opencode.json");
-    fs.writeFileSync(configFile, JSON.stringify({ providers: { openai: { models: { "gpt-6-astra": { limit } } } } }, null, 2) + "\n");
-
-    const actions = opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), opencodeContext(configDir));
-    const providers = providersOf(writeActionContent(actions, configFile));
-    expect(providers["openai"]?.models?.["gpt-6-astra"]?.limit).toEqual(limit);
-
-    const owned = primaryOwnership(actions, configFile);
-    for (const field of limitFieldIds("openai", "gpt-6-astra")) {
-      expect(owned, `${field} no debe reclamarse`).not.toContain(field);
-    }
-    // No se introduce otro catálogo ni límites prefijados.
-    expect(providers["opencode-go"]).toBeUndefined();
-  });
-
-  it("unmerge retira solo los límites owned canónicos y preserva lo ajeno", () => {
-    const configDir = tempConfigDir();
-    const configFile = path.join(configDir, "opencode.json");
-    // El fixture representa el modelo/limit creados por Stack (aunque el
-    // usuario añadiera luego `user-model` al mismo provider); el set owned
-    // incluye los contenedores de la cadena, no solo las hojas, para que el
-    // unmerge retire el límite canónico sin dejar residuo vacío.
-    const ownedFields = [
-      ...limitContainerFieldIds("opencode-go", "deepseek-v4.1-flash"),
-      ...limitFieldIds("opencode-go", "deepseek-v4.1-flash"),
-    ];
-    const config = {
-      providers: {
-        openai: { models: { "gpt-6-astra": { limit: { context: 872000, input: 744000, output: 128000 } } } },
-        "opencode-go": {
-          models: {
-            "deepseek-v4.1-flash": { limit: { context: 400000, output: 128000 } },
-            "user-model": { limit: { context: 1, output: 1 } },
-          },
-        },
-      },
-    };
-    fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + "\n");
-
-    const actions = opencodeAdapter.planUnmerge(loadCanonicalMcp(stackRoot()), loadCanonicalHooks(stackRoot()), {
-      ...opencodeContext(configDir),
-      ownedPrimaryModelFields: new Set(ownedFields),
-    });
-    const after = providersOf(writeActionContent(actions, configFile));
-    expect(after["opencode-go"]?.models?.["deepseek-v4.1-flash"]?.limit, "owned canónico se retira").toBeUndefined();
-    expect(after["opencode-go"]?.models?.["user-model"]?.limit, "lo ajeno se preserva").toEqual({ context: 1, output: 1 });
-    expect(after["openai"]?.models?.["gpt-6-astra"]?.limit, "no owned: intacto").toEqual({ context: 872000, input: 744000, output: 128000 });
-  });
-});
-
 describe("opencodeAdapter v2: unmerge no poda contenedores preexistentes ajenos", () => {
   it("preserva limit/agents.title/compaction/worktree vacíos preexistentes al retirar hojas owned", () => {
     // Spec 04:62: los contenedores se podan SOLO cuando su propio ID
@@ -478,7 +391,7 @@ describe("opencodeAdapter v2: unmerge no poda contenedores preexistentes ajenos"
 
     const mcp = loadCanonicalMcp(stackRoot());
     const actions = opencodeAdapter.planMainConfig(mcp, opencodeContext(configDir));
-    const owned = primaryOwnership(actions, configFile);
+    const owned = configOwnership(actions, configFile);
 
     // El plan no reclama los contenedores que ya existían: no los creó.
     for (const segments of [
@@ -493,9 +406,9 @@ describe("opencodeAdapter v2: unmerge no poda contenedores preexistentes ajenos"
 
     fs.writeFileSync(configFile, writeActionContent(actions, configFile));
     const unmerged = JSON.parse(writeActionContent(
-      opencodeAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
+      opencodeAdapter.planUnmerge(mcp, {
         ...opencodeContext(configDir),
-        ownedPrimaryModelFields: owned,
+        ownedConfigFields: owned,
       }),
       configFile,
     )) as Record<string, any>;
@@ -518,7 +431,7 @@ describe("opencodeAdapter v2: unmerge no poda contenedores preexistentes ajenos"
 });
 
 describe("opencodeAdapter v2: diagnóstico de contenedores no objeto", () => {
-  // Guardia para la reutilización de `ensureOwnedPrimaryObject` en los cinco
+  // Guardia para la reutilización de `ensureOwnedConfigObject` en los cinco
   // contenedores: el rechazo de null/array/escalar debe conservar el `fieldPath`
   // exacto (Spec 04:64), sin snapshots de prosa.
   it.each([
@@ -638,7 +551,7 @@ describe("opencodeAdapter v2: defaults de servidor y roster", () => {
     expect(root.agents?.title?.model).toBeUndefined();
 
     // No se reclama ownership de un bloque que no se escribió.
-    const owned = primaryOwnership(actions, jsoncFile);
+    const owned = configOwnership(actions, jsoncFile);
     for (const segments of [
       ["agents", "plan"],
       ["agents", "plan", "disabled"],

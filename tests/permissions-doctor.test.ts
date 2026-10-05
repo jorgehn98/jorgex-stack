@@ -27,7 +27,7 @@ it.each(["claude-code", "opencode", "codex"] as const)("reports differing %s per
   fs.writeFileSync(config, content);
   await runDoctor(options(runtime));
   expect(output()).toMatch(/permission(?:s block| profile) differs/);
-  expect(output()).toContain("--upgrade-permissions");
+  expect(output()).toContain("manually after creating a backup");
   expect(output()).not.toContain(canary);
   expect(fs.readFileSync(config, "utf8")).toBe(content);
 });
@@ -47,7 +47,6 @@ it("reads native Pi permission configuration without receipts, claims or repairs
   expect(await runDoctor(options("pi"))).toBe(0);
   expect(output()).toContain("proveedor controla su aplicación");
   expect(output()).not.toContain("private-policy-canary");
-  expect(output()).not.toContain("--upgrade-permissions");
   expect(fs.readFileSync(policy, "utf8")).toBe(content);
 });
 
@@ -60,7 +59,6 @@ it.each(["malformed", "invalid-root", "unreadable"] as const)("fails closed for 
   expect(await runDoctor(options("pi"))).toBe(1);
   expect(output()).toMatch(/inválida|no se puede leer/);
   expect(output()).not.toContain("private-policy-canary");
-  expect(output()).not.toContain("--upgrade-permissions");
   if (kind === "unreadable") expect(fs.statSync(policy).isDirectory()).toBe(true);
   else expect(fs.readFileSync(policy, "utf8")).toBe(content);
 });

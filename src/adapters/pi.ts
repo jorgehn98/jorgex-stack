@@ -8,7 +8,6 @@ import { BROWSER_CONTROL_GUIDANCE } from "../lib/canonical.js";
 import type { Adapter } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { detectPi } from "../lib/detect.js";
-import { createLocalCapabilityReport } from "../lib/quality-capabilities.js";
 import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 export function piSystemPromptFile(targetDir?: string): string {
@@ -28,8 +27,7 @@ export const piAdapter: Adapter = {
   name: "Pi",
   detect: detectPi,
   adaptSystemPromptSections(sections) { return { ...sections, browser: BROWSER_CONTROL_GUIDANCE }; },
-  reportCapabilities() { return createLocalCapabilityReport("pi", []); },
-  planUnmerge(canonical, _hooks, ctx) {
+  planUnmerge(canonical, ctx) {
     const prompt = path.join(ctx.configDir, "AGENTS.md");
     const actions = [{ kind: "write" as const, target: prompt, content: removeSystemPromptSections(readTextIfExists(prompt) ?? "") }];
     const target = path.join(ctx.configDir, "mcp.json");
@@ -55,11 +53,8 @@ export const piAdapter: Adapter = {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
       agentsDir: path.join(configDir, "agents"),
       skillsDir: path.join(agentsHome, ".agents", "skills"),
-      commandsDir: path.join(configDir, "prompts"),
       pluginsDir: null,
       scriptsDir: path.join(configDir, "scripts"),
-      outputStylesDir: null,
-      profilesDir: null,
     };
   },
 
@@ -109,9 +104,6 @@ export const piAdapter: Adapter = {
     return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }];
   },
 
-  renderCommand(file, content) {
-    return { file, content: content.replace(/\{\{input\}\}/g, "$ARGUMENTS") };
-  },
 
 };
 

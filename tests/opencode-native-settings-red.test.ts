@@ -16,8 +16,8 @@ it("records only created v2 fields and preserves user models and permissions on 
   fs.writeFileSync(path.join(configDir, "opencode.json"), '{"model":"personal/model","permissions":[{"effect":"deny","action":"shell","resource":"*"}]}');
   expect(await install()).toBe(0);
   const row = readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes.opencode!;
-  expect(row.primaryOwned).not.toContain('["opencode.json","model"]');
-  expect(row.primaryOwned).toContain('["cli.json","plugins","./tui/subagents"]');
+  expect(row.configOwned).not.toContain('["opencode.json","model"]');
+  expect(row.configOwned).toContain('["cli.json","plugins","./tui/subagents"]');
   const before = fs.readFileSync(path.join(configDir, "opencode.json"), "utf8");
   expect(await install()).toBe(0);
   expect(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8")).toBe(before);
