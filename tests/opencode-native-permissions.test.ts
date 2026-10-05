@@ -8,7 +8,7 @@ import { nativePermission } from "./fixtures/opencode-native.js";
 
 const binary = process.env.JORGEX_OPENCODE_BIN;
 const permission = JSON.parse(fs.readFileSync(path.join(stackRoot(), "config", "defaults.json"), "utf8")).opencode.permission;
-const models = { strong: { model: "fixture/fixture" }, standard: { model: "fixture/fixture" }, cheap: { model: "fixture/fixture" } };
+const models = {};
 const safeDiff = "git --no-pager -c core.fsmonitor=false -c log.showSignature=false diff --no-ext-diff --no-textconv --end-of-options";
 
 describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 native permission contract", () => {

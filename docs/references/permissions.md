@@ -27,6 +27,42 @@ queda en silencio.
 
 ---
 
+## Subagentes nativos
+
+Stack proyecta seis roles: analyst, reviewer, security-auditor y simplifier son
+lectores; implementer y generalist escriben. No instala un principal paralelo:
+se usa el principal del runtime y la skill orchestrator. No se asignan tiers,
+modelos ni esfuerzo al renderizar agentes sin una elección por nombre.
+
+- **Claude:** lectores con `Read, Grep, Glob, Skill`, sin Bash ni Agent;
+  los escritores excluyen Agent. No hay elevación mediante el prompt.
+- **OpenCode v2:** lectores con denies nativos de `edit` y `shell`;
+  todos los roles deniegan `subagent`. Se retira la allowlist git-read.
+- **Pi:** lectores con `read, grep, find, ls`; escritores añaden bash/edit/write.
+  `allowedAgents` vacío bloquea descendientes. La definición de usuario reviewer
+  sustituye el builtin por precedencia nativa, sin modificarlo.
+- **Codex — excepción de sesión:** los lectores conservan shell para lectura.
+  Una revisión aislada requiere que **la sesión padre sea readonly**; el rol no
+  puede imponer ese sandbox. Stack no emite `sandbox_mode` en el archivo del
+  agente como garantía ni añade un wrapper. El canon expresa intención readonly,
+  no enforcement por agente. La fuente oficial `rust-v0.160.0`,
+  `child_config.rs`, restaura el sandbox padre tras aplicar el rol; `role.rs`
+  solo aplica reductores concretos de features. Los tests de proyección verifican
+  formato/intención, no certifican un smoke runtime de Codex.
+
+Claude usa la copia de skills en `~/.agents/skills` mediante enlaces por skill
+(desde su directorio configurado), no sustituye `skills/` completo. Su CLAUDE.md
+contiene solo el import relativo gestionado hacia `.agents/AGENTS.md`; los paths
+con espacios se escapan, nunca se entrecomillan. Los archivos/enlaces ajenos no
+se reclaman por igualdad. Un archivo ilegible bloquea la operación. Para archivos
+de agentes gestionados se conservan model/effort/thinking existentes al actualizar
+el cuerpo. La cabecera Pi es un archivo local con tema activo, sin package/contract
+ni badges de paquete; el panel OpenCode reutiliza los recursos nativos v2 existentes.
+
+En Claude, OpenCode y Pi el coordinador entrega diff/historia a los lectores;
+no se sustituye git-read por shell general. El aislamiento y las restricciones
+que el usuario configure en cada runtime siguen siendo responsabilidad del host.
+
 ## 1. Dónde vive cada cosa
 
 | Runtime      | Archivo de usuario               | Clave gestionada                                        |
@@ -475,9 +511,8 @@ añadidas en T17/T20:
 - **La red de secretos es `read`/`edit`, no el filesystem.** En OpenCode
   v2 fresco, el array nativo no añade denies de secretos sobre bash:
   leer un `.env` por shell (p. ej. `cat .env`) queda en `allow` por
-  diseño. Consecuencia aceptada: el subagente git-read puede mostrar
-  secretos con `git diff HEAD -- .env`, porque el diff no pasa por las
-  denies de `read`/`edit`.
+  diseño para los roles que reciben shell. Los lectores OpenCode no reciben
+  shell; git-read ya no forma parte de su proyección.
 - **Secretos fuera del filesystem.** Variables de entorno con secrets
   pueden terminar en respuestas del modelo si una shell las expande dentro
   de un comando `Bash` aprobado por el usuario (p. ej.

@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
+import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectCodex } from "../lib/detect.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath, stackRoot } from "../lib/paths.js";
@@ -444,15 +444,15 @@ export const codexAdapter: Adapter = {
     };
   },
 
-  renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
-    const tierModel = resolveAgentModel(models, agent.name);
+  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
+    const selected = agentModelChoice(models, agent.name);
 
     const lines = [
       `name = ${tomlString(agent.name)}`,
       `description = ${tomlString(agent.description)}`,
     ];
-    if (tierModel.model !== "default") lines.push(`model = ${tomlString(tierModel.model)}`);
-    if (tierModel.variant) lines.push(`model_reasoning_effort = ${tomlString(tierModel.variant)}`);
+    if (selected.model) lines.push(`model = ${tomlString(selected.model)}`);
+    if (selected.variant) lines.push(`model_reasoning_effort = ${tomlString(selected.variant)}`);
     // Codex hereda el sandbox del padre; un rol no impone aislamiento por agente.
     lines.push(`developer_instructions = ${tomlMultiline(agent.body)}`);
 

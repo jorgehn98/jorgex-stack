@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection } from "../src/lib/filemerge.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];

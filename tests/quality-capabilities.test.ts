@@ -52,9 +52,6 @@ type CapabilityFixture = {
 };
 
 const FIXTURE_MODELS = {
-  strong: { model: "fixture/strong" },
-  standard: { model: "fixture/standard" },
-  cheap: { model: "fixture/cheap" },
 };
 
 const temporaryConfigDirs: string[] = [];

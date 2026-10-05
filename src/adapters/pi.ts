@@ -1,3 +1,4 @@
+import { agentModelChoice } from "../lib/agent-model.js";
 import { editJsonc, upsertJson } from "../lib/filemerge.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { planOwnedProjection } from "../lib/owned-projection.js";
@@ -62,12 +63,14 @@ export const piAdapter: Adapter = {
     };
   },
 
-  renderAgent(agent) {
+  renderAgent(agent, models) {
+    const selected = agentModelChoice(models, agent.name);
+    const choices = `${selected.model ? `model: ${JSON.stringify(selected.model)}\n` : ""}${selected.variant ? `thinking: ${JSON.stringify(selected.variant)}\n` : ""}`;
     const tools = agent.readonly ? "read, grep, find, ls" : "read, grep, find, ls, bash, edit, write";
     return [{
       kind: "agent",
       file: `${agent.name}.md`,
-      content: `---\nname: ${agent.name}\ndescription: ${JSON.stringify(agent.description)}\ntools: ${tools}\nallowedAgents:\nallowNestedSubagents: false\n---\n${agent.body}`,
+      content: `---\nname: ${agent.name}\ndescription: ${JSON.stringify(agent.description)}\ntools: ${tools}\n${choices}allowedAgents:\nallowNestedSubagents: false\n---\n${agent.body}`,
     }];
   },
 

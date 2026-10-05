@@ -6,7 +6,7 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { piAdapter } from "../src/adapters/pi.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { loadCanonicalAgents, parseCanonicalAgent } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 
 const agents = () => loadCanonicalAgents(path.resolve("stack/agents"));
 

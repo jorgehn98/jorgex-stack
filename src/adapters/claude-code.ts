@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
+import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { upsertJson } from "../lib/filemerge.js";
@@ -209,12 +209,13 @@ export const claudeCodeAdapter: Adapter = {
     };
   },
 
-  renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
+  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
     const lines = [`name: ${agent.name}`, `description: ${yamlString(agent.description)}`];
     const tools = toolsFor(agent);
     if (tools !== null) lines.push(`tools: ${tools}`);
-    const selected = resolveAgentModel(models, agent.name);
-    if (selected.model !== "default") lines.push(`model: ${yamlString(selected.model)}`);
+    const selected = agentModelChoice(models, agent.name);
+    if (selected.model) lines.push(`model: ${yamlString(selected.model)}`);
+    if (selected.variant) lines.push(`effort: ${yamlString(selected.variant)}`);
     if (!agent.spawn) lines.push("disallowedTools: Agent");
 
     return [

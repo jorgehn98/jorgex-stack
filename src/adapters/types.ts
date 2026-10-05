@@ -7,7 +7,7 @@
 import type { WritingStyleSnapshot } from "../lib/writing-style.js";
 import type { RuntimeDetection } from "../lib/detect.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import type { RuntimeModelMap } from "../lib/model-map.js";
+import type { AgentModelChoices } from "../lib/agent-model.js";
 import type { LocalQualityCapabilityReport } from "../lib/quality-capabilities.js";
 import type { SystemPromptSections } from "../lib/system-prompt-sections.js";
 
@@ -31,9 +31,6 @@ export interface OpenCodeTargetEvidenceOption {
 export type InstallModePreference =
   | { mode: "human"; subagentConcurrency: "serial" }
   | { mode: "programmatic"; subagentConcurrency: SubagentConcurrency };
-
-/** Tier canónico de modelo por agente; el model-map lo resuelve por runtime (PRD §6.1). */
-export type Tier = "strong" | "standard" | "cheap";
 
 export interface McpOwnershipChange {
   server: string;
@@ -75,7 +72,7 @@ export interface InstallContext {
   subagentConcurrency?: SubagentConcurrency;
   /** Binario Engram detectado (D7: siempre el existente). null = no instalado. */
   engramBin: string | null;
-  models: RuntimeModelMap;
+  models: AgentModelChoices;
   /** Avisos no fatales que el pipeline muestra al final. */
   warnings: string[];
   /** MCPs opcionales habilitados explícitamente para este runtime. */
@@ -152,7 +149,7 @@ export interface Adapter extends SharedProjectionAdapter {
   /** Proyecta los seis subagentes en su formato nativo; el principal pertenece al host. */
   renderAgent(
     agent: CanonicalAgent,
-    models: RuntimeModelMap,
+    models: AgentModelChoices,
   ): { file: string; content: string; kind: "agent" }[];
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];

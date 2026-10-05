@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { planAgents } from "../src/components/agents.js";
 import { loadCanonicalAgents, loadCanonicalMcp } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 /**

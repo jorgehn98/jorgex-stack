@@ -22,7 +22,7 @@ import { officialSetupVerifiers } from "./lib/official-engram-setup.js";
 import { editJsonc, parseJsoncObject } from "./lib/filemerge.js";
 import { installMissingEngram } from "./lib/engram-install.js";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot } from "./lib/writing-style.js";
-import type { RuntimeModelMap } from "./lib/model-map.js";
+import type { AgentModelChoices } from "./lib/agent-model.js";
 
 export const ADAPTERS: Record<RuntimeId, Adapter> = { "claude-code": claudeCodeAdapter, codex: codexAdapter, opencode: opencodeAdapter, pi: piAdapter };
 export const PI_PACKAGES = ["pi-subagents", "@juicesharp/rpiv-ask-user-question", "pi-web-access", "@gotgenes/pi-permission-system", "gentle-engram", "@narumitw/pi-goal", "compact-tools"] as const;
@@ -65,7 +65,7 @@ export function makeContext(adapter: Adapter, configDir: string, targetDir?: str
   if (previous && !samePath(previous.configDir, configDir)) throw new Error(`${adapter.id}: configDir difiere del manifest; se conserva el perfil anterior.`);
   return {
     stackDir: stackRoot(), configDir, targetDir, engramBin: targetDir ? null : detectEngram(),
-    models: {} as RuntimeModelMap, warnings: [],
+    models: {} as AgentModelChoices, warnings: [],
     writingStyle: prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir }),
     ownedFiles: new Set(Object.values(manifest.runtimes).flatMap((row) => row?.owned ?? [])),
     ownedMcpServers: new Set(previous?.mcpOwned), ownedPrimaryModelFields: new Set(previous?.primaryOwned),

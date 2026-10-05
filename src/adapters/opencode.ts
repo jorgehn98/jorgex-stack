@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryModelOwnershipChange } from "./types.js";
 import { BROWSER_CONTROL_GUIDANCE, isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
-import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
+import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, resolveOpenCodeConfigDir, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
@@ -650,15 +650,15 @@ export const opencodeAdapter: Adapter = {
     };
   },
 
-  renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
+  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
     const lines: string[] = [`description: ${yamlString(agent.description)}`, `mode: ${agent.mode}`];
 
-    const tierModel = resolveAgentModel(models, agent.name);
+    const selected = agentModelChoice(models, agent.name);
     // v2 usa un único `provider/model#variant`. Se serializa con yamlString
     // (JSON double-quoted) para que un modelo manual con comillas o saltos de
     // línea no inyecte campos, comentarios ni delimitadores en el frontmatter.
-    const modelRef = tierModel.variant ? `${tierModel.model}#${tierModel.variant}` : tierModel.model;
-    if (tierModel.model !== "default") lines.push(`model: ${yamlString(modelRef)}`);
+    const modelRef = selected.variant ? `${selected.model}#${selected.variant}` : selected.model;
+    if (selected.model) lines.push(`model: ${yamlString(modelRef!)}`);
 
     // Reglas nativas: los lectores no reciben shell/escritura y ningún hijo delega.
     const rules: PermissionRule[] = [];

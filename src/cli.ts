@@ -5,6 +5,7 @@ import { ADAPTERS, runInstall } from "./install.js";
 import { runUpdate, runUpdateCheck } from "./update.js";
 import { runDoctor } from "./doctor.js";
 import { runUninstall } from "./uninstall.js";
+import { runModelsPicker } from "./models-picker.js";
 import { listBackups, restoreBackup } from "./lib/backup.js";
 import { readPackageVersion } from "./lib/release.js";
 import { runQualityPlan } from "./lib/quality-runner.js";
@@ -55,7 +56,7 @@ export function parseCliArgs(argv: string[]): ParsedCli {
   return { action, command, flags, ...(action === "unknown" ? { unknownCommand: first } : {}) };
 }
 function printHelp(): void {
-  console.log("jorgex-stack install|update|doctor|uninstall|models|restore|quality\n--agents claude-code,codex,opencode,pi --target-dir DIR --dry-run --yes\nInstall: --engram --upgrade-permissions. Update: --check. Uninstall: --remove-engram.\nMenú y selector nativo por agente pendientes de T07/T06; no se usa el picker por tiers retirado.");
+  console.log("jorgex-stack install|update|doctor|uninstall|models|restore|quality\n--agents claude-code,codex,opencode,pi --target-dir DIR --dry-run --yes\nInstall: --engram --upgrade-permissions. Update: --check. Uninstall: --remove-engram.\nModelos: edición nativa individual con backup. Menú común pendiente de T07.");
 }
 async function main(): Promise<void> {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -70,7 +71,6 @@ async function main(): Promise<void> {
     else console.log(serializeQualityReceipt(result.receipt));
     process.exitCode = result.evaluation.status === "pass" ? 0 : 1; return;
   }
-  if (command === "models") throw new Error("Selector por tiers retirado; selector nativo por agente pendiente de T06. Usa la elección nativa del runtime mientras tanto.");
   if (command === "restore") {
     if (flags.targetDir) throw new Error("restore no admite target-dir.");
     if (flags.list) { console.log(listBackups().map((backup) => `${backup.id} ${backup.label}`).join("\n")); return; }
@@ -82,6 +82,10 @@ async function main(): Promise<void> {
   if (flags.engram && command !== "install") throw new Error("--engram solo se admite en install.");
   const runtimes = flags.agents.length ? flags.agents : Object.keys(ADAPTERS) as RuntimeId[];
   const options = { ...flags, runtimes };
+  if (command === "models") {
+    if (flags.targetDir || flags.dryRun) throw new Error("El selector requiere configuración nativa y guardado explícito; no admite target-dir/dry-run.");
+    process.exitCode = await runModelsPicker(options); return;
+  }
   if (command === "doctor") process.exitCode = await runDoctor(options);
   else if (command === "uninstall") process.exitCode = await runUninstall(options);
   else if (command === "update") process.exitCode = flags.check ? await runUpdateCheck() : await runUpdate(options);

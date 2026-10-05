@@ -8,7 +8,7 @@ import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { piAdapter } from "../src/adapters/pi.js";
 import type { FileAction, InstallContext, SharedProjectionAdapter } from "../src/adapters/types.js";
 import { planSystemPrompt } from "../src/components/system-prompt.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { readWritingStyle, resolveWritingStyleFile } from "../src/lib/writing-style.js";
 

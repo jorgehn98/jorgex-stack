@@ -9,13 +9,10 @@ import { loadCanonicalAgents, loadCanonicalMcp, type CanonicalHooks } from "../s
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const OPEN_CODE_MODELS = {
-  strong: { model: "provider/strong" },
-  standard: { model: "provider/standard" },
-  cheap: { model: "provider/cheap" },
 };
 
 describe("removeMarkdownSection", () => {

@@ -13,7 +13,7 @@ import { applyChanges, diffPlan } from "../src/install.js";
 import { createBackup, restoreBackup } from "../src/lib/backup.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { readTextIfExists } from "../src/lib/fsx.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import type { FileAction, InstallContext } from "../src/adapters/types.js";
 
 let root: string;

@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { parseOpenCodeHostVersion } from "./helpers/opencode-host-version.js";
 
@@ -314,7 +314,7 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real 
   }, CASE_TIMEOUT_MS);
 
   it("un rol readonly no puede editar aunque el autoaccept global esté activo", async () => {
-    const models = { strong: { model: "fixture/fixture" }, standard: { model: "fixture/fixture" }, cheap: { model: "fixture/fixture" } };
+    const models = {};
     const [agent] = opencodeAdapter.renderAgent(
       { name: "probe", description: "Permission fixture", mode: "subagent", readonly: true, bash: "none", spawn: false, body: "Use the local fixture." },
       models,

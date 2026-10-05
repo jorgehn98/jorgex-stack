@@ -5,7 +5,8 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
+import type { AgentModelChoices } from "../src/lib/agent-model.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];
@@ -43,10 +44,7 @@ function primaryOwnership(actions: ReturnType<typeof opencodeAdapter.planMainCon
 }
 
 /** Delimitador del frontmatter del agente: recorte, no un parser YAML. */
-const MODELS: RuntimeModelMap = {
-  strong: { model: "provider/strong", variant: "high" },
-  standard: { model: "provider/standard", variant: "medium" },
-  cheap: { model: "provider/cheap" },
+const MODELS: AgentModelChoices = {
 };
 
 

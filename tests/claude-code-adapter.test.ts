@@ -5,13 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import type { InstallContext } from "../src/adapters/types.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
-import type { RuntimeModelMap } from "../src/lib/model-map.js";
+import type { AgentModelChoices } from "../src/lib/agent-model.js";
 import { stackRoot } from "../src/lib/paths.js";
 
-const MODELS: RuntimeModelMap = {
-  strong: { model: "fable" },
-  standard: { model: "sonnet" },
-  cheap: { model: "haiku" },
+const MODELS: AgentModelChoices = {
 };
 
 

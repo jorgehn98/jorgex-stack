@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
 import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
+import type { AgentModelChoices } from "../src/lib/agent-model.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];
@@ -42,10 +43,7 @@ function primaryOwnership(actions: ReturnType<typeof codexAdapter.planMainConfig
   return new Set((action.primaryModelOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
 }
 
-const MODELS: RuntimeModelMap = {
-  strong: { model: "default", variant: "high" },
-  standard: { model: "default", variant: "medium" },
-  cheap: { model: "default", variant: "low" },
+const MODELS: AgentModelChoices = {
 };
 
 

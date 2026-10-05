@@ -10,11 +10,10 @@ import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
-import * as modelMap from "../src/lib/model-map.js";
+import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { planSkills } from "../src/components/skills.js";
-import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
+import { OPEN_CODE_TEST_MODELS } from "./fixtures/model-map.js";
 
 let tmp: string;
 
@@ -210,7 +209,6 @@ const mutableRuntimeViolations = (): string[] => {
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jx-maint-"));
-  vi.spyOn(modelMap, "loadModelMap").mockReturnValue(TEST_MODEL_MAP);
 });
 
 afterEach(() => {
