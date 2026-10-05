@@ -5,11 +5,22 @@ import { planOwnedProjection } from "../lib/owned-projection.js";
 import fs from "node:fs";
 import path from "node:path";
 import { BROWSER_CONTROL_GUIDANCE } from "../lib/canonical.js";
-import type { Adapter } from "./types.js";
+import type { Adapter, FileAction } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { detectPi } from "../lib/detect.js";
 import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
+const SUBAGENT_CONFIG = "extensions/subagent/config.json";
+const SUBAGENT_TIMEOUT_FIELD = JSON.stringify([SUBAGENT_CONFIG, "timeoutMs"]);
+const SUBAGENT_TIMEOUT_MS = 7200000;
+
+function readSubagentConfig(file: string) {
+  const raw = readTextIfExists(file);
+  const config: unknown = raw === null ? {} : JSON.parse(raw);
+  if (!isRecord(config)) throw new Error("Pi: configuración nativa de subagentes inválida (contenido omitido).");
+  return { raw, config };
+}
+
 export function piSystemPromptFile(targetDir?: string): string {
   const configDir = targetDir === undefined
     ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
@@ -29,7 +40,7 @@ export const piAdapter: Adapter = {
   adaptSystemPromptSections(sections) { return { ...sections, browser: BROWSER_CONTROL_GUIDANCE }; },
   planUnmerge(canonical, ctx) {
     const prompt = path.join(ctx.configDir, "AGENTS.md");
-    const actions = [{ kind: "write" as const, target: prompt, content: removeSystemPromptSections(readTextIfExists(prompt) ?? "") }];
+    const actions: FileAction[] = [{ kind: "write", target: prompt, content: removeSystemPromptSections(readTextIfExists(prompt) ?? "") }];
     const target = path.join(ctx.configDir, "mcp.json");
     const raw = readTextIfExists(target);
     if (raw !== null) actions.push({ kind: "write", target, content: editJsonc(raw, (root) => {
@@ -43,6 +54,15 @@ export const piAdapter: Adapter = {
         if (expected && JSON.stringify(current) === JSON.stringify(expected)) delete root.mcpServers[name];
       }
     }) });
+    if (ctx.ownedConfigFields?.has(SUBAGENT_TIMEOUT_FIELD)) {
+      const target = path.join(ctx.configDir, SUBAGENT_CONFIG);
+      const { raw, config } = readSubagentConfig(target);
+      if (raw !== null) actions.push({
+        kind: "write", target,
+        content: config.timeoutMs === SUBAGENT_TIMEOUT_MS ? editJsonc(raw, (root) => { delete root.timeoutMs; }) : raw,
+        configOwnership: [{ field: SUBAGENT_TIMEOUT_FIELD, owned: false }],
+      });
+    }
     return actions;
   },
 
@@ -101,7 +121,16 @@ export const piAdapter: Adapter = {
         if (!isRecord(current) || current.command !== ctx.browserControlInvocation!.command || JSON.stringify(current.args ?? []) !== JSON.stringify(ctx.browserControlInvocation!.args) || current.enabled === false || current.disabled === true) throw new Error("Pi: Browser Control incompatible; se conserva sin reclamar.");
       }
     }) : content;
-    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }];
+    const subagentTarget = path.join(ctx.configDir, SUBAGENT_CONFIG);
+    const { raw, config } = readSubagentConfig(subagentTarget);
+    const subagentActions: FileAction[] = Object.hasOwn(config, "timeoutMs") ? [] : [{
+      kind: "write", target: subagentTarget,
+      content: raw === null
+        ? upsertJson(null, (root) => { root.timeoutMs = SUBAGENT_TIMEOUT_MS; })
+        : editJsonc(raw, (root) => { root.timeoutMs = SUBAGENT_TIMEOUT_MS; }),
+      configOwnership: [{ field: SUBAGENT_TIMEOUT_FIELD, owned: true }],
+    }];
+    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }, ...subagentActions];
   },
 
 
