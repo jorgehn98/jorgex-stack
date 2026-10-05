@@ -13,7 +13,7 @@ export function planAgents(adapter: Pick<Adapter, "paths" | "renderAgent">, ctx:
       if (actions.length === 0 || !fs.existsSync(target)) return actions;
       const current = fs.readFileSync(target, "utf8");
       const fields = rendered.file.endsWith(".toml")
-        ? /^(?:model|model_reasoning_effort)\s*=.*$/gm
+        ? /^[ \t]*(?:model|model_reasoning_effort)\s*=.*$/gm
         : /^(?:model|thinking|effort):.*$/gm;
       const header = rendered.file.endsWith(".toml") ? current.split(/^developer_instructions\s*=/m)[0]! : current.split(/^---\s*$/m)[1] ?? "";
       const choices = header.match(fields) ?? [];

@@ -7,7 +7,7 @@ import { createBackup } from "./lib/backup.js";
 import { loadCanonicalMcp } from "./lib/canonical.js";
 import { isContainedIn, pruneEmptyDirs } from "./lib/fsx.js";
 import { readManifest, removeRuntimeManifest, writeRuntimeManifest } from "./lib/manifest.js";
-import { HOME } from "./lib/paths.js";
+import { HOME, samePath } from "./lib/paths.js";
 import { includesOwnedFile, type OperationScope } from "./lib/operation-scope.js";
 
 export interface UninstallOptions extends OpenCodeTargetEvidenceOption {
@@ -38,7 +38,12 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       const otherRows = Object.entries(manifest.runtimes).filter(([runtime]) => runtime !== id).map(([, entry]) => entry!);
       const referenced = new Set(scope.section === "skills" ? [] : otherRows.flatMap((entry) => entry.owned));
       const sharedPrompt = adapter.paths(ctx.configDir).sharedPromptFile;
-      const plan = configSelected ? [...planRetiredHooks(adapter, ctx, row.owned), ...adapter.planUnmerge(loadCanonicalMcp(ctx.stackDir), ctx)].filter((action) => !(otherRows.length && action.target === sharedPrompt)) : [];
+      const sharedPromptReferenced = sharedPrompt !== undefined && Object.entries(manifest.runtimes).some(([runtime, entry]) => {
+        if (runtime === id || !entry) return false;
+        const paths = ADAPTERS[runtime as RuntimeId].paths(entry.configDir);
+        return samePath(paths.sharedPromptFile ?? paths.systemPromptFile, sharedPrompt);
+      });
+      const plan = configSelected ? [...planRetiredHooks(adapter, ctx, row.owned), ...adapter.planUnmerge(loadCanonicalMcp(ctx.stackDir), ctx)].filter((action) => !(sharedPromptReferenced && action.target === sharedPrompt)) : [];
       const changes = diffPlan(plan).filter((change) => change.status !== "unchanged");
       const targets = new Set(plan.map((action) => action.target));
       const removable = row.owned.filter((file) => includesOwnedFile(adapter, ctx, scope, file) && !referenced.has(file) && !targets.has(file) && path.basename(file) !== "engram.ts" && fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined);

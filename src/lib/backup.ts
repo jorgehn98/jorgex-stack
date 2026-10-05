@@ -4,8 +4,6 @@ import crypto from "node:crypto";
 import { dataDir, HOME } from "./paths.js";
 import { ensureDir, isContainedIn, writeText, readTextIfExists } from "./fsx.js";
 
-const KEEP_BACKUPS = 10;
-
 export interface BackupInfo {
   id: string;
   label: string;
@@ -33,7 +31,7 @@ function compositeChecksum(files: string[]): string {
  * Copia los archivos existentes que se van a tocar a un snapshot con manifest.
  * Devuelve null si ninguno de los targets existe todavía (nada que respaldar).
  * Si el contenido es idéntico al backup más reciente, lo reutiliza en vez de
- * duplicarlo (así los slots de retención no se llenan de copias iguales).
+ * duplicarlo. Los snapshots se conservan hasta su limpieza deliberada.
  */
 export function createBackup(files: string[], label: string, root = backupsRoot()): BackupInfo | null {
   const existing = [...new Set(files)].filter((f) => fs.lstatSync(f, { throwIfNoEntry: false }) !== undefined);
@@ -68,7 +66,6 @@ export function createBackup(files: string[], label: string, root = backupsRoot(
 
   const info: BackupInfo = { id, label, createdAt: new Date().toISOString(), files: entries, checksum };
   writeText(path.join(dir, "manifest.json"), JSON.stringify(info, null, 2) + "\n");
-  pruneBackups(root);
   return info;
 }
 
@@ -82,7 +79,7 @@ export function listBackups(root = backupsRoot()): BackupInfo[] {
     try {
       infos.push(JSON.parse(manifest) as BackupInfo);
     } catch {
-      // Manifest corrupto: se lista vacío para que sea visible y prune lo recicle.
+      // Manifest corrupto: se lista vacío para que sea visible, sin eliminarlo.
       infos.push({ id: entry.name, label: "(manifest corrupto)", createdAt: "", files: [] });
     }
   }
@@ -144,11 +141,4 @@ export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME)
     restored++;
   }
   return restored;
-}
-
-function pruneBackups(root: string): void {
-  const all = listBackups(root);
-  for (const old of all.slice(KEEP_BACKUPS)) {
-    fs.rmSync(path.join(root, old.id), { recursive: true, force: true });
-  }
 }

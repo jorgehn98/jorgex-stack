@@ -183,6 +183,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
   let exitCode = 0;
   let browserInstalled = false;
+  let manifestBackedUp = false;
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     let phase = "preflight";
@@ -199,7 +200,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const row: RuntimeManifest = { configDir, owned: [...old?.owned ?? []], mcpOwned: [...old?.mcpOwned ?? []], configOwned: [...old?.configOwned ?? []], packages: [...old?.packages ?? []], engram: old?.engram, updatedAt: old?.updatedAt ?? new Date().toISOString() };
       const persist = () => {
         if (JSON.stringify(readManifest(manifestPath).runtimes[id]) === JSON.stringify(row)) return;
-        createBackup([manifestPath], "manifest", path.join(state, "backups")); writeRuntimeManifest(id, row, manifestPath);
+        if (!manifestBackedUp) {
+          createBackup([manifestPath], "manifest", path.join(state, "backups"));
+          manifestBackedUp = true;
+        }
+        writeRuntimeManifest(id, row, manifestPath);
       };
       if (deliberate) {
         phase = "integraciones nativas";
