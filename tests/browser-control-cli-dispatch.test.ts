@@ -8,10 +8,9 @@ import {
   cleanupOwnedResourcesOrThrow,
   registerOwnedResourceCleanup,
   runBoundedProcess,
-  type BoundedProcessResult,
   type CliResult,
 } from "./helpers/bounded-process.js";
-import { prepareRepoBuildRun, removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
+import { removeTemporaryRoots } from "./helpers/pnpm-tooling.js";
 import { activateManagedBrowserTree } from "../src/lib/browser-managed.js";
 import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 
@@ -40,8 +39,6 @@ import { browserTreeSha256 } from "../src/lib/browser-stage.js";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "dist", "cli.js");
 const CLI_TIMEOUT_MS = 15_000;
-const BUILD_TIMEOUT_MS = 60_000;
-const PNPM_VERSION_CHECK_TIMEOUT_MS = 10_000;
 
 const BC_PACKAGE = "@opencode-ai/browser-control" as const;
 const BC_SERVER = "browser-control";
@@ -69,47 +66,7 @@ const PROVIDER_ARGS = [
 ] as const;
 
 const temporaryRoots: string[] = [];
-let releaseBuildRootsCleanup: (() => void) | undefined;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function buildDist(): Promise<void> {
-  // Owned-resource owner armed before the first root is created.
-  releaseBuildRootsCleanup = registerOwnedResourceCleanup("browser-control-cli-dispatch-roots", () =>
-    removeTemporaryRoots(temporaryRoots),
-  );
-  const prepared = await prepareRepoBuildRun({
-    repoRoot: REPO_ROOT,
-    env: process.env,
-    runProcess: runBoundedProcess,
-    versionCheckTimeoutMs: PNPM_VERSION_CHECK_TIMEOUT_MS,
-    registerTempRoot: (root) => temporaryRoots.push(root),
-  });
-  let result: BoundedProcessResult;
-  try {
-    result = await runBoundedProcess(prepared.invocation, {
-      cwd: REPO_ROOT,
-      env: prepared.env,
-      timeoutMs: BUILD_TIMEOUT_MS,
-    });
-  } catch (error) {
-    throw new Error(`pnpm build failed to start: ${errorMessage(error)}`);
-  }
-
-  if (result.error === undefined && !result.timedOut && result.status === 0) return;
-
-  const details = [
-    result.timedOut ? `timeout after ${BUILD_TIMEOUT_MS}ms` : undefined,
-    result.error?.message,
-    result.status === null ? undefined : `exit status: ${result.status}`,
-    result.signal === null ? undefined : `signal: ${result.signal}`,
-    result.stdout,
-    result.stderr,
-  ].filter((value): value is string => value !== undefined && value !== "");
-  throw new Error(`pnpm build failed${details.length === 0 ? "" : `:\n${details.join("\n")}`}`);
-}
+let releaseRootsCleanup: (() => void) | undefined;
 
 type Layout = {
   root: string;
@@ -237,14 +194,18 @@ afterEach(() => {
 
 afterAll(() => {
   cleanupOwnedResourcesOrThrow();
-  releaseBuildRootsCleanup?.();
-  releaseBuildRootsCleanup = undefined;
+  releaseRootsCleanup?.();
+  releaseRootsCleanup = undefined;
 });
 
 describe("browser control dispatch to the verified managed runtime [RED]", () => {
-  beforeAll(async () => {
-    await buildDist();
-  }, 120_000);
+  beforeAll(() => {
+    // Build once before the suite; concurrent builds clean the CLI used by other tests.
+    expect(fs.existsSync(CLI_PATH), "Run pnpm build before CLI acceptance tests.").toBe(true);
+    releaseRootsCleanup = registerOwnedResourceCleanup("browser-control-cli-dispatch-roots", () =>
+      removeTemporaryRoots(temporaryRoots),
+    );
+  });
 
   it("reenvía exactamente los args del proveedor al runtime activo verificado", async () => {
     const layout = createLayout();

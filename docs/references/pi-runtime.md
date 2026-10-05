@@ -193,9 +193,9 @@ La lista `testedVersions` en el contrato representa compatibilidad probada del h
 
 Durante la instalación del paquete, antes de la proyección y del `sync` final, `initialization-diagnostics-v1` permite aceptar provisionalmente solo el envelope exacto de `doctor` que devuelve `INITIALIZATION_REQUIRED`: salida JSON de una sola línea, `schemaVersion: 1`, `command: "doctor"`, `ok: false`, con el nombre, versión y raíz del paquete iguales al candidato verificado y su runner, cinco checks ordenados (`package`, `engram`, `context7` en `ok`; `permissions` y `experience` en `ok` o `error`, con al menos uno en `error`), y `error.phase: "initialization"`, `error.code: "INITIALIZATION_REQUIRED"`, `error.message: "Pi initialization is pending: run sync to complete first initialization."` y `error.remedy: "Run jorgex-pi sync --json and retry."`. Ese estado es **pending**, no healthy. La proyección debe completarse y `sync` debe finalizar la inicialización; cualquier otro resultado unhealthy, malformed o divergente bloquea la instalación.
 
-## Adopción y automatización
+## Cambios entre Stack y Pi
 
-La automatización Stack ↔ Pi es snapshot-only: no resuelve ni adopta releases Pi en Stack. No hay que ejecutar un preparador local de adopción ni rotar hashes manualmente como operación rutinaria. Un cambio semántico del contrato requiere revisión específica y actualización deliberada del contrato canónico; un artefacto incompatible bloquea la instalación gestionada antes de activación. El [runbook Stack ↔ Pi](stack-pi-automation.md) cubre la coordinación de snapshots, no adopción de paquetes.
+El coordinador automático de snapshots y el preparador local de adopciones están retirados, sin reemplazo. Los cambios entre repositorios requieren PRs explícitas y merge autorizado. Esta retirada no cambia la resolución dinámica ni el stage del instalador: un artefacto incompatible sigue bloqueando antes de activación. No rotar hashes manualmente para forzar su aceptación.
 
 ## Histórico: candidato Stack 1.9.6 / Pi 0.8.4
 
@@ -204,8 +204,6 @@ El release publicado histórico fijaba `npm:jorgex-pi@0.8.4`. La fuente ejecutab
 Stack `1.9.5`, `1.9.6` y `1.9.7` son referencias históricas. La disponibilidad inmediata tras publicación y adopción verificadas no cambia la validación, el merge, el pin exacto ni la compatibilidad exigidos.
 
 ## Lifecycle y seguridad
-
-La coordinación opcional entre Stack y Pi está descrita en el [runbook de automatización Stack ↔ Pi](stack-pi-automation.md). Esta automatización no forma parte del lifecycle local de Pi y permanece desactivada por defecto.
 
 - `install` verifica primero el tarball y prepara el stage aislado. Para un candidato con transporte nativo, ejecuta `runNativePiMcpPhase` antes de la promoción del paquete y de la proyección; con candidato legacy, ejecuta `engram setup pi` con backup y rollback de `settings.json`, `mcp.json`, `mcp-adapter.json` y el árbol `npm`. El candidato verificado debe declarar el lector MCP que va a usar antes de migrar la configuración. Después hace backup de `settings.json` y ejecuta `package install → projection install → package sync`. La última operación ejecuta la inicialización nativa de Pi después de que Stack haya proyectado sus recursos compartidos; si la proyección se bloquea, no se intenta inicializar el paquete. El checker nativo activo (`beforeInitialization`/`beforePackageDeactivation`) corre contra el módulo Pi realmente instalado y bloquea antes del sync interno y antes de desactivar el paquete privado.
 - La reconciliación interna reaplica la proyección del paquete autenticado sin duplicar recursos y valida la autoridad granular sin reclamar entradas ajenas. No existe un comando público Stack `sync`: usa `install --agents pi` para aplicar configuración o `update --agents pi` para actualizar; ambos pueden adquirir releases verificadas y no heredan una garantía offline.
