@@ -21,5 +21,3 @@ Prefer the smallest native/existing solution. State what disappears as well as w
 Check that every requested outcome has task coverage, references resolve and dependencies are coherent. Unresolved material decisions stay visible and block approval of their affected work. Do not fabricate requirements to close a blank section.
 
 Present the plan for user approval. Planning does not implement, publish, merge or authorize changes to a personal installation. The orchestrator owns execution, tracking and cleanup.
-
-Adapted from Matt Pocock's skills; see LICENSE.txt.

@@ -14,5 +14,3 @@ Group independent questions that can be answered now; wait to ask dependent ques
 Challenge contradictions and unsupported assumptions. Do not invent legacy data or exhaust every imaginable branch. Stop when the outcome, boundaries and material risks are understood; ordinary implementation preferences are not another interview.
 
 Summarize the decisions that matter and keep necessary unresolved points visible. Clarification does not authorize implementation or external effects.
-
-Adapted from Matt Pocock's skills; see LICENSE.txt.
