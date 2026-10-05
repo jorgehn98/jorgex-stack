@@ -16,6 +16,11 @@ export interface EngramInstallOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   fetch?: typeof globalThis.fetch;
+  /** Existing binary selected by a deliberate install/update. */
+  updateBin?: string;
+  installedVersion?: string | null;
+  /** Called only for a different release, before download or filesystem writes. */
+  beforeUpdate?: (version: string) => Promise<void>;
 }
 
 export type EngramInstallResult =
@@ -36,18 +41,19 @@ interface LiveAsset {
   digest: unknown;
 }
 
-/** Installs only a missing binary; existing installations and Engram data are never replaced. */
+/** Acquire verified official bytes; an existing binary is replaced only through the explicit update path. */
 export async function installMissingEngram(options: EngramInstallOptions = {}): Promise<EngramInstallResult> {
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? os.homedir();
   if (!path.isAbsolute(homeDir)) return { ok: false, reason: "El directorio personal debe ser absoluto." };
   const binaryName = platform === "win32" ? "engram.exe" : "engram";
-  const bin = path.join(homeDir, ".local", "bin", binaryName);
+  const bin = options.updateBin ?? path.join(homeDir, ".local", "bin", binaryName);
+  if (!path.isAbsolute(bin)) return { ok: false, reason: "Engram: destino no absoluto." };
   let staging: string | undefined;
   let outcome: EngramInstallResult | undefined;
   try {
     const existing = fs.lstatSync(bin, { throwIfNoEntry: false });
-    if (existing) {
+    if (existing && options.updateBin === undefined) {
       if (!fs.statSync(bin).isFile()) throw new Error(`El destino Engram no es un archivo: ${bin}`);
       fs.accessSync(bin, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
       outcome = { ok: true, bin };
@@ -128,6 +134,12 @@ export async function installMissingEngram(options: EngramInstallOptions = {}): 
         );
       }
       const approvedSha = (asset.digest as string).slice("sha256:".length);
+      if (options.updateBin !== undefined) {
+        if (options.installedVersion === null) throw new Error("Engram: versión local no verificable; se conserva el binario.");
+        if (options.installedVersion === version) return { ok: true, bin };
+        if (existing?.isSymbolicLink() || !existing?.isFile()) throw new Error("Engram: el binario a actualizar debe ser regular; usa su gestor original para enlaces.");
+        await options.beforeUpdate?.(version);
+      }
       const response = await fetchFn(asset.browser_download_url as string, {
         signal: AbortSignal.timeout(120_000),
       });
@@ -180,7 +192,9 @@ export async function installMissingEngram(options: EngramInstallOptions = {}): 
       const stagedBin = path.join(staging, binaryName);
       fs.writeFileSync(stagedBin, binary, { flag: "wx", mode: 0o755 });
       // El hard link publica bytes completos de forma atómica y falla si otro installer ganó la carrera.
-      fs.linkSync(stagedBin, bin);
+      if (options.updateBin !== undefined) {
+        fs.renameSync(stagedBin, bin);
+      } else fs.linkSync(stagedBin, bin);
       outcome = { ok: true, bin };
     }
   } catch (error) {

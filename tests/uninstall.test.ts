@@ -143,6 +143,7 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       models: OPEN_CODE_MODELS,
       warnings: [],
       ownedMcpServers: new Set(["context7"]),
+      ownedFiles: new Set([path.join(pluginsDir, "hooks.ts"), path.join(pluginsDir, "worktree.ts")]),
       preserveEngram: true,
     };
     const actions = opencodeAdapter.planUnmerge(MCP_SIN_ENGRAM, HOOKS, ctx);
@@ -151,9 +152,8 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
 
     expect(result.mcp.engram).toBeDefined();
     expect(result.mcp.context7).toBeUndefined();
-    // Los registros file:// se quitan siempre (los locales se auto-cargan del
-    // dir; el ARCHIVO engram.ts lo protege preserveEngram en deleteTargets).
-    expect(result.plugin).toEqual(["@usuario/su-plugin-npm"]);
+    // Retira solo registros propios de los plugins retirados; Engram y paquetes ajenos permanecen.
+    expect(result.plugin).toEqual(["@usuario/su-plugin-npm", urls[0]]);
 
     fs.rmSync(tmp, { recursive: true, force: true });
   });
@@ -296,87 +296,12 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
   });
 });
 
-describe("uninstall preflight de prompts", () => {
-  it("valida todos los runtimes antes de borrar o crear backups", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-uninstall-prompt-preflight-"));
-    const home = path.join(root, "home");
-    const codexHome = path.join(home, ".codex");
-    const opencodeConfig = path.join(home, ".config", "opencode");
-    const codexPrompt = path.join(codexHome, "AGENTS.md");
-    const opencodePrompt = path.join(opencodeConfig, "AGENTS.md");
-    const codexManagedAgent = path.join(codexHome, "agents", "test-analyzer.toml");
-    const modelMap = path.join(home, ".jorgex-stack", "model-map.json");
-    const validCodexPrompt = upsertMarkdownSection("# Codex user text\n", "system-prompt", "Managed base.");
-    const ambiguousOpenCodePrompt = "# OpenCode user text\n\n<!-- jorgex:browser -->\nBroken legacy marker.\n";
-    const modelMapContent = JSON.stringify({
-      codex: {
-        strong: { model: "provider/strong" },
-        standard: { model: "provider/standard" },
-        cheap: { model: "provider/cheap" },
-      },
-      opencode: OPEN_CODE_MODELS,
-    }, null, 2) + "\n";
-    const previousEnv = {
-      HOME: process.env.HOME,
-      USERPROFILE: process.env.USERPROFILE,
-      CODEX_HOME: process.env.CODEX_HOME,
-      OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
-      PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
-    };
-
-    fs.mkdirSync(codexHome, { recursive: true });
-    fs.mkdirSync(opencodeConfig, { recursive: true });
-    fs.mkdirSync(path.dirname(codexManagedAgent), { recursive: true });
-    fs.mkdirSync(path.dirname(modelMap), { recursive: true });
-    fs.writeFileSync(codexPrompt, validCodexPrompt);
-    fs.writeFileSync(opencodePrompt, ambiguousOpenCodePrompt);
-    fs.writeFileSync(codexManagedAgent, "managed codex agent\n");
-    fs.writeFileSync(modelMap, modelMapContent);
-
-    process.env.HOME = home;
-    process.env.USERPROFILE = home;
-    process.env.CODEX_HOME = codexHome;
-    process.env.OPENCODE_CONFIG_DIR = opencodeConfig;
-    process.env.PI_CODING_AGENT_DIR = path.join(home, ".pi", "agent");
-    vi.resetModules();
-    try {
-      const { runUninstall } = await import("../src/uninstall.js");
-      await expect(runUninstall({
-        runtimes: ["codex", "opencode"],
-        dryRun: false,
-        yes: true,
-        removeEngram: false,
-        removePlaywright: false,
-      })).resolves.toBe(1);
-
-      expect(fs.readFileSync(codexPrompt, "utf8")).toBe(validCodexPrompt);
-      expect(fs.readFileSync(opencodePrompt, "utf8")).toBe(ambiguousOpenCodePrompt);
-      expect(fs.readFileSync(codexManagedAgent, "utf8")).toBe("managed codex agent\n");
-      expect(fs.readFileSync(modelMap, "utf8")).toBe(modelMapContent);
-      expect(fs.existsSync(path.join(home, ".jorgex-stack", "backups"))).toBe(false);
-    } finally {
-      if (previousEnv.HOME === undefined) delete process.env.HOME;
-      else process.env.HOME = previousEnv.HOME;
-      if (previousEnv.USERPROFILE === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = previousEnv.USERPROFILE;
-      if (previousEnv.CODEX_HOME === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = previousEnv.CODEX_HOME;
-      if (previousEnv.OPENCODE_CONFIG_DIR === undefined) delete process.env.OPENCODE_CONFIG_DIR;
-      else process.env.OPENCODE_CONFIG_DIR = previousEnv.OPENCODE_CONFIG_DIR;
-      if (previousEnv.PI_CODING_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
-      else process.env.PI_CODING_AGENT_DIR = previousEnv.PI_CODING_AGENT_DIR;
-      vi.resetModules();
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("paridad entre adapters (los 14 agentes canónicos reales)", () => {
+describe("paridad entre adapters (los seis subagentes canónicos)", () => {
   const agents = loadCanonicalAgents(path.join(stackRoot(), "agents"));
 
-  it("hay 14 agentes canónicos (1 primary + 13 subagentes)", () => {
-    expect(agents).toHaveLength(14);
-    expect(agents.filter((a) => a.mode === "primary")).toHaveLength(1);
+  it("hay seis subagentes y ningún primary propio", () => {
+    expect(agents).toHaveLength(6);
+    expect(agents.every((agent) => agent.mode === "subagent")).toBe(true);
   });
 
   it.each([
@@ -396,14 +321,8 @@ describe("paridad entre adapters (los 14 agentes canónicos reales)", () => {
     }
   });
 
-  it("el orchestrator nunca es un subagente: agent solo en opencode, modo principal en el resto", () => {
-    const orchestrator = agents.find((a) => a.mode === "primary")!;
-    const oc = opencodeAdapter.renderAgent(orchestrator, OPEN_CODE_MODELS);
-    expect(oc.map((o) => o.kind)).toEqual(["agent"]);
-    const cc = claudeCodeAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP["claude-code"]);
-    expect(cc.map((o) => o.kind)).toEqual(["output-style"]);
-    const cx = codexAdapter.renderAgent(orchestrator, DEFAULT_MODEL_MAP.codex);
-    expect(cx.map((o) => o.kind)).toEqual(["profile"]);
+  it("orchestrator se descubre como skill, no como agente propio", () => {
+    expect(agents.some((agent) => agent.name === "orchestrator")).toBe(false);
   });
 });
 

@@ -10,7 +10,7 @@ export interface BackupInfo {
   id: string;
   label: string;
   createdAt: string;
-  files: { original: string; stored: string }[];
+  files: { original: string; stored: string; symlinkTarget?: string }[];
   /** Checksum compuesto del contenido respaldado (dedup de snapshots idénticos). */
   checksum?: string;
 }
@@ -23,7 +23,7 @@ function backupsRoot(): string {
 function compositeChecksum(files: string[]): string {
   const hash = crypto.createHash("sha256");
   for (const file of [...files].sort()) {
-    const content = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    const content = crypto.createHash("sha256").update(fs.lstatSync(file).isSymbolicLink() ? `symlink:${fs.readlinkSync(file)}` : fs.readFileSync(file)).digest("hex");
     hash.update(`${file}:${content}\n`);
   }
   return hash.digest("hex");
@@ -36,7 +36,7 @@ function compositeChecksum(files: string[]): string {
  * duplicarlo (así los slots de retención no se llenan de copias iguales).
  */
 export function createBackup(files: string[], label: string, root = backupsRoot()): BackupInfo | null {
-  const existing = [...new Set(files)].filter((f) => fs.existsSync(f));
+  const existing = [...new Set(files)].filter((f) => fs.lstatSync(f, { throwIfNoEntry: false }) !== undefined);
   if (existing.length === 0) return null;
 
   const checksum = compositeChecksum(existing);
@@ -57,6 +57,11 @@ export function createBackup(files: string[], label: string, root = backupsRoot(
 
   const entries = existing.map((original, i) => {
     const stored = path.join(dir, "files", `${String(i).padStart(4, "0")}-${path.basename(original)}`);
+    if (fs.lstatSync(original).isSymbolicLink()) {
+      const symlinkTarget = path.resolve(path.dirname(original), fs.readlinkSync(original));
+      fs.writeFileSync(stored, symlinkTarget);
+      return { original, stored, symlinkTarget };
+    }
     fs.copyFileSync(original, stored);
     return { original, stored };
   });
@@ -115,7 +120,7 @@ export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME)
     return false;
   };
   let restored = 0;
-  for (const { original, stored } of info.files) {
+  for (const { original, stored, symlinkTarget } of info.files) {
     if (!fs.existsSync(stored)) continue;
     // El manifest del backup es estado local editable: nunca puede dirigir
     // una escritura fuera de la frontera (HOME en uso real).
@@ -132,7 +137,10 @@ export function restoreBackup(id: string, root = backupsRoot(), boundary = HOME)
     }
     if (hasSymlinkAncestor(original)) continue;
     ensureDir(path.dirname(original));
-    fs.copyFileSync(stored, original);
+    if (symlinkTarget !== undefined) {
+      if (!isContainedIn(symlinkTarget, boundary) || fs.existsSync(original)) continue;
+      fs.symlinkSync(symlinkTarget, original, process.platform === "win32" ? "junction" : "dir");
+    } else fs.copyFileSync(stored, original);
     restored++;
   }
   return restored;

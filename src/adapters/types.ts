@@ -11,8 +11,8 @@ import type { RuntimeModelMap } from "../lib/model-map.js";
 import type { LocalQualityCapabilityReport } from "../lib/quality-capabilities.js";
 import type { SystemPromptSections } from "../lib/system-prompt-sections.js";
 
-export type RuntimeId = "claude-code" | "codex" | "opencode";
-export type SelectableRuntimeId = RuntimeId | "pi";
+export type RuntimeId = "claude-code" | "codex" | "opencode" | "pi";
+export type SelectableRuntimeId = RuntimeId;
 
 export type InstallMode = "human" | "programmatic";
 
@@ -54,9 +54,10 @@ export type FileAction =
       mcpOwnership?: McpOwnershipChange[];
       primaryModelOwnership?: PrimaryModelOwnershipChange[];
     }
-  | { kind: "copy"; target: string; source: string };
+  | { kind: "copy"; target: string; source: string; symlink?: true };
 
 export interface InstallContext {
+  ownedFiles?: ReadonlySet<string>;
   writingStyle?: WritingStyleSnapshot;
   /** Raíz de la fuente canónica (stack/). */
   stackDir: string;
@@ -79,45 +80,8 @@ export interface InstallContext {
   warnings: string[];
   /** MCPs opcionales habilitados explícitamente para este runtime. */
   enabledMcpServers?: ReadonlySet<string>;
-  /**
-   * Versión DevTools realmente observada y verificada (devtools-mcp.json).
-   * Se exige cuando el MCP opcional chrome-devtools está habilitado para
-   * materializar el template canónico `chrome-devtools-mcp@{{VERSION}}`.
-   */
-  devtoolsMcpObservedVersion?: { version: string; integrity: string };
-  /** Verified Stack-owned Node guard, supplied by the managed browser lifecycle. */
-  devtoolsMcpInvocation?: { command: string; args: readonly string[] };
-  /**
-   * Invocación MCP completa del guard Browser Control verificado (launcher
-   * `active`): sus `args` ya incluyen el subcomando `mcp`. No autoriza un
-   * PATH/global arbitrario. El adapter proyecta `command: [command, ...args]`
-   * sin anexar `mcp` de nuevo, porque el guard verifica exactamente esos
-   * argumentos. Su ausencia es Browser Control pendiente, nunca un MCP
-   * apuntando a bytes ausentes.
-   */
+  /** Native stdio command; the provider owns relay startup and browser attachment. */
   browserControlInvocation?: { command: string; args: readonly string[] };
-  /**
-   * SKILL.md oficial retenido en la release `active` verificada (byte-identical).
-   * Solo lo llena el lifecycle Browser Control para OpenCode; se proyecta en
-   * `<configDir>/skills/browser-control/SKILL.md`, nunca en el canon compartido
-   * `~/.agents/skills`. Su ausencia no proyecta skill ni declara la capacidad.
-   */
-  browserControlSkillSource?: string;
-  /**
-   * Invocación completa del launcher `active` PREVIO (A) cuando el lifecycle
-   * sustituyó A por B. Permite autenticar un comando gestionado existente como
-   * el vector exacto de A antes de reemplazarlo por B; nunca autoriza un PATH ni
-   * una entrada manual ajena.
-   */
-  browserControlPreviousInvocation?: { command: string; args: readonly string[] };
-  /**
-   * SKILL.md retenido en la release `active` previa (A) antes de sustituirla por
-   * B: fingerprint de bytes para autenticar el target owned. Un target que no
-   * coincide ni con B ni con A se conserva y bloquea.
-   */
-  browserControlPreviousSkillSource?: string;
-  /** Playwright CLI habilitado por la preferencia persistida tras consentimiento explícito. */
-  playwrightCliEnabled?: boolean;
   /** Registros MCP que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
   /** Campos del primary model que una escritura previa del stack creó. */
@@ -141,6 +105,8 @@ export interface InstallContext {
 
 export interface AdapterPaths {
   systemPromptFile: string;
+  sharedPromptFile?: string;
+  skillLinksDir?: string;
   agentsDir: string;
   skillsDir: string;
   commandsDir: string;
@@ -183,20 +149,11 @@ export interface Adapter extends SharedProjectionAdapter {
   detect(): RuntimeDetection;
   /** Diagnóstico local de capabilities; nunca certifica enforcement del runtime. */
   reportCapabilities(configDir: string): LocalQualityCapabilityReport;
-  /**
-   * Convierte un agente canónico a uno o varios artefactos nativos del runtime.
-   * El orchestrator (primary) es SIEMPRE un modo del agente principal que el
-   * usuario pilota, nunca un subagente invocado: OpenCode → primary agent
-   * (Tab) · Claude Code → output style (modo persistente, /config) · Codex →
-   * profile con developer_instructions. Los tres son wrappers de la skill
-   * canónica instalada por planSkills.
-   */
+  /** Proyecta los seis subagentes en su formato nativo; el principal pertenece al host. */
   renderAgent(
     agent: CanonicalAgent,
     models: RuntimeModelMap,
-  ): { file: string; content: string; kind: "agent" | "command" | "output-style" | "profile" }[];
-  /** Traduce hooks.json canónico (formato Claude Code) al mecanismo del runtime. */
-  planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[];
+  ): { file: string; content: string; kind: "agent" }[];
   /** Registra MCPs y demás claves gestionadas en la config principal del runtime. */
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[];
   /**

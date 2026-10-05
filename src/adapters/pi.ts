@@ -1,38 +1,15 @@
+import { editJsonc, upsertJson } from "../lib/filemerge.js";
+import { readTextIfExists } from "../lib/fsx.js";
+import { planOwnedProjection } from "../lib/owned-projection.js";
 import fs from "node:fs";
 import path from "node:path";
-import type { SelectableRuntimeId, SharedProjectionAdapter } from "./types.js";
+import { BROWSER_CONTROL_GUIDANCE } from "../lib/canonical.js";
+import type { Adapter } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
+import { detectPi } from "../lib/detect.js";
+import { createLocalCapabilityReport } from "../lib/quality-capabilities.js";
+import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
-import { readPiMcpConfig, resolvePiAdapterConfigPath } from "../lib/pi-mcp-config.js";
-
-/** Origen efectivo declarado por el recibo separado de providers (solo lectura). */
-export interface PiProviderReceiptReport {
-  kind: "registry" | "derived";
-  detail: string;
-}
-
-/**
- * Lectura read-only del recibo separado de providers. Devuelve null cuando no
- * existe recibo; lanza ante binding inválido, recibo malformado o drift.
- * No toca red ni repara nada.
- */
-export async function readPiProviderReceiptReport(input: {
-  homeDir: string;
-  agentDir: string;
-}): Promise<PiProviderReceiptReport | null> {
-  // Import dinámico: evita el ciclo estático con pi-provider-receipt (que
-  // consume isNamedPiSource de este adapter).
-  const { piProviderReceiptPath, verifyPiProviderReceipt } = await import("../lib/pi-provider-receipt.js");
-  if (fs.lstatSync(piProviderReceiptPath(input.homeDir), { throwIfNoEntry: false }) === undefined) return null;
-  const verification = verifyPiProviderReceipt({ homeDir: input.homeDir, agentDir: input.agentDir });
-  if (verification.kind === "absent") return null;
-  const gentle = verification.receipt?.providers.find((entry) => entry.name === "gentle-engram");
-  const version = gentle?.version ?? "unknown";
-  return verification.kind === "derived"
-    ? { kind: "derived", detail: `variante temporal derivada del oficial v${version} (patch #1567)` }
-    : { kind: "registry", detail: `artefacto oficial de registry v${version}` };
-}
-
 export function piSystemPromptFile(targetDir?: string): string {
   const configDir = targetDir === undefined
     ? process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent")
@@ -45,14 +22,34 @@ export function piSystemPromptFile(targetDir?: string): string {
  * paquete nativo; el registro gestionado del runtime se mantiene en su
  * lifecycle nativo.
  */
-export const piAdapter: SharedProjectionAdapter & {
-  readonly id: Extract<SelectableRuntimeId, "pi">;
-} = {
+export const piAdapter: Adapter = {
   id: "pi",
+  name: "Pi",
+  detect: detectPi,
+  adaptSystemPromptSections(sections) { return { ...sections, browser: BROWSER_CONTROL_GUIDANCE }; },
+  reportCapabilities() { return createLocalCapabilityReport("pi", []); },
+  planUnmerge(canonical, _hooks, ctx) {
+    const prompt = path.join(ctx.configDir, "AGENTS.md");
+    const actions = [{ kind: "write" as const, target: prompt, content: removeSystemPromptSections(readTextIfExists(prompt) ?? "") }];
+    const target = path.join(ctx.configDir, "mcp.json");
+    const raw = readTextIfExists(target);
+    if (raw !== null) actions.push({ kind: "write", target, content: editJsonc(raw, (root) => {
+      if (!isRecord(root.mcpServers)) throw new Error("Pi: mcpServers inválido; se conserva.");
+      for (const name of ctx.ownedMcpServers ?? []) {
+        const current = root.mcpServers[name];
+        if (!isRecord(current)) continue;
+        const canonicalContext = { url: canonical.servers.context7?.url, headers: { CONTEXT7_API_KEY: "" } };
+        const canonicalBrowser = { command: "browser-control-mcp", args: [] };
+        const expected = name === "context7" ? canonicalContext : name === "browser-control" ? canonicalBrowser : null;
+        if (expected && JSON.stringify(current) === JSON.stringify(expected)) delete root.mcpServers[name];
+      }
+    }) });
+    return actions;
+  },
 
   paths(configDir) {
     const piConfigDir = path.dirname(piSystemPromptFile());
-    const agentsHome = samePath(configDir, piConfigDir) ? HOME : path.join(path.dirname(configDir), "home");
+    const agentsHome = samePath(configDir, piConfigDir) ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
       agentsDir: path.join(configDir, "agents"),
@@ -65,427 +62,65 @@ export const piAdapter: SharedProjectionAdapter & {
     };
   },
 
+  renderAgent(agent) {
+    const tools = agent.readonly ? "read, grep, find, ls" : "read, grep, find, ls, bash, edit, write";
+    return [{
+      kind: "agent",
+      file: `${agent.name}.md`,
+      content: `---\nname: ${agent.name}\ndescription: ${JSON.stringify(agent.description)}\ntools: ${tools}\nallowedAgents:\nallowNestedSubagents: false\n---\n${agent.body}`,
+    }];
+  },
+
+  planAdditionalResources(ctx) {
+    const source = path.join(ctx.stackDir, "assets", "pi", "jorgex-header.ts");
+    fs.readFileSync(source);
+    return planOwnedProjection({ kind: "copy", source, target: path.join(ctx.configDir, "extensions", "jorgex-header.ts") }, ctx);
+  },
+
+  planMainConfig(canonical, ctx) {
+    const target = path.join(ctx.configDir, "mcp.json");
+    let created = false;
+    const content = upsertJson(readTextIfExists(target), (root) => {
+      root.mcpServers ??= {};
+      if (!isRecord(root.mcpServers)) throw new Error(`Pi: mcpServers inválido en ${target}`);
+      if (root.mcpServers.context7 !== undefined) {
+        if (!isRecord(root.mcpServers.context7) || root.mcpServers.context7.url !== canonical.servers.context7?.url) throw new Error(`Pi: Context7 incompatible en ${target}`);
+        return;
+      }
+      const server = canonical.servers.context7;
+      if (!server || server.transport !== "http" || !server.url) throw new Error("Pi: falta Context7 HTTP canónico");
+      root.mcpServers.context7 = { url: server.url, headers: { CONTEXT7_API_KEY: "" } };
+      created = true;
+    });
+    const ownership = created ? [{ server: "context7", owned: true }] : [];
+    const nativeContent = ctx.browserControlInvocation ? upsertJson(content, (root) => {
+      const servers = root.mcpServers as Record<string, unknown>;
+      if (servers["browser-control"] === undefined) {
+        servers["browser-control"] = { command: ctx.browserControlInvocation!.command, args: [...ctx.browserControlInvocation!.args] };
+        ownership.push({ server: "browser-control", owned: true });
+      } else {
+        const current = servers["browser-control"];
+        if (!isRecord(current) || current.command !== ctx.browserControlInvocation!.command || JSON.stringify(current.args ?? []) !== JSON.stringify(ctx.browserControlInvocation!.args) || current.enabled === false || current.disabled === true) throw new Error("Pi: Browser Control incompatible; se conserva sin reclamar.");
+      }
+    }) : content;
+    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }];
+  },
+
   renderCommand(file, content) {
     return { file, content: content.replace(/\{\{input\}\}/g, "$ARGUMENTS") };
   },
 
-  // La guía Context7 se habilita al adoptar su registro HTTP en Pi.
-  adaptSystemPromptSections(sections) {
-    const modular = { ...sections };
-    delete modular.context7;
-    return modular;
-  },
 };
 
-/**
- * Verificador oficial Pi del post-estado `engram setup pi` (solo lectura).
- *
- * Canonical (`plugin/pi` README, `pi-engram init`):
- * - settings.json declara exactamente un `npm:gentle-engram` + un
- *   `npm:pi-mcp-adapter` (entradas string u objeto con `source`;
- *   versiones provider-managed: se observan, no se fijan; solo bare o
- *   selector npm seguro de versión/tag/rango, sin file:/link:/workspace:/
- *   patch:/URL/git/paths/archivo (.tgz/.tar/.tar.gz)/alias npm redirigidos;
- *   toda reclamación del nombre protegido con selector inseguro falla).
- * - mcp.json contiene `mcpServers.engram` exactamente como upstream main:
- *   `{ command === engramBin absoluto, args === ["mcp","--tools=agent"],
- *   lifecycle === "lazy", directTools === false }`. Sin wrappers. Toda
- *   coexistencia con `servers.engram` legacy es conflicto fail-closed.
- * Respeta PI_CODING_AGENT_DIR; por defecto <home>/.pi/agent.
- * Ausente/duplicado/inválido/ilegible/parcial falla cerrado sin escribir.
- */
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-
-function piPackageSource(entry: unknown): string | null {
-  if (typeof entry === "string") return entry;
-  if (!isRecord(entry)) return null;
-  const source = entry["source"];
-  return typeof source === "string" ? source : null;
+export async function verifyOfficialSetup(args: { configDir: string }): Promise<{ ok: boolean; layers: string[]; duplicates: boolean }> {
+  const raw = readTextIfExists(path.join(args.configDir, "settings.json"));
+  const settings: unknown = raw === null ? {} : JSON.parse(raw);
+  const packages = isRecord(settings) && Array.isArray(settings.packages) ? settings.packages : [];
+  const gentle = packages.filter((entry: unknown) => (typeof entry === "string" ? entry : isRecord(entry) ? entry.source : undefined) === "npm:gentle-engram");
+  return { ok: gentle.length === 1, layers: [gentle.length === 1 ? "native-package" : "native-package:missing-or-pinned"], duplicates: gentle.length > 1 };
 }
-
-function isSafePiVersionSpec(spec: string): boolean {
-  // Bare o selector npm seguro de versión/tag/rango (provider-managed, sin
-  // pin Stack): se acepta y se observa. Rechaza procedencia redirigida
-  // (file:/link:/workspace:/patch:/URL/git/paths/alias npm) que contiene
-  // `/`, `\`, `:`, `#`, `?` o empieza por `.`, además de selectores que
-  // terminan en archivo (.tgz/.tar/.tar.gz, case-insensitive); el resto usa
-  // whitelist de caracteres de versión/tag/rango sin fijar versión del
-  // provider.
-  if (spec === "" || /[\r\n]/.test(spec)) return false;
-  if (spec.includes("/") || spec.includes("\\") || spec.includes(":") || spec.includes("#") || spec.includes("?")) {
-    return false;
-  }
-  if (spec.startsWith(".")) return false;
-  const lower = spec.toLowerCase();
-  if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz") || lower.endsWith(".tar")) return false;
-  return /^[A-Za-z0-9._\-^~><=| +*xXv]+$/.test(spec);
-}
-
-function claimsProtectedName(source: string, name: string): boolean {
-  // Reclama el nombre protegido aunque el selector sea inseguro: bare
-  // `npm:<name>` o cualquier `npm:<name>@<spec>`, seguro o no.
-  return source === `npm:${name}` || source.startsWith(`npm:${name}@`);
-}
-
-export function isNamedPiSource(source: string, name: string): boolean {
-  if (source === `npm:${name}`) return true;
-  const prefix = `npm:${name}@`;
-  if (!source.startsWith(prefix)) return false;
-  return isSafePiVersionSpec(source.slice(prefix.length));
-}
-
-function isGentleSource(source: string): boolean {
-  return isNamedPiSource(source, "gentle-engram");
-}
-
-function isAdapterSource(source: string): boolean {
-  return isNamedPiSource(source, "pi-mcp-adapter");
-}
-
-function isExactPiEngramMcp(value: unknown, engramBin: string): boolean {
-  // Forma directa canónica de upstream main, sin wrappers: exactamente
-  // { command === engramBin absoluto, args === ["mcp","--tools=agent"],
-  //   lifecycle === "lazy", directTools === false }. Cualquier wrapper
-  // (Node/arbitrario/shell) se rechaza aunque sus args contengan tokens
-  // confiables; la forma directa sin lifecycle lazy o sin directTools false
-  // explícito también se rechaza.
-  if (!isRecord(value)) return false;
-  if (typeof engramBin !== "string" || engramBin === "" || !path.isAbsolute(engramBin)) return false;
-  const keys = Object.keys(value).sort();
-  if (keys.length !== 4 || keys[0] !== "args" || keys[1] !== "command" || keys[2] !== "directTools" || keys[3] !== "lifecycle") {
-    return false;
-  }
-  if (value["command"] !== engramBin) return false;
-  if (value["lifecycle"] !== "lazy") return false;
-  if (value["directTools"] !== false) return false;
-  const args = value["args"];
-  if (!Array.isArray(args) || args.length !== 2 || args[0] !== "mcp" || args[1] !== "--tools=agent") {
-    return false;
-  }
-  return true;
-}
-
-function errnoCode(error: unknown): string {
-  return error instanceof Error && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
-    ? (error as NodeJS.ErrnoException).code as string
-    : "UNKNOWN";
-}
-
-/** True only when the installed package declares the validated native contract. */
-function installedNativeContract(configDir: string): boolean {
-  try {
-    const file = path.join(configDir, "npm", "node_modules", "jorgex-pi", "contract", "native-mcp.v1.json");
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) return false;
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return isRecord(parsed)
-      && parsed["schemaVersion"] === 1
-      && parsed["capability"] === "mcp-native-v1"
-      && parsed["transport"] === "native";
-  } catch {
-    return false;
-  }
-}
-
-function isExactNativeEngramServer(value: unknown, engramBin: string): boolean {
-  if (!isRecord(value)) return false;
-  if (typeof engramBin !== "string" || engramBin === "" || !path.isAbsolute(engramBin)) return false;
-  if (value["command"] !== engramBin) return false;
-  const args = value["args"];
-  return Array.isArray(args) && args.length === 2 && args[0] === "mcp" && args[1] === "--tools=agent";
-}
-
-/**
- * Native official-setup verification: no adapter is required; the persistent
- * `mcp.json` Engram server and a single canonical gentle-engram registration are
- * enough. Returns null when an adapter is declared so the legacy branch keeps
- * its stricter validation.
- */
-function verifyNativePiSetup(
-  configDir: string,
-  engramBin: string,
-): { ok: boolean; layers: string[]; duplicates: boolean; reason?: string } | null {
-  let settings: unknown;
-  try {
-    settings = JSON.parse(fs.readFileSync(path.join(configDir, "settings.json"), "utf8"));
-  } catch {
-    return null;
-  }
-  if (!isRecord(settings) || !Array.isArray(settings["packages"])) return null;
-  const sources = (settings["packages"] as unknown[]).map(piPackageSource);
-  if (sources.some((source) => source !== null && claimsProtectedName(source, "pi-mcp-adapter"))) return null;
-  const passed: string[] = [];
-  const missing: string[] = [];
-  const gentle = sources.filter((source): source is string => source !== null && isGentleSource(source));
-  if (gentle.length === 1) passed.push("packages");
-  else {
-    missing.push(gentle.length > 1 ? "packages:duplicate" : "packages:missing");
-  }
-  let mcpPath: string;
-  try {
-    mcpPath = path.join(configDir, "mcp.json");
-    const parsed = readPiMcpConfig(mcpPath);
-    const servers = isRecord(parsed) ? parsed["mcpServers"] : undefined;
-    if (!isRecord(servers) || !isExactNativeEngramServer(servers["engram"], engramBin)) {
-      missing.push("mcp:invalid");
-    } else {
-      passed.push("mcp");
-    }
-  } catch (error) {
-    missing.push(errnoCode(error) === "ENOENT" ? "mcp:missing" : "mcp:invalid");
-  }
-  if (missing.length === 0) return { ok: true, layers: passed, duplicates: false };
-  return {
-    ok: false,
-    layers: [...passed, ...missing],
-    duplicates: missing.includes("packages:duplicate"),
-    reason: `Pi: setup oficial Engram nativo incompleto (${missing.join(", ")}).`,
-  };
-}
-
-export async function verifyOfficialSetup(args: {
-  configDir: string;
-  engramBin: string;
-  homeDir?: string;
-}): Promise<{
-  ok: boolean;
-  layers: string[];
-  duplicates: boolean;
-  reason?: string;
-  providerReceipt?: PiProviderReceiptReport;
-}> {
-  if (installedNativeContract(args.configDir)) {
-    const native = verifyNativePiSetup(args.configDir, args.engramBin);
-    if (native !== null) {
-      // El setup nativo también declara el origen efectivo del recibo separado
-      // (solo lectura); un recibo malformado o drifted nunca se presenta sano.
-      if (typeof args.homeDir === "string" && args.homeDir !== "") {
-        try {
-          const report = await readPiProviderReceiptReport({ homeDir: args.homeDir, agentDir: args.configDir });
-          if (report !== null) return { ...native, providerReceipt: report };
-        } catch (error) {
-          return {
-            ok: false,
-            layers: [...native.layers, "provider-receipt:invalid"],
-            duplicates: native.duplicates,
-            reason: `Pi: provider receipt inválido o drifted (${error instanceof Error ? error.message : String(error)}); no se presenta como setup sano.`,
-          };
-        }
-      }
-      return native;
-    }
-  }
-  const passed: string[] = [];
-  const missing: string[] = [];
-  let duplicates = false;
-  let providerDetail: string | null = null;
-  let providerReceipt: PiProviderReceiptReport | undefined;
-
-  // --- packages (settings.json, singleton gentle + adapter) ---
-  let packagesDetail: string | null = null;
-  try {
-    const raw = fs.readFileSync(path.join(args.configDir, "settings.json"), "utf8");
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      packagesDetail = "packages:invalid";
-      missing.push(packagesDetail);
-      packagesDetail = "singleton inválido en settings.json (JSON no parseable)";
-      throw new Error("__invalid__");
-    }
-    if (!isRecord(parsed) || !Array.isArray(parsed["packages"])) {
-      missing.push("packages:missing");
-      packagesDetail = "singleton incompleto en settings.json (falta packages[])";
-    } else {
-      const sources = (parsed["packages"] as unknown[]).map(piPackageSource);
-      // Toda entrada que reclama un nombre protegido con selector inseguro
-      // falla cerrado antes de contar singletons; las ajenas se preservan
-      // (se ignoran) y solo después se exige exactamente una entrada segura
-      // por nombre protegido.
-      const unsafeClaimed = sources.filter(
-        (source): source is string =>
-          source !== null
-          && ((claimsProtectedName(source, "gentle-engram") && !isGentleSource(source))
-            || (claimsProtectedName(source, "pi-mcp-adapter") && !isAdapterSource(source))),
-      );
-      if (unsafeClaimed.length > 0) {
-        missing.push("packages:invalid");
-        packagesDetail = `singleton inválido en settings.json (selector inseguro que reclama nombre protegido: ${unsafeClaimed[0]})`;
-      } else {
-        const gentle = sources.filter((source): source is string => source !== null && isGentleSource(source));
-        const adapter = sources.filter((source): source is string => source !== null && isAdapterSource(source));
-        if (gentle.length === 1 && adapter.length === 1) {
-          passed.push("packages");
-          packagesDetail = null;
-        } else {
-          duplicates = gentle.length > 1 || adapter.length > 1;
-          if (duplicates) missing.push("packages:duplicate");
-          else if (gentle.length === 0 || adapter.length === 0) {
-            const absent = [
-              ...(gentle.length === 0 ? ["gentle-engram"] : []),
-              ...(adapter.length === 0 ? ["pi-mcp-adapter"] : []),
-            ].join(" + ");
-            missing.push("packages:missing");
-            void absent;
-          } else {
-            missing.push("packages:missing");
-          }
-          const detail = duplicates
-            ? `singleton duplicado en settings.json (gentle-engram x${gentle.length}, pi-mcp-adapter x${adapter.length})`
-            : `singleton incompleto en settings.json (falta ${gentle.length === 0 ? "gentle-engram" : "pi-mcp-adapter"})`;
-          packagesDetail = detail;
-        }
-      }
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === "__invalid__") {
-      // Ya registrado arriba.
-    } else {
-      const code = errnoCode(error);
-      if (code === "ENOENT") {
-        missing.push("packages:missing");
-        packagesDetail = "singleton incompleto en settings.json (ausente)";
-      } else {
-        missing.push("packages:unreadable");
-        packagesDetail = `singleton ilegible en settings.json (unreadable ${code})`;
-      }
-    }
-  }
-
-  // --- mcp (the installed adapter's selected config, mcpServers.engram exacto) ---
-  let mcpDetail: string | null = null;
-  const appendMcpDetail = (detail: string): void => {
-    mcpDetail = mcpDetail === null ? detail : `${mcpDetail}; ${detail}`;
-  };
-  if (typeof args.engramBin !== "string" || args.engramBin === "") {
-    missing.push("mcp:missing");
-    mcpDetail = "mcp inválido en mcp.json (sin engramBin absoluto)";
-  } else {
-    let mcpPath: string | null = null;
-    let mcpName = "mcp.json";
-    try {
-      mcpPath = resolvePiAdapterConfigPath(args.configDir);
-      mcpName = path.basename(mcpPath);
-    } catch (error) {
-      missing.push("mcp:adapter-metadata");
-      mcpDetail = `mcp inválido: metadata instalada de pi-mcp-adapter ausente o inválida (${error instanceof Error ? error.message : String(error)})`;
-    }
-
-    // Adapter >=3 no longer reads the old filename.  An old official Engram
-    // root is still a duplicate/conflict, not a reason to silently declare
-    // the new file healthy.  This check is read-only; migration belongs to
-    // the official setup lifecycle.
-    if (mcpPath !== null && mcpName === "mcp-adapter.json") {
-      const legacyPath = path.join(args.configDir, "mcp.json");
-      try {
-        const legacy = readPiMcpConfig(legacyPath);
-        const legacyServers = isRecord(legacy) ? legacy["mcpServers"] : undefined;
-        const legacyAltServers = isRecord(legacy) ? legacy["mcp-servers"] : undefined;
-        const legacyEngram = isRecord(legacyServers)
-          ? legacyServers["engram"]
-          : isRecord(legacyAltServers) ? legacyAltServers["engram"] : undefined;
-        if (legacyEngram !== undefined) {
-          duplicates = true;
-          missing.push("mcp:conflict");
-          appendMcpDetail("mcp en conflicto en mcp.json (el adapter instalado lee mcp-adapter.json y conserva una definición Engram legacy; migra la raíz oficial sin duplicarla)");
-        }
-      } catch (error) {
-        const code = errnoCode(error);
-        if (code !== "ENOENT") {
-          missing.push("mcp:conflict");
-          const diagnostic = error instanceof SyntaxError ? "INVALID_JSON" : /^[A-Z0-9_]{1,32}$/.test(code) ? code : "UNKNOWN";
-          appendMcpDetail(`mcp en conflicto en ${legacyPath} (configuración legacy ilegible o inválida: ${diagnostic})`);
-        }
-      }
-    }
-
-    if (mcpPath !== null && !missing.some((entry) => entry === "mcp:adapter-metadata")) {
-      try {
-        const parsed = readPiMcpConfig(mcpPath);
-        if (!isRecord(parsed)) {
-          missing.push("mcp:invalid");
-          appendMcpDetail(`mcp inválido en ${mcpName} (raíz no objeto)`);
-        } else {
-          const servers = parsed["mcpServers"];
-          if (!isRecord(servers) || servers["engram"] === undefined) {
-            missing.push("mcp:missing");
-            appendMcpDetail(`mcp ausente en ${mcpName} (falta mcpServers.engram)`);
-          } else if (isExactPiEngramMcp(servers["engram"], args.engramBin)) {
-            const legacy = isRecord(parsed["servers"]) ? parsed["servers"]["engram"] : undefined;
-            if (legacy !== undefined) {
-              missing.push("mcp:conflict");
-              appendMcpDetail(`mcp en conflicto en ${mcpName} (servers.engram legacy coexiste con mcpServers.engram canónico; conflicto fail-closed sin activar Pi)`);
-            } else if (!missing.some((entry) => entry === "mcp:conflict")) {
-              passed.push("mcp");
-              mcpDetail = null;
-            }
-          } else {
-            const foreign = isRecord(servers["engram"])
-              && typeof (servers["engram"] as Record<string, unknown>)["command"] === "string"
-              && (servers["engram"] as Record<string, unknown>)["command"] !== args.engramBin
-              && !String((servers["engram"] as Record<string, unknown>)["command"]).includes("node")
-              && !JSON.stringify(servers["engram"]).includes(args.engramBin);
-            missing.push(foreign ? "mcp:conflict" : "mcp:invalid");
-            appendMcpDetail(foreign
-              ? `mcp en conflicto en ${mcpName} (no apunta al binario oficial ${args.engramBin}); se preserva sin reescribir`
-              : `mcp inválido en ${mcpName} (se exige forma directa canónica: command === engramBin absoluto, args === ["mcp","--tools=agent"], lifecycle === "lazy", directTools === false)`);
-          }
-        }
-      } catch (error) {
-        const code = errnoCode(error);
-        if (code === "ENOENT") {
-          missing.push("mcp:missing");
-          appendMcpDetail(`mcp ausente en ${mcpName} (falta mcpServers.engram)`);
-        } else if (error instanceof SyntaxError) {
-          missing.push("mcp:invalid");
-          appendMcpDetail(`mcp inválido en ${mcpName} (JSON/JSONC no parseable)`);
-        } else {
-          missing.push("mcp:unreadable");
-          appendMcpDetail(`mcp ilegible en ${mcpName} (unreadable ${code}, parcial sin activar Pi)`);
-        }
-      }
-    }
-  }
-
-  // --- provider receipt (separate provenance contract, read-only) ---
-  // Ausencia preserva instalaciones sin el contrato. Malformado o drift falla
-  // cerrado y nunca se presenta como setup sano.
-  if (typeof args.homeDir === "string" && args.homeDir !== "") {
-    try {
-      const report = await readPiProviderReceiptReport({ homeDir: args.homeDir, agentDir: args.configDir });
-      if (report !== null) {
-        providerReceipt = report;
-        passed.push(`provider-receipt:${report.kind}`);
-      }
-    } catch (error) {
-      missing.push("provider-receipt:invalid");
-      providerDetail = `provider receipt inválido o drifted (${error instanceof Error ? error.message : String(error)})`;
-    }
-  }
-
-  if (missing.length === 0) {
-    return {
-      ok: true,
-      layers: passed,
-      duplicates: false,
-      ...(providerReceipt === undefined ? {} : { providerReceipt }),
-    };
-  }
-  const detail = `Pi: setup oficial Engram incompleto (${[
-    ...(packagesDetail !== null ? [packagesDetail] : []),
-    ...(providerDetail !== null ? [providerDetail] : []),
-    ...(mcpDetail !== null ? [mcpDetail] : []),
-  ].join("; ")}; falta: ${missing.join(", ")}).`;
-  return {
-    ok: false,
-    layers: [...passed, ...missing],
-    duplicates,
-    reason: detail,
-  };
-}
-
 registerOfficialSetupVerifier("pi", verifyOfficialSetup);

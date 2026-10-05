@@ -316,7 +316,7 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real 
   it("un rol readonly no puede editar aunque el autoaccept global esté activo", async () => {
     const models = { strong: { model: "fixture/fixture" }, standard: { model: "fixture/fixture" }, cheap: { model: "fixture/fixture" } };
     const [agent] = opencodeAdapter.renderAgent(
-      { name: "probe", description: "Permission fixture", mode: "subagent", tier: "standard", readonly: true, bash: "git-read", spawn: false, body: "Use the local fixture." },
+      { name: "probe", description: "Permission fixture", mode: "subagent", readonly: true, bash: "none", spawn: false, body: "Use the local fixture." },
       models,
     );
     const content = agent!.content.replace("mode: subagent", "mode: primary");

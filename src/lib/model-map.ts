@@ -20,17 +20,18 @@ export type RuntimeModelMap = Record<Tier, TierModel> & {
 };
 export type ModelMap = Partial<Record<RuntimeId, RuntimeModelMap>>;
 type DefaultModelMap = {
+  pi: RuntimeModelMap;
   "claude-code": RuntimeModelMap;
   codex: RuntimeModelMap;
   opencode: RuntimeModelMap;
 };
 
 /**
- * Modelo efectivo de un subagente: override por nombre > tier. Un override
- * con `"variant": ""` limpia el variant del tier (modelo sin variant).
+ * La proyección nativa solo usa elecciones por nombre; sin elección hereda.
+ * El tier opcional permanece para los consumidores del picker pendiente de T06.
  */
-export function resolveAgentModel(models: RuntimeModelMap, agentName: string, tier: Tier): TierModel {
-  const base = models[tier];
+export function resolveAgentModel(models: RuntimeModelMap, agentName: string, tier?: Tier): TierModel {
+  const base = tier === undefined ? { model: "default" } : models[tier];
   const override = models.overrides?.[agentName];
   if (!override) return base;
   return {
@@ -47,6 +48,7 @@ export function resolveAgentModel(models: RuntimeModelMap, agentName: string, ti
  * ~/.jorgex-stack/model-map.json (local, nunca en el repo).
  */
 export const DEFAULT_MODEL_MAP: DefaultModelMap = {
+  pi: {} as RuntimeModelMap,
   "claude-code": {
     strong: { model: "fable" },
     standard: { model: "sonnet" },
@@ -60,20 +62,10 @@ export const DEFAULT_MODEL_MAP: DefaultModelMap = {
     standard: { model: "gpt-5.6-luna", variant: "max" },
     cheap: { model: "gpt-5.6-luna", variant: "medium" },
   },
-  // Roster v2 aprobado (Spec T04). Los subagentes que no encajan en su tier
-  // llevan override explícito; el primary (orchestrator) nunca fija modelo.
   opencode: {
     strong: { model: "openai/gpt-6.1-sol", variant: "xhigh" },
     standard: { model: "openai/gpt-6.1-sol", variant: "medium" },
     cheap: { model: "opencode-go/muse-spark-1.3-contributor", variant: "medium" },
-    overrides: {
-      "test-analyzer": { model: "openai/gpt-6-luna", variant: "max" },
-      "type-design-analyzer": { model: "openai/gpt-6-luna", variant: "max" },
-      implementer: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" },
-      tester: { model: "opencode-go/deepseek-v4.1-flash", variant: "high" },
-      "docs-maintainer": { model: "minimax/MiniMax-M3", variant: "thinking" },
-      engram: { model: "minimax/MiniMax-M3", variant: "thinking" },
-    },
   },
 };
 

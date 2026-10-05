@@ -4,8 +4,9 @@ import path from "node:path";
 export function readTextIfExists(file: string): string | null {
   try {
     return fs.readFileSync(file, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 

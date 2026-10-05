@@ -75,7 +75,7 @@ export function detectOpenCode(): RuntimeDetection {
   return {
     id: "opencode",
     name: "OpenCode",
-    installed: binPath !== null || existsSync(configDir),
+    installed: binPath !== null,
     binPath,
     configDir,
   };
@@ -105,7 +105,7 @@ export function detectClaudeCode(): RuntimeDetection {
   return {
     id: "claude-code",
     name: "Claude Code",
-    installed: binPath !== null || existsSync(configDir),
+    installed: binPath !== null,
     binPath,
     configDir,
   };
@@ -117,7 +117,7 @@ export function detectCodex(): RuntimeDetection {
   return {
     id: "codex",
     name: "Codex CLI",
-    installed: binPath !== null || existsSync(configDir),
+    installed: binPath !== null,
     binPath,
     configDir,
   };
@@ -152,4 +152,9 @@ export function engramVersion(bin: string): string | null {
   const out = runDetectedBin(bin, ["--version"], 5_000);
   if (out === null) return null;
   return /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(out)?.[1] ?? out.trim().split("\n")[0] ?? null;
+}
+
+export function detectPi(): RuntimeDetection {
+  const binPath = lookPath("pi");
+  return { id: "pi", name: "Pi", installed: binPath !== null, binPath, configDir: process.env.PI_CODING_AGENT_DIR ?? path.join(HOME, ".pi", "agent") };
 }

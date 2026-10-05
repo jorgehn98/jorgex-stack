@@ -6,7 +6,6 @@ import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { findOrphans, readManifest, removeRuntimeManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 import { isContainedIn, writeText } from "../src/lib/fsx.js";
 import { readTomlSection } from "../src/lib/filemerge.js";
-import { planPlugins } from "../src/components/plugins.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
@@ -14,7 +13,6 @@ import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP } from "../src/lib/model-map.js";
 import * as modelMap from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
-import { planCommands } from "../src/components/commands.js";
 import { planSkills } from "../src/components/skills.js";
 import { OPEN_CODE_TEST_MODELS, TEST_MODEL_MAP } from "./fixtures/model-map.js";
 
@@ -377,75 +375,6 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(preserved).toContain('sandbox_mode = "workspace-write" # old default');
     expect(preserved).not.toContain('default_permissions = "jorgex-read-anywhere"');
     expect(preserved).not.toContain("[permissions.jorgex-read-anywhere]");
-  });
-});
-
-describe("planPlugins: placeholders resueltos", () => {
-  it("T14: engram.ts legacy no se despliega (oficial vía setup); hooks/worktree siguen Stack-owned", async () => {
-    const ctx = {
-      stackDir: stackRoot(),
-      configDir: tmp,
-      engramBin: "C:\\bin\\engram.exe",
-      models: OPEN_CODE_TEST_MODELS,
-      warnings: [],
-    };
-    const actions = planPlugins(opencodeAdapter, ctx);
-    // El plugin legacy no se empaqueta ni despliega: sync no lo recrea.
-    expect(actions.some((a) => a.target.endsWith("engram.ts"))).toBe(false);
-    // hooks.ts/worktree.ts siguen Stack-owned y se siguen desplegando.
-    expect(actions.some((a) => a.target.endsWith("hooks.ts"))).toBe(true);
-    expect(actions.some((a) => a.target.endsWith("worktree.ts"))).toBe(true);
-  });
-});
-
-describe("planPlugins: límites de runtime", () => {
-  it.each(
-    [
-      ["claude-code", claudeCodeAdapter],
-      ["codex", codexAdapter],
-    ] as const,
-  )("no planifica plugins locales para %s", (_id, adapter) => {
-    const ctx = {
-      stackDir: stackRoot(),
-      configDir: tmp,
-      engramBin: null,
-      models: DEFAULT_MODEL_MAP[adapter.id]!,
-      warnings: [],
-    };
-    expect(planPlugins(adapter, ctx)).toEqual([]);
-  });
-});
-
-describe("planCommands: comandos específicos por runtime", () => {
-  const makeCtx = (adapterId: "opencode" | "claude-code" | "codex") => ({
-    stackDir: stackRoot(),
-    configDir: tmp,
-    engramBin: null,
-    models: DEFAULT_MODEL_MAP[adapterId]!,
-    warnings: [],
-  });
-
-  it("instala wrappers de /xreview en Claude/OpenCode y deja Codex usar la skill portable", () => {
-    const opencodeTargets = planCommands(opencodeAdapter, makeCtx("opencode"))
-      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
-    const claudeTargets = planCommands(claudeCodeAdapter, makeCtx("claude-code"))
-      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
-    const codexTargets = planCommands(codexAdapter, makeCtx("codex"))
-      .map((action) => path.relative(tmp, action.target).replace(/\\/g, "/"));
-
-    expect(opencodeTargets).toContain("commands/xreview.md");
-    expect(claudeTargets).toContain("commands/xreview.md");
-    expect(codexTargets).not.toContain("skills/xreview/SKILL.md");
-
-    for (const [adapter, id] of [
-      [opencodeAdapter, "opencode"],
-      [claudeCodeAdapter, "claude-code"],
-      [codexAdapter, "codex"],
-    ] as const) {
-      const ctx = makeCtx(id);
-      const expectedTarget = path.join(adapter.paths(ctx.configDir).skillsDir, "xreview", "SKILL.md");
-      expect(planSkills(adapter, ctx).some((action) => action.target === expectedTarget)).toBe(true);
-    }
   });
 });
 

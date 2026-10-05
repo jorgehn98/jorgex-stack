@@ -1,0 +1,45 @@
+{
+  "skill_name": "visual-director",
+  "note": "Casos propuestos ids 13-15, solo propuesta, en español natural, con cuatro criterios por caso (12 en total). Registran prompt y contrato esperado para calibrar baseline 2.0.1 frente a la propuesta 2.0.2. No se han leído salidas de modelo; los datos son ficticios y declarados por el usuario, sin apuntar a archivos reales.",
+  "evals": [
+    {
+      "id": 13,
+      "name": "audio-correlacion-sin-video",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Tengo un clip cantado generado y el productor me pasa una medición de audio: la correlación ronda 0,97 en seis ventanas de palabra aceptadas que suman 7,4 s de 11,9 s, siempre sobre la canción completa de 180 s. No te doy el archivo de vídeo y yo no he visto la boca en ningún fotograma; él afirma que el lip sync cubre el 62 % de toda la película. Quiero que audites esa afirmación y me propongas qué comprobar después, sin ejecutar nada ni tocar el audio. No hace falta añadir SFX.",
+      "expected_output": "Contrato esperado: trata la correlación de 0,97 como una medición de audio en seis ventanas de palabra (7,4 s de 11,9 s) y no como prueba de sincronía labial. No extrapola esas ventanas al total ni acepta que el agregado equivalga a los 180 s o al metraje entero: el «62 % de toda la película» usa un denominador incorrecto (seis ventanas, no la canción completa ni el film completo). No afirma haber visto el vídeo ni la boca. Separa el dato declarado por el productor (contexto y fuente) de un hecho verificado en el clip. Propone como siguiente paso una revisión audiovisual emparejada (boca/visemas contra el audio real) sobre el clip, pendiente de archivo, sin ejecutar, sin fijar modelo o API concretos y sin añadir SFX. Conserva el máster y el audio sin cambios.",
+      "files": [],
+      "assertions": [
+        "No acepta la correlación acústica de 0,97 como prueba de boca o articulación: es una medición de audio y la boca no se ha visto.",
+        "Corrige el denominador: el agregado son seis ventanas de palabra seleccionadas (7,4 s de 11,9 s), no los 180 s del máster ni el metraje completo; un 7,4/180 ≈ 4,1 % se describe como duración examinada, no como porcentaje de lip/articulación.",
+        "Propone como siguiente comprobación una revisión audiovisual emparejada sobre el clip real (offset y articulación visible), con el archivo aún pendiente, sin fijar SDK de generación ni ejecutar.",
+        "Separa lo reportado por el productor de lo inspeccionado, conserva el máster sin cambios y no afirma ver el vídeo ni hace llamadas de pago ni de visión falsas."
+      ]
+    },
+    {
+      "id": 14,
+      "name": "clip-desfase-rango-util",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Tengo un clip de vídeo fuente de 5 s y una canción maestra aprobada que no puedo retimear; quiero insertar ese clip visual entre 30 y 35 del máster. El productor declara el mapeo t_src = t_master − 30 + 0,97 con rate 1, pero no me pasa el archivo ni los campos de VFR/fps, y no se ha medido nada. Quiero una propuesta de timeline y corte nominal válida, con metadatos declarados y aproximados, no medidos, sin cambiar la canción, y dime hasta dónde llega el rango visual útil. Si falta un tramo, prefiero rellenarlo con un inserto alternativo aprobado antes que congelar el último fotograma.",
+      "expected_output": "Contrato esperado: trata la canción maestra como existente y congelada, conservada entera y con el audio independiente del recorte visual; no la retimea, no la alarga ni la acorta. Deduce que el mapeo t_src = t_master − 30 + 0,97 tiene signo positivo y que el vídeo fuente de 5 s cubre de forma nominal el máster 30 → 34,03, no 35; no hace falta mapear todo el máster por el offset del vídeo. El tramo 34,03–35 se queda sin fuente y debe rellenarse con un inserto alternativo aprobado, sin cambiar la canción y sin congelar el último fotograma en silencio; la propuesta de corte puede reportar el final en 34,03 y optar por material adicional futuro o ajustar el límite del plano dejando el resto del máster intacto. Como los campos de VFR/fps no están y no hay medición, presenta todo como metadatos nominales declarados y aproximados, sin exigir una retención exacta de los 35 s completos: el encaje por cuantización de frames queda para más adelante. Se queda en propuesta, sin ejecutar ni afirmar haber visto el archivo.",
+      "files": [],
+      "assertions": [
+        "Reporta 30 → 34,03 como subrango nominal válido del intervalo 30–35 pedido (t_src = t_master − 30 + 0,97 con fuente de 5 s), sin exigir un final cuantizado exacto ni el fotograma fuente literal (~4,958); mencionar que el máster disponible empieza antes, en 29,03, es aceptable.",
+        "No retimea, recorta ni reinicia la canción maestra ni su audio: el máster conserva su timeline completo aunque se recorte el visual.",
+        "Resuelve el tramo 34,03–35 sin fuente con un inserto alternativo aprobado o un corte de escena, explícitamente sin congelar el último fotograma y sin asumir una retención editorial no pedida.",
+        "Presenta el mapeo y 34,03 como metadatos declarados y aproximados, distintos de un decode real o una QA de fuente futura, sin regenerar estilo, sin librerías y sin afirmar renders o evidencia real."
+      ]
+    },
+    {
+      "id": 15,
+      "name": "assets-roles-y-estados",
+      "prompt": "Usa la skill de dirección visual que te he indicado para esta prueba. Tengo 30 assets de bucle de ventana decorativa rectangular, opacos, y planeo 2 recortes en primer plano; la herramienta de cola haría matte de los 32. Envié dos trabajos con el mismo prompt y me devolvieron IDs distintos, uno con estado «submitted» y otro ya descargado; no te paso archivos. Solo quiero un plan antes del lote: cómo organizarías la preparación, el emparejamiento y la readiness de cierre, sin procesar ni generar nada. Dime cómo usarías los IDs y el rol de cada asset para no mezclarlos.",
+      "expected_output": "Contrato esperado: organiza por rol y estado (30 bucles de ventana opacos frente a 2 recortes de primer plano) y usa los IDs distintos, no el prompt idéntico, para emparejar cada trabajo con su asset; distingue el estado declarado «submitted» del ya descargado sin asumir que ambos produjeron lo mismo ni que compartir prompt garantiza identidad. No impone una respuesta única: propone preparación (separar los 32 del matte masivo y marcar cuáles necesitan matte y cuáles no), emparejamiento por ID y readiness de cierre con estados de asset y de trabajo, sin un libro de trabajo universal ni un hash por píxel. Se queda en plan previo al lote: no procesa, no genera, no instala y no afirma inspeccionar archivos que no existen. No arrastra identidad de género, estilo Windows XP ni modelo fuente: son irrelevantes aquí y no deben sesgar el plan.",
+      "files": [],
+      "assertions": [
+        "Usa el rol como criterio: los 30 bucles de ventana opacos no se matifican por defecto y los 2 recortes de primer plano se preparan según su prueba (alpha, clave o segmentación), sin exigir pesos privados, GPU ni API concretas.",
+        "Empareja cada trabajo con su asset por ID o toma distinta, no por el prompt compartido, y no asume identidad entre las dos devoluciones.",
+        "Distingue «submitted» (acuse) de recibido y «downloaded» de validado o estado real; la readiness de cierre queda futura.",
+        "Al no haber archivos, no finge validación ni procesamiento, admite un registro previo existente sin imponer una base de datos o ledger de hashes nuevo, y no reclama QA real de película ni puntuaciones de benchmark."
+      ]
+    }
+  ]
+}

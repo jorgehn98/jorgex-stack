@@ -1,35 +1,29 @@
+import fs from "node:fs";
+import { planOwnedProjection } from "../lib/owned-projection.js";
 import path from "node:path";
 import type { Adapter, FileAction, InstallContext } from "../adapters/types.js";
 import { loadCanonicalAgents } from "../lib/canonical.js";
-import { composeProgrammaticAgentBody } from "../lib/mode-composition.js";
 
-export function planAgents(adapter: Adapter, ctx: InstallContext): FileAction[] {
-  const { agentsDir, commandsDir, outputStylesDir, profilesDir, scriptsDir } = adapter.paths(ctx.configDir);
-  const dirFor = {
-    agent: agentsDir,
-    command: commandsDir,
-    "output-style": outputStylesDir,
-    profile: profilesDir,
-  } as const;
-
-  // Forward slashes: la ruta va dentro de un string YAML double-quoted (hook
-  // command), donde un backslash de Windows se interpretaría como escape.
-  const scriptsBase = scriptsDir.replace(/\\/g, "/");
-
-  return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) => {
-    const composedAgent = {
-      ...agent,
-      body: composeProgrammaticAgentBody(ctx.stackDir, agent, ctx.mode, ctx.subagentConcurrency),
-    };
-
-    return adapter.renderAgent(composedAgent, ctx.models).flatMap((rendered): FileAction[] => {
-      const dir = dirFor[rendered.kind];
-      if (dir === null) {
-        ctx.warnings.push(`${adapter.name}: sin destino para '${rendered.kind}' (${rendered.file}) — omitido.`);
-        return [];
-      }
-      const content = rendered.content.replace(/\{\{SCRIPTS_DIR\}\}/g, scriptsBase);
-      return [{ kind: "write", target: path.join(dir, rendered.file), content }];
-    });
-  });
+export function planAgents(adapter: Pick<Adapter, "paths" | "renderAgent">, ctx: InstallContext): FileAction[] {
+  const { agentsDir } = adapter.paths(ctx.configDir);
+  return loadCanonicalAgents(path.join(ctx.stackDir, "agents")).flatMap((agent) =>
+    adapter.renderAgent(agent, ctx.models).flatMap((rendered) => {
+      const target = path.join(agentsDir, rendered.file);
+      const actions = planOwnedProjection({ kind: "write", target, content: rendered.content }, ctx);
+      if (actions.length === 0 || !fs.existsSync(target)) return actions;
+      const current = fs.readFileSync(target, "utf8");
+      const fields = rendered.file.endsWith(".toml")
+        ? /^(?:model|model_reasoning_effort)\s*=.*$/gm
+        : /^(?:model|thinking|effort):.*$/gm;
+      const header = rendered.file.endsWith(".toml") ? current.split(/^developer_instructions\s*=/m)[0]! : current.split(/^---\s*$/m)[1] ?? "";
+      const choices = header.match(fields) ?? [];
+      if (choices.length === 0) return actions;
+      const content = rendered.file.endsWith(".toml")
+        ? rendered.content.replace(/^[\s\S]*?(?=^developer_instructions\s*=)/m,
+          (header) => `${choices.join("\n")}\n${header.replace(fields, "")}`)
+        : rendered.content.replace(/^---\n([\s\S]*?)\n---\n/,
+          (_match, header: string) => `---\n${choices.join("\n")}\n${header.replace(fields, "")}\n---\n`);
+      return [{ kind: "write", target, content }];
+    }),
+  );
 }

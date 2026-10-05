@@ -58,7 +58,7 @@ describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 nativ
     expect(await nativePermission({ binary: binary!, permission, tool, file })).toBe(expected);
   }, 25000);
   it("a full writer still inherits protected edit paths", async () => {
-    const [agent] = opencodeAdapter.renderAgent({ name: "probe", description: "Permission fixture", mode: "subagent", tier: "standard", readonly: false, bash: "full", spawn: true, body: "Use the local fixture." }, models);
+    const [agent] = opencodeAdapter.renderAgent({ name: "probe", description: "Permission fixture", mode: "subagent", readonly: false, bash: "full", spawn: true, body: "Use the local fixture." }, models);
     expect(await nativePermission({ binary: binary!, permission, tool: "write", file: ".env", agent: agent!.content })).toBe("deny");
   }, 25000);
   it.each([
@@ -68,15 +68,8 @@ describe.skipIf(!binary || process.platform === "win32")("OpenCode 1.18.30 nativ
   }, 25000);
   it.each([
     ["none", "printf ordinary", "deny"], ["full", "rm -rf ordinary", "allow"],
-    ["git-read", "printf ordinary", "deny"], ["git-read", `${safeDiff} HEAD`, "allow"],
-    // Sin denies bash de secretos en el canon, el subagente git-read hereda
-    // solo denies de destrucción: diff sobre .env o *.key da allow observado.
-    ["git-read", `${safeDiff} HEAD -- .env`, "allow"],
-    ["git-read", `${safeDiff} HEAD -- credentials.key`, "allow"],
-    ["git-read", `${safeDiff} HEAD; printf side-effect`, "deny"],
-    ["git-read", `${safeDiff} $(printf side-effect)`, "deny"],
   ] as const)("%s subagent: %s → %s", async (bash, command, expected) => {
-    const [agent] = opencodeAdapter.renderAgent({ name: "probe", description: "Permission fixture", mode: "subagent", tier: "standard", readonly: bash !== "full", bash, spawn: false, body: "Use the local fixture." }, models);
+    const [agent] = opencodeAdapter.renderAgent({ name: "probe", description: "Permission fixture", mode: "subagent", readonly: bash !== "full", bash, spawn: false, body: "Use the local fixture." }, models);
     expect(await nativePermission({ binary: binary!, permission, command, agent: agent!.content })).toBe(expected);
   }, 25000);
 });

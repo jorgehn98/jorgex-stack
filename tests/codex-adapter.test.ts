@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
-import { loadCanonicalAgents, loadCanonicalHooks, loadCanonicalMcp, type CanonicalAgent } from "../src/lib/canonical.js";
+import { loadCanonicalHooks, loadCanonicalMcp } from "../src/lib/canonical.js";
 import { DEFAULT_MODEL_MAP, type RuntimeModelMap } from "../src/lib/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
@@ -48,95 +48,6 @@ const MODELS: RuntimeModelMap = {
   cheap: { model: "default", variant: "low" },
 };
 
-function agent(overrides: Partial<CanonicalAgent>): CanonicalAgent {
-  return {
-    name: "demo",
-    description: "Demo agent",
-    mode: "subagent",
-    tier: "strong",
-    readonly: false,
-    bash: "full",
-    spawn: true,
-    body: "\n# Demo\n\nUse `git diff` and C:\\paths\\with\\backslashes.\n",
-    ...overrides,
-  };
-}
-
-describe("codexAdapter.renderAgent", () => {
-  it("subagente → TOML con sandbox, effort por tier y sin model cuando es default", () => {
-    const [out] = codexAdapter.renderAgent(agent({ readonly: true, bash: "git-read" }), MODELS);
-    expect(out!.kind).toBe("agent");
-    expect(out!.file).toBe("demo.toml");
-    expect(out!.content).toContain('name = "demo"');
-    expect(out!.content).toContain('sandbox_mode = "read-only"');
-    expect(out!.content).toContain('model_reasoning_effort = "high"');
-    expect(out!.content).not.toContain("model =");
-    // literal multiline: los backslashes del body viajan intactos
-    expect(out!.content).toContain("C:\\paths\\with\\backslashes");
-  });
-
-  it("subagente con escritura → workspace-write y effort medium", () => {
-    const [out] = codexAdapter.renderAgent(agent({ tier: "standard" }), MODELS);
-    expect(out!.content).toContain('sandbox_mode = "workspace-write"');
-    expect(out!.content).toContain('model_reasoning_effort = "medium"');
-  });
-
-  it("emite model cuando el model-map fija uno concreto", () => {
-    const models: RuntimeModelMap = { ...MODELS, strong: { model: "gpt-5.4", variant: "high" } };
-    const [out] = codexAdapter.renderAgent(agent({}), models);
-    expect(out!.content).toContain('model = "gpt-5.4"');
-  });
-
-  it("override por agente: modelo propio y variant vacío limpia el effort del tier", () => {
-    const models: RuntimeModelMap = {
-      ...MODELS,
-      overrides: { demo: { model: "gpt-5.4-mini", variant: "" } },
-    };
-    const [out] = codexAdapter.renderAgent(agent({}), models);
-    expect(out!.content).toContain('model = "gpt-5.4-mini"');
-    expect(out!.content).not.toContain("model_reasoning_effort");
-  });
-
-  it("projects the approved model and effort for every Codex subagent role", () => {
-    const expected = [
-      ["code-reviewer", "standard", "gpt-5.6-luna", "max"],
-      ["security-auditor", "strong", "gpt-6-astra", "low"],
-      ["codebase-analyst", "standard", "gpt-5.6-luna", "max"],
-      ["silent-failure-hunter", "strong", "gpt-6-astra", "low"],
-      ["implementer", "standard", "gpt-5.6-luna", "max"],
-      ["tester", "standard", "gpt-5.6-luna", "max"],
-      ["docs-maintainer", "cheap", "gpt-5.6-luna", "medium"],
-    ] as const;
-
-    for (const [name, tier, model, effort] of expected) {
-      const canonical = loadCanonicalAgents(path.join(stackRoot(), "agents")).find((candidate) => candidate.name === name);
-      expect(canonical?.tier).toBe(tier);
-      const [rendered] = codexAdapter.renderAgent(canonical!, DEFAULT_MODEL_MAP.codex);
-      expect(rendered!.content).toContain(`model = "${model}"`);
-      expect(rendered!.content).toContain(`model_reasoning_effort = "${effort}"`);
-    }
-  });
-
-  it("el primary (orchestrator) → profile wrapper, sin skill duplicada, model ni effort", () => {
-    const models: RuntimeModelMap = { ...MODELS, strong: { model: "gpt-5.4", variant: "high" } };
-    const out = codexAdapter.renderAgent(agent({
-      name: "orchestrator",
-      mode: "primary",
-      body: "Load and follow the `orchestrator` skill.",
-    }), models);
-    expect(out).toHaveLength(1);
-
-    const profile = out[0]!;
-    expect(profile.kind).toBe("profile");
-    expect(profile.file).toBe("orchestrator.config.toml");
-    expect(profile.content).toContain("developer_instructions = '''");
-    expect(profile.content).toContain("codex --profile orchestrator");
-    expect(profile.content).toContain("Load and follow the `orchestrator` skill");
-    expect(profile.content).not.toContain("## Phases");
-    expect(profile.content).not.toContain("model =");
-    expect(profile.content).not.toContain("model_reasoning_effort");
-  });
-});
 
 describe("codexAdapter.renderCommand", () => {
   it("convierte un command canónico en skill con name/description", () => {
@@ -148,16 +59,16 @@ describe("codexAdapter.renderCommand", () => {
   });
 });
 
-describe("codexAdapter primary Sol defaults", () => {
-  it("añade los defaults ausentes, es idempotente y limpia solo valores canónicos", () => {
+describe("codexAdapter model choices", () => {
+  it("no impone modelo/contexto y preserva elecciones sin reclamarlas", () => {
     const freshDir = tempConfigDir();
     const freshFile = path.join(freshDir, "config.toml");
     const fresh = writeActionContent(
       codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), codexContext(freshDir)),
       freshFile,
     );
-    expect(fresh).toContain('model = "gpt-5.6-sol"');
-    expect(fresh).toContain("model_context_window = 872000");
+    expect(fresh).not.toMatch(/^model =/m);
+    expect(fresh).not.toContain("model_context_window");
 
     const configDir = tempConfigDir();
     const configFile = path.join(configDir, "config.toml");
@@ -168,8 +79,8 @@ describe("codexAdapter primary Sol defaults", () => {
     const installActions = codexAdapter.planMainConfig(mcp, ctx);
     const installed = writeActionContent(installActions, configFile);
 
-    expect(installed).toContain('model = "gpt-5.6-sol"');
-    expect(installed).toContain("model_context_window = 872000");
+    expect(installed).not.toContain('model = "gpt-5.6-sol"');
+    expect(installed).not.toContain("model_context_window");
     expect(installed).not.toContain("auto_compact");
     expect(installed).toContain("custom_flag = true");
     expect(installed).toContain('model = "inside multiline"');
@@ -178,7 +89,7 @@ describe("codexAdapter primary Sol defaults", () => {
     fs.writeFileSync(configFile, installed);
     expect(writeActionContent(codexAdapter.planMainConfig(mcp, ctx), configFile)).toBe(installed);
 
-    const customized = installed.replace('model = "gpt-5.6-sol"', 'model = "user/model"');
+    const customized = 'model = "user/model"\n' + installed;
     fs.writeFileSync(configFile, customized);
     const unmerged = writeActionContent(
       codexAdapter.planUnmerge(mcp, loadCanonicalHooks(stackRoot()), {
@@ -523,7 +434,7 @@ describe("codexAdapter official Engram MCP preservation", () => {
     };
   }
 
-  it("con plugin activo y MCP oficial exacto preserva sección y libera ownership (idempotente)", () => {
+  it("con plugin activo y MCP oficial exacto preserva sección sin reclamar ownership (idempotente)", () => {
     const configDir = tempConfigDir();
     const configFile = path.join(configDir, "config.toml");
     writeOfficialConfig(configFile, `command = ${JSON.stringify(ENGRAM_BIN)}\nargs = ["mcp", "--tools=agent"]`);
@@ -531,13 +442,13 @@ describe("codexAdapter official Engram MCP preservation", () => {
     const [action] = codexAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), officialCtx(configDir, ["engram"]));
     if (action?.kind !== "write") throw new Error("Expected a config write");
     const section = readTomlSection(action.content, "mcp_servers.engram");
-    // Preserva, no borra; libera el ownership previo del Stack.
+    // La proyección no posee ni reescribe el registro oficial.
     expect(section).not.toBeNull();
     expect(section).toContain(JSON.stringify(ENGRAM_BIN));
     expect(section).toContain('"mcp"');
     expect(section).toContain('"--tools=agent"');
     expect(readTomlSection(action.content, "mcp_servers.ajeno")).toContain('command = "x"');
-    expect(action.mcpOwnership).toEqual(expect.arrayContaining([{ server: "engram", owned: false }]));
+    expect(action.mcpOwnership?.some((change) => change.server === "engram")).not.toBe(true);
 
     // Idempotente tras el setup oficial real: el siguiente sync no muta.
     fs.writeFileSync(configFile, action.content);

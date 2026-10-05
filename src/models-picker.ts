@@ -1,8 +1,6 @@
-import path from "node:path";
 import * as p from "@clack/prompts";
 import type { RuntimeId, Tier } from "./adapters/types.js";
 import { detectClaudeCode, detectCodex, detectOpenCode, runDetectedBin } from "./lib/detect.js";
-import { loadCanonicalAgents } from "./lib/canonical.js";
 import {
   ensureModelMapFile,
   loadModelMap,
@@ -12,7 +10,6 @@ import {
   type RuntimeModelMap,
   type TierModel,
 } from "./lib/model-map.js";
-import { stackRoot } from "./lib/paths.js";
 import { writeText } from "./lib/fsx.js";
 
 const TIERS: Tier[] = ["strong", "standard", "cheap"];
@@ -55,13 +52,9 @@ function opencodeLiveModels(binPath: string): string[] | null {
   return models.length > 0 ? models : null;
 }
 
-/** Subagentes canónicos agrupados por tier. El primary (orchestrator) nunca lleva modelo. */
+/** El selector retirado falla explícitamente hasta su reemplazo por agente. */
 function agentsByTier(): Record<Tier, string[]> {
-  const grouped: Record<Tier, string[]> = { strong: [], standard: [], cheap: [] };
-  for (const agent of loadCanonicalAgents(path.join(stackRoot(), "agents"))) {
-    if (agent.mode === "subagent") grouped[agent.tier].push(agent.name);
-  }
-  return grouped;
+  throw new Error("El canon ya no usa tiers. El selector por agente sustituye este flujo en T06.");
 }
 
 function isCompleteRuntimeModelMap(models: Partial<RuntimeModelMap>): models is RuntimeModelMap {

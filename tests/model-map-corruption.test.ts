@@ -76,8 +76,7 @@ describe("corrupt model-map install safety", () => {
             runtimes: ["codex"],
             dryRun: false,
             yes: true,
-            mode: { mode: "human", subagentConcurrency: "serial" },
-          })).rejects.toThrow(/model-map|corrige|restaura/i);
+                })).rejects.toThrow(/model-map|corrige|restaura/i);
 
           expect(fs.readFileSync(configFile, "utf8")).toBe(configBefore);
           expect(fs.existsSync(path.join(configDir, "AGENTS.md"))).toBe(false);

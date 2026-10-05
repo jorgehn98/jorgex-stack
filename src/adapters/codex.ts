@@ -5,7 +5,7 @@ import type { Adapter, FileAction, InstallContext, McpOwnershipChange, PrimaryMo
 import type { CanonicalAgent, CanonicalHooks, CanonicalMcp } from "../lib/canonical.js";
 import { resolveAgentModel, type RuntimeModelMap } from "../lib/model-map.js";
 import { detectCodex } from "../lib/detect.js";
-import { DEVTOOLS_MCP_SERVER, isCanonicalMcpServerEnabled, loadCanonicalDefaults, loadCanonicalMcp, materializeCanonicalDevtoolsServerForRemoval } from "../lib/canonical.js";
+import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath, stackRoot } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import {
@@ -13,14 +13,13 @@ import {
   hasTomlChildSection,
   headerName as tomlHeaderName,
   multilineStringMask,
-  hasTomlRootKey,
   removeMarkdownSection,
   removeTomlRootKeyIfExact,
   removeTomlSection,
   upsertTomlRootKeyIfMissing,
   upsertTomlSection,
 } from "../lib/filemerge.js";
-import { removeNativeHooks, upsertNativeHooks } from "../lib/hooks-format.js";
+import { removeNativeHooks } from "../lib/hooks-format.js";
 import { createLocalCapabilityReport, hasManagedMarkdownSection } from "../lib/quality-capabilities.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
@@ -67,12 +66,8 @@ function isManagedOptionalStdioServer(server: CanonicalMcp["servers"][string], s
     && section?.trim() === stdioMcpSection(server);
 }
 
-function isOwnedDevtoolsServer(name: string, server: CanonicalMcp["servers"][string], section: string | null, ctx: InstallContext): boolean {
-  if (isManagedOptionalStdioServer(server, section)) return true;
-  if (name !== DEVTOOLS_MCP_SERVER) return false;
-  const template = loadCanonicalMcp(ctx.stackDir).servers[DEVTOOLS_MCP_SERVER];
-  return template !== undefined
-    && isManagedOptionalStdioServer(materializeCanonicalDevtoolsServerForRemoval(template), section);
+function isCanonicalOptionalServer(name: string, server: CanonicalMcp["servers"][string], section: string | null, ctx: InstallContext): boolean {
+  return isManagedOptionalStdioServer(server, section);
 }
 
 /**
@@ -450,23 +445,7 @@ export const codexAdapter: Adapter = {
   },
 
   renderAgent(agent: CanonicalAgent, models: RuntimeModelMap) {
-    const tierModel = resolveAgentModel(models, agent.name, agent.tier);
-
-    // El orchestrator (primary) es un modo del agente principal: profile
-    // (`codex --profile orchestrator`, developer_instructions con rol
-    // developer). planSkills instala el workflow canónico compartido.
-    // Sin model ni effort: el primary usa SIEMPRE el modelo que el usuario
-    // tenga por defecto (y puede cambiarlo en sesión) — solo los subagentes
-    // fijan modelo por tier.
-    if (agent.mode === "primary") {
-      const profileLines = [
-        "# Managed by jorgex-stack — modo orquestador del agente principal.",
-        `# Uso: codex --profile ${agent.name}`,
-        `developer_instructions = ${tomlMultiline(agent.body)}`,
-      ];
-
-      return [{ file: `${agent.name}.config.toml`, content: profileLines.join("\n") + "\n", kind: "profile" as const }];
-    }
+    const tierModel = resolveAgentModel(models, agent.name);
 
     const lines = [
       `name = ${tomlString(agent.name)}`,
@@ -474,8 +453,7 @@ export const codexAdapter: Adapter = {
     ];
     if (tierModel.model !== "default") lines.push(`model = ${tomlString(tierModel.model)}`);
     if (tierModel.variant) lines.push(`model_reasoning_effort = ${tomlString(tierModel.variant)}`);
-    // readonly (y bash none/git-read) → sandbox read-only; con escritura → workspace.
-    lines.push(`sandbox_mode = ${tomlString(agent.readonly ? "read-only" : "workspace-write")}`);
+    // Codex hereda el sandbox del padre; un rol no impone aislamiento por agente.
     lines.push(`developer_instructions = ${tomlMultiline(agent.body)}`);
 
     return [{ file: `${agent.name}.toml`, content: lines.join("\n") + "\n", kind: "agent" as const }];
@@ -497,29 +475,6 @@ export const codexAdapter: Adapter = {
       file: `${name}/SKILL.md`,
       content: `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n${body}`,
     };
-  },
-
-  planHooks(canonical: CanonicalHooks, ctx: InstallContext): FileAction[] {
-    const actions: FileAction[] = [];
-    const { scriptsDir } = this.paths(ctx.configDir);
-
-    // Mismo formato que Claude Code; el tool de shell en Codex se llama "shell".
-    const hooksFile = path.join(ctx.configDir, "hooks.json");
-    const content = upsertNativeHooks(readTextIfExists(hooksFile), canonical, scriptsDir, (matcher) =>
-      matcher.split("|").some((p) => p.trim() === "Bash") ? "shell" : matcher,
-    );
-    actions.push({ kind: "write", target: hooksFile, content });
-    ctx.warnings.push(
-      "Codex: los hooks no-managed requieren aprobación manual — ejecuta /hooks dentro de codex para activarlos.",
-    );
-
-    const scriptsSource = path.join(ctx.stackDir, "scripts");
-    if (fs.existsSync(scriptsSource)) {
-      for (const f of fs.readdirSync(scriptsSource)) {
-        actions.push({ kind: "copy", source: path.join(scriptsSource, f), target: path.join(scriptsDir, f) });
-      }
-    }
-    return actions;
   },
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
@@ -581,19 +536,6 @@ export const codexAdapter: Adapter = {
       }
     }
 
-    if (!hasTomlRootKey(content, PRIMARY_MODEL_FIELD)) {
-      content = upsertTomlRootKeyIfMissing(content, PRIMARY_MODEL_FIELD, PRIMARY_MODEL);
-      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_MODEL_FIELD) !== true) {
-        primaryModelOwnership.push({ field: PRIMARY_MODEL_FIELD, owned: true });
-      }
-    }
-    if (!hasTomlRootKey(content, PRIMARY_CONTEXT_FIELD)) {
-      content = upsertTomlRootKeyIfMissing(content, PRIMARY_CONTEXT_FIELD, PRIMARY_CONTEXT_WINDOW);
-      if (ctx.ownedPrimaryModelFields?.has(PRIMARY_CONTEXT_FIELD) !== true) {
-        primaryModelOwnership.push({ field: PRIMARY_CONTEXT_FIELD, owned: true });
-      }
-    }
-
     for (const [name, server] of Object.entries(canonical.servers)) {
       // Plugin oficial activo: sus hooks y skill no incluyen este MCP; el
       // setup (`engram setup codex`) registra un MCP user separado.
@@ -622,13 +564,13 @@ export const codexAdapter: Adapter = {
       }
       if (!isCanonicalMcpServerEnabled(name, server, ctx.enabledMcpServers)) {
         if (owned) {
-          if (isOwnedDevtoolsServer(name, server, existing, ctx)) content = removeTomlSection(content!, section);
+          if (isCanonicalOptionalServer(name, server, existing, ctx)) content = removeTomlSection(content!, section);
           mcpOwnership.push({ server: name, owned: false });
         }
         continue;
       }
       if (server.optional && existing !== null) {
-        if (!owned || !isOwnedDevtoolsServer(name, server, existing, ctx)) {
+        if (!owned || !isCanonicalOptionalServer(name, server, existing, ctx)) {
           throw new Error(`Codex: ${name}: conflicto con servidor MCP existente ajeno o modificado; se conserva. Retira esa entrada explícitamente antes de activar DevTools gestionado.`);
         }
       }
@@ -734,7 +676,7 @@ export const codexAdapter: Adapter = {
           continue;
         }
         if (ctx.ownedMcpServers?.has(name) === true) {
-          if (isOwnedDevtoolsServer(name, server, readTomlSection(content, section), ctx)) {
+          if (isCanonicalOptionalServer(name, server, readTomlSection(content, section), ctx)) {
             content = removeTomlSection(content, section);
           }
           mcpOwnership.push({ server: name, owned: false });

@@ -6,7 +6,6 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import type { Adapter, InstallContext } from "../src/adapters/types.js";
-import { planHooks } from "../src/components/hooks.js";
 import { planSystemPrompt } from "../src/components/system-prompt.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import {
@@ -135,7 +134,7 @@ const ADAPTER_FIXTURES: readonly AdapterFixture[] = [
     writeCanonicalConfig(configDir) {
       const context = fixtureContext(configDir);
       writeActionContent(
-        planHooks(claudeCodeAdapter, context),
+        claudeCodeAdapter.planMainConfig(loadCanonicalMcp(context.stackDir), context),
         path.join(configDir, "settings.json"),
       );
     },
