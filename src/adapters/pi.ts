@@ -4,7 +4,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { planOwnedProjection } from "../lib/owned-projection.js";
 import fs from "node:fs";
 import path from "node:path";
-import { BROWSER_CONTROL_GUIDANCE } from "../lib/canonical.js";
+import { BROWSER_CONTROL_GUIDANCE, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS } from "../lib/canonical.js";
 import type { Adapter, FileAction } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { detectPi } from "../lib/detect.js";
@@ -13,6 +13,26 @@ import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 const SUBAGENT_CONFIG = "extensions/subagent/config.json";
 const SUBAGENT_TIMEOUT_FIELD = JSON.stringify([SUBAGENT_CONFIG, "timeoutMs"]);
 const SUBAGENT_TIMEOUT_MS = 7200000;
+const PERMISSION_CONFIG = "extensions/pi-permission-system/config.json";
+
+/**
+ * Política nativa fresh: `yoloMode` aprueba los ask y conserva los deny
+ * explícitos; `bash` se declara aparte porque el proveedor avisa si solo
+ * hereda del `*` superior.
+ */
+function freshPermissionPolicy(): string {
+  const secrets = Object.fromEntries(SECRET_PATH_PATTERNS.map((pattern) => [pattern, "deny"]));
+  return JSON.stringify({
+    $schema: "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json",
+    yoloMode: true,
+    permission: {
+      "*": "allow",
+      path: { "*": "allow", ...secrets, [SECRET_PATH_EXCEPTION]: "allow" },
+      bash: { "*": "allow" },
+      external_directory: "allow",
+    },
+  }, null, 2) + "\n";
+}
 
 function readSubagentConfig(file: string) {
   const raw = readTextIfExists(file);
@@ -135,7 +155,15 @@ export const piAdapter: Adapter = {
         : editJsonc(raw, (root) => { root.timeoutMs = SUBAGENT_TIMEOUT_MS; }),
       configOwnership: [{ field: SUBAGENT_TIMEOUT_FIELD, owned: true }],
     }];
-    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }, ...subagentActions];
+    // Solo si falta: una política existente nunca se reescribe ni se reclama.
+    const permissionTarget = path.join(ctx.configDir, PERMISSION_CONFIG);
+    const permissionActions: FileAction[] = fs.lstatSync(permissionTarget, { throwIfNoEntry: false }) === undefined
+      ? [{ kind: "write", target: permissionTarget, content: freshPermissionPolicy() }]
+      : [];
+    if (permissionActions.length > 0) {
+      ctx.warnings.push("Pi: fresh permission policy enables yoloMode and denies only secret paths; enforcement belongs to the native extension and is not a sandbox.");
+    }
+    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }, ...subagentActions, ...permissionActions];
   },
 
 

@@ -284,50 +284,32 @@ describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("la config fresca siembra permissions sin hooks propios read-anywhere y denies de .env", () => {
-    const { settings, content } = run(makeCtx());
-    expect(settings).not.toHaveProperty("hooks");
-    expect(settings).toHaveProperty("permissions");
-
-    const permissions = settings.permissions as { allow?: string[]; ask?: string[]; deny?: string[] };
-    expect(permissions.allow).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
-    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "WebSearch"]) {
-      expect(permissions.allow).not.toContain(tool);
-    }
-    expect(permissions.ask).toEqual(expect.arrayContaining(["Bash", "Edit", "Write", "WebFetch", "WebSearch"]));
-    expect(permissions.deny).toEqual(
-      expect.arrayContaining(["Read(//**/.env)", "Read(//**/.env.*)", "Bash(format:*)", "Bash(mkfs:*)"]),
-    );
-    expect(content).not.toContain("disableBypassPermissionsMode");
-  });
-
-  it("la config fresca también avisa y endurece secretos más allá de .env", () => {
+  it("la config fresca trabaja sin prompts y deniega únicamente secretos", () => {
     const { settings, warnings } = run(makeCtx());
-    const permissions = settings.permissions as { deny?: string[] };
+    expect(settings).not.toHaveProperty("hooks");
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
+    expect(settings.attribution).toEqual({ commit: "", pr: "" });
 
-    expect(permissions.deny).toEqual(
-      expect.arrayContaining([
-        "Read(//**/.ssh/**)",
-        "Read(//**/.aws/credentials)",
-        "Read(//**/.npmrc)",
-        "Read(//**/.git-credentials)",
-        "Read(//**/id_rsa)",
-        "Read(//**/id_ed25519)",
-        "Read(//**/*.pem)",
-        "Read(//**/*.key)",
-      ]),
-    );
-    expect(warnings.join("\n")).toMatch(/read-anywhere|broad/i);
+    const permissions = settings.permissions as { defaultMode?: string; allow?: string[]; ask?: string[]; deny: string[] };
+    expect(permissions.defaultMode).toBe("bypassPermissions");
+    expect(permissions.ask ?? []).toEqual([]);
+    expect(permissions.deny.every((rule) => /^(Read|Edit)\(\/\/\*\*\//.test(rule))).toBe(true);
+    const secrets = [".env", ".env.local", ".env.*.local", ".env.dev", ".env.development", ".env.production", ".env.prod", ".env.staging", ".env.test", ".ssh/**", ".aws/credentials", ".npmrc", ".git-credentials", "id_rsa", "id_ed25519", "*.pem", "*.key"];
+    expect(permissions.deny).toEqual(["Read", "Edit"].flatMap((tool) => secrets.map((secret) => `${tool}(//**/${secret})`)));
+    expect(warnings.join("\n")).toMatch(/bypassPermissions/);
   });
 
-  it("la config fresca ya no concede escritura, shell ni egress web; las manda a ask", () => {
+  it("ningún deny fresco alcanza .env.example: Claude no admite excepciones posteriores", () => {
     const { settings } = run(makeCtx());
-    const permissions = settings.permissions as { allow?: string[]; ask?: string[] };
+    const { deny } = settings.permissions as { deny: string[] };
+    // Un comodín `.env.*` bloquearía también el ejemplo; las variantes se enumeran.
+    expect(deny.filter((rule) => /\.env\.\*\)$/.test(rule))).toEqual([]);
+    expect(deny.filter((rule) => rule.includes("example"))).toEqual([]);
+  });
 
-    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "WebSearch"]) {
-      expect(permissions.allow).not.toContain(tool);
-    }
-    expect(permissions.ask).toEqual(expect.arrayContaining(["Bash", "Edit", "Write", "WebFetch", "WebSearch"]));
+  it.each(['{"other":true}', "{}", '{\n    "permissions": { "deny": [] },\n    "z": 1\n}\n'])("la config existente %j se conserva byte a byte", (existing) => {
+    fs.writeFileSync(settingsFile, existing);
+    expect(run(makeCtx()).content).toBe(existing);
   });
 
   it("la config no vacía sin permissions no recibe permissions", () => {

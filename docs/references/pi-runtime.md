@@ -16,7 +16,7 @@ Browser Control se registra como MCP stdio; su proveedor posee relay/extension/a
 
 Pi utiliza el gestor configurado por el usuario. Si es pnpm11, su espera predeterminada de24h puede seleccionar una versión anterior a `latest`; Stack no desactiva esa protección ni promete haber probado una release que el gestor no instaló.
 
-Lectores Stack usan tools `read, grep, find, ls`; implementer/generalist incluyen bash/edit/write. Sin delegación anidada. Pi tiene seis archivos propios, no modifica builtin del proveedor. El sistema de permisos es extensión nativa; doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
+Lectores Stack usan tools `read, grep, find, ls`; implementer/generalist incluyen bash/edit/write. Sin delegación anidada. Pi tiene seis archivos propios, no modifica builtin del proveedor. El sistema de permisos es extensión nativa. Si `extensions/pi-permission-system/config.json` no existe, Stack lo crea con `yoloMode` y deny de rutas de secretos; uno existente se conserva intacto y la desinstalación no lo retira. Doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
 
 **Contexto de los subagentes:** pi-subagents arranca los agentes propios con prompt limpio. Cada uno declara `inheritProjectContext` e `inheritGlobalContext` para recibir los `AGENTS.md` de proyecto y global, y `skills: lean-code` cuando su prompt la nombra; no heredan el catálogo completo de skills.
 

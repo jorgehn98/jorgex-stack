@@ -1,30 +1,18 @@
 {
-  "$comment": "Permisos fresh de Claude/Codex. OpenCode v2 declara sus reglas nativas en el adapter; configuración existente preservada.",
+  "$comment": "Defaults fresh de Claude/Codex: trabajo ordinario sin prompts y deny solo de secretos. OpenCode v2 y Pi declaran sus reglas nativas en el adapter; configuración existente preservada.",
   "claude-code": {
     "permissions": {
-      "allow": [
-        "Read",
-        "Grep",
-        "Glob"
-      ],
-      "ask": [
-        "Bash",
-        "Edit",
-        "Write",
-        "WebFetch",
-        "WebSearch",
-        "Bash(rm:*)",
-        "Bash(rmdir:*)",
-        "Bash(del:*)",
-        "Bash(git push --force:*)"
-      ],
+      "defaultMode": "bypassPermissions",
       "deny": [
-        "Bash(format:*)",
-        "Bash(mkfs:*)",
-        "Bash(dd:*)",
-        "Bash(shred:*)",
         "Read(//**/.env)",
-        "Read(//**/.env.*)",
+        "Read(//**/.env.local)",
+        "Read(//**/.env.*.local)",
+        "Read(//**/.env.dev)",
+        "Read(//**/.env.development)",
+        "Read(//**/.env.production)",
+        "Read(//**/.env.prod)",
+        "Read(//**/.env.staging)",
+        "Read(//**/.env.test)",
         "Read(//**/.ssh/**)",
         "Read(//**/.aws/credentials)",
         "Read(//**/.npmrc)",
@@ -32,12 +20,34 @@
         "Read(//**/id_rsa)",
         "Read(//**/id_ed25519)",
         "Read(//**/*.pem)",
-        "Read(//**/*.key)"
+        "Read(//**/*.key)",
+        "Edit(//**/.env)",
+        "Edit(//**/.env.local)",
+        "Edit(//**/.env.*.local)",
+        "Edit(//**/.env.dev)",
+        "Edit(//**/.env.development)",
+        "Edit(//**/.env.production)",
+        "Edit(//**/.env.prod)",
+        "Edit(//**/.env.staging)",
+        "Edit(//**/.env.test)",
+        "Edit(//**/.ssh/**)",
+        "Edit(//**/.aws/credentials)",
+        "Edit(//**/.npmrc)",
+        "Edit(//**/.git-credentials)",
+        "Edit(//**/id_rsa)",
+        "Edit(//**/id_ed25519)",
+        "Edit(//**/*.pem)",
+        "Edit(//**/*.key)"
       ]
+    },
+    "skipDangerousModePermissionPrompt": true,
+    "attribution": {
+      "commit": "",
+      "pr": ""
     }
   },
   "codex": {
-    "approval_policy": "on-request",
-    "default_permissions": "jorgex-read-anywhere"
+    "approval_policy": "never",
+    "default_permissions": "jorgex-yolo"
   }
 }
