@@ -14,7 +14,7 @@ vi.mock("../src/lib/paths.js", async (original) => ({
   get HOME() { return isolated.root; },
   dataDir: () => path.join(isolated.root, ".jorgex-stack"),
 }));
-const logs = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+const logs = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), step: vi.fn() }));
 vi.mock("@clack/prompts", () => ({ log: logs }));
 
 let root: string;
