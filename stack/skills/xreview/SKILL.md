@@ -53,7 +53,8 @@ Resolve the base in this order; never default to `main`:
 - **Fix-check**: verify the finding, its correction and the nearby regression risk, preferably with deterministic evidence.
 - **Delta review**: review changed hunks and affected contracts when a fix invalidates coverage or adds risk; reopen only the relevant reviewer.
 - **Full review**: only when the effective diff or integration context changed too broadly to keep the earlier coverage.
-- After a retarget or a change to the parent candidate, recompute diff and merge-base even if the head is unchanged. An unrelated advance of the production branch does not invalidate coverage by itself.
+- After a retarget or a rewritten parent in stacked PRs, recompute diff and merge-base even if the head is unchanged.
+- The base branch advancing does not invalidate coverage or call for a new review. The base is integrated once, when the PR's merge turn starts; only one PR per repository is in that turn at a time.
 - If fixes keep failing, reconsider cause and approach instead of relaunching the same cycle.
 - Stop when no valid blocker remains, fixes are verified and coverage of the current candidate is justified.
 

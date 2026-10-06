@@ -84,6 +84,8 @@ docs/
 - Mark Ready only after implementation and verification; Ready is not a trigger to start review.
 - Verify required checks for the current candidate before integration.
 - Merge only on explicit user request. A Ready PR or intermediate merge does not close the whole objective.
+- Work on PRs in parallel, but run one merge turn per repository at a time, in the order the user gives. A base that advanced does not return a PR to draft; integrate it once when that turn starts.
+- After the merge order you may enable auto-merge on that PR instead of watching its checks; never enable it without the order.
 - Do not add AI signatures or `Co-Authored-By` lines.
 - Use native completion notifications instead of polling when available.
 - Reuse an agent for the same problem, not as a permanent specialist for unrelated objectives.
