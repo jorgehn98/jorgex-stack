@@ -37,6 +37,7 @@ Resolve the base in this order; never default to `main`:
 
 - Zero to three reviewers. Zero does not waive deterministic verification.
 - Give each one its primary scope (paths or hunks and the risk it owns) and the support context it needs, not the whole parent conversation.
+- Hand over the diff text and the SHAs: reviewers cannot run Git.
 - All reviewers are read-only. The existing implementer applies approved fixes and simplifications. No comment writer, tester or specialist chain.
 - A writer finishing, a commit, a test run or marking Ready does not trigger a review.
 

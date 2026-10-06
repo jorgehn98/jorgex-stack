@@ -19,9 +19,6 @@ Use only the sections that apply; do not leave empty headings. Delimit paths and
 ## Decisions
 [Settled choices about modules, interfaces and contracts, with the reason. No paths or snippets unless they encode a decision.]
 
-## Testing decisions
-[Risks that matter and where they are protected.]
-
 ## Out of scope
 [What is deliberately excluded.]
 ```

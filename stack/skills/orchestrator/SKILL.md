@@ -34,7 +34,7 @@ Own the result, not a procession of agents.
 | simplifier | Material complexity in a change, using `lean-code` | Read-only |
 
 - Work directly when a handoff adds little value.
-- Readers receive the diff and history from you; they have no shell.
+- Readers receive the diff and history from you; they do not use a shell.
 - For a direct simplification, assign implementer with `lean-code`; no prior simplifier pass is required.
 
 ## Delegate

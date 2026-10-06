@@ -35,7 +35,7 @@ spawn: false
 
 ## Limits
 
-- No writes, unrestricted shell or subdelegation. Do not apply migrations, deploy or change data.
+- No writes or subdelegation. Do not use a shell, even where the runtime leaves one available. Do not apply migrations, deploy or change data.
 - Report security risks as evidence; a full audit belongs to security-auditor.
 - An analysis result is not permission to implement.
 

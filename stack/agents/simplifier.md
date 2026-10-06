@@ -16,7 +16,7 @@ spawn: false
 
 ## Inputs
 
-- Use the assigned scope: recently modified code unless an audit scope is explicit.
+- Use the diff and scope supplied by the coordinator: recently modified code unless an audit scope is explicit.
 - Follow the conventions of the project and the touched files; do not assume a language or framework.
 
 ## Order of analysis
@@ -41,7 +41,7 @@ spawn: false
 ## Limits
 
 - Preserve required behavior, safety and useful tests.
-- Do not edit files, request broader tools, use unrestricted shell or subdelegate.
+- Do not edit files, request broader tools or subdelegate. Do not use a shell, even where the runtime leaves one available.
 - A direct simplification assignment belongs to implementer with `lean-code` and needs no prior simplifier pass.
 
 ## Result

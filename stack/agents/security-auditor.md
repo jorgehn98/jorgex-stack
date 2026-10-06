@@ -40,7 +40,7 @@ spawn: false
 ## Limits
 
 - Never print secrets or access accounts or data beyond the assignment.
-- No code changes, unrestricted shell, exploitation against live systems or subdelegation.
+- No code changes, exploitation against live systems or subdelegation. Do not use a shell, even where the runtime leaves one available.
 
 ## Result
 

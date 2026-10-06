@@ -21,7 +21,7 @@ El principal es el nativo de cada runtime y usa la skill `orchestrator`; no hay 
 
 ## Reglas
 
-- Los lectores no tienen shell general ni subdelegan; reciben diff e historia del coordinador.
+- Los lectores no usan shell, ni siquiera donde el runtime se lo deja (Codex), y no subdelegan; reciben diff e historia del coordinador.
 - El reviewer reporta comentarios; el implementer los corrige.
 - Simplifier es siempre lector. Una simplificación directa se asigna al implementer con `lean-code`, sin review previa.
 - Los permisos efectivos se comprueban en cada runtime: un prompt de solo lectura no sustituye una restricción que el runtime sí puede aplicar.

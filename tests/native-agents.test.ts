@@ -52,7 +52,7 @@ describe("native six-agent canon", () => {
       // pi-subagents starts custom agents with a clean prompt; both flags are needed for ~/.pi/agent/AGENTS.md.
       expect(frontmatter).toContain("inheritProjectContext: true\ninheritGlobalContext: true\n");
       expect(frontmatter).not.toContain("inheritSkills");
-      expect(/^skills: lean-code$/m.test(frontmatter)).toBe(agent.body.includes("`lean-code`"));
+      expect(/^skills: lean-code$/m.test(frontmatter), agent.name).toBe(agent.name === "implementer" || agent.name === "simplifier");
     }
   });
 

@@ -1,3 +1,5 @@
+<!-- Modified by JorgeX Stack from the upstream skill. -->
+
 # MCP Server Evaluation Guide
 
 ## Overview

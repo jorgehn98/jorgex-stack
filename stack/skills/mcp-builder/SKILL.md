@@ -12,10 +12,10 @@ Create MCP (Model Context Protocol) servers that enable LLMs to interact with ex
 
 ## Scope in JorgeX Stack
 
-Modified from the upstream skill: this section and the wording of sections 1.1, 1.4 and Phase 4 were changed by JorgeX Stack.
+This file and the references of this skill have been modified by JorgeX Stack from the upstream skill.
 
 - Size the server to the request. Implement the tools the stated use case needs; add broader API coverage only when asked.
-- Phase 4 is optional: create evaluations when the user asks for them or the server is going to be published, with a number of questions proportional to the tool surface.
+- Phase 4 is optional: create evaluations when the user asks for them or the server is going to be published, with a number of questions proportional to the tool surface. The ten questions in the evaluation guide are a maximum for a full server, not a requirement.
 - Model-based evaluations, paid API calls, installations and external effects need explicit authorization. Do not run them to verify an edit.
 
 ---

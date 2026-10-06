@@ -40,16 +40,17 @@ it("confirms the shared destructive scope and never retries a partial operation 
   expect(h.messages.join(" ")).toContain("pendiente");
 });
 it("explains the permission policy before a configuration unit can be applied", async () => {
-  const h = harness(["install", "config", "pi", "back", "back", "back", "exit"]);
+  const h = harness(["install", "config", "pi", "back", "back", "back", "update", "all", "pi", "back", "back", "back", "exit"]);
   await runMenu(h.operations, h.ui, true);
   expect(h.operate).not.toHaveBeenCalled();
+  expect(h.messages.filter((message) => message.includes("Permisos"))).toHaveLength(2);
   const notice = h.messages.find((message) => message.includes("Permisos"))!;
   expect(notice).toMatch(/sin prompts/);
   expect(notice).toMatch(/existente se conserva/);
   expect(notice).toMatch(/Codex.*\.env/);
 });
 it("does not show the permission notice for scopes that never write permissions", async () => {
-  const h = harness(["install", "skills", "back", "back", "doctor", "config", "pi", "back", "back", "back", "exit"]);
+  const h = harness(["install", "skills", "back", "back", "doctor", "config", "pi", "back", "back", "back", "uninstall", "all", "pi", "back", "back", "back", "exit"]);
   await runMenu(h.operations, h.ui, true);
   expect(h.messages.some((message) => message.includes("Permisos"))).toBe(false);
 });

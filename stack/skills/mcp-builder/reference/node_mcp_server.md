@@ -1,3 +1,5 @@
+<!-- Modified by JorgeX Stack from the upstream skill. -->
+
 # Node/TypeScript MCP Server Implementation Guide
 
 ## Overview
