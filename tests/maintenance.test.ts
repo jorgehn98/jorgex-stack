@@ -76,32 +76,23 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(ctx.warnings.join("\n")).toMatch(/ordinary|sensitive/i);
   });
 
-  it("codex: la config fresca publica jorgex-read-anywhere sin sandbox_mode", () => {
+  it("codex: la config fresca no pregunta y deniega solo directorios de credenciales", () => {
     const ctx = makeCtx("codex");
     const [action] = codexAdapter.planMainConfig(mcp(), ctx);
     const fresh = (action as { content: string }).content;
-    expect(fresh).toContain('approval_policy = "on-request"');
-    expect(fresh).toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(fresh).toContain("[permissions.jorgex-read-anywhere]");
-    expect(fresh).toContain(":workspace");
-    expect(fresh).toContain("*.env");
-    expect(fresh).not.toContain('sandbox_mode = "workspace-write"');
-    expect(readTomlSection(fresh, "permissions.jorgex-read-anywhere")?.trimEnd()).toBe('extends = ":workspace"');
-    expect(readTomlSection(fresh, "permissions.jorgex-read-anywhere.filesystem")?.trimEnd()).toBe(
-      '":root" = "read"\n"~/.ssh/**" = "deny"\n"~/.aws/credentials" = "deny"\n"~/.npmrc" = "deny"\n"~/.git-credentials" = "deny"',
+    expect(fresh).toContain('approval_policy = "never"');
+    expect(fresh).toContain('default_permissions = "jorgex-yolo"');
+    expect(fresh).not.toContain("sandbox_mode");
+    expect(readTomlSection(fresh, "permissions.jorgex-yolo")?.trimEnd()).toBe('extends = ":workspace"');
+    expect(readTomlSection(fresh, "permissions.jorgex-yolo.network")?.trimEnd()).toBe("enabled = true");
+    // Codex 0.158 + bubblewrap: dos o más ARCHIVOS denegados existentes rompen
+    // todo el sandbox; solo se deniegan directorios. `:root = write` tampoco arranca.
+    expect(readTomlSection(fresh, "permissions.jorgex-yolo.filesystem")?.trimEnd()).toBe(
+      '":root" = "read"\n"~" = "write"\n"~/.ssh" = "deny"\n"~/.aws" = "deny"',
     );
-    expect(readTomlSection(fresh, 'permissions.jorgex-read-anywhere.filesystem.:workspace_roots')?.trimEnd()).toBe(
-      '"." = "write"\n"*.env" = "deny"\n"*.env.*" = "deny"\n".ssh/**" = "deny"\n".aws/credentials" = "deny"\n".npmrc" = "deny"\n".git-credentials" = "deny"\n"**/id_rsa" = "deny"\n"**/id_ed25519" = "deny"\n"**/*.pem" = "deny"\n"**/*.key" = "deny"',
-    );
-    expect(fresh).toContain(".ssh");
-    expect(fresh).toContain(".aws/credentials");
-    expect(fresh).toContain(".npmrc");
-    expect(fresh).toContain(".git-credentials");
-    expect(fresh).toContain("id_rsa");
-    expect(fresh).toContain("id_ed25519");
-    expect(fresh).toContain("*.pem");
-    expect(fresh).toContain("*.key");
-    expect(ctx.warnings.join("\n")).toMatch(/read-anywhere|broad/i);
+    expect(readTomlSection(fresh, "permissions.jorgex-yolo.filesystem.:workspace_roots")?.trimEnd()).toBe('"." = "write"');
+    expect(fresh).not.toMatch(/\.env|\.pem|\.key|\.npmrc|credentials"/);
+    expect(ctx.warnings.join("\n")).toMatch(/\.env/);
   });
 
   it("codex: una config no vacía sin default_permissions ni [permissions.*] no recibe el perfil", () => {
@@ -111,8 +102,8 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     const content = (action as { content: string }).content;
 
     expect(content).toContain('other = "value"');
-    expect(content).not.toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(readTomlSection(content, "permissions.jorgex-read-anywhere")).toBeNull();
+    expect(content).not.toContain('default_permissions = "jorgex-yolo"');
+    expect(readTomlSection(content, "permissions.jorgex-yolo")).toBeNull();
   });
 
   it("codex: la config custom conserva default_permissions y no auto-migra el perfil", () => {
@@ -122,7 +113,7 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     expect(existing).toContain('approval_policy = "never"');
     expect(existing).toContain('default_permissions = "custom"');
     expect(existing).toContain('sandbox_mode = "workspace-write"');
-    expect(existing).not.toContain('[permissions.jorgex-read-anywhere]');
+    expect(existing).not.toContain('[permissions.jorgex-yolo]');
   });
 
   it.each(["read-only", "danger-full-access"] as const)(
@@ -134,8 +125,8 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
       const content = (action as { content: string }).content;
 
       expect(content).toContain(`sandbox_mode = "${sandboxMode}"`);
-      expect(content).not.toContain('default_permissions = "jorgex-read-anywhere"');
-      expect(content).not.toContain('[permissions.jorgex-read-anywhere]');
+      expect(content).not.toContain('default_permissions = "jorgex-yolo"');
+      expect(content).not.toContain('[permissions.jorgex-yolo]');
     },
   );
 
@@ -147,8 +138,8 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
 
     const custom = (codexAdapter.planMainConfig(mcp(), makeCtx("codex"))[0] as { content: string }).content;
     expect(custom).toContain('sandbox_mode = "read-only" # custom');
-    expect(custom).not.toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(custom).not.toContain('[permissions.jorgex-read-anywhere]');
+    expect(custom).not.toContain('default_permissions = "jorgex-yolo"');
+    expect(custom).not.toContain('[permissions.jorgex-yolo]');
   });
 
   it("codex: la config con [permissions.custom] no recibe default_permissions ni el perfil jorgex", () => {
@@ -156,8 +147,8 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     const custom = (codexAdapter.planMainConfig(mcp(), makeCtx("codex"))[0] as { content: string }).content;
     expect(custom).toContain('approval_policy = "never"');
     expect(custom).toContain('[permissions.custom]');
-    expect(custom).not.toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(custom).not.toContain('[permissions.jorgex-read-anywhere]');
+    expect(custom).not.toContain('default_permissions = "jorgex-yolo"');
+    expect(custom).not.toContain('[permissions.jorgex-yolo]');
 
     writeText(path.join(tmp, "config.toml"), 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n');
 
@@ -165,8 +156,8 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     const preserved = (legacy as { content: string }).content;
     expect(preserved).toContain('approval_policy = "on-request"');
     expect(preserved).toContain('sandbox_mode = "workspace-write"');
-    expect(preserved).not.toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(preserved).not.toContain("[permissions.jorgex-read-anywhere]");
+    expect(preserved).not.toContain('default_permissions = "jorgex-yolo"');
+    expect(preserved).not.toContain("[permissions.jorgex-yolo]");
   });
 
   it("codex: el legacy workspace-write con comentario inline se preserva sin perfil jorgex", () => {
@@ -178,8 +169,8 @@ describe("permisos por defecto: lectura externa sin write-anywhere", () => {
     const preserved = (codexAdapter.planMainConfig(mcp(), makeCtx("codex"))[0] as { content: string }).content;
     expect(preserved).toContain('approval_policy = "on-request"');
     expect(preserved).toContain('sandbox_mode = "workspace-write" # old default');
-    expect(preserved).not.toContain('default_permissions = "jorgex-read-anywhere"');
-    expect(preserved).not.toContain("[permissions.jorgex-read-anywhere]");
+    expect(preserved).not.toContain('default_permissions = "jorgex-yolo"');
+    expect(preserved).not.toContain("[permissions.jorgex-yolo]");
   });
 });
 

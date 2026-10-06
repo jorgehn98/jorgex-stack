@@ -43,7 +43,7 @@
     }
   },
   "codex": {
-    "approval_policy": "on-request",
-    "default_permissions": "jorgex-read-anywhere"
+    "approval_policy": "never",
+    "default_permissions": "jorgex-yolo"
   }
 }

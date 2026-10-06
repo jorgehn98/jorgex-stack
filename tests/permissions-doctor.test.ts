@@ -22,7 +22,7 @@ it.each(["claude-code", "opencode", "codex"] as const)("reports differing %s per
   const canary = "private-permission-canary";
   const initial = fs.readFileSync(config, "utf8");
   const content = runtime === "codex"
-    ? initial.replace('default_permissions = "jorgex-read-anywhere"', 'default_permissions = "personal"') + `\n# ${canary}\n`
+    ? initial.replace('default_permissions = "jorgex-yolo"', 'default_permissions = "personal"') + `\n# ${canary}\n`
     : JSON.stringify({ ...JSON.parse(initial), permissions: runtime === "opencode" ? [{ action: "shell", resource: canary, effect: "deny" }] : { allow: [canary] } });
   fs.writeFileSync(config, content);
   await runDoctor(options(runtime));

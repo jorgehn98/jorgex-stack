@@ -151,44 +151,39 @@ function assertCompatibleContext7(server: CanonicalMcp["servers"][string], secti
 }
 
 const CODEX_PERMISSION_HEADERS = {
-  base: "permissions.jorgex-read-anywhere",
-  filesystem: "permissions.jorgex-read-anywhere.filesystem",
-  workspaceRoots: 'permissions.jorgex-read-anywhere.filesystem.":workspace_roots"',
+  base: "permissions.jorgex-yolo",
+  network: "permissions.jorgex-yolo.network",
+  filesystem: "permissions.jorgex-yolo.filesystem",
+  workspaceRoots: 'permissions.jorgex-yolo.filesystem.":workspace_roots"',
 } as const;
 
-/** Single source for the profile emitted below and checked by the diagnostic. */
+/**
+ * Single source for the profile emitted below and checked by the diagnostic.
+ * Solo se deniegan DIRECTORIOS: con Codex 0.158 y bubblewrap, dos o más
+ * archivos denegados existentes hacen fallar todos los comandos del sandbox, y
+ * `":root" = "write"` no arranca. Ampliar a archivos exige volver a probarlo.
+ */
 const CODEX_PERMISSION_PROFILE = {
   base: [["extends", ":workspace"]],
+  network: [["enabled", true]],
   filesystem: [
     [":root", "read"],
-    ["~/.ssh/**", "deny"],
-    ["~/.aws/credentials", "deny"],
-    ["~/.npmrc", "deny"],
-    ["~/.git-credentials", "deny"],
+    ["~", "write"],
+    ["~/.ssh", "deny"],
+    ["~/.aws", "deny"],
   ],
-  workspaceRoots: [
-    [".", "write"],
-    ["*.env", "deny"],
-    ["*.env.*", "deny"],
-    [".ssh/**", "deny"],
-    [".aws/credentials", "deny"],
-    [".npmrc", "deny"],
-    [".git-credentials", "deny"],
-    ["**/id_rsa", "deny"],
-    ["**/id_ed25519", "deny"],
-    ["**/*.pem", "deny"],
-    ["**/*.key", "deny"],
-  ],
+  workspaceRoots: [[".", "write"]],
 } as const;
 
 const CODEX_PERMISSION_SECTIONS = [
   { header: CODEX_PERMISSION_HEADERS.base, entries: CODEX_PERMISSION_PROFILE.base, quoteKeys: false },
+  { header: CODEX_PERMISSION_HEADERS.network, entries: CODEX_PERMISSION_PROFILE.network, quoteKeys: false },
   { header: CODEX_PERMISSION_HEADERS.filesystem, entries: CODEX_PERMISSION_PROFILE.filesystem, quoteKeys: true },
   { header: CODEX_PERMISSION_HEADERS.workspaceRoots, entries: CODEX_PERMISSION_PROFILE.workspaceRoots, quoteKeys: true },
 ] as const;
 
 function renderCodexPermissionEntries(
-  entries: readonly (readonly [string, string])[],
+  entries: readonly (readonly [string, string | boolean])[],
   quoteKeys: boolean,
 ): string {
   return entries.map(([key, value]) => `${quoteKeys ? JSON.stringify(key) : key} = ${JSON.stringify(value)}`).join("\n");
@@ -292,13 +287,18 @@ export const codexAdapter: Adapter = {
       }
 
       ctx.warnings.push(
-        "Codex: fresh config enables read-anywhere via the jorgex-read-anywhere permission profile; broad local reads can expose secrets not covered by deny rules.",
+        "Codex: fresh config never asks for approval and runs in the provider sandbox with home-wide writes and network. Only ~/.ssh and ~/.aws are denied; .env files, .npmrc and loose keys are NOT protected.",
       );
 
       content = upsertTomlSection(
         content,
         CODEX_PERMISSION_HEADERS.base,
         renderCodexPermissionEntries(CODEX_PERMISSION_PROFILE.base, false),
+      );
+      content = upsertTomlSection(
+        content,
+        CODEX_PERMISSION_HEADERS.network,
+        renderCodexPermissionEntries(CODEX_PERMISSION_PROFILE.network, false),
       );
       content = upsertTomlSection(
         content,
