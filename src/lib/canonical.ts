@@ -121,6 +121,17 @@ export const SECRET_PATH_PATTERNS = [
 ] as const;
 export const SECRET_PATH_EXCEPTION = "*.env.example";
 
+/**
+ * El nombre canónico o una ruta absoluta al mismo binario. Un proceso lanzado
+ * sin el PATH de la shell interactiva (un servicio) puede resolver el nombre a
+ * otra copia, así que fijar la ruta es una personalización legítima.
+ */
+export function isBrowserControlCommand(value: unknown, command: string): boolean {
+  return typeof value === "string" && (value === command || (path.isAbsolute(value) && path.basename(value) === command));
+}
+
+export const BROWSER_CONTROL_INCOMPATIBLE_WARNING = "el MCP 'browser-control' existente no equivale al launcher nativo (remoto, deshabilitado u otro comando); se conserva intacto y sin reclamar. Browser Control queda bajo tu configuración y Stack no proyecta su guía.";
+
 export const BROWSER_CONTROL_GUIDANCE = [
   "## Browser Control",
   "",

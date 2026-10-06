@@ -45,8 +45,9 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
         }
       }
       if (configSelected && (id === "pi" || id === "opencode")) {
-        ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
-        if (!opts.targetDir && !lookPath("browser-control-mcp")) throw new Error("Browser Control ausente. Requiere Node>=22.19, extensión Chromium y adopción explícita de pestaña; doctor no inicia el relay.");
+        // Mismo criterio que Aplicar: sin binario resoluble no se espera ni el MCP ni su guía.
+        if (opts.targetDir || lookPath("browser-control-mcp")) ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
+        else ctx.warnings.push("Browser Control ausente: no se comprueba su MCP ni su guía. Requiere Node>=22.19, extensión Chromium y adopción explícita de pestaña; doctor no lo instala ni inicia el relay.");
       }
       const drift = diffPlan(buildScopedPlan(adapter, ctx, scope)).filter((change) => change.status !== "unchanged");
       for (const warning of ctx.warnings) p.log.warn(warning);
