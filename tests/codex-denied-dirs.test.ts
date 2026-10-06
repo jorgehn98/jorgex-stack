@@ -79,12 +79,41 @@ it("does not create directories with --target-dir", async () => {
   expect(fs.existsSync(aws())).toBe(false);
 });
 
-it("does not create directories when an existing configuration is preserved without seeding", async () => {
-  fs.mkdirSync(configDir);
-  fs.writeFileSync(path.join(configDir, "config.toml"), 'other = "value"\n');
+/** A machine seeded by an earlier release: profile active, ~/.aws never created, deny entry in an equivalent TOML spelling. */
+async function seededWithoutAws(): Promise<string> {
   expect(await realInstall()).toBe(0);
-  expect(fs.readFileSync(path.join(configDir, "config.toml"), "utf8")).not.toContain("jorgex-yolo");
-  expect(fs.existsSync(ssh())).toBe(false);
+  fs.rmdirSync(aws());
+  const file = path.join(configDir, "config.toml");
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace('"~/.aws" = "deny"', '"~/.aws"="deny" # credentials'));
+  vi.clearAllMocks();
+  return file;
+}
+
+it("repairs a preserved configuration whose active jorgex-yolo profile denies a missing directory", async () => {
+  const file = await seededWithoutAws();
+  fs.chmodSync(ssh(), 0o750);
+  const preserved = fs.readFileSync(file, "utf8");
+  expect(await realInstall()).toBe(0);
+  expect(mode(aws())).toBe(0o700);
+  expect(fs.readdirSync(aws())).toEqual([]);
+  expect(mode(ssh())).toBe(0o750);
+  expect(fs.readFileSync(file, "utf8")).toBe(preserved);
+  expect(warnings()).toContain("~/.aws");
+  expect(warnings()).toContain("created empty with mode 700");
+  expect(warnings()).not.toContain("~/.ssh");
+});
+
+it("does not repair a preserved configuration on dry-run", async () => {
+  await seededWithoutAws();
+  expect(await realInstall({ dryRun: true })).toBe(0);
+  expect(fs.existsSync(aws())).toBe(false);
+});
+
+it("does not create directories when the preserved configuration activates another profile", async () => {
+  const file = await seededWithoutAws();
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace('default_permissions = "jorgex-yolo"', 'default_permissions = "personal"'));
+  expect(await realInstall()).toBe(0);
+  expect(fs.readFileSync(file, "utf8")).toContain('default_permissions = "personal"');
   expect(fs.existsSync(aws())).toBe(false);
 });
 

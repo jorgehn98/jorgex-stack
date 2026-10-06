@@ -41,8 +41,9 @@ export type FileAction =
       content: string;
       /**
        * Directories this content needs to exist to be usable. The pipeline
-       * creates the missing ones (mode 700) right before writing and never
-       * changes an existing one. They are not owned: uninstall keeps them.
+       * creates the missing ones (mode 700) when it applies this action, even
+       * if the file itself is already current, and never changes an existing
+       * one. They are not owned: uninstall keeps them.
        */
       ensureDirs?: string[];
       mcpOwnership?: McpOwnershipChange[];
