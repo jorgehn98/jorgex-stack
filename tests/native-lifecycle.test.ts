@@ -19,6 +19,7 @@ vi.mock("../src/lib/paths.js", async (original) => ({
 let root: string;
 beforeEach(() => {
   root = fs.mkdtempSync("/var/tmp/jx-native-lifecycle-"); isolated.root = root;
+  vi.stubEnv("ENGRAM_DATA_DIR", ""); // the installer must read Engram's record under the per-test HOME, never the real one
   vi.spyOn(detection, "engramVersion").mockReturnValue("3.0.0");
   const name = expectedEngramAssetName("3.0.0", process.platform, process.arch);
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ tag_name: "v3.0.0", assets: [{
@@ -26,7 +27,7 @@ beforeEach(() => {
     browser_download_url: `https://github.com/Gentleman-Programming/engram/releases/download/v3.0.0/${name}`,
   }] }))));
 });
-afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 it("projects Pi twice without acquisition and preserves choices, foreign packages and official host layout", async () => {
   const config = path.join(root, "pi-agent");

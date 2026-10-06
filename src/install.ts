@@ -117,9 +117,12 @@ export function buildScopedPlan(adapter: Adapter, ctx: InstallContext, scope: Op
 }
 /** True when Engram already records a protocol mode for the runtime, or its record cannot be read. */
 function hasEngramProtocolMode(id: RuntimeId): boolean {
-  const raw = readTextIfExists(path.join(process.env.ENGRAM_DATA_DIR || path.join(HOME, ".engram"), "protocol-mode.json"));
-  if (raw === null) return false;
-  try { return typeof (JSON.parse(raw) as Record<string, unknown>)[id] === "string"; } catch { return true; }
+  // Engram ignora un ENGRAM_DATA_DIR en blanco y usa ~/.engram; se replica para leer el mismo registro.
+  const dir = process.env.ENGRAM_DATA_DIR?.trim() ? process.env.ENGRAM_DATA_DIR : path.join(HOME, ".engram");
+  try {
+    const raw = readTextIfExists(path.join(dir, "protocol-mode.json"));
+    return raw !== null && typeof (JSON.parse(raw) as Record<string, unknown>)[id] === "string";
+  } catch { return true; }
 }
 
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
