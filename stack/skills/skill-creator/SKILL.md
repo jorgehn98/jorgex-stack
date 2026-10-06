@@ -29,6 +29,14 @@ Then after the skill is done (but again, the order is flexible), you can also ru
 
 Cool? Cool.
 
+## Scope in JorgeX Stack
+
+Modified from the upstream skill: this section was added by JorgeX Stack; the rest is unchanged.
+
+- Three separate activities: **create or edit** a skill, **evaluate** it, and **optimize its description**. Only the first is the default; run the other two when the user asks for them.
+- Use what the current runtime provides. Parallel subagents, a CLI that calls a model (`claude -p`) and a graphical browser may be missing: use the fallbacks described below or skip that step and say so. Do not build wrappers to replace them.
+- Evaluations and description optimization spend model calls. Those, installations and external effects need explicit authorization; do not run them to verify an edit.
+
 ## Communicating with the user
 
 The skill creator is liable to be used by people across a wide range of familiarity with coding jargon. If you haven't heard (and how could you, it's only very recently that it started), there's a trend now where the power of Claude is inspiring plumbers to open up their terminals, parents and grandparents to google "how to install npm". On the other hand, the bulk of users are probably fairly computer-literate.
