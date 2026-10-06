@@ -36,6 +36,17 @@ export const executeNative: NativeExecutor = (bin, args, env) => {
     return execFileSync(invocation.command, invocation.args, { env: { ...process.env, ...env }, encoding: "utf8", timeout: 120_000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   } catch { throw new Error(`Falló ${path.basename(bin)} ${args.slice(0, 2).join(" ")}; revisa el proveedor. Puede haber cambios parciales.`); }
 };
+/**
+ * Announces each native step before it runs. Synchronous subprocesses block the event loop, so a spinner could not
+ * animate. Only the binary name and its leading subcommand words are shown: never paths, values or subprocess output.
+ */
+export function announceNative(execute: NativeExecutor): NativeExecutor {
+  return (bin, args, env) => {
+    const end = args.findIndex((arg) => !/^[a-z][a-z-]*$/.test(arg));
+    p.log.step(`Paso nativo en curso: ${[path.parse(bin).name, ...args.slice(0, end < 0 ? args.length : end)].join(" ")}`);
+    return execute(bin, args, env);
+  };
+}
 export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   runtimes: RuntimeId[];
   scope?: OperationScope;
@@ -45,7 +56,8 @@ export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   writingStyle?: WritingStyleSnapshot;
   engram?: boolean;
   engramBin?: string | null;
-  backupEngramData?: boolean;
+  /** Explicit consent to replace an outdated Engram binary. Without it and without a TTY the binary is kept. */
+  updateEngramBinary?: boolean;
   command?: "install" | "update";
   execute?: NativeExecutor;
   detect?: (runtime: RuntimeId) => ReturnType<Adapter["detect"]>;
@@ -168,7 +180,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   if (opts.targetDir && opts.runtimes.length !== 1) throw new Error("--target-dir requiere un runtime.");
   const state = stateDirectory(opts.targetDir);
   const manifestPath = path.join(state, "manifest.json");
-  const execute = opts.execute ?? executeNative;
+  const execute = announceNative(opts.execute ?? executeNative);
   let engram = opts.engramBin === undefined ? opts.targetDir ? null : detectEngram() : opts.engramBin;
   const scope = opts.scope ?? { section: "all" };
   const configSelected = scope.section === "all" || scope.section === "config";
@@ -215,15 +227,13 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
             updateBin: currentBin,
             installedVersion: engramVersion(currentBin),
             beforeUpdate: async (version) => {
-              let approved = opts.backupEngramData;
+              let approved = opts.updateEngramBinary;
               if (approved === undefined) {
-                if (!process.stdin.isTTY) throw new Error("Engram requiere decisión explícita de respaldo antes de actualizar; no se modifica el binario.");
-                const answer = await p.confirm({ message: `¿Exportar todas las memorias y actualizar Engram al release oficial ${version}?`, initialValue: true });
+                if (!process.stdin.isTTY) throw new Error("Engram requiere consentimiento explícito antes de actualizar; no se modifica el binario.");
+                const answer = await p.confirm({ message: `¿Actualizar Engram al release oficial ${version}?`, initialValue: true });
                 approved = !p.isCancel(answer) && answer;
               }
-              if (!approved) throw new Error("Engram: actualización cancelada; respaldo no autorizado. Sin cambios.");
-              fs.mkdirSync(path.join(state, "backups"), { recursive: true });
-              execute(currentBin, ["export", path.join(state, "backups", `engram-export-${Date.now()}.json`), "--all"]);
+              if (!approved) throw new Error("Engram: actualización no autorizada. Sin cambios.");
               createBackup([currentBin], "engram-binary", path.join(state, "backups"));
             },
           });

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as p from "@clack/prompts";
 import { runInstall } from "../src/install.js";
 import { runUninstall } from "../src/uninstall.js";
 import { runUpdate } from "../src/update.js";
@@ -134,17 +135,52 @@ it.each(["claude-code", "codex"] as const)("refreshes complete official Engram o
   }
 });
 
-it.each(["install", "update"] as const)("%s resolves an outdated Engram but makes no changes when backup/update is declined", async (command) => {
+it.each(["install", "update"] as const)("%s resolves an outdated Engram but makes no changes when the binary update is declined", async (command) => {
   const bin = path.join(root, "engram"); fs.writeFileSync(bin, "previous binary", { mode: 0o755 });
   vi.mocked(detection.engramVersion).mockReturnValue("1.19.0");
   const execute = vi.fn(() => "");
   const operation = command === "install" ? runInstall : runUpdate;
-  expect(await operation({ runtimes: ["codex"], dryRun: false, yes: true, engramBin: bin, backupEngramData: false, execute,
+  expect(await operation({ runtimes: ["codex"], dryRun: false, yes: true, engramBin: bin, updateEngramBinary: false, execute,
     detect: () => ({ id: "codex", name: "Codex", installed: true, binPath: "/fake/codex", configDir: path.join(root, ".codex") }) })).toBe(1);
   expect(globalThis.fetch).toHaveBeenCalledOnce();
   expect(execute).not.toHaveBeenCalled();
   expect(fs.readFileSync(bin, "utf8")).toBe("previous binary");
   expect(fs.readdirSync(root)).toEqual(["engram"]);
+});
+
+it("replaces an outdated Engram after consent with a binary backup and no memory export", async () => {
+  const bin = path.join(root, "engram"); fs.writeFileSync(bin, "previous binary", { mode: 0o755 });
+  vi.mocked(detection.engramVersion).mockReturnValue("1.19.0");
+  const fetchMock = vi.mocked(globalThis.fetch);
+  const metadata = await (await fetchMock("")).text();
+  fetchMock.mockReset().mockResolvedValueOnce(new Response(metadata)).mockResolvedValueOnce(new Response("", { status: 503 }));
+  const execute = vi.fn(() => "");
+  expect(await runInstall({ runtimes: ["codex"], dryRun: false, yes: true, engramBin: bin, updateEngramBinary: true, execute,
+    detect: () => ({ id: "codex", name: "Codex", installed: true, binPath: "/fake/codex", configDir: path.join(root, ".codex") }) })).toBe(1);
+  // Consent reached the download (stubbed to fail closed): the binary was backed up first and never exported.
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(execute).not.toHaveBeenCalled();
+  const backups = path.join(root, ".jorgex-stack", "backups");
+  const [snapshot] = fs.readdirSync(backups);
+  expect(fs.readdirSync(backups)).toEqual([expect.stringMatching(/-engram-binary$/)]);
+  expect(fs.readFileSync(path.join(backups, snapshot!, "files", "0000-engram"), "utf8")).toBe("previous binary");
+  expect(fs.readFileSync(bin, "utf8")).toBe("previous binary");
+});
+
+it("announces each native step by name without arguments beyond subcommands or subprocess output", async () => {
+  const step = vi.spyOn(p.log, "step").mockImplementation(() => {});
+  const calls: string[][] = [];
+  expect(await runUpdate({ runtimes: ["codex"], dryRun: false, yes: true, engramBin: "/fake/engram", verifyEngram: async () => true,
+    execute: (_bin, args) => { calls.push(args); return "subprocess secret output"; },
+    detect: () => ({ id: "codex", name: "Codex", installed: true, binPath: "/fake/codex", configDir: path.join(root, ".codex") }) })).toBe(0);
+  const announced = step.mock.calls.map(([message]) => message);
+  expect(announced).toEqual([
+    "Paso nativo en curso: codex update",
+    "Paso nativo en curso: engram setup codex",
+    "Paso nativo en curso: codex plugin marketplace upgrade engram",
+    "Paso nativo en curso: codex plugin add",
+  ]);
+  expect(calls).toHaveLength(announced.length);
 });
 
 it("update resolves a current Engram without export/download and delegates the host to its native updater", async () => {
