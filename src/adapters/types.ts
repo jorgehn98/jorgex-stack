@@ -91,13 +91,12 @@ export interface AdapterPaths {
 }
 
 /**
- * Secciones retiradas (provider-only): Stack ya no las inyecta en ningún
- * runtime — el provider oficial (`engram setup` + plugin/MCP/skills oficiales)
- * es el único owner. Lista acotada SOLO para migración: install/uninstall
+ * Secciones retiradas: Engram pertenece al provider oficial y la guía
+ * browser-control se sustituye por el bloque browser. Install/uninstall
  * eliminan idempotentemente los bloques que versiones anteriores instalaron.
  * No añadir secciones activas aquí.
  */
-export const LEGACY_SYSTEM_PROMPT_SECTIONS = ["engram-protocol"] as const;
+export const LEGACY_SYSTEM_PROMPT_SECTIONS = ["engram-protocol", "browser-control"] as const;
 
 /**
  * Contrato mínimo de los recursos que todos los runtimes pueden proyectar.

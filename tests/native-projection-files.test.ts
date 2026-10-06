@@ -130,6 +130,27 @@ describe("native projection filesystem boundaries", () => {
     expect(diffPlan(planSystemPrompt(claudeCodeAdapter, ctx)).every((change) => change.status === "unchanged")).toBe(true);
   });
 
+  it.each([claudeCodeAdapter, codexAdapter, opencodeAdapter, piAdapter])("projects the separate browser module without duplicating legacy guidance (%s)", (adapter) => {
+    ctx.stackDir = path.resolve("stack");
+    ctx.configDir = path.join(root, adapter.id);
+    const paths = adapter.paths(ctx.configDir);
+    const target = paths.sharedPromptFile ?? paths.systemPromptFile;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "User policy\n\n<!-- jorgex:browser-control -->\nOld browser guide\n<!-- /jorgex:browser-control -->\n");
+    apply(planSystemPrompt(adapter, ctx));
+    const prompt = fs.readFileSync(target, "utf8");
+    const browser = /<!-- jorgex:browser -->\n([\s\S]*?)\n<!-- \/jorgex:browser -->/.exec(prompt)?.[1];
+    const core = /<!-- jorgex:system-prompt -->\n([\s\S]*?)\n<!-- \/jorgex:system-prompt -->/.exec(prompt)?.[1];
+    const module = fs.readFileSync(path.join(ctx.stackDir, "system-prompt", "browser-use.md"), "utf8").trim();
+    expect(browser).toContain(module);
+    expect(core).not.toContain(module);
+    expect(browser?.includes("browser-control-mcp")).toBe(adapter.id === "opencode" || adapter.id === "pi");
+    expect(prompt).toContain("User policy");
+    expect(prompt).not.toContain("Old browser guide");
+    expect(prompt).not.toContain("<!-- jorgex:browser-control -->");
+    expect(diffPlan(planSystemPrompt(adapter, ctx)).every((change) => change.status === "unchanged")).toBe(true);
+  });
+
   it("Pi Context7 preserves user entries and claims only a newly created entry", () => {
     ctx.stackDir = path.resolve("stack");
     ctx.configDir = path.join(root, "pi-agent");

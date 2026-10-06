@@ -575,14 +575,10 @@ export const opencodeAdapter: Adapter = {
   },
 
 
-  // OpenCode v2 no ofrece el selector Playwright CLI: se retira su
-  // guía en todos los casos, aunque la preferencia legacy siga activa, y se
-  // proyecta el bloque browser-control. Context7, writing-style y DevTools
-  // conservan su contrato condicional sin cambios.
   adaptSystemPromptSections(sections) {
     const adapted = { ...sections };
     delete adapted.playwright;
-    adapted.browser = BROWSER_CONTROL_GUIDANCE;
+    adapted.browser = [sections.browser, BROWSER_CONTROL_GUIDANCE].filter(Boolean).join("\n\n");
     return adapted;
   },
 

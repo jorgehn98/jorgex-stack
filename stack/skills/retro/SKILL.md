@@ -14,5 +14,3 @@ Check existing instructions and tools before recommending more rules or infrastr
 Present the few changes most likely to help, with evidence, expected benefit and uncertainty. Prefer deletion, consolidation or a better division of responsibility. Do not automatically add checks, agents, dependencies or permissions.
 
 Proposals need normal approval before implementation. A retrospective is not a mandatory phase after every task.
-
-Adapted from Matt Pocock's skills; see LICENSE.txt.

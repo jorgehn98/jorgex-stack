@@ -1,6 +1,6 @@
 {
   "name": "jorgex-stack",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Configuración compartida de skills, subagentes e integraciones nativas para Claude Code, Codex, OpenCode v2 y Pi oficial",
   "type": "module",
   "license": "MIT",

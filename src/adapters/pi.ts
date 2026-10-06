@@ -37,7 +37,9 @@ export const piAdapter: Adapter = {
   id: "pi",
   name: "Pi",
   detect: detectPi,
-  adaptSystemPromptSections(sections) { return { ...sections, browser: BROWSER_CONTROL_GUIDANCE }; },
+  adaptSystemPromptSections(sections) {
+    return { ...sections, browser: [sections.browser, BROWSER_CONTROL_GUIDANCE].filter(Boolean).join("\n\n") };
+  },
   planUnmerge(canonical, ctx) {
     const prompt = path.join(ctx.configDir, "AGENTS.md");
     const actions: FileAction[] = [{ kind: "write", target: prompt, content: removeSystemPromptSections(readTextIfExists(prompt) ?? "") }];
