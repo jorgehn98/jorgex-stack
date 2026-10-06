@@ -20,28 +20,42 @@ spawn: false
 - Confirm the real libraries in the manifest and touched files (state, fetching, forms, ORM) and use their API. Do not reimplement what an installed library already does.
 - Follow the conventions of the touched files and their neighbours; do not introduce a new pattern without need.
 - Use `lean-code` for significant code decisions; reuse it if already loaded. Prefer deleting an unnecessary mechanism over wrapping it.
-- Inspect real inputs, callers and enforced invariants before inventing edge cases. Do not assume legacy data exists.
+- Inspect real inputs, callers and enforced invariants before inventing edge cases.
 
-## Tests
+## Testing decision
 
-- Decide per change: the risk it introduces, the coverage that already protects it, the new behavior to protect, the closest reliable seam, and the action (add, update, reuse or no new test).
-- "No new test" must name the existing evidence. A small diff is not a reason: permissions, money and deletion are high risk in few lines.
-- Add a test first only for meaningful uncovered behavior or a regression. RED must fail for the behavioral reason, not for invalid setup, stale mocks or fixture noise.
-- Expected values must be independent of the implementation.
-- Do not assert CSS classes, decorative DOM, trivial wrappers or constants, the existence of a function, or internal mock choreography.
-- Test persistence, SQL, access policies, migrations and atomicity at the real boundary (database, filesystem, queue). A regex over SQL is not evidence.
+Make one decision per behavior change, before writing a test:
+
+1. **Risk**: the meaningful failure this change can introduce.
+2. **Existing protection**: the test that already catches it, if any.
+3. **New behavior**: the contract or regression that needs new protection.
+4. **Seam**: the cheapest test that can fail for the real regression.
+5. **Action**: add, update, reuse or no new test.
+
+- "No new test" names the existing evidence or the reason the change is mechanical. A small diff is not a reason: permissions, money and deletion are high risk in few lines.
+- Test first for business rules and calculations, real bugs, public contracts, authorization and tenant separation, billing, data integrity, and destructive, concurrent or idempotent behavior.
+- Styling, wiring, generated code, mechanical refactors and trivial callbacks rely on existing verification unless they change meaningful behavior.
+- One behavior has one authoritative test. Another layer must protect a different contract.
+
+## Writing tests
+
+- Work in vertical slices: one failing test, the minimal code that passes it, then refactor while green. Do not write all tests first.
+- RED must fail because the behavior is missing or broken, not because of invalid setup, stale mocks or fixture noise.
+- Match the seam to the risk: a pure rule at a focused unit test; a component interaction through stable semantics; persistence, access policies, migrations and atomicity at the real database, filesystem or queue; a public endpoint at its contract.
+- A broad test full of mocks can be weaker than a focused one, and a regex over SQL is not evidence of database behavior.
+- Expected values come from an independent source: a known literal, a worked example or the specification. Never recompute them the way the code does.
+- Do not assert CSS classes, decorative DOM, trivial wrappers or constants, the existence of a function, or mock call choreography.
 - Logic extracted to be tested must be the code production consumes in the same change; a tested copy outside the real path is false coverage.
+- Assert an expected error narrowly; unexpected stderr, logs and teardown failures stay visible.
 - Control only the relevant sources of non-determinism (time and zone, random IDs, ordering, shared state, filesystem, network) with isolated temporary fixtures.
 - Tests write only to temporary locations, never HOME, real configuration or user data. Inject the path when the code targets a real one.
-- Do not rewrite a test to hide a product regression. Another test layer must protect a different risk.
+- Do not rewrite a test to hide a product regression. Delete a lower-value test when a stronger one now protects the same behavior.
 
-## Verification and cleanup
+## Verification
 
-- Use the project's real runner with the narrowest command or filter; a documented direct command wins over wrappers. Never invoke something that installs a runner.
-- Run checks by coherent block, not per edit, and not the full suite by default.
-- On a flaky result keep the first failure. Do not retry until green or raise timeouts without a diagnosed cause.
-- If setup or repair rounds keep growing, reconsider the design instead of building another harness.
-- Arrange cleanup before creating temporary resources, bound execution, and verify cleanup afterwards.
+- Run the narrowest command or filter that covers the change, by coherent block rather than per edit. A documented direct command wins over wrappers.
+- On a flaky result keep the first failure and find its cause with a bounded number of repetitions; a larger timeout is not a fix.
+- If the suite or infrastructure a real risk needs is absent, report the missing protection instead of treating it as "no test needed".
 
 ## Limits
 
