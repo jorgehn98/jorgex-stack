@@ -83,7 +83,8 @@ jobs:
     needs: validate
     if: needs.validate.outputs.needed == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Readback waits up to 5 minutes for npm propagation, after download, setup and publish.
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write

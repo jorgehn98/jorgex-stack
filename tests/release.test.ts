@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // CI policy is JavaScript and is deliberately outside the installed runtime.
 // @ts-expect-error The release script has no TypeScript declaration.
-import { releasePlan, registryVersion, verifyIntegrity, publicationNeeded, normalizeSha, validateVersion } from "../.github/scripts/release-policy.mjs";
+import { releasePlan, registryVersion, verifyIntegrity, confirmPublished, publicationNeeded, normalizeSha, validateVersion } from "../.github/scripts/release-policy.mjs";
 
 const sha = "a".repeat(40);
 const mainSha = "b".repeat(40);
@@ -41,6 +41,60 @@ describe("version prepared in the PR", () => {
     await expect(registryVersion("jorgex-stack", "2.0.0", fetcher(200))).rejects.toThrow(/metadata/);
     await expect(registryVersion("jorgex-stack", "2.0.0", async () => { throw new Error("network"); })).rejects.toThrow(/network/);
     expect(await registryVersion("jorgex-stack", "2.0.0", fetcher(200, { name: "jorgex-stack", version: "2.0.0", dist: { integrity } }))).toEqual({ integrity });
+  });
+
+  describe("readback after publish", () => {
+    const published = { name: "jorgex-stack", version: "2.0.0", dist: { integrity } };
+    const registry = (...responses: Array<[number, object?]>) => {
+      const sleeps: number[] = [];
+      let calls = 0;
+      const fetcher = async () => {
+        const [status, value = {}] = responses[Math.min(calls++, responses.length - 1)]!;
+        return { status, ok: status === 200, json: async () => value };
+      };
+      return { sleeps, calls: () => calls, options: { fetcher, sleep: async (ms: number) => { sleeps.push(ms); } } };
+    };
+
+    it("waits through propagation 404s until the version appears", async () => {
+      const npm = registry([404], [404], [200, published]);
+      await expect(confirmPublished("jorgex-stack", "2.0.0", integrity, npm.options)).resolves.toBeUndefined();
+      expect(npm.calls()).toBe(3);
+      expect(npm.sleeps).toEqual([15_000, 15_000]);
+    });
+
+    it("stops at five minutes of absence without authorizing a republish", async () => {
+      const npm = registry([404]);
+      await expect(confirmPublished("jorgex-stack", "2.0.0", integrity, npm.options)).rejects.toThrow(/unavailable; do not republish/);
+      expect(npm.calls()).toBe(21);
+      expect(npm.sleeps).toHaveLength(20);
+      expect(npm.sleeps.reduce((total, ms) => total + ms, 0)).toBe(300_000);
+    });
+
+    it("fails immediately when the published bytes differ", async () => {
+      const npm = registry([404], [200, { ...published, dist: { integrity: "sha512-" + "B".repeat(86) + "==" } }], [200, published]);
+      await expect(confirmPublished("jorgex-stack", "2.0.0", integrity, npm.options)).rejects.toThrow(/integrity differs/);
+      expect(npm.calls()).toBe(2);
+    });
+
+    it.each([401, 500])("fails on HTTP %i at the first attempt, without retrying", async (status) => {
+      const npm = registry([status], [200, published]);
+      await expect(confirmPublished("jorgex-stack", "2.0.0", integrity, npm.options)).rejects.toThrow(new RegExp(`HTTP ${status}`));
+      expect(npm.calls()).toBe(1);
+      expect(npm.sleeps).toEqual([]);
+    });
+
+    it("fails on metadata that does not identify the version, without retrying", async () => {
+      const npm = registry([200, { ...published, version: "2.0.1" }], [200, published]);
+      await expect(confirmPublished("jorgex-stack", "2.0.0", integrity, npm.options)).rejects.toThrow(/metadata/);
+      expect(npm.calls()).toBe(1);
+    });
+
+    it("does not retry a network failure", async () => {
+      let calls = 0;
+      const fetcher = async () => { calls++; throw new Error("network"); };
+      await expect(confirmPublished("jorgex-stack", "2.0.0", integrity, { fetcher, sleep: async () => {} })).rejects.toThrow(/network/);
+      expect(calls).toBe(1);
+    });
   });
 
   it("checks the real tarball before registry access or publication", () => {
