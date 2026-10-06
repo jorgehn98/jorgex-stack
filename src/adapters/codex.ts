@@ -193,12 +193,15 @@ function renderCodexPermissionEntries(
 
 const CODEX_PERMISSION_PROFILE_NAME = "jorgex-yolo";
 
-/** Denied directories of the profile that do not exist under HOME, as [profile key, absolute path]. */
+/**
+ * Denied directories of the profile that do not exist under HOME, as [profile key, absolute path].
+ * lstat: a dangling symlink is the user's own entry, never something to create over.
+ */
 function missingCodexDeniedDirs(): (readonly [string, string])[] {
   return CODEX_PERMISSION_PROFILE.filesystem
     .filter(([, access]) => access === "deny")
     .map(([key]) => [key, path.join(HOME, key.replace(/^~\//, ""))] as const)
-    .filter(([, dir]) => !fs.existsSync(dir));
+    .filter(([, dir]) => !fs.lstatSync(dir, { throwIfNoEntry: false }));
 }
 
 const CODEX_STALE_PERMISSIONS_WARNING =
@@ -344,9 +347,9 @@ export const codexAdapter: Adapter = {
       }
       // Solo se avisa: una config existente no se repara ni se toca el HOME.
       if (ctx.targetDir === undefined && readCodexRootValue(contentSource, "default_permissions") === CODEX_PERMISSION_PROFILE_NAME) {
-        const filesystem = (readTomlSection(contentSource, codexNormalizedHeader(CODEX_PERMISSION_HEADERS.filesystem)) ?? "").split("\n").map((line) => line.trim());
+        const filesystem = readTomlSection(contentSource, codexNormalizedHeader(CODEX_PERMISSION_HEADERS.filesystem)) ?? "";
         for (const [key] of missingCodexDeniedDirs()) {
-          if (!filesystem.includes(renderCodexPermissionEntries([[key, "deny"]], true))) continue;
+          if (parseTomlString(tomlAssignment(filesystem, key).raw) !== "deny") continue;
           const warning = `Codex: profile ${CODEX_PERMISSION_PROFILE_NAME} denies ${key} but that directory does not exist; Codex 0.160+ then fails every sandboxed command (bwrap: Destination is not a file). Fix: mkdir -m 700 ${key}`;
           if (!ctx.warnings.includes(warning)) ctx.warnings.push(warning);
         }

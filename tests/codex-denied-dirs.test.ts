@@ -58,6 +58,14 @@ it("leaves an existing denied directory and its permissions untouched", async ()
   expect(mode(aws())).toBe(0o700);
 });
 
+it("does not create over a dangling symlink the user owns", async () => {
+  fs.symlinkSync(path.join(root, "unmounted"), aws());
+  expect(await realInstall()).toBe(0);
+  expect(fs.lstatSync(aws()).isSymbolicLink()).toBe(true);
+  expect(fs.existsSync(path.join(root, "unmounted"))).toBe(false);
+  expect(mode(ssh())).toBe(0o700);
+});
+
 it("does not create directories on dry-run", async () => {
   expect(await realInstall({ dryRun: true })).toBe(0);
   expect(fs.existsSync(ssh())).toBe(false);
@@ -88,6 +96,9 @@ it("doctor reports an active profile denying a missing directory, with the concr
   expect(warnings()).not.toContain("mkdir -m 700");
 
   fs.rmdirSync(aws());
+  // An equivalent TOML spelling of the deny entry must still be recognized.
+  const file = path.join(configDir, "config.toml");
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace('"~/.aws" = "deny"', '"~/.aws"="deny" # credentials'));
   await runDoctor({ runtimes: ["codex"] });
   expect(warnings()).toContain("mkdir -m 700 ~/.aws");
   expect(warnings()).not.toContain("mkdir -m 700 ~/.ssh");
