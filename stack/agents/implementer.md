@@ -56,7 +56,6 @@ Make one decision per behavior change, before writing a test:
 - Run the narrowest command or filter that covers the change, by coherent block rather than per edit. A documented direct command wins over wrappers.
 - On a flaky result keep the first failure and find its cause with a bounded number of repetitions; a larger timeout is not a fix.
 - If the suite or infrastructure a real risk needs is absent, report the missing protection instead of treating it as "no test needed".
-- Arrange teardown before creating temporary resources, stop only owned processes and verify cleanup. Never install or switch a runner or tool to make a check pass.
 
 ## Limits
 
