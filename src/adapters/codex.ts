@@ -345,12 +345,14 @@ export const codexAdapter: Adapter = {
       if (codexDefaults !== undefined && !isCodexPermissionBlockCurrent(contentSource, codexDefaults)) {
         ctx.warnings.push(CODEX_STALE_PERMISSIONS_WARNING);
       }
-      // Solo se avisa: una config existente no se repara ni se toca el HOME.
+      // El config.toml preservado no se toca; solo se crea el directorio que su perfil activo necesita.
+      // Doctor y dry-run reciben el mismo aviso pero nunca aplican el plan.
       if (ctx.targetDir === undefined && readCodexRootValue(contentSource, "default_permissions") === CODEX_PERMISSION_PROFILE_NAME) {
         const filesystem = readTomlSection(contentSource, codexNormalizedHeader(CODEX_PERMISSION_HEADERS.filesystem)) ?? "";
-        for (const [key] of missingCodexDeniedDirs()) {
-          if (parseTomlString(tomlAssignment(filesystem, key).raw) !== "deny") continue;
-          const warning = `Codex: profile ${CODEX_PERMISSION_PROFILE_NAME} denies ${key} but that directory does not exist; Codex 0.160+ then fails every sandboxed command (bwrap: Destination is not a file). Fix: mkdir -m 700 ${key}`;
+        const missing = missingCodexDeniedDirs().filter(([key]) => parseTomlString(tomlAssignment(filesystem, key).raw) === "deny");
+        if (missing.length > 0) ensureDirs = missing.map(([, dir]) => dir);
+        for (const [key] of missing) {
+          const warning = `Codex: profile ${CODEX_PERMISSION_PROFILE_NAME} denies ${key} but that directory does not exist; Codex 0.160+ then fails every sandboxed command (bwrap: Destination is not a file). It is created empty with mode 700 when this config is applied; manual fix: mkdir -m 700 ${key}`;
           if (!ctx.warnings.includes(warning)) ctx.warnings.push(warning);
         }
       }
