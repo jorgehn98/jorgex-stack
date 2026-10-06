@@ -162,6 +162,8 @@ const CODEX_PERMISSION_HEADERS = {
  * Solo se deniegan DIRECTORIOS: con Codex 0.158 y bubblewrap, dos o más
  * archivos denegados existentes hacen fallar todos los comandos del sandbox, y
  * `":root" = "write"` no arranca. Ampliar a archivos exige volver a probarlo.
+ * Desde Codex 0.160 un directorio denegado que NO existe también rompe todo el
+ * sandbox (`bwrap: Destination is not a file`): ver `missingCodexDeniedDirs`.
  */
 const CODEX_PERMISSION_PROFILE = {
   base: [["extends", ":workspace"]],
@@ -187,6 +189,19 @@ function renderCodexPermissionEntries(
   quoteKeys: boolean,
 ): string {
   return entries.map(([key, value]) => `${quoteKeys ? JSON.stringify(key) : key} = ${JSON.stringify(value)}`).join("\n");
+}
+
+const CODEX_PERMISSION_PROFILE_NAME = "jorgex-yolo";
+
+/**
+ * Denied directories of the profile that do not exist under HOME, as [profile key, absolute path].
+ * lstat: a dangling symlink is the user's own entry, never something to create over.
+ */
+function missingCodexDeniedDirs(): (readonly [string, string])[] {
+  return CODEX_PERMISSION_PROFILE.filesystem
+    .filter(([, access]) => access === "deny")
+    .map(([key]) => [key, path.join(HOME, key.replace(/^~\//, ""))] as const)
+    .filter(([, dir]) => !fs.lstatSync(dir, { throwIfNoEntry: false }));
 }
 
 const CODEX_STALE_PERMISSIONS_WARNING =
@@ -271,6 +286,7 @@ export const codexAdapter: Adapter = {
     let content = contentSource;
     const mcpOwnership: McpOwnershipChange[] = [];
     const configOwnership: ConfigOwnershipChange[] = [];
+    let ensureDirs: string[] | undefined;
 
     const context7 = canonical.servers.context7;
     if (context7 !== undefined) {
@@ -289,6 +305,17 @@ export const codexAdapter: Adapter = {
       ctx.warnings.push(
         "Codex: fresh config never asks for approval and runs in the provider sandbox with home-wide writes and network. Only ~/.ssh and ~/.aws are denied; .env files, .npmrc and loose keys are NOT protected.",
       );
+
+      // Nunca con --target-dir: ese modo no toca el HOME real.
+      if (ctx.targetDir === undefined) {
+        const missing = missingCodexDeniedDirs();
+        if (missing.length > 0) {
+          ensureDirs = missing.map(([, dir]) => dir);
+          ctx.warnings.push(
+            `Codex: ${missing.map(([key]) => key).join(" and ")} missing; created empty with mode 700 when this config is applied, because Codex 0.160+ fails every sandboxed command if a denied directory does not exist.`,
+          );
+        }
+      }
 
       content = upsertTomlSection(
         content,
@@ -317,6 +344,15 @@ export const codexAdapter: Adapter = {
       const codexDefaults = loadCanonicalDefaults(ctx.stackDir)["codex"];
       if (codexDefaults !== undefined && !isCodexPermissionBlockCurrent(contentSource, codexDefaults)) {
         ctx.warnings.push(CODEX_STALE_PERMISSIONS_WARNING);
+      }
+      // Solo se avisa: una config existente no se repara ni se toca el HOME.
+      if (ctx.targetDir === undefined && readCodexRootValue(contentSource, "default_permissions") === CODEX_PERMISSION_PROFILE_NAME) {
+        const filesystem = readTomlSection(contentSource, codexNormalizedHeader(CODEX_PERMISSION_HEADERS.filesystem)) ?? "";
+        for (const [key] of missingCodexDeniedDirs()) {
+          if (parseTomlString(tomlAssignment(filesystem, key).raw) !== "deny") continue;
+          const warning = `Codex: profile ${CODEX_PERMISSION_PROFILE_NAME} denies ${key} but that directory does not exist; Codex 0.160+ then fails every sandboxed command (bwrap: Destination is not a file). Fix: mkdir -m 700 ${key}`;
+          if (!ctx.warnings.includes(warning)) ctx.warnings.push(warning);
+        }
       }
     }
 
@@ -403,6 +439,7 @@ export const codexAdapter: Adapter = {
       kind: "write",
       target: file,
       content,
+      ...(ensureDirs !== undefined ? { ensureDirs } : {}),
       ...(mcpOwnership.length > 0 ? { mcpOwnership } : {}),
       ...(configOwnership.length > 0 ? { configOwnership } : {}),
     }];

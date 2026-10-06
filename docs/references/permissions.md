@@ -23,11 +23,21 @@ Esta lista aplica a Claude, OpenCode y Pi; Codex es la excepción descrita abajo
 | Runtime | Configuración fresh | Alcance del deny | Límite |
 |---|---|---|---|
 | Claude Code | `defaultMode: bypassPermissions`, aviso de modo peligroso preaceptado, `deny` de `Read`/`Edit` | Tools de archivo y comandos de shell reconocidos (`cat`, `head`, `tail`, `sed`, `tee`, redirecciones) | Deny gana siempre y no admite excepción: las variantes de `.env` se enumeran en vez de usar `.env.*`. [Límites](claude-code-limits.md) |
-| Codex | `approval_policy = "never"` y perfil `jorgex-yolo`: lectura global, escritura en HOME y workspace, red activa, deny de `~/.ssh` y `~/.aws` | Sandbox del proveedor: cubre cualquier comando | **No protege `.env`, `.npmrc` ni claves sueltas.** No es bypass: fuera de HOME y de los temporales que abre el propio sandbox no escribe |
+| Codex | `approval_policy = "never"` y perfil `jorgex-yolo`: lectura global, escritura en HOME y workspace, red activa, deny de `~/.ssh` y `~/.aws` (se crean vacíos si faltan) | Sandbox del proveedor: cubre cualquier comando | **No protege `.env`, `.npmrc` ni claves sueltas.** No es bypass: fuera de HOME y de los temporales que abre el propio sandbox no escribe |
 | OpenCode v2 | `external_directory` permitido, `read`/`edit` denegados sobre secretos, cliente `autoaccept` | Tools `read` y `edit` | Shell no pasa por estas reglas. El adapter exige major 2 |
 | Pi | `yoloMode: true`, `*` y `bash` permitidos, `path` denegado sobre secretos | Todas las tools y rutas dentro de comandos bash | Depende de que cargue `@gotgenes/pi-permission-system`; que `yoloMode` conserve los deny explícitos está contrastado con la documentación del proveedor en la versión 35.0.2, no con un test propio. Doctor lee el JSON y no certifica enforcement |
 
 **Codex:** solo se deniegan directorios. Con Codex CLI 0.158.0 y bubblewrap 0.12 se reprodujo que dos o más archivos denegados existentes hacen fallar todos los comandos del sandbox (`bwrap: Can't write data to file …: Bad file descriptor`), y `":root" = "write"` no arranca; un directorio denegado funciona. La lista de archivos se ampliará cuando el proveedor lo corrija, tras repetir la prueba con `codex sandbox -P jorgex-yolo`. Algunas herramientas pueden chocar con el sandbox (sockets de Docker, escrituras fuera de HOME).
+
+**Codex, directorios denegados ausentes:** con Codex CLI 0.160.1 un directorio denegado que no existe hace fallar todos los comandos del sandbox (`bwrap: Destination is not a file <ruta>`); con 0.158.0 funcionaba. Un directorio existente, aunque esté vacío, funciona y se deniega. Por eso, al sembrar el perfil fresh en una instalación real, Stack crea antes los que falten (`~/.ssh`, `~/.aws`) vacíos y con modo 700, y lo avisa. No cambia los permisos de uno que ya exista, no los crea con dry-run ni cuando la configuración existente se conserva sin sembrar, y no los retira al desinstalar.
+
+Doctor avisa cuando `default_permissions = "jorgex-yolo"` sigue denegando uno de esos directorios y este no existe (por ejemplo, si se borró después), sin repararlo. Reparación manual:
+
+```text
+mkdir -m 700 ~/.aws
+```
+
+La alternativa es quitar esa línea `deny` del perfil en `config.toml`, tras un backup. La prueba del perfil (`codex sandbox -P jorgex-yolo -C <workspace> -- echo ok`) debe repetirse contra la versión de Codex que quede **después** de `codex update`, no contra la anterior: aplicar la configuración actualiza Codex justo después de sembrar el perfil.
 
 ## Preservación
 

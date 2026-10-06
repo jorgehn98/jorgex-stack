@@ -47,6 +47,19 @@ export function announceNative(execute: NativeExecutor): NativeExecutor {
     return execute(bin, args, env);
   };
 }
+const BROWSER_CONTROL_BIN = "browser-control-mcp";
+/**
+ * Browser Control es opcional: una copia ya resoluble en el PATH se respeta sea
+ * cual sea su gestor, y un fallo de instalación se devuelve como causa en lugar
+ * de abortar la unidad. Cadena vacía significa disponible.
+ */
+function ensureBrowserControl(execute: NativeExecutor): string {
+  if (lookPath(BROWSER_CONTROL_BIN)) return "";
+  const pnpm = lookPath("pnpm");
+  if (!pnpm) return "falta en el PATH y pnpm tampoco está disponible para instalarlo";
+  try { execute(pnpm, ["add", "--global", "@opencode-ai/browser-control@latest"]); return ""; }
+  catch { return "falló `pnpm add --global`; la causa probable es que pnpm no tiene directorio global configurado (ERR_PNPM_NO_GLOBAL_BIN_DIR)"; }
+}
 export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   runtimes: RuntimeId[];
   scope?: OperationScope;
@@ -121,6 +134,7 @@ export function applyChanges(changes: PlannedChange[], onWritten?: (action: File
   for (const { action, status } of changes) {
     if (status === "unchanged") continue;
     fs.mkdirSync(path.dirname(action.target), { recursive: true });
+    if (action.kind === "write") for (const dir of action.ensureDirs ?? []) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (action.kind === "write") fs.writeFileSync(action.target, action.content, { encoding: "utf8", flag: status === "create" ? "wx" : "w" });
     else if (action.symlink) fs.symlinkSync(path.resolve(action.source), action.target, process.platform === "win32" ? "junction" : "dir");
     else fs.copyFileSync(action.source, action.target, status === "create" ? fs.constants.COPYFILE_EXCL : 0);
@@ -194,7 +208,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
     if (acquired.warning) p.log.warn(acquired.warning);
   }
   let exitCode = 0;
-  let browserInstalled = false;
+  // undefined: sin comprobar (o ejecución sin efectos nativos); "": disponible; texto: causa del fallo.
+  let browserControlProblem: string | undefined;
   let manifestBackedUp = false;
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
@@ -315,16 +330,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           if (id === "opencode") retireExtraEngramMonitor(configDir, path.join(state, "backups"), createdTui);
         }
         if (id === "pi" || id === "opencode") {
-          if (!browserInstalled) {
-            const pnpm = lookPath("pnpm");
-            if (!pnpm) throw new Error("Browser Control requiere pnpm disponible y su directorio global configurado.");
-            execute(pnpm, ["add", "--global", "@opencode-ai/browser-control@latest"]);
-            browserInstalled = true;
-          }
-          p.log.info("Browser Control: carga la extensión Chromium del proveedor y adjunta una pestaña explícitamente. Tras actualizar, recarga la extensión/reinicia el relay con el proveedor; Stack no detiene sesiones ajenas.");
+          browserControlProblem ??= ensureBrowserControl(execute);
+          if (browserControlProblem) ctx.warnings.push(`Browser Control no disponible: ${browserControlProblem}. No se añade su MCP ni su guía; el resto de la configuración continúa. Remedio: ejecuta \`pnpm setup\`, reabre la shell y vuelve a aplicar, o instala @opencode-ai/browser-control con tu gestor preferido.`);
+          else p.log.info("Browser Control: carga la extensión Chromium del proveedor y adjunta una pestaña explícitamente. Tras actualizar, recarga la extensión/reinicia el relay con el proveedor; Stack no detiene sesiones ajenas.");
         }
       }
-      if (id === "pi" || id === "opencode") ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
+      if ((id === "pi" || id === "opencode") && !browserControlProblem) ctx.browserControlInvocation = { command: BROWSER_CONTROL_BIN, args: [] };
       phase = "proyección";
       const selectedPlan = buildScopedPlan(adapter, ctx, scope);
       const plan = [...(configSelected ? planRetiredHooks(adapter, ctx, row.owned) : []), ...selectedPlan];

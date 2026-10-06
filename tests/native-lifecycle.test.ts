@@ -12,7 +12,8 @@ import { expectedEngramAssetName } from "../src/lib/github.js";
 const isolated = vi.hoisted(() => ({ root: "" }));
 vi.mock("../src/lib/paths.js", async (original) => ({
   ...await original<typeof import("../src/lib/paths.js")>(),
-  HOME: "/var/tmp",
+  // Per-test HOME: a fresh Codex install creates the missing denied directories under it.
+  get HOME() { return isolated.root; },
   dataDir: () => path.join(isolated.root, ".jorgex-stack"),
 }));
 let root: string;

@@ -133,6 +133,7 @@ describe("native projection filesystem boundaries", () => {
   it.each([claudeCodeAdapter, codexAdapter, opencodeAdapter, piAdapter])("projects the separate browser module without duplicating legacy guidance (%s)", (adapter) => {
     ctx.stackDir = path.resolve("stack");
     ctx.configDir = path.join(root, adapter.id);
+    ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
     const paths = adapter.paths(ctx.configDir);
     const target = paths.sharedPromptFile ?? paths.systemPromptFile;
     fs.mkdirSync(path.dirname(target), { recursive: true });
