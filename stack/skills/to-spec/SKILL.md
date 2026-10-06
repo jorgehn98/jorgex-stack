@@ -5,19 +5,44 @@ description: Turn an agreed objective and code findings into a concise PRD, exec
 
 # To Spec
 
-Synthesize the conversation and relevant code findings; do not repeat an interview that already closed the decisions. Investigate technical unknowns and ask only for material product decisions that remain unresolved.
+Turn an agreed objective into `work/{name}/` with a PRD, a plan and task specifications. Templates: [references/templates.md](references/templates.md).
 
-Use one work/{name}/ directory:
-- PRD.md: problem, desired result, scope, settled decisions and non-goals.
-- plan.md: verifiable success criteria, bounded tasks with owner/dependencies/status and links to their specifications. Include delivery order and bases when multiple PRs are needed.
-- tasks/{NN}.md: the outcome, affected files, decisive context, boundaries and sufficient verification for that task.
+## Before writing
 
-Keep scope in the PRD and task state only in the plan. Do not store tasks in Engram, generate another tracker or copy the whole PRD into every task. A task is an integrated result, not a RED/test/GREEN/docs microphase.
+- Synthesize the conversation and the relevant code findings; do not repeat an interview that already closed the decisions.
+- Investigate technical unknowns yourself. Ask only for material product decisions that remain unresolved.
+- "Consider X" or "evaluate X" is a question, not a requirement: find who consumes it before specifying it.
+- `{name}` is one canonical kebab-case name shared by the work directory, branch and worktree.
 
-For each change, identify the real regression risk, useful existing coverage, any missing behavior protection and the closest reliable test seam. Reuse coverage or state why no new test is needed. Do not invent legacy states, require one approval per test seam or add fixtures merely to fill a template.
+## Artifacts
 
-Prefer the smallest native/existing solution. State what disappears as well as what is added. Separate Git dependencies from external prerequisites; do not assume an unpublished artifact exists.
+- `PRD.md`: problem, desired result, scope, settled decisions and non-goals.
+- `plan.md`: verifiable success criteria (`SC-NN`), delivery order and bases when several PRs are needed, and the task table with owner, dependencies, criteria covered and status.
+- `tasks/{NN}.md`: the outcome, affected files, decisive context, boundaries and sufficient verification for that task.
 
-Check that every requested outcome has task coverage, references resolve and dependencies are coherent. Unresolved material decisions stay visible and block approval of their affected work. Do not fabricate requirements to close a blank section.
+## Rules
 
-Present the plan for user approval. Planning does not implement, publish, merge or authorize changes to a personal installation. The orchestrator owns execution, tracking and cleanup.
+- One home per fact: scope in the PRD; criteria, coverage and status only in the plan; the specification only in its task file.
+- Do not store tasks in Engram, generate another tracker or copy the PRD into every task.
+- A task is an integrated, independently verifiable result, not a RED, test, GREEN or docs microphase.
+- Criteria are verifiable and specific: "the type includes X", not "the type is correct".
+- In a task, separate verified facts from assumptions, cite the source of what you copy and include only what is pertinent.
+- Testing decision per behavior change: risk, existing protection, new behavior to protect, chosen seam and action (add, update, reuse or no new test) with its reason.
+- Do not invent legacy states, require one approval per test seam or add fixtures to fill a template.
+- Prefer the smallest native or existing solution. State what disappears as well as what is added.
+- Separate Git dependencies from external prerequisites; do not assume an unpublished artifact exists.
+- Mark an unresolved material decision as `[NEEDS CLARIFICATION: …]`. It stays visible and blocks approval of the affected work.
+
+## Check before presenting
+
+- Every requested outcome maps to a criterion, and every criterion to at least one task.
+- Every task has an owner, scope, files, dependencies and a complete testing decision when it changes behavior.
+- PR bases and merge order are compatible with task dependencies.
+- References resolve, and PRD, plan and tasks do not contradict each other.
+- No blank section was filled with a fabricated requirement.
+
+## Limits
+
+- Present the plan for user approval.
+- Planning does not implement, publish, merge or authorize changes to a personal installation.
+- The orchestrator owns execution, tracking and cleanup.

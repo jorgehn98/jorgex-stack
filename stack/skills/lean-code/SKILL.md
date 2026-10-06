@@ -60,9 +60,20 @@ Do not add a new dependency unless the task explicitly requires it or the projec
 Before adding a new helper, wrapper, abstraction, or dependency, run the ladder again.
 Prefer the narrowest change that solves the real need.
 
+### Design friction
+
+- Judge a design by how hard a real change is, not by how it looks.
+- Look for coupling that forces unrelated edits and for one responsibility scattered across modules.
+- Prefer a small interface over a deep module to another layer; simplify the interface before adding one.
+
 ### Diagnostic tooling
 
-Reuse the project's runner, fixtures, helpers and existing diagnostic commands before building a harness. New probes, replay scripts and diagnostic harnesses are temporary by default, with explicit resource ownership and automatic teardown arranged before execution. Keep tooling only for a concrete recurring need within the approved scope: identify its consumer, why the existing harness cannot cover it, and who maintains it in the current task or PR. Seek approval if retaining it expands the scope. A successful one-off investigation alone does not justify a permanent command, framework or dependency. Preserve the authoritative regression test and compact reproduction evidence, not the disposable environment; do not remove meaningful permission, concurrency or deletion protection just to shrink the diff.
+- Reuse the project's runner, fixtures, helpers and existing diagnostic commands before building a harness.
+- New probes, replay scripts and harnesses are temporary by default, with explicit resource ownership and teardown arranged before execution.
+- Keep tooling only for a concrete recurring need within the approved scope: name its consumer, why the existing harness cannot cover it and who maintains it. Seek approval if keeping it expands the scope.
+- A successful one-off investigation does not justify a permanent command, framework or dependency.
+- Preserve the authoritative regression test and compact reproduction evidence, not the disposable environment.
+- Do not remove meaningful permission, concurrency or deletion protection just to shrink the diff.
 
 ### Review / simplification
 
@@ -71,7 +82,7 @@ If the code is already minimal and clear, leave it alone.
 
 ### Audit
 
-Rank findings as:
+State the scope explicitly (repository or path) and report only; an audit applies nothing. Rank findings as:
 
 - delete
 - stdlib
@@ -81,3 +92,5 @@ Rank findings as:
 - shrink
 
 Do not propose rewrites that only move complexity around.
+
+List separately what should be deferred because of risk or because it is outside the scope.

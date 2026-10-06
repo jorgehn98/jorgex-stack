@@ -5,12 +5,29 @@ description: Review workflow friction in a session or task when the user explici
 
 # Retro
 
-Use the named session or the current conversation. Do not browse unrelated private histories or invent measurements.
+Run only on explicit request. A retrospective is not a phase after every task.
 
-Look for repeated handoffs, growing worker context, unnecessary reasoning before useful evidence, repeated skill loads, blind retries, speculative tests, expensive fixtures and missing cleanup. Separate human waiting, command duration and model latency.
+## Scope
 
-Check existing instructions and tools before recommending more rules or infrastructure. If a rule already exists, investigate why it was not effective rather than duplicating it. Compare equivalent bounded tasks before recommending global model/effort changes.
+- Use the named session or the current conversation.
+- Do not browse unrelated private histories or invent measurements.
 
-Present the few changes most likely to help, with evidence, expected benefit and uncertainty. Prefer deletion, consolidation or a better division of responsibility. Do not automatically add checks, agents, dependencies or permissions.
+## Friction to look for
 
-Proposals need normal approval before implementation. A retrospective is not a mandatory phase after every task.
+- Repeated handoffs and growing worker context.
+- Reasoning spent before useful evidence.
+- Repeated skill loads and blind retries.
+- Speculative tests and expensive fixtures.
+- Missing cleanup.
+- Human waiting, command duration and model latency, kept separate.
+
+## Before recommending
+
+- Check existing instructions and tools first. If a rule already exists, find out why it was not effective instead of duplicating it.
+- Compare equivalent bounded tasks before recommending a global model or effort change.
+- Prefer deletion, consolidation or a better division of responsibility.
+- Do not add checks, agents, dependencies or permissions automatically.
+
+## Output
+
+The few changes most likely to help, each with its evidence, expected benefit and uncertainty. Proposals need normal approval before implementation.
