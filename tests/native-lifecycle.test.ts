@@ -19,6 +19,7 @@ vi.mock("../src/lib/paths.js", async (original) => ({
 let root: string;
 beforeEach(() => {
   root = fs.mkdtempSync("/var/tmp/jx-native-lifecycle-"); isolated.root = root;
+  vi.stubEnv("ENGRAM_DATA_DIR", ""); // the installer must read Engram's record under the per-test HOME, never the real one
   vi.spyOn(detection, "engramVersion").mockReturnValue("3.0.0");
   const name = expectedEngramAssetName("3.0.0", process.platform, process.arch);
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ tag_name: "v3.0.0", assets: [{
@@ -26,7 +27,7 @@ beforeEach(() => {
     browser_download_url: `https://github.com/Gentleman-Programming/engram/releases/download/v3.0.0/${name}`,
   }] }))));
 });
-afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 it("projects Pi twice without acquisition and preserves choices, foreign packages and official host layout", async () => {
   const config = path.join(root, "pi-agent");
@@ -116,6 +117,21 @@ it("does not install an absent runtime or write configuration", async () => {
   expect(fs.readdirSync(root)).toEqual([]);
 });
 
+it.each([
+  ["a recorded mode", '{"claude-code":"full"}'],
+  ["an unreadable record", "{"],
+])("keeps the Engram protocol mode on claude-code with %s", async (_label, record) => {
+  fs.mkdirSync(path.join(root, ".engram"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".engram", "protocol-mode.json"), record);
+  const calls: Array<[string, string[]]> = [];
+  const execute = (bin: string, args: string[]) => { calls.push([bin, args]); return ""; };
+  expect(await runInstall({ runtimes: ["claude-code"], dryRun: false, yes: true, engramBin: "/fake/engram", execute,
+    verifyEngram: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
+    detect: () => ({ id: "claude-code", name: "claude-code", installed: true, binPath: "/fake/claude-code", configDir: path.join(root, ".claude") }) })).toBe(0);
+  expect(calls).toContainEqual(["/fake/engram", ["setup", "claude-code"]]);
+  expect(fs.readFileSync(path.join(root, ".engram", "protocol-mode.json"), "utf8")).toBe(record);
+});
+
 it.each(["claude-code", "codex"] as const)("refreshes complete official Engram on %s without adding a browser", async (runtime) => {
   const calls: Array<[string, string[]]> = [];
   const verification = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
@@ -125,7 +141,7 @@ it.each(["claude-code", "codex"] as const)("refreshes complete official Engram o
     detect: () => ({ id: runtime, name: runtime, installed: true, binPath: `/fake/${runtime}`, configDir }) })).toBe(0);
   expect(globalThis.fetch).toHaveBeenCalledOnce();
   expect(calls.some(([, args]) => args[0] === "export")).toBe(false);
-  expect(calls).toContainEqual(["/fake/engram", ["setup", runtime]]);
+  expect(calls).toContainEqual(["/fake/engram", runtime === "claude-code" ? ["setup", runtime, "--protocol=slim"] : ["setup", runtime]]);
   expect(calls.some(([, args]) => args.some((arg) => /browser-control/.test(arg)))).toBe(false);
   if (runtime === "claude-code") expect(calls).toContainEqual(["/fake/claude-code", ["plugin", "update", "engram"]]);
   else {

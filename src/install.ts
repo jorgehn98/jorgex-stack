@@ -115,6 +115,16 @@ export function buildScopedPlan(adapter: Adapter, ctx: InstallContext, scope: Op
   if (scope.section === "config") return [...adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx), ...planSystemPrompt(adapter, ctx), ...(adapter.planAdditionalResources?.(ctx) ?? []).flatMap((action) => planOwnedProjection(action, ctx))];
   return buildPlan(adapter, ctx);
 }
+/** True when Engram already records a protocol mode for the runtime, or its record cannot be read. */
+function hasEngramProtocolMode(id: RuntimeId): boolean {
+  // Engram ignora un ENGRAM_DATA_DIR en blanco y usa ~/.engram; se replica para leer el mismo registro.
+  const dir = process.env.ENGRAM_DATA_DIR?.trim() ? process.env.ENGRAM_DATA_DIR : path.join(HOME, ".engram");
+  try {
+    const raw = readTextIfExists(path.join(dir, "protocol-mode.json"));
+    return raw !== null && typeof (JSON.parse(raw) as Record<string, unknown>)[id] === "string";
+  } catch { return true; }
+}
+
 export type PlannedChange = { action: FileAction; status: "create" | "update" | "unchanged" };
 export function assertProjectionPath(target: string, boundary: string): void {
   if (!isContainedIn(target, boundary)) throw new Error(`Target fuera del hogar seleccionado: ${target}`);
@@ -333,7 +343,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           const initial = opts.verifyEngram ? undefined : await officialSetupVerifiers[id]?.({ configDir, engramBin: engram, homeDir: HOME });
           const preexisting = opts.verifyEngram ? await verify(id, configDir, engram) : initial?.ok === true;
           const createdTui = new Set(["tui.json", "tui.jsonc"].filter((name) => !fs.existsSync(path.join(configDir, name))));
-          execute(engram, ["setup", id], nativeEnv);
+          // Engram repite su protocolo en el hook de inicio y en las instrucciones del MCP; slim retira la copia del hook.
+          // Solo Claude Code lo aplica, y un modo ya registrado es elección del usuario: no se pisa.
+          const slim = id === "claude-code" && !hasEngramProtocolMode(id);
+          execute(engram, slim ? ["setup", id, "--protocol=slim"] : ["setup", id], nativeEnv);
           if (id === "claude-code") { execute(bin, ["plugin", "marketplace", "update", "engram"]); execute(bin, ["plugin", "update", "engram"]); }
           if (id === "codex") { execute(bin, ["plugin", "marketplace", "upgrade", "engram"]); execute(bin, ["plugin", "add", "engram@engram"]); }
           if (!(await verify(id, configDir, engram))) throw new Error("Engram: setup incompleto; faltan capas oficiales, revisa doctor.");
