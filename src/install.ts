@@ -37,13 +37,22 @@ export const executeNative: NativeExecutor = (bin, args, env) => {
   } catch { throw new Error(`Falló ${path.basename(bin)} ${args.slice(0, 2).join(" ")}; revisa el proveedor. Puede haber cambios parciales.`); }
 };
 /**
+ * A package or plugin identifier as the native steps pass it: `npm:name`, `npm:@scope/name`, `@scope/name`, `name@version`.
+ * It must carry a package marker (`npm:`, a scope or a version): a bare value with digits could be a token or a
+ * directory. Deliberately narrower than npm's grammar: no dots or underscores in the name, so a file name never
+ * qualifies, and nothing that can spell a path (leading dot or tilde, a slash outside the scope, backslash, drive letter).
+ */
+const PACKAGE_IDENTIFIER = /^(?=.*[:@])(?:npm:)?(?:@[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*(?:@[a-z0-9][a-z0-9.-]*)?$/;
+/**
  * Announces each native step before it runs. Synchronous subprocesses block the event loop, so a spinner could not
- * animate. Only the binary name and its leading subcommand words are shown: never paths, values or subprocess output.
+ * animate. Only the binary name, its leading subcommand words and the package identifier right after them are shown:
+ * never paths, flags, their values or subprocess output. Anything else ends the label.
  */
 export function announceNative(execute: NativeExecutor): NativeExecutor {
   return (bin, args, env) => {
     const end = args.findIndex((arg) => !/^[a-z][a-z-]*$/.test(arg));
-    p.log.step(`Paso nativo en curso: ${[path.parse(bin).name, ...args.slice(0, end < 0 ? args.length : end)].join(" ")}`);
+    const shown = end < 0 ? args : args.slice(0, PACKAGE_IDENTIFIER.test(args[end]!) ? end + 1 : end);
+    p.log.step(`Paso nativo en curso: ${[path.parse(bin).name, ...shown].join(" ")}`);
     return execute(bin, args, env);
   };
 }

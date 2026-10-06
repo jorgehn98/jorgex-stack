@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as p from "@clack/prompts";
-import { runInstall } from "../src/install.js";
+import { announceNative, runInstall } from "../src/install.js";
 import { runUninstall } from "../src/uninstall.js";
 import { runUpdate } from "../src/update.js";
 import { readManifest } from "../src/lib/manifest.js";
@@ -168,7 +168,7 @@ it("replaces an outdated Engram after consent with a binary backup and no memory
   expect(fs.readFileSync(bin, "utf8")).toBe("previous binary");
 });
 
-it("announces each native step by name without arguments beyond subcommands or subprocess output", async () => {
+it("announces each native step by name and package, without other arguments or subprocess output", async () => {
   const step = vi.spyOn(p.log, "step").mockImplementation(() => {});
   const calls: string[][] = [];
   expect(await runUpdate({ runtimes: ["codex"], dryRun: false, yes: true, engramBin: "/fake/engram", verifyEngram: async () => true,
@@ -179,9 +179,27 @@ it("announces each native step by name without arguments beyond subcommands or s
     "Paso nativo en curso: codex update",
     "Paso nativo en curso: engram setup codex",
     "Paso nativo en curso: codex plugin marketplace upgrade engram",
-    "Paso nativo en curso: codex plugin add",
+    "Paso nativo en curso: codex plugin add engram@engram",
   ]);
   expect(calls).toHaveLength(announced.length);
+});
+
+it("labels a native step with its package identifier and never with a path, a flag or what follows it", () => {
+  const step = vi.spyOn(p.log, "step").mockImplementation(() => {});
+  const run = announceNative(() => "");
+  const label = (bin: string, args: string[]) => { step.mockClear(); run(bin, args); return step.mock.calls[0]![0]; };
+  expect(label("/usr/bin/pi", ["install", "npm:pi-subagents"])).toBe("Paso nativo en curso: pi install npm:pi-subagents");
+  expect(label("/usr/bin/pi", ["install", "npm:@gotgenes/pi-permission-system"])).toBe("Paso nativo en curso: pi install npm:@gotgenes/pi-permission-system");
+  expect(label("/usr/bin/pi", ["remove", "npm:jorgex-pi@0.8.29"])).toBe("Paso nativo en curso: pi remove npm:jorgex-pi@0.8.29");
+  expect(label("/usr/bin/pnpm", ["add", "@opencode-ai/browser-control@latest"])).toBe("Paso nativo en curso: pnpm add @opencode-ai/browser-control@latest");
+  for (const unsafe of ["/home/user/.engram/export.json", "./local-package", "../sibling", "~/package", "C:\\Users\\user\\pkg", "npm:../escape", "export.json", "relative/path", "name@../escape", "TOKEN_value", "build2", "0123456789abcdef"]) {
+    expect(label("/usr/bin/pi", ["install", unsafe])).toBe("Paso nativo en curso: pi install");
+  }
+  // A flag ends the label: its value and anything after it stay out, even a well-formed package.
+  expect(label("/usr/bin/pnpm", ["add", "--global", "@opencode-ai/browser-control@latest"])).toBe("Paso nativo en curso: pnpm add");
+  expect(label("/usr/bin/claude", ["mcp", "remove", "engram", "--scope", "user"])).toBe("Paso nativo en curso: claude mcp remove engram");
+  // Only one identifier is shown; a second positional value is never appended.
+  expect(label("/usr/bin/pi", ["install", "npm:pi-subagents", "npm:pi-web-access"])).toBe("Paso nativo en curso: pi install npm:pi-subagents");
 });
 
 it("update resolves a current Engram without export/download and delegates the host to its native updater", async () => {
