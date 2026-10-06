@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import type { OpenCodeTargetEvidenceOption, RuntimeId } from "./adapters/types.js";
-import { ADAPTERS, applyChanges, configDirectory, diffPlan, executeNative, makeContext, stateDirectory, planRetiredHooks, type NativeExecutor } from "./install.js";
+import { ADAPTERS, applyChanges, configDirectory, diffPlan, announceNative, executeNative, makeContext, stateDirectory, planRetiredHooks, type NativeExecutor } from "./install.js";
 import { createBackup } from "./lib/backup.js";
 import { loadCanonicalMcp } from "./lib/canonical.js";
 import { isContainedIn, pruneEmptyDirs } from "./lib/fsx.js";
@@ -57,7 +57,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       }
       if (opts.dryRun) { p.log.info(`${id}: retiraría ${removable.length} archivos propios.`); continue; }
       createBackup([...removable, ...changes.map((change) => change.action.target), manifestPath], `uninstall-${id}`, path.join(state, "backups"));
-      const execute = opts.execute ?? executeNative;
+      const execute = announceNative(opts.execute ?? executeNative);
       if (configSelected && !opts.targetDir) {
         const bin = adapter.detect().binPath;
         if ((row.packages?.length || opts.removeEngram && row.engram) && !bin) throw new Error(`${id}: runtime ausente; quedan integraciones nativas por retirar.`);
