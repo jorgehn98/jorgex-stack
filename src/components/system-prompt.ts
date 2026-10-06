@@ -26,7 +26,7 @@ export function planSystemPrompt(adapter: SharedProjectionAdapter, ctx: InstallC
     browser: readModule("browser-use.md"),
     "writing-style": ctx.writingStyle?.content ?? undefined,
   };
-  const sections = adapter.adaptSystemPromptSections?.(modules) ?? modules;
+  const sections = adapter.adaptSystemPromptSections?.(modules, ctx) ?? modules;
   let content = existing ?? "";
   for (const section of SYSTEM_PROMPT_SECTIONS) {
     const body = sections[section];

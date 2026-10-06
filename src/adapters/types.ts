@@ -112,7 +112,7 @@ export interface SharedProjectionAdapter {
   id: SelectableRuntimeId;
   paths(configDir: string): AdapterPaths;
   /** Añade orientación propia del runtime a las secciones compartidas. */
-  adaptSystemPromptSections?(sections: SystemPromptSections): SystemPromptSections;
+  adaptSystemPromptSections?(sections: SystemPromptSections, ctx: InstallContext): SystemPromptSections;
 }
 
 export interface Adapter extends SharedProjectionAdapter {

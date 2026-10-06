@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, ConfigOwnershipChange } from "./types.js";
-import { BROWSER_CONTROL_GUIDANCE, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
+import { BROWSER_CONTROL_GUIDANCE, BROWSER_CONTROL_INCOMPATIBLE_WARNING, isBrowserControlCommand, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
 import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectOpenCode } from "../lib/detect.js";
@@ -82,7 +82,8 @@ const BROWSER_CONTROL_SERVER = "browser-control";
 /**
  * Un MCP manual `browser-control` solo equivale al launcher gestionado si es
  * local, está efectivamente habilitado y expuesto por Code Mode, y su command
- * es exactamente `[command, ...args]` (la invocación ya es `readyMCP`). No se
+ * es `[command, ...args]` con el nombre canónico o una ruta absoluta al mismo
+ * binario (la invocación ya es `readyMCP`). No se
  * exige igualdad del objeto completo: los campos desconocidos del usuario se
  * preservan. Un `type` remoto, un command ausente/distinto, `disabled: true`
  * nativo, `enabled: false` legacy o `codemode: false` no pueden anunciar el MCP
@@ -97,8 +98,8 @@ function isCompatibleBrowserControlServer(
   if (entry["disabled"] === true || entry["enabled"] === false || entry["codemode"] === false) return false;
   const command = entry["command"];
   return Array.isArray(command)
-    && command.every((part) => typeof part === "string")
-    && isDeepStrictEqual(command, [invocation.command, ...invocation.args]);
+    && isBrowserControlCommand(command[0], invocation.command)
+    && isDeepStrictEqual(command.slice(1), [...invocation.args]);
 }
 
 /**
@@ -558,10 +559,10 @@ export const opencodeAdapter: Adapter = {
   },
 
 
-  adaptSystemPromptSections(sections) {
+  adaptSystemPromptSections(sections, ctx) {
     const adapted = { ...sections };
     delete adapted.playwright;
-    adapted.browser = [sections.browser, BROWSER_CONTROL_GUIDANCE].filter(Boolean).join("\n\n");
+    if (ctx.browserControlInvocation) adapted.browser = [sections.browser, BROWSER_CONTROL_GUIDANCE].filter(Boolean).join("\n\n");
     return adapted;
   },
 
@@ -744,7 +745,9 @@ export const opencodeAdapter: Adapter = {
           writableServers()[BROWSER_CONTROL_SERVER] = { type: "local", command: [browserControl.command, ...browserControl.args] };
           mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });
         } else if (!isCompatibleBrowserControlServer(existing, browserControl)) {
-          throw new Error("OpenCode: Browser Control personalizado/incompatible; se conserva sin reclamar.");
+          ctx.warnings.push(`OpenCode: ${BROWSER_CONTROL_INCOMPATIBLE_WARNING}`);
+          // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
+          ctx.browserControlInvocation = undefined;
         }
       }
 
