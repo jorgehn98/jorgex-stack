@@ -113,20 +113,16 @@ function planClaudePermissions(ctx: InstallContext): FileAction[] {
     const settingsFile = path.join(ctx.configDir, "settings.json");
     let content = contentSource ?? "{}";
 
-    // Permisos por defecto: se siembran en settings.json fresca o vacía. Una config
+    // Defaults: se siembran en settings.json fresca o vacía. Una config
     // existente se preserva byte a byte y solo avisa cuando el bloque difiere.
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
     const canonicalPermissions = defaults?.["permissions"];
     if (contentSource === null) {
-      if (canonicalPermissions !== undefined) {
-        content = upsertJson(content, (root) => {
-          if (root["permissions"] === undefined) {
-            root["permissions"] = canonicalPermissions;
-            ctx.warnings.push(
-              "Claude Code: fresh config enables read-anywhere via Read/Grep/Glob allow rules; shell, writes and web egress remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
-            );
-          }
-        });
+      if (defaults !== undefined) {
+        content = upsertJson(content, (root) => { Object.assign(root, defaults); });
+        ctx.warnings.push(
+          "Claude Code: fresh config starts in bypassPermissions with the danger prompt pre-accepted; only secret paths are denied for Read/Edit and recognized shell file commands. Arbitrary subprocesses are not covered: this is not a sandbox.",
+        );
       }
     } else if (canonicalPermissions !== undefined) {
       content = upsertJson(content, (root) => {
