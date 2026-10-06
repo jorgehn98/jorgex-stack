@@ -48,6 +48,20 @@ export function verifyIntegrity(registry, integrity) {
   if (registry.integrity !== integrity) throw new Error("Registry integrity differs from the validated tarball; no tag may be created.");
 }
 
+// npm exposes a new version minutes after `npm publish` returns. Only that 404 is waited for:
+// network, auth, malformed metadata and byte mismatch throw on the attempt that sees them.
+const READBACK_INTERVAL_MS = 15_000;
+const READBACK_LIMIT_MS = 300_000;
+
+export async function confirmPublished(name, version, integrity, { fetcher = fetch, sleep: pause = sleep } = {}) {
+  for (let waited = 0; waited < READBACK_LIMIT_MS; waited += READBACK_INTERVAL_MS) {
+    const registry = await registryVersion(name, version, fetcher);
+    if (registry) return verifyIntegrity(registry, integrity);
+    await pause(READBACK_INTERVAL_MS);
+  }
+  verifyIntegrity(await registryVersion(name, version, fetcher), integrity);
+}
+
 export function publicationNeeded(registry, integrity, planned, rerun = false) {
   if (registry || !planned) {
     verifyIntegrity(registry, integrity);
@@ -129,12 +143,7 @@ async function main(command, path) {
       output({ publish });
       return;
     }
-    // Bounded public readback. Auth errors, malformed metadata and byte mismatch fail immediately.
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const registry = await registryVersion(NAME, version);
-      if (registry || attempt === 3) { verifyIntegrity(registry, integrity); return; }
-      await sleep(5_000);
-    }
+    await confirmPublished(NAME, version, integrity);
   } else {
     throw new Error("Usage: release-policy.mjs target|plan|artifact|prepare|verify [tarball]");
   }
