@@ -18,6 +18,6 @@ Toolchain declarada en package.json, con Node 24 en Actions/pnpm 11.1.1. Verific
 
 ## Runtime y caché de Actions
 
-Quality gate de PR ejecuta instalación frozen, typecheck, tests y build del Stack restante. Un solo build por lane, sin pi-artifact/paridad/pins. Publicación valida el candidato y reutiliza su dist, conserva OIDC/provenance y auto-patch. Node 24, setup-node sin instalación implícita de gestor y caché pnpm solo tras prepararlo. Acciones fijadas por SHA; checkouts de lectura no preservan credenciales. Checks requeridos deben corresponder al candidato/contexto actual; no sustituir un gate externo por texto ni afirmar que no existe porque `gh pr checks` esté vacío.
+Quality gate de PR ejecuta instalación frozen, typecheck, tests y build del Stack restante. Un solo build por lane, sin pi-artifact/paridad/pins. Publicación valida el candidato y reutiliza su dist, conserva OIDC/provenance; la versión se prepara en el PR, sin auto-patch. Node 24, setup-node sin instalación implícita de gestor y caché pnpm solo tras prepararlo. Acciones fijadas por SHA; checkouts de lectura no preservan credenciales. Checks requeridos deben corresponder al candidato/contexto actual; no sustituir un gate externo por texto ni afirmar que no existe porque `gh pr checks` esté vacío.
 
 Ver [publicación](../../README.md#publicación) y [workflow canónico](../../stack/skills/orchestrator/SKILL.md). No se genera recibo privado de calidad ni export para otro runtime.

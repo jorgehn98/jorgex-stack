@@ -46,6 +46,16 @@ describe("native six-agent canon", () => {
     }
   });
 
+  it("gives Pi children the project and global instructions and only the skill they name", () => {
+    for (const agent of agents()) {
+      const frontmatter = piAdapter.renderAgent(agent, DEFAULT_MODEL_MAP.codex)[0]!.content.split("\n---\n")[0]!;
+      // pi-subagents starts custom agents with a clean prompt; both flags are needed for ~/.pi/agent/AGENTS.md.
+      expect(frontmatter).toContain("inheritProjectContext: true\ninheritGlobalContext: true\n");
+      expect(frontmatter).not.toContain("inheritSkills");
+      expect(/^skills: lean-code$/m.test(frontmatter), agent.name).toBe(agent.name === "implementer" || agent.name === "simplifier");
+    }
+  });
+
   it("renders an explicitly selected per-agent model, safely quoted", () => {
     const agent = agents().find((agent) => agent.name === "implementer")!;
     const models = { ...DEFAULT_MODEL_MAP.opencode, overrides: { implementer: { model: "user/model", variant: "high" } } };

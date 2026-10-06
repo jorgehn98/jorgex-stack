@@ -42,6 +42,9 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
   const detected = operations.detect();
   ui.info(`JorgeX Stack · Runtimes detectados: ${detected.map((id) => ADAPTERS[id].name).join(" · ") || "ninguno"}. Los ausentes no se instalan automáticamente.`);
   async function unit(action: Action, scope: OperationScope, runtimes: RuntimeId[], route: string) {
+    if ((action === "install" || action === "update") && (scope.section === "all" || scope.section === "config")) {
+      ui.info("Permisos: una configuración nueva trabaja sin prompts y solo deniega rutas de secretos; una existente se conserva sin cambios. No es un sandbox, y en Codex los .env no quedan protegidos. Detalle: docs/references/permissions.md.");
+    }
     while (true) {
       const choice = await ui.select(route, [
         { value: "apply", label: action === "doctor" ? "Comprobar (solo lectura)" : "Aplicar esta unidad" },

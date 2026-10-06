@@ -10,6 +10,14 @@ license: Complete terms in LICENSE.txt
 
 Create MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. The quality of an MCP server is measured by how well it enables LLMs to accomplish real-world tasks.
 
+## Scope in JorgeX Stack
+
+This file and the references of this skill have been modified by JorgeX Stack from the upstream skill.
+
+- Size the server to the request. Implement the tools the stated use case needs; add broader API coverage only when asked.
+- Phase 4 is optional: create evaluations when the user asks for them or the server is going to be published, with a number of questions proportional to the tool surface. The ten questions in the evaluation guide are a maximum for a full server, not a requirement.
+- Model-based evaluations, paid API calls, installations and external effects need explicit authorization. Do not run them to verify an edit.
+
 ---
 
 # Process
@@ -23,7 +31,7 @@ Creating a high-quality MCP server involves four main phases:
 #### 1.1 Understand Modern MCP Design
 
 **API Coverage vs. Workflow Tools:**
-Balance comprehensive API endpoint coverage with specialized workflow tools. Workflow tools can be more convenient for specific tasks, while comprehensive coverage gives agents flexibility to compose operations. Performance varies by client—some clients benefit from code execution that combines basic tools, while others work better with higher-level workflows. When uncertain, prioritize comprehensive API coverage.
+Balance comprehensive API endpoint coverage with specialized workflow tools. Workflow tools can be more convenient for specific tasks, while comprehensive coverage gives agents flexibility to compose operations. Performance varies by client—some clients benefit from code execution that combines basic tools, while others work better with higher-level workflows. When uncertain, cover the stated use case first and ask before widening coverage.
 
 **Tool Naming and Discoverability:**
 Clear, descriptive tool names help agents find the right tools quickly. Use consistent prefixes (e.g., `github_create_issue`, `github_list_repos`) and action-oriented naming.
@@ -71,7 +79,7 @@ Key pages to review:
 Review the service's API documentation to identify key endpoints, authentication requirements, and data models. Use web search and WebFetch as needed.
 
 **Tool Selection:**
-Prioritize comprehensive API coverage. List endpoints to implement, starting with the most common operations.
+List the endpoints the use case needs, starting with the most common operations. Add broader coverage only when requested.
 
 ---
 
@@ -151,9 +159,9 @@ See language-specific guides for detailed testing approaches and quality checkli
 
 ---
 
-### Phase 4: Create Evaluations
+### Phase 4: Create Evaluations (optional)
 
-After implementing your MCP server, create comprehensive evaluations to test its effectiveness.
+When evaluations are in scope, create them after implementing your MCP server to test its effectiveness.
 
 **Load [✅ Evaluation Guide](./reference/evaluation.md) for complete evaluation guidelines.**
 
@@ -161,13 +169,13 @@ After implementing your MCP server, create comprehensive evaluations to test its
 
 Use evaluations to test whether LLMs can effectively use your MCP server to answer realistic, complex questions.
 
-#### 4.2 Create 10 Evaluation Questions
+#### 4.2 Create Evaluation Questions
 
 To create effective evaluations, follow the process outlined in the evaluation guide:
 
 1. **Tool Inspection**: List available tools and understand their capabilities
 2. **Content Exploration**: Use READ-ONLY operations to explore available data
-3. **Question Generation**: Create 10 complex, realistic questions
+3. **Question Generation**: Create complex, realistic questions (ten for a full published server; fewer for a small one)
 4. **Answer Verification**: Solve each question yourself to verify answers
 
 #### 4.3 Evaluation Requirements

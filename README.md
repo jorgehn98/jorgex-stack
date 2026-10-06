@@ -31,10 +31,10 @@ Workflow canónico: [orchestrator](stack/skills/orchestrator/SKILL.md). No se du
 
 | Runtime | Recursos Stack e integración |
 | --- | --- |
-| Claude Code | Subagentes nativos, enlaces de skills, `~/.agents/AGENTS.md` con puente mínimo en `~/.claude/CLAUDE.md`; plugin/MCP oficial Engram. Sin browser adicional. |
+| Claude Code | Subagentes nativos, enlaces de skills, `~/.agents/AGENTS.md` con puente mínimo en `~/.claude/CLAUDE.md` y permisos fresh; plugin/MCP oficial Engram. Sin browser adicional. |
 | Codex | Agentes TOML, skills compartidas, instrucciones globales y permisos fresh; plugin/hooks/MCP oficiales Engram. Sin browser desktop añadido. |
 | OpenCode v2 | Agentes/permisos nativos, server `opencode.json(c)`, cliente `cli.json`, panel local `./tui/subagents`; setup oficial Engram completo y Browser Control. V1 no soportado. |
-| Pi oficial | Agentes, instrucciones, cabecera local y configuración MCP; extensiones nativas instaladas por Pi, incluido Engram y compact-tools. Sin tema impuesto ni instalador jorgex-pi. |
+| Pi oficial | Agentes con contexto de proyecto y global, instrucciones, cabecera local, configuración MCP y política de permisos fresh; extensiones nativas instaladas por Pi, incluido Engram y compact-tools. Sin tema impuesto ni instalador jorgex-pi. |
 
 Las rutas efectivas respetan configuración nativa/variables del runtime. Context7 usa placeholder vacío para que cada usuario conecte su cuenta; nunca se distribuyen credenciales. [Estilo de escritura](docs/references/writing-style.md) se proyecta en todos los runtimes, sin overlay programático.
 
