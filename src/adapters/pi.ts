@@ -84,10 +84,13 @@ export const piAdapter: Adapter = {
     const selected = agentModelChoice(models, agent.name);
     const choices = `${selected.model ? `model: ${JSON.stringify(selected.model)}\n` : ""}${selected.variant ? `thinking: ${JSON.stringify(selected.variant)}\n` : ""}`;
     const tools = agent.readonly ? "read, grep, find, ls" : "read, grep, find, ls, bash, edit, write";
+    // pi-subagents arranca cada agente propio con prompt limpio: sin estos
+    // campos no ve AGENTS.md de proyecto/global ni la skill que su prompt nombra.
+    const context = `inheritProjectContext: true\ninheritGlobalContext: true\n${agent.body.includes("`lean-code`") ? "skills: lean-code\n" : ""}`;
     return [{
       kind: "agent",
       file: `${agent.name}.md`,
-      content: `---\nname: ${agent.name}\ndescription: ${JSON.stringify(agent.description)}\ntools: ${tools}\n${choices}allowedAgents:\nallowNestedSubagents: false\n---\n${agent.body}`,
+      content: `---\nname: ${agent.name}\ndescription: ${JSON.stringify(agent.description)}\ntools: ${tools}\n${choices}${context}allowedAgents:\nallowNestedSubagents: false\n---\n${agent.body}`,
     }];
   },
 
