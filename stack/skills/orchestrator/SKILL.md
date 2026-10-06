@@ -64,6 +64,7 @@ Own the result, not a procession of agents.
 - Follow the project's Git rules for worktrees, commits, draft and Ready. Ready means implementation, necessary review and fixes are finished.
 - Check the actual candidate and its required CI before integration. Never merge without explicit user authorization.
 - Delivery report: PR, candidate and checks; two to four bullets of what changed; verification run; pending items and real friction observed.
+- Report each pending item as owner, next action and what unblocks it, in every status update as well as the delivery report. Say so when nothing is pending; do not list items you have not verified are still open.
 - Do not finish after only analysing or planning when implementation was requested and approved.
 
 ## Several PRs
@@ -73,7 +74,8 @@ Own the result, not a procession of agents.
 - **External prerequisite**: an artifact, migration, deployment or decision that must exist. It blocks its consumer, not all other approved work.
 - One objective per PR; split by contract, coupling and risk, not by line count.
 - Record base and SHA, parent or prerequisite, and merge order in the plan.
-- A Ready parent is immutable. If a base changes or a PR is retargeted, return the affected PR to draft and recompute diff, coverage and checks: the same head does not preserve evidence.
+- A Ready parent is immutable. If a PR is retargeted or the parent candidate it builds on changes, return the affected PR to draft and recompute diff, coverage and checks: the same head does not preserve evidence.
+- Production advancing through an unrelated merge is not that case. Resync only when the repository requires an up-to-date branch, a conflict appears or the merged change touches the same contract.
 - After a parent merges, check the child's real target before any merge.
 - Ready is not a pause: continue approved safe work. Do not invent work to stay busy.
 
