@@ -62,7 +62,7 @@ Own the result, not a procession of agents.
 - Use `xreview` on a coherent candidate while the PR is still draft. Early review is the exception: one specialist, for a concrete risk checks do not cover.
 - Validate findings against real premises. Fix blockers, not every optional suggestion; recheck affected behavior instead of restarting the panel.
 - Follow the project's Git rules for worktrees, commits, draft and Ready. Ready means implementation, necessary review and fixes are finished.
-- Check the actual candidate and its required CI before integration. Never merge without explicit user authorization. After that order you may enable auto-merge on that PR and stop watching its checks; never enable it without the order.
+- Check the actual candidate and its required CI before integration. Never merge without explicit user authorization. After that order you may enable auto-merge on that PR and stop watching its checks, since required checks still gate the merge; never enable it without the order.
 - Delivery report: PR, candidate and checks; two to four bullets of what changed; verification run; pending items and real friction observed.
 - Report each pending item as owner, next action and what unblocks it, in every status update as well as the delivery report. Say so when nothing is pending; do not list items you have not verified are still open.
 - Do not finish after only analysing or planning when implementation was requested and approved.
@@ -76,7 +76,7 @@ Own the result, not a procession of agents.
 - Record base and SHA, parent or prerequisite, and merge order in the plan.
 - A Ready parent is immutable. Only a retarget or a rewritten parent in stacked PRs invalidates evidence: return the affected PR to draft and recompute diff, coverage and checks, because the same head does not preserve it.
 - The base branch advancing does not return a PR to draft or invalidate its evidence. An independent PR integrates the base once, when its merge turn starts.
-- Work on PRs in parallel, but in each repository only one at a time enters the merge turn: integrate the base, mark Ready, pass checks, merge. The turn starts with the user's explicit order; several PRs merge in series, in the order given. This is a written convention: do not build locks, queues or coordination between sessions.
+- Work on PRs in parallel, but in each repository only one at a time enters the merge turn: integrate the base, mark Ready, pass checks, merge. The turn starts with the user's explicit order; several PRs merge in series, in the order given. A finished PR stays draft until its turn. This is a written convention: do not build locks, queues or coordination between sessions.
 - After a parent merges, check the child's real target before any merge.
 - Ready is not a pause: continue approved safe work. Do not invent work to stay busy.
 
