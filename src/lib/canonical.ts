@@ -102,6 +102,25 @@ export function loadCanonicalDefaults(stackDir: string): Record<string, Record<s
   return parsed;
 }
 
+/**
+ * Patrones de secretos para los runtimes cuyo comodín `*` también casa `/`
+ * (OpenCode v2 y el sistema de permisos de Pi). `*.env.example` se re-permite
+ * después: en ambos gana la última coincidencia.
+ */
+export const SECRET_PATH_PATTERNS = [
+  "*.env",
+  "*.env.*",
+  "*.ssh/*",
+  "*.aws/credentials",
+  "*.npmrc",
+  "*.git-credentials",
+  "*id_rsa*",
+  "*id_ed25519*",
+  "*.pem",
+  "*.key",
+] as const;
+export const SECRET_PATH_EXCEPTION = "*.env.example";
+
 export const BROWSER_CONTROL_GUIDANCE = [
   "## Browser Control",
   "",

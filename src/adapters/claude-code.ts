@@ -8,7 +8,7 @@ import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
 import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
-import { upsertJson } from "../lib/filemerge.js";
+import { parseJsoncObject, upsertJson } from "../lib/filemerge.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
 
@@ -113,28 +113,26 @@ function planClaudePermissions(ctx: InstallContext): FileAction[] {
     const settingsFile = path.join(ctx.configDir, "settings.json");
     let content = contentSource ?? "{}";
 
-    // Permisos por defecto: se siembran en settings.json fresca o vacía. Una config
+    // Defaults: se siembran en settings.json fresca o vacía. Una config
     // existente se preserva byte a byte y solo avisa cuando el bloque difiere.
     const defaults = loadCanonicalDefaults(ctx.stackDir)["claude-code"];
     const canonicalPermissions = defaults?.["permissions"];
     if (contentSource === null) {
-      if (canonicalPermissions !== undefined) {
-        content = upsertJson(content, (root) => {
-          if (root["permissions"] === undefined) {
-            root["permissions"] = canonicalPermissions;
-            ctx.warnings.push(
-              "Claude Code: fresh config enables read-anywhere via Read/Grep/Glob allow rules; shell, writes and web egress remain approval-gated, but broad local reads can expose secrets not covered by deny rules.",
-            );
-          }
-        });
+      if (defaults !== undefined) {
+        content = upsertJson(content, (root) => { Object.assign(root, defaults); });
+        ctx.warnings.push(
+          "Claude Code: fresh config starts in bypassPermissions with the danger prompt pre-accepted; only secret paths are denied for Read/Edit and recognized shell file commands. Arbitrary subprocesses are not covered: this is not a sandbox.",
+        );
       }
     } else if (canonicalPermissions !== undefined) {
-      content = upsertJson(content, (root) => {
-        if (isDeepStrictEqual(root["permissions"], canonicalPermissions)) return;
+      // Solo lectura: reserializar cambiaría bytes de una config ajena.
+      const existing = parseJsoncObject(contentSource).value;
+      if (existing === null) throw new Error("Claude Code: settings.json no es JSON válido; corrígelo antes de reintentar install.");
+      if (!isDeepStrictEqual(existing["permissions"], canonicalPermissions)) {
         ctx.warnings.push(
           "Claude Code: permissions block differs from the stack default and was left untouched; review/edit the native settings.json manually after creating a backup. Replacing permissions can discard personal choices and extra hardenings.",
         );
-      });
+      }
     }
     actions.push({ kind: "write", target: settingsFile, content });
 
