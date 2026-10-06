@@ -16,7 +16,7 @@ Browser Control se registra como MCP stdio; su proveedor posee relay/extension/a
 
 Pi utiliza el gestor configurado por el usuario. Si es pnpm11, su espera predeterminada de24h puede seleccionar una versión anterior a `latest`; Stack no desactiva esa protección ni promete haber probado una release que el gestor no instaló.
 
-Lectores Stack usan tools `read, grep, find, ls`; implementer/generalist incluyen bash/edit/write. Sin delegación anidada. Pi tiene seis archivos propios, no modifica builtin del proveedor. El sistema de permisos es extensión nativa; doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
+Lectores Stack usan tools `read, grep, find, ls`; implementer/generalist incluyen bash/edit/write. Sin delegación anidada. Pi tiene seis archivos propios, no modifica builtin del proveedor. El sistema de permisos es extensión nativa. Si `extensions/pi-permission-system/config.json` no existe, Stack lo crea con `yoloMode` y deny de rutas de secretos; uno existente se conserva intacto y la desinstalación no lo retira. Doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
 
 **Timeout temporal de dos horas:** al Aplicar Configuración/Todo, Stack siembra `timeoutMs: 7200000` en la configuración nativa `~/.pi/agent/extensions/subagent/config.json` **solo si el campo está ausente**. Conserva cualquier elección previa (también si vale dos horas), sin reclamarla por igualdad, y los demás campos. Hay backup antes de modificar un archivo existente; reaplicar no produce cambios. Desinstalar retira únicamente el campo creado por Stack que siga valiendo 7200000; un override personal se conserva.
 

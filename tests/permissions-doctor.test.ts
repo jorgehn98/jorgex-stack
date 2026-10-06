@@ -55,7 +55,7 @@ it.each(["malformed", "invalid-root", "unreadable"] as const)("fails closed for 
   const policy = path.join(root, "pi-agent", "extensions", "pi-permission-system", "config.json");
   fs.mkdirSync(path.dirname(policy), { recursive: true });
   const content = kind === "malformed" ? 'private-policy-canary {{' : '{"permission":null,"private":"private-policy-canary"}';
-  if (kind === "unreadable") fs.mkdirSync(policy); else fs.writeFileSync(policy, content);
+  if (kind === "unreadable") { fs.rmSync(policy); fs.mkdirSync(policy); } else fs.writeFileSync(policy, content);
   expect(await runDoctor(options("pi"))).toBe(1);
   expect(output()).toMatch(/inválida|no se puede leer/);
   expect(output()).not.toContain("private-policy-canary");
@@ -63,8 +63,10 @@ it.each(["malformed", "invalid-root", "unreadable"] as const)("fails closed for 
   else expect(fs.readFileSync(policy, "utf8")).toBe(content);
 });
 
-it("does not infer an invalid Pi permission state when optional configuration is absent", async () => {
+it("reports a removed Pi permission policy as pending instead of inferring a state", async () => {
   await install("pi");
-  expect(await runDoctor(options("pi"))).toBe(0);
+  fs.rmSync(path.join(root, "pi-agent", "extensions", "pi-permission-system", "config.json"));
+  expect(await runDoctor(options("pi"))).toBe(1);
+  expect(output()).toContain("pendientes de reconciliación");
   expect(output()).not.toContain("configuración nativa de permisos presente");
 });

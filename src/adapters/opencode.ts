@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, ConfigOwnershipChange } from "./types.js";
-import { BROWSER_CONTROL_GUIDANCE, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
+import { BROWSER_CONTROL_GUIDANCE, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
 import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
 import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
 import { detectOpenCode } from "../lib/detect.js";
@@ -162,23 +162,6 @@ function hasPendingCliMigration(ctx: InstallContext): boolean {
   return readTextIfExists(path.join(opencodeStateDir(ctx), "kv.json")) !== null;
 }
 
-/**
- * Patrones de secretos denegados para `read`/`edit` (Spec T04). El comodín `*`
- * casa también `/`, así que no se duplican variantes con y sin directorio.
- */
-const SECRET_DENY_PATTERNS = [
-  "*.env",
-  "*.env.*",
-  "*.ssh/*",
-  "*.aws/credentials",
-  "*.npmrc",
-  "*.git-credentials",
-  "*id_rsa*",
-  "*id_ed25519*",
-  "*.pem",
-  "*.key",
-] as const;
-
 interface PermissionRule {
   action: string;
   resource: string;
@@ -194,8 +177,8 @@ interface PermissionRule {
 function freshPermissions(): PermissionRule[] {
   const rules: PermissionRule[] = [{ action: "external_directory", resource: "*", effect: "allow" }];
   for (const action of ["read", "edit"] as const) {
-    for (const resource of SECRET_DENY_PATTERNS) rules.push({ action, resource, effect: "deny" });
-    rules.push({ action, resource: "*.env.example", effect: "allow" });
+    for (const resource of SECRET_PATH_PATTERNS) rules.push({ action, resource, effect: "deny" });
+    rules.push({ action, resource: SECRET_PATH_EXCEPTION, effect: "allow" });
   }
   return rules;
 }
