@@ -47,7 +47,7 @@ describe("backup: dedup de snapshots idénticos", () => {
   });
 });
 
-describe("permisos por defecto: lectura externa sin write-anywhere", () => {
+describe("permisos por defecto fresh", () => {
   const makeCtx = (id: "opencode" | "codex") => ({
     stackDir: stackRoot(),
     configDir: tmp,

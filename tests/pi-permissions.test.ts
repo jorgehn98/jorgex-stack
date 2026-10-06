@@ -31,7 +31,7 @@ it("seeds a prompt-free native policy that denies only secret paths", async () =
   expect(Object.keys(config.permission).sort()).toEqual(["*", "bash", "external_directory", "path"]);
 
   const paths = config.permission.path as Record<string, string>;
-  for (const secret of ["/work/app/.env", "/work/app/.env.local", "/home/u/.ssh/id_ed25519", "/home/u/.aws/credentials", "/home/u/.npmrc", "/home/u/.git-credentials", "/work/tls/server.pem", "/work/tls/server.key"]) {
+  for (const secret of ["/work/app/.env", "/work/app/.env.local", "/home/u/.ssh/config", "/work/keys/id_rsa", "/work/keys/id_ed25519", "/home/u/.aws/credentials", "/home/u/.npmrc", "/home/u/.git-credentials", "/work/tls/server.pem", "/work/tls/server.key"]) {
     expect(decide(paths, secret), secret).toBe("deny");
   }
   for (const ordinary of ["/work/app/.env.example", "/work/app/src/index.ts", "/home/u/notes.md"]) {

@@ -294,21 +294,8 @@ describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
     expect(permissions.defaultMode).toBe("bypassPermissions");
     expect(permissions.ask ?? []).toEqual([]);
     expect(permissions.deny.every((rule) => /^(Read|Edit)\(\/\/\*\*\//.test(rule))).toBe(true);
-    for (const tool of ["Read", "Edit"]) {
-      expect(permissions.deny).toEqual(expect.arrayContaining([
-        `${tool}(//**/.env)`,
-        `${tool}(//**/.env.local)`,
-        `${tool}(//**/.env.production)`,
-        `${tool}(//**/.ssh/**)`,
-        `${tool}(//**/.aws/credentials)`,
-        `${tool}(//**/.npmrc)`,
-        `${tool}(//**/.git-credentials)`,
-        `${tool}(//**/id_rsa)`,
-        `${tool}(//**/id_ed25519)`,
-        `${tool}(//**/*.pem)`,
-        `${tool}(//**/*.key)`,
-      ]));
-    }
+    const secrets = [".env", ".env.local", ".env.*.local", ".env.dev", ".env.development", ".env.production", ".env.prod", ".env.staging", ".env.test", ".ssh/**", ".aws/credentials", ".npmrc", ".git-credentials", "id_rsa", "id_ed25519", "*.pem", "*.key"];
+    expect(permissions.deny).toEqual(["Read", "Edit"].flatMap((tool) => secrets.map((secret) => `${tool}(//**/${secret})`)));
     expect(warnings.join("\n")).toMatch(/bypassPermissions/);
   });
 
@@ -320,10 +307,9 @@ describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
     expect(deny.filter((rule) => rule.includes("example"))).toEqual([]);
   });
 
-  it("la config no vacía no recibe modo, atribución ni aceptación del aviso", () => {
-    fs.writeFileSync(settingsFile, JSON.stringify({ other: true }));
-    const { content } = run(makeCtx());
-    expect(JSON.parse(content)).toEqual({ other: true });
+  it.each(['{"other":true}', "{}", '{\n    "permissions": { "deny": [] },\n    "z": 1\n}\n'])("la config existente %j se conserva byte a byte", (existing) => {
+    fs.writeFileSync(settingsFile, existing);
+    expect(run(makeCtx()).content).toBe(existing);
   });
 
   it("la config no vacía sin permissions no recibe permissions", () => {
