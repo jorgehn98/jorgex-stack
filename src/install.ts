@@ -109,6 +109,7 @@ export function applyChanges(changes: PlannedChange[], onWritten?: (action: File
   for (const { action, status } of changes) {
     if (status === "unchanged") continue;
     fs.mkdirSync(path.dirname(action.target), { recursive: true });
+    if (action.kind === "write") for (const dir of action.ensureDirs ?? []) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (action.kind === "write") fs.writeFileSync(action.target, action.content, { encoding: "utf8", flag: status === "create" ? "wx" : "w" });
     else if (action.symlink) fs.symlinkSync(path.resolve(action.source), action.target, process.platform === "win32" ? "junction" : "dir");
     else fs.copyFileSync(action.source, action.target, status === "create" ? fs.constants.COPYFILE_EXCL : 0);
