@@ -20,7 +20,7 @@
 - Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro` and `what` explicitly invoked.
 - Do not turn available skills or subagents into a mandatory sequence.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
-- With Engram, call `mem_session_summary` once, when the user explicitly closes the session; finishing an answer or an intermediate task is not a close. Keep saving decisions and durable findings with `mem_save` as they happen.
+- With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. Keep saving decisions and durable findings with `mem_save` as they happen.
 
 ## Default Architecture
 
@@ -88,7 +88,7 @@ docs/
 - Work on PRs in parallel, but run one merge turn per repository at a time, in the order the user gives. A base that advanced does not return a PR to draft; integrate it once when that turn starts, before marking Ready.
 - After the merge order you may enable auto-merge on that PR instead of watching its checks; never enable it without the order.
 - Do not add AI signatures or `Co-Authored-By` lines.
-- Use native completion notifications instead of polling when available.
+- Use native completion notifications instead of polling when available. Wait for external CI with one background watch, such as `gh pr checks <n> --watch`, and keep working; do not loop on `sleep` in the foreground.
 - Reuse an agent for the same problem, not as a permanent specialist for unrelated objectives.
 
 ## Terminal

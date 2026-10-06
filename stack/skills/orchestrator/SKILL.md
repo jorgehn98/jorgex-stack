@@ -62,7 +62,7 @@ Own the result, not a procession of agents.
 - Use `xreview` on a coherent candidate while the PR is still draft. Early review is the exception: one specialist, for a concrete risk checks do not cover.
 - Validate findings against real premises. Fix blockers, not every optional suggestion; recheck affected behavior instead of restarting the panel.
 - Follow the project's Git rules for worktrees, commits, draft and Ready. Ready means implementation, necessary review and fixes are finished.
-- Check the actual candidate and its required CI before integration. Never merge without explicit user authorization. After that order you may enable auto-merge on that PR and stop watching its checks, since required checks still gate the merge; never enable it without the order.
+- Check the actual candidate and its required CI before integration. Never merge without explicit user authorization. After that order you may enable auto-merge on that PR and stop watching its checks, since required checks still gate the merge; never enable it without the order. Confirm the PR reports auto-merge as enabled and retry once if it does not.
 - Delivery report: PR, candidate and checks; two to four bullets of what changed; verification run; pending items and real friction observed.
 - Report each pending item as owner, next action and what unblocks it, in every status update as well as the delivery report. Say so when nothing is pending; do not list items you have not verified are still open.
 - Do not finish after only analysing or planning when implementation was requested and approved.
