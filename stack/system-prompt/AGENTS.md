@@ -20,6 +20,7 @@
 - Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro` and `what` explicitly invoked.
 - Do not turn available skills or subagents into a mandatory sequence.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
+- With Engram, save decisions and durable findings as they happen, but write the session summary once, when the user explicitly closes the session, not after each answer or finished task.
 
 ## Default Architecture
 
