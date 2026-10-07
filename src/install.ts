@@ -190,6 +190,21 @@ export function retireExtraEngramMonitor(configDir: string, backupsRoot: string,
   }
 }
 
+/**
+ * Files the official Engram setup and its runtime plugin commands rewrite. The config directory
+ * also holds credentials, session history and logs: nothing outside this list is ever copied.
+ */
+const ENGRAM_SETUP_FILES: Partial<Record<RuntimeId, readonly string[]>> = {
+  "claude-code": ["settings.json"],
+  codex: ["config.toml", "engram-instructions.md", "engram-compact-prompt.md"],
+  opencode: ["opencode.json", "opencode.jsonc", "tui.json", "tui.jsonc", path.join("plugins", "engram.ts")],
+};
+function engramSetupBackupTargets(id: RuntimeId, configDir: string): string[] {
+  const targets = (ENGRAM_SETUP_FILES[id] ?? []).map((name) => path.join(configDir, name));
+  if (id === "claude-code") targets.push(process.env.CLAUDE_CONFIG_DIR ? path.join(configDir, ".claude.json") : path.join(HOME, ".claude.json"));
+  return targets;
+}
+
 /** Retire only registrations pointing to script files recorded as ours. Provider hooks are untouched. */
 export function planRetiredHooks(adapter: Adapter, ctx: InstallContext, owned: readonly string[]): FileAction[] {
   const scriptsDir = adapter.paths(ctx.configDir).scriptsDir;
@@ -339,10 +354,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           if (id === "claude-code") execute(bin, ["update"]);
           if (id === "opencode") { execute(bin, ["upgrade"]); assertOpenCodeV2Preflight(opts, bin); }
           if (id === "codex") execute(bin, ["update"]);
-          const backupTargets = fs.existsSync(configDir) ? fs.readdirSync(configDir).map((name) => path.join(configDir, name)).filter((file) => fs.lstatSync(file).isFile()) : [];
-          backupTargets.push(path.join(configDir, "plugins", "engram.ts"));
-          if (id === "claude-code") backupTargets.push(process.env.CLAUDE_CONFIG_DIR ? path.join(configDir, ".claude.json") : path.join(HOME, ".claude.json"));
-          createBackup(backupTargets, "engram-setup", path.join(state, "backups"));
+          createBackup(engramSetupBackupTargets(id, configDir), "engram-setup", path.join(state, "backups"));
           const verify = opts.verifyEngram ?? (async (runtime, directory, engramBin) => (await officialSetupVerifiers[runtime]?.({ configDir: directory, engramBin, homeDir: HOME }))?.ok === true);
           const initial = opts.verifyEngram ? undefined : await officialSetupVerifiers[id]?.({ configDir, engramBin: engram, homeDir: HOME });
           const preexisting = opts.verifyEngram ? await verify(id, configDir, engram) : initial?.ok === true;
