@@ -54,11 +54,37 @@ Catálogos nativos: Claude SDK oficial, Codex app-server, OpenCode v2 `/api/mode
 
 ## Preservación y retirada
 
-Antes de cambiar configuración existente hay backup en `~/.jorgex-stack/backups`. Los respaldos no se podan automáticamente: se conservan hasta una limpieza manual deliberada y pueden ocupar espacio creciente. Antes de eliminar snapshots, comprueba qué originales contienen y cuáles necesitas conservar para recuperar cambios; no los borres durante una operación activa. El manifest original se respalda una vez por operación, mientras el ownership se persiste por unidad para conservar evidencia de fallos parciales. Marcadores Markdown y upserts JSON/TOML preservan contenido ajeno; archivos propios se registran en un manifest mínimo local. Configuración existente de permisos no se reimpone; drift se informa sin volcar contenido. Un archivo ilegible, manifest inválido, ruta enlazada o conflicto de ownership bloquea la unidad afectada, no se interpreta como estado vacío.
+Antes de cambiar configuración existente hay backup en `~/.jorgex-stack/backups`. Los respaldos no se podan automáticamente: se conservan hasta una limpieza manual deliberada y pueden ocupar espacio creciente. Antes de eliminar snapshots, comprueba qué originales contienen y cuáles necesitas conservar para recuperar cambios; no los borres durante una operación activa. El manifest original se respalda una vez por operación, mientras el ownership se persiste por unidad para conservar evidencia de fallos parciales. Marcadores Markdown y upserts JSON/TOML preservan contenido ajeno; archivos propios se registran en un manifest mínimo local. Configuración existente de permisos no se reimpone; drift se informa sin volcar contenido. Un archivo ilegible, manifest inválido, ruta enlazada o conflicto de ownership bloquea la unidad afectada, no se interpreta como estado vacío. El backup previo al setup de Engram (`engram-setup`) copia solo los archivos que ese setup reescribe: `settings.json` y `.claude.json` en Claude Code; `config.toml`, `engram-instructions.md` y `engram-compact-prompt.md` en Codex; `opencode.json[c]`, `tui.json[c]` y `plugins/engram.ts` en OpenCode. Las versiones hasta 2.0.9 copiaban todos los archivos del nivel superior del directorio del runtime, incluidos credenciales (`auth.json` de Codex), historial y logs: revisa y elimina a mano los snapshots `*-engram-setup` antiguos que no necesites.
 
 Desinstalar retira solo recursos gestionados seleccionados, con confirmación y backup; las skills tienen alcance **global compartido**, anunciado antes de aplicar. Conserva runtimes, herramientas compartidas, Engram por defecto, DB/memorias, credenciales, sesiones, browser/perfiles y datos ajenos. Un archivo propio puede retirarse con backup aunque haya sido modificado; una entrada de configuración modificada se conserva/libera. El manifest no autentica propiedad frente a manipulación: revisa/restaura su backup antes de mutar si sospechas inconsistencias.
 
+Un archivo que ya existe en una ruta que Stack proyecta (subagentes, archivos de skills gestionadas, cabecera de Pi, recursos del cliente OpenCode) y que el manifest no registra se trata como ajeno, aunque lo instalara una versión anterior de Stack: se conserva sin tocar y tanto Aplicar como Doctor avisan de si es «idéntico al canon» o «distinto del canon». Para recuperar su gestión, aplica la unidad afectada desde Instalar / configurar o Actualizar: Stack pregunta archivo por archivo, con No por defecto. Al aceptar, un archivo distinto se respalda en un snapshot `adopt-<runtime>`, se sustituye por el canon y queda registrado como propio —un subagente adoptado conserva el modelo/esfuerzo que tuviera, igual que uno propio—; uno idéntico solo se registra, sin escritura ni backup. Desde entonces Stack lo actualiza y lo retira como cualquier recurso propio. Si respondes No, sigue siendo tuyo y el aviso se repite; Doctor no falla por ello. Enlaces simbólicos, directorios y skills completas ajenas nunca se ofrecen para adopción.
+
 No hay migrador universal para instalaciones históricas. La retirada explícita del paquete jorgex-pi y de scripts/plugins registrados propios no migra sesiones ni historia. Los backups pueden recuperarse manualmente en sus rutas originales después de revisar el contenido; no hay comando público Restore.
+
+### Residuos de versiones anteriores
+
+Versiones anteriores de Stack dejaron archivos y directorios que la versión actual ya no lee. Doctor los lista una vez por ejecución, con ruta, tamaño, clase y paso para retirarlos, y resume `~/.jorgex-stack/backups` con el número de snapshots y el tamaño total. Es solo lectura: no borra nada y su resultado no cambia por residuos ni por backups. La detección es únicamente por existencia de la ruta; `updatedAt` de cada runtime en el manifest se renueva solo cuando su fila cambia.
+
+**Privados**: están en directorios que solo Stack creó.
+
+| Base | Rutas |
+| --- | --- |
+| `~/.jorgex-stack/` | `install-mode.json`, `model-map.json`, `primary-model.json`, `pi-receipt.json`, `pi-projection-receipt.json`, `playwright-cli.json`, `devtools-mcp.json`, `packages/`, `.browser-managed/` |
+| Configuración de Pi | directorios `stage-*`, `jorgex-pi/`, `npm/jorgex-pi-managed/` |
+
+**En configuración del usuario**: Stack los lista y nunca los retira, porque sin manifest no puede probar que sigan siendo suyos. Comprueba que no los has personalizado antes de borrarlos a mano.
+
+| Base | Rutas |
+| --- | --- |
+| Configuración de OpenCode | `plugins/stack-hooks.ts`, `commands/xreview.md` |
+| Configuración de Pi | `prompts/lean-audit.md`, `extensions/jorgex-compact-tools/` |
+
+**Valores dentro de archivos**: Doctor no los detecta, porque no inspecciona contenido. Se revisan y retiran a mano:
+
+- Servidor MCP `chrome-devtools` en la configuración de OpenCode y de Codex.
+- `theme: "JorgeX"` en la configuración de Pi.
+- Dependencia `pi-mcp-adapter` en `npm/package.json` de Pi.
 
 ## Desarrollo y CI
 
