@@ -1,6 +1,6 @@
 # 01 — Métodos y pipelines de vídeo
 
-> Investigación y propuesta. 2026-10-02. Cubre cómo se decide el método, qué pipelines canónicos existen y qué se sabe sobre su determinismo. No incluye instalación, generación ni prueba en esta fase. Fuentes en [fuentes.md](fuentes.md) (V01–V15).
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló, generó ni ejecutó. Fuentes: [fuentes.md](fuentes.md) (V01–V15).
 
 ## 1. Principio rector: control explícito vs condicionamiento generativo
 
@@ -50,7 +50,7 @@ Audio aprobado
 Acabado y master
 ```
 
-- Veo3.1 acepta primeras/últimas imágenes y referencias propias; **no** transferir arbitrariamente el proxy de Blender ni usar la extensión con clips que no sean Veo (V11).
+- Veo3.1 acepta primeras/últimas imágenes y referencias propias; no transferir arbitrariamente el proxy de Blender ni usar la extensión con clips que no sean Veo (V11).
 - LTX Union Control con IC-LoRA heredado 2.3 opera con depth/canny/pose; depende de ComfyUI con GPU, nodos y pesos; la licencia comunitaria puede condicionarse a facturación (V12, V13).
 - Aleph Edit Studio está documentado para single edit de imagen seleccionada → metraje; multi-edit/expand aparece marcado como próximo en la UI documentada; no asumir paridad de API (V09, V10).
 
@@ -128,15 +128,7 @@ Ninguna pipeline se aplica a toda la pieza sin un **prototipo representativo** q
 
 Los assets aprobados, una vez fijados, dan un **montaje reproducible**; no garantizan una **generación idéntica** si se vuelve a llamar al modelo generativo.
 
-## 6. Lo que este capítulo evita
-
-- No recomienda Veo, Aleph, LTX, Remotion o HyperFrames por defecto. Cada uno entra cuando el caso lo pide.
-- No asume que una herramienta ofrezca un control que su documentación vigente no respalda.
-- No mezcla audio y vídeo en una sola decisión; el audio manda sobre el corte.
-- No promete paridad de API entre single edit y multi-edit cuando la documentación UI marca multi-edit/expand como próximo.
-
-## 7. Pendientes
+## 6. Pendientes
 
 - Confirmar capacidades vigentes (audio input, multi-image conditioning, durations) en el momento de elegir proveedor, no en abstracto.
 - Verificar el entorno de ejecución para LTX Union Control (GPU, ComfyUI, pesos, licencia) antes de planificar.
-- Documentar el prototipo representativo aprobado como referencia para la producción por lote.

@@ -1,6 +1,6 @@
 # 03 — Web: narrativa, CRO y motion
 
-> Investigación y propuesta. 2026-10-02. Cubre la lógica de página, la disciplina CRO como hipótesis verificable, los patrones de motion por rol y la accesibilidad/rendimiento como guardrails. No instala ni ejecuta. Fuentes en [fuentes.md](fuentes.md) (W01–W14).
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló ni ejecutó. Fuentes: [fuentes.md](fuentes.md) (W01–W14).
 
 ## 1. Mensaje: a quién llega, qué cambia, qué objetivo
 
@@ -20,7 +20,7 @@ La página navega a dos velocidades:
 - **Exploración narrativa**: lectura o recorrido lineal, con cadencia, ritmo y pausas. Es el camino del visitante curioso.
 - **Vía rápida**: anclas de navegación, índice, CTA accesibles sin completar la animación ni el scroll. Es el camino del visitante con objetivo concreto.
 
-Una pieza bien hecha **no obliga** a seguir la exploración para llegar al CTA. Saltar a una sección, abrir un menú o copiar un enlace debe funcionar en cualquier momento.
+Una pieza bien hecha no obliga a seguir la exploración para llegar al CTA. Saltar a una sección, abrir un menú o copiar un enlace debe funcionar en cualquier momento.
 
 ## 3. Ficha de sección
 
@@ -33,15 +33,15 @@ Cada sección principal responde, sin depender de animación:
 - **Acción**: qué CTA sale de la sección.
 - **Alternativa estática**: cómo se ve y funciona sin motion (versión con reduced-motion, sin JS, sin canvas).
 
-La animación mejora la experiencia; nunca es el único camino.
+La animación mejora la experiencia; nunca es el único camino. La jerarquía es contenido, luego semántica, luego motion, luego estética; no se invierte.
 
 ## 4. Personalidad sin animación
 
-La personalidad de una página se sostiene con composición, tipografía, sistema visual, materiales y voz. La animación **acompaña**, no define. Si la página pierde su carácter sin motion, el carácter estaba en el motion, no en el diseño.
+La personalidad de una página se sostiene con composición, tipografía, sistema visual, materiales y voz. La animación acompaña, no define. Si la página pierde su carácter sin motion, el carácter estaba en el motion, no en el diseño.
 
 ## 5. CRO como hipótesis, no como promesa
 
-La optimización de conversión es una hipótesis que se prueba. **No se garantiza** que más motion, más scroll o más tiempo en página produzcan más leads.
+La optimización de conversión es una hipótesis que se prueba. No se garantiza que más motion, más scroll o más tiempo en página produzcan más leads.
 
 - **Hipótesis de ejemplo**: una demo que aclara el proceso **aumenta los contactos cualificados** frente a la versión estática.
 - **Métrica principal**: lead cualificado, reserva, venta o registro, no scroll ni tiempo en página.
@@ -83,6 +83,8 @@ Confundirlos lleva a animaciones que ignoran al usuario o que pierden accesibili
 - **Rive**: máquinas de estados diseñadas con HTML accesible; renderizar el canvas no exime de dar alternativas (W14).
 - **SVG** para gráficos vectoriales; **Canvas** para procedural denso; **Three.js / R3F** cuando el volumen aporta; **vídeo prerender** frente a imagen cuando la estática no comunica el movimiento.
 
+Este orden por capas no es un ranking de bibliotecas.
+
 ## 9. Accesibilidad WCAG 2.2
 
 - **2.2.2 Pause, Stop, Hide (A)**: animación auto-iniciada de más de 5 s junto a otro contenido requiere pausa; no es opcional.
@@ -99,16 +101,7 @@ Confundirlos lleva a animaciones que ignoran al usuario o que pierden accesibili
 - `transform` y `opacity` cuando encajan; reservar tamaños de medios; lazy en lo que está fuera de vista; pausa de vídeo fuera de viewport; evitar `will-change` indiscriminado.
 - No hacer scroll hijacking por defecto; no animar gratuitamente sobre errores, pagos o lectura larga.
 
-## 11. Lo que este capítulo evita
+## 11. Pendientes
 
-- No garantiza CRO ni ranking de bibliotecas.
-- No trata reduced-motion como sustituto del resto de accesibilidad.
-- No usa parallax ni scroll-linked como cumplimiento AA; son decisiones AAA.
-- No invierte la jerarquía: contenido, luego semántica, luego motion, luego estética.
-
-## 12. Pendientes
-
-- Medir en campo, no solo en Lighthouse, antes de cerrar el bucle CRO.
 - Documentar el fallback de cada patrón de motion (reduced-motion, sin JS, sin canvas).
 - Confirmar la compatibilidad de la API de scroll timelines con la matriz de navegadores objetivo.
-- Cerrar el plan de CRO con métrica principal y regla de parada antes de empezar.

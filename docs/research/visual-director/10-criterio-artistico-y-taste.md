@@ -1,10 +1,10 @@
 # 10 — Criterio artístico y taste
 
-> Investigación y propuesta. 2026-10-02. Define cómo la skill entiende y aplica el criterio artístico sin imponer una estética única, sin paradigmas anti-IA y con los principios profesionales como contexto, no como ley. Fuentes en [fuentes.md](fuentes.md) (TS01, E01–E04, M03).
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló ni ejecutó. Fuentes: [fuentes.md](fuentes.md) (TS01, E01–E04, M03).
 
 ## 1. Lo que no es
 
-El criterio artístico aquí documentado **no es**:
+El criterio artístico aquí documentado no es:
 
 - Una estética única que la skill impone (ni "premium", ni "cinematográfico" como atajo).
 - Un paradigma anti-IA: la calidad no depende de rechazar la generación, sino de la dirección, el juicio y la revisión.
@@ -14,7 +14,7 @@ El criterio artístico aquí documentado **no es**:
 
 ## 2. Lo que sí es
 
-El criterio artístico aquí documentado **es**:
+El criterio artístico aquí documentado es:
 
 - **Especificidad del sujeto**: el sistema visual nace del producto, la audiencia, el contexto y los materiales, no de un catálogo (E04).
 - **Significado antes que apariencia**: una elección estética sirve a un propósito, no decora por decorar.
@@ -83,9 +83,3 @@ Una pieza puede pasar el eje técnico y fallar el artístico, o al revés. La re
 ## 8. La novedad no es calidad
 
 La novedad por sí sola no es señal de calidad ni de CRO (TS). Una técnica nueva que no aporta a la intención se quita; una técnica conocida que resuelve el problema se queda. La evaluación premia la coherencia con la intención, no la originalidad de la herramienta.
-
-## 9. Pendientes
-
-- Acordar, en cada proyecto, qué fuentes profesionales se citan como contexto de la decisión; no citarlas todas por defecto.
-- Documentar, en el registro del proyecto, el razonamiento de las decisiones artísticas y funcionales, no solo el resultado.
-- Mantener la regla de no prohibir por defecto cuando la futura skill operativa se materialice.

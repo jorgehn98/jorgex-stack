@@ -1,6 +1,6 @@
 # 08 — Edición y transcripción de grabaciones del usuario
 
-> Investigación y propuesta. 2026-10-02. Cubre el flujo cuando el usuario graba contenido (YouTube, Instagram u otro) y la skill actúa como editor: cortes, silencios, repeticiones, subtítulos, animación, b-roll y audio. No ejecuta; documenta el patrón. Los **detalles de herramientas** (ASR, editores, runtime) viven en [12](12-transcripcion-precision-y-silencios.md), [13](13-edicion-multimodal-y-flujos-reales.md) y [14](14-remotion-hyperframes-transcripcion-y-limites.md). Este capítulo es la **vista de pipeline**; 12/13/14 son los capítulos de detalle. Fuentes en [fuentes.md](fuentes.md) (M03, M04, M05, R03, R04, R05, H02, H05, H06, E02, E04, AS01–AS07, ED01–ED07, RT01–RT09).
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló ni ejecutó y no hubo grabaciones de muestra. Vista general del flujo de edición de grabaciones; el detalle de herramientas está en [12](12-transcripcion-precision-y-silencios.md) (ASR y silencios), [13](13-edicion-multimodal-y-flujos-reales.md) (editores) y [14](14-remotion-hyperframes-transcripcion-y-limites.md) (runtime). Fuentes: [fuentes.md](fuentes.md) (M03, M04, M05, R03, R04, R05, H02, H05, H06, E02, E04, AS01–AS07, ED01–ED07, RT01–RT09).
 
 ## 1. Alcance
 
@@ -41,13 +41,13 @@ QA reproducción completa con audio y subs
 
 Los detalles de cada bloque viven en los capítulos referenciados:
 
-- **ASR y transcript (§3.1, §3.2)**: capacidades declaradas, probabilidades, alineación forzada, gate de 80 ms, y la diferencia entre hueco de transcript y silencio acústico → [12](12-transcripcion-precision-y-silencios.md) §2–§3.
-- **Cortes, reorden y rate (§3.3)**: contrato con `t_final = t_dest + (t_source - source_in) / rate`, ripple, drift A/V → [13](13-edicion-multimodal-y-flujos-reales.md) §5.
-- **Captions (§3.4)**: contrato Remotion `install-whisper-cpp` y `whisper-web` (WASM/CPU) → [14](14-remotion-hyperframes-transcripcion-y-limites.md) §2–§3.
+- **ASR y transcript**: capacidades declaradas, probabilidades, alineación forzada, gate de 80 ms, y la diferencia entre hueco de transcript y silencio acústico → [12](12-transcripcion-precision-y-silencios.md) §2–§3.
+- **Cortes, reorden y rate**: contrato con `t_final = t_dest + (t_source - source_in) / rate`, ripple, drift A/V → [13](13-edicion-multimodal-y-flujos-reales.md) §5.
+- **Captions**: contrato Remotion `install-whisper-cpp` y `whisper-web` (WASM/CPU) → [14](14-remotion-hyperframes-transcripcion-y-limites.md) §2–§3.
 
 ### 3.5 Repeticiones (decisión editorial, no detector)
 
-La eliminación de repeticiones **no** es un detector léxico (H05, AS03 stable-ts). Una palabra repetida puede ser intencional (énfasis, muletilla funcional, construcción narrativa) o no. La decisión es editorial:
+La eliminación de repeticiones no es un detector léxico (H05, AS03 stable-ts). Una palabra repetida puede ser intencional (énfasis, muletilla funcional, construcción narrativa) o no. La decisión es editorial:
 
 - Revisar el **significado y el contexto**: ¿la repetición añade énfasis o es ruido?
 - Si es ruido, marcar el rango y dejar que el editor humano decida el corte, no automatizar.
@@ -55,7 +55,7 @@ La eliminación de repeticiones **no** es un detector léxico (H05, AS03 stable-
 
 ## 4. Audio: lo que el transcript no cuenta
 
-El transcript tiene **huecos donde no hay habla**, pero los huecos no equivalen a silencio acústico (AS06 ffmpeg `silencedetect`, H05, H06, E02). El audio real incluye respiración audible, ruido ambiente, colas de reverberación, música o SFX que pueden no estar en el transcript. La **duración final del audio editado incluye esas colas**; los captions y el timeline deben respetarlas. La skill documenta la duración real al cerrar la edición, **no** la duración del transcript. El **VAD puede llamar "no-speech" a música, SFX o respiración**, así que un gap de transcript es solo **indicio**, no verdad. Detalle: [12](12-transcripcion-precision-y-silencios.md) §3.
+El transcript tiene **huecos donde no hay habla**, pero los huecos no equivalen a silencio acústico (AS06 ffmpeg `silencedetect`, H05, H06, E02). El audio real incluye respiración audible, ruido ambiente, colas de reverberación, música o SFX que pueden no estar en el transcript. La **duración final del audio editado incluye esas colas**; los captions y el timeline deben respetarlas. La skill documenta la duración real al cerrar la edición, no la duración del transcript. El **VAD puede llamar "no-speech" a música, SFX o respiración**, así que un gap de transcript es solo **indicio**, no verdad. Detalle: [12](12-transcripcion-precision-y-silencios.md) §3.
 
 ## 5. QA antes de entregar
 
@@ -66,6 +66,7 @@ Antes de declarar el vídeo editado listo, la skill reproduce y verifica:
 - Cortes coherentes con la decisión editorial; **inventario reloj** (duración, offset, canales, rotación, CFR/VFR) registrado.
 - Mobile safe areas: subtítulos y overlays no quedan cortados en pantallas pequeñas.
 - Privacidad: la grabación no termina en un servicio no autorizado.
+- Registro del proyecto: criterios de corte y reorden usados, no solo el resultado, incluyendo motor ASR, versión, timebase y tail.
 
 Si no se puede reproducir la versión editada (entorno sin render, sin player), se registra como **pendiente**, no como aprobado. (M03 describe la disciplina de analizar referencia real — útil como base conceptual; la regla "no aprobado sin reproducción" es nuestra, no de M.)
 
@@ -92,7 +93,5 @@ La skill puede preparar una **cutlist** o una **muestra corta** (por ejemplo, lo
 
 ## 9. Pendientes
 
-- Confirmar, en cada encargo, el grado de intervención deseado y los permisos de subida y STT antes de tocar el archivo.
-- Documentar, en el registro del proyecto, los criterios de corte y reorden usados, no solo el resultado, **incluyendo motor ASR, versión, timebase y tail**.
-- Decidir si la futura skill operativa lleva un script genérico de preflight para esta pipeline; el usuario prefiere referencias breves, no un nuevo tooling (ver [11](11-skills-externas-aportes-y-limites.md) §4).
-- Medir con una muestra en español autorizada: ASR chosen + alineación + cutlist + export; no se ejecuta aquí.
+- Decidir si la skill lleva un script genérico de preflight para esta pipeline; el usuario prefiere referencias breves, no un nuevo tooling (ver [11](11-skills-externas-aportes-y-limites.md) §4).
+- Medir con una muestra en español autorizada: ASR elegido + alineación + cutlist + export.

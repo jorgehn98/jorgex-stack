@@ -1,8 +1,8 @@
 # 04 — Conversación, autonomía y revisión
 
-> Investigación y propuesta. 2026-10-02. Define cómo se extrae la visión del usuario, cómo se documenta sin duplicar, qué autonomía tiene el agente dentro del alcance y cómo se revisa hasta entregar. No crea la skill; describe el comportamiento deseado.
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló ni ejecutó.
 >
-> **Aviso de autoridad (2026-10-03).** Este capítulo se redactó bajo la arquitectura abierta del 2 de octubre. La **arquitectura mínima cerrada** del primer borrador vive en [`00-encargo-y-arquitectura.md`](00-encargo-y-arquitectura.md) (especialmente §4 fases 0–6 y §9 propiedad/fronteras); la práctica descrita aquí se mantiene vigente en lo que no contradiga `00`.
+> Redactado antes del cierre de arquitectura del 2026-10-03: si algo choca con [00](00-encargo-y-arquitectura.md) §4 (fases) y §9 (propiedad y fronteras), manda 00.
 
 ## 1. Descubrimiento conversacional: profundo pero proporcional
 
@@ -18,28 +18,28 @@ Ni el plan de tareas ni el PRD deben absorber la conversación creativa. Se mant
 
 ### 2.1 Quién es dueño de qué
 
-- **PRD**: objetivos, alcance, restricciones del producto y criterios de éxito del negocio. **No** se convierte en brief visual completo ni se duplica como guía creativa. Si el proyecto no tiene PRD, basta con el archivo de plan visual.
+- **PRD**: objetivos, alcance, restricciones del producto y criterios de éxito del negocio. No se convierte en brief visual completo ni se duplica como guía creativa. Si el proyecto no tiene PRD, basta con el archivo de plan visual.
 - **Registro de diseño (`DESIGN.md` o equivalente del proyecto)**: intentos visuales, decisiones aprobadas, razones y referencias. Aquí viven los estados `observado / declarado / propuesto / aprobado`.
-- **Plan de tareas**: estados, dependencias, dueños y gates. Aquí **no** viven decisiones creativas que el usuario no haya aprobado.
+- **Plan de tareas**: estados, dependencias, dueños y gates. Aquí no viven decisiones creativas que el usuario no haya aprobado.
 
 ### 2.2 Cómo se mantiene
 
 - **Dueño habitual**: `DESIGN.md` cuando existe; el archivo de plan visual cuando el proyecto lo mantiene; el registro de la respuesta para una exploración puntual.
 - **Tipos de registro y su función**:
-  - **Work owner plan** (plan de trabajo, estados, dependencias, gates): vive en el plan de tareas; **no** contiene decisiones creativas que el usuario no haya aprobado.
+  - **Work owner plan** (plan de trabajo, estados, dependencias, gates): vive en el plan de tareas; no contiene decisiones creativas que el usuario no haya aprobado.
   - **Visual decision record** (intención visual, decisiones aprobadas, razones, referencias): vive en el `DESIGN.md` del proyecto; es la fuente que el brand kit referencia (ver [09-brand-kit-evolutivo.md](09-brand-kit-evolutivo.md) §2).
   - **Evidence checkpoint** (renders inspeccionados, audio escuchado, página cargada, capturas de QA): vive en el registro del proyecto o en el handover; cada checkpoint cita la fuente inspeccionada y la fecha.
-  - **Chat efímero** (intercambios one-off de exploración): **no** se replica como docs nuevos por ceremonia. La conversación útil se destila en el visual decision record; el chat se descarta.
+  - **Chat efímero** (intercambios one-off de exploración): no se replica como docs nuevos por ceremonia. La conversación útil se destila en el visual decision record; el chat se descarta.
 - **Separación de responsabilidades**: el plan de tareas tiene estados y dependencias; el visual decision record tiene decisiones, razones y referencias; el evidence checkpoint tiene pruebas con fecha. No se mezclan.
 - **Estados** para cada ítem en el visual decision record:
   - **Observado**: leído de un token, stylesheet, asset aprobado o render inspeccionado. Se nombra la fuente.
   - **Declarado**: dicho por el usuario. Se preserva literal cuando importa, no por defecto.
   - **Propuesto**: decisión pendiente de validar. Se marca hasta que se apruebe.
   - **Aprobado**: el usuario dio el visto bueno o delegó esa decisión de forma explícita.
-- **Quién verifica**: el **dueño de la verificación** es quien se compromete a inspeccionar la prueba con su nombre/rol. Una **decisión puede estar aprobada mientras su verificación técnica o audiovisual sigue pendiente**: se conserva el estado de la decisión (aprobada) y se registra por separado qué comprobación falta y quién la realizará. La ausencia de un dueño de verificación **no** convierte una decisión aprobada en `propuesta` por defecto: la decisión sigue aprobada y la verificación queda como `pendiente` con su dueño o, en su defecto, pendiente de asignar. La verificación humana no es eliminada por la autonomía; la disciplina no la sustituye. Los dueños existentes del plan de trabajo, del visual decision record y del evidence checkpoint se conservan; no se introduce un esquema adicional obligatorio para esta distinción.
+- **Quién verifica**: el **dueño de la verificación** es quien se compromete a inspeccionar la prueba con su nombre/rol. Una **decisión puede estar aprobada mientras su verificación técnica o audiovisual sigue pendiente**: se conserva el estado de la decisión (aprobada) y se registra por separado qué comprobación falta y quién la realizará. La ausencia de un dueño de verificación no convierte una decisión aprobada en `propuesta` por defecto: la decisión sigue aprobada y la verificación queda como `pendiente` con su dueño o, en su defecto, pendiente de asignar. La verificación humana no es eliminada por la autonomía; la disciplina no la sustituye. Los dueños existentes del plan de trabajo, del visual decision record y del evidence checkpoint se conservan; no se introduce un esquema adicional obligatorio para esta distinción.
 - **Lo que se conserva**: la decisión, la razón específica del brief que la justifica, la referencia (archivo, render, cita corta) y los cambios posteriores — qué cambió, cuándo y a qué versión anterior sustituye.
 - **Lo que no se conserva por defecto**: secretos, tokens, claves; transcripciones literales de toda la conversación; copias del PRD, plan o `DESIGN.md`. Se referencian, no se duplican.
-- **Preferencias personales del usuario** (una plataforma concreta, un estilo favorito, una restricción de stack) se registran como `declarado` y **no** se promueven a política global de la skill. La skill pregunta antes de asumir.
+- **Preferencias personales del usuario** (una plataforma concreta, un estilo favorito, una restricción de stack) se registran como `declarado` y no se promueven a política global de la skill. La skill pregunta antes de asumir.
 
 ## 3. Readiness, no omnisciencia
 
@@ -99,6 +99,8 @@ La autonomía tiene topes. El agente se detiene y pregunta (o entrega) cuando to
 - **Cambio material**: el brief, el mensaje, el medio o el presupuesto cambió. Se confirma el nuevo alcance antes de seguir.
 - **Criterio o presupuesto no autorizado**: el usuario debe decidir antes de gastar o de aceptar un criterio nuevo.
 
+Los topes de gasto, tiempo y reintentos se acuerdan por encargo. Aquí se describe la disciplina, no un número universal.
+
 ## 7. Resultado entregado y respuesta a feedback
 
 ### 7.1 Qué incluye la entrega
@@ -120,7 +122,5 @@ Cuando algo no se puede inspeccionar — render no disponible, audio sin previsu
 
 ## 9. Riesgos y puntos pendientes
 
-- **El comportamiento descrito aquí es la propuesta**, no una edición realizada. La skill actual tiene su propio flujo de seis etapas; alinear ambos exige una decisión de fusión o coexistencia, no una sustitución silenciosa.
+- **Propuesta**: este capítulo describe el comportamiento deseado, no un comportamiento observado.
 - **La fuente única de decisiones** depende de que el proyecto tenga un dueño claro para el registro. Cuando no exista, hay que decidir caso a caso; este dossier no lo fuerza.
-- **Los topes de gasto, tiempo y reintentos** se acuerdan por encargo. Aquí se describe la disciplina, no un número universal.
-- **La revisión humana** sigue siendo necesaria cuando el criterio o el presupuesto exceden lo autorizado. La autonomía no la elimina; la disciplina no la sustituye.

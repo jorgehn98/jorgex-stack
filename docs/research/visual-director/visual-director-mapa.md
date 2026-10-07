@@ -1,8 +1,6 @@
-# Visual Director: mapa actual y arquitectura propuesta
+# Mapa de la skill original y primera propuesta
 
-Revisión: 2 de octubre de 2026. Fuente: la skill `visual-director/` original. Este documento es un análisis y una propuesta; no modifica la skill ni constituye una dirección aprobada.
-
-> **Aviso histórico (2026-10-03).** Este mapa conserva su cuerpo del 2 de octubre de 2026 como **vista histórica** del estado y de la propuesta abierta; no se ha reescrito. La **arquitectura mínima cerrada** del primer borrador vive en [`Docs/00-encargo-y-arquitectura.md`](Docs/00-encargo-y-arquitectura.md) (2026-10-03) y es la **fuente autorizada** vigente. Si algo de este mapa entra en conflicto con `Docs/00`, manda `Docs/00`. El `SKILL.md`, `references/`, `assets/` y `evals/evals.json` siguen intactos; este mapa no los modifica.
+> Análisis del 2026-10-02 de la skill `visual-director/` original, con la primera propuesta de evolución. Se conserva sin reescribir como punto de partida histórico: "actualmente" y "la skill" se refieren a aquella versión. La arquitectura que se cerró después está en [00](00-encargo-y-arquitectura.md); si hay conflicto, manda 00.
 
 ## 1. Cómo funciona actualmente
 
@@ -237,9 +235,9 @@ La estructura es ilustrativa: no exige mover todos los archivos ni crear una fic
 5. **Mantener OpenDesign como recurso opcional**, verificando su instalación antes de usarlo. Cualquier ampliación a generación requiere un cambio de alcance explícito.
 6. **Añadir casos de evaluación**: vídeo generativo cinematográfico, montaje de material existente, campaña web/vídeo/gráfica coherente, herramienta indisponible, generación sin permiso de gasto y continuación de una dirección aprobada.
 
-### Decisión todavía abierta: activación
+### Decisión abierta entonces: activación
 
-La versión actual es manual: solo se activa con invocación explícita, y sus evaluaciones comprueban ese comportamiento. Convertirla en el director habitual de trabajos visuales sustanciales supondría cambiar descripción y evaluaciones. No debería dispararse para cualquier padding, botón o ajuste rutinario. Se recomienda resolver esta decisión antes de editar la skill.
+Resuelta después: la activación sigue siendo manual. La versión actual es manual: solo se activa con invocación explícita, y sus evaluaciones comprueban ese comportamiento. Convertirla en el director habitual de trabajos visuales sustanciales supondría cambiar descripción y evaluaciones. No debería dispararse para cualquier padding, botón o ajuste rutinario. Se recomienda resolver esta decisión antes de editar la skill.
 
 ## 7. Resultado de esta revisión
 
