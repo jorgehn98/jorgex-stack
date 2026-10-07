@@ -1,10 +1,12 @@
 # 02 — Herramientas de vídeo y evidencia
 
-> Investigación y propuesta. 2026-10-02. Resume qué se sabe de cada herramienta representativa a partir de fuentes leídas, sin ranking ni promesa de capacidades futuras. No instala ni ejecuta. Fuentes en [fuentes.md](fuentes.md) (V01–V15).
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló ni ejecutó. Fuentes: [fuentes.md](fuentes.md) (V01–V15, T01–T04).
 
 ## 1. Nueve características representativas, no una lista cerrada
 
 Estas herramientas aparecen en los pipelines del capítulo 01. No son obligatorias; son las que la evidencia permite caracterizar con sus límites. Cualquier otra herramienta se evalúa con el mismo patrón: función, disponibilidad, restricciones, licencia, evidencia.
+
+El «vídeo» no es un medio único: motion graphics, explainer, narrativo, demo, lyric video y motion design de producto son ramas con criterios diferentes.
 
 ### 1.1 Blender (previz, cámara, pases)
 
@@ -100,16 +102,6 @@ Las tendencias que la documentación y los casos revisados permiten nombrar sin 
 
 No se publica un ranking de "más usados" ni una cuota de calidad promedio. Las estrellas, demos y materiales de marketing no son evidencia de capacidad estable ni de idoneidad para un proyecto concreto.
 
-## 4. Lo que este capítulo evita
+## 4. Pendientes
 
-- No afirma paridad entre single edit y multi-edit cuando la UI documentada los marca como estados distintos.
-- No usa material de marketing como si fuera documentación técnica.
-- No fija precios; remite a los términos contractuales.
-- No considera "video" como un medio único: motion graphics, explainer, narrativo, demo, lyric video y motion design de producto son ramas con criterios diferentes.
-
-## 5. Pendientes
-
-- Confirmar capacidades vigentes y costes el día del encargo.
 - Confirmar licencia de Remotion y de los adaptadores HyperFrames en la versión que se vaya a usar.
-- Documentar el prototipo aprobado como base de la producción por lote.
-- No usar voces clonadas sin consentimiento y licencia explícitos.

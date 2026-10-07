@@ -1,14 +1,17 @@
-# Fuentes leídas en la preparación del dossier
+# Fuentes
 
-> Investigación y propuesta. 2026-10-02. Cada fuente se identifica por un código, su enlace, la fecha de consulta, qué evidencia aporta y qué no aporta. Distingue documentación oficial, marketing, norma UX y propuesta de integración no certificada.
+> Registro de las fuentes consultadas el 2026-10-02. Los enlaces y los SHA son instantáneas de esa fecha, no instalaciones reales.
 
 ## Cómo leer este registro
 
-- **Código** se usa para citar en otros capítulos (V, W, T, SK, C, MAPA).
-- **Fecha de consulta**: 2026-10-02 salvo que se indique.
-- **Qué evidencia**: la información que la fuente soporta con su contenido público.
-- **Qué no evidencia**: la información que la fuente no soporta y que requeriría prueba runtime, documentación más reciente o datos fechados.
-- **Tipo**: documentación oficial / marketing / norma UX / propuesta de integración no certificada / material de partida.
+- **Código**: identifica la fuente y es lo que citan los capítulos. Los prefijos son V, W, T, SK, C, MAPA, SKILL, M, R, H, TS, E, AS, ED, RT, BK, FN, LP, WC, CR, GN, UX y GF.
+- **Fecha de consulta**: 2026-10-02 salvo que se indique. La fecha de publicación solo aparece cuando se conoce.
+- **Qué evidencia**: lo que la fuente respalda con su contenido público.
+- **Qué no evidencia**: lo que la fuente no respalda y exigiría una prueba real, documentación más reciente o datos fechados.
+- **Tipo**: documentación oficial, marketing, norma UX, propuesta de integración no certificada, fuente profesional como contexto, material de partida o propuesta del dossier. No se equiparan entre sí.
+- **SHA**: las fuentes M, R, H, TS, AS, ED, RT, CR, GN, UX y GF llevan el SHA del commit consultado cuando aplica, y declaran qué se verificó leyendo el archivo y qué solo consta en metadatos. Las E, CR03–CR05, GF01 y GF02 son publicaciones externas sin SHA.
+- **Propuestas del dossier**: AS05, AS07, ED07 y RT09 no son atribuibles a ninguna fuente externa. AS06 es documentación oficial de ffmpeg.
+- **Prefijos que no deben confundirse**: R son las skills de Remotion (capítulos 08 y 11) y RT los métodos de runtime de Remotion y HyperFrames (08 y 14). H son las skills de HyperFrames (08 y 11); RT03–RT05, RT07 y RT08 son su runtime. TS es la skill de Taste (10 y 11).
 
 ## Video (V)
 
@@ -67,8 +70,8 @@
 ## Material de partida
 
 - **C01** — Clodyssey: making-of y su análisis. *Material de partida.* El material fuente analizado no forma parte de este repositorio. El corpus original tenía 644 imágenes en 10 lotes. No evidencia: vídeo final, audio final, lipsync verificado.
-- **MAPA** — [visual-director-mapa.md](../visual-director-mapa.md) (2026-10-02). *Análisis previo.* Evidencia: cobertura, huecos, activación. No evidencia: implementaciones futuras de la skill.
-- **SKILL** — `visual-director/SKILL.md` + `references/*` + `assets/*` + `evals/evals.json`. *Skill original.* Evidencia: comportamiento declarado. No evidencia: ejecuciones validadas.
+- **MAPA** — [visual-director-mapa.md](visual-director-mapa.md) (2026-10-02). *Análisis previo.* Evidencia: cobertura, huecos, activación. No evidencia: implementaciones posteriores de la skill.
+- **SKILL** — `visual-director/SKILL.md` + `references/*` + `assets/*` + `evals/evals.json`, en su versión del 2026-10-02. *Skill original.* Evidencia: comportamiento declarado. No evidencia: ejecuciones validadas.
 
 ## Skills externas investigadas (delegadas a subagentes, 2026-10-02)
 
@@ -160,7 +163,7 @@ Cada entrada lleva el **SHA pinned** al commit concreto de la consulta y la **UR
 - **RT06** — [`hyperframes/packages/codex-plugin/skills/remotion-best-practices/remotion-markup/silence-detection.md`](https://github.com/remotion-dev/remotion/blob/f229094de9c8ca80565d9928a1191ccd39aea931/packages/codex-plugin/skills/remotion-best-practices/remotion-markup/silence-detection.md). *Mismo SHA runtime que RT01.* *Documentación oficial.* Evidencia: cadena `loudnorm` → `silencedetect` → `frame trims` con `floor startfps`/`ceil endfps`. **Reglas, no thresholds universales**. No evidencia: thresholds por defecto aplicables universalmente.
 - **RT07** — [`hyperframes/skills/media-use/scripts/transcript-cut.mjs`](https://github.com/heygen-com/hyperframes/blob/f16e509832d4fa02bbc9a5f81b59ff78f9d466af/skills/media-use/scripts/transcript-cut.mjs) y [`hyperframes/skills/media-use/scripts/lib/cutlist.mjs`](https://github.com/heygen-com/hyperframes/blob/f16e509832d4fa02bbc9a5f81b59ff78f9d466af/skills/media-use/scripts/lib/cutlist.mjs). *Mismo SHA que RT03.* *Documentación oficial.* Evidencia: heurística de gaps de palabra > threshold con 150 ms cada lado; **no** es prueba acústica; no diferencia speech, breath, sfx, music. Riesgo de truncar cola, incluso con `--keep`; `<200 ms` segmentos se dropean. `normal recode cuts` (herramienta de re-encode con frame/timebase concreto) **no** es lo mismo que `--copy` (keyframe, sin re-encode); sus efectos exactos dependen de la combinación frame/timebase. **Devuelven segments, no remapan captions** — los subtítulos se actualizan a posteriori aplicando un mapa temporal sobre los segmentos retenidos; la re-transcripción final es una alternativa de contraste, no obligatoria. No evidencia: reproducción; QA ejecutado.
 - **RT08** — [`hyperframes/docs/packages/cli.mdx`](https://github.com/heygen-com/hyperframes/blob/f16e509832d4fa02bbc9a5f81b59ff78f9d466af/docs/packages/cli.mdx). *Mismo SHA que RT03.* *Documentación oficial.* Evidencia: HF `snapshot` solo dentro de un proyecto Hyperframes (`my-project`), no extrae frames de un vídeo arbitrario; Remotion still frame composition no se compone automáticamente desde un source video (requiere assets ya disponibles); native extract source frames con FFmpeg opcional, **no** se introduce nuevo script; `fractional fps` con time base racional, **no** redondeado. No evidencia: extracción genérica de frames de un source arbitrario.
-- **RT09** — *Propuesta (no es una fuente upstream).* Contrato raíz para futura skill operativa: `source` (id, ruta, idioma), `target` (timebase CFR/VFR, in/out, rate), `pipeline` (lista ordenada de métodos con inputs/outputs, **mínimo** actor y backend chosen por método), `evidence` (method, confidence o missing, source range, output timebase). El **hash** de source y el **SHA final** son campos **opcionales**: se incluyen cuando la finalidad del proyecto exige **provenance o reproducibilidad**; no son obligatorios para todos los casos. Detalle en [14](14-remotion-hyperframes-transcripcion-y-limites.md) §9. La futura skill operativa no absorbe tutoriales de API; el contrato raíz es el surface mínima que la skill expone.
+- **RT09** — *Propuesta (no es una fuente upstream).* Contrato raíz para la skill: `source` (id, ruta, idioma), `target` (timebase CFR/VFR, in/out, rate), `pipeline` (lista ordenada de métodos con inputs/outputs, **mínimo** actor y backend chosen por método), `evidence` (method, confidence o missing, source range, output timebase). El **hash** de source y el **SHA final** son campos **opcionales**: se incluyen cuando la finalidad del proyecto exige **provenance o reproducibilidad**; no son obligatorios para todos los casos. Detalle en [14](14-remotion-hyperframes-transcripcion-y-limites.md) §9. La futura skill operativa no absorbe tutoriales de API; el contrato raíz es el surface mínima que la skill expone.
 
 ## BK — Marca portable y tokens (delegados a subagente, 2026-10-02)
 
@@ -184,7 +187,7 @@ Cada entrada lleva el **SHA pinned** o la URL de documentación oficial. Las cap
 
 ## LP — Licencias de repos externos (verificadas por subagente, 2026-10-02)
 
-Cada entrada lleva el SHA pinned del archivo `LICENSE` o de la ruta canónica consultada. Las copias sustanciales se condicionan a esta verificación. Documentado en [15](15-marca-portable-y-grafica-fija.md) y [18](18-cobertura-del-encargo.md). Los códigos LP01–LP02 son los únicos citados en 15/18.
+Cada entrada lleva el SHA pinned del archivo `LICENSE` o de la ruta canónica consultada. Las copias sustanciales se condicionan a esta verificación. Se citan en [07](07-validacion-y-decisiones-pendientes.md), [09](09-brand-kit-evolutivo.md), [15](15-marca-portable-y-grafica-fija.md) y [16](16-acabado-audiovisual-y-entrega-editable.md).
 
 - **LP01** — [`taste-skill/LICENSE`](https://github.com/Leonxlnx/taste-skill/blob/3c7017d636c3a4aad378433ea6d0cfa6c921da4a/LICENSE) (SHA pinned `3c7017d636c3a4aad378433ea6d0cfa6c921da4a`; misma licencia en `main` `26fc25c0...`). *LICENSE oficial.* **MIT Copyright 2026 Leonxlnx** (verificado en README y tree). El LICENSE **resuelve** el pendiente de copia sustancial **bajo las condiciones del MIT**: copyright + notice se preservan. **No** se hace copia sustancial hasta que el usuario autorice; el LICENSE existe y permite la copia con atribución, no la reescritura del skill.
 - **LP02** — [`remotion-dev/skills LICENSE` (404)](https://raw.githubusercontent.com/remotion-dev/skills/0b5db9daae40f42c73544d1cc0a8c733bd530eaa/LICENSE) (SHA pinned `0b5db9daae40f42c73544d1cc0a8c733bd530eaa`); [`tree recursivo`](https://api.github.com/repos/remotion-dev/skills/git/trees/0b5db9daae40f42c73544d1cc0a8c733bd530eaa?recursive=1); [`package.json`](https://github.com/remotion-dev/skills/blob/0b5db9daae40f42c73544d1cc0a8c733bd530eaa/package.json). *Ausencia factual.* Tree de 424 entradas **no** contiene `LICENSE` / `LICENSING` / `COPYING` / `COPYRIGHT` / `NOTICE`; el endpoint `LICENSE` raíz devuelve **404**; README y `package.json` **no** declaran licencia. La copia sustancial queda **pendiente de permiso**; conceptos como **expresión independiente + cita** son distintos de **copia sustancial**. **No** se emite juicio legal.

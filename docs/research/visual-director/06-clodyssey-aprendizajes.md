@@ -1,10 +1,12 @@
 # 06 — CLODYSSEY: aprendizajes transferibles
 
-> Síntesis documental. 2026-10-02. Lee los análisis del making-of CLODYSSEY para extraer prácticas que pueden trasladarse a vídeos de otros estilos. No imita la estética ni reproduce el pipeline. El material fuente analizado no forma parte de este repositorio.
+> Investigación del 2026-10-02, por lectura de los análisis del making-of CLODYSSEY; nada se instaló ni ejecutó. El material fuente analizado no forma parte de este repositorio. Fuentes: [fuentes.md](fuentes.md) (C01).
 
 ## 1. Lo que el paquete documenta y lo que no
 
-El making-of describe la producción: brief, dirección, generación, edición y postproducción. Lo que **no** contiene en el momento de este dossier es el vídeo final, las tomas intermedias ni los archivos musicales independientes. Eso limita la evaluación del resultado audiovisual pero no la del proceso. El capítulo 00 del análisis fija ese alcance y separa observado, declarado, inferencia y propuesta.
+El making-of describe la producción: brief, dirección, generación, edición y postproducción. Lo que no contiene en el momento de este dossier es el vídeo final, las tomas intermedias ni los archivos musicales independientes. Eso limita la evaluación del resultado audiovisual pero no la del proceso. El capítulo 00 del análisis fija ese alcance y separa observado, declarado, inferencia y propuesta.
+
+El lipsync, el sonido final y las transiciones no se han inspeccionado, así que no constan como validados. Las 644 imágenes, los 161 prompts y las 36 hojas de contacto no se reanalizaron: el análisis previo ya los comprobó (cap. 00 del paquete).
 
 ## 2. Cinco movimientos del proceso
 
@@ -45,19 +47,12 @@ Estas cifras no descalifican el trabajo; describen el **coste real de iterar** y
 
 Los capítulos 11 y 13 del análisis contienen la lectura de la conversación y del bucle autónomo. Aportan a [04-conversacion-autonomia-y-revision.md](04-conversacion-autonomia-y-revision.md) tres ideas:
 
-- **Una fuente de verdad operativa** con identificador, archivos de entrada, manifiest de jobs, selección de takes y log de runs. La conversación no es el único lugar donde viven las decisiones.
+- **Una fuente de verdad operativa** con identificador, archivos de entrada, manifest de jobs, selección de takes y log de runs. La conversación no es el único lugar donde viven las decisiones.
 - **Reparto de autoridad**: el director fija intención y aprueba; el agente principal coordina, integra y corrige; los agentes de capítulo producen dentro de contrato; los revisores juzgan sin editar; los submitters envían lotes ya preparados. Cada rol tiene un límite y un archivo bajo su propiedad.
 - **El prototipo representativo precede al lote**: el bucle **animar → revisar → corregir** opera sobre una unidad que demuestra la dificultad del proyecto, no sobre la pieza entera.
 
-## 8. Lo que esta síntesis evita
-
-- No afirma que el lipsync, el sonido final o las transiciones estén validados; esa parte del resultado **no se ha inspeccionado** en esta fase.
-- No reanaliza las 644 imágenes, los 161 prompts ni las 36 hojas de contacto; el análisis previo ya los comprobó (cap. 00 del paquete).
-- Esta síntesis no expone identificadores ni valores sensibles de logs. El material fuente analizado no forma parte de este repositorio.
-
-## 9. Pendientes y límites registrados
+## 8. Pendientes y límites registrados
 
 - **Adjuntos referenciados pero ausentes del paquete**: algunos capítulos del análisis mencionan materiales que el paquete original no incluye como archivos sueltos. Se documentan aquí como límite, no se inventan rutas para suplirlos.
 - Inspeccionar el vídeo final y un conjunto pequeño de canciones y tomas comparables cuando estén disponibles, siguiendo el método del capítulo 08 del análisis.
 - Verificar el lipsync y la sincronía de audio con el master cuando los materiales lo permitan.
-- Decidir qué elementos del proceso documentado entran en la futura skill como referencia breve y cuáles quedan como antecedente.

@@ -1,14 +1,14 @@
 # 05 — Herramientas externas y conectores
 
-> Investigación y propuesta. 2026-10-02. Define cómo se introduce una herramienta externa en la futura skill: 1–2 frases con función, disponibilidad previa y setup condicional oficial. No instala ni conecta en esta fase. Fuentes en [fuentes.md](fuentes.md) (T01–T08).
+> Investigación del 2026-10-02, por lectura de fuentes; nada se instaló ni ejecutó. Fuentes: [fuentes.md](fuentes.md) (T01–T08).
 >
-> **Aviso de autoridad (2026-10-03).** Este capítulo se redactó bajo la arquitectura abierta del 2 de octubre. La **arquitectura mínima cerrada** del primer borrador vive en [`00-encargo-y-arquitectura.md`](00-encargo-y-arquitectura.md) (especialmente §8 referencias de herramientas y §9 propiedad/fronteras); la disciplina de "no instalar ni gastar sin permiso" se mantiene como en este capítulo, alineada con `00`.
+> Redactado antes del cierre de arquitectura del 2026-10-03: si algo choca con [00](00-encargo-y-arquitectura.md) §8 (referencias de herramientas) y §9 (propiedad y fronteras), manda 00.
 
 ## 1. Regla general
 
-Una herramienta externa entra en la futura skill como **referencia breve**: una o dos frases con función, disponibilidad y setup condicional. El núcleo de la skill no absorbe manuales; el detalle vive en la documentación oficial y en la nota del usuario. La regla se inspira en la disciplina de referencias progresivas de la especificación de skills, no en una norma externa copiada.
+Una herramienta externa entra en la skill como **referencia breve**: una o dos frases con función, disponibilidad y setup condicional. El núcleo de la skill no absorbe manuales; el detalle vive en la documentación oficial y en la nota del usuario. La regla se inspira en la disciplina de referencias progresivas de la especificación de skills, no en una norma externa copiada.
 
-**No son requisitos universales** Remotion, HyperFrames ni los MCPs. Se mencionan cuando el caso lo pide; se omiten cuando no.
+No son requisitos universales Remotion, HyperFrames ni los MCPs. Se mencionan cuando el caso lo pide; se omiten cuando no.
 
 ## 2. Revisión local antes de cualquier acción
 
@@ -27,7 +27,7 @@ Cuando una herramienta candidata no está disponible, la skill:
 1. Documenta la ausencia con el comando de comprobación usado y la salida obtenida.
 2. Justifica por qué la pide, con referencia al caso (pipeline, patrón, demo).
 3. Pide autorización con un **comando vigente acorde al sistema operativo y al package manager**: `npm i -g`, `pnpm add`, `brew install`, `apt install`, `docker run`, etc.
-4. No instala nada por su cuenta en esta fase.
+4. No instala nada por su cuenta.
 
 ## 4. Plataforma generativa o MCP: preguntar antes de asumir
 
@@ -37,7 +37,7 @@ Cuando el usuario declara una plataforma o ya la tiene conectada, la skill verif
 
 La investigación (T01–T08 en [fuentes.md](fuentes.md)) documenta ejemplos estudiados a fecha 2026-10-02 (Remotion, HyperFrames, OpenDesign, plataformas con MCP) como **evidencia fechada**, no como shortlist recomendada ni como requisito. La skill no asume que una plataforma concreta esté en uso solo porque figure en la investigación.
 
-## 5. Ejemplos de referencia futura (no borrador de SKILL)
+## 5. Ejemplos de referencia
 
 Estos ejemplos muestran el patrón. No son una lista corta de "lo que la skill recomienda": la elección final la hace el usuario.
 
@@ -61,10 +61,4 @@ Estos ejemplos muestran el patrón. No son una lista corta de "lo que la skill r
 - Procedimientos de recuperación ante fallos específicos de una plataforma.
 - Un script genérico de preflight universal. La verificación se hace caso a caso cuando hace falta (comando, `--version`, OAuth presente, etc.); no se introduce un tooling de copia/preflight como parte de la skill, porque el usuario quiere referencias breves, no un nuevo tooling.
 
-La investigación (incluida esta fase) puede documentar más detalle; la skill activa no. La profundidad vive en `Docs/`, en la documentación oficial y en la nota del proyecto.
-
-## 8. Pendientes
-
-- Confirmar el inventario de MCP servers disponibles en el entorno del usuario.
-- Confirmar la política de gasto y subida de material por proyecto.
-- Comprobar la presencia y versión de cada herramienta en el entorno concreto (con utilidades ya disponibles en el sistema); no se introduce un script externo obligatorio ni un prescript universal.
+La investigación puede documentar más detalle; la skill activa no. La profundidad vive en este dossier, en la documentación oficial y en la nota del proyecto.
