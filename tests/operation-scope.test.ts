@@ -212,6 +212,17 @@ it("adopts an identical foreign file by recording ownership only, without writin
   expect(manifest().runtimes.pi!.owned).toContain(file);
   expect(adoptBackups()).toEqual([]);
 });
+it.runIf(process.platform !== "win32")("never offers or records an identical foreign file reached through a linked directory", async () => {
+  const { adoptOptions, file } = await historicAgent();
+  const agents = path.dirname(file);
+  const elsewhere = path.join(root, "elsewhere");
+  fs.renameSync(agents, elsewhere);
+  fs.symlinkSync(elsewhere, agents);
+  const confirmAdoption = vi.fn(async () => true);
+  await runInstall({ ...adoptOptions, confirmAdoption });
+  expect(confirmAdoption).not.toHaveBeenCalled();
+  expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
+});
 it("keeps a foreign file when adoption is declined, and never offers previews or non-regular targets", async () => {
   const { adoptOptions, file, adoptBackups } = await historicAgent("personal");
   const confirmAdoption = vi.fn(async () => false);

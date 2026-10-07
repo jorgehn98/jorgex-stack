@@ -233,6 +233,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // undefined: sin comprobar (o ejecución sin efectos nativos); "": disponible; texto: causa del fallo.
   let browserControlProblem: string | undefined;
   let manifestBackedUp = false;
+  // Shared paths are planned once per runtime: a declined file is not asked about again in the same run.
+  const declinedAdoptions = new Set<string>();
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     let phase = "preflight";
@@ -368,9 +370,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       if (!opts.dryRun && opts.confirmAdoption) for (const candidate of ctx.adoptable ?? []) {
         // A linked ancestor is not offered either: the file stays foreign, as it does without a prompt.
         try { assertProjectionPath(candidate.action.target, opts.targetDir ?? HOME); } catch { continue; }
-        if (!await opts.confirmAdoption(candidate.action.target, candidate.identical)) continue;
+        if (declinedAdoptions.has(candidate.action.target)) continue;
+        if (!await opts.confirmAdoption(candidate.action.target, candidate.identical)) { declinedAdoptions.add(candidate.action.target); continue; }
         adopted.push(candidate.action);
-        ctx.warnings.splice(ctx.warnings.indexOf(candidate.warning), 1);
+        const notice = ctx.warnings.indexOf(candidate.warning);
+        if (notice >= 0) ctx.warnings.splice(notice, 1);
       }
       const adoptedTargets = new Set(adopted.map((action) => action.target));
       const selectedPlan = [...projected, ...adopted];
