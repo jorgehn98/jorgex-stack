@@ -65,8 +65,9 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
       if (action === "uninstall" && !await ui.confirm(`Retirar ${route}${scope.section === "all" || scope.section === "skills" ? ": incluye skills compartidas usadas por otros runtimes" : ""}. Conserva runtimes, datos de Engram, credenciales, sesiones y herramientas compartidas. ¿Continuar?`)) continue;
       try {
         const result = await operations.operate(action, scope, runtimes);
-        ui.info(result ? "Aplicación parcial: consulta las unidades aplicadas y pendientes arriba. Reintento solo al elegir Aplicar; sin rollback global." : "Unidad completada. Configuración: nueva sesión / reload del runtime cuando corresponda.");
-      } catch { ui.info("Unidad pendiente; pueden existir cambios parciales. Reintenta explícitamente; sin rollback global."); }
+        if (action === "doctor") ui.info(result ? "Comprobación con pendientes: revisa los avisos de arriba. Doctor solo lee; no se ha modificado nada." : "Comprobación sin pendientes. Doctor solo lee; no se ha modificado nada.");
+        else ui.info(result ? "Aplicación parcial: consulta las unidades aplicadas y pendientes arriba. Reintento solo al elegir Aplicar; sin rollback global." : "Unidad completada. Configuración: nueva sesión / reload del runtime cuando corresponda.");
+      } catch { ui.info(action === "doctor" ? "Comprobación incompleta: Doctor no pudo terminar. No se ha modificado nada." : "Unidad pendiente; pueden existir cambios parciales. Reintenta explícitamente; sin rollback global."); }
     }
   }
   while (true) {
