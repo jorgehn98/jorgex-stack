@@ -10,7 +10,7 @@ Este índice y el dossier son investigación/evidencia histórica, no contratos 
 
 ## Documentos
 
-- [Visual Director](./visual-director/README.md): dossier de investigación, análisis de proyectos externos y evaluaciones para mejorar la skill.
+- [Visual Director](./visual-director/README.md): dossier de investigación y mapa para mejorar la skill.
 - [Selección de modelos Codex](./codex-model-selection.md): defaults por tier, overrides acotados y evidencia externa contrastada.
 - [Calidad agéntica al estilo de Uncle Bob](./uncle-bob-agentic-quality.md): source-first, especificación, roles, handoffs, arquitectura, QA y hardening.
 - [Métricas y testing](./testing-metrics.md): coverage, CRAP, mutation testing, property testing y perfiles de calidad.
@@ -34,7 +34,7 @@ Este índice y el dossier son investigación/evidencia histórica, no contratos 
 
 ## Contexto histórico
 
-Las propuestas siguientes no son decisiones aprobadas del producto actual. El dossier Visual Director conserva snapshots, assets y transcripciones originales; su índice describe la ubicación operativa, no reescribe esa evidencia. Dos enlaces históricos (`Docs/clodyssey/PROCEDENCIA.md` y `verificacion-copia.json`) ya estaban ausentes antes del traslado. El dossier no es dependencia de runtime ni prueba de derechos sobre material externo.
+Las propuestas siguientes no son decisiones aprobadas del producto actual. El dossier Visual Director conserva la investigación propia y su mapa; el material fuente analizado y la evidencia de evaluación no forman parte de este repositorio. El dossier no es dependencia de runtime ni prueba de derechos sobre material externo.
 
 ## Regla de decisión
 

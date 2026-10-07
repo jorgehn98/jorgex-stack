@@ -11,7 +11,7 @@ Stack configura Claude Code, Codex, **OpenCode v2** y **Pi oficial** mediante su
 - Browser Control nativo solo OpenCode/Pi; no Playwright, DevTools ni supervisor de relay. No perfiles autenticados o datos sensibles sin autorización. [Límites browser](docs/references/browser-automation.md).
 - Pi posee host, paquetes y la aplicación de permisos; Stack proyecta agentes, MCP/configuración, cabecera local y una política de permisos solo cuando falta. compact-tools es extensión independiente, no instalador. Su publicación por el titular es prerrequisito externo: un paquete local no demuestra disponibilidad en el registro. No modificar el repo Pi por rutina.
 - Configuración idempotente, backup previo y ownership mínimo local. No reclamar valores preexistentes por igualdad ni borrar contenido ajeno. Un manifest inválido bloquea mutación; no es prueba criptográfica de propiedad. Sin migrador histórico universal ni rollback entre proveedores; errores parciales visibles.
-- No tocar `C:\Users\jorge\Desktop\jorgex-custom-tools`, datos de Engram, vaults, credenciales ni sesiones. Dossier Visual Director en `docs/research/visual-director/`: evidencia histórica, no instrucciones activas. Preservar assets, licencias y notices; no reescribir historia como contrato actual.
+- No tocar `C:\Users\jorge\Desktop\jorgex-custom-tools`, datos de Engram, vaults, credenciales ni sesiones. Dossier Visual Director en `docs/research/visual-director/`: investigación histórica propia, no instrucciones activas. No añadir material de terceros, binarios, transcripciones ni rutas personales; no reescribir historia como contrato actual.
 
 ## Trabajo y verificación
 
