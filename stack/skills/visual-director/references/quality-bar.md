@@ -33,7 +33,7 @@ Responsive from narrow mobile to the intended desktop range; visible keyboard fo
 
 ## Video checks
 
-First seconds establish interest quickly enough for the platform; every scene has one primary idea; on-screen copy stays readable for its duration; motion and voiceover do not compete; cuts have rhythm and motivation; the mix supports rather than masks speech; the end card/CTA holds long enough; no accidental blank or duplicate frames; a deterministic re-render is stable; codec/container/resolution/fps are correct; compression does not destroy fine lines, gradients or text.
+First seconds establish interest quickly enough for the platform; every scene has one primary idea; on-screen copy stays readable for its duration; motion and voiceover do not compete; cuts have rhythm and motivation; the mix supports rather than masks speech; the end card/CTA holds long enough; the message survives with sound off where the destination autoplays muted; a loop joins without a visible hitch; no accidental blank or duplicate frames; a deterministic re-render is stable; codec/container/resolution/fps are correct; compression does not destroy fine lines, gradients or text.
 
 ## Fixed-graphic checks
 
