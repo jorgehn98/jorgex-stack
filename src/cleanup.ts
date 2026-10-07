@@ -16,6 +16,21 @@ function within(target: string, root: string): boolean {
   catch { return false; }
 }
 
+/**
+ * Whether Pi may still load the retired jorgex-pi package: its residues are live code until Pi's settings stop
+ * naming it. Unreadable or malformed settings count as still loaded.
+ */
+function piStillLoadsJorgexPi(configDir: string): boolean {
+  try {
+    const raw = fs.readFileSync(path.join(configDir, "settings.json"), "utf8");
+    const packages: unknown = JSON.parse(raw).packages ?? [];
+    return !Array.isArray(packages) || packages.some((entry) => {
+      const source = typeof entry === "string" ? entry : entry && typeof entry === "object" && "source" in entry ? entry.source : null;
+      return typeof source !== "string" || /^npm:jorgex-pi(?:@|$)/.test(source);
+    });
+  } catch (error) { return !(error instanceof Error && "code" in error && error.code === "ENOENT"); }
+}
+
 /** Removes every path it can and reports the ones it could not; returns how many were removed. */
 function removeAll(targets: string[], ui: CleanupUI): number {
   let removed = 0;
@@ -37,9 +52,11 @@ export async function cleanResidues(dirs: ResidueDirs, ui: CleanupUI, backupsRoo
   const directories: string[] = [];
   const sizes: (number | null)[] = [];
   const skipped: string[] = [];
+  const piLive = !!dirs.configDirs.pi && piStillLoadsJorgexPi(dirs.configDirs.pi);
   for (const residue of findResidues(dirs)) {
     const stat = fs.lstatSync(residue.path, { throwIfNoEntry: false });
-    if (residue.kind !== "private") skipped.push(`  ${residue.path} (${formatBytes(residue.bytes)}). ${residue.remedy}`);
+    if (residue.kind === "private" && piLive && isContainedIn(residue.path, dirs.configDirs.pi!)) skipped.push(`  ${residue.path}: Pi todavía registra jorgex-pi o su settings.json no es legible; aplica antes Instalar / configurar › Configuración por runtime › Pi.`);
+    else if (residue.kind !== "private") skipped.push(`  ${residue.path} (${formatBytes(residue.bytes)}). ${residue.remedy}`);
     else if (stat?.isSymbolicLink()) skipped.push(`  ${residue.path}: es un enlace simbólico; no se sigue ni se retira. Revísalo a mano.`);
     else if (!stat || (!stat.isFile() && !stat.isDirectory()) || !roots.some((root) => within(residue.path, root))) skipped.push(`  ${residue.path}: fuera de los directorios propios de Stack o de tipo inesperado; se omite.`);
     else { (stat.isDirectory() ? directories : files).push(residue.path); sizes.push(residue.bytes); }

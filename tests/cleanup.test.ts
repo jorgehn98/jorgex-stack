@@ -27,6 +27,19 @@ describe("cleanResidues", () => {
     write(path.join(root, "opencode", "commands", "xreview.md"), "mine");
   };
 
+  it.each([
+    ["still registers jorgex-pi", '{"packages":["npm:pi-subagents",{"source":"npm:jorgex-pi@0.8.29"}]}'],
+    ["has unreadable settings", "{"],
+  ])("keeps Pi residues while Pi %s, and still removes the ones in Stack's own directory", async (_label, settings) => {
+    seed();
+    write(path.join(root, "pi-agent", "settings.json"), settings);
+    const h = ui(true);
+    expect(await cleanResidues(dirs(), h)).toBe(2);
+    expect(h.text()).toMatch(/stage-abc: Pi todavía registra jorgex-pi/);
+    expect(fs.existsSync(path.join(root, "pi-agent", "stage-abc", "pkg.tgz"))).toBe(true);
+    expect(fs.existsSync(path.join(state(), "packages"))).toBe(false);
+  });
+
   it("removes private residues after confirmation, backing up files only, and leaves user configuration alone", async () => {
     seed();
     const h = ui(true);
