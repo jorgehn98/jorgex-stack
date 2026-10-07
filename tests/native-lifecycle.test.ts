@@ -227,6 +227,7 @@ it("labels a native step with its package identifier and never with a path, a fl
   }
   // A flag ends the label: its value and anything after it stay out, even a well-formed package.
   expect(label("/usr/bin/pnpm", ["add", "--global", "@opencode-ai/browser-control@latest"])).toBe("Paso nativo en curso: pnpm add");
+  expect(label("/usr/bin/pnpm", ["add", "@opencode-ai/browser-control@latest", "--global"])).toBe("Paso nativo en curso: pnpm add @opencode-ai/browser-control@latest");
   expect(label("/usr/bin/claude", ["mcp", "remove", "engram", "--scope", "user"])).toBe("Paso nativo en curso: claude mcp remove engram");
   // Only one identifier is shown; a second positional value is never appended.
   expect(label("/usr/bin/pi", ["install", "npm:pi-subagents", "npm:pi-web-access"])).toBe("Paso nativo en curso: pi install npm:pi-subagents");

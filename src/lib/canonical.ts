@@ -124,10 +124,15 @@ export const SECRET_PATH_EXCEPTION = "*.env.example";
 /**
  * El nombre canónico o una ruta absoluta al mismo binario. Un proceso lanzado
  * sin el PATH de la shell interactiva (un servicio) puede resolver el nombre a
- * otra copia, así que fijar la ruta es una personalización legítima.
+ * otra copia, así que fijar la ruta es una personalización legítima. En Windows
+ * los gestores de paquetes exponen el binario como shim `.cmd` o `.exe`.
  */
 export function isBrowserControlCommand(value: unknown, command: string): boolean {
-  return typeof value === "string" && (value === command || (path.isAbsolute(value) && path.basename(value) === command));
+  if (typeof value !== "string") return false;
+  if (value === command) return true;
+  if (path.isAbsolute(value)) return path.basename(value) === command;
+  const shim = path.win32.parse(value);
+  return path.win32.isAbsolute(value) && shim.name === command && [".cmd", ".exe"].includes(shim.ext.toLowerCase());
 }
 
 export const BROWSER_CONTROL_INCOMPATIBLE_WARNING = "el MCP 'browser-control' existente no equivale al launcher nativo (remoto, deshabilitado u otro comando); se conserva intacto y sin reclamar. Browser Control queda bajo tu configuración y Stack no proyecta su guía.";
