@@ -84,7 +84,7 @@ La combinación se justifica por el brief, no por defecto.
 - **Grabaciones personales**: si el usuario sube su propia grabación a un servicio, debe autorizarlo; la skill no sube nada por su cuenta.
 - **Voz de terceros**: clonada o de otro hablante, requiere consentimiento y licencia comercial explícita.
 - **STT local vs remoto**: la decisión se toma por **capacidad y permiso** del usuario, no por preferencia de proveedor. STT local (RT02 `@remotion/whisper-web` WASM/CPU; AS01 faster-whisper CPU int8; AS04 Parakeet CPU) evita subir el audio. STT remoto envía el audio fuera del entorno local, lo que exige revisar permisos del proveedor, tratamiento de datos y cláusulas del servicio; **la responsabilidad sobre el contenido y sobre el cumplimiento de permisos sigue siendo del usuario, no se transfiere al proveedor**. La skill no asume un proveedor concreto. Detalle de motores: [12](12-transcripcion-precision-y-silencios.md) §2; de runtime: [14](14-remotion-hyperframes-transcripcion-y-limites.md).
-- **Datos personales en el transcript**: el transcript puede contener nombres, ubicaciones, datos sensibles. La skill los trata como el resto de la información personal: no se exponen en la síntesis, no se publican, no se suben.
+- **Datos personales en el transcript**: el transcript puede contener nombres, ubicaciones, datos sensibles. La skill los trata como el resto de la información personal: no se exponen en la síntesis ni se difunden.
 
 ## 8. Muestra antes de producción masiva
 

@@ -1,6 +1,6 @@
 # Visual Director: mapa actual y arquitectura propuesta
 
-Revisión: 2 de octubre de 2026. Fuente: `visual-director/` en este Escritorio. Este documento es un análisis y una propuesta; no modifica la skill ni constituye una dirección aprobada.
+Revisión: 2 de octubre de 2026. Fuente: la skill `visual-director/` original. Este documento es un análisis y una propuesta; no modifica la skill ni constituye una dirección aprobada.
 
 > **Aviso histórico (2026-10-03).** Este mapa conserva su cuerpo del 2 de octubre de 2026 como **vista histórica** del estado y de la propuesta abierta; no se ha reescrito. La **arquitectura mínima cerrada** del primer borrador vive en [`Docs/00-encargo-y-arquitectura.md`](Docs/00-encargo-y-arquitectura.md) (2026-10-03) y es la **fuente autorizada** vigente. Si algo de este mapa entra en conflicto con `Docs/00`, manda `Docs/00`. El `SKILL.md`, `references/`, `assets/` y `evals/evals.json` siguen intactos; este mapa no los modifica.
 
