@@ -97,4 +97,4 @@ Trusted Publisher, antiguos recursos App/secrets, entornos y rulesets siguen baj
 - [Entrada al workflow](docs/references/sdd-workflow.md)
 - [Investigación histórica](docs/research/README.md)
 
-MIT para Stack; preservar licencias/atribución incluidas de skills y terceros. El dossier conserva evidencia histórica y material externo, no otorga derechos de uso adicionales sobre assets.
+MIT para Stack; preservar licencias/atribución incluidas de skills y terceros. El dossier conserva investigación histórica propia; el material externo que analiza no forma parte del repositorio.
