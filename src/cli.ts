@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, runInstall, type RuntimeSyncStatus } from "./install.js";
@@ -144,6 +145,10 @@ async function main() {
   if (process.argv.length > 2) { console.error("Solo entrada interactiva: jorgex-stack, sin subcomandos ni flags."); process.exitCode = 1; return; }
   await runMenu(operations, ui, !!process.stdin.isTTY && !!process.stdout.isTTY);
 }
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Package managers expose the bin as a symlink: Node resolves the module to the real file, argv[1] keeps the link path.
+function isEntryPoint() {
+  try { return process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; }
+}
+if (isEntryPoint()) {
   await main().catch(() => { console.error("Operación incompleta; revisa configuración/permisos. Sin rollback global."); process.exitCode = 1; });
 }
