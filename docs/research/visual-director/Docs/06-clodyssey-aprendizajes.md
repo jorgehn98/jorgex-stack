@@ -1,10 +1,10 @@
 # 06 — CLODYSSEY: aprendizajes transferibles
 
-> Síntesis documental. 2026-10-02. Lee los análisis conservados en `Docs/clodyssey/` para extraer prácticas que pueden trasladarse a vídeos de otros estilos. No imita la estética ni reproduce el pipeline. La carpeta original fue eliminada con autorización después de verificar la copia; los 637 JPEG sin copia se descartaron por no ser necesarios para este estudio. Se conservan el análisis completo, las 36 hojas de contacto y las 7 imágenes citadas, según [clodyssey/PROCEDENCIA.md](clodyssey/PROCEDENCIA.md) y [clodyssey/verificacion-copia.json](clodyssey/verificacion-copia.json).
+> Síntesis documental. 2026-10-02. Lee los análisis del making-of CLODYSSEY para extraer prácticas que pueden trasladarse a vídeos de otros estilos. No imita la estética ni reproduce el pipeline. El material fuente analizado no forma parte de este repositorio.
 
 ## 1. Lo que el paquete documenta y lo que no
 
-El making-of describe la producción: brief, dirección, generación, edición y postproducción. Lo que **no** contiene en el momento de este dossier es el vídeo final, las tomas intermedias ni los archivos musicales independientes. Eso limita la evaluación del resultado audiovisual pero no la del proceso. El [capítulo 00 del análisis conservado](clodyssey/analisis/00-alcance-y-evidencia.md) fija ese alcance y separa observado, declarado, inferencia y propuesta.
+El making-of describe la producción: brief, dirección, generación, edición y postproducción. Lo que **no** contiene en el momento de este dossier es el vídeo final, las tomas intermedias ni los archivos musicales independientes. Eso limita la evaluación del resultado audiovisual pero no la del proceso. El capítulo 00 del análisis fija ese alcance y separa observado, declarado, inferencia y propuesta.
 
 ## 2. Cinco movimientos del proceso
 
@@ -16,7 +16,7 @@ Secuencia que el making-of documenta como flujo, no como plantilla:
 4. **Audio real elegido**: voz, música y SFX con su propio criterio; el audio manda sobre cortes y lipsync.
 5. **Composición JS y control de tiempo**: letras, type tucks, rotoscopia, sincronía con los eventos del audio; QA narrativa.
 
-Este orden no es obligatorio. Es la secuencia que el making-of presenta y la que el [capítulo 07 del análisis conservado](clodyssey/analisis/07-metodo-transferible.md) señala como transferible.
+Este orden no es obligatorio. Es la secuencia que el making-of presenta y la que el capítulo 07 del análisis señala como transferible.
 
 ## 3. Eventos por plano
 
@@ -43,7 +43,7 @@ Estas cifras no descalifican el trabajo; describen el **coste real de iterar** y
 
 ## 7. Aportación a 04 (conversación, autonomía, revisión)
 
-Los capítulos [11](clodyssey/analisis/11-conversacion-y-encargo.md) y [13](clodyssey/analisis/13-control-del-bucle-autonomo.md) del análisis conservado contienen la lectura de la conversación y del bucle autónomo. Aportan a [04-conversacion-autonomia-y-revision.md](04-conversacion-autonomia-y-revision.md) tres ideas:
+Los capítulos 11 y 13 del análisis contienen la lectura de la conversación y del bucle autónomo. Aportan a [04-conversacion-autonomia-y-revision.md](04-conversacion-autonomia-y-revision.md) tres ideas:
 
 - **Una fuente de verdad operativa** con identificador, archivos de entrada, manifiest de jobs, selección de takes y log de runs. La conversación no es el único lugar donde viven las decisiones.
 - **Reparto de autoridad**: el director fija intención y aprueba; el agente principal coordina, integra y corrige; los agentes de capítulo producen dentro de contrato; los revisores juzgan sin editar; los submitters envían lotes ya preparados. Cada rol tiene un límite y un archivo bajo su propiedad.
@@ -53,12 +53,11 @@ Los capítulos [11](clodyssey/analisis/11-conversacion-y-encargo.md) y [13](clod
 
 - No afirma que el lipsync, el sonido final o las transiciones estén validados; esa parte del resultado **no se ha inspeccionado** en esta fase.
 - No reanaliza las 644 imágenes, los 161 prompts ni las 36 hojas de contacto; el análisis previo ya los comprobó (cap. 00 del paquete).
-- La copia a `Docs/clodyssey/` contiene los raw logs con datos personales y operativos del paquete, por autorización de investigación privada. Esta síntesis no expone identificadores ni valores sensibles de logs; la copia no se publica ni se sube. El estado de la copia está en [clodyssey/PROCEDENCIA.md](clodyssey/PROCEDENCIA.md) y [clodyssey/verificacion-copia.json](clodyssey/verificacion-copia.json).
+- Esta síntesis no expone identificadores ni valores sensibles de logs. El material fuente analizado no forma parte de este repositorio.
 
 ## 9. Pendientes y límites registrados
 
-- **Selección parcial de Midjourney**: `Docs/clodyssey/` conserva 7 imágenes del directorio `midjourney/`; los otros 637 originales fueron eliminados con autorización. Las 36 hojas de contacto conservan una vista reducida de las 644 imágenes del corpus histórico. Los enlaces al directorio de imágenes resuelven contra la selección de 7, no contra el corpus completo. Los textos del análisis se preservan sin cambios; [clodyssey/PROCEDENCIA.md](clodyssey/PROCEDENCIA.md) aclara su disponibilidad actual.
-- **Adjuntos referenciados pero ausentes del paquete**: algunos capítulos del análisis mencionan materiales que el paquete original no incluye como archivos sueltos. Esos enlaces quedan como referencia de intención; la copia respeta la fuente y no los edita. Se documentan aquí como límite, no se inventan rutas para suplirlos.
-- Inspeccionar el vídeo final y un conjunto pequeño de canciones y tomas comparables cuando estén disponibles, siguiendo el método del [capítulo 08 del análisis conservado](clodyssey/analisis/08-evaluar-calidad.md).
+- **Adjuntos referenciados pero ausentes del paquete**: algunos capítulos del análisis mencionan materiales que el paquete original no incluye como archivos sueltos. Se documentan aquí como límite, no se inventan rutas para suplirlos.
+- Inspeccionar el vídeo final y un conjunto pequeño de canciones y tomas comparables cuando estén disponibles, siguiendo el método del capítulo 08 del análisis.
 - Verificar el lipsync y la sincronía de audio con el master cuando los materiales lo permitan.
 - Decidir qué elementos del proceso documentado entran en la futura skill como referencia breve y cuáles quedan como antecedente.

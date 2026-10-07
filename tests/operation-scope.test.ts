@@ -2,6 +2,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as p from "@clack/prompts";
 import { runInstall } from "../src/install.js";
 import { runUninstall } from "../src/uninstall.js";
 import { runDoctor } from "../src/doctor.js";
@@ -146,4 +147,95 @@ it.each([false, true])("retains original backups and persists partial ownership 
   expect(fs.readFileSync(config, "utf8")).toBe(originalConfig);
   expect(restoreBackup(manifestBackups[0]!.id, backups, root)).toBe(1);
   expect(fs.readFileSync(manifestFile, "utf8")).toBe(originalManifest);
+});
+
+/** A historic install: the file Stack would write is on disk, but no manifest records it. */
+async function historicAgent(content?: string) {
+  const adoptOptions = { ...scopeOptions(), scope: { section: "agents" as const, agent: "implementer" } };
+  expect(await runInstall(adoptOptions)).toBe(0);
+  const file = path.join(root, "pi-agent", "agents", "implementer.md");
+  const canon = fs.readFileSync(file, "utf8");
+  fs.rmSync(path.join(root, ".jorgex-stack"), { recursive: true });
+  if (content !== undefined) fs.writeFileSync(file, content);
+  const adoptBackups = () => listBackups(path.join(root, ".jorgex-stack", "backups")).filter((info) => info.label === "adopt-pi");
+  return { adoptOptions, file, canon, adoptBackups };
+}
+it.each([["idéntico al canon", undefined], ["distinto del canon", "personal"]])("reports a foreign file as %s and keeps it without confirmation", async (state, content) => {
+  const { adoptOptions, file, canon, adoptBackups } = await historicAgent(content);
+  const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
+  expect(await runInstall(adoptOptions)).toBe(0);
+  expect(warn.mock.calls.map(([message]) => message)).toEqual([expect.stringMatching(new RegExp(`${state}.*implementer\\.md`))]);
+  warn.mockClear();
+  expect(await runDoctor(adoptOptions)).toBe(0);
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining(state));
+  expect(fs.readFileSync(file, "utf8")).toBe(content ?? canon);
+  expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
+  expect(adoptBackups()).toEqual([]);
+});
+it("adopts a different foreign file after confirmation: backup, canon and ownership, then no further changes", async () => {
+  const { adoptOptions, file, canon, adoptBackups } = await historicAgent("personal");
+  const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
+  const confirmAdoption = vi.fn(async () => true);
+  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
+  expect(confirmAdoption.mock.calls).toEqual([[file, false]]);
+  expect(warn).not.toHaveBeenCalled();
+  expect(fs.readFileSync(file, "utf8")).toBe(canon);
+  expect(manifest().runtimes.pi!.owned).toContain(file);
+  const [backup, ...rest] = adoptBackups();
+  expect(rest).toEqual([]);
+  expect(backup!.files.map((entry) => [entry.original, fs.readFileSync(entry.stored, "utf8")])).toEqual([[file, "personal"]]);
+  const state = path.join(root, ".jorgex-stack");
+  const settled = [fs.readFileSync(path.join(state, "manifest.json"), "utf8"), fs.readdirSync(path.join(state, "backups"))];
+  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
+  expect(confirmAdoption).toHaveBeenCalledOnce();
+  expect([fs.readFileSync(path.join(state, "manifest.json"), "utf8"), fs.readdirSync(path.join(state, "backups"))]).toEqual(settled);
+  expect(fs.readFileSync(file, "utf8")).toBe(canon);
+});
+it("keeps the model and effort of an adopted subagent, as it does for an owned one", async () => {
+  const { adoptOptions, file, canon } = await historicAgent();
+  const personal = canon.replace("---\n", '---\nmodel: "personal"\nthinking: "personal-effort"\n');
+  fs.writeFileSync(file, personal.replace(/\n$/, "\nlocal note\n"));
+  const confirmAdoption = vi.fn(async () => true);
+  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
+  expect(confirmAdoption.mock.calls).toEqual([[file, false]]);
+  expect(fs.readFileSync(file, "utf8")).toBe(personal);
+  expect(readAgentModel("pi", file).selection).toEqual({ model: "personal", variant: "personal-effort" });
+});
+it("adopts an identical foreign file by recording ownership only, without writing or backing it up", async () => {
+  const { adoptOptions, file, canon, adoptBackups } = await historicAgent();
+  const confirmAdoption = vi.fn(async () => true);
+  const write = vi.spyOn(fs, "writeFileSync");
+  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
+  expect(confirmAdoption.mock.calls).toEqual([[file, true]]);
+  expect(write.mock.calls.map(([target]) => target)).not.toContain(file);
+  expect(fs.readFileSync(file, "utf8")).toBe(canon);
+  expect(manifest().runtimes.pi!.owned).toContain(file);
+  expect(adoptBackups()).toEqual([]);
+});
+it.runIf(process.platform !== "win32")("never offers or records an identical foreign file reached through a linked directory", async () => {
+  const { adoptOptions, file } = await historicAgent();
+  const agents = path.dirname(file);
+  const elsewhere = path.join(root, "elsewhere");
+  fs.renameSync(agents, elsewhere);
+  fs.symlinkSync(elsewhere, agents);
+  const confirmAdoption = vi.fn(async () => true);
+  await runInstall({ ...adoptOptions, confirmAdoption });
+  expect(confirmAdoption).not.toHaveBeenCalled();
+  expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
+});
+it("keeps a foreign file when adoption is declined, and never offers previews or non-regular targets", async () => {
+  const { adoptOptions, file, adoptBackups } = await historicAgent("personal");
+  const confirmAdoption = vi.fn(async () => false);
+  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
+  expect(confirmAdoption.mock.calls).toEqual([[file, false]]);
+  expect(await runInstall({ ...adoptOptions, confirmAdoption: async () => { throw new Error("offered in a preview"); }, dryRun: true })).toBe(0);
+  expect(fs.readFileSync(file, "utf8")).toBe("personal");
+  expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
+  expect(adoptBackups()).toEqual([]);
+  const elsewhere = path.join(root, "personal-agent.md");
+  fs.renameSync(file, elsewhere); fs.symlinkSync(elsewhere, file);
+  expect(await runInstall({ ...adoptOptions, confirmAdoption: async () => { throw new Error("offered a symlink"); } })).toBe(0);
+  expect(fs.readFileSync(elsewhere, "utf8")).toBe("personal");
+  expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+  expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
 });

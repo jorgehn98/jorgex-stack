@@ -131,7 +131,10 @@ const operations: MenuOperations = {
     }
     const statuses: Array<{ runtime: RuntimeId; status: RuntimeSyncStatus }> = [];
     const onRuntimeStatus = (runtime: string, status: RuntimeSyncStatus) => { statuses.push({ runtime: runtime as RuntimeId, status }); };
-    const result = action === "update" ? await runUpdate({ ...opts, engram, onRuntimeStatus }) : await runInstall({ ...opts, engram, onRuntimeStatus });
+    const confirmAdoption = (file: string, identical: boolean) => ui.confirm(identical
+      ? `Archivo ajeno idéntico al canon en una ruta de Stack: ${file}. ¿Registrarlo como gestionado? No se modifica ahora; Stack lo actualizará y retirará como propio.`
+      : `Archivo ajeno distinto del canon en una ruta de Stack: ${file}. ¿Sustituirlo por el canon y gestionarlo? Se guarda un backup antes.`);
+    const result = action === "update" ? await runUpdate({ ...opts, engram, onRuntimeStatus, confirmAdoption }) : await runInstall({ ...opts, engram, onRuntimeStatus, confirmAdoption });
     for (const { runtime, status } of statuses) ui.info(`${ADAPTERS[runtime].name}: ${status === "ok" ? "unidad aplicada" : "unidad pendiente / parcial"}.`);
     return result;
   },

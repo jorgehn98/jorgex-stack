@@ -80,7 +80,7 @@ it.each(RUNTIMES)("installs through pnpm only when the binary is missing (%s)", 
   onPath({ pnpm: "/fake/pnpm" });
   const { exit, pnpmCalls } = await apply(runtime);
   expect(exit).toBe(0);
-  expect(pnpmCalls).toEqual([["/fake/pnpm", ["add", "--global", "@opencode-ai/browser-control@latest"]]]);
+  expect(pnpmCalls).toEqual([["/fake/pnpm", ["add", "@opencode-ai/browser-control@latest", "--global"]]]);
   expect(browserControlEntry(runtime)).toBeDefined();
 });
 
@@ -162,4 +162,13 @@ it("doctor accepts the projection applied without Browser Control instead of fai
   await runDoctor({ runtimes: ["pi"] });
   expect(warnings()).toMatch(/Browser Control ausente/);
   expect(error).not.toHaveBeenCalled();
+});
+
+it("accepts the canonical name, an absolute path to it and a Windows shim, and nothing that merely resembles it", async () => {
+  const { isBrowserControlCommand } = await import("../src/lib/canonical.js");
+  const compatible = (value: unknown) => isBrowserControlCommand(value, "browser-control-mcp");
+  for (const value of ["browser-control-mcp", "/home/user/.local/share/pnpm/browser-control-mcp",
+    "C:\\Users\\user\\AppData\\Local\\pnpm\\browser-control-mcp.cmd", "C:/Users/user/AppData/Local/pnpm/browser-control-mcp.CMD", "D:\\tools\\browser-control-mcp.exe"]) expect(compatible(value)).toBe(true);
+  for (const value of ["browser-control-mcp.cmd", "other-mcp", "/usr/bin/other-mcp", "relative/browser-control-mcp", "/usr/bin/browser-control-mcp.cmd",
+    "C:\\tools\\browser-control-mcp.js", "C:\\tools\\other.cmd", 7, null]) expect(compatible(value)).toBe(false);
 });

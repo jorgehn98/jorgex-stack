@@ -132,6 +132,20 @@ it.each([
   expect(fs.readFileSync(path.join(root, ".engram", "protocol-mode.json"), "utf8")).toBe(record);
 });
 
+it("backs up only the files Engram setup rewrites, never credentials or session data", async () => {
+  const configDir = path.join(root, ".codex");
+  fs.mkdirSync(configDir, { recursive: true });
+  for (const name of ["config.toml", "engram-instructions.md", "auth.json", "logs_2.sqlite", "thread_history_1.sqlite"]) fs.writeFileSync(path.join(configDir, name), name);
+  expect(await runInstall({ runtimes: ["codex"], dryRun: false, yes: true, engramBin: "/fake/engram", execute: () => "",
+    verifyEngram: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
+    detect: () => ({ id: "codex", name: "codex", installed: true, binPath: "/fake/codex", configDir }) })).toBe(0);
+  const backups = path.join(root, ".jorgex-stack", "backups");
+  const saved = fs.readdirSync(backups).flatMap((id) =>
+    (JSON.parse(fs.readFileSync(path.join(backups, id, "manifest.json"), "utf8")).files as { original: string }[]).map((file) => `${id.replace(/^.*Z-/, "")}:${path.basename(file.original)}`));
+  expect(saved).toEqual(expect.arrayContaining(["engram-setup:config.toml", "engram-setup:engram-instructions.md"]));
+  expect(saved.filter((entry) => /auth\.json|sqlite/.test(entry))).toEqual([]);
+});
+
 it.each(["claude-code", "codex"] as const)("refreshes complete official Engram on %s without adding a browser", async (runtime) => {
   const calls: Array<[string, string[]]> = [];
   const verification = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
@@ -213,6 +227,7 @@ it("labels a native step with its package identifier and never with a path, a fl
   }
   // A flag ends the label: its value and anything after it stay out, even a well-formed package.
   expect(label("/usr/bin/pnpm", ["add", "--global", "@opencode-ai/browser-control@latest"])).toBe("Paso nativo en curso: pnpm add");
+  expect(label("/usr/bin/pnpm", ["add", "@opencode-ai/browser-control@latest", "--global"])).toBe("Paso nativo en curso: pnpm add @opencode-ai/browser-control@latest");
   expect(label("/usr/bin/claude", ["mcp", "remove", "engram", "--scope", "user"])).toBe("Paso nativo en curso: claude mcp remove engram");
   // Only one identifier is shown; a second positional value is never appended.
   expect(label("/usr/bin/pi", ["install", "npm:pi-subagents", "npm:pi-web-access"])).toBe("Paso nativo en curso: pi install npm:pi-subagents");
