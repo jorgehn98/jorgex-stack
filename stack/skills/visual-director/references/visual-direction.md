@@ -41,7 +41,7 @@ Non-user-triggered motion should be selective; one orchestrated sequence often r
 
 ## Two passes
 
-**Pass 1 — Direction**: palette, type, composition/layout, shape/material, imagery, motion/camera and one signature moment. **Pass 2 — Genericity critique**: could this plan be pasted into another project unchanged; is a trope used because it is easy for a machine to generate; what is genuinely specific; is the signature moment doing the work; what should be removed. Revise before implementation if it still reads as a template.
+**Pass 1 — Direction**: palette, type, composition/layout, shape/material, imagery, motion/camera and one signature moment. **Pass 2 — Genericity critique**: could this plan be pasted into another project unchanged; is a trope used because it is easy for a machine to generate; what is genuinely specific; is the signature moment doing the work; what should be removed. Revise before implementation if it still reads as a template. Name the few defaults this direction deliberately excludes, so production does not drift back to them.
 
 ## Copy and references
 

@@ -7,6 +7,7 @@ Decide the **method** before the runtime. Programmatic generation, recorded/edit
 Define the piece before animating:
 
 - hook in the first seconds where the platform demands it, then beats/scenes, information density, typography load, visual peak, transition logic, audio relationship and end card/CTA;
+- whether the piece must still read with sound off, and which area stays safe when it is recropped to another aspect ratio;
 - shot framing and camera grammar (lens, POV, movement, cut) as design decisions; a storyboard orients camera and acting and may depart from the board to serve clarity or emotion;
 - one primary render clock. Programmatic work ties animation to frame/time, never wall-clock; live capture is valid when the case asks for it, and native capture is not universally wrong.
 
@@ -14,7 +15,7 @@ Avoid "slide 1 / fade / slide 2 / fade" as the default grammar. Think continuous
 
 ### Music-led pieces
 
-Build from the approved audio: map relevant phrases and musical changes to meaning, action or abstraction, emotion, focal element and transition. Reuse a motif when it helps recognition; decide how its returns develop rather than treating each lyric as an unrelated illustration. Keep this breakdown in the existing storyboard, not a second mandatory document.
+Build from the approved audio: map relevant phrases and musical changes to meaning, action or abstraction, emotion, focal element and transition. Reuse a motif when it helps recognition; decide how its returns develop rather than treating each lyric as an unrelated illustration. Keep this breakdown in the existing storyboard, not a second mandatory document. When cuts or accents must land on the music, measure the beat grid and the relevant onsets from the approved track instead of assuming a nominal tempo, and place a synchronized sound by its measured peak, not by where its file starts.
 
 Compose lyrics with the shot: decide when text leads and when it supports, reserve readable space, and allow enough time at the destination size. Character movement, camera and typography need not all peak together or hit every beat. Across scene handoffs, preserve the intended pose, position, lighting, motif and entry/exit relationship. See [audio](audio.md) for master-track and synchronization checks.
 
@@ -27,7 +28,11 @@ Use when the piece is authored by code or a timeline that must render the same f
 - One primary orchestration model is enough. **Remotion** renders React components frame by frame and fits reuse of an existing React stack and typed variants; **HyperFrames** composes seekable HTML/CSS/JS and fits webpage-native sources and browser runtimes. Neither is a mandatory default, and setup is an explicit, separately approved action — consult [official docs](official-docs.md) before committing. For an offline 3D cinematic, the 3D environment may itself be the primary render.
 - For many personalized outputs, separate the immutable design system, reusable scene components, input schema, media assets, timing rules and text constraints; design for worst-case text and media lengths.
 
-Reconstruct each frame from its requested time, including seeded randomness and any simulation state, so seeking or parallel rendering does not depend on previous playback. Artistic exposure or line-jitter cadence can differ from export fps; test the intended movement, not only the metadata. When reusing cached frames, confirm that their source, code, assets, fonts and timing settings still match; invalidate affected frames when they do not. A filename or file size alone is not that check.
+Reconstruct each frame from its requested time, including seeded randomness and any simulation state, so seeking or parallel rendering does not depend on previous playback. A value whose target changes several times stays a function of time when each change contributes its own closed-form response (for example one spring step per change, summed) instead of state integrated frame by frame. Artistic exposure or line-jitter cadence can differ from export fps; test the intended movement, not only the metadata. When reusing cached frames, confirm that their source, code, assets, fonts and timing settings still match; invalidate affected frames when they do not. A filename or file size alone is not that check.
+
+Motion blur in a frame-by-frame render is authored, not free: when the look needs it and the render budget allows, sample several sub-frame times per output frame and blend them. A seamless loop needs every moving element to hand over from the last frame to the first in position and velocity, not only a matching still.
+
+Before a full render, render the frames at the beats, transitions and text holds, and fix composition, legibility and off-grid timing there. It is a cheap pre-check, not a substitute for playback.
 
 Check render and encoder exit status, the complete expected frame sequence or stream, and a decodable output before reporting export success. A log saying "wrote" or an existing file is insufficient; a failed export stays failed even if a preview looked good. Then inspect playback as required by the [quality bar](quality-bar.md).
 
