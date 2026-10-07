@@ -68,3 +68,13 @@ it("reports a failed cleanup and stays in the menu", async () => {
   expect(h.clean).toHaveBeenCalledOnce();
   expect(h.messages.join(" ")).toContain("Limpieza incompleta");
 });
+it("closes a read-only Doctor run without apply, retry or rollback wording", async () => {
+  for (const [fail, expected] of [[true, "con pendientes"], [false, "sin pendientes"]] as const) {
+    const h = harness(["doctor", "skills", "apply", "back", "back", "exit"], fail);
+    await runMenu(h.operations, h.ui, true);
+    expect(h.operate).toHaveBeenCalledExactlyOnceWith("doctor", { section: "skills" }, ["pi"]);
+    const closing = h.messages.at(-1)!;
+    expect(closing).toContain(expected);
+    expect(closing).not.toMatch(/Aplicación|Reintento|rollback|reload/);
+  }
+});
