@@ -75,6 +75,8 @@ export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
+  /** Per-file consent to take over a foreign file on a Stack path. Without it nothing is adopted; `yes` never stands in for it. */
+  confirmAdoption?: (file: string, identical: boolean) => Promise<boolean>;
   writingStyle?: WritingStyleSnapshot;
   engram?: boolean;
   engramBin?: string | null;
@@ -97,7 +99,7 @@ export function makeContext(adapter: Adapter, configDir: string, targetDir?: str
   if (previous && !samePath(previous.configDir, configDir)) throw new Error(`${adapter.id}: configDir difiere del manifest; se conserva el perfil anterior.`);
   return {
     stackDir: stackRoot(), configDir, targetDir, engramBin: targetDir ? null : detectEngram(),
-    models: {} as AgentModelChoices, warnings: [],
+    models: {} as AgentModelChoices, warnings: [], adoptable: [],
     writingStyle: prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir }),
     ownedFiles: new Set(Object.values(manifest.runtimes).flatMap((row) => row?.owned ?? [])),
     ownedMcpServers: new Set(previous?.mcpOwned), ownedConfigFields: new Set(previous?.configOwned),
@@ -188,6 +190,21 @@ export function retireExtraEngramMonitor(configDir: string, backupsRoot: string,
   }
 }
 
+/**
+ * Files the official Engram setup and its runtime plugin commands rewrite. The config directory
+ * also holds credentials, session history and logs: nothing outside this list is ever copied.
+ */
+const ENGRAM_SETUP_FILES: Partial<Record<RuntimeId, readonly string[]>> = {
+  "claude-code": ["settings.json"],
+  codex: ["config.toml", "engram-instructions.md", "engram-compact-prompt.md"],
+  opencode: ["opencode.json", "opencode.jsonc", "tui.json", "tui.jsonc", path.join("plugins", "engram.ts")],
+};
+function engramSetupBackupTargets(id: RuntimeId, configDir: string): string[] {
+  const targets = (ENGRAM_SETUP_FILES[id] ?? []).map((name) => path.join(configDir, name));
+  if (id === "claude-code") targets.push(process.env.CLAUDE_CONFIG_DIR ? path.join(configDir, ".claude.json") : path.join(HOME, ".claude.json"));
+  return targets;
+}
+
 /** Retire only registrations pointing to script files recorded as ours. Provider hooks are untouched. */
 export function planRetiredHooks(adapter: Adapter, ctx: InstallContext, owned: readonly string[]): FileAction[] {
   const scriptsDir = adapter.paths(ctx.configDir).scriptsDir;
@@ -231,6 +248,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   // undefined: sin comprobar (o ejecución sin efectos nativos); "": disponible; texto: causa del fallo.
   let browserControlProblem: string | undefined;
   let manifestBackedUp = false;
+  // Shared paths are planned once per runtime: a declined file is not asked about again in the same run.
+  const declinedAdoptions = new Set<string>();
   for (const id of opts.runtimes) {
     const adapter = ADAPTERS[id];
     let phase = "preflight";
@@ -336,10 +355,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           if (id === "claude-code") execute(bin, ["update"]);
           if (id === "opencode") { execute(bin, ["upgrade"]); assertOpenCodeV2Preflight(opts, bin); }
           if (id === "codex") execute(bin, ["update"]);
-          const backupTargets = fs.existsSync(configDir) ? fs.readdirSync(configDir).map((name) => path.join(configDir, name)).filter((file) => fs.lstatSync(file).isFile()) : [];
-          backupTargets.push(path.join(configDir, "plugins", "engram.ts"));
-          if (id === "claude-code") backupTargets.push(process.env.CLAUDE_CONFIG_DIR ? path.join(configDir, ".claude.json") : path.join(HOME, ".claude.json"));
-          createBackup(backupTargets, "engram-setup", path.join(state, "backups"));
+          createBackup(engramSetupBackupTargets(id, configDir), "engram-setup", path.join(state, "backups"));
           const verify = opts.verifyEngram ?? (async (runtime, directory, engramBin) => (await officialSetupVerifiers[runtime]?.({ configDir: directory, engramBin, homeDir: HOME }))?.ok === true);
           const initial = opts.verifyEngram ? undefined : await officialSetupVerifiers[id]?.({ configDir, engramBin: engram, homeDir: HOME });
           const preexisting = opts.verifyEngram ? await verify(id, configDir, engram) : initial?.ok === true;
@@ -362,13 +378,27 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
       if ((id === "pi" || id === "opencode") && !browserControlProblem) ctx.browserControlInvocation = { command: BROWSER_CONTROL_BIN, args: [] };
       phase = "proyección";
-      const selectedPlan = buildScopedPlan(adapter, ctx, scope);
+      const projected = buildScopedPlan(adapter, ctx, scope);
+      const adopted: FileAction[] = [];
+      if (!opts.dryRun && opts.confirmAdoption) for (const candidate of ctx.adoptable ?? []) {
+        // A linked ancestor is not offered either: the file stays foreign, as it does without a prompt.
+        try { assertProjectionPath(candidate.action.target, opts.targetDir ?? HOME); } catch { continue; }
+        if (declinedAdoptions.has(candidate.action.target)) continue;
+        if (!await opts.confirmAdoption(candidate.action.target, candidate.identical)) { declinedAdoptions.add(candidate.action.target); continue; }
+        adopted.push(candidate.action);
+        const notice = ctx.warnings.indexOf(candidate.warning);
+        if (notice >= 0) ctx.warnings.splice(notice, 1);
+      }
+      const adoptedTargets = new Set(adopted.map((action) => action.target));
+      const selectedPlan = [...projected, ...adopted];
       const plan = [...(configSelected ? planRetiredHooks(adapter, ctx, row.owned) : []), ...selectedPlan];
       const changes = diffPlan(plan).filter((change) => change.status !== "unchanged");
       for (const { action } of changes) assertProjectionPath(action.target, opts.targetDir ?? HOME);
       if (!opts.dryRun) {
         if (configSelected && "installedContent" in style) applyWritingStyle(style as ReturnType<typeof prepareWritingStyle>);
-        createBackup(changes.filter((change) => change.status === "update").map((change) => change.action.target), `install-${id}`, path.join(state, "backups"));
+        const updates = changes.filter((change) => change.status === "update").map((change) => change.action.target);
+        createBackup(updates.filter((target) => !adoptedTargets.has(target)), `install-${id}`, path.join(state, "backups"));
+        createBackup(updates.filter((target) => adoptedTargets.has(target)), `adopt-${id}`, path.join(state, "backups"));
         const shared = new Set(configSelected ? planSystemPrompt(adapter, ctx).map((action) => action.target) : []);
         const configTargets = new Set(configSelected ? adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx).map((action) => action.target) : []);
         const ownedCandidates = new Set(selectedPlan.filter((action) => !shared.has(action.target) && !configTargets.has(action.target)).map((action) => action.target));
@@ -380,8 +410,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           }
           persist();
         });
-        // An existing Stack-owned shared file is a reference, never a claim by equality.
-        for (const target of ownedCandidates) if (ctx.ownedFiles?.has(target) && !row.owned.includes(target)) row.owned.push(target);
+        // An existing Stack-owned shared file is a reference, never a claim by equality. An adopted identical file is
+        // not written, so its confirmation is recorded here.
+        for (const target of ownedCandidates) if ((ctx.ownedFiles?.has(target) || adoptedTargets.has(target)) && !row.owned.includes(target)) row.owned.push(target);
         const keep = new Set([...plan.map((action) => action.target), ...Object.entries(readManifest(manifestPath).runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? [])]);
         for (const orphan of [...row.owned]) {
           if (!includesOwnedFile(adapter, ctx, scope, orphan) || keep.has(orphan) || path.basename(orphan) === "engram.ts") continue;
